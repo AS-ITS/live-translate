@@ -89,7 +89,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('heading', { name: 'Live Translate' })).toBeVisible();
   await expect(page.getByText('Ready')).toBeVisible();
 
-  const targetLanguage = page.getByRole('combobox');
+  const targetLanguage = page.getByLabel('Target language');
 
   await targetLanguage.selectOption('ja');
   await page.getByRole('button', { name: 'Start' }).click();

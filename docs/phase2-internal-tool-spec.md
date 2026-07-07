@@ -20,8 +20,9 @@ database, change APIs, or change production code.
 - Basic access control.
 - Translation history.
 - Subtitle export.
-- Audio input device selection.
-- Audio output device selection.
+- Audio input device selection. Audio Device Selection v1 completed.
+- Audio output device selection remains future work because browser output
+  routing support is limited.
 - Recently used languages.
 - Session history.
 - Auto reconnect.
@@ -216,27 +217,31 @@ documentation.
 
 ### Device Selection
 
+Status: Audio Device Selection v1 completed for input device selection. Output
+device selection remains future work and is browser-limited.
+
 #### Purpose
 
-Let users choose the microphone and speaker devices used for translation,
-improving repeat use in internal environments with multiple audio devices.
+Let users choose the microphone used for translation, improving repeat use in
+internal environments with multiple audio input devices. Speaker device
+selection remains a future enhancement because browser output routing support is
+limited.
 
 #### User Flow
 
 1. The user opens device settings.
-2. The app lists available microphones and output devices after permission is
-   granted.
-3. The user selects input and output devices.
+2. The app lists available microphones after permission is granted.
+3. The user selects an input device.
 4. The next session uses the selected devices when available.
 
 #### Functional Requirements
 
 - List available audio input devices through browser media device APIs.
 - Use the selected input device for microphone capture.
-- Use the selected output device for playback when the browser supports output
-  device selection.
 - Persist recent device choices locally if appropriate.
 - Fall back safely when a selected device is unavailable.
+- Output device selection remains future work and depends on browser support
+  such as `setSinkId`.
 
 #### API / Data Requirement
 
@@ -246,9 +251,8 @@ improving repeat use in internal environments with multiple audio devices.
 
 #### Frontend Impact
 
-- Add input and output device controls.
+- Add input device controls.
 - Handle permission-dependent device labels.
-- Detect unsupported `setSinkId` or equivalent output routing capability.
 - Preserve current behavior when no device is selected.
 
 #### Backend Impact
@@ -259,11 +263,12 @@ improving repeat use in internal environments with multiple audio devices.
 
 - Unit tests for device selection state and fallback behavior.
 - E2E tests with mocked media devices.
-- Manual browser checks for microphone labels and output routing support.
+- Manual browser checks for microphone labels.
 
 #### Risk / Notes
 
-- Output device selection support varies by browser.
+- Output device selection support varies by browser and remains out of scope for
+  v1.
 - Device IDs can change between sessions and should be treated as preferences,
   not guaranteed stable identifiers.
 

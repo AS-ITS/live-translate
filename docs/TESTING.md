@@ -24,12 +24,20 @@ Run transcript export unit tests:
 node --test tests/unit/transcriptExport.test.js
 ```
 
+Run media device utility unit tests:
+
+```bash
+node --test tests/unit/mediaDevices.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
 - Linear resampling and PCM chunking
 - Transcript update behavior
 - Transcript export formatting
+- Media device normalization, input constraints, and output-selection capability
+  detection
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 

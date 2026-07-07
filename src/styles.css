@@ -75,7 +75,7 @@ input {
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(220px, 1fr) auto;
   align-items: end;
   gap: 16px;
 }
@@ -183,6 +183,12 @@ input:disabled {
 .export-note {
   margin: 12px 0 0;
   color: #6b7886;
+  line-height: 1.5;
+}
+
+.device-note {
+  margin: 0;
+  color: #516070;
   line-height: 1.5;
 }
 

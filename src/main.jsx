@@ -1,8 +1,9 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Download, Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { LiveTranslateSession } from './lib/liveSession.js';
+import { audioInputDevices } from './lib/mediaDevices.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
 import {
   applyTranscriptEvent,
@@ -21,20 +22,72 @@ function App() {
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
   const [exportFormat, setExportFormat] = useState('txt');
   const [exportStream, setExportStream] = useState('translation');
+  const [inputDevices, setInputDevices] = useState([]);
+  const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
+  const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
   const sessionRef = useRef(null);
 
   const isActive = status === 'requesting-permission' || status === 'connecting' || status === 'listening';
 
+  useEffect(() => {
+    void refreshInputDevices();
+
+    if (!navigator.mediaDevices?.addEventListener) {
+      return undefined;
+    }
+
+    const handleDeviceChange = () => {
+      void refreshInputDevices();
+    };
+
+    navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
+    return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  async function refreshInputDevices() {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      return;
+    }
+
+    try {
+      const devices = audioInputDevices(await navigator.mediaDevices.enumerateDevices());
+      setInputDevices(devices);
+      setSelectedInputDeviceId((current) => {
+        if (!current || devices.some((device) => device.deviceId === current)) {
+          return current;
+        }
+
+        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
+        return '';
+      });
+    } catch {
+      setDeviceMessage('Microphone list is unavailable. Using browser default microphone.');
+    }
+  }
+
   async function startSession() {
     setError('');
+    setDeviceMessage('');
     setTranscriptTimeOrigin(Date.now());
     setTranscript(resetTranscriptState());
     setStatus('requesting-permission');
 
+    const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
+      ? selectedInputDeviceId
+      : '';
+
     const session = new LiveTranslateSession({
       targetLanguageCode,
       echoTargetLanguage,
+      inputDeviceId: inputDeviceIdForSession,
+      onInputDeviceFallback: () => {
+        setSelectedInputDeviceId('');
+        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
+      },
+      onMicrophoneReady: () => {
+        void refreshInputDevices();
+      },
       onConnecting: () => setStatus('connecting'),
       onInputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'source' })),
       onOutputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'translation' })),
@@ -140,6 +193,25 @@ function App() {
             <span>Echo target language</span>
           </label>
 
+          <label className="field">
+            <span>Microphone</span>
+            <select
+              value={selectedInputDeviceId}
+              onChange={(event) => {
+                setSelectedInputDeviceId(event.target.value);
+                setDeviceMessage('');
+              }}
+              disabled={isActive}
+            >
+              <option value="">Browser default microphone</option>
+              {inputDevices.map((device) => (
+                <option key={device.deviceId || device.label} value={device.deviceId}>
+                  {device.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
           {status === 'listening' ? (
             <button className="button secondary" type="button" onClick={stopSession}>
               <Square size={18} aria-hidden="true" />
@@ -154,6 +226,7 @@ function App() {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
       </section>
 
       <section className="export-panel" aria-label="Transcript export">

@@ -57,15 +57,15 @@ Status: Completed
 
 ## 4. Phase 2 - Internal Tool
 
-Status: Planned. Better transcript handling and Transcript Export are completed;
-Phase 2 overall is not completed.
+Status: Planned. Better transcript handling, Transcript Export, and Audio Input
+Device Selection are completed; Phase 2 overall is not completed.
 
 ### Candidate Features
 
 - Basic login / access control
 - Translation history
 - Export transcript as TXT / SRT / VTT. Completed.
-- Audio input device selection
+- Audio input device selection. Completed.
 - Audio output device selection
 - Recent target language
 - Session history

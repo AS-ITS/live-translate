@@ -6,6 +6,7 @@ import {
   OUTPUT_SAMPLE_RATE,
   pcm16ToFloat
 } from './audio.js';
+import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -15,6 +16,9 @@ export class LiveTranslateSession {
   constructor({
     targetLanguageCode,
     echoTargetLanguage,
+    inputDeviceId = '',
+    onInputDeviceFallback,
+    onMicrophoneReady,
     onConnecting,
     onInputTranscript,
     onOutputTranscript,
@@ -23,6 +27,9 @@ export class LiveTranslateSession {
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
+    this.inputDeviceId = inputDeviceId;
+    this.onInputDeviceFallback = onInputDeviceFallback;
+    this.onMicrophoneReady = onMicrophoneReady;
     this.onConnecting = onConnecting;
     this.onInputTranscript = onInputTranscript;
     this.onOutputTranscript = onOutputTranscript;
@@ -42,14 +49,8 @@ export class LiveTranslateSession {
   }
 
   async start() {
-    this.mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        channelCount: 1
-      }
-    });
+    this.mediaStream = await this.openInputStream();
+    this.onMicrophoneReady?.();
 
     this.audioContext = new AudioContext();
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
@@ -131,6 +132,20 @@ export class LiveTranslateSession {
 
     this.source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
+  }
+
+  async openInputStream() {
+    try {
+      return await navigator.mediaDevices.getUserMedia(buildAudioInputConstraints(this.inputDeviceId));
+    } catch (error) {
+      if (!this.inputDeviceId || !isMissingSelectedInputError(error)) {
+        throw error;
+      }
+
+      this.inputDeviceId = '';
+      this.onInputDeviceFallback?.();
+      return navigator.mediaDevices.getUserMedia(buildAudioInputConstraints());
+    }
   }
 
   handleMessage(message) {

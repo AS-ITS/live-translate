@@ -27,7 +27,8 @@ database, change APIs, or change production code.
 - Auto reconnect.
 - Token refresh.
 - AudioWorklet migration.
-- Better transcript handling.
+- Better transcript handling. Completed. See
+  [Better Transcript Handling](features/better-transcript-handling.md).
 - Usage logging.
 
 ## 3. Phase 2 Non-Goals
@@ -529,7 +530,8 @@ Make repeated internal use smoother without changing the core product scope.
 
 Suggested order from lower risk to higher risk:
 
-1. Better transcript handling.
+1. Better transcript handling. Completed. See
+   [Better Transcript Handling](features/better-transcript-handling.md).
 2. Device selection.
 3. Transcript export.
 4. Usage logging.

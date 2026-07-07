@@ -12,6 +12,12 @@ Run all unit tests:
 npm run test:unit
 ```
 
+Run transcript unit tests:
+
+```bash
+node --test tests/unit/transcript.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion

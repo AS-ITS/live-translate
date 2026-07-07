@@ -1,10 +1,12 @@
 # Better Transcript Handling
 
+Status: Implemented / Completed
+
 ## 1. Feature Overview
 
-Better Transcript Handling is the first planned Phase 2 feature. Its purpose is
-to improve how the frontend handles source transcript and translated transcript
-events from the Gemini Live session.
+Better Transcript Handling is the first completed Phase 2 feature. Its purpose
+is to improve how the frontend handles source transcript and translated
+transcript events from the Gemini Live session.
 
 The feature should prevent duplicate append behavior, out-of-order display, and
 final transcript text being overwritten by later partial updates. It should also
@@ -221,16 +223,20 @@ Suggested assertions:
 
 ## 8. Implementation Notes
 
-Expected implementation locations, if this feature is later approved for code
-work:
+Actual implementation locations:
 
-- `src/lib/transcript.js` or a similar utility for transcript state operations.
+- `src/lib/transcript.js` for deterministic transcript state operations.
 - `src/lib/liveSession.js` event mapping from Gemini SDK events into normalized
   transcript events.
 - `src/main.jsx` state handling for rendering source and translation transcript
   state.
-- `tests/unit/transcript.test.js` or the closest existing unit test location for
-  transcript behavior.
+- `tests/unit/transcript.test.js` for transcript behavior coverage.
+
+Passed validation:
+
+```bash
+node --test tests/unit/transcript.test.js
+```
 
 Implementation guidance:
 

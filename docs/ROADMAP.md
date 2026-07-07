@@ -57,7 +57,8 @@ Status: Completed
 
 ## 4. Phase 2 - Internal Tool
 
-Status: Planned
+Status: Planned. Better transcript handling is completed; Phase 2 overall is
+not completed.
 
 ### Candidate Features
 
@@ -71,7 +72,7 @@ Status: Planned
 - Auto reconnect
 - Token refresh
 - AudioWorklet migration
-- Better transcript handling
+- Better transcript handling. Completed.
 - Usage logging
 - Admin usage review
 

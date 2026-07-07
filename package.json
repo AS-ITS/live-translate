@@ -8,6 +8,10 @@
     "build": "vite build",
     "server": "node server/index.js",
     "test": "node --test tests/*.test.js",
+    "test:unit": "node --test tests/unit/*.test.js",
+    "test:integration": "node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/*.test.js",
+    "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
+    "test:live-smoke": "node scripts/live-smoke-test.js",
     "check": "node --check server/index.js && node --check server/tokenService.js && node --check src/lib/audio.js"
   },
   "dependencies": {
@@ -18,5 +22,7 @@
     "react-dom": "^18.3.1",
     "lucide-react": "^0.468.0"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@playwright/test": "^1.61.1"
+  }
 }

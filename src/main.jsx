@@ -3,14 +3,19 @@ import { createRoot } from 'react-dom/client';
 import { Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { LiveTranslateSession } from './lib/liveSession.js';
+import {
+  applyTranscriptEvent,
+  createTranscriptState,
+  resetTranscriptState,
+  transcriptTextForStream
+} from './lib/transcript.js';
 import './styles.css';
 
 function App() {
   const [status, setStatus] = useState('idle');
   const [targetLanguageCode, setTargetLanguageCode] = useState('zh-Hant');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
-  const [inputTranscript, setInputTranscript] = useState(createTranscriptState);
-  const [outputTranscript, setOutputTranscript] = useState(createTranscriptState);
+  const [transcript, setTranscript] = useState(createTranscriptState);
   const [error, setError] = useState('');
   const sessionRef = useRef(null);
 
@@ -18,16 +23,15 @@ function App() {
 
   async function startSession() {
     setError('');
-    setInputTranscript(createTranscriptState());
-    setOutputTranscript(createTranscriptState());
+    setTranscript(resetTranscriptState());
     setStatus('requesting-permission');
 
     const session = new LiveTranslateSession({
       targetLanguageCode,
       echoTargetLanguage,
       onConnecting: () => setStatus('connecting'),
-      onInputTranscript: (update) => setInputTranscript((current) => updateTranscript(current, update)),
-      onOutputTranscript: (update) => setOutputTranscript((current) => updateTranscript(current, update)),
+      onInputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'source' })),
+      onOutputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'translation' })),
       onError: (nextError) => {
         setError(nextError.message);
         setStatus('error');
@@ -57,8 +61,8 @@ function App() {
     setStatus('stopped');
   }
 
-  const inputTranscriptText = transcriptText(inputTranscript);
-  const outputTranscriptText = transcriptText(outputTranscript);
+  const inputTranscriptText = transcriptTextForStream(transcript, 'source');
+  const outputTranscriptText = transcriptTextForStream(transcript, 'translation');
 
   return (
     <main className="app-shell">
@@ -129,33 +133,6 @@ function TranscriptPanel({ title, text, emptyText }) {
       <p className={text ? 'transcript-text' : 'transcript-text empty'}>{text || emptyText}</p>
     </article>
   );
-}
-
-function createTranscriptState() {
-  return { finalText: '', partialText: '' };
-}
-
-function updateTranscript(current, update) {
-  const next = update.text?.trim() || '';
-  if (!next) {
-    return current;
-  }
-
-  if (update.isFinal) {
-    return {
-      finalText: current.finalText ? `${current.finalText} ${next}` : next,
-      partialText: ''
-    };
-  }
-
-  return {
-    ...current,
-    partialText: next
-  };
-}
-
-function transcriptText(transcript) {
-  return [transcript.finalText, transcript.partialText].filter(Boolean).join(' ');
 }
 
 function statusLabel(status) {

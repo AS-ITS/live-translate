@@ -1,6 +1,6 @@
 # Transcript Export
 
-Status: Planned
+Status: Minimal current-session export implemented
 
 ## 1. Feature Overview
 
@@ -8,13 +8,18 @@ Transcript Export is a Phase 2 planning feature that lets an internal user
 download transcript content from the current or previously selected translation
 session.
 
-The feature should build on the existing frontend transcript item model from
-`src/lib/transcript.js`. It should export deterministic text files from
-available transcript items without changing the Gemini Live session, token flow,
-backend API, storage model, or production authentication behavior.
+The current minimal implementation builds on the existing frontend transcript
+item model from `src/lib/transcript.js`. It exports deterministic text files
+from available current-session transcript items without changing the Gemini Live
+session, token flow, backend API, storage model, or production authentication
+behavior.
 
-This document is planning-only. It does not implement code, add a backend
-endpoint, add persistence, or call the real Gemini API.
+This feature does not add a backend endpoint, persistence, or real Gemini API
+validation.
+
+SRT/VTT timing is approximate frontend observation timing, not media-aligned
+timing. Subtitle cues are derived from when transcript items are observed and
+finalized in the browser.
 
 ## 2. Goals
 
@@ -130,6 +135,16 @@ Bonjour.
 7. If export is unavailable, the UI explains the recoverable reason without
    clearing the transcript.
 
+Current minimal UI:
+
+- Supports current visible session transcript only.
+- Lets the user choose TXT, SRT, or VTT.
+- Lets the user choose Translation, Source, or Both.
+- Disables download when the selected export has no transcript text.
+- Disables SRT and VTT when Both is selected because timed formats export one
+  stream at a time.
+- Keeps transcript text available after Stop.
+
 ## 6. Transcript Data Dependency
 
 Transcript Export depends on the transcript item model implemented in
@@ -208,7 +223,13 @@ Data rules:
 
 ## 9. Testing Requirements
 
-Planned tests should be deterministic and must not call the real Gemini API.
+Tests should be deterministic and must not call the real Gemini API.
+
+Run transcript export unit tests:
+
+```bash
+node --test tests/unit/transcriptExport.test.js
+```
 
 Unit test coverage:
 
@@ -237,12 +258,12 @@ later.
 
 ## 10. Acceptance Criteria
 
-- `docs/features/transcript-export.md` defines the planned Transcript Export
-  feature scope.
+- `docs/features/transcript-export.md` defines the Transcript Export feature
+  scope.
 - Export formats TXT, SRT, and VTT are specified.
 - The spec depends on the `src/lib/transcript.js` transcript item model.
 - The spec preserves current Start / Stop and Gemini Live session behavior.
-- No production code is changed.
+- Current-session export is implemented in frontend code only.
 - No backend API is added.
 - No persistence is added.
 - No package is installed.

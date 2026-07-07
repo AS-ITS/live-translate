@@ -18,11 +18,18 @@ Run transcript unit tests:
 node --test tests/unit/transcript.test.js
 ```
 
+Run transcript export unit tests:
+
+```bash
+node --test tests/unit/transcriptExport.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
 - Linear resampling and PCM chunking
 - Transcript update behavior
+- Transcript export formatting
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 

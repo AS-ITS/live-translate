@@ -9,8 +9,8 @@ function App() {
   const [status, setStatus] = useState('idle');
   const [targetLanguageCode, setTargetLanguageCode] = useState('zh-Hant');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
-  const [inputTranscript, setInputTranscript] = useState('');
-  const [outputTranscript, setOutputTranscript] = useState('');
+  const [inputTranscript, setInputTranscript] = useState(createTranscriptState);
+  const [outputTranscript, setOutputTranscript] = useState(createTranscriptState);
   const [error, setError] = useState('');
   const sessionRef = useRef(null);
 
@@ -18,28 +18,30 @@ function App() {
 
   async function startSession() {
     setError('');
-    setInputTranscript('');
-    setOutputTranscript('');
+    setInputTranscript(createTranscriptState());
+    setOutputTranscript(createTranscriptState());
     setStatus('requesting-permission');
 
     const session = new LiveTranslateSession({
       targetLanguageCode,
       echoTargetLanguage,
-      onInputTranscript: (text) => setInputTranscript((current) => appendTranscript(current, text)),
-      onOutputTranscript: (text) => setOutputTranscript((current) => appendTranscript(current, text)),
+      onConnecting: () => setStatus('connecting'),
+      onInputTranscript: (update) => setInputTranscript((current) => updateTranscript(current, update)),
+      onOutputTranscript: (update) => setOutputTranscript((current) => updateTranscript(current, update)),
       onError: (nextError) => {
         setError(nextError.message);
         setStatus('error');
+        sessionRef.current = null;
       },
       onClose: () => {
         setStatus((current) => (current === 'listening' ? 'stopped' : current));
+        sessionRef.current = null;
       }
     });
 
     sessionRef.current = session;
 
     try {
-      setStatus('connecting');
       await session.start();
       setStatus('listening');
     } catch (nextError) {
@@ -54,6 +56,9 @@ function App() {
     sessionRef.current = null;
     setStatus('stopped');
   }
+
+  const inputTranscriptText = transcriptText(inputTranscript);
+  const outputTranscriptText = transcriptText(outputTranscript);
 
   return (
     <main className="app-shell">
@@ -110,8 +115,8 @@ function App() {
       </section>
 
       <section className="transcript-grid" aria-label="Live transcripts">
-        <TranscriptPanel title="Source speech" text={inputTranscript} emptyText="Waiting for source speech..." />
-        <TranscriptPanel title="Translated speech" text={outputTranscript} emptyText="Waiting for translated speech..." />
+        <TranscriptPanel title="Source speech" text={inputTranscriptText} emptyText="Waiting for source speech..." />
+        <TranscriptPanel title="Translated speech" text={outputTranscriptText} emptyText="Waiting for translated speech..." />
       </section>
     </main>
   );
@@ -126,12 +131,31 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
-function appendTranscript(current, next) {
-  if (!next.trim()) {
+function createTranscriptState() {
+  return { finalText: '', partialText: '' };
+}
+
+function updateTranscript(current, update) {
+  const next = update.text?.trim() || '';
+  if (!next) {
     return current;
   }
 
-  return current ? `${current} ${next}` : next;
+  if (update.isFinal) {
+    return {
+      finalText: current.finalText ? `${current.finalText} ${next}` : next,
+      partialText: ''
+    };
+  }
+
+  return {
+    ...current,
+    partialText: next
+  };
+}
+
+function transcriptText(transcript) {
+  return [transcript.finalText, transcript.partialText].filter(Boolean).join(' ');
 }
 
 function statusLabel(status) {
@@ -148,4 +172,3 @@ function statusLabel(status) {
 }
 
 createRoot(document.getElementById('root')).render(<App />);
-

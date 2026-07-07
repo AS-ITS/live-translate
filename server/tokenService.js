@@ -19,6 +19,10 @@ export function normalizeTokenRequest(body = {}) {
 export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage }, now = new Date()) {
   const expireTime = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now.getTime() + 60 * 1000).toISOString();
+  const translationConfig = {
+    targetLanguageCode,
+    echoTargetLanguage
+  };
 
   return {
     uses: 1,
@@ -30,9 +34,8 @@ export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage }, now
         responseModalities: ['AUDIO'],
         inputAudioTranscription: {},
         outputAudioTranscription: {},
-        translationConfig: {
-          targetLanguageCode,
-          echoTargetLanguage
+        generationConfig: {
+          translationConfig
         }
       }
     },
@@ -69,5 +72,10 @@ export async function createLiveToken(body, options = {}) {
 
 async function createGenAiClient(apiKey) {
   const { GoogleGenAI } = await import('@google/genai');
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      apiVersion: 'v1alpha'
+    }
+  });
 }

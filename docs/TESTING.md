@@ -38,6 +38,11 @@ Current integration coverage:
 - Missing `GEMINI_API_KEY`
 - Provider expired-token style failure
 - Structured error response for invalid JSON
+- Demo access-token gate
+- Origin allowlist enforcement
+- IP-based rate limiting
+- Security headers and request id response headers
+- `/healthz` and `/readyz`
 
 ## E2E Tests
 

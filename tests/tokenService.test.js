@@ -27,8 +27,9 @@ test('buildTokenConfig locks live translate model and audio settings', () => {
   assert.equal(config.newSessionExpireTime, '2026-07-06T00:01:00.000Z');
   assert.equal(config.liveConnectConstraints.model, 'gemini-3.5-live-translate-preview');
   assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['AUDIO']);
-  assert.equal(config.liveConnectConstraints.config.translationConfig.targetLanguageCode, 'zh-Hant');
-  assert.equal(config.liveConnectConstraints.config.translationConfig.echoTargetLanguage, false);
+  assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.targetLanguageCode, 'zh-Hant');
+  assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.echoTargetLanguage, false);
+  assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
 });
 
 test('createLiveToken maps Gemini token response', async () => {
@@ -65,4 +66,3 @@ test('createLiveToken maps provider failures to 502', async () => {
     status: 502
   });
 });
-

@@ -120,3 +120,15 @@ After each completed task, report:
 - Meeting room features
 - Unrelated AI model benchmark
 - Deployment automation
+
+## 10. Definition of Done
+
+A task is considered complete only if:
+
+- Functional requirements are satisfied.
+- Related documentation is updated if behavior changed.
+- Relevant tests pass.
+- No secrets are exposed.
+- Existing functionality is not regressed.
+- Code follows project conventions.
+- Scope stays within the current project phase.

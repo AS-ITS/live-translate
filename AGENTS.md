@@ -33,6 +33,14 @@ Core architecture:
 - Do not modify the core Live API session unless the task explicitly requires it.
 - Prefer the smallest safe change that satisfies the request.
 - Preserve existing behavior unless the request requires a behavior change.
+- Phase 2 follow-up development should be capability-centered.
+- Do not create a separate feature spec for every small feature.
+- One feature spec should usually support 2-3 related implementation features.
+- Add a new `docs/features/*.md` file only when existing specs cannot support
+  the design.
+- Before creating a new feature spec, check whether an existing spec can be
+  extended.
+- Keep documentation minimal, scoped, and maintainable.
 
 ## 3. Agent Workflow
 
@@ -62,6 +70,9 @@ Core architecture:
 - Subtitle export may be added.
 - Device selection may be added.
 - Usage records may be added.
+- Before implementing Auto Reconnect, Token Refresh, Session History, or Usage
+  Logging, read `docs/features/session-lifecycle.md`.
+- Do not implement reconnect behavior unless explicitly requested.
 
 ### Phase 3 Production
 

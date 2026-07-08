@@ -25,8 +25,9 @@ database, change APIs, or change production code.
   routing support is limited.
 - Recently used languages.
 - Session history.
-- Auto reconnect.
-- Token refresh.
+- Session Lifecycle Management.
+- Auto reconnect. Depends on Session Lifecycle Management.
+- Token refresh. Depends on Session Lifecycle Management.
 - AudioWorklet migration.
 - Better transcript handling. Completed. See
   [Better Transcript Handling](features/better-transcript-handling.md).
@@ -44,7 +45,29 @@ database, change APIs, or change production code.
 - Meeting room system.
 - Full admin dashboard.
 
-## 4. Feature Breakdown
+## 4. Capability-Based Planning
+
+Phase 2 should no longer be planned primarily as a pile of isolated small
+features. Follow-up work should be grouped into capabilities that describe a
+coherent product and technical area.
+
+A capability should usually support multiple related implementation features.
+For example, Auto Reconnect should not be designed as a standalone spec. It
+belongs under a future Connection Resilience capability with Token Refresh,
+Retry Policy, Timeout Strategy, and Recovery UX.
+
+Connection Resilience depends on
+[Session Lifecycle Management](features/session-lifecycle.md). The lifecycle
+spec defines the session states, transitions, cleanup rules, close/error
+reasons, and reconnect readiness needed before reconnect or token refresh can be
+implemented.
+
+Before implementing Auto Reconnect or Token Refresh, first check whether
+`docs/features/session-lifecycle.md` is sufficient for the design. If it is not
+sufficient, extend the lifecycle spec or create a focused Connection Resilience
+spec instead of creating separate specs for each small feature.
+
+## 5. Feature Breakdown
 
 ### Access Control
 
@@ -327,12 +350,90 @@ languages, and visible transcript state.
 - Session management changes can affect the core live session flow. Keep changes
   incremental and covered by targeted tests.
 
+### Session Lifecycle Management
+
+#### Purpose
+
+Define an explicit session lifecycle model before implementing Auto Reconnect or
+Token Refresh. This feature clarifies session states, allowed transitions,
+cleanup behavior, error reasons, and reconnect readiness while preserving the
+existing Gemini Live session and token flow.
+
+See [Session Lifecycle Management](features/session-lifecycle.md).
+
+#### User Flow
+
+1. The user starts and stops sessions through the existing controls.
+2. The app moves through explicit lifecycle states such as permission request,
+   connecting, listening, stopping, stopped, and error.
+3. The app records why a session closed or failed in memory.
+4. The UI maps each lifecycle state to stable controls, status messages, and
+   error display behavior.
+5. Future reconnect or refresh behavior can use the same lifecycle model without
+   changing the initial token flow.
+
+#### Functional Requirements
+
+- Define the session state model.
+- Define legal state transitions and reject invalid transitions.
+- Distinguish user stop, unexpected close, token or auth failure, network
+  failure, provider error, and cleanup failure.
+- Define deterministic cleanup for user stop, errors, unexpected close, page
+  unload, React unmount, and token or auth failure.
+- Define UI mapping for controls, status messages, and error display.
+- Define future reconnect readiness data without activating reconnect behavior.
+- Keep the current Gemini Live session and token flow unchanged.
+- Do not implement reconnect behavior in this feature.
+
+#### API / Data Requirement
+
+- No backend API is required.
+- No database or persistence is required.
+- No change to `/api/live-token` is required.
+- Session lifecycle state can remain frontend-local unless a later Session
+  History or Usage Logging feature explicitly selects persistence.
+
+#### Frontend Impact
+
+- Refine the frontend session state machine and cleanup boundaries when this
+  feature is implemented.
+- Reserve future-ready states such as `reconnecting` and `expired` without
+  requiring immediate UI behavior.
+- Keep transcript state, selected target language, and selected input device
+  available as reconnect readiness inputs for future work.
+
+#### Backend Impact
+
+- No backend change.
+- The backend-owned `GEMINI_API_KEY` and ephemeral token issuance flow remain
+  unchanged.
+
+#### Testing Requirement
+
+- Unit tests for valid and invalid lifecycle transitions.
+- Unit tests for close and error reason mapping.
+- Unit tests for cleanup path selection.
+- UI tests or component tests for lifecycle-to-control mapping if UI behavior is
+  changed.
+- Reconnect and expired states should be reserved but not active until a later
+  feature explicitly implements them.
+
+#### Risk / Notes
+
+- This is a planning and foundation feature. It should not reconnect sessions,
+  refresh tokens, change Gemini Live API integration, add backend APIs, or add
+  persistence.
+- The lifecycle model should be stable enough for future Auto Reconnect, Token
+  Refresh, Session History, and Usage Logging work.
+
 ### Reconnection and Token Refresh
 
 #### Purpose
 
 Improve session reliability when a Gemini Live session disconnects or an
 ephemeral token expires during internal use.
+
+Depends on: Session Lifecycle Management.
 
 #### User Flow
 
@@ -531,7 +632,7 @@ Make repeated internal use smoother without changing the core product scope.
 - UX changes should not obscure current demo functionality.
 - Avoid broad visual redesign unless explicitly requested.
 
-## 5. Suggested Implementation Order
+## 6. Suggested Implementation Order
 
 Suggested order from lower risk to higher risk:
 
@@ -539,24 +640,27 @@ Suggested order from lower risk to higher risk:
    [Better Transcript Handling](features/better-transcript-handling.md).
 2. Device selection.
 3. Transcript export.
-4. Usage logging.
-5. Translation history.
-6. Auto reconnect / token refresh.
-7. AudioWorklet migration.
-8. Basic access control.
+4. Session Lifecycle Management.
+5. Usage logging.
+6. Translation history.
+7. Auto reconnect / token refresh.
+8. AudioWorklet migration.
+9. Basic access control.
 
 Rationale:
 
 - Transcript handling and device selection can be scoped mostly to frontend
   behavior and deterministic tests.
 - Export depends on transcript structure and timestamp quality.
+- Session Lifecycle Management defines state, cleanup, error reasons, and
+  reconnect readiness before reliability features are added.
 - Usage logging and history require storage decisions and retention rules.
-- Reconnect and token refresh touch the live session lifecycle.
+- Reconnect and token refresh depend on the live session lifecycle.
 - AudioWorklet migration changes the audio path.
 - Basic access control can affect every API and user flow, so it should be
   designed carefully even if the final mechanism remains simple.
 
-## 6. Data Model Draft
+## 7. Data Model Draft
 
 These models are planning drafts only. Field names and storage types should be
 finalized after the storage choice is confirmed.
@@ -652,7 +756,7 @@ Potential `accessType` values:
 - `password`
 - `local_user`
 
-## 7. API Draft
+## 8. API Draft
 
 These APIs are planning candidates only. They should not be implemented until
 storage, access control, and retention are confirmed.
@@ -753,7 +857,7 @@ with frontend media device APIs. A backend devices endpoint would not be able to
 see the user's local microphones or speakers and should be avoided unless a
 future requirement introduces server-managed hardware.
 
-## 8. Testing Strategy
+## 9. Testing Strategy
 
 ### Unit Tests
 
@@ -796,7 +900,7 @@ future requirement introduces server-managed hardware.
 - Sensitive values are not visible in browser logs, server logs, or responses.
 - Real Gemini smoke testing remains opt-in with `ENABLE_REAL_GEMINI_TEST=true`.
 
-## 9. Documentation Updates Needed
+## 10. Documentation Updates Needed
 
 If Phase 2 implementation begins, update:
 
@@ -812,7 +916,7 @@ If Phase 2 implementation begins, update:
 - `AGENTS.md`: update phase rules and validation guidance if Phase 2 becomes
   the active implementation phase.
 
-## 10. Open Questions
+## 11. Open Questions
 
 - Is login actually required for Phase 2, or is the current access-token gate
   sufficient for internal use?

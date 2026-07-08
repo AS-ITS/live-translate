@@ -58,7 +58,8 @@ Status: Completed
 ## 4. Phase 2 - Internal Tool
 
 Status: Planned. Better transcript handling, Transcript Export, and Audio Input
-Device Selection are completed; Phase 2 overall is not completed.
+Device Selection are completed; Session Lifecycle Management is planned; Phase
+2 overall is not completed.
 
 ### Candidate Features
 
@@ -69,12 +70,47 @@ Device Selection are completed; Phase 2 overall is not completed.
 - Audio output device selection
 - Recent target language
 - Session history
-- Auto reconnect
-- Token refresh
+- Session Lifecycle Management. Planned.
+- Auto Reconnect / Token Refresh. Planned; depends on Session Lifecycle
+  Management.
 - AudioWorklet migration
 - Better transcript handling. Completed.
 - Usage logging
 - Admin usage review
+
+### Current Phase 2 Feature Status
+
+- Better Transcript Handling: Completed
+- Transcript Export: Completed
+- Audio Input Device Selection: Completed
+- Session Lifecycle Management: Planned
+- Auto Reconnect / Token Refresh: Planned, depends on Session Lifecycle
+  Management
+
+### Phase 2 Planning Rule
+
+Phase 2 capabilities should be grouped logically. Planning should prefer
+capability specs that support related work instead of creating a new feature
+spec for every small feature.
+
+Completed capabilities:
+
+- Transcript Engine
+  - Better Transcript Handling
+  - Transcript Export
+- Audio Input Management
+  - Audio Input Device Selection
+- Session Design
+  - Session Lifecycle Specification
+
+Next recommended capability:
+
+- Connection Resilience
+  - Auto Reconnect
+  - Token Refresh
+  - Retry Policy
+  - Timeout Strategy
+  - Recovery UX
 
 ## 5. Phase 3 - Production
 

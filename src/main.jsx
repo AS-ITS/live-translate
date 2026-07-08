@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Download, Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
+import { failureUiStateForClassification } from './lib/failureUiState.js';
 import { LiveTranslateSession } from './lib/liveSession.js';
 import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
@@ -18,14 +19,10 @@ import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
 const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
-const MANUAL_RECOVERY_MESSAGES = {
-  token_expired: 'Session expired. Please start a new session.',
-  auth_failed: 'Access failed. Please check your access token or configuration.',
-  rate_limited: 'Too many requests. Please wait and try again.'
-};
 
 function App() {
   const [status, setStatus] = useState('idle');
+  const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('zh-Hant');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [transcript, setTranscript] = useState(createTranscriptState);
@@ -83,6 +80,7 @@ function App() {
   async function startSession() {
     reconnectController().reset();
     suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
     const session = createSession({ preserveTranscript: false });
 
     sessionRef.current = session;
@@ -100,6 +98,7 @@ function App() {
   async function stopSession() {
     reconnectController().cancel();
     suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
     await reconnectingSession?.stop().catch(() => {});
@@ -153,43 +152,29 @@ function App() {
       },
       onConnectionFailure: (failure) => {
         const classification = classifyFailureSignal(failure);
+        const failureUiState = failureUiStateForClassification(classification);
 
-        if (classification.reason === 'token_expired') {
-          suppressReconnectErrorRef.current = true;
-          setError(MANUAL_RECOVERY_MESSAGES.token_expired);
-          setStatus('expired');
-          sessionRef.current = null;
+        if (!failureUiState.shouldReconnect) {
+          suppressReconnectErrorRef.current = failureUiState.suppressSessionError;
+          setError(failureUiState.message);
+          setStatus(failureUiState.status);
+          setStatusLabelOverride(failureUiState.statusLabel);
+          if (failureUiState.clearSession) {
+            sessionRef.current = null;
+          }
           return;
         }
 
-        if (classification.reason === 'auth_failed') {
-          suppressReconnectErrorRef.current = true;
-          setError(MANUAL_RECOVERY_MESSAGES.auth_failed);
-          setStatus('auth_failed');
-          sessionRef.current = null;
-          return;
-        }
-
-        if (classification.reason === 'rate_limited') {
-          suppressReconnectErrorRef.current = true;
-          setError(MANUAL_RECOVERY_MESSAGES.rate_limited);
-          setStatus('rate_limited');
-          sessionRef.current = null;
-          return;
-        }
-
-        if (classification.reason !== 'unexpected_close') {
-          return;
-        }
-
-        suppressReconnectErrorRef.current = true;
-        setError('');
-        setStatus('reconnecting');
+        suppressReconnectErrorRef.current = failureUiState.suppressSessionError;
+        setError(failureUiState.message);
+        setStatus(failureUiState.status);
+        setStatusLabelOverride(failureUiState.statusLabel);
         void reconnectController()
           .scheduleReconnect(classification)
           .then((result) => {
             if (!result.scheduled && !result.ignored) {
               suppressReconnectErrorRef.current = false;
+              setStatusLabelOverride('');
               setError(reconnectErrorMessage(result));
               setStatus('error');
             }
@@ -204,6 +189,7 @@ function App() {
     }
 
     setError('');
+    setStatusLabelOverride('');
     setStatus('reconnecting');
 
     const session = createSession({ preserveTranscript: true });
@@ -220,6 +206,7 @@ function App() {
       await session.stop().catch(() => {});
       reconnectSessionRef.current = null;
       sessionRef.current = null;
+      setStatusLabelOverride('');
       setError(RECONNECT_FAILED_MESSAGE);
       setStatus('error');
       return;
@@ -232,6 +219,7 @@ function App() {
 
     reconnectSessionRef.current = null;
     sessionRef.current = session;
+    setStatusLabelOverride('');
     setStatus('listening');
   }
 
@@ -286,7 +274,7 @@ function App() {
         <div className="title-block">
           <div className="status-pill">
             <Radio size={16} aria-hidden="true" />
-            {statusLabel(status)}
+            {statusLabel(status, statusLabelOverride)}
           </div>
           <h1 id="app-title">Live Translate</h1>
           <p>Real-time speech translation powered by Gemini Live API.</p>
@@ -413,7 +401,11 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
-function statusLabel(status) {
+function statusLabel(status, override = '') {
+  if (override) {
+    return override;
+  }
+
   const labels = {
     idle: 'Ready',
     'requesting-permission': 'Requesting mic',
@@ -422,8 +414,6 @@ function statusLabel(status) {
     reconnecting: 'Reconnecting',
     stopped: 'Stopped',
     expired: 'Session expired',
-    auth_failed: 'Access failed',
-    rate_limited: 'Rate limited',
     error: 'Needs attention'
   };
 

@@ -54,6 +54,12 @@ Run LiveSession failure signal unit tests:
 node --test tests/unit/liveSessionFailureSignal.test.js
 ```
 
+Run frontend failure UI state mapping unit tests:
+
+```bash
+node --test tests/unit/failureUiState.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
@@ -66,6 +72,7 @@ Current unit coverage:
 - Retry policy decisions
 - Reconnect controller lifecycle, cancellation, generation guard, and execution hook
 - LiveSession post-cleanup failure signal integration
+- Frontend failure-to-UI-state mapping for manual recovery and controlled reconnect
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 

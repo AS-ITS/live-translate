@@ -30,6 +30,34 @@ test('classifies token expired from explicit code', () => {
   assert.equal(classification.recoverable, true);
 });
 
+test('classifies token expired from explicit reason', () => {
+  const classification = classifyConnectionFailure({ reason: 'token_expired' });
+
+  assert.equal(classification.reason, 'token_expired');
+  assert.equal(classification.category, 'token');
+  assert.equal(classification.recoverable, true);
+});
+
+test('classifies token expired from Live close payload message', () => {
+  const classification = classifyConnectionFailure({
+    reason: 'unexpected_close',
+    rawEvent: { message: 'Live close payload: token expired' }
+  });
+
+  assert.equal(classification.reason, 'token_expired');
+  assert.equal(classification.category, 'token');
+});
+
+test('classifies token expired from Live error payload message', () => {
+  const classification = classifyConnectionFailure({
+    reason: 'provider_error',
+    rawError: new Error('Live error payload: session expired')
+  });
+
+  assert.equal(classification.reason, 'token_expired');
+  assert.equal(classification.category, 'token');
+});
+
 test('classifies auth failed from HTTP authorization statuses', () => {
   assert.equal(classifyConnectionFailure({ status: 401 }).reason, 'auth_failed');
   assert.equal(classifyConnectionFailure({ response: { status: 403 } }).reason, 'auth_failed');
@@ -77,6 +105,16 @@ test('classifies unexpected close from explicit reason', () => {
   assert.equal(classification.category, 'provider');
 });
 
+test('generic unexpected close remains unexpected close', () => {
+  const classification = classifyConnectionFailure({
+    reason: 'unexpected_close',
+    rawEvent: { reason: 'provider closed', code: 1011 }
+  });
+
+  assert.equal(classification.reason, 'unexpected_close');
+  assert.equal(classification.category, 'provider');
+});
+
 test('classifies user stop from explicit reason', () => {
   const classification = classifyConnectionFailure('user_stop');
 
@@ -118,6 +156,15 @@ test('requires fresh token for token and new-session failures', () => {
   assert.equal(requiresFreshToken(classifyConnectionFailure('permission_denied')), false);
 });
 
+test('token expired requires fresh token without user action or stop recovery', () => {
+  const classification = classifyConnectionFailure('token_expired');
+
+  assert.equal(classification.recoverable, true);
+  assert.equal(requiresFreshToken(classification), true);
+  assert.equal(requiresUserAction(classification), false);
+  assert.equal(shouldStopRecovery(classification), false);
+});
+
 test('stops recovery for terminal failures', () => {
   assert.equal(shouldStopRecovery(classifyConnectionFailure('user_stop')), true);
   assert.equal(shouldStopRecovery(classifyConnectionFailure('cleanup_failed')), true);
@@ -136,4 +183,25 @@ test('safeMessage does not include raw token, secret, or stack content', () => {
   assert.equal(classification.safeMessage.includes('secret'), false);
   assert.equal(classification.safeMessage.includes('GEMINI_API_KEY'), false);
   assert.equal(classification.safeMessage.includes('stack'), false);
+});
+
+test('token expired safeMessage does not include raw token or stack content', () => {
+  const classification = classifyConnectionFailure({
+    rawError: new Error('token expired raw-token-abc123 at Provider.stack')
+  });
+
+  assert.equal(classification.reason, 'token_expired');
+  assert.equal(classification.safeMessage.includes('raw-token-abc123'), false);
+  assert.equal(classification.safeMessage.includes('Provider.stack'), false);
+  assert.equal(classification.safeMessage.includes('token expired raw'), false);
+});
+
+test('provider error is not misclassified as token expired', () => {
+  const classification = classifyConnectionFailure({
+    reason: 'provider_error',
+    rawError: new Error('The provider request expired unexpectedly')
+  });
+
+  assert.equal(classification.reason, 'provider_error');
+  assert.equal(classification.category, 'provider');
 });

@@ -82,7 +82,7 @@ const STOP_RECOVERY_REASONS = new Set([
 
 export function classifyConnectionFailure(input = {}) {
   const normalized = normalizeInput(input);
-  const reason = explicitReason(normalized) || inferReason(normalized);
+  const reason = tokenExpirationReason(normalized) || explicitReason(normalized) || inferReason(normalized);
   return classificationFor(reason);
 }
 
@@ -127,8 +127,11 @@ function normalizeInput(input) {
     name: input?.name || error?.name,
     code: input?.code || input?.error?.code || error?.code,
     status: input?.status || input?.response?.status || error?.status || error?.response?.status,
+    message: input?.message || input?.error?.message || error?.message,
     reason: input?.reason || input?.error?.reason || error?.reason,
-    context: input?.context || error?.context
+    context: input?.context || error?.context,
+    rawError: input?.rawError,
+    rawEvent: input?.rawEvent
   };
 }
 
@@ -157,6 +160,38 @@ function inferReason(input) {
   }
 
   return 'unknown_error';
+}
+
+function tokenExpirationReason(input) {
+  if (normalizeText(input.reason) === 'token_expired' || normalizeText(input.code) === 'token_expired') {
+    return 'token_expired';
+  }
+
+  return tokenExpirationMessage(input) ? 'token_expired' : null;
+}
+
+function tokenExpirationMessage(input) {
+  return messageValues(input).some((value) => {
+    const normalized = normalizeText(value);
+    return (
+      normalized.includes('token expired') ||
+      normalized.includes('token expiration') ||
+      normalized.includes('expired token') ||
+      normalized.includes('session expired')
+    );
+  });
+}
+
+function messageValues(input) {
+  return [
+    input.message,
+    input.error?.message,
+    input.error?.reason,
+    input.rawError?.message,
+    input.rawError?.reason,
+    input.rawEvent?.message,
+    input.rawEvent?.reason
+  ].filter(Boolean);
 }
 
 function isOffline(input) {

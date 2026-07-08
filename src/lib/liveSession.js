@@ -225,14 +225,16 @@ export class LiveTranslateSession {
 
     const reason = event?.reason ? `: ${event.reason}` : '';
     const code = event?.code ? ` (code ${event.code})` : '';
+    const error = new Error(`Live API session closed unexpectedly${reason}${code}`);
     await this.cleanup({ closeSession: false });
     this.onConnectionFailure?.({
       source: 'unexpected_close',
+      rawError: error,
       rawEvent: event,
       reasonHint: 'unexpected_close',
       afterCleanup: true
     });
-    this.onError?.(new Error(`Live API session closed unexpectedly${reason}${code}`));
+    this.onError?.(error);
   }
 
   async cleanup({ closeSession = true, signalAudioEnd = false } = {}) {

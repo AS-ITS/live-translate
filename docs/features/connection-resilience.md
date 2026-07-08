@@ -45,6 +45,26 @@ Token Refresh, retry orchestration, or recovery UI behavior.
 | Cleanup | `cleanup_failed` | Stop automatic recovery to avoid duplicate resources. |
 | Unknown | `unknown_error` | Use limited retry, then stop with a user-visible error. |
 
+### Token Expiration Classification / UX Readiness
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/lib/connectionFailures.js`
+- `src/lib/liveSession.js`
+- `tests/unit/connectionFailures.test.js`
+
+This slice classifies explicit `token_expired` reasons or codes and Live
+error/close payloads that clearly indicate token or session expiration. The
+classification is recoverable, requires a fresh token, does not require user
+action, and exposes only a safe user-facing message.
+
+This slice prepares UX messaging and recovery metadata only. Reconnect for
+`token_expired` remains not enabled, and the frontend reconnect allowlist remains
+limited to the previously implemented `unexpected_close` path. Proactive token
+refresh and a full token refresh system remain not implemented.
+
 ## Recovery Matrix
 
 | Failure | Can Recover? | Requires User Action? | Retry? | Reconnect? | Reset Session? |

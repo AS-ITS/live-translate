@@ -62,7 +62,7 @@ Current unit coverage:
 - Transcript export formatting
 - Media device normalization, input constraints, and output-selection capability
   detection
-- Connection failure classification
+- Connection failure classification, including token expiration readiness
 - Retry policy decisions
 - Reconnect controller lifecycle, cancellation, generation guard, and execution hook
 - LiveSession post-cleanup failure signal integration

@@ -10,20 +10,18 @@ before adding Auto Reconnect, Token Refresh, Session History, or Usage Logging.
 This feature does not directly implement reconnect behavior, change the Gemini
 Live token flow, add backend APIs, add a database, or add persistence.
 
-## Related Capability
+## Related Capabilities
 
-Session Lifecycle Management supports the future Connection Resilience
-capability.
+### Connection Resilience
 
-Connection Resilience may include:
+Session Lifecycle Management provides the state model, lifecycle transition
+rules, cleanup policy, close reasons, UI mapping, and lifecycle rules that
+Connection Resilience builds on.
 
-- Auto Reconnect.
-- Token Refresh.
-- Retry Policy.
-- Timeout Strategy.
-- Recovery UX.
-
-Do not implement reconnect behavior from this document alone.
+Connection Resilience is a separate capability specification for retry policy,
+auto reconnect, token refresh, timeout strategy, health monitoring, recovery
+matrix, and recovery UX. See
+[Connection Resilience](connection-resilience.md).
 
 ## Goals
 
@@ -33,7 +31,6 @@ Do not implement reconnect behavior from this document alone.
   failure.
 - Define cleanup policy.
 - Define UI state mapping.
-- Define future reconnect readiness.
 - Keep the existing Gemini Live session/token flow unchanged.
 - Do not add persistence.
 - Do not add backend API.
@@ -88,7 +85,7 @@ implemented.
 | `stopped` | User starts another session | `requesting-permission` | No | New session flow begins. |
 | `listening` | Recoverable disconnect detected | `reconnecting` | Yes | Future only; reconnect is not active in this feature. |
 | `reconnecting` | Reconnect succeeds | `listening` | No | Future only. |
-| `reconnecting` | Reconnect fails or retry limit reached | `error` | Yes | Future only. |
+| `reconnecting` | Recovery fails or is unavailable | `error` | Yes | Future only. |
 | `listening` | Token/session expiration detected | `expired` | Yes | Future only; token refresh is not active in this feature. |
 
 Invalid transitions should be rejected or ignored in a controlled way. For
@@ -151,22 +148,6 @@ transcript/export state unless the selected session reset policy requires it.
 Export controls should never require an active Gemini Live session. They should
 depend only on available transcript data and the selected export format.
 
-## Future Reconnect Readiness
-
-Future reconnect or refresh work should have access to:
-
-- Selected target language.
-- Selected input device.
-- Current transcript state.
-- Previous close reason.
-- Retry count.
-- Last successful connection time.
-- Token expiration time if available.
-
-This feature should only define and preserve the shape of these inputs where
-practical. It should not start reconnect attempts, refresh tokens, or change
-token issuance timing.
-
 ## Testing Requirements
 
 - Valid state transitions.
@@ -175,7 +156,6 @@ token issuance timing.
 - Unexpected close cleanup path.
 - Error reason mapping.
 - UI mapping.
-- Future reconnect state reserved but not active.
 
 Tests should be deterministic and should not call the real Gemini API.
 
@@ -185,5 +165,5 @@ Tests should be deterministic and should not call the real Gemini API.
 - State transition table completed.
 - Close/error reason model documented.
 - Cleanup policy documented.
-- Auto Reconnect / Token Refresh dependency documented.
+- Connection Resilience dependency documented.
 - No production code changed.

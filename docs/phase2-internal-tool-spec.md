@@ -26,8 +26,7 @@ database, change APIs, or change production code.
 - Recently used languages.
 - Session history.
 - Session Lifecycle Management.
-- Auto reconnect. Depends on Session Lifecycle Management.
-- Token refresh. Depends on Session Lifecycle Management.
+- Connection Resilience. Depends on Session Lifecycle Management.
 - AudioWorklet migration.
 - Better transcript handling. Completed. See
   [Better Transcript Handling](features/better-transcript-handling.md).
@@ -59,13 +58,12 @@ Retry Policy, Timeout Strategy, and Recovery UX.
 Connection Resilience depends on
 [Session Lifecycle Management](features/session-lifecycle.md). The lifecycle
 spec defines the session states, transitions, cleanup rules, close/error
-reasons, and reconnect readiness needed before reconnect or token refresh can be
-implemented.
+reasons, and UI mapping that reliability work builds on.
 
-Before implementing Auto Reconnect or Token Refresh, first check whether
-`docs/features/session-lifecycle.md` is sufficient for the design. If it is not
-sufficient, extend the lifecycle spec or create a focused Connection Resilience
-spec instead of creating separate specs for each small feature.
+Connection Resilience has its own capability specification:
+[Connection Resilience](features/connection-resilience.md). Before implementing
+Auto Reconnect, Token Refresh, Retry Policy, Timeout Strategy, or Recovery UX,
+use that specification together with the Session Lifecycle model.
 
 ## 5. Feature Breakdown
 
@@ -426,20 +424,23 @@ See [Session Lifecycle Management](features/session-lifecycle.md).
 - The lifecycle model should be stable enough for future Auto Reconnect, Token
   Refresh, Session History, and Usage Logging work.
 
-### Reconnection and Token Refresh
+### Connection Resilience
 
 #### Purpose
 
-Improve session reliability when a Gemini Live session disconnects or an
-ephemeral token expires during internal use.
+Improve session reliability when a Gemini Live session disconnects, an
+ephemeral token or session expires, the browser goes offline, provider errors
+occur, or audio/browser resources need controlled recovery.
 
 Depends on: Session Lifecycle Management.
+
+See [Connection Resilience](features/connection-resilience.md).
 
 #### User Flow
 
 1. The user starts a session.
-2. The app detects a recoverable session disconnect or token-expiration risk.
-3. The app requests a new token when appropriate.
+2. The app classifies any recoverable failure.
+3. The app applies the selected retry, timeout, and token refresh policy.
 4. The app reconnects with minimal user interruption or clearly asks the user to
    restart if automatic recovery is unsafe.
 
@@ -447,21 +448,27 @@ Depends on: Session Lifecycle Management.
 
 - Detect expected stop, unexpected disconnect, token failure, and provider
   errors separately.
+- Classify failures before choosing a recovery path.
+- Apply bounded retry attempts and avoid aggressive loops.
 - Request fresh ephemeral tokens before reuse or reconnect.
-- Limit retry attempts and avoid aggressive loops.
+- Monitor basic connection health signals such as offline/online, close/error
+  events, timeouts, and audio device failures.
 - Preserve transcript content already received before reconnect.
 - Stop microphone tracks if reconnect cannot complete safely.
+- Surface recovery state clearly in the UI.
 
 #### API / Data Requirement
 
 - Existing `POST /api/live-token` may be reused for refresh.
-- Session metadata may record reconnect attempts and failure reason.
+- Session metadata may record reconnect attempts and failure reason if a later
+  persistence capability selects storage.
 - No long-lived Gemini credential may be exposed to the browser.
 
 #### Frontend Impact
 
 - Add reconnecting and refresh states to the session state machine.
-- Add retry limits and user-visible recovery messages.
+- Add retry limits, offline/expired handling, and user-visible recovery
+  messages.
 - Ensure audio capture and playback resources are cleaned up between attempts.
 
 #### Backend Impact
@@ -472,9 +479,11 @@ Depends on: Session Lifecycle Management.
 
 #### Testing Requirement
 
-- Unit tests for reconnect state transitions and retry limits.
+- Unit tests for failure classification, reconnect state transitions, retry
+  limits, and timeout decisions.
 - Integration tests for repeated token issuance under rate limits.
-- E2E tests with mocked session disconnects and token refresh.
+- E2E tests with mocked session disconnects, offline/online behavior, and token
+  refresh.
 
 #### Risk / Notes
 
@@ -643,7 +652,7 @@ Suggested order from lower risk to higher risk:
 4. Session Lifecycle Management.
 5. Usage logging.
 6. Translation history.
-7. Auto reconnect / token refresh.
+7. Connection Resilience.
 8. AudioWorklet migration.
 9. Basic access control.
 
@@ -655,7 +664,9 @@ Rationale:
 - Session Lifecycle Management defines state, cleanup, error reasons, and
   reconnect readiness before reliability features are added.
 - Usage logging and history require storage decisions and retention rules.
-- Reconnect and token refresh depend on the live session lifecycle.
+- Connection Resilience depends on the live session lifecycle and should cover
+  retry policy, auto reconnect, token refresh, timeout strategy, health
+  monitoring, and recovery UX as one capability.
 - AudioWorklet migration changes the audio path.
 - Basic access control can affect every API and user flow, so it should be
   designed carefully even if the final mechanism remains simple.

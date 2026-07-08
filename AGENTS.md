@@ -142,8 +142,11 @@ Do not introduce behavior changes without documenting them.
 - Subtitle export may be added.
 - Device selection may be added.
 - Usage records may be added.
-- Before implementing Auto Reconnect, Token Refresh, Session History, or Usage
-  Logging, read `docs/features/session-lifecycle.md`.
+- Before implementing Auto Reconnect or Token Refresh, read
+  `docs/features/session-lifecycle.md` and
+  `docs/features/connection-resilience.md`.
+- Before implementing Session History or Usage Logging, read
+  `docs/features/session-lifecycle.md`.
 - Do not implement reconnect behavior unless explicitly requested.
 
 ### Phase 3 Production
@@ -231,3 +234,15 @@ Otherwise:
 - Extend existing documentation.
 - Keep documentation concise.
 - Avoid duplicate specifications.
+
+## Capability Boundary Rule
+
+Every capability should own a clear responsibility.
+
+Avoid expanding an existing capability beyond its original scope.
+
+If a capability grows to include multiple independent implementation areas,
+prefer creating a new capability specification rather than continually expanding
+an existing one.
+
+Capability specifications should remain cohesive and maintainable.

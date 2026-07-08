@@ -73,8 +73,12 @@ Resilience is planned; Phase 2 overall is not completed.
 - Recent target language
 - Session history
 - Session Lifecycle Specification. Completed.
-- Auto Reconnect / Token Refresh. Planned; depends on Session Lifecycle
-  Specification.
+- Connection Resilience. Planned; depends on Session Lifecycle Specification.
+  - Retry Policy
+  - Auto Reconnect
+  - Token Refresh
+  - Timeout Strategy
+  - Recovery UX
 - AudioWorklet migration
 - Better transcript handling. Completed.
 - Usage logging
@@ -91,6 +95,11 @@ Resilience is planned; Phase 2 overall is not completed.
 - Session Design: Completed
   - Session Lifecycle Specification
 - Connection Resilience: Planned
+  - Retry Policy
+  - Auto Reconnect
+  - Token Refresh
+  - Timeout Strategy
+  - Recovery UX
 - Phase 2 overall: In Progress, not completed
 
 ### Phase 2 Planning Rule
@@ -112,9 +121,9 @@ Completed capabilities:
 Next recommended capability:
 
 - Connection Resilience
+  - Retry Policy
   - Auto Reconnect
   - Token Refresh
-  - Retry Policy
   - Timeout Strategy
   - Recovery UX
 

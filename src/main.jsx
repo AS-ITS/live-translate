@@ -18,6 +18,11 @@ import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
 const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
+const MANUAL_RECOVERY_MESSAGES = {
+  token_expired: 'Session expired. Please start a new session.',
+  auth_failed: 'Access failed. Please check your access token or configuration.',
+  rate_limited: 'Too many requests. Please wait and try again.'
+};
 
 function App() {
   const [status, setStatus] = useState('idle');
@@ -147,11 +152,31 @@ function App() {
         sessionRef.current = null;
       },
       onConnectionFailure: (failure) => {
-        const classification = classifyConnectionFailure({
-          reason: failure.reasonHint,
-          error: failure.rawError,
-          context: failure.source
-        });
+        const classification = classifyFailureSignal(failure);
+
+        if (classification.reason === 'token_expired') {
+          suppressReconnectErrorRef.current = true;
+          setError(MANUAL_RECOVERY_MESSAGES.token_expired);
+          setStatus('expired');
+          sessionRef.current = null;
+          return;
+        }
+
+        if (classification.reason === 'auth_failed') {
+          suppressReconnectErrorRef.current = true;
+          setError(MANUAL_RECOVERY_MESSAGES.auth_failed);
+          setStatus('auth_failed');
+          sessionRef.current = null;
+          return;
+        }
+
+        if (classification.reason === 'rate_limited') {
+          suppressReconnectErrorRef.current = true;
+          setError(MANUAL_RECOVERY_MESSAGES.rate_limited);
+          setStatus('rate_limited');
+          sessionRef.current = null;
+          return;
+        }
 
         if (classification.reason !== 'unexpected_close') {
           return;
@@ -396,10 +421,36 @@ function statusLabel(status) {
     listening: 'Listening',
     reconnecting: 'Reconnecting',
     stopped: 'Stopped',
+    expired: 'Session expired',
+    auth_failed: 'Access failed',
+    rate_limited: 'Rate limited',
     error: 'Needs attention'
   };
 
   return labels[status] || status;
+}
+
+function classifyFailureSignal(failure) {
+  const rawClassification = classifyConnectionFailure({
+    error: failure.rawError,
+    rawError: failure.rawError,
+    rawEvent: failure.rawEvent,
+    code: failure.rawError?.code || failure.rawEvent?.code,
+    status: failure.rawError?.status || failure.rawEvent?.status,
+    context: failure.source
+  });
+
+  if (rawClassification.reason !== 'unknown_error') {
+    return rawClassification;
+  }
+
+  return classifyConnectionFailure({
+    reason: failure.reasonHint,
+    error: failure.rawError,
+    rawError: failure.rawError,
+    rawEvent: failure.rawEvent,
+    context: failure.source
+  });
 }
 
 function contentTypeForFormat(format) {

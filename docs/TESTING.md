@@ -127,6 +127,10 @@ The Playwright flow:
 - Clicks `Stop`
 - Verifies the mocked session closes and microphone tracks stop
 - Mocks an unexpected close and verifies controlled reconnect for that reason
+- Verifies token expiration, authorization failure, and rate-limit UX messages
+  do not trigger reconnect
+- Verifies manual recovery states keep Start available, hide Stop, preserve
+  transcript/export state, and reset transcript on manual Start
 - Verifies reconnect failure, retry exhaustion, Stop cancellation, and
   transcript preservation during recovery errors
 

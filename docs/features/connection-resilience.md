@@ -221,6 +221,48 @@ Reconnect scope remains limited to `unexpected_close`. Reconnect for
 other failure reasons remains not implemented. Token Refresh remains not
 implemented as a separate capability.
 
+## Token Expiration UX Display Path
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `tests/e2e/liveTranslate.spec.js`
+
+This slice displays stable, user-facing error messages when the frontend
+receives classified `token_expired`, `auth_failed`, or `rate_limited`
+connection failures. `token_expired` moves the UI to the reserved `expired`
+state and keeps transcript/export state available. `auth_failed` and
+`rate_limited` move to the existing error display path.
+
+This slice does not schedule reconnect for `token_expired`, `auth_failed`, or
+`rate_limited`, does not request a fresh token, and does not create a replacement
+`LiveTranslateSession`. The controlled reconnect path for `unexpected_close`
+remains unchanged and is still the only enabled reconnect path. Proactive token
+refresh and a full token refresh system remain not implemented.
+
+## Manual Recovery UX Polish
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `tests/e2e/liveTranslate.spec.js`
+
+This slice clarifies that `expired`, `auth_failed`, and `rate_limited` states
+require manual recovery. The UI shows direct next-step messages asking the user
+to start a new session or wait and try again. In these states, the Start button
+is available, the Stop button is hidden, and existing transcript/export state is
+kept available until the user manually starts a new session.
+
+Manual Start continues through the existing start flow and resets transcript
+state. This slice does not enable automatic reconnect for `token_expired`, does
+not change the `unexpected_close` controlled reconnect path, does not request
+tokens outside the existing start flow, and does not add proactive or full token
+refresh behavior.
+
 ## Timeout Strategy
 
 Timeouts should reuse current boundaries unless implementation evidence shows a

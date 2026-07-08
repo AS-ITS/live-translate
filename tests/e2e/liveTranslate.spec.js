@@ -166,6 +166,117 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   await expect(page.getByText('こんにちは')).toBeVisible();
 });
 
+test('token expired shows friendly message without reconnect and preserves transcript', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'before token expiration' },
+        outputTranscription: { text: 'still visible after expiration' },
+        turnComplete: true
+      }
+    });
+  });
+  await expect(page.getByText('before token expiration')).toBeVisible();
+  await expect(page.getByText('still visible after expiration')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
+  });
+
+  await expect(page.getByText('Session expired', { exact: true })).toBeVisible();
+  await expect(page.getByText('Session expired. Please start a new session.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Stop' })).toBeHidden();
+  await expect(page.getByText('before token expiration')).toBeVisible();
+  await expect(page.getByText('still visible after expiration')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+  await page.waitForTimeout(900);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await expect(page.getByText('before token expiration')).toBeHidden();
+  await expect(page.getByText('still visible after expiration')).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+});
+
+test('auth failed shows friendly message without reconnect', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'before auth failure' },
+        outputTranscription: { text: 'auth failure transcript' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitError({
+      code: 'auth_failed',
+      message: 'raw auth failure token abc123 at Provider.stack'
+    });
+  });
+
+  await expect(page.getByText('Access failed', { exact: true })).toBeVisible();
+  await expect(page.getByText('Access failed. Please check your access token or configuration.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Stop' })).toBeHidden();
+  await expect(page.getByText('before auth failure')).toBeVisible();
+  await expect(page.getByText('auth failure transcript')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+  await page.waitForTimeout(900);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+});
+
+test('rate limited shows friendly message without reconnect', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'before rate limit' },
+        outputTranscription: { text: 'rate limit transcript' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitError({
+      code: 'rate_limited',
+      message: 'raw rate limit failure token abc123 at Provider.stack'
+    });
+  });
+
+  await expect(page.getByText('Rate limited', { exact: true })).toBeVisible();
+  await expect(page.getByText('Too many requests. Please wait and try again.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Stop' })).toBeHidden();
+  await expect(page.getByText('before rate limit')).toBeVisible();
+  await expect(page.getByText('rate limit transcript')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+  await page.waitForTimeout(900);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+});
+
 test('stop during reconnect cancels pending replacement session', async ({ page }) => {
   await page.goto('/');
 

@@ -46,6 +46,74 @@ Core architecture:
 - Update `CHANGELOG.md` when completing a capability or milestone.
 - Do not keep expanding documentation unless it supports the current capability.
 
+## Decision Gate
+
+Before making any architectural or workflow change, determine its impact.
+
+### Minor Change
+
+Examples:
+- Utility functions
+- Bug fixes
+- Tests
+- Documentation updates
+
+Action:
+- Implement directly within the requested scope.
+
+### Medium Change
+
+Examples:
+- New feature within an existing capability
+- New UI component
+- New internal module
+
+Action:
+- Confirm the existing feature specification is sufficient before implementation.
+- If the existing spec is sufficient, proceed with minimal scoped changes.
+- If the spec is insufficient, stop and report the missing requirements.
+
+### Major Change
+
+Examples:
+- New capability
+- Architecture change
+- New dependency
+- Data model change
+- Backend API change
+- Security model change
+- Gemini Live integration change
+- Ephemeral token flow change
+
+Action:
+- Stop implementation.
+- Propose the design first.
+- Wait for user approval before coding.
+
+## Architecture Protection
+
+Do not change these areas unless the requested task explicitly requires it:
+
+- Gemini Live integration flow
+- Ephemeral token architecture
+- Security model
+- Transcript engine
+- Session lifecycle
+- Testing strategy
+
+Prefer extending existing architecture over replacing it.
+
+## Regression Protection
+
+Before modifying an existing module:
+
+- Identify its current responsibilities.
+- Preserve current behavior unless explicitly requested.
+- Run the smallest relevant tests.
+- Report potential regression risks.
+
+Do not introduce behavior changes without documenting them.
+
 ## 3. Agent Workflow
 
 1. Understand the request.

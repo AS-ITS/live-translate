@@ -23,6 +23,16 @@ must not proxy live audio.
 Connection failures should be classified into stable internal categories before
 recovery decisions are made.
 
+Status: Slice 1 implemented.
+
+Implementation files:
+
+- `src/lib/connectionFailures.js`
+- `tests/unit/connectionFailures.test.js`
+
+This slice only classifies failures. It does not implement Auto Reconnect,
+Token Refresh, retry orchestration, or recovery UI behavior.
+
 | Category | Reasons | Recovery Direction |
 | --- | --- | --- |
 | Permission | `permission_denied`, `permission_revoked` | Stop and ask for user action. |
@@ -64,6 +74,17 @@ recovery decisions are made.
 
 Retry must be bounded, observable, and cancelable.
 
+Status: Slice 2 implemented.
+
+Implementation files:
+
+- `src/lib/retryPolicy.js`
+- `tests/unit/retryPolicy.test.js`
+
+This slice only decides retry timing and limits from an existing failure
+classification. It does not implement Auto Reconnect, Token Refresh, or
+recovery UI behavior.
+
 - Use exponential backoff with jitter.
 - Start around `500ms` to `1000ms`.
 - Cap per-attempt delay around `8s` to `10s`.
@@ -76,6 +97,109 @@ Retry must be bounded, observable, and cancelable.
   recoverable.
 
 Retry must never loop indefinitely or silently create multiple active sessions.
+
+## Reconnect Controller Skeleton
+
+Status: Slice 3A implemented.
+
+Implementation files:
+
+- `src/lib/reconnectController.js`
+- `tests/unit/reconnectController.test.js`
+
+This slice adds a testable orchestration skeleton for reconnect lifecycle state,
+retry state, cancellation, generation protection, and cleanup ordering. It does
+not open a Gemini Live session, request a token, change UI state, or enable Auto
+Reconnect.
+
+Auto Reconnect, Token Refresh, and Recovery UI remain not implemented.
+
+## LiveSession Failure Signal Integration
+
+Status: Slice 3B implemented.
+
+Implementation files:
+
+- `src/lib/liveSession.js`
+- `src/main.jsx`
+- `tests/unit/liveSessionFailureSignal.test.js`
+
+This slice emits classifiable failure signals after Live session error or
+unexpected-close cleanup completes. The UI entrypoint classifies the signal and
+asks the Reconnect Controller skeleton for a retry scheduling decision.
+
+This slice does not rebuild Live sessions, request fresh tokens, add a
+SessionFactory, change the Gemini Live session flow, or enable Auto Reconnect.
+
+Auto Reconnect, Token Refresh, SessionFactory, and Recovery UI remain not
+implemented.
+
+## Reconnect Execution Hook Skeleton
+
+Status: Slice 3C-A implemented.
+
+Implementation files:
+
+- `src/lib/reconnectController.js`
+- `tests/unit/reconnectController.test.js`
+
+This slice lets the Reconnect Controller call an injected `executeReconnect`
+hook after a scheduled retry delay when the generation is still current and the
+controller has not been cancelled. The hook receives the failure classification,
+retry decision, and generation id.
+
+This hook is execution infrastructure only. It does not create a
+`LiveTranslateSession`, request tokens, add a SessionFactory, modify UI state, or
+enable real Auto Reconnect.
+
+Real Auto Reconnect, LiveSession creation, Token Refresh, SessionFactory, and
+Recovery UI remain not implemented.
+
+## Controlled Reconnect for Unexpected Close
+
+Status: Slice 3C-B implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `tests/e2e/liveTranslate.spec.js`
+
+This slice wires the Reconnect Controller execution hook to a controlled
+frontend adapter path for `unexpected_close` only. After Live session cleanup and
+retry delay, the adapter creates a replacement `LiveTranslateSession`; the
+session start path naturally requests a fresh ephemeral token through the
+existing `/api/live-token` flow.
+
+This slice preserves current transcript state, export controls, selected input
+device, target language, and echo-target-language settings during reconnect.
+Stop remains available during reconnect and cancels pending or in-progress
+replacement startup.
+
+Reconnect for `token_expired`, `network_offline`, `provider_error`, microphone
+errors, and other failure reasons remains not implemented. Token Refresh remains
+not implemented as a separate capability. SessionFactory, backend/API changes,
+and full Auto Reconnect remain not implemented.
+
+## Retry Exhaustion and Failure UX Hardening
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `tests/e2e/liveTranslate.spec.js`
+
+This slice hardens the user-visible reconnect failure path for the existing
+`unexpected_close` controlled reconnect scope. Reconnecting state now has a
+clear user-visible message, reconnect startup failure shows a safe manual-retry
+error, retry exhaustion shows a distinct exhausted-retry message, stale
+callbacks are guarded by reconnect generation checks, and transcript/export
+state remains available after reconnect failure.
+
+Reconnect scope remains limited to `unexpected_close`. Reconnect for
+`token_expired`, `network_offline`, `provider_error`, microphone errors, and
+other failure reasons remains not implemented. Token Refresh remains not
+implemented as a separate capability.
 
 ## Timeout Strategy
 
@@ -95,6 +219,8 @@ reconnect, or stop.
 
 ## Token Refresh Strategy
 
+Status: Not implemented.
+
 Use reactive token refresh first.
 
 - Do not reuse old ephemeral tokens for reconnect.
@@ -111,6 +237,8 @@ unexpected close that requires a new Live session, or a failed session that must
 be rebuilt from a clean state.
 
 ## Auto Reconnect Strategy
+
+Status: Not implemented.
 
 Auto reconnect should rebuild the live session from a clean lifecycle boundary.
 

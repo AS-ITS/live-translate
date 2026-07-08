@@ -2,8 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Download, Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
+import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { LiveTranslateSession } from './lib/liveSession.js';
 import { audioInputDevices } from './lib/mediaDevices.js';
+import { createReconnectController } from './lib/reconnectController.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
 import {
   applyTranscriptEvent,
@@ -13,6 +15,9 @@ import {
   transcriptTextForStream
 } from './lib/transcript.js';
 import './styles.css';
+
+const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
+const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
 
 function App() {
   const [status, setStatus] = useState('idle');
@@ -27,8 +32,12 @@ function App() {
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
   const sessionRef = useRef(null);
+  const reconnectControllerRef = useRef(null);
+  const reconnectSessionRef = useRef(null);
+  const suppressReconnectErrorRef = useRef(false);
 
-  const isActive = status === 'requesting-permission' || status === 'connecting' || status === 'listening';
+  const isActive =
+    status === 'requesting-permission' || status === 'connecting' || status === 'listening' || status === 'reconnecting';
 
   useEffect(() => {
     void refreshInputDevices();
@@ -67,40 +76,9 @@ function App() {
   }
 
   async function startSession() {
-    setError('');
-    setDeviceMessage('');
-    setTranscriptTimeOrigin(Date.now());
-    setTranscript(resetTranscriptState());
-    setStatus('requesting-permission');
-
-    const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
-      ? selectedInputDeviceId
-      : '';
-
-    const session = new LiveTranslateSession({
-      targetLanguageCode,
-      echoTargetLanguage,
-      inputDeviceId: inputDeviceIdForSession,
-      onInputDeviceFallback: () => {
-        setSelectedInputDeviceId('');
-        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
-      },
-      onMicrophoneReady: () => {
-        void refreshInputDevices();
-      },
-      onConnecting: () => setStatus('connecting'),
-      onInputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'source' })),
-      onOutputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'translation' })),
-      onError: (nextError) => {
-        setError(nextError.message);
-        setStatus('error');
-        sessionRef.current = null;
-      },
-      onClose: () => {
-        setStatus((current) => (current === 'listening' ? 'stopped' : current));
-        sessionRef.current = null;
-      }
-    });
+    reconnectController().reset();
+    suppressReconnectErrorRef.current = false;
+    const session = createSession({ preserveTranscript: false });
 
     sessionRef.current = session;
 
@@ -115,9 +93,131 @@ function App() {
   }
 
   async function stopSession() {
+    reconnectController().cancel();
+    suppressReconnectErrorRef.current = false;
+    const reconnectingSession = reconnectSessionRef.current;
+    reconnectSessionRef.current = null;
+    await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
     setStatus('stopped');
+  }
+
+  function createSession({ preserveTranscript }) {
+    if (!preserveTranscript) {
+      setError('');
+      setDeviceMessage('');
+      setTranscriptTimeOrigin(Date.now());
+      setTranscript(resetTranscriptState());
+      setStatus('requesting-permission');
+    }
+
+    const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
+      ? selectedInputDeviceId
+      : '';
+
+    return new LiveTranslateSession({
+      targetLanguageCode,
+      echoTargetLanguage,
+      inputDeviceId: inputDeviceIdForSession,
+      onInputDeviceFallback: () => {
+        setSelectedInputDeviceId('');
+        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
+      },
+      onMicrophoneReady: () => {
+        void refreshInputDevices();
+      },
+      onConnecting: () => {
+        setStatus((current) => (current === 'reconnecting' ? 'reconnecting' : 'connecting'));
+      },
+      onInputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'source' })),
+      onOutputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'translation' })),
+      onError: (nextError) => {
+        if (suppressReconnectErrorRef.current) {
+          suppressReconnectErrorRef.current = false;
+          return;
+        }
+
+        setError(nextError.message);
+        setStatus('error');
+        sessionRef.current = null;
+      },
+      onClose: () => {
+        setStatus((current) => (current === 'listening' ? 'stopped' : current));
+        sessionRef.current = null;
+      },
+      onConnectionFailure: (failure) => {
+        const classification = classifyConnectionFailure({
+          reason: failure.reasonHint,
+          error: failure.rawError,
+          context: failure.source
+        });
+
+        if (classification.reason !== 'unexpected_close') {
+          return;
+        }
+
+        suppressReconnectErrorRef.current = true;
+        setError('');
+        setStatus('reconnecting');
+        void reconnectController()
+          .scheduleReconnect(classification)
+          .then((result) => {
+            if (!result.scheduled && !result.ignored) {
+              suppressReconnectErrorRef.current = false;
+              setError(reconnectErrorMessage(result));
+              setStatus('error');
+            }
+          });
+      }
+    });
+  }
+
+  async function startReconnectSession({ generationId, classification }) {
+    if (classification.reason !== 'unexpected_close' || generationId !== reconnectController().currentGeneration()) {
+      return;
+    }
+
+    setError('');
+    setStatus('reconnecting');
+
+    const session = createSession({ preserveTranscript: true });
+    reconnectSessionRef.current = session;
+
+    try {
+      await session.start();
+    } catch (nextError) {
+      if (generationId !== reconnectController().currentGeneration()) {
+        await session.stop().catch(() => {});
+        return;
+      }
+
+      await session.stop().catch(() => {});
+      reconnectSessionRef.current = null;
+      sessionRef.current = null;
+      setError(RECONNECT_FAILED_MESSAGE);
+      setStatus('error');
+      return;
+    }
+
+    if (generationId !== reconnectController().currentGeneration()) {
+      await session.stop().catch(() => {});
+      return;
+    }
+
+    reconnectSessionRef.current = null;
+    sessionRef.current = session;
+    setStatus('listening');
+  }
+
+  function reconnectController() {
+    if (!reconnectControllerRef.current) {
+      reconnectControllerRef.current = createReconnectController({
+        executeReconnect: startReconnectSession
+      });
+    }
+
+    return reconnectControllerRef.current;
   }
 
   function downloadTranscript() {
@@ -217,6 +317,11 @@ function App() {
               <Square size={18} aria-hidden="true" />
               Stop
             </button>
+          ) : status === 'reconnecting' ? (
+            <button className="button secondary" type="button" onClick={stopSession}>
+              <Square size={18} aria-hidden="true" />
+              Stop
+            </button>
           ) : (
             <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
               {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
@@ -226,6 +331,7 @@ function App() {
         </div>
 
         {error ? <p className="error-message">{error}</p> : null}
+        {status === 'reconnecting' ? <p className="device-note">Reconnecting live translation...</p> : null}
         {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
       </section>
 
@@ -265,6 +371,14 @@ function App() {
   );
 }
 
+function reconnectErrorMessage(result) {
+  if (result?.decision?.stopReason === 'max_attempts_exceeded') {
+    return RECONNECT_EXHAUSTED_MESSAGE;
+  }
+
+  return RECONNECT_FAILED_MESSAGE;
+}
+
 function TranscriptPanel({ title, text, emptyText }) {
   return (
     <article className="transcript-panel">
@@ -280,6 +394,7 @@ function statusLabel(status) {
     'requesting-permission': 'Requesting mic',
     connecting: 'Connecting',
     listening: 'Listening',
+    reconnecting: 'Reconnecting',
     stopped: 'Stopped',
     error: 'Needs attention'
   };

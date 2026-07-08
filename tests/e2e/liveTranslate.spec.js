@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
+  page.liveTokenRequests = [];
+  page.failLiveTokenRequestAt = null;
+
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
 
@@ -71,6 +74,16 @@ test.beforeEach(async ({ page }) => {
   await page.route('**/api/live-token', async (route) => {
     const request = route.request();
     const body = JSON.parse(request.postData() || '{}');
+    page.liveTokenRequests.push(body);
+
+    if (page.failLiveTokenRequestAt === page.liveTokenRequests.length) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'provider_unavailable' } })
+      });
+      return;
+    }
 
     await route.fulfill({
       status: 200,
@@ -89,7 +102,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('heading', { name: 'Live Translate' })).toBeVisible();
   await expect(page.getByText('Ready')).toBeVisible();
 
-  const targetLanguage = page.getByLabel('Target language');
+  const targetLanguage = page.getByRole('combobox', { name: 'Target language' });
 
   await targetLanguage.selectOption('ja');
   await page.getByRole('button', { name: 'Start' }).click();
@@ -120,4 +133,146 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('button', { name: 'Start' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
+});
+
+test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('combobox', { name: 'Target language' }).selectOption('ja');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'hello' },
+        outputTranscription: { text: 'こんにちは' },
+        turnComplete: true
+      }
+    });
+  });
+  await expect(page.getByText('hello')).toBeVisible();
+  await expect(page.getByText('こんにちは')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect(page.getByText('Listening')).toBeVisible();
+  await expect(page.getByText('hello')).toBeVisible();
+  await expect(page.getByText('こんにちは')).toBeVisible();
+});
+
+test('stop during reconnect cancels pending replacement session', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await expect(page.getByText('Stopped')).toBeVisible();
+  await page.waitForTimeout(900);
+
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+});
+
+test('duplicate unexpected close does not create duplicate replacement sessions', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions[0];
+    session.emitClose({ reason: 'unexpected provider close', code: 1011 });
+    session.emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await page.waitForTimeout(900);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+});
+
+test('reconnect failure preserves transcript and allows manual restart', async ({ page }) => {
+  page.failLiveTokenRequestAt = 2;
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'hello before failure' },
+        outputTranscription: { text: 'translated before failure' },
+        turnComplete: true
+      }
+    });
+  });
+  await expect(page.getByText('hello before failure')).toBeVisible();
+  await expect(page.getByText('translated before failure')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+
+  await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+  await expect(page.getByText('Unable to reconnect live translation. You can start a new session when ready.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start' })).toBeVisible();
+  await expect(page.getByText('hello before failure')).toBeVisible();
+  await expect(page.getByText('translated before failure')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+
+  page.failLiveTokenRequestAt = null;
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await expect.poll(() => page.liveTokenRequests.length).toBe(3);
+});
+
+test('retry exhaustion shows explicit error and preserves transcript', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'still exportable' },
+        outputTranscription: { text: 'after exhaustion' },
+        turnComplete: true
+      }
+    });
+  });
+
+  for (let index = 0; index < 3; index += 1) {
+    await page.evaluate((sessionIndex) => {
+      window.__mockGoogleGenAI.liveSessions[sessionIndex].emitClose({ reason: 'unexpected provider close', code: 1011 });
+    }, index);
+    await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(index + 2);
+    await expect(page.getByText('Listening')).toBeVisible();
+  }
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[3].emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+
+  await expect(page.getByText('Live translation could not reconnect after repeated attempts. You can start a new session when ready.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start' })).toBeVisible();
+  await expect(page.getByText('still exportable')).toBeVisible();
+  await expect(page.getByText('after exhaustion')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(4);
 });

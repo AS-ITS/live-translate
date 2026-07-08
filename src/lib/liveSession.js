@@ -23,7 +23,8 @@ export class LiveTranslateSession {
     onInputTranscript,
     onOutputTranscript,
     onError,
-    onClose
+    onClose,
+    onConnectionFailure
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
@@ -35,6 +36,7 @@ export class LiveTranslateSession {
     this.onOutputTranscript = onOutputTranscript;
     this.onError = onError;
     this.onClose = onClose;
+    this.onConnectionFailure = onConnectionFailure;
     this.audioContext = null;
     this.mediaStream = null;
     this.source = null;
@@ -204,8 +206,16 @@ export class LiveTranslateSession {
 
   async handleSessionError(event) {
     const message = event?.message || event?.error?.message || 'Live API error';
+    const error = event instanceof Error ? event : new Error(message);
     await this.cleanup({ closeSession: true });
-    this.onError?.(new Error(message));
+    this.onConnectionFailure?.({
+      source: 'live_error',
+      rawError: error,
+      rawEvent: event,
+      reasonHint: 'provider_error',
+      afterCleanup: true
+    });
+    this.onError?.(error);
   }
 
   async handleSessionClose(event) {
@@ -216,6 +226,12 @@ export class LiveTranslateSession {
     const reason = event?.reason ? `: ${event.reason}` : '';
     const code = event?.code ? ` (code ${event.code})` : '';
     await this.cleanup({ closeSession: false });
+    this.onConnectionFailure?.({
+      source: 'unexpected_close',
+      rawEvent: event,
+      reasonHint: 'unexpected_close',
+      afterCleanup: true
+    });
     this.onError?.(new Error(`Live API session closed unexpectedly${reason}${code}`));
   }
 

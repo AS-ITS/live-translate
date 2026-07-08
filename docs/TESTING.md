@@ -30,6 +30,30 @@ Run media device utility unit tests:
 node --test tests/unit/mediaDevices.test.js
 ```
 
+Run connection failure classification unit tests:
+
+```bash
+node --test tests/unit/connectionFailures.test.js
+```
+
+Run retry policy unit tests:
+
+```bash
+node --test tests/unit/retryPolicy.test.js
+```
+
+Run reconnect controller unit tests:
+
+```bash
+node --test tests/unit/reconnectController.test.js
+```
+
+Run LiveSession failure signal unit tests:
+
+```bash
+node --test tests/unit/liveSessionFailureSignal.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
@@ -38,6 +62,10 @@ Current unit coverage:
 - Transcript export formatting
 - Media device normalization, input constraints, and output-selection capability
   detection
+- Connection failure classification
+- Retry policy decisions
+- Reconnect controller lifecycle, cancellation, generation guard, and execution hook
+- LiveSession post-cleanup failure signal integration
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 
@@ -83,6 +111,12 @@ Run E2E tests:
 npm run test:e2e
 ```
 
+Run the Live Translate E2E flow only:
+
+```bash
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTranslate.spec.js
+```
+
 The Playwright flow:
 
 - Opens the home page
@@ -92,6 +126,9 @@ The Playwright flow:
 - Verifies the UI reaches `Listening`
 - Clicks `Stop`
 - Verifies the mocked session closes and microphone tracks stop
+- Mocks an unexpected close and verifies controlled reconnect for that reason
+- Verifies reconnect failure, retry exhaustion, Stop cancellation, and
+  transcript preservation during recovery errors
 
 ## Live Smoke Test
 

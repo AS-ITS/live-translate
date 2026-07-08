@@ -21,9 +21,18 @@ export class GoogleGenAI {
           sendRealtimeInput(input) {
             this.sentInputs.push(input);
           },
+          emitMessage(message) {
+            request.callbacks?.onmessage?.(message);
+          },
+          emitError(error) {
+            request.callbacks?.onerror?.(error);
+          },
+          emitClose(event = { reason: 'mock-close', code: 1000 }) {
+            request.callbacks?.onclose?.(event);
+          },
           close() {
             this.closed = true;
-            request.callbacks?.onclose?.({ reason: 'mock-close', code: 1000 });
+            this.emitClose();
           }
         };
 

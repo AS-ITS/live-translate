@@ -29,6 +29,8 @@ Core architecture:
 - Read `docs/architecture.md` after the spec.
 - Read `docs/api.md` before changing APIs.
 - Read `TESTING.md` before making or validating test-related changes.
+- Check `CHANGELOG.md` before starting milestone-related work.
+- Follow `CONTRIBUTING.md` for development workflow.
 - Do not add features that were not requested.
 - Do not modify the core Live API session unless the task explicitly requires it.
 - Prefer the smallest safe change that satisfies the request.
@@ -41,6 +43,8 @@ Core architecture:
 - Before creating a new feature spec, check whether an existing spec can be
   extended.
 - Keep documentation minimal, scoped, and maintainable.
+- Update `CHANGELOG.md` when completing a capability or milestone.
+- Do not keep expanding documentation unless it supports the current capability.
 
 ## 3. Agent Workflow
 
@@ -143,3 +147,19 @@ A task is considered complete only if:
 - Existing functionality is not regressed.
 - Code follows project conventions.
 - Scope stays within the current project phase.
+
+## Documentation Stop Rule
+
+Documentation should support implementation, not replace it.
+
+Before creating a new document, verify whether the required information can be incorporated into an existing document.
+
+Only create a new Markdown document when:
+- A new capability is introduced.
+- Existing documentation cannot accurately represent the new design.
+- The user explicitly requests a separate document.
+
+Otherwise:
+- Extend existing documentation.
+- Keep documentation concise.
+- Avoid duplicate specifications.

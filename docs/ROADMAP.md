@@ -14,7 +14,9 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Phase 1 Demo is completed.
+Current milestone: v0.5.0 - Phase 2 Foundation.
+
+Phase 1 Demo is completed. Phase 2 overall is in progress and not completed.
 
 Completed Phase 1 capabilities include:
 
@@ -57,9 +59,9 @@ Status: Completed
 
 ## 4. Phase 2 - Internal Tool
 
-Status: Planned. Better transcript handling, Transcript Export, and Audio Input
-Device Selection are completed; Session Lifecycle Management is planned; Phase
-2 overall is not completed.
+Status: In Progress. Better Transcript Handling, Transcript Export, Audio Input
+Device Selection, and Session Lifecycle Specification are completed; Connection
+Resilience is planned; Phase 2 overall is not completed.
 
 ### Candidate Features
 
@@ -70,9 +72,9 @@ Device Selection are completed; Session Lifecycle Management is planned; Phase
 - Audio output device selection
 - Recent target language
 - Session history
-- Session Lifecycle Management. Planned.
+- Session Lifecycle Specification. Completed.
 - Auto Reconnect / Token Refresh. Planned; depends on Session Lifecycle
-  Management.
+  Specification.
 - AudioWorklet migration
 - Better transcript handling. Completed.
 - Usage logging
@@ -80,12 +82,16 @@ Device Selection are completed; Session Lifecycle Management is planned; Phase
 
 ### Current Phase 2 Feature Status
 
-- Better Transcript Handling: Completed
-- Transcript Export: Completed
-- Audio Input Device Selection: Completed
-- Session Lifecycle Management: Planned
-- Auto Reconnect / Token Refresh: Planned, depends on Session Lifecycle
-  Management
+- Phase 1 Demo: Completed
+- Transcript Engine: Completed
+  - Better Transcript Handling
+  - Transcript Export
+- Audio Input Management: Completed
+  - Audio Input Device Selection
+- Session Design: Completed
+  - Session Lifecycle Specification
+- Connection Resilience: Planned
+- Phase 2 overall: In Progress, not completed
 
 ### Phase 2 Planning Rule
 

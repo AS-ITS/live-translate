@@ -28,6 +28,10 @@ Completed:
 - Security hardening
 - Testing documentation
 
+Documentation:
+
+- [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - High-level system architecture, runtime flow, module responsibilities, dependency boundaries, completed capabilities, and deferred architecture.
+
 Planned next capability:
 
 - Phase 2B

@@ -26,7 +26,8 @@ Core architecture:
 ## 2. Development Principles
 
 - Read `docs/spec.md` first.
-- Read `docs/architecture.md` after the spec.
+- Read `docs/architecture/architecture-overview.md` after the spec.
+- Read `docs/architecture.md` after the architecture overview.
 - Read `docs/api.md` before changing APIs.
 - Read `TESTING.md` before making or validating test-related changes.
 - Check `CHANGELOG.md` before starting milestone-related work.
@@ -45,6 +46,8 @@ Core architecture:
 - Keep documentation minimal, scoped, and maintainable.
 - Update `CHANGELOG.md` when completing a capability or milestone.
 - Do not keep expanding documentation unless it supports the current capability.
+- Before modifying cross-cutting architecture or multiple capabilities, read
+  `docs/architecture/architecture-overview.md`.
 
 ## Decision Gate
 

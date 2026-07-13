@@ -7,7 +7,11 @@ Gemini Live API.
 
 ## Current Status
 
-Current milestone: v0.5.0 - Phase 2 Foundation
+Phase 2A Foundation
+Status: Completed
+
+Phase 2 Overall
+Status: In Progress
 
 Completed:
 
@@ -18,14 +22,17 @@ Completed:
 - Transcript export
 - Audio input device selection
 - Session lifecycle specification
+- Connection resilience foundation
+- Session records and history MVP
+- Saved-session export
 - Security hardening
 - Testing documentation
 
 Planned next capability:
 
-- Connection Resilience
-  - Auto Reconnect
-  - Token Refresh
-  - Retry Policy
-  - Timeout Strategy
-  - Recovery UX
+- Phase 2B
+  - Settings
+  - Usage Metrics
+  - Diagnostics
+  - Transcript Search
+  - Storage, only if justified

@@ -1,5 +1,11 @@
 # Changelog
 
+## Phase 2A Foundation Completed
+
+Phase 2A closes the foundation milestone for Live Translate. The core realtime translation workflow, transcript lifecycle, session history, saved-session export, and the first connection resilience slice are now documented as complete for the Phase 2 foundation.
+
+This milestone intentionally keeps durable storage deferred. History remains memory-only, backend persistence is not introduced, and the next milestone is Phase 2B.
+
 ## v0.6.0 - Connection Resilience Phase 1
 
 ### Added

@@ -949,3 +949,14 @@ If Phase 2 implementation begins, update:
 - Which browsers must support AudioWorklet and output device selection?
 - Is an admin usage review page required, or is a simple API/report enough for
   Phase 2?
+
+## 12. Phase 2A Exit Criteria
+
+- Transcript lifecycle complete.
+- Session history complete.
+- Session export complete.
+- Connection Resilience Phase 1 complete.
+- No durable storage.
+- No backend persistence.
+
+Phase 2A accepted.

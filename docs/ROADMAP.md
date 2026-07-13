@@ -14,9 +14,10 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: v0.5.0 - Phase 2 Foundation.
+Current milestone: v0.6.0 - Phase 2A Foundation.
 
-Phase 1 Demo is completed. Phase 2 overall is in progress and not completed.
+Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
+in progress and not completed.
 
 Completed Phase 1 capabilities include:
 
@@ -33,6 +34,27 @@ Completed Phase 1 capabilities include:
 - Security hardening
 - Testing documentation
 - P0 hardening tests passed
+
+Phase 2A Foundation completed:
+
+- Transcript Engine
+  - Better Transcript Handling
+  - Transcript Export
+- Audio Input Management
+  - Audio Input Device Selection
+- Session Design
+  - Session Lifecycle Specification
+- Connection Resilience
+  - Failure Classification
+  - Retry Policy
+  - Reconnect Controller
+  - Controlled `unexpected_close` reconnect
+  - Failure-state mapping
+- Session Records & Translation History
+  - Session Records
+  - History List
+  - Session Detail
+  - Saved Session Export
 
 ## 3. Phase 1 - Demo
 
@@ -59,31 +81,65 @@ Status: Completed
 
 ## 4. Phase 2 - Internal Tool
 
-Status: In Progress. Better Transcript Handling, Transcript Export, Audio Input
-Device Selection, and Session Lifecycle Specification are completed; Connection
-Resilience is partially implemented; Phase 2 overall is not completed.
+Status: In Progress. Phase 2A Foundation is completed; Phase 2B is planned.
 
 ### Candidate Features
 
 - Basic login / access control
-- Translation history
+- Translation history. Deferred beyond the foundation milestone.
 - Export transcript as TXT / SRT / VTT. Completed.
 - Audio input device selection. Completed.
-- Audio output device selection
-- Recent target language
-- Session history
+- Audio output device selection. Deferred.
+- Recent target language. Deferred.
+- Session history. Completed as the Phase 2A MVP.
 - Session Lifecycle Specification. Completed.
-- Connection Resilience. Partially Implemented; depends on Session Lifecycle
+- Connection Resilience. Phase 1 completed; depends on Session Lifecycle
   Specification.
+  - Failure Classification
   - Retry Policy
-  - Auto Reconnect
-  - Token Refresh
-  - Timeout Strategy
-  - Recovery UX
-- AudioWorklet migration
+  - Reconnect Controller
+  - Controlled `unexpected_close` reconnect
+  - Failure-state mapping
+- AudioWorklet migration. Deferred.
 - Better transcript handling. Completed.
-- Usage logging
-- Admin usage review
+- Usage logging. Deferred.
+- Admin usage review. Deferred.
+
+### Phase 2A Foundation
+
+Completed:
+
+- Transcript Engine
+- Transcript Export
+- Audio Input Device Selection
+- Session Lifecycle
+- Connection Resilience Phase 1
+- Session Records
+- History List
+- Session Detail
+- Saved Session Export
+
+Deferred:
+
+- Durable storage
+- Backend persistence
+- Search
+- Bookmarks
+- Delete
+- Analytics
+- Diagnostics dashboard
+- Access control
+- Token refresh
+- Proactive reconnect
+- Network reconnect
+- Microphone reconnect
+- Provider reconnect
+- Settings
+- Usage Metrics
+- Diagnostics
+- Transcript Search
+- Audio Output Selection
+- AudioWorklet migration
 
 ### Current Phase 2 Feature Status
 
@@ -95,13 +151,18 @@ Resilience is partially implemented; Phase 2 overall is not completed.
   - Audio Input Device Selection
 - Session Design: Completed
   - Session Lifecycle Specification
-- Connection Resilience: Partially Implemented
+- Connection Resilience: Phase 1 Completed
+  - Failure Classification
   - Retry Policy
-  - Auto Reconnect
-  - Token Refresh
-  - Timeout Strategy
-  - Recovery UX
-- Phase 2 overall: In Progress, not completed
+  - Reconnect Controller
+  - Controlled `unexpected_close` reconnect
+  - Failure-state mapping
+- Session Records & Translation History: MVP Completed
+  - Session Records
+  - History List
+  - Session Detail
+  - Saved Session Export
+- Phase 2 overall: In Progress, Phase 2B next
 
 ### Phase 2 Planning Rule
 
@@ -118,15 +179,27 @@ Completed capabilities:
   - Audio Input Device Selection
 - Session Design
   - Session Lifecycle Specification
-
-Next recommended capability:
-
 - Connection Resilience
+  - Failure Classification
   - Retry Policy
-  - Auto Reconnect
-  - Token Refresh
-  - Timeout Strategy
-  - Recovery UX
+  - Reconnect Controller
+  - Controlled `unexpected_close` reconnect
+  - Failure-state mapping
+- Session Records & Translation History
+  - Session Records
+  - History List
+  - Session Detail
+  - Saved Session Export
+
+### Phase 2B - Planned
+
+Current deferred capabilities:
+
+- Settings
+- Usage Metrics
+- Diagnostics
+- Transcript Search
+- Storage, only if justified
 
 ## 5. Phase 3 - Production
 

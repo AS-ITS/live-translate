@@ -60,6 +60,24 @@ Run frontend failure UI state mapping unit tests:
 node --test tests/unit/failureUiState.test.js
 ```
 
+Run session records domain model unit tests:
+
+```bash
+node --test tests/unit/sessionRecords.test.js
+```
+
+Run session repository unit tests:
+
+```bash
+node --test tests/unit/sessionRepository.test.js
+```
+
+Run session record lifecycle mapping unit tests:
+
+```bash
+node --test tests/unit/sessionRecordLifecycle.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
@@ -73,6 +91,11 @@ Current unit coverage:
 - Reconnect controller lifecycle, cancellation, generation guard, and execution hook
 - LiveSession post-cleanup failure signal integration
 - Frontend failure-to-UI-state mapping for manual recovery and controlled reconnect
+- Session records domain model creation, finalization, transcript item mapping,
+  and transcript summary behavior
+- Session repository interface and in-memory adapter behavior
+- Session record lifecycle mapping helpers for active record creation, final
+  transcript append, and finalization
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 
@@ -140,6 +163,12 @@ The Playwright flow:
   transcript/export state, and reset transcript on manual Start
 - Verifies reconnect failure, retry exhaustion, Stop cancellation, and
   transcript preservation during recovery errors
+- Verifies read-only finalized session history list behavior for empty state,
+  stopped sessions, failed sessions, expired sessions, manual restart, and
+  reconnect without duplicate history records
+- Verifies read-only inline session detail behavior for saved metadata,
+  final-only source and translation transcripts, close behavior, failure
+  reasons, and no-transcript empty state
 
 ## Live Smoke Test
 

@@ -226,6 +226,219 @@ input:disabled {
   color: #6b7886;
 }
 
+.history-panel {
+  margin-top: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 20px;
+  background: #ffffff;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.history-header h2 {
+  margin: 0;
+  color: #314152;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.history-empty {
+  margin: 0;
+  color: #6b7886;
+  line-height: 1.5;
+}
+
+.history-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-item {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfd;
+}
+
+.history-item-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.history-item h3 {
+  margin: 0 0 8px;
+  color: #17202a;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.history-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #eef3f7;
+  color: #314152;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.history-status-failed {
+  background: #fff0f0;
+  color: #a51f1f;
+}
+
+.history-status-expired {
+  background: #fff6df;
+  color: #785300;
+}
+
+.history-metadata {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 12px;
+}
+
+.history-metadata div {
+  display: grid;
+  gap: 4px;
+}
+
+.history-metadata dt {
+  color: #6b7886;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.history-metadata dd {
+  margin: 0;
+  color: #314152;
+  line-height: 1.4;
+}
+
+.history-summary,
+.history-reason {
+  margin: 0;
+  color: #516070;
+  line-height: 1.5;
+}
+
+.history-reason {
+  margin-top: 6px;
+  color: #7d1717;
+  font-weight: 600;
+}
+
+.detail-button {
+  min-width: auto;
+  min-height: 36px;
+  padding: 0 12px;
+  border-color: #b9c4d1;
+  background: #ffffff;
+  color: #314152;
+  font-size: 0.875rem;
+}
+
+.session-detail {
+  margin-top: 16px;
+  border-top: 1px solid #d8dee6;
+  padding-top: 16px;
+}
+
+.session-detail-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.session-detail-header h3 {
+  margin: 0;
+  color: #17202a;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.session-detail-metadata {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+}
+
+.session-detail-metadata div {
+  display: grid;
+  gap: 4px;
+}
+
+.session-detail-metadata dt {
+  color: #6b7886;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.session-detail-metadata dd {
+  margin: 0;
+  color: #314152;
+  line-height: 1.4;
+}
+
+.session-detail-transcripts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.session-transcript-section {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.session-transcript-section h4 {
+  margin: 0 0 10px;
+  color: #314152;
+  font-size: 0.9375rem;
+  letter-spacing: 0;
+}
+
+.session-transcript-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.session-transcript-list li {
+  border-left: 3px solid #d8dee6;
+  padding-left: 10px;
+}
+
+.session-transcript-list p {
+  margin: 0;
+  color: #17202a;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     width: min(100% - 20px, 640px);
@@ -239,6 +452,27 @@ input:disabled {
   .controls,
   .transcript-grid {
     grid-template-columns: 1fr;
+  }
+
+  .history-item-header,
+  .history-metadata,
+  .session-detail-header,
+  .session-detail-metadata,
+  .session-detail-transcripts {
+    grid-template-columns: 1fr;
+  }
+
+  .history-item-header,
+  .session-detail-header {
+    display: grid;
+  }
+
+  .history-status {
+    width: fit-content;
+  }
+
+  .detail-button {
+    width: 100%;
   }
 
   .button {

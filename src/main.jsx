@@ -7,6 +7,14 @@ import { failureUiStateForClassification } from './lib/failureUiState.js';
 import { LiveTranslateSession } from './lib/liveSession.js';
 import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
+import { createMemorySessionRepository } from './lib/sessionRepository.js';
+import {
+  appendNewFinalTranscriptItems,
+  buildFinalizePatch,
+  buildSessionRecordInput,
+  createActiveSessionRecord,
+  finalizeActiveSessionRecord
+} from './lib/sessionRecordLifecycle.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
 import {
   applyTranscriptEvent,
@@ -19,6 +27,7 @@ import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
 const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
+const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
 
 function App() {
   const [status, setStatus] = useState('idle');
@@ -33,9 +42,13 @@ function App() {
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
+  const [historyRecords, setHistoryRecords] = useState([]);
+  const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const sessionRef = useRef(null);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
+  const sessionRepositoryRef = useRef(createMemorySessionRepository());
+  const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
 
   const isActive =
@@ -87,6 +100,7 @@ function App() {
 
     try {
       await session.start();
+      createCurrentSessionRecord();
       setStatus('listening');
     } catch (nextError) {
       await session.stop().catch(() => {});
@@ -104,6 +118,11 @@ function App() {
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
+    finalizeCurrentSessionRecord({
+      status: 'stopped',
+      failureReason: 'user_stop',
+      failureCategory: 'user_intent'
+    });
     setStatus('stopped');
   }
 
@@ -134,8 +153,8 @@ function App() {
       onConnecting: () => {
         setStatus((current) => (current === 'reconnecting' ? 'reconnecting' : 'connecting'));
       },
-      onInputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'source' })),
-      onOutputTranscript: (update) => setTranscript((current) => applyTranscriptEvent(current, { ...update, stream: 'translation' })),
+      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
+      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
@@ -145,6 +164,11 @@ function App() {
         setError(nextError.message);
         setStatus('error');
         sessionRef.current = null;
+        finalizeCurrentSessionRecord({
+          status: 'failed',
+          failureReason: 'unknown_error',
+          failureCategory: 'unknown'
+        });
       },
       onClose: () => {
         setStatus((current) => (current === 'listening' ? 'stopped' : current));
@@ -159,6 +183,11 @@ function App() {
           setError(failureUiState.message);
           setStatus(failureUiState.status);
           setStatusLabelOverride(failureUiState.statusLabel);
+          finalizeCurrentSessionRecord({
+            status: failureUiState.status === 'expired' ? 'expired' : 'failed',
+            failureReason: classification.reason,
+            failureCategory: classification.category
+          });
           if (failureUiState.clearSession) {
             sessionRef.current = null;
           }
@@ -177,6 +206,11 @@ function App() {
               setStatusLabelOverride('');
               setError(reconnectErrorMessage(result));
               setStatus('error');
+              finalizeCurrentSessionRecord({
+                status: 'failed',
+                failureReason: classification.reason,
+                failureCategory: classification.category
+              });
             }
           });
       }
@@ -209,6 +243,11 @@ function App() {
       setStatusLabelOverride('');
       setError(RECONNECT_FAILED_MESSAGE);
       setStatus('error');
+      finalizeCurrentSessionRecord({
+        status: 'failed',
+        failureReason: classification.reason,
+        failureCategory: classification.category
+      });
       return;
     }
 
@@ -231,6 +270,77 @@ function App() {
     }
 
     return reconnectControllerRef.current;
+  }
+
+  function createCurrentSessionRecord() {
+    const record = createActiveSessionRecord(
+      sessionRepositoryRef.current,
+      buildSessionRecordInput({
+        startedAt: Date.now(),
+        targetLanguageCode,
+        targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
+        ...selectedInputDeviceSnapshot()
+      })
+    );
+    activeSessionRecordIdRef.current = record.id;
+    return record;
+  }
+
+  function applyTranscriptUpdate(update) {
+    setTranscript((current) => {
+      const next = applyTranscriptEvent(current, update);
+      appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordIdRef.current, current, next);
+      return next;
+    });
+  }
+
+  function finalizeCurrentSessionRecord(options) {
+    const sessionId = activeSessionRecordIdRef.current;
+    activeSessionRecordIdRef.current = null;
+
+    try {
+      const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
+
+      if (finalized) {
+        refreshHistoryRecords();
+      }
+
+      return finalized;
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshHistoryRecords() {
+    const finalizedRecords = sessionRepositoryRef.current
+      .listSessionRecords()
+      .filter((record) => TERMINAL_HISTORY_STATUSES.has(record.status))
+      .sort((a, b) => historyRecordSortTime(b) - historyRecordSortTime(a));
+
+    setHistoryRecords(finalizedRecords);
+  }
+
+  function openHistoryRecordDetail(id) {
+    const record = historyRecords.find((historyRecord) => historyRecord.id === id);
+
+    if (!record || !TERMINAL_HISTORY_STATUSES.has(record.status)) {
+      return;
+    }
+
+    setSelectedHistoryRecordId(id);
+  }
+
+  function closeHistoryRecordDetail() {
+    setSelectedHistoryRecordId(null);
+  }
+
+  function selectedInputDeviceSnapshot() {
+    const selectedDevice = inputDevices.find((device) => device.deviceId === selectedInputDeviceId);
+
+    return {
+      selectedInputDeviceId: selectedDevice?.deviceId || '',
+      inputDeviceLabelSnapshot: selectedDevice?.label || null
+    };
   }
 
   function downloadTranscript() {
@@ -267,6 +377,9 @@ function App() {
   });
   const exportUnavailableReason =
     exportFormat !== 'txt' && exportStream === 'both' ? 'SRT and VTT export one stream at a time.' : '';
+  const selectedHistoryDetail = selectedHistoryRecordId
+    ? sessionRepositoryRef.current.getSessionRecord(selectedHistoryRecordId)
+    : null;
 
   return (
     <main className="app-shell">
@@ -380,6 +493,14 @@ function App() {
         <TranscriptPanel title="Source speech" text={inputTranscriptText} emptyText="Waiting for source speech..." />
         <TranscriptPanel title="Translated speech" text={outputTranscriptText} emptyText="Waiting for translated speech..." />
       </section>
+
+      <HistoryPanel
+        records={historyRecords}
+        selectedRecordId={selectedHistoryRecordId}
+        selectedDetail={selectedHistoryDetail}
+        onViewDetails={openHistoryRecordDetail}
+        onCloseDetails={closeHistoryRecordDetail}
+      />
     </main>
   );
 }
@@ -401,6 +522,240 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
+function HistoryPanel({ records, selectedRecordId, selectedDetail, onViewDetails, onCloseDetails }) {
+  return (
+    <section className="history-panel" aria-labelledby="history-title">
+      <div className="history-header">
+        <h2 id="history-title">Session history</h2>
+      </div>
+
+      {records.length === 0 ? (
+        <p className="history-empty">No session history yet.</p>
+      ) : (
+        <ol className="history-list">
+          {records.map((record) => (
+            <li className="history-item" key={record.id}>
+              <article aria-label={`${historyLanguageLabel(record)} ${historyStatusLabel(record.status)} session`}>
+                <div className="history-item-header">
+                  <div>
+                    <h3>{historyLanguageLabel(record)}</h3>
+                    <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
+                  </div>
+                  <button className="button detail-button" type="button" onClick={() => onViewDetails(record.id)}>
+                    View details
+                  </button>
+                </div>
+
+                <dl className="history-metadata">
+                  <div>
+                    <dt>Started</dt>
+                    <dd>{formatRecordTime(record.startedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Ended</dt>
+                    <dd>{formatRecordTime(record.endedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Duration</dt>
+                    <dd>{formatDuration(record.durationMs)}</dd>
+                  </div>
+                </dl>
+
+                <p className="history-summary">{transcriptSummaryLabel(record.transcriptSummary)}</p>
+                {shouldShowFailureReason(record) ? <p className="history-reason">Reason: {record.failureReason}</p> : null}
+              </article>
+              {selectedRecordId === record.id ? <SessionDetail detail={selectedDetail} onClose={onCloseDetails} /> : null}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function SessionDetail({ detail, onClose }) {
+  if (!detail) {
+    return (
+      <section className="session-detail" aria-label="Session details">
+        <div className="session-detail-header">
+          <h3>Session details unavailable</h3>
+          <button className="button detail-button" type="button" onClick={onClose}>
+            Close details
+          </button>
+        </div>
+        <p className="history-empty">This session record is unavailable.</p>
+      </section>
+    );
+  }
+
+  const { sessionRecord, transcriptItems } = detail;
+  const sourceItems = finalTranscriptItemsForStream(transcriptItems, 'source');
+  const translationItems = finalTranscriptItemsForStream(transcriptItems, 'translation');
+  const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
+
+  return (
+    <section className="session-detail" aria-label="Session details">
+      <div className="session-detail-header">
+        <h3>{historyLanguageLabel(sessionRecord)} details</h3>
+        <button className="button detail-button" type="button" onClick={onClose}>
+          Close details
+        </button>
+      </div>
+
+      <dl className="session-detail-metadata">
+        <div>
+          <dt>Target language</dt>
+          <dd>{historyLanguageLabel(sessionRecord)}</dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{historyStatusLabel(sessionRecord.status)}</dd>
+        </div>
+        <div>
+          <dt>Started</dt>
+          <dd>{formatRecordTime(sessionRecord.startedAt)}</dd>
+        </div>
+        <div>
+          <dt>Ended</dt>
+          <dd>{formatRecordTime(sessionRecord.endedAt)}</dd>
+        </div>
+        <div>
+          <dt>Duration</dt>
+          <dd>{formatDuration(sessionRecord.durationMs)}</dd>
+        </div>
+        <div>
+          <dt>Transcript</dt>
+          <dd>{transcriptSummaryLabel(sessionRecord.transcriptSummary)}</dd>
+        </div>
+        {shouldShowFailureReason(sessionRecord) ? (
+          <div>
+            <dt>Failure reason</dt>
+            <dd>{sessionRecord.failureReason}</dd>
+          </div>
+        ) : null}
+        {sessionRecord.failureCategory ? (
+          <div>
+            <dt>Failure category</dt>
+            <dd>{sessionRecord.failureCategory}</dd>
+          </div>
+        ) : null}
+        {sessionRecord.inputDeviceLabelSnapshot ? (
+          <div>
+            <dt>Microphone</dt>
+            <dd>{sessionRecord.inputDeviceLabelSnapshot}</dd>
+          </div>
+        ) : null}
+      </dl>
+
+      {hasTranscript ? (
+        <div className="session-detail-transcripts">
+          <TranscriptItemList title="Source transcript" items={sourceItems} />
+          <TranscriptItemList title="Translation transcript" items={translationItems} />
+        </div>
+      ) : (
+        <p className="history-empty">No saved transcript.</p>
+      )}
+    </section>
+  );
+}
+
+function TranscriptItemList({ title, items }) {
+  return (
+    <section className="session-transcript-section" aria-label={title}>
+      <h4>{title}</h4>
+      {items.length === 0 ? (
+        <p className="history-empty">No saved transcript.</p>
+      ) : (
+        <ol className="session-transcript-list">
+          {items.map((item) => (
+            <li key={item.id}>
+              <p>{item.text}</p>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function historyLanguageLabel(record) {
+  return record.targetLanguageLabel || record.targetLanguageCode || 'Unknown language';
+}
+
+function historyStatusLabel(status) {
+  const labels = {
+    stopped: 'Stopped',
+    failed: 'Failed',
+    expired: 'Expired',
+    completed: 'Completed'
+  };
+
+  return labels[status] || status;
+}
+
+function transcriptSummaryLabel(summary = {}) {
+  const sourceFinalCount = summary.sourceFinalCount || 0;
+  const translationFinalCount = summary.translationFinalCount || 0;
+
+  if (!summary.hasTranscript && sourceFinalCount === 0 && translationFinalCount === 0) {
+    return 'No transcript';
+  }
+
+  return `Source final: ${sourceFinalCount} · Translation final: ${translationFinalCount}`;
+}
+
+function shouldShowFailureReason(record) {
+  return (record.status === 'failed' || record.status === 'expired') && record.failureReason;
+}
+
+function finalTranscriptItemsForStream(items = [], stream) {
+  return items
+    .filter((item) => item.stream === stream && item.status === 'final')
+    .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+}
+
+function formatRecordTime(value) {
+  if (!value) {
+    return 'Not available';
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleString();
+}
+
+function formatDuration(durationMs) {
+  if (!Number.isFinite(durationMs)) {
+    return 'Not available';
+  }
+
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds}s`;
+}
+
+function historyRecordSortTime(record) {
+  const endedAt = new Date(record.endedAt).getTime();
+
+  if (Number.isFinite(endedAt)) {
+    return endedAt;
+  }
+
+  const startedAt = new Date(record.startedAt).getTime();
+
+  return Number.isFinite(startedAt) ? startedAt : 0;
+}
+
 function statusLabel(status, override = '') {
   if (override) {
     return override;
@@ -418,6 +773,10 @@ function statusLabel(status, override = '') {
   };
 
   return labels[status] || status;
+}
+
+function targetLanguageLabelFor(code) {
+  return SUPPORTED_LANGUAGES.find((language) => language.code === code)?.label || null;
 }
 
 function classifyFailureSignal(failure) {

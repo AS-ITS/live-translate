@@ -23,6 +23,21 @@ test('application dependencies expose the assembled session read controller', ()
   assert.equal(typeof dependencies.sessionReadController.getSession, 'function');
 });
 
+test('application dependencies compose the HTTP request handler from the assembled controller', () => {
+  let injectedController;
+  const dependencies = createApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    requestHandlerFactory({ sessionReadController }) {
+      injectedController = sessionReadController;
+
+      return function requestHandler() {};
+    }
+  });
+
+  assert.strictEqual(injectedController, dependencies.sessionReadController);
+  assert.equal(typeof dependencies.requestHandler, 'function');
+});
+
 test('assembled controller can list sessions and get session detail', () => {
   const history = [historyItem({ id: 'session-1' })];
   const detail = detailDTO({ id: 'session-1' });
@@ -38,7 +53,8 @@ test('HTTP requests delegate to the injected sessionReadRepository through the c
   const calls = [];
   const history = [historyItem({ id: 'session-1' })];
   const detail = detailDTO({ id: 'session-1' });
-  const dependencies = createSessionReadDependencies({
+  const dependencies = createApplicationDependencies({
+    requestHandlerFactory: createRequestHandler,
     sessionReadRepository: readRepository({
       listSessionHistory() {
         calls.push(['list']);
@@ -50,12 +66,9 @@ test('HTTP requests delegate to the injected sessionReadRepository through the c
       }
     })
   });
-  const handler = createRequestHandler({
-    sessionReadController: dependencies.sessionReadController
-  });
 
-  const listResponse = await request(handler, { method: 'GET', url: '/api/sessions' });
-  const detailResponse = await request(handler, { method: 'GET', url: '/api/sessions/session-1' });
+  const listResponse = await request(dependencies.requestHandler, { method: 'GET', url: '/api/sessions' });
+  const detailResponse = await request(dependencies.requestHandler, { method: 'GET', url: '/api/sessions/session-1' });
 
   assert.equal(listResponse.status, 200);
   assert.deepEqual(listResponse.json(), history);
@@ -115,15 +128,13 @@ test('composition root can build the read repository from the legacy persistence
 
 test('repository DTO and null behavior preserve WP3 and WP4 contracts', async () => {
   const history = [historyItem({ id: 'session-1' })];
-  const dependencies = createSessionReadDependencies({
+  const dependencies = createApplicationDependencies({
+    requestHandlerFactory: createRequestHandler,
     sessionReadRepository: readRepository({ history, detail: null })
   });
-  const handler = createRequestHandler({
-    sessionReadController: dependencies.sessionReadController
-  });
 
-  const listResponse = await request(handler, { method: 'GET', url: '/api/sessions' });
-  const missingResponse = await request(handler, { method: 'GET', url: '/api/sessions/missing' });
+  const listResponse = await request(dependencies.requestHandler, { method: 'GET', url: '/api/sessions' });
+  const missingResponse = await request(dependencies.requestHandler, { method: 'GET', url: '/api/sessions/missing' });
 
   assert.equal(listResponse.status, 200);
   assert.deepEqual(listResponse.json(), history);
@@ -132,18 +143,16 @@ test('repository DTO and null behavior preserve WP3 and WP4 contracts', async ()
 });
 
 test('unexpected repository errors keep existing internal error handling', async () => {
-  const dependencies = createSessionReadDependencies({
+  const dependencies = createApplicationDependencies({
+    requestHandlerFactory: createRequestHandler,
     sessionReadRepository: readRepository({
       getSessionDetail() {
         throw new Error('read storage failed');
       }
     })
   });
-  const handler = createRequestHandler({
-    sessionReadController: dependencies.sessionReadController
-  });
 
-  const response = await request(handler, { method: 'GET', url: '/api/sessions/session-1' });
+  const response = await request(dependencies.requestHandler, { method: 'GET', url: '/api/sessions/session-1' });
 
   assert.equal(response.status, 500);
   assert.equal(response.json().error.code, 'internal_error');

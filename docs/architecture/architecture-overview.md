@@ -11,9 +11,11 @@ Readers should be able to understand:
 - How the browser obtains a Gemini ephemeral token.
 - How the browser connects directly to Gemini Live API.
 - How audio is captured, chunked, and played back.
-- How transcript state is normalized and reused.
+- How the canonical source transcript is normalized and reused.
+- How future translation outputs relate to the same Session.
 - How session lifecycle and reconnect behavior are separated.
-- How session history is stored in the in-memory repository.
+- How session history and derived translation data are stored in the
+  in-memory repository.
 - How saved export reuses transcript formatting.
 
 Relevant background docs:
@@ -21,6 +23,8 @@ Relevant background docs:
 - [README.md](../../README.md)
 - [docs/spec.md](../spec.md)
 - [docs/architecture.md](../architecture.md)
+- [docs/architecture/domain-model.md](domain-model.md)
+- [docs/architecture/phase2b-application-foundation.md](phase2b-application-foundation.md)
 - [docs/architecture/session-records-architecture.md](session-records-architecture.md)
 - [docs/features/session-lifecycle.md](../features/session-lifecycle.md)
 - [docs/features/connection-resilience.md](../features/connection-resilience.md)
@@ -49,6 +53,18 @@ Browser audio streams are not proxied through the backend.
 The backend only issues short-lived ephemeral tokens and enforces the access
 gate, origin validation, rate limit, and structured error handling around
 `POST /api/live-token`.
+
+Current Phase 2A implementation is still a simplified single-output session
+model. It uses `SessionRecord`, session-level `targetLanguageCode`,
+stream-based source/translation `TranscriptItem` records, a memory repository,
+`main.jsx` application orchestration, and a Gemini/browser-specific
+`LiveTranslateSession`.
+
+Phase 2B target architecture introduces an explicit Application Layer,
+repository and provider ports, TranslationRequest / TranslationExecution /
+TranslationOutput contracts, read-model contracts, and Compatibility Adapter
+mapping. Phase 2C adds saved transcript re-translation, multiple outputs,
+retry/cancel/delete, provider selection, and output version UI.
 
 ## 3. Runtime Architecture
 
@@ -106,6 +122,29 @@ Dependency direction is intentionally one-way:
 - Session Record Lifecycle maps session state into record updates.
 - Session Repository hides storage details behind a stable boundary.
 - Saved Session Export reuses transcript formatting instead of duplicating it.
+
+Phase 2B target dependency direction:
+
+```text
+React UI / REST API / Worker
+            |
+            v
+Application Services
+            |
+            v
+Domain Model and Policies
+            |
+            v
+Ports
+            |
+            v
+Infrastructure Adapters
+```
+
+Phase 2B migration is incremental. Existing helpers may first be wrapped by
+Application Services. React components should no longer directly own repository
+writes, session finalization, translation execution, or export orchestration
+once the Phase 2B-2 skeletons exist.
 
 ## 4. Core Runtime Flow
 
@@ -190,6 +229,8 @@ Gemini Event
 Rules:
 
 - Source and translation streams stay separate.
+- The current implementation treats the source stream as the canonical text
+  source for the active session.
 - Partial updates replace the current partial item.
 - Final updates commit a stable item.
 - Duplicate partial or final updates are suppressed.
@@ -281,15 +322,44 @@ flowchart LR
 
 Rules:
 
-- `SessionRecord` is the domain model.
-- `TranscriptItem[]` belongs to the record.
-- `SessionRepository` is the storage abstraction.
+- `SessionRecord` is the current Phase 2A storage and compatibility shape, not
+  the canonical Phase 2B target aggregate.
+- `TranscriptItem[]` currently belongs to the record.
+- `SessionRepository` is the current storage abstraction.
 - `MemorySessionRepository` is the current runtime adapter.
+- The current implementation still maps one SessionRecord to one active target
+  language output.
+- The Phase 2B target model splits the canonical SourceTranscript from the
+  Translation aggregate.
 - Listening creates the active record.
 - `stopped`, `error`, and `expired` finalize the record.
 - Reconnect keeps the same logical `SessionRecord`.
 - Manual Start creates a new record.
 - History only shows terminal sessions.
+
+Phase 2B target aggregate boundary:
+
+```text
+Session Aggregate
+├── Session
+└── SourceTranscript
+
+Translation Aggregate
+├── TranslationRequest
+├── TranslationExecutions
+└── TranslationOutput
+```
+
+The aggregates are connected by identifiers:
+
+```text
+TranslationRequest.sessionId
+TranslationRequest.sourceTranscriptRevisionId
+```
+
+Session detail is an Application Read Model composed from Session and
+Translation data. Legacy `SessionRecord` data should be projected through a
+Compatibility Adapter in repository implementation or read-model mapper.
 
 See [Session Records & Translation History](../features/session-records-history.md)
 and [Session Records Architecture](session-records-architecture.md).
@@ -317,10 +387,13 @@ SessionRepository detail
 
 Export rules:
 
-- TXT supports `source`, `translation`, or `both`.
+- TXT supports `source`, `translation`, or `both` for the current
+  single-output representation.
 - SRT and VTT support one stream at a time.
 - Timing uses frontend observation timestamps.
 - Saved export uses `sessionRecord.startedAt` as `timeOrigin`.
+- Future saved export should support SourceTranscript plus multiple
+  TranslationOutput records without changing canonical data.
 
 Saved export must reuse existing formatting rules instead of reimplementing
 them.
@@ -330,6 +403,11 @@ them.
 | Module | Responsibility | Must Not Own |
 | ------ | -------------- | ------------ |
 | `main.jsx` | UI orchestration, session composition, history/detail wiring, reconnect adapter | Gemini SDK internals, repository implementation, export formatting rules |
+| `SessionApplicationService` | Phase 2B target session use-case boundary for create/start/reconnect/stop/complete/fail/list/detail | React rendering, Gemini SDK internals, legacy `SessionRecord` storage shape |
+| `TranslationApplicationService` | Phase 2B target translation request, execution, retry/cancel/delete contract boundary | Provider SDK details, React rendering, compatibility mapping |
+| `ExportApplicationService` | Phase 2B target export orchestration for SourceTranscript, TranslationOutput, and combined Session view | Repository implementation, file-format internals, live audio |
+| `LiveSpeechTranslationPort` | Phase 2B target provider port for realtime speech translation | Repository writes, UI state, saved transcript translation lifecycle |
+| `SavedTranscriptTranslationPort` | Phase 2B target provider port for saved transcript translation | Microphone/audio lifecycle, WebSocket-only assumptions, UI state |
 | `liveSession.js` | One low-level Gemini/audio session attempt, microphone capture, audio playback, event forwarding | Repository logic, history state, retry policy, durable storage |
 | `transcript.js` | Normalize transcript items, preserve stream separation, partial/final handling, stable ordering | Repository access, UI layout, token flow, export file generation |
 | `transcriptExport.js` | Format active-session transcript data into TXT, SRT, and VTT | Repository access, live session control, history mutation |
@@ -358,8 +436,73 @@ them.
   rules.
 - Any future durable storage adapter must obey the existing repository
   boundary.
+- Application Services must not depend on the legacy `SessionRecord` storage
+  shape.
+- Compatibility Adapter belongs in repository implementation or read-model
+  mapper, not in Application Service.
+- Translation execution failure does not affect Session status.
+- Provider socket close, microphone disconnect, and browser suspend must be
+  classified by the Application Layer before any domain lifecycle transition.
 
-## 14. Current Storage Model
+## 14. Phase 2B Foundation Contracts
+
+Phase 2B-1 defines contracts only. Phase 2B-2 may implement skeletons, ports,
+compatibility adapters, and read-model wrappers.
+
+Application services:
+
+- `SessionApplicationService`
+- `TranslationApplicationService`
+- `ExportApplicationService`
+
+Repository ports:
+
+- `SessionRepository`
+- `TranslationRepository`
+
+Provider ports:
+
+- `LiveSpeechTranslationPort`
+- `SavedTranscriptTranslationPort`
+
+Deferred provider port:
+
+- `SpeechSynthesisPort`
+
+Formal translation model:
+
+```text
+TranslationRequest
+    |
+    +-- TranslationExecution 1..n
+    |
+    +-- TranslationOutput 0..1 successful result
+```
+
+Application read models:
+
+- `SessionHistoryListItem`
+- `SessionDetailDTO`
+- `TranslationOutputSummaryDTO`
+- `TranslationOutputDetailDTO`
+- `TranslationRequestDTO`
+- `TranslationExecutionDTO`
+
+Lightweight Phase 2B-1 domain event contracts:
+
+- `SessionCreated`
+- `SessionCompleted`
+- `SessionFailed`
+- `SourceTranscriptFinalized`
+- `TranslationRequested`
+- `TranslationExecutionStarted`
+- `TranslationExecutionFailed`
+- `TranslationOutputCreated`
+
+These are not Event Sourcing, broker, replay, persisted event history, or outbox
+contracts.
+
+## 15. Current Storage Model
 
 Current state:
 
@@ -377,7 +520,7 @@ If browser-local durable storage is introduced later:
 - Use epoch milliseconds for timestamps.
 - Define retention, delete, and migration policy up front.
 
-## 15. Security and Privacy Boundaries
+## 16. Security and Privacy Boundaries
 
 Do not store or log:
 
@@ -396,7 +539,7 @@ Additional boundary rules:
 - Future server-side history must introduce access control before storing
   transcript data.
 
-## 16. Testing Architecture
+## 17. Testing Architecture
 
 Unit tests cover:
 
@@ -422,7 +565,7 @@ automated test execution.
 
 See [docs/TESTING.md](../TESTING.md) for the test split and available commands.
 
-## 17. Completed Capability Snapshot
+## 18. Completed Capability Snapshot
 
 Phase 2A completed capabilities:
 
@@ -438,7 +581,10 @@ Phase 2A completed capabilities:
 - Session Detail
 - Saved Session Export
 
-## 18. Deferred Architecture
+The current implementation remains a simplified single-output representation
+of the future domain model.
+
+## 19. Deferred Architecture
 
 Intentionally deferred:
 
@@ -451,11 +597,40 @@ Intentionally deferred:
 - Usage Metrics
 - Diagnostics dashboard
 - Token refresh
+- Multi-language re-translation
 - Broader reconnect reasons
 - Audio output selection
 - AudioWorklet migration
+- Event outbox
+- Broker
+- Event replay
+- Raw audio storage
+- Text-to-speech regeneration
+- Billing
+- Multi-tenancy
+- Production deployment concerns
+- Provider selection UI
+- Multi-output UI
+- Retry/cancel/delete behavior
+- Output version UI
 
-## 19. Related Documentation
+## 20. Terminology
+
+Canonical Phase 2B target terms:
+
+- Session-oriented Real-time Multilingual Translation Platform
+- Application Layer
+- SourceTranscript
+- TranslationRequest
+- TranslationExecution
+- TranslationOutput
+- Compatibility Adapter
+
+`TranslationJob` is not a canonical domain entity. It may appear only as current
+proposal history, legacy naming, or transitional compatibility alias and must be
+labelled as non-target terminology.
+
+## 21. Related Documentation
 
 - [README.md](../../README.md)
 - [AGENTS.md](../../AGENTS.md)
@@ -463,6 +638,8 @@ Intentionally deferred:
 - [docs/ROADMAP.md](../ROADMAP.md)
 - [docs/spec.md](../spec.md)
 - [docs/architecture.md](../architecture.md)
+- [docs/architecture/domain-model.md](domain-model.md)
+- [docs/architecture/phase2b-application-foundation.md](phase2b-application-foundation.md)
 - [docs/architecture/session-records-architecture.md](session-records-architecture.md)
 - [docs/features/session-lifecycle.md](../features/session-lifecycle.md)
 - [docs/features/connection-resilience.md](../features/connection-resilience.md)

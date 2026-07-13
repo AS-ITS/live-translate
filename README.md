@@ -1,9 +1,10 @@
 # Live Translate
 
-Live Translate is a real-time speech translation web app using a React frontend,
-a Node.js backend, and the Gemini Live API. The backend owns `GEMINI_API_KEY` and
-issues short-lived ephemeral tokens so the browser can connect directly to the
-Gemini Live API.
+Live Translate is a session-oriented real-time multilingual translation platform
+that accepts Chinese or mixed-language speech, generates a selected target-language
+output, and preserves reusable session transcripts for future translations into
+additional languages. The backend owns `GEMINI_API_KEY` and issues short-lived
+ephemeral tokens so the browser can connect directly to the Gemini Live API.
 
 ## Current Status
 
@@ -31,6 +32,7 @@ Completed:
 Documentation:
 
 - [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - High-level system architecture, runtime flow, module responsibilities, dependency boundaries, completed capabilities, and deferred architecture.
+- [docs/architecture/domain-model.md](docs/architecture/domain-model.md) - Core domain objects, ownership, lifecycle, relationships, and future extension boundaries.
 
 Planned next capability:
 

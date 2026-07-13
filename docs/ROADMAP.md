@@ -1,6 +1,7 @@
 # ROADMAP
 
-This document helps AI coding agents and developers understand the intended project phases, current scope, and boundaries for future work.
+This document helps AI coding agents and developers understand the intended
+project phases, current scope, and boundaries for future work.
 
 ## 1. Project Direction
 
@@ -14,10 +15,11 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: v0.6.0 - Phase 2A Foundation.
+Current milestone: Phase 2B-1 Architecture Foundation.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
-in progress and not completed.
+in progress and not completed. Phase 2B-1 is documentation and contract work
+only.
 
 Completed Phase 1 capabilities include:
 
@@ -81,7 +83,8 @@ Status: Completed
 
 ## 4. Phase 2 - Internal Tool
 
-Status: In Progress. Phase 2A Foundation is completed; Phase 2B is planned.
+Status: In Progress. Phase 2A Foundation is completed; Phase 2B-1 Architecture
+Foundation is current.
 
 ### Candidate Features
 
@@ -162,7 +165,7 @@ Deferred:
   - History List
   - Session Detail
   - Saved Session Export
-- Phase 2 overall: In Progress, Phase 2B next
+- Phase 2 overall: In Progress, Phase 2B-1 current
 
 ### Phase 2 Planning Rule
 
@@ -191,15 +194,85 @@ Completed capabilities:
   - Session Detail
   - Saved Session Export
 
-### Phase 2B - Planned
+### Phase 2B-1 - Architecture Foundation
 
-Current deferred capabilities:
+Status: Current.
 
-- Settings
-- Usage Metrics
-- Diagnostics
-- Transcript Search
-- Storage, only if justified
+Scope:
+
+- Documentation and contracts only.
+- Application Layer boundaries.
+- Aggregate boundaries.
+- Repository and provider ports.
+- TranslationRequest / TranslationExecution / TranslationOutput contracts.
+- Compatibility Adapter placement.
+- Read-model contracts.
+- Lightweight domain event contracts.
+
+No production code changes and no tests are required for this documentation-only
+phase.
+
+### Phase 2B-2 - Foundation Implementation
+
+Status: Planned.
+
+Scope:
+
+- Application service skeletons:
+  - `SessionApplicationService`
+  - `TranslationApplicationService`
+  - `ExportApplicationService`
+- Repository ports:
+  - `SessionRepository`
+  - `TranslationRepository`
+- Provider ports:
+  - `LiveSpeechTranslationPort`
+  - `SavedTranscriptTranslationPort`
+- Compatibility Adapter implementation in repository implementation or
+  read-model mapper.
+- Read-model wrappers:
+  - `SessionHistoryListItem`
+  - `SessionDetailDTO`
+  - `TranslationOutputSummaryDTO`
+  - `TranslationOutputDetailDTO`
+  - `TranslationRequestDTO`
+  - `TranslationExecutionDTO`
+- Current UI single-output display must continue to work.
+
+### Phase 2C - Translation Capability Implementation
+
+Status: Planned after Phase 2B.
+
+Scope:
+
+- Saved transcript re-translation.
+- Multiple outputs.
+- Retry.
+- Cancel.
+- Delete.
+- Provider selection.
+- Output version UI.
+
+### Phase 2 Deferred Scope
+
+Deferred:
+
+- Settings, unless separately selected.
+- Usage Metrics.
+- Diagnostics.
+- Transcript Search.
+- Storage, unless justified later.
+- Durable database.
+- Event outbox.
+- Broker.
+- Event replay.
+- Raw audio storage.
+- Text-to-speech regeneration.
+- Billing.
+- Multi-tenancy.
+- Production deployment concerns.
+- Audio output selection.
+- AudioWorklet migration.
 
 ## 5. Phase 3 - Production
 

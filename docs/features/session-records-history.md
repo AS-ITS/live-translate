@@ -16,6 +16,13 @@ on the existing transcript, export, lifecycle, device-selection, and failure
 classification foundations while keeping the active live session behavior
 separate from saved history.
 
+Domain direction note:
+
+- A Session is not just a single translation result.
+- A future Session can contain multiple Translation Outputs.
+- The current Slice still uses a single target language implementation.
+- Multi-output and re-translation remain future extension work.
+
 ## Goals
 
 - Define `SessionRecord` model.
@@ -86,6 +93,17 @@ Failure Classification defines stable internal failure categories and reasons
 for permission, token, network, provider, browser runtime, audio device, user
 intent, cleanup, and unknown failures. Session records should store normalized
 failure reason/category values, not raw SDK errors or sensitive diagnostics.
+
+### Session / Translation Future Shape
+
+The future domain model separates the canonical Source Transcript from one or
+more Translation Outputs. Saved history should eventually reopen the Session as
+an aggregate rather than treating each target language as a fully independent
+history item.
+
+Current implementation remains a single-output representation with one active
+`targetLanguageCode` per record. That is intentional for Phase 2A and should not
+be interpreted as the final domain shape.
 
 ## SessionRecord Model Draft
 

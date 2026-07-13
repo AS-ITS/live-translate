@@ -183,7 +183,9 @@ function logProviderError(requestId, error) {
   });
 }
 
-const defaultRequestHandler = createRequestHandler(createApplicationDependencies());
+const { requestHandler: defaultRequestHandler } = createApplicationDependencies({
+  requestHandlerFactory: createRequestHandler
+});
 
 export function createRequestHandler({ sessionReadController } = {}) {
   return async function handleRequestWithDependencies(req, res) {

@@ -4,7 +4,8 @@
 
 Phase 2 evolves Live Translate from a controlled Phase 1 demo into an internal
 tool that a small team can use repeatedly with more predictable behavior,
-recoverability, and operational visibility.
+recoverability, and operational visibility. The product direction is a
+Session-oriented Real-time Multilingual Translation Platform.
 
 The Phase 2 direction keeps the core browser-to-Gemini Live API audio path from
 Phase 1. The backend continues to own `GEMINI_API_KEY` and issue short-lived
@@ -31,6 +32,42 @@ database, change APIs, or change production code.
 - Better transcript handling. Completed. See
   [Better Transcript Handling](features/better-transcript-handling.md).
 - Usage logging.
+
+### Phase 2B Architecture Direction
+
+Phase 2B is split into architecture foundation and foundation implementation.
+It centers on an explicit Application Layer and a canonical SourceTranscript
+that can support TranslationRequest, TranslationExecution, and
+TranslationOutput contracts without requiring repeated audio input.
+
+Current implementation:
+
+- Simplified single-output model.
+- `SessionRecord`.
+- Session-level `targetLanguageCode`.
+- Stream-based source / translation `TranscriptItem` records.
+- Memory repository.
+- `main.jsx` application orchestration.
+- `LiveTranslateSession` Gemini/browser-specific implementation.
+
+Phase 2B target:
+
+- Application service boundaries.
+- Repository and provider ports.
+- TranslationRequest / TranslationExecution contracts.
+- Compatibility Adapter mapping.
+- Read-model contracts.
+- Lightweight domain event contracts.
+
+Phase 2C target:
+
+- Saved transcript re-translation.
+- Multiple outputs.
+- Retry / cancel / delete.
+- Provider selection.
+- Output version UI.
+
+See [Phase 2B Application Foundation](architecture/phase2b-application-foundation.md).
 
 ## 3. Phase 2 Non-Goals
 
@@ -152,13 +189,20 @@ transcripts when storage is selected.
 
 #### API / Data Requirement
 
-- Data models: `Session`, `TranscriptItem`.
+- Current data models: `SessionRecord`, `TranscriptItem`.
+- Phase 2B target domain entities: `Session`, `SourceTranscript`,
+  `TranslationRequest`, `TranslationExecution`, `TranslationOutput`,
+  `TranscriptItem`.
+- Phase 2B target read models: `SessionHistoryListItem`, `SessionDetailDTO`,
+  `TranslationOutputSummaryDTO`, `TranslationOutputDetailDTO`,
+  `TranslationRequestDTO`, `TranslationExecutionDTO`.
 - Candidate APIs:
   - `GET /api/sessions`
   - `GET /api/sessions/:id`
   - `DELETE /api/sessions/:id`
 - Storage choice is unresolved: localStorage, file-based storage, SQLite, or
   MariaDB.
+- Durable database selection is deferred.
 
 #### Frontend Impact
 
@@ -318,7 +362,10 @@ languages, and visible transcript state.
 
 #### API / Data Requirement
 
-- Data model: `Session`.
+- Current data model: `SessionRecord`.
+- Phase 2B target Session aggregate: `Session` and `SourceTranscript`.
+- Phase 2B target Translation aggregate: `TranslationRequest`,
+  `TranslationExecution`, and `TranslationOutput`.
 - Candidate APIs:
   - `GET /api/sessions`
   - `GET /api/sessions/:id`
@@ -656,6 +703,15 @@ Suggested order from lower risk to higher risk:
 8. AudioWorklet migration.
 9. Basic access control.
 
+Current Phase 2B ordering:
+
+1. Phase 2B-1 Architecture Foundation: documentation and contracts only.
+2. Phase 2B-2 Foundation Implementation: service skeletons, ports,
+   Compatibility Adapter, and read-model wrappers.
+3. Phase 2C Translation Capability Implementation: saved transcript
+   re-translation, multiple outputs, retry/cancel/delete, provider selection,
+   and output version UI.
+
 Rationale:
 
 - Transcript handling and device selection can be scoped mostly to frontend
@@ -675,6 +731,11 @@ Rationale:
 
 These models are planning drafts only. Field names and storage types should be
 finalized after the storage choice is confirmed.
+
+The current implementation still uses `SessionRecord` with one
+`targetLanguageCode` and stream-based source / translation `TranscriptItem`
+records. The Phase 2B target separates domain entities from read models and uses
+Compatibility Adapter mapping during migration.
 
 ### Session
 
@@ -700,6 +761,73 @@ Potential statuses:
 - `stopped`
 - `failed`
 - `expired`
+
+### SourceTranscript
+
+```json
+{
+  "id": "source-transcript-id",
+  "sessionId": "session-id",
+  "revisionId": "source-transcript-revision-id",
+  "status": "finalized",
+  "createdAt": "2026-07-07T08:00:00.000Z",
+  "finalizedAt": "2026-07-07T08:10:00.000Z"
+}
+```
+
+### TranslationRequest
+
+```json
+{
+  "id": "translation-request-id",
+  "sessionId": "session-id",
+  "sourceTranscriptRevisionId": "source-transcript-revision-id",
+  "targetLanguageCode": "ja",
+  "status": "succeeded",
+  "createdAt": "2026-07-07T08:11:00.000Z",
+  "updatedAt": "2026-07-07T08:11:30.000Z"
+}
+```
+
+### TranslationExecution
+
+```json
+{
+  "id": "translation-execution-id",
+  "translationRequestId": "translation-request-id",
+  "provider": "gemini",
+  "model": "gemini-3.5-live-translate-preview",
+  "status": "succeeded",
+  "startedAt": "2026-07-07T08:11:00.000Z",
+  "endedAt": "2026-07-07T08:11:30.000Z",
+  "failureReason": null
+}
+```
+
+### TranslationOutput
+
+```json
+{
+  "id": "translation-output-id",
+  "translationRequestId": "translation-request-id",
+  "sessionId": "session-id",
+  "sourceTranscriptRevisionId": "source-transcript-revision-id",
+  "targetLanguageCode": "ja",
+  "createdAt": "2026-07-07T08:11:30.000Z",
+  "completedAt": "2026-07-07T08:11:30.000Z"
+}
+```
+
+Rules:
+
+- TranslationRequest represents one product intent.
+- TranslationExecution represents one provider attempt.
+- Retry creates a new TranslationExecution under the original
+  TranslationRequest.
+- TranslationOutput is successful derived data.
+- Translation execution failure does not affect Session status.
+- `TranslationJob` is not a canonical domain entity. It may appear only as
+  legacy naming or transitional compatibility alias.
 
 ### TranscriptItem
 

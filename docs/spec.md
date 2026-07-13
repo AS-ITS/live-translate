@@ -2,17 +2,19 @@
 
 ## Project Overview
 
-Live Translate is a real-time speech translation web app. It lets a user speak
-into the browser, sends live microphone audio to Gemini Live API, and plays back
-translated speech while showing source and translated transcripts.
+Live Translate is a Session-oriented Real-time Multilingual Translation
+Platform.
+It lets a user speak mixed-language audio into the browser, sends live
+microphone audio to Gemini Live API, and plays back a selected target-language
+translation while showing source and translated transcripts.
 
 The MVP is a single-user browser experience backed by a small Node.js service
 that issues short-lived Gemini ephemeral tokens.
 
 ## Summary
 
-Build a real-time speech translation web app with a React + JavaScript frontend,
-a Node.js backend, and Gemini Live API using
+Build a Session-oriented Real-time Multilingual Translation Platform with a
+React + JavaScript frontend, a Node.js backend, and Gemini Live API using
 `gemini-3.5-live-translate-preview`.
 
 The browser captures microphone audio, converts it to raw PCM 16-bit 16kHz mono
@@ -20,12 +22,25 @@ chunks, and connects directly to Gemini Live API with a short-lived ephemeral
 token issued by the backend. Gemini returns translated 24kHz PCM audio plus input
 and output transcripts.
 
+Current scope:
+
+- Each user translation run creates one Session.
+- The current session produces one selected target-language translation output.
+- The Session preserves source transcript items for review and export.
+
+Future scope:
+
+- The same saved SourceTranscript may later produce additional
+  TranslationOutput records.
+- Re-translation should not require new audio input or re-recording.
+
 ## Goals
 
-- Start and stop a live speech translation session from the browser.
-- Let the user choose a target translation language.
+- Start and stop a Session from the browser.
+- Let the user choose a target output language.
 - Play translated audio in near real time.
 - Show source and translated transcripts.
+- Preserve the source transcript as the canonical input for future translations.
 - Keep `GEMINI_API_KEY` only on the backend.
 - Avoid proxying audio streams through the backend.
 
@@ -43,7 +58,7 @@ and output transcripts.
 The MVP includes:
 
 - A browser UI for selecting a target language.
-- A browser UI for starting and stopping a live translation session.
+- A browser UI for starting and stopping a Session.
 - Microphone permission handling.
 - Browser-side microphone capture.
 - Browser-side audio conversion to the Gemini input audio format.
@@ -53,6 +68,7 @@ The MVP includes:
 - Display of input and output transcripts.
 - A backend endpoint for ephemeral token issuance.
 - Validation of supported target languages and token options.
+- Session-local source transcript preservation for later export or review.
 
 ## Functional Requirements
 
@@ -121,4 +137,5 @@ Default target language: `zh-Hant`.
 - Add configurable voices or playback settings.
 - Add usage metrics and operational dashboards.
 - Add broader browser compatibility testing.
-
+- Reopen a saved Session and generate additional TranslationOutput records from
+  the same SourceTranscript without re-recording audio.

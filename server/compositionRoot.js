@@ -4,7 +4,18 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSessionReadController } from './sessionReadController.js';
 
 export function createApplicationDependencies(options = {}) {
-  return createSessionReadDependencies(options);
+  const { requestHandlerFactory, ...sessionReadOptions } = options;
+  const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
+  const requestHandler = requestHandlerFactory
+    ? requestHandlerFactory({
+        sessionReadController: sessionReadDependencies.sessionReadController
+      })
+    : undefined;
+
+  return {
+    ...sessionReadDependencies,
+    ...(requestHandler ? { requestHandler } : {})
+  };
 }
 
 export function createSessionReadDependencies({ sessionRepository, sessionReadRepository } = {}) {

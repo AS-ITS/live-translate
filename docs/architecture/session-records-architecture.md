@@ -2,7 +2,8 @@
 
 ## Purpose
 
-This document describes the Domain Architecture for Session Records.
+This document describes the current Session Records architecture and its Phase
+2B compatibility role.
 
 It does not discuss:
 
@@ -19,10 +20,30 @@ It only discusses:
 - Lifecycle.
 - Future extension.
 
-Session Records should provide a stable domain boundary for turning a completed
-live translation session into a read-only history record without changing the
-Gemini Live session flow, the transcript engine, reconnect behavior, token
-refresh behavior, or storage infrastructure.
+Session Records provide the current boundary for turning a completed live
+translation session into a read-only history record without changing the Gemini
+Live session flow, transcript engine, reconnect behavior, token refresh
+behavior, or storage infrastructure.
+
+Phase 2B target architecture no longer treats `SessionRecord` as the canonical
+future aggregate. `SessionRecord` is the current simplified single-output memory
+repository shape and a transitional compatibility shape.
+
+The canonical Phase 2B target is:
+
+```text
+Session Aggregate
+├── Session
+└── SourceTranscript
+
+Translation Aggregate
+├── TranslationRequest
+├── TranslationExecutions
+└── TranslationOutput
+```
+
+See [Phase 2B Application Foundation](phase2b-application-foundation.md) and
+[Domain Model](domain-model.md).
 
 ## Domain Model
 
@@ -44,16 +65,17 @@ flowchart TD
   HistoryConsumer --> Export
 ```
 
-The domain flow is intentionally one-way:
+The current flow is intentionally one-way:
 
 - A live session emits lifecycle and transcript-domain events.
 - The transcript engine owns normalized transcript items.
-- The session record captures session metadata and references transcript items.
+- The session record captures current session metadata and references transcript
+  items.
 - The repository abstracts persistence.
 - History consumers read finalized records without mutating live-session or
   transcript-engine state.
 
-## Ownership
+## Current Ownership
 
 ### LiveSession
 
@@ -68,6 +90,10 @@ LiveSession must not depend on a concrete storage engine. It should talk only to
 the `SessionRepository` boundary or to a narrow session-record coordinator that
 uses that boundary.
 
+Phase 2B note: `LiveTranslateSession` is a Gemini/browser-specific
+implementation and may later become a `LiveSpeechTranslationPort`
+infrastructure adapter. It should not become an Application Service.
+
 ### Transcript Engine
 
 Responsible for:
@@ -81,6 +107,10 @@ Responsible for:
 The transcript engine is the source of transcript-domain truth. It must not know
 where history is stored.
 
+In the Phase 2B target model, transcript items attach to either SourceTranscript
+or TranslationOutput through explicit parent ownership. The current
+implementation still maps items with `sessionId` plus `stream`.
+
 ### Repository
 
 Responsible for:
@@ -93,6 +123,17 @@ Responsible for:
 The repository must not depend on UI components, routing, rendering, or export
 controls.
 
+This document does not change the existing `SessionRepository` interface or the
+current memory-only adapter. Durable storage remains deferred.
+
+Phase 2B repository target:
+
+- `SessionRepository` manages the Session aggregate and SourceTranscript.
+- `TranslationRepository` manages the Translation aggregate.
+- No `SourceTranscriptRepository`, `TranslationRequestRepository`,
+  `TranslationExecutionRepository`, `TranslationOutputRepository`, or
+  `ExportArtifactRepository` is introduced in Phase 2B.
+
 ### History UI
 
 Responsible for:
@@ -104,11 +145,18 @@ Responsible for:
 History UI must not mutate transcript engine state or reopen finalized records
 for editing.
 
-## Domain Objects
+## Current Domain Objects and Compatibility Mapping
 
 ### SessionRecord
 
-`SessionRecord` represents one recorded live translation session.
+`SessionRecord` represents one current recorded live translation session.
+
+Phase 2B compatibility status:
+
+- Current implementation shape.
+- Legacy/transitional compatibility alias.
+- Not the canonical target aggregate.
+- Must be projected through a Compatibility Adapter into read-model contracts.
 
 Core Domain fields:
 
@@ -172,6 +220,36 @@ Transcript history should store transcript items, not a single combined
 transcript string. `TranscriptItem` preserves sequence, stream, status, and
 timing, which are required for reliable history detail rendering and export.
 
+Target parent ownership:
+
+- Source items belong to SourceTranscript.
+- Translation items belong to TranslationOutput.
+- Current `sessionId` plus `stream` mapping remains a compatibility input.
+
+### Phase 2B Target Entities
+
+Domain entities:
+
+- `Session`
+- `SourceTranscript`
+- `TranslationRequest`
+- `TranslationExecution`
+- `TranslationOutput`
+- `TranscriptItem`
+
+Application DTOs / Read Models:
+
+- `SessionHistoryListItem`
+- `SessionDetailDTO`
+- `TranslationOutputSummaryDTO`
+- `TranslationOutputDetailDTO`
+- `TranslationRequestDTO`
+- `TranslationExecutionDTO`
+
+React components should consume read models instead of assembling domain
+aggregates directly. Legacy `SessionRecord` data should be projected into these
+contracts by repository implementation or read-model mapper.
+
 ### Repository
 
 `SessionRepository` is the persistence boundary for session records and related
@@ -202,7 +280,7 @@ Future Extension responsibilities:
 - Apply retention rules after retention policy is approved.
 - Enforce adapter-level delete semantics after storage is selected.
 
-## Repository Boundary
+## Current Repository Boundary
 
 `SessionRepository` interface:
 
@@ -235,6 +313,16 @@ Method ownership:
 This interface is the required boundary for repository adapters. Slice 1B adds
 an in-memory adapter for deterministic validation, but the architecture still
 does not choose a durable storage engine.
+
+Phase 2B Compatibility Adapter rules:
+
+- Compatibility Adapter belongs in repository implementation or read-model
+  mapper.
+- Compatibility Adapter must not be placed in Application Service.
+- Application Service must not depend on the legacy `SessionRecord` storage
+  shape.
+- Current single-output records must continue to project into Phase 2B read
+  models during migration.
 
 ## Lifecycle Ownership
 
@@ -303,10 +391,18 @@ Gemini Live connection, transcript engine state, audio resources, or token flow.
 - Export must consume transcript items and must not mutate session records.
 - Storage adapters must not reinterpret raw SDK events; they store domain
   objects only.
+- Application Services must not depend on legacy `SessionRecord` storage shape.
+- Compatibility Adapter belongs in repository implementation or read-model
+  mapper.
+- Translation execution failure must not affect Session status.
 
 Connection Resilience may produce failure or retry metadata that Session Records
 captures through lifecycle mapping. It must not create, update, finalize, or
 delete records directly.
+
+Runtime failures such as provider socket close, microphone disconnect, or
+browser suspend must be classified by the Application Layer before they become
+domain lifecycle transitions.
 
 ## Future Storage
 
@@ -364,6 +460,23 @@ Disallowing transcript editing keeps the first history capability focused and
 prevents unclear ownership between saved records, transcript engine state, and
 future editing workflows.
 
+### ADR-004: SessionRecord Is Transitional
+
+Status: Accepted.
+
+Reason: Phase 2B target architecture separates Session/SourceTranscript from the
+Translation aggregate. Current `SessionRecord` remains a compatibility shape for
+the existing memory repository and single-output UI, but it is not the canonical
+future aggregate.
+
+### ADR-005: Compatibility Adapter Placement
+
+Status: Accepted.
+
+Reason: Compatibility mapping belongs in repository implementation or
+read-model mapper so Application Services do not depend on legacy storage
+details.
+
 ## Out of Scope
 
 - Search.
@@ -374,6 +487,15 @@ future editing workflows.
 - Audio storage.
 - Token refresh.
 - Access control.
+- Durable database.
+- Event outbox.
+- Broker.
+- Event replay.
+- Raw audio storage.
+- Text-to-speech regeneration.
+- Billing.
+- Multi-tenancy.
+- Production deployment concerns.
 
 ## Acceptance Criteria
 
@@ -383,3 +505,19 @@ future editing workflows.
 - Future storage is replaceable.
 - Architecture does not depend on a specific storage engine.
 - Production code is not changed by this architecture document.
+
+## Terminology
+
+Canonical Phase 2B terms:
+
+- Session-oriented Real-time Multilingual Translation Platform
+- Application Layer
+- SourceTranscript
+- TranslationRequest
+- TranslationExecution
+- TranslationOutput
+- Compatibility Adapter
+
+`TranslationJob` is not a canonical domain entity. It may appear only as
+proposal history, legacy naming, or transitional compatibility alias and must be
+labelled as non-target terminology.

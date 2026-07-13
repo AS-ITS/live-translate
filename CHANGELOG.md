@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.6.0 - Connection Resilience Phase 1
+
+### Added
+
+- Failure Classification
+- Retry Policy
+- Reconnect Controller
+- LiveSession Failure Signal Integration
+- Controlled `unexpected_close` reconnect
+- Failure-State Mapping
+- Manual Recovery UX
+- Retry Exhaustion UX
+
+### Improved
+
+- Stable frontend failure handling
+- Safer reconnect orchestration
+- Better session lifecycle consistency
+- Clearer failure UX
+- Better unit/E2E coverage
+
+### Deferred
+
+These items are intentionally deferred:
+
+- `token_expired` reconnect
+- network reconnect
+- provider reconnect
+- microphone reconnect
+- proactive token refresh
+
+### Notes
+
+- Connection Resilience is now partially implemented.
+- Only `unexpected_close` supports controlled reconnect.
+- Phase 2 overall remains In Progress.
+
 ## v0.5.0 - Phase 2 Foundation
 
 ### Added

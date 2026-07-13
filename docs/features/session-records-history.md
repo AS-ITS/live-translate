@@ -6,8 +6,8 @@ Session Records & Translation History is a Phase 2 capability for defining the
 session record model, translation history foundation, session-to-transcript
 relationship, and repository abstraction.
 
-Status: Slice 4 implemented with a read-only finalized history list and inline
-session detail backed by the in-memory repository.
+Status: Slice 5 implemented with a read-only finalized history list, inline
+session detail, and saved-session export backed by the in-memory repository.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,
@@ -436,9 +436,33 @@ Slice 4 does not implement:
 
 ### Slice 5: Saved Session Export
 
-Allow existing TXT/SRT/VTT export utilities to operate on saved transcript
-items. Do not add a backend export endpoint unless a later storage/API design
-explicitly selects it.
+Status: Implemented.
+
+Implementation files:
+
+- `src/lib/sessionRecordExport.js`
+- `tests/unit/sessionRecordExport.test.js`
+- `src/main.jsx`
+- `src/styles.css`
+- `tests/e2e/liveTranslate.spec.js`
+
+Slice 5 allows saved session detail views to export saved final transcript
+items as TXT, SRT, or VTT by reusing the existing transcript export formatter.
+TXT supports source, translation, and both streams. SRT and VTT support one
+stream at a time. Saved subtitle timing uses the original session observation
+timestamps with `SessionRecord.startedAt` as the session-relative time origin.
+
+Slice 5 does not implement:
+
+- Export controls in the history list.
+- Backend export.
+- Durable storage.
+- `localStorage`.
+- IndexedDB.
+- Backend persistence.
+- Backend APIs.
+- Delete behavior.
+- Search, filters, bookmarks, or dashboards.
 
 ### Slice 6: Storage Engine Decision
 

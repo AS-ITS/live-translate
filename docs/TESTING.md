@@ -78,6 +78,12 @@ Run session record lifecycle mapping unit tests:
 node --test tests/unit/sessionRecordLifecycle.test.js
 ```
 
+Run saved session export unit tests:
+
+```bash
+node --test tests/unit/sessionRecordExport.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
@@ -96,6 +102,8 @@ Current unit coverage:
 - Session repository interface and in-memory adapter behavior
 - Session record lifecycle mapping helpers for active record creation, final
   transcript append, and finalization
+- Saved session export helpers for TXT/SRT/VTT formatting, session-relative
+  timing, file naming, and unavailable export states
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 
@@ -169,6 +177,9 @@ The Playwright flow:
 - Verifies read-only inline session detail behavior for saved metadata,
   final-only source and translation transcripts, close behavior, failure
   reasons, and no-transcript empty state
+- Verifies saved session detail export controls for TXT/SRT/VTT availability,
+  unsupported stream combinations, session switching, and active export state
+  separation
 
 ## Live Smoke Test
 

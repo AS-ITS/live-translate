@@ -439,6 +439,18 @@ input:disabled {
   white-space: pre-wrap;
 }
 
+.saved-export-panel {
+  margin-top: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.saved-export-controls {
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     width: min(100% - 20px, 640px);
@@ -450,7 +462,8 @@ input:disabled {
   }
 
   .controls,
-  .transcript-grid {
+  .transcript-grid,
+  .saved-export-controls {
     grid-template-columns: 1fr;
   }
 

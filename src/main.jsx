@@ -15,6 +15,11 @@ import {
   createActiveSessionRecord,
   finalizeActiveSessionRecord
 } from './lib/sessionRecordLifecycle.js';
+import {
+  buildSavedSessionFileName,
+  canExportSavedSession,
+  formatSavedSessionExport
+} from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
 import {
   applyTranscriptEvent,
@@ -574,6 +579,17 @@ function HistoryPanel({ records, selectedRecordId, selectedDetail, onViewDetails
 }
 
 function SessionDetail({ detail, onClose }) {
+  const [savedExportFormat, setSavedExportFormat] = useState('txt');
+  const [savedExportStream, setSavedExportStream] = useState('translation');
+  const [savedExportError, setSavedExportError] = useState('');
+  const sessionRecordId = detail?.sessionRecord?.id;
+
+  useEffect(() => {
+    setSavedExportFormat('txt');
+    setSavedExportStream('translation');
+    setSavedExportError('');
+  }, [sessionRecordId]);
+
   if (!detail) {
     return (
       <section className="session-detail" aria-label="Session details">
@@ -592,6 +608,38 @@ function SessionDetail({ detail, onClose }) {
   const sourceItems = finalTranscriptItemsForStream(transcriptItems, 'source');
   const translationItems = finalTranscriptItemsForStream(transcriptItems, 'translation');
   const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
+  const canDownloadSavedTranscript = canExportSavedSession(detail, {
+    format: savedExportFormat,
+    stream: savedExportStream
+  });
+  const savedExportUnavailableReason = savedSessionExportUnavailableReason(detail, {
+    format: savedExportFormat,
+    stream: savedExportStream
+  });
+
+  function downloadSavedTranscript() {
+    setSavedExportError('');
+
+    try {
+      const content = formatSavedSessionExport(detail, {
+        format: savedExportFormat,
+        stream: savedExportStream
+      });
+      const fileName = buildSavedSessionFileName(sessionRecord, {
+        format: savedExportFormat,
+        stream: savedExportStream
+      });
+      const blob = new Blob([content], { type: contentTypeForFormat(savedExportFormat) });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setSavedExportError('Saved transcript export is unavailable for the selected options.');
+    }
+  }
 
   return (
     <section className="session-detail" aria-label="Session details">
@@ -655,6 +703,41 @@ function SessionDetail({ detail, onClose }) {
       ) : (
         <p className="history-empty">No saved transcript.</p>
       )}
+
+      <section className="saved-export-panel" aria-label="Saved transcript export">
+        <div className="controls saved-export-controls">
+          <label className="field">
+            <span>Saved export format</span>
+            <select value={savedExportFormat} onChange={(event) => setSavedExportFormat(event.target.value)}>
+              <option value="txt">TXT</option>
+              <option value="srt">SRT</option>
+              <option value="vtt">VTT</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>Saved export stream</span>
+            <select value={savedExportStream} onChange={(event) => setSavedExportStream(event.target.value)}>
+              <option value="translation">Translation</option>
+              <option value="source">Source</option>
+              <option value="both">Both</option>
+            </select>
+          </label>
+
+          <button
+            className="button detail-button"
+            type="button"
+            onClick={downloadSavedTranscript}
+            disabled={!canDownloadSavedTranscript}
+          >
+            <Download size={16} aria-hidden="true" />
+            Download saved
+          </button>
+        </div>
+        <p className="export-note">Saved subtitle timing uses the original session observation timestamps.</p>
+        {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
+        {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
+      </section>
     </section>
   );
 }
@@ -712,6 +795,18 @@ function finalTranscriptItemsForStream(items = [], stream) {
   return items
     .filter((item) => item.stream === stream && item.status === 'final')
     .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+}
+
+function savedSessionExportUnavailableReason(detail, options) {
+  if ((options.format === 'srt' || options.format === 'vtt') && options.stream === 'both') {
+    return 'SRT and VTT export one stream at a time.';
+  }
+
+  if (!canExportSavedSession(detail, options)) {
+    return 'Saved transcript export is unavailable for the selected options.';
+  }
+
+  return '';
 }
 
 function formatRecordTime(value) {

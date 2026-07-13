@@ -65,6 +65,12 @@ This slice prepares UX messaging and recovery metadata only. Reconnect for
 limited to the previously implemented `unexpected_close` path. Proactive token
 refresh and a full token refresh system remain not implemented.
 
+Current token status:
+
+- `token_expired` classification is complete.
+- `token_expired` reconnect is not enabled.
+- Proactive token refresh is not implemented.
+
 ## Recovery Matrix
 
 | Failure | Can Recover? | Requires User Action? | Retry? | Reconnect? | Reset Session? |
@@ -241,6 +247,28 @@ This slice does not schedule reconnect for `token_expired`, `auth_failed`, or
 `LiveTranslateSession`. The controlled reconnect path for `unexpected_close`
 remains unchanged and is still the only enabled reconnect path. Proactive token
 refresh and a full token refresh system remain not implemented.
+
+## Frontend Failure-State Mapping Unit Coverage
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/lib/failureUiState.js`
+- `tests/unit/failureUiState.test.js`
+
+This slice covers the frontend mapping from classified connection failures to
+UI state metadata. It keeps manual-recovery failures distinct from the
+controlled reconnect path:
+
+- `token_expired` maps to the manual `expired` state and does not reconnect.
+- `auth_failed` maps to the manual error path and does not reconnect.
+- `rate_limited` maps to the manual error path and does not reconnect.
+- `unexpected_close` remains the only controlled reconnect path.
+
+This unit coverage documents and protects the current frontend boundary. It
+does not enable reconnect for `token_expired`, does not request fresh tokens for
+manual-recovery failures, and does not add proactive token refresh.
 
 ## Manual Recovery UX Polish
 

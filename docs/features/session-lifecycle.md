@@ -57,13 +57,12 @@ matrix, and recovery UX. See
   shutdown.
 - `error`: The session failed or closed unexpectedly and can be reset or
   restarted.
-- `reconnecting`: Future-ready state for an automatic reconnect attempt.
+- `reconnecting`: Automatic recovery setup is active.
 - `expired`: Future-ready state for token or session expiration that cannot
   continue without refresh or restart.
 
-`reconnecting` and `expired` are reserved future-ready states. They do not need
-immediate active UI behavior until Auto Reconnect or Token Refresh is explicitly
-implemented.
+`expired` is a reserved future-ready state for token refresh. It can still be
+used as a visible manual-recovery state before token refresh is implemented.
 
 ## State Transition Rules
 
@@ -80,13 +79,13 @@ implemented.
 | `stopping` | Cleanup fails | `error` | Yes | Reason: `cleanup_failed`; retry best-effort cleanup. |
 | `listening` | Unexpected close | `error` | Yes | Reason: `unexpected_close`. |
 | `listening` | Network failure | `error` | Yes | Reason: `network_error`. |
-| `listening` | Token/auth failure | `error` | Yes | Reason: `token_expired` or `auth_failed`. |
+| `listening` | Auth or rate-limit failure | `error` | Yes | Reason: `auth_failed` or `rate_limited`. |
 | `error` | User resets or retries | `idle` | No | Error display can clear after reset. |
 | `stopped` | User starts another session | `requesting-permission` | No | New session flow begins. |
-| `listening` | Recoverable disconnect detected | `reconnecting` | Yes | Future only; reconnect is not active in this feature. |
-| `reconnecting` | Reconnect succeeds | `listening` | No | Future only. |
-| `reconnecting` | Recovery fails or is unavailable | `error` | Yes | Future only. |
-| `listening` | Token/session expiration detected | `expired` | Yes | Future only; token refresh is not active in this feature. |
+| `listening` | Recoverable disconnect detected | `reconnecting` | Yes | Recovery is active outside this lifecycle spec. |
+| `reconnecting` | Reconnect succeeds | `listening` | No | Return after replacement setup succeeds. |
+| `reconnecting` | Recovery fails or is unavailable | `error` | Yes | Failure remains a normal error lifecycle outcome. |
+| `listening` | Token/session expiration detected | `expired` | Yes | Reason: `token_expired`; token refresh is not active in this feature. |
 
 Invalid transitions should be rejected or ignored in a controlled way. For
 example, `idle` should not transition directly to `listening`, and `stopped`
@@ -103,6 +102,7 @@ should not transition to `listening` without a new setup flow.
 - `network_error`: Browser or network connectivity interrupted the session.
 - `token_expired`: The ephemeral token or Live session expired.
 - `auth_failed`: Authentication or authorization failed.
+- `rate_limited`: Token issuance or live translation startup was rate-limited.
 - `provider_error`: Gemini or provider-side behavior returned an unrecoverable
   error.
 - `cleanup_failed`: Resource cleanup failed or only partially completed.
@@ -137,16 +137,22 @@ transcript/export state unless the selected session reset policy requires it.
 | --- | --- | --- | --- | --- | --- | --- |
 | `idle` | Enabled | Disabled | Enabled | Enabled if transcript exists | Ready | Hidden |
 | `requesting-permission` | Disabled | Disabled | Disabled | Disabled | Requesting microphone permission | Hidden |
-| `connecting` | Disabled | Enabled | Disabled | Disabled | Connecting | Hidden |
+| `connecting` | Disabled / Starting | Hidden | Disabled | Disabled | Starting | Hidden |
 | `listening` | Disabled | Enabled | Disabled | Enabled if transcript exists | Listening | Hidden |
 | `stopping` | Disabled | Disabled | Disabled | Disabled | Stopping | Hidden |
 | `stopped` | Enabled | Disabled | Enabled | Enabled if transcript exists | Stopped | Hidden |
 | `error` | Enabled | Disabled | Enabled | Enabled if transcript exists | Error | Visible |
-| `reconnecting` | Disabled | Enabled | Disabled | Disabled | Reconnecting | Hidden unless reconnect fails |
+| `reconnecting` | Disabled | Enabled | Disabled | Enabled if transcript exists | Reconnecting | Hidden unless reconnect fails |
 | `expired` | Enabled | Disabled | Enabled | Enabled if transcript exists | Session expired | Visible |
 
 Export controls should never require an active Gemini Live session. They should
-depend only on available transcript data and the selected export format.
+depend only on available transcript data and the selected export format. During
+`reconnecting`, export controls can remain available; Download availability is
+still determined by transcript and export-format availability.
+
+`auth_failed` and `rate_limited` currently use the internal `error` state. The
+visible status label may be overridden to a more specific user-facing label
+without adding separate lifecycle states.
 
 ## Testing Requirements
 

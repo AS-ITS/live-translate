@@ -61,7 +61,7 @@ Status: Completed
 
 Status: In Progress. Better Transcript Handling, Transcript Export, Audio Input
 Device Selection, and Session Lifecycle Specification are completed; Connection
-Resilience is planned; Phase 2 overall is not completed.
+Resilience is partially implemented; Phase 2 overall is not completed.
 
 ### Candidate Features
 
@@ -73,7 +73,8 @@ Resilience is planned; Phase 2 overall is not completed.
 - Recent target language
 - Session history
 - Session Lifecycle Specification. Completed.
-- Connection Resilience. Planned; depends on Session Lifecycle Specification.
+- Connection Resilience. Partially Implemented; depends on Session Lifecycle
+  Specification.
   - Retry Policy
   - Auto Reconnect
   - Token Refresh
@@ -94,7 +95,7 @@ Resilience is planned; Phase 2 overall is not completed.
   - Audio Input Device Selection
 - Session Design: Completed
   - Session Lifecycle Specification
-- Connection Resilience: Planned
+- Connection Resilience: Partially Implemented
   - Retry Policy
   - Auto Reconnect
   - Token Refresh

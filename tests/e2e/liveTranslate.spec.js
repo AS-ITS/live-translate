@@ -108,6 +108,14 @@ function sessionDetail(page) {
   return page.locator('.session-detail');
 }
 
+function savedExportPanel(page) {
+  return sessionDetail(page).getByLabel('Saved transcript export');
+}
+
+function activeExportPanel(page) {
+  return page.locator('.export-panel');
+}
+
 async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation') {
   await page.evaluate(
     ({ sourceText, translationText }) => {
@@ -240,10 +248,52 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(detail.getByText('saved translation detail')).toBeVisible();
   await expect(detail.getByText('partial should not save')).toBeHidden();
   await expect(detail.getByText('partial translation should not save')).toBeHidden();
+  await expect(savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' })).toHaveValue('txt');
+  await expect(savedExportPanel(page).getByRole('combobox', { name: 'Saved export stream' })).toHaveValue('translation');
+  await expect(savedExportPanel(page).getByRole('button', { name: 'Download saved' })).toBeEnabled();
 
   await detail.getByRole('button', { name: 'Close details' }).click();
   await expect(sessionDetail(page)).toBeHidden();
   await expect(historyItems(page)).toHaveCount(1);
+});
+
+test('saved SRT and VTT export are enabled when timing exists', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'timed source', 'timed translation');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  const panel = savedExportPanel(page);
+  await panel.getByRole('combobox', { name: 'Saved export stream' }).selectOption('source');
+  await panel.getByRole('combobox', { name: 'Saved export format' }).selectOption('srt');
+  await expect(panel.getByRole('button', { name: 'Download saved' })).toBeEnabled();
+
+  await panel.getByRole('combobox', { name: 'Saved export format' }).selectOption('vtt');
+  await expect(panel.getByRole('button', { name: 'Download saved' })).toBeEnabled();
+  await expect(panel.getByText('Saved subtitle timing uses the original session observation timestamps.')).toBeVisible();
+});
+
+test('both stream is unavailable for saved SRT and VTT export', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'source subtitle', 'translation subtitle');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  const panel = savedExportPanel(page);
+  await panel.getByRole('combobox', { name: 'Saved export format' }).selectOption('srt');
+  await panel.getByRole('combobox', { name: 'Saved export stream' }).selectOption('both');
+
+  await expect(panel.getByRole('button', { name: 'Download saved' })).toBeDisabled();
+  await expect(panel.getByText('SRT and VTT export one stream at a time.')).toBeVisible();
+
+  await panel.getByRole('combobox', { name: 'Saved export format' }).selectOption('vtt');
+  await expect(panel.getByRole('button', { name: 'Download saved' })).toBeDisabled();
 });
 
 test('no transcript detail shows empty state', async ({ page }) => {
@@ -256,6 +306,49 @@ test('no transcript detail shows empty state', async ({ page }) => {
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   await expect(sessionDetail(page).getByText('No saved transcript.')).toBeVisible();
+  await expect(savedExportPanel(page).getByRole('button', { name: 'Download saved' })).toBeDisabled();
+});
+
+test('switching saved session resets saved export controls', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'first source', 'first translation');
+  await page.getByRole('button', { name: 'Stop' }).click();
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'second source', 'second translation');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await expect(historyItems(page)).toHaveCount(2);
+
+  await historyItems(page).nth(1).getByRole('button', { name: 'View details' }).click();
+  await savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' }).selectOption('vtt');
+  await savedExportPanel(page).getByRole('combobox', { name: 'Saved export stream' }).selectOption('source');
+
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  await expect(savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' })).toHaveValue('txt');
+  await expect(savedExportPanel(page).getByRole('combobox', { name: 'Saved export stream' })).toHaveValue('translation');
+});
+
+test('saved export controls do not alter active export controls', async ({ page }) => {
+  await page.goto('/');
+
+  await activeExportPanel(page).getByRole('combobox', { name: 'Export format' }).selectOption('vtt');
+  await activeExportPanel(page).getByRole('combobox', { name: 'Export stream' }).selectOption('source');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'source export separation', 'translation export separation');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  await savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' }).selectOption('srt');
+  await savedExportPanel(page).getByRole('combobox', { name: 'Saved export stream' }).selectOption('translation');
+
+  await expect(activeExportPanel(page).getByRole('combobox', { name: 'Export format' })).toHaveValue('vtt');
+  await expect(activeExportPanel(page).getByRole('combobox', { name: 'Export stream' })).toHaveValue('source');
 });
 
 test('failed session appears in history with normalized failure reason', async ({ page }) => {

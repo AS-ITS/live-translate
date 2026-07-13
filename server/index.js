@@ -1,10 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { createLiveToken } from './tokenService.js';
-import { createSessionReadController } from './sessionReadController.js';
-import { createSessionQueryService } from '../src/application/sessionQueryService.js';
-import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
-import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
+import { createApplicationDependencies } from './compositionRoot.js';
 
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -186,17 +183,7 @@ function logProviderError(requestId, error) {
   });
 }
 
-function createDefaultSessionReadController() {
-  const sessionRepository = createMemorySessionRepository();
-  const sessionReadRepository = createSessionReadRepository({ sessionRepository });
-  const sessionQueryService = createSessionQueryService({ sessionReadRepository });
-
-  return createSessionReadController({ sessionQueryService });
-}
-
-const defaultRequestHandler = createRequestHandler({
-  sessionReadController: createDefaultSessionReadController()
-});
+const defaultRequestHandler = createRequestHandler(createApplicationDependencies());
 
 export function createRequestHandler({ sessionReadController } = {}) {
   return async function handleRequestWithDependencies(req, res) {

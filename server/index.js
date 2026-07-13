@@ -1,6 +1,10 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { createLiveToken } from './tokenService.js';
+import { createSessionReadController } from './sessionReadController.js';
+import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
+import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
 
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -18,6 +22,7 @@ const ERROR_RESPONSES = {
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
+  session_not_found: { status: 404, message: 'Session not found.' },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
@@ -28,7 +33,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
@@ -181,7 +186,31 @@ function logProviderError(requestId, error) {
   });
 }
 
+function createDefaultSessionReadController() {
+  const sessionRepository = createMemorySessionRepository();
+  const sessionReadRepository = createSessionReadRepository({ sessionRepository });
+  const sessionQueryService = createSessionQueryService({ sessionReadRepository });
+
+  return createSessionReadController({ sessionQueryService });
+}
+
+const defaultRequestHandler = createRequestHandler({
+  sessionReadController: createDefaultSessionReadController()
+});
+
+export function createRequestHandler({ sessionReadController } = {}) {
+  return async function handleRequestWithDependencies(req, res) {
+    return handleRequestWithSessionReadController(req, res, {
+      sessionReadController
+    });
+  };
+}
+
 export async function handleRequest(req, res) {
+  return defaultRequestHandler(req, res);
+}
+
+async function handleRequestWithSessionReadController(req, res, { sessionReadController } = {}) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -206,6 +235,64 @@ export async function handleRequest(req, res) {
     const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured());
     statusCode = ready ? 200 : 503;
     sendJson(res, statusCode, { ok: ready, requestId }, requestId);
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/sessions') {
+    try {
+      const sessions = await sessionReadController.listSessions();
+      statusCode = 200;
+      sendJson(res, statusCode, sessions, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
+    try {
+      const sessionId = path.slice('/api/sessions/'.length);
+      const session = await sessionReadController.getSession(sessionId);
+
+      if (!session) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+
+      statusCode = 200;
+      sendJson(res, statusCode, session, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
+    }
     return;
   }
 

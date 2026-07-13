@@ -8,6 +8,7 @@ import { LiveTranslateSession } from './lib/liveSession.js';
 import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
+import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -49,12 +50,16 @@ function App() {
   const [error, setError] = useState('');
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
+  const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
   const sessionRef = useRef(null);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
+  const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
+  const detailRequestIdRef = useRef(0);
+  const selectedHistoryRecordIdRef = useRef(null);
 
   const isActive =
     status === 'requesting-permission' || status === 'connecting' || status === 'listening' || status === 'reconnecting';
@@ -316,27 +321,55 @@ function App() {
     }
   }
 
-  function refreshHistoryRecords() {
-    const finalizedRecords = sessionRepositoryRef.current
-      .listSessionRecords()
-      .filter((record) => TERMINAL_HISTORY_STATUSES.has(record.status))
-      .sort((a, b) => historyRecordSortTime(b) - historyRecordSortTime(a));
+  async function refreshHistoryRecords() {
+    try {
+      const history = await sessionReadApiClientRef.current.listSessionHistory();
+      const finalizedRecords = history
+        .filter((record) => TERMINAL_HISTORY_STATUSES.has(record.status))
+        .sort((a, b) => historyRecordSortTime(b) - historyRecordSortTime(a));
 
-    setHistoryRecords(finalizedRecords);
+      setHistoryRecords(finalizedRecords);
+    } catch {
+      setError('Session history is unavailable.');
+    }
   }
 
-  function openHistoryRecordDetail(id) {
+  async function openHistoryRecordDetail(id) {
     const record = historyRecords.find((historyRecord) => historyRecord.id === id);
 
     if (!record || !TERMINAL_HISTORY_STATUSES.has(record.status)) {
       return;
     }
 
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    selectedHistoryRecordIdRef.current = id;
     setSelectedHistoryRecordId(id);
+    setSelectedHistoryDetail(undefined);
+
+    try {
+      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+
+      if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
+        return;
+      }
+
+      setSelectedHistoryDetail(detail);
+    } catch {
+      if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
+        return;
+      }
+
+      setSelectedHistoryDetail(null);
+      setError('Session details are unavailable.');
+    }
   }
 
   function closeHistoryRecordDetail() {
+    detailRequestIdRef.current += 1;
+    selectedHistoryRecordIdRef.current = null;
     setSelectedHistoryRecordId(null);
+    setSelectedHistoryDetail(null);
   }
 
   function selectedInputDeviceSnapshot() {
@@ -382,8 +415,8 @@ function App() {
   });
   const exportUnavailableReason =
     exportFormat !== 'txt' && exportStream === 'both' ? 'SRT and VTT export one stream at a time.' : '';
-  const selectedHistoryDetail = selectedHistoryRecordId
-    ? sessionRepositoryRef.current.getSessionRecord(selectedHistoryRecordId)
+  const selectedHistoryRecord = selectedHistoryRecordId
+    ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
 
   return (
@@ -503,6 +536,7 @@ function App() {
         records={historyRecords}
         selectedRecordId={selectedHistoryRecordId}
         selectedDetail={selectedHistoryDetail}
+        selectedRecord={selectedHistoryRecord}
         onViewDetails={openHistoryRecordDetail}
         onCloseDetails={closeHistoryRecordDetail}
       />
@@ -527,7 +561,7 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
-function HistoryPanel({ records, selectedRecordId, selectedDetail, onViewDetails, onCloseDetails }) {
+function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails }) {
   return (
     <section className="history-panel" aria-labelledby="history-title">
       <div className="history-header">
@@ -569,7 +603,9 @@ function HistoryPanel({ records, selectedRecordId, selectedDetail, onViewDetails
                 <p className="history-summary">{transcriptSummaryLabel(record.transcriptSummary)}</p>
                 {shouldShowFailureReason(record) ? <p className="history-reason">Reason: {record.failureReason}</p> : null}
               </article>
-              {selectedRecordId === record.id ? <SessionDetail detail={selectedDetail} onClose={onCloseDetails} /> : null}
+              {selectedRecordId === record.id ? (
+                <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onClose={onCloseDetails} />
+              ) : null}
             </li>
           ))}
         </ol>
@@ -578,17 +614,31 @@ function HistoryPanel({ records, selectedRecordId, selectedDetail, onViewDetails
   );
 }
 
-function SessionDetail({ detail, onClose }) {
+function SessionDetail({ detail, historyRecord, onClose }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
-  const sessionRecordId = detail?.sessionRecord?.id;
+  const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
     setSavedExportFormat('txt');
     setSavedExportStream('translation');
     setSavedExportError('');
   }, [sessionRecordId]);
+
+  if (detail === undefined) {
+    return (
+      <section className="session-detail" aria-label="Session details">
+        <div className="session-detail-header">
+          <h3>Loading session details</h3>
+          <button className="button detail-button" type="button" onClick={onClose}>
+            Close details
+          </button>
+        </div>
+        <p className="history-empty">Loading saved session...</p>
+      </section>
+    );
+  }
 
   if (!detail) {
     return (
@@ -604,15 +654,16 @@ function SessionDetail({ detail, onClose }) {
     );
   }
 
-  const { sessionRecord, transcriptItems } = detail;
-  const sourceItems = finalTranscriptItemsForStream(transcriptItems, 'source');
-  const translationItems = finalTranscriptItemsForStream(transcriptItems, 'translation');
+  const sessionRecord = sessionRecordForDetailDTO(detail, historyRecord);
+  const sourceItems = finalTranscriptItemsForStream(detail.sourceTranscript?.items, 'source');
+  const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
   const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
-  const canDownloadSavedTranscript = canExportSavedSession(detail, {
+  const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
+  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream
   });
-  const savedExportUnavailableReason = savedSessionExportUnavailableReason(detail, {
+  const savedExportUnavailableReason = savedSessionExportUnavailableReason(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream
   });
@@ -621,11 +672,11 @@ function SessionDetail({ detail, onClose }) {
     setSavedExportError('');
 
     try {
-      const content = formatSavedSessionExport(detail, {
+      const content = formatSavedSessionExport(exportDetail, {
         format: savedExportFormat,
         stream: savedExportStream
       });
-      const fileName = buildSavedSessionFileName(sessionRecord, {
+      const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
         format: savedExportFormat,
         stream: savedExportStream
       });
@@ -795,6 +846,24 @@ function finalTranscriptItemsForStream(items = [], stream) {
   return items
     .filter((item) => item.stream === stream && item.status === 'final')
     .sort((a, b) => (a.sequence || 0) - (b.sequence || 0));
+}
+
+function sessionRecordForDetailDTO(detail, historyRecord) {
+  const session = detail?.session || {};
+  const selectedTranslationOutput = detail?.selectedTranslationOutput || {};
+
+  return {
+    ...session,
+    targetLanguageCode: historyRecord?.targetLanguageCode || selectedTranslationOutput.targetLanguageCode || null,
+    targetLanguageLabel: historyRecord?.targetLanguageLabel || selectedTranslationOutput.targetLanguageLabel || null
+  };
+}
+
+function exportDetailForSessionDetailDTO(detail, historyRecord) {
+  return {
+    sessionRecord: sessionRecordForDetailDTO(detail, historyRecord),
+    transcriptItems: [...(detail?.sourceTranscript?.items || []), ...(detail?.selectedTranslationOutput?.items || [])]
+  };
 }
 
 function savedSessionExportUnavailableReason(detail, options) {

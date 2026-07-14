@@ -1,6 +1,7 @@
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationDomainEventPublisherAdapter } from '../src/infrastructure/translationDomainEventPublisherAdapter.js';
+import { createTranslationDomainEventSubscriber } from '../src/infrastructure/translationDomainEventSubscriber.js';
 import { createInMemoryDomainEventBus } from '../src/infrastructure/inMemoryDomainEventBus.js';
 import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
@@ -13,6 +14,7 @@ export function createApplicationDependencies(options = {}) {
     requestHandlerFactory,
     translationRepository,
     domainEventPublisher,
+    translationDomainEventHandlers,
     translationCommandServiceFactory = createDefaultTranslationCommandService,
     translationCommandControllerFactory = createDefaultTranslationCommandController,
     ...sessionReadOptions
@@ -23,6 +25,7 @@ export function createApplicationDependencies(options = {}) {
       ? translationRepository
       : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
     domainEventPublisher,
+    translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory
   });
@@ -62,14 +65,18 @@ export function createSessionReadDependencies({ sessionRepository, sessionReadRe
 export function createTranslationCommandDependencies({
   translationRepository,
   domainEventPublisher,
+  translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
   assertFactory(translationCommandControllerFactory, 'translationCommandControllerFactory');
 
-  const resolvedDomainEventPublisher =
-    domainEventPublisher || createTranslationDomainEventPublisherAdapter({ eventBus: createInMemoryDomainEventBus() });
+  const translationDomainEventInfrastructure = createTranslationDomainEventInfrastructure({
+    domainEventPublisher,
+    translationDomainEventHandlers
+  });
+  const resolvedDomainEventPublisher = translationDomainEventInfrastructure.domainEventPublisher;
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher
@@ -82,7 +89,23 @@ export function createTranslationCommandDependencies({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationCommandService,
-    translationCommandController
+    translationCommandController,
+    unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents
+  };
+}
+
+function createTranslationDomainEventInfrastructure({ domainEventPublisher, translationDomainEventHandlers } = {}) {
+  const eventBus = createInMemoryDomainEventBus();
+  const resolvedDomainEventPublisher = domainEventPublisher || createTranslationDomainEventPublisherAdapter({ eventBus });
+  const domainEventSubscriber = createTranslationDomainEventSubscriber({
+    eventBus,
+    handlers: translationDomainEventHandlers || {}
+  });
+  const unsubscribeTranslationDomainEvents = domainEventSubscriber.subscribe();
+
+  return {
+    domainEventPublisher: resolvedDomainEventPublisher,
+    unsubscribeTranslationDomainEvents
   };
 }
 

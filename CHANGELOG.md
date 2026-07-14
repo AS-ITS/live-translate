@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Phase 2B-4 WP7 Translation Domain Event infrastructure composition in the production application dependency graph.
+
 ## Phase 2A Foundation Completed
 
 Phase 2A closes the foundation milestone for Live Translate. The core realtime translation workflow, transcript lifecycle, session history, saved-session export, and the first connection resilience slice are now documented as complete for the Phase 2 foundation.

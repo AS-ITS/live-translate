@@ -4,6 +4,11 @@
 
 ### Added
 
+- Phase 2C WP2 Saved Transcript Translation Provider Port: added a
+  provider-neutral saved-transcript translation application port and
+  deterministic fake adapter supporting configured success, rejected failure,
+  synchronous throw, and deferred completion without real provider or network
+  integration.
 - Phase 2C WP1 Translation Persistence Foundation: repository queries for
   requests by session, executions by request, and outputs by session/request
   while preserving in-memory instance isolation and multiple output versions.

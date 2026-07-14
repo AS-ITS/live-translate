@@ -10,7 +10,7 @@ export function createTranslationRequestCreatedEvent(input = undefined) {
 
   return createTranslationEvent(TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, {
     occurredAt,
-    payload: { request: deepClone(request) }
+    payload: { request }
   });
 }
 
@@ -19,7 +19,7 @@ export function createTranslationExecutionCreatedEvent(input = undefined) {
 
   return createTranslationEvent(TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED, {
     occurredAt,
-    payload: { execution: deepClone(execution) }
+    payload: { execution }
   });
 }
 
@@ -28,7 +28,7 @@ export function createTranslationExecutionUpdatedEvent(input = undefined) {
 
   return createTranslationEvent(TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, {
     occurredAt,
-    payload: { execution: deepClone(execution) }
+    payload: { execution }
   });
 }
 
@@ -37,15 +37,15 @@ export function createTranslationOutputCreatedEvent(input = undefined) {
 
   return createTranslationEvent(TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, {
     occurredAt,
-    payload: { output: deepClone(output) }
+    payload: { output }
   });
 }
 
 function createTranslationEvent(type, { occurredAt, payload }) {
-  return deepFreeze({
+  return Object.freeze({
     type,
     occurredAt,
-    payload
+    payload: Object.freeze(payload)
   });
 }
 
@@ -93,38 +93,6 @@ function assertTimestamp(value, field) {
   }
 
   return value;
-}
-
-function deepClone(value) {
-  if (value === null || typeof value !== 'object') {
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(deepClone);
-  }
-
-  if (!isRecord(value)) {
-    throw new TypeError('nested event values must be objects, arrays, or primitives');
-  }
-
-  const copy = {};
-  for (const [key, nestedValue] of Object.entries(value)) {
-    copy[key] = deepClone(nestedValue);
-  }
-  return copy;
-}
-
-function deepFreeze(value) {
-  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) {
-    return value;
-  }
-
-  for (const nestedValue of Object.values(value)) {
-    deepFreeze(nestedValue);
-  }
-
-  return Object.freeze(value);
 }
 
 function isRecord(value) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createTranslationCommandService } from '../../src/application/translationCommandService.js';
+import { createTranslationCommandService as createRawTranslationCommandService } from '../../src/application/translationCommandService.js';
 import {
   TranslationExecution,
   TranslationOutput,
@@ -14,6 +14,13 @@ const SERVICE_METHODS = Object.freeze([
   'updateTranslationExecution',
   'createTranslationOutput'
 ]);
+
+function createTranslationCommandService(options = {}) {
+  return createRawTranslationCommandService({
+    domainEventPublisher: domainEventPublisher(),
+    ...options
+  });
+}
 
 test('factory throws TypeError when translationRepository is missing', () => {
   assert.throws(() => createTranslationCommandService(), TypeError);
@@ -29,6 +36,27 @@ test('factory throws TypeError when any required repository method is missing', 
       new RegExp(`translationRepository\\.${missingMethod}`)
     );
   }
+});
+
+test('factory throws TypeError when domainEventPublisher publish contract is missing', () => {
+  const repository = translationRepository();
+
+  assert.throws(
+    () => createRawTranslationCommandService({ translationRepository: repository }),
+    /domainEventPublisher is required/
+  );
+  assert.throws(
+    () => createRawTranslationCommandService({ translationRepository: repository, domainEventPublisher: null }),
+    /domainEventPublisher is required/
+  );
+  assert.throws(
+    () => createRawTranslationCommandService({ translationRepository: repository, domainEventPublisher: {} }),
+    /domainEventPublisher\.publish must be a function/
+  );
+  assert.throws(
+    () => createRawTranslationCommandService({ translationRepository: repository, domainEventPublisher: { publish: true } }),
+    /domainEventPublisher\.publish must be a function/
+  );
 });
 
 test('service object is frozen and only exposes command methods', () => {
@@ -387,26 +415,25 @@ test('createTranslationOutput does not swallow domain validation errors', () => 
 
 test('create methods preserve sync and async repository behavior', async () => {
   const requestResult = { id: 'sync-request-result' };
-  const executionResult = Promise.resolve({ id: 'async-execution-result' });
-  const outputResult = Promise.resolve({ id: 'async-output-result' });
+  const executionResult = { id: 'async-execution-result' };
+  const outputResult = { id: 'async-output-result' };
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
       createTranslationRequest() {
         return requestResult;
       },
       createTranslationExecution() {
-        return executionResult;
+        return Promise.resolve(executionResult);
       },
       createTranslationOutput() {
-        return outputResult;
+        return Promise.resolve(outputResult);
       }
     })
   });
 
   assert.strictEqual(service.createTranslationRequest(requestPayload()), requestResult);
-  assert.strictEqual(service.createTranslationExecution(executionPayload()), executionResult);
-  assert.strictEqual(await service.createTranslationExecution(executionPayload()), await executionResult);
-  assert.strictEqual(service.createTranslationOutput(outputPayload()), outputResult);
+  assert.strictEqual(await service.createTranslationExecution(executionPayload()), executionResult);
+  assert.strictEqual(await service.createTranslationOutput(outputPayload()), outputResult);
 });
 
 function runTransition(execution, transitionPayload) {
@@ -477,6 +504,16 @@ function translationRepository(overrides = {}) {
       overrides.getTranslationOutput ||
       function getTranslationOutput() {
         return null;
+      }
+  };
+}
+
+function domainEventPublisher(overrides = {}) {
+  return {
+    publish:
+      overrides.publish ||
+      function publish() {
+        return undefined;
       }
   };
 }

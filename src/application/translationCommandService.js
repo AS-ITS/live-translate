@@ -1,33 +1,93 @@
-import { TranslationExecution, TranslationOutput, TranslationRequest } from '../domain/translation/index.js';
+import {
+  TranslationExecution,
+  TranslationOutput,
+  TranslationRequest,
+  createTranslationExecutionCreatedEvent,
+  createTranslationExecutionUpdatedEvent,
+  createTranslationOutputCreatedEvent,
+  createTranslationRequestCreatedEvent
+} from '../domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
 
 const EXECUTION_TRANSITIONS = Object.freeze(['start', 'complete', 'fail', 'cancel']);
 
-export function createTranslationCommandService({ translationRepository } = {}) {
-  assertTranslationRepository(translationRepository);
+export function createTranslationCommandService({ translationRepository, repository, domainEventPublisher } = {}) {
+  const resolvedTranslationRepository = translationRepository ?? repository;
+
+  assertTranslationRepository(resolvedTranslationRepository);
+  assertDomainEventPublisher(domainEventPublisher);
 
   return Object.freeze({
     createTranslationRequest(payload) {
-      return translationRepository.createTranslationRequest(new TranslationRequest(payload));
+      const request = new TranslationRequest(payload);
+      const repositoryResult = resolvedTranslationRepository.createTranslationRequest(request);
+
+      return publishAfterRepositoryResult(
+        repositoryResult,
+        () =>
+          createTranslationRequestCreatedEvent({
+            occurredAt: request.createdAt,
+            request
+          }),
+        domainEventPublisher
+      );
     },
 
     createTranslationExecution(payload) {
-      return translationRepository.createTranslationExecution(new TranslationExecution(payload));
+      const execution = new TranslationExecution(payload);
+      const repositoryResult = resolvedTranslationRepository.createTranslationExecution(execution);
+
+      return publishAfterRepositoryResult(
+        repositoryResult,
+        () =>
+          createTranslationExecutionCreatedEvent({
+            occurredAt: execution.startedAt,
+            execution
+          }),
+        domainEventPublisher
+      );
     },
 
     updateTranslationExecution(payload = {}) {
       const { executionId, transition, ...transitionPayload } = payload;
-      const result = translationRepository.getTranslationExecution(executionId);
+      const result = resolvedTranslationRepository.getTranslationExecution(executionId);
 
       if (isPromiseLike(result)) {
-        return result.then((execution) => updateExecution(translationRepository, executionId, execution, transition, transitionPayload));
+        return result.then((execution) =>
+          updateExecution(
+            resolvedTranslationRepository,
+            domainEventPublisher,
+            executionId,
+            execution,
+            transition,
+            transitionPayload
+          )
+        );
       }
 
-      return updateExecution(translationRepository, executionId, result, transition, transitionPayload);
+      return updateExecution(
+        resolvedTranslationRepository,
+        domainEventPublisher,
+        executionId,
+        result,
+        transition,
+        transitionPayload
+      );
     },
 
     createTranslationOutput(payload) {
-      return translationRepository.createTranslationOutput(new TranslationOutput(payload));
+      const output = new TranslationOutput(payload);
+      const repositoryResult = resolvedTranslationRepository.createTranslationOutput(output);
+
+      return publishAfterRepositoryResult(
+        repositoryResult,
+        () =>
+          createTranslationOutputCreatedEvent({
+            occurredAt: output.createdAt,
+            output
+          }),
+        domainEventPublisher
+      );
     }
   });
 }
@@ -48,13 +108,33 @@ function assertMethod(target, methodName) {
   }
 }
 
-function updateExecution(translationRepository, executionId, execution, transition, transitionPayload) {
+function assertDomainEventPublisher(domainEventPublisher) {
+  if (!domainEventPublisher || typeof domainEventPublisher !== 'object') {
+    throw new TypeError('domainEventPublisher is required.');
+  }
+
+  if (typeof domainEventPublisher.publish !== 'function') {
+    throw new TypeError('domainEventPublisher.publish must be a function.');
+  }
+}
+
+function updateExecution(translationRepository, domainEventPublisher, executionId, execution, transition, transitionPayload) {
   if (execution === null || execution === undefined) {
     throw new Error(`TranslationExecution ${executionId} was not found`);
   }
 
   const updatedExecution = applyExecutionTransition(execution, transition, transitionPayload);
-  return translationRepository.updateTranslationExecution(updatedExecution);
+  const repositoryResult = translationRepository.updateTranslationExecution(updatedExecution);
+
+  return publishAfterRepositoryResult(
+    repositoryResult,
+    () =>
+      createTranslationExecutionUpdatedEvent({
+        occurredAt: executionTransitionOccurredAt(transition, updatedExecution),
+        execution: updatedExecution
+      }),
+    domainEventPublisher
+  );
 }
 
 function applyExecutionTransition(execution, transition, payload) {
@@ -78,4 +158,37 @@ function applyExecutionTransition(execution, transition, payload) {
 
 function isPromiseLike(value) {
   return value !== null && typeof value === 'object' && typeof value.then === 'function';
+}
+
+function publishAfterRepositoryResult(repositoryResult, createEvent, domainEventPublisher) {
+  if (isPromiseLike(repositoryResult)) {
+    return repositoryResult.then((resolvedRepositoryResult) =>
+      publishEventAndReturnResult(domainEventPublisher, createEvent(), resolvedRepositoryResult)
+    );
+  }
+
+  return publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
+}
+
+function publishEventAndReturnResult(domainEventPublisher, event, repositoryResult) {
+  const publicationResult = domainEventPublisher.publish(event);
+
+  if (isPromiseLike(publicationResult)) {
+    return publicationResult.then(() => repositoryResult);
+  }
+
+  return repositoryResult;
+}
+
+function executionTransitionOccurredAt(transition, execution) {
+  switch (transition) {
+    case 'start':
+      return execution.startedAt;
+    case 'complete':
+    case 'fail':
+    case 'cancel':
+      return execution.completedAt;
+    default:
+      throw new TypeError(`Unsupported TranslationExecution transition: ${transition}`);
+  }
 }

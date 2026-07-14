@@ -59,7 +59,8 @@ test('each factory returns the expected event type and payload shape', () => {
     assert.deepEqual(Object.keys(event), ['type', 'occurredAt', 'payload']);
     assert.equal(event.type, type);
     assert.equal(event.occurredAt, 'occurred-at');
-    assert.deepEqual(event.payload, { [aggregateField]: toPlainObject(aggregate) });
+    assert.deepEqual(event.payload, { [aggregateField]: aggregate });
+    assert.strictEqual(event.payload[aggregateField], aggregate);
   }
 });
 
@@ -86,7 +87,7 @@ test('aggregate payload content is preserved without adding domain fields', () =
   });
   const event = createTranslationRequestCreatedEvent({ request, occurredAt: 1000 });
 
-  assert.deepEqual(event.payload.request, toPlainObject(request));
+  assert.strictEqual(event.payload.request, request);
   assert.deepEqual(Object.keys(event.payload.request), [
     'id',
     'sessionId',
@@ -97,7 +98,7 @@ test('aggregate payload content is preserved without adding domain fields', () =
   ]);
 });
 
-test('events, payloads, aggregates, nested objects, and arrays are deeply frozen', () => {
+test('events and payload containers are frozen while aggregate references are preserved', () => {
   const request = createRequest({
     sourceTranscriptSnapshot: {
       revisionId: 'source-revision-1',
@@ -108,6 +109,7 @@ test('events, payloads, aggregates, nested objects, and arrays are deeply frozen
 
   assert.equal(Object.isFrozen(event), true);
   assert.equal(Object.isFrozen(event.payload), true);
+  assert.strictEqual(event.payload.request, request);
   assert.equal(Object.isFrozen(event.payload.request), true);
   assert.equal(Object.isFrozen(event.payload.request.sourceTranscriptSnapshot), true);
   assert.equal(Object.isFrozen(event.payload.request.sourceTranscriptSnapshot.items), true);
@@ -115,7 +117,7 @@ test('events, payloads, aggregates, nested objects, and arrays are deeply frozen
   assert.equal(Object.isFrozen(event.payload.request.sourceTranscriptSnapshot.items[0].tokens), true);
 });
 
-test('event payload is a defensive copy of nested objects and arrays', () => {
+test('event payload preserves aggregate object identity', () => {
   const request = {
     id: 'request-1',
     nested: {
@@ -124,15 +126,15 @@ test('event payload is a defensive copy of nested objects and arrays', () => {
   };
   const event = createTranslationRequestCreatedEvent({ request, occurredAt: 1000 });
 
-  assert.notEqual(event.payload.request, request);
-  assert.notEqual(event.payload.request.nested, request.nested);
-  assert.notEqual(event.payload.request.nested.items, request.nested.items);
-  assert.notEqual(event.payload.request.nested.items[0], request.nested.items[0]);
-  assert.notEqual(event.payload.request.nested.items[0].tags, request.nested.items[0].tags);
+  assert.strictEqual(event.payload.request, request);
+  assert.strictEqual(event.payload.request.nested, request.nested);
+  assert.strictEqual(event.payload.request.nested.items, request.nested.items);
+  assert.strictEqual(event.payload.request.nested.items[0], request.nested.items[0]);
+  assert.strictEqual(event.payload.request.nested.items[0].tags, request.nested.items[0].tags);
   assert.deepEqual(event.payload.request, request);
 });
 
-test('mutating the original input after event creation does not affect the event', () => {
+test('mutating a mutable aggregate reference after event creation is reflected in the event payload', () => {
   const request = {
     id: 'request-1',
     nested: {
@@ -146,10 +148,11 @@ test('mutating the original input after event creation does not affect the event
   request.nested.items[0].tags.push('changed');
   request.nested.items.push({ text: 'later' });
 
+  assert.strictEqual(event.payload.request, request);
   assert.deepEqual(event.payload.request, {
-    id: 'request-1',
+    id: 'changed',
     nested: {
-      items: [{ text: 'hello', tags: ['source'] }]
+      items: [{ text: 'changed', tags: ['source', 'changed'] }, { text: 'later' }]
     }
   });
 });
@@ -188,6 +191,7 @@ test('factory does not mutate the original input object', () => {
   assert.deepEqual(input, before);
   assert.equal(Object.isFrozen(input), false);
   assert.equal(Object.isFrozen(input.request), false);
+  assert.equal(Object.isFrozen(input.request.nested), false);
 });
 
 for (const { name, factory, aggregateField, createAggregate } of FACTORIES) {

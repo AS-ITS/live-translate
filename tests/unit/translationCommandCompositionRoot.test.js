@@ -8,6 +8,7 @@ import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/tra
 
 test('application dependencies assemble translation command graph with injected repository', () => {
   const translationRepository = repository();
+  const domainEventPublisher = publisher();
   const translationCommandService = service();
   const translationCommandController = controller();
   const requestHandlerResult = function requestHandler() {};
@@ -16,6 +17,7 @@ test('application dependencies assemble translation command graph with injected 
   const dependencies = createApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository,
+    domainEventPublisher,
     translationCommandServiceFactory(options) {
       calls.push(['serviceFactory', options]);
       return translationCommandService;
@@ -31,11 +33,13 @@ test('application dependencies assemble translation command graph with injected 
   });
 
   assert.strictEqual(dependencies.translationRepository, translationRepository);
+  assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
   assert.strictEqual(dependencies.requestHandler, requestHandlerResult);
   assert.strictEqual(calls[0][1].translationRepository, translationRepository);
-  assert.deepEqual(Object.keys(calls[0][1]), ['translationRepository']);
+  assert.strictEqual(calls[0][1].domainEventPublisher, domainEventPublisher);
+  assert.deepEqual(Object.keys(calls[0][1]), ['translationRepository', 'domainEventPublisher']);
   assert.strictEqual(calls[1][1].translationCommandService, translationCommandService);
   assert.deepEqual(Object.keys(calls[1][1]), ['translationCommandService']);
   assert.strictEqual(calls[2][1].translationCommandController, translationCommandController);
@@ -45,15 +49,19 @@ test('application dependencies assemble translation command graph with injected 
 
 test('translation command dependencies use the service factory result to build the controller', () => {
   const translationRepository = repository();
+  const domainEventPublisher = publisher();
   const translationCommandService = service();
   const translationCommandController = controller();
   let injectedRepository;
+  let injectedPublisher;
   let injectedService;
 
   const dependencies = createTranslationCommandDependencies({
     translationRepository,
-    translationCommandServiceFactory({ translationRepository: nextRepository }) {
+    domainEventPublisher,
+    translationCommandServiceFactory({ translationRepository: nextRepository, domainEventPublisher: nextPublisher }) {
       injectedRepository = nextRepository;
+      injectedPublisher = nextPublisher;
       return translationCommandService;
     },
     translationCommandControllerFactory({ translationCommandService: nextService }) {
@@ -63,9 +71,31 @@ test('translation command dependencies use the service factory result to build t
   });
 
   assert.strictEqual(injectedRepository, translationRepository);
+  assert.strictEqual(injectedPublisher, domainEventPublisher);
   assert.strictEqual(injectedService, translationCommandService);
+  assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
+});
+
+test('translation command dependencies create one usable publisher instance by default', () => {
+  const translationRepository = repository();
+  const translationCommandService = service();
+  let injectedPublisher;
+
+  const dependencies = createTranslationCommandDependencies({
+    translationRepository,
+    translationCommandServiceFactory({ domainEventPublisher: nextPublisher }) {
+      injectedPublisher = nextPublisher;
+      return translationCommandService;
+    },
+    translationCommandControllerFactory() {
+      return controller();
+    }
+  });
+
+  assert.equal(typeof dependencies.domainEventPublisher.publish, 'function');
+  assert.strictEqual(injectedPublisher, dependencies.domainEventPublisher);
 });
 
 test('application dependencies preserve existing session read controller wiring', () => {
@@ -204,6 +234,16 @@ function service(overrides = {}) {
       overrides.createTranslationOutput ||
       function createTranslationOutput(input) {
         return input;
+      }
+  };
+}
+
+function publisher(overrides = {}) {
+  return {
+    publish:
+      overrides.publish ||
+      function publish() {
+        return undefined;
       }
   };
 }

@@ -30,7 +30,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
@@ -187,10 +187,17 @@ const { requestHandler: defaultRequestHandler } = createApplicationDependencies(
   requestHandlerFactory: createRequestHandler
 });
 
-export function createRequestHandler({ sessionReadController } = {}) {
+export function createRequestHandler(options = {}) {
+  const { sessionReadController, translationCommandController } = options;
+
+  if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
+    assertTranslationCommandController(translationCommandController);
+  }
+
   return async function handleRequestWithDependencies(req, res) {
     return handleRequestWithSessionReadController(req, res, {
-      sessionReadController
+      sessionReadController,
+      translationCommandController
     });
   };
 }
@@ -199,7 +206,7 @@ export async function handleRequest(req, res) {
   return defaultRequestHandler(req, res);
 }
 
-async function handleRequestWithSessionReadController(req, res, { sessionReadController } = {}) {
+async function handleRequestWithSessionReadController(req, res, { sessionReadController, translationCommandController } = {}) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -285,6 +292,35 @@ async function handleRequestWithSessionReadController(req, res, { sessionReadCon
     return;
   }
 
+  if (isTranslationCommandRoute(req.method, path)) {
+    try {
+      assertTranslationCommandController(translationCommandController);
+
+      const body = await readJson(req);
+      const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
+
+      statusCode = status;
+      sendJson(res, statusCode, await result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
+    }
+    return;
+  }
+
   if (req.method !== 'POST' || path !== '/api/live-token') {
     statusCode = 404;
     sendJson(res, statusCode, errorPayload('not_found', requestId), requestId);
@@ -332,6 +368,75 @@ async function handleRequestWithSessionReadController(req, res, { sessionReadCon
       targetLanguageCode
     });
   }
+}
+
+function assertTranslationCommandController(translationCommandController) {
+  if (!translationCommandController) {
+    throw new TypeError('translationCommandController is required.');
+  }
+
+  assertMethod(translationCommandController, 'createTranslationRequest');
+  assertMethod(translationCommandController, 'createTranslationExecution');
+  assertMethod(translationCommandController, 'updateTranslationExecution');
+  assertMethod(translationCommandController, 'createTranslationOutput');
+}
+
+function assertMethod(target, methodName) {
+  if (typeof target[methodName] !== 'function') {
+    throw new TypeError(`translationCommandController.${methodName} must be a function.`);
+  }
+}
+
+function isTranslationCommandRoute(method, path) {
+  return (
+    (method === 'POST' && path === '/api/translation-requests') ||
+    (method === 'POST' && path === '/api/translation-executions') ||
+    (method === 'PATCH' &&
+      path.startsWith('/api/translation-executions/') &&
+      path.length > '/api/translation-executions/'.length) ||
+    (method === 'POST' && path === '/api/translation-outputs')
+  );
+}
+
+function handleTranslationCommand(method, path, body, translationCommandController) {
+  if (method === 'POST' && path === '/api/translation-requests') {
+    return {
+      status: 201,
+      result: translationCommandController.createTranslationRequest(body)
+    };
+  }
+
+  if (method === 'POST' && path === '/api/translation-executions') {
+    return {
+      status: 201,
+      result: translationCommandController.createTranslationExecution(body)
+    };
+  }
+
+  if (
+    method === 'PATCH' &&
+    path.startsWith('/api/translation-executions/') &&
+    path.length > '/api/translation-executions/'.length
+  ) {
+    const executionId = decodeURIComponent(path.slice('/api/translation-executions/'.length));
+    return {
+      status: 200,
+      result: translationCommandController.updateTranslationExecution({
+        ...body,
+        id: executionId,
+        executionId
+      })
+    };
+  }
+
+  if (method === 'POST' && path === '/api/translation-outputs') {
+    return {
+      status: 201,
+      result: translationCommandController.createTranslationOutput(body)
+    };
+  }
+
+  throw createHttpError('not_found');
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

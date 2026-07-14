@@ -1,0 +1,261 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createTranslationCommandLifecycle } from '../../src/lib/translationCommandLifecycle.js';
+
+test('records session start through translation request, execution creation, and execution start update', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+
+  await lifecycle.recordSessionStarted(record);
+
+  assert.deepEqual(calls, [
+    [
+      'createTranslationRequest',
+      {
+        id: 'legacy-request:session-1:ja',
+        sessionId: 'session-1',
+        sourceTranscriptRevisionId: 'source-revision:session-1:final',
+        targetLanguageCode: 'ja',
+        sourceTranscriptSnapshot: null,
+        createdAt: 900
+      }
+    ],
+    [
+      'createTranslationExecution',
+      {
+        id: 'legacy-execution:session-1:ja',
+        translationRequestId: 'legacy-request:session-1:ja',
+        startedAt: 900
+      }
+    ],
+    [
+      'updateTranslationExecution',
+      'legacy-execution:session-1:ja',
+      {
+        transition: 'start',
+        startedAt: 900
+      }
+    ]
+  ]);
+});
+
+test('records translation output and completes execution after dependent commands finish', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+  const item = translationItem();
+
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordFinalTranscriptItems(record, [item]);
+  await lifecycle.recordSessionFinalized({ ...record, status: 'stopped', endedAt: 1200 });
+
+  assert.deepEqual(calls.map((call) => call[0]), [
+    'createTranslationRequest',
+    'createTranslationExecution',
+    'updateTranslationExecution',
+    'createTranslationOutput',
+    'updateTranslationExecution'
+  ]);
+  assert.deepEqual(calls[3], [
+    'createTranslationOutput',
+    {
+      id: 'legacy-output:session-1:ja:translation-1',
+      executionId: 'legacy-execution:session-1:ja',
+      sequence: 1,
+      translatedText: 'こんにちは',
+      targetLanguageCode: 'ja',
+      providerMetadata: null,
+      createdAt: 1100
+    }
+  ]);
+  assert.deepEqual(calls[4], [
+    'updateTranslationExecution',
+    'legacy-execution:session-1:ja',
+    {
+      transition: 'complete',
+      completedAt: 1200
+    }
+  ]);
+});
+
+test('records failed terminal session as execution failure without output', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordSessionFinalized({
+    ...record,
+    status: 'failed',
+    endedAt: 1200,
+    failureReason: 'unexpected_close',
+    failureCategory: 'provider'
+  });
+
+  assert.deepEqual(calls.at(-1), [
+    'updateTranslationExecution',
+    'legacy-execution:session-1:ja',
+    {
+      transition: 'fail',
+      failureInfo: {
+        reason: 'unexpected_close',
+        category: 'provider'
+      },
+      completedAt: 1200
+    }
+  ]);
+});
+
+test('does not mutate command inputs', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord({ nested: { preserved: true } });
+  const item = translationItem({ nested: { preserved: true } });
+  const beforeRecord = JSON.stringify(record);
+  const beforeItem = JSON.stringify(item);
+
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordFinalTranscriptItems(record, [item]);
+
+  assert.equal(JSON.stringify(record), beforeRecord);
+  assert.equal(JSON.stringify(item), beforeItem);
+});
+
+test('uses injected client without touching global fetch', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => {
+    throw new Error('global fetch should not be used');
+  };
+
+  try {
+    const lifecycle = createTranslationCommandLifecycle({
+      translationCommandApiClient: fakeClient(calls),
+      now: () => 1000
+    });
+
+    await lifecycle.recordSessionStarted(sessionRecord());
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 3);
+});
+
+test('client rejection is reported and resolved without skipping caller cleanup', async () => {
+  const errors = [];
+  let cleanupCalled = false;
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient([], {
+      createTranslationRequest() {
+        return Promise.reject(new Error('persistence unavailable'));
+      }
+    }),
+    onError(error, context) {
+      errors.push([error.message, context.operation]);
+    },
+    now: () => 1000
+  });
+
+  await lifecycle.recordSessionStarted(sessionRecord());
+  cleanupCalled = true;
+
+  assert.equal(cleanupCalled, true);
+  assert.deepEqual(errors, [['persistence unavailable', 'startTranslationExecution']]);
+});
+
+test('does not duplicate lifecycle operations', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+  const item = translationItem();
+  const finalized = { ...record, status: 'stopped', endedAt: 1200 };
+
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordFinalTranscriptItems(record, [item]);
+  await lifecycle.recordFinalTranscriptItems(record, [item]);
+  await lifecycle.recordSessionFinalized(finalized);
+  await lifecycle.recordSessionFinalized(finalized);
+
+  assert.equal(calls.filter((call) => call[0] === 'createTranslationRequest').length, 1);
+  assert.equal(calls.filter((call) => call[0] === 'createTranslationExecution').length, 1);
+  assert.equal(calls.filter((call) => call[0] === 'createTranslationOutput').length, 1);
+  assert.equal(
+    calls.filter((call) => call[0] === 'updateTranslationExecution' && call[2].transition === 'start').length,
+    1
+  );
+  assert.equal(
+    calls.filter((call) => call[0] === 'updateTranslationExecution' && call[2].transition === 'complete').length,
+    1
+  );
+});
+
+function fakeClient(calls, overrides = {}) {
+  return {
+    createTranslationRequest:
+      overrides.createTranslationRequest ||
+      async function createTranslationRequest(command) {
+        calls.push(['createTranslationRequest', command]);
+        return command;
+      },
+    createTranslationExecution:
+      overrides.createTranslationExecution ||
+      async function createTranslationExecution(command) {
+        calls.push(['createTranslationExecution', command]);
+        return command;
+      },
+    updateTranslationExecution:
+      overrides.updateTranslationExecution ||
+      async function updateTranslationExecution(executionId, command) {
+        calls.push(['updateTranslationExecution', executionId, command]);
+        return { executionId, ...command };
+      },
+    createTranslationOutput:
+      overrides.createTranslationOutput ||
+      async function createTranslationOutput(command) {
+        calls.push(['createTranslationOutput', command]);
+        return command;
+      }
+  };
+}
+
+function sessionRecord(overrides = {}) {
+  return {
+    id: 'session-1',
+    startedAt: 900,
+    createdAt: 900,
+    targetLanguageCode: 'ja',
+    targetLanguageLabel: 'Japanese',
+    ...overrides
+  };
+}
+
+function translationItem(overrides = {}) {
+  return {
+    id: 'translation-1',
+    stream: 'translation',
+    status: 'final',
+    text: 'こんにちは',
+    sequence: 1,
+    startedAt: 1000,
+    finalizedAt: 1100,
+    ...overrides
+  };
+}

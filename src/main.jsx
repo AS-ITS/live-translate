@@ -9,6 +9,8 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
+import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -56,6 +58,7 @@ function App() {
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
@@ -293,13 +296,23 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    void translationCommandLifecycle().recordSessionStarted(record);
     return record;
   }
 
   function applyTranscriptUpdate(update) {
     setTranscript((current) => {
       const next = applyTranscriptEvent(current, update);
-      appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordIdRef.current, current, next);
+      const activeSessionRecordId = activeSessionRecordIdRef.current;
+      const appended = appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordId, current, next);
+
+      if (appended.length > 0) {
+        const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
+        if (activeSessionRecord) {
+          void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
+        }
+      }
+
       return next;
     });
   }
@@ -313,6 +326,7 @@ function App() {
 
       if (finalized) {
         refreshHistoryRecords();
+        void translationCommandLifecycle().recordSessionFinalized(finalized);
       }
 
       return finalized;
@@ -332,6 +346,22 @@ function App() {
     } catch {
       setError('Session history is unavailable.');
     }
+  }
+
+  function translationCommandLifecycle() {
+    if (!translationCommandLifecycleRef.current) {
+      translationCommandLifecycleRef.current = createTranslationCommandLifecycle({
+        translationCommandApiClient: createTranslationCommandApiClient(),
+        onError: reportTranslationCommandError
+      });
+    }
+
+    return translationCommandLifecycleRef.current;
+  }
+
+  function reportTranslationCommandError(error) {
+    console.error('Translation command persistence failed.', error);
+    setError('Translation persistence is unavailable. Live translation can continue.');
   }
 
   async function openHistoryRecordDetail(id) {

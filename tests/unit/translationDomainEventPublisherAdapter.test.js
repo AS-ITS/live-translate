@@ -61,11 +61,11 @@ test('publish does not mutate event or payload', () => {
   const eventBus = eventBusStub();
   const adapter = createTranslationDomainEventPublisherAdapter({ eventBus });
   const event = createRequestCreatedEvent();
-  const before = structuredClone(event);
+  const before = toPlainObject(event);
 
   adapter.publish(event);
 
-  assert.deepEqual(event, before);
+  assert.deepEqual(toPlainObject(event), before);
   assert.equal(Object.isFrozen(event), true);
   assert.equal(Object.isFrozen(event.payload), true);
   assert.equal(Object.isFrozen(event.payload.request), true);
@@ -173,4 +173,16 @@ function createRequestCreatedEvent(overrides = {}) {
     }),
     occurredAt: 'occurred-at'
   });
+}
+
+function toPlainObject(value) {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(toPlainObject);
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [key, toPlainObject(nestedValue)]));
 }

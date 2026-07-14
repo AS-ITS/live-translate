@@ -49,7 +49,7 @@ test('publish throws a deterministic not implemented error for any input', () =>
 test('publish does not mutate a frozen WP1 domain event before throwing', () => {
   const publisher = createTranslationDomainEventPublisher();
   const event = createRequestCreatedEvent();
-  const before = structuredClone(event);
+  const before = toPlainObject(event);
 
   assert.equal(Object.isFrozen(event), true);
   assert.equal(Object.isFrozen(event.payload), true);
@@ -57,7 +57,7 @@ test('publish does not mutate a frozen WP1 domain event before throwing', () => 
 
   assert.throws(() => publisher.publish(event), NOT_IMPLEMENTED_ERROR);
 
-  assert.deepEqual(event, before);
+  assert.deepEqual(toPlainObject(event), before);
 });
 
 test('publisher does not store events or expose event collection APIs', () => {
@@ -101,4 +101,16 @@ function createRequestCreatedEvent(overrides = {}) {
     }),
     occurredAt: 'occurred-at'
   });
+}
+
+function toPlainObject(value) {
+  if (value === null || typeof value !== 'object') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(toPlainObject);
+  }
+
+  return Object.fromEntries(Object.entries(value).map(([key, nestedValue]) => [key, toPlainObject(nestedValue)]));
 }

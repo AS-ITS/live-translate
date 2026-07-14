@@ -1,6 +1,6 @@
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
-import { createTranslationRepository } from '../src/domain/translation/translationRepository.js';
+import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
 import { createSessionReadController } from './sessionReadController.js';
@@ -18,7 +18,7 @@ export function createApplicationDependencies(options = {}) {
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
       ? translationRepository
-      : createTranslationRepository(),
+      : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
     translationCommandServiceFactory,
     translationCommandControllerFactory
   });
@@ -37,7 +37,7 @@ export function createApplicationDependencies(options = {}) {
 }
 
 export function createSessionReadDependencies({ sessionRepository, sessionReadRepository } = {}) {
-  const resolvedSessionRepository = sessionRepository || (sessionReadRepository ? null : createMemorySessionRepository());
+  const resolvedSessionRepository = sessionRepository || createMemorySessionRepository();
   const resolvedSessionReadRepository =
     sessionReadRepository || createSessionReadRepository({ sessionRepository: resolvedSessionRepository });
   const sessionQueryService = createSessionQueryService({

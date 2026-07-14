@@ -4,6 +4,9 @@
 
 ### Added
 
+- Phase 2C WP1 Translation Persistence Foundation: repository queries for
+  requests by session, executions by request, and outputs by session/request
+  while preserving in-memory instance isolation and multiple output versions.
 - Phase 2B-4 WP9 Translation Domain Event end-to-end integration coverage for production composition routing, lifecycle, and failure propagation.
 - Phase 2B-4 WP8 Translation Domain Event handler factory with safe default no-op handlers.
 - Phase 2B-4 WP7 Translation Domain Event infrastructure composition in the production application dependency graph.

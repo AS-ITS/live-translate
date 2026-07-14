@@ -9,11 +9,15 @@ const EXPECTED_METHODS = [
   'createTranslationRequest',
   'getTranslationRequest',
   'updateTranslationRequest',
+  'listTranslationRequestsBySession',
   'createTranslationExecution',
   'getTranslationExecution',
   'updateTranslationExecution',
+  'listTranslationExecutionsByRequest',
   'createTranslationOutput',
   'listTranslationOutputsByExecution',
+  'listTranslationOutputsBySession',
+  'listTranslationOutputsByRequest',
   'getTranslationOutput'
 ];
 

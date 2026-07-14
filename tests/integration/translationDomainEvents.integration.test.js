@@ -433,6 +433,11 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
       return request;
     },
 
+    listTranslationRequestsBySession(sessionId) {
+      record('listTranslationRequestsBySession', [sessionId]);
+      return Array.from(requests.values()).filter((request) => request.sessionId === sessionId);
+    },
+
     createTranslationExecution(execution) {
       record('createTranslationExecution', [execution]);
       executionMap.set(execution.id, execution);
@@ -450,6 +455,11 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
       return execution;
     },
 
+    listTranslationExecutionsByRequest(requestId) {
+      record('listTranslationExecutionsByRequest', [requestId]);
+      return Array.from(executionMap.values()).filter((execution) => execution.translationRequestId === requestId);
+    },
+
     createTranslationOutput(output) {
       record('createTranslationOutput', [output]);
       outputs.set(output.id, output);
@@ -459,6 +469,33 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
     listTranslationOutputsByExecution(executionId) {
       record('listTranslationOutputsByExecution', [executionId]);
       return Array.from(outputs.values()).filter((output) => output.executionId === executionId);
+    },
+
+    listTranslationOutputsBySession(sessionId) {
+      record('listTranslationOutputsBySession', [sessionId]);
+      const requestIds = new Set(
+        Array.from(requests.values())
+          .filter((request) => request.sessionId === sessionId)
+          .map((request) => request.id)
+      );
+      const executionIds = new Set(
+        Array.from(executionMap.values())
+          .filter((execution) => requestIds.has(execution.translationRequestId))
+          .map((execution) => execution.id)
+      );
+
+      return Array.from(outputs.values()).filter((output) => executionIds.has(output.executionId));
+    },
+
+    listTranslationOutputsByRequest(requestId) {
+      record('listTranslationOutputsByRequest', [requestId]);
+      const executionIds = new Set(
+        Array.from(executionMap.values())
+          .filter((execution) => execution.translationRequestId === requestId)
+          .map((execution) => execution.id)
+      );
+
+      return Array.from(outputs.values()).filter((output) => executionIds.has(output.executionId));
     },
 
     getTranslationOutput(outputId) {

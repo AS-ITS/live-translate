@@ -71,6 +71,29 @@ test('creates, gets, and updates TranslationRequest without mutating input or un
   assert.equal(repository.getTranslationRequest('request-1').sourceTranscriptSnapshot.revisionId, 'source-revision-2');
 });
 
+test('lists only TranslationRequests for a session in deterministic insertion order', () => {
+  const repository = createTranslationRepositoryAdapter({
+    sessionRepository: legacySessionRepository({
+      sessions: [sessionRecord({ id: 'session-1' }), sessionRecord({ id: 'session-2' })]
+    })
+  });
+
+  repository.createTranslationRequest(requestPayload({ id: 'request-1', sessionId: 'session-1' }));
+  repository.createTranslationRequest(requestPayload({ id: 'request-2', sessionId: 'session-2' }));
+  repository.createTranslationRequest(requestPayload({ id: 'request-3', sessionId: 'session-1' }));
+
+  assert.deepEqual(
+    repository.listTranslationRequestsBySession('session-1').map((request) => request.id),
+    ['request-1', 'request-3']
+  );
+  assert.deepEqual(
+    repository.listTranslationRequestsBySession('session-2').map((request) => request.id),
+    ['request-2']
+  );
+  assert.deepEqual(repository.listTranslationRequestsBySession('missing-session'), []);
+  assert.throws(() => repository.listTranslationRequestsBySession(''), /sessionId must not be empty/);
+});
+
 test('request missing session, missing entity, duplicate, and conflicting identity behavior is deterministic', () => {
   const repository = createTranslationRepositoryAdapter({ sessionRepository: legacySessionRepository() });
 
@@ -117,6 +140,37 @@ test('creates, gets, and updates TranslationExecution while preserving lifecycle
     updated.failureInfo.nested.code = 'mutated';
   }, TypeError);
   assert.equal(repository.getTranslationExecution('execution-1').failureInfo.nested.code, 'x');
+});
+
+test('lists only TranslationExecutions for a request and keeps unrelated executions unchanged on update', () => {
+  const repository = createTranslationRepositoryAdapter({ sessionRepository: legacySessionRepository() });
+
+  repository.createTranslationRequest(requestPayload({ id: 'request-1' }));
+  repository.createTranslationRequest(requestPayload({ id: 'request-2' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-1', translationRequestId: 'request-1' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-2', translationRequestId: 'request-2' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-3', translationRequestId: 'request-1' }));
+
+  const updated = repository.updateTranslationExecution(
+    new TranslationExecution({
+      ...executionPayload({ id: 'execution-1', translationRequestId: 'request-1' }),
+      status: 'completed',
+      completedAt: '2026-07-14T01:04:00.000Z'
+    })
+  );
+
+  assert.equal(updated.status, 'completed');
+  assert.equal(repository.getTranslationExecution('execution-2').status, 'pending');
+  assert.deepEqual(
+    repository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.id),
+    ['execution-1', 'execution-3']
+  );
+  assert.deepEqual(
+    repository.listTranslationExecutionsByRequest('request-2').map((execution) => execution.id),
+    ['execution-2']
+  );
+  assert.deepEqual(repository.listTranslationExecutionsByRequest('missing-request'), []);
+  assert.throws(() => repository.listTranslationExecutionsByRequest(null), /requestId must be a string/);
 });
 
 test('execution missing request, missing entity, duplicate, and conflicting identity behavior is deterministic', () => {
@@ -171,6 +225,55 @@ test('creates, lists, and gets TranslationOutput with deterministic ordering and
   assert.deepEqual(repository.listTranslationOutputsByExecution('missing-execution'), []);
 });
 
+test('lists TranslationOutputs by session and request without collapsing same-language versions', () => {
+  const repository = createTranslationRepositoryAdapter({
+    sessionRepository: legacySessionRepository({
+      sessions: [sessionRecord({ id: 'session-1' }), sessionRecord({ id: 'session-2' })]
+    })
+  });
+
+  repository.createTranslationRequest(requestPayload({ id: 'request-1', sessionId: 'session-1', targetLanguageCode: 'fr' }));
+  repository.createTranslationRequest(requestPayload({ id: 'request-2', sessionId: 'session-1', targetLanguageCode: 'fr' }));
+  repository.createTranslationRequest(requestPayload({ id: 'request-3', sessionId: 'session-2', targetLanguageCode: 'fr' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-1', translationRequestId: 'request-1' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-2', translationRequestId: 'request-1' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-3', translationRequestId: 'request-2' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-4', translationRequestId: 'request-3' }));
+  repository.createTranslationOutput(
+    outputPayload({ id: 'output-2', executionId: 'execution-2', sequence: 1, targetLanguageCode: 'fr' })
+  );
+  repository.createTranslationOutput(
+    outputPayload({ id: 'output-1', executionId: 'execution-1', sequence: 0, targetLanguageCode: 'fr' })
+  );
+  repository.createTranslationOutput(
+    outputPayload({ id: 'output-3', executionId: 'execution-3', sequence: 2, targetLanguageCode: 'fr' })
+  );
+  repository.createTranslationOutput(
+    outputPayload({ id: 'output-4', executionId: 'execution-4', sequence: 3, targetLanguageCode: 'fr' })
+  );
+
+  assert.deepEqual(
+    repository.listTranslationOutputsBySession('session-1').map((output) => output.id),
+    ['output-1', 'output-2', 'output-3']
+  );
+  assert.deepEqual(
+    repository.listTranslationOutputsBySession('session-2').map((output) => output.id),
+    ['output-4']
+  );
+  assert.deepEqual(
+    repository.listTranslationOutputsByRequest('request-1').map((output) => output.id),
+    ['output-1', 'output-2']
+  );
+  assert.deepEqual(
+    repository.listTranslationOutputsByRequest('request-2').map((output) => output.id),
+    ['output-3']
+  );
+  assert.deepEqual(repository.listTranslationOutputsBySession('missing-session'), []);
+  assert.deepEqual(repository.listTranslationOutputsByRequest('missing-request'), []);
+  assert.throws(() => repository.listTranslationOutputsBySession('   '), /sessionId must not be empty/);
+  assert.throws(() => repository.listTranslationOutputsByRequest(undefined), /requestId must be a string/);
+});
+
 test('output missing execution and duplicate identifier behavior is deterministic', () => {
   const repository = seededRepositoryWithExecution();
 
@@ -181,6 +284,28 @@ test('output missing execution and duplicate identifier behavior is deterministi
 
   repository.createTranslationOutput(outputPayload());
   assert.throws(() => repository.createTranslationOutput(outputPayload()), /TranslationOutput already exists: output-1/);
+});
+
+test('separate repository instances have isolated translation command state', () => {
+  const repositoryA = createTranslationRepositoryAdapter({ sessionRepository: legacySessionRepository() });
+  const repositoryB = createTranslationRepositoryAdapter({ sessionRepository: legacySessionRepository() });
+
+  repositoryA.createTranslationRequest(requestPayload({ id: 'request-a' }));
+  repositoryA.createTranslationExecution(executionPayload({ id: 'execution-a', translationRequestId: 'request-a' }));
+  repositoryA.createTranslationOutput(outputPayload({ id: 'output-a', executionId: 'execution-a' }));
+
+  repositoryB.createTranslationRequest(requestPayload({ id: 'request-b' }));
+
+  assert.deepEqual(
+    repositoryA.listTranslationRequestsBySession('session-1').map((request) => request.id),
+    ['request-a']
+  );
+  assert.deepEqual(
+    repositoryB.listTranslationRequestsBySession('session-1').map((request) => request.id),
+    ['request-b']
+  );
+  assert.equal(repositoryB.getTranslationExecution('execution-a'), null);
+  assert.deepEqual(repositoryB.listTranslationOutputsBySession('session-1'), []);
 });
 
 test('supports async legacy session repository method results', async () => {

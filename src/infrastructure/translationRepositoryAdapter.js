@@ -62,6 +62,20 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
       );
     },
 
+    listTranslationRequestsBySession(sessionId) {
+      assertRequiredString(sessionId, 'sessionId');
+
+      return mapMaybePromise(sessionRepository.getSessionRecord(sessionId), (sessionDetail) => {
+        if (!sessionDetail?.sessionRecord) {
+          return [];
+        }
+
+        return translationCommandStateFor(sessionDetail.sessionRecord).requests
+          .filter((request) => request.sessionId === sessionId)
+          .map(toTranslationRequest);
+      });
+    },
+
     createTranslationExecution(execution) {
       const translationExecution = new TranslationExecution(execution);
 
@@ -119,6 +133,23 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
       );
     },
 
+    listTranslationExecutionsByRequest(requestId) {
+      assertRequiredString(requestId, 'requestId');
+
+      return mapMaybePromise(
+        findSessionRecord(sessionRepository, (state) => state.requests.some((request) => request.id === requestId)),
+        (result) => {
+          if (!result) {
+            return [];
+          }
+
+          return translationCommandStateFor(result.sessionRecord).executions
+            .filter((execution) => execution.translationRequestId === requestId)
+            .map(toTranslationExecution);
+        }
+      );
+    },
+
     createTranslationOutput(output) {
       const translationOutput = new TranslationOutput(output);
 
@@ -157,6 +188,42 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
             .filter((output) => output.executionId === executionId)
             .sort(compareTranslationOutputs)
             .map(toTranslationOutput);
+        }
+      );
+    },
+
+    listTranslationOutputsBySession(sessionId) {
+      assertRequiredString(sessionId, 'sessionId');
+
+      return mapMaybePromise(sessionRepository.getSessionRecord(sessionId), (sessionDetail) => {
+        if (!sessionDetail?.sessionRecord) {
+          return [];
+        }
+
+        return sortedTranslationOutputs(translationCommandStateFor(sessionDetail.sessionRecord).outputs);
+      });
+    },
+
+    listTranslationOutputsByRequest(requestId) {
+      assertRequiredString(requestId, 'requestId');
+
+      return mapMaybePromise(
+        findSessionRecord(sessionRepository, (state) => state.requests.some((request) => request.id === requestId)),
+        (result) => {
+          if (!result) {
+            return [];
+          }
+
+          const state = translationCommandStateFor(result.sessionRecord);
+          const executionIds = new Set(
+            state.executions
+              .filter((execution) => execution.translationRequestId === requestId)
+              .map((execution) => execution.id)
+          );
+
+          return sortedTranslationOutputs(
+            state.outputs.filter((output) => output.requestId === requestId || executionIds.has(output.executionId))
+          );
         }
       );
     },
@@ -300,6 +367,22 @@ function compareTranslationOutputs(first, second) {
   }
 
   return String(first.id).localeCompare(String(second.id));
+}
+
+function sortedTranslationOutputs(outputs) {
+  return [...outputs].sort(compareTranslationOutputs).map(toTranslationOutput);
+}
+
+function assertRequiredString(value, field) {
+  if (typeof value !== 'string') {
+    throw new TypeError(`${field} must be a string`);
+  }
+
+  if (value.trim().length === 0) {
+    throw new RangeError(`${field} must not be empty`);
+  }
+
+  return value;
 }
 
 function mapMaybePromise(value, mapper) {

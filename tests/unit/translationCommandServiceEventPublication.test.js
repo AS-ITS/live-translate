@@ -420,6 +420,11 @@ function translationRepository(overrides = {}) {
       function updateTranslationRequest(request) {
         return request;
       },
+    listTranslationRequestsBySession:
+      overrides.listTranslationRequestsBySession ||
+      function listTranslationRequestsBySession() {
+        return [];
+      },
     createTranslationExecution:
       overrides.createTranslationExecution ||
       function createTranslationExecution(execution) {
@@ -435,6 +440,11 @@ function translationRepository(overrides = {}) {
       function updateTranslationExecution(execution) {
         return execution;
       },
+    listTranslationExecutionsByRequest:
+      overrides.listTranslationExecutionsByRequest ||
+      function listTranslationExecutionsByRequest() {
+        return [];
+      },
     createTranslationOutput:
       overrides.createTranslationOutput ||
       function createTranslationOutput(output) {
@@ -443,6 +453,16 @@ function translationRepository(overrides = {}) {
     listTranslationOutputsByExecution:
       overrides.listTranslationOutputsByExecution ||
       function listTranslationOutputsByExecution() {
+        return [];
+      },
+    listTranslationOutputsBySession:
+      overrides.listTranslationOutputsBySession ||
+      function listTranslationOutputsBySession() {
+        return [];
+      },
+    listTranslationOutputsByRequest:
+      overrides.listTranslationOutputsByRequest ||
+      function listTranslationOutputsByRequest() {
         return [];
       },
     getTranslationOutput:

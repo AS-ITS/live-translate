@@ -4,6 +4,7 @@
 
 ### Added
 
+- Phase 2B-4 WP9 Translation Domain Event end-to-end integration coverage for production composition routing, lifecycle, and failure propagation.
 - Phase 2B-4 WP8 Translation Domain Event handler factory with safe default no-op handlers.
 - Phase 2B-4 WP7 Translation Domain Event infrastructure composition in the production application dependency graph.
 

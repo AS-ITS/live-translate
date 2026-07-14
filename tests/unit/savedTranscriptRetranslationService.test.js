@@ -4,6 +4,7 @@ import { createApplicationDependencies } from '../../server/compositionRoot.js';
 import { createSavedTranscriptRetranslationService } from '../../src/application/translation/index.js';
 import { TRANSLATION_EVENT_TYPES } from '../../src/domain/translation/index.js';
 import { createFakeSavedTranscriptTranslationProvider } from '../../src/infrastructure/fakeSavedTranscriptTranslationProvider.js';
+import { createTranslationRepositoryAdapter } from '../../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
 const SERVICE_METHODS = Object.freeze(['translateSavedTranscript']);
@@ -130,8 +131,8 @@ test('success flow creates request, running execution before provider, final exe
       [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'request-1'],
       [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED, 'pending'],
       [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'running'],
-      [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'completed'],
-      [TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'output-1']
+      [TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'output-1'],
+      [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'completed']
     ]
   );
 
@@ -185,8 +186,49 @@ test('provider input object is not mutated and deferred completion is awaited be
   assert.equal(result.execution.status, 'completed');
   assert.deepEqual(
     observed.events.map((event) => event.payload.execution?.status || event.type),
-    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'pending', 'running', 'completed', TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED]
+    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'pending', 'running', TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'completed']
   );
+});
+
+test('success flow persists output before completing execution and returns final references', async () => {
+  const order = [];
+  const dependencies = serviceDependencies({
+    commandOverrides: {
+      createTranslationRequest(input) {
+        order.push('createTranslationRequest');
+        return { ...input, marker: 'request-reference' };
+      },
+      createTranslationExecution(input) {
+        order.push('createTranslationExecution');
+        return { ...input, marker: 'created-execution-reference' };
+      },
+      updateTranslationExecution(input) {
+        order.push(`updateTranslationExecution:${input.transition}`);
+        return {
+          id: input.executionId,
+          status: input.transition === 'start' ? 'running' : 'completed',
+          marker: `${input.transition}-execution-reference`
+        };
+      },
+      createTranslationOutput(input) {
+        order.push('createTranslationOutput');
+        return { ...input, marker: 'output-reference' };
+      }
+    }
+  });
+
+  const result = await createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(operationInput());
+
+  assert.deepEqual(order, [
+    'createTranslationRequest',
+    'createTranslationExecution',
+    'updateTranslationExecution:start',
+    'createTranslationOutput',
+    'updateTranslationExecution:complete'
+  ]);
+  assert.equal(result.request.marker, 'request-reference');
+  assert.equal(result.execution.marker, 'complete-execution-reference');
+  assert.equal(result.output.marker, 'output-reference');
 });
 
 test('multiple invocations for the same session and target preserve separate requests and outputs', async () => {
@@ -255,6 +297,182 @@ test('provider failure is not retried or wrapped', async () => {
   );
 });
 
+test('provider failure creates no output and does not complete execution', async () => {
+  const expectedError = new Error('provider failed before output');
+  const dependencies = serviceDependencies({
+    provider: createFakeSavedTranscriptTranslationProvider({ mode: 'throw', error: expectedError })
+  });
+
+  await assert.rejects(
+    createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(operationInput()),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.deepEqual(dependencies.calls.names(), [
+    'createTranslationRequest',
+    'createTranslationExecution',
+    'updateTranslationExecution',
+    'updateTranslationExecution'
+  ]);
+  assert.equal(dependencies.calls.entries()[2][1].transition, 'start');
+  assert.equal(dependencies.calls.entries()[3][1].transition, 'fail');
+  assert.equal(dependencies.provider.getCalls().length, 1);
+});
+
+test('output creation synchronous throw propagates exactly without completing execution or retrying', async () => {
+  const expectedError = new Error('output repository sync failed');
+  const dependencies = serviceDependencies({
+    commandOverrides: {
+      createTranslationOutput() {
+        dependencies.calls.push('createTranslationOutput', { attempt: 1 });
+        throw expectedError;
+      }
+    }
+  });
+  const input = operationInput();
+  const before = structuredClone(input);
+
+  await assert.rejects(
+    createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(input),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.deepEqual(input, before);
+  assert.equal(dependencies.provider.getCalls().length, 1);
+  assert.deepEqual(dependencies.calls.names(), [
+    'createTranslationRequest',
+    'createTranslationExecution',
+    'updateTranslationExecution',
+    'createTranslationOutput'
+  ]);
+  assert.equal(dependencies.calls.entries()[2][1].transition, 'start');
+});
+
+test('output creation asynchronous rejection propagates exactly without completing execution or retrying', async () => {
+  const expectedError = new Error('output repository async failed');
+  const dependencies = serviceDependencies({
+    commandOverrides: {
+      createTranslationOutput(input) {
+        dependencies.calls.push('createTranslationOutput', input);
+        return Promise.reject(expectedError);
+      }
+    }
+  });
+
+  await assert.rejects(
+    createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(operationInput()),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.equal(dependencies.provider.getCalls().length, 1);
+  assert.deepEqual(dependencies.calls.names(), [
+    'createTranslationRequest',
+    'createTranslationExecution',
+    'updateTranslationExecution',
+    'createTranslationOutput'
+  ]);
+  assert.equal(dependencies.calls.entries()[2][1].transition, 'start');
+});
+
+test('output event publication failure preserves output but does not complete execution', async () => {
+  const expectedError = new Error('output handler failed before completion');
+  const dependencies = graphDependencies({
+    handlers: {
+      outputCreated() {
+        throw expectedError;
+      }
+    }
+  });
+
+  await assert.rejects(
+    dependencies.savedTranscriptRetranslationService.translateSavedTranscript(operationInput()),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationRequestsBySession('session-1').map((request) => request.id),
+    ['request-1']
+  );
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.status),
+    ['running']
+  );
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationOutputsBySession('session-1').map((output) => output.id),
+    ['output-1']
+  );
+  assert.equal(dependencies.provider.getCalls().length, 1);
+});
+
+test('execution completion repository failure preserves output and propagates exactly without retry', async () => {
+  const expectedError = new Error('complete repository failed');
+  const calls = [];
+  const dependencies = graphDependencies({
+    translationRepositoryFactory(baseRepository) {
+      return {
+        ...baseRepository,
+        updateTranslationExecution(execution) {
+          calls.push(['updateTranslationExecution', execution.status]);
+          if (execution.status === 'completed') {
+            throw expectedError;
+          }
+          return baseRepository.updateTranslationExecution(execution);
+        }
+      };
+    }
+  });
+
+  await assert.rejects(
+    dependencies.savedTranscriptRetranslationService.translateSavedTranscript(operationInput()),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.deepEqual(calls, [
+    ['updateTranslationExecution', 'running'],
+    ['updateTranslationExecution', 'completed']
+  ]);
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.status),
+    ['running']
+  );
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationOutputsBySession('session-1').map((output) => output.id),
+    ['output-1']
+  );
+  assert.equal(dependencies.provider.getCalls().length, 1);
+});
+
+test('execution completion event publication failure preserves completed execution and output without retry', async () => {
+  const expectedError = new Error('completion handler failed');
+  const updatedStatuses = [];
+  const dependencies = graphDependencies({
+    handlers: {
+      executionUpdated(event) {
+        updatedStatuses.push(event.payload.execution.status);
+        if (event.payload.execution.status === 'completed') {
+          throw expectedError;
+        }
+      }
+    }
+  });
+
+  await assert.rejects(
+    dependencies.savedTranscriptRetranslationService.translateSavedTranscript(operationInput()),
+    (actualError) => actualError === expectedError
+  );
+
+  assert.deepEqual(updatedStatuses, ['running', 'completed']);
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.status),
+    ['completed']
+  );
+  assert.deepEqual(
+    dependencies.translationRepository.listTranslationOutputsBySession('session-1').map((output) => output.id),
+    ['output-1']
+  );
+  assert.equal(dependencies.provider.getCalls().length, 1);
+});
+
 test('command failures propagate and prevent later work without retry, rollback, or compensation', async () => {
   const requestError = new Error('request failed');
   const requestFailure = serviceDependencies({
@@ -299,7 +517,7 @@ test('command failures propagate and prevent later work without retry, rollback,
     createSavedTranscriptRetranslationService(successUpdateFailure).translateSavedTranscript(operationInput()),
     (error) => error === successUpdateError
   );
-  assert.equal(successUpdateFailure.calls.names().includes('createTranslationOutput'), false);
+  assert.equal(successUpdateFailure.calls.names().includes('createTranslationOutput'), true);
 
   const outputError = new Error('output failed');
   const outputFailure = serviceDependencies({
@@ -313,6 +531,7 @@ test('command failures propagate and prevent later work without retry, rollback,
     createSavedTranscriptRetranslationService(outputFailure).translateSavedTranscript(operationInput()),
     (error) => error === outputError
   );
+  assert.equal(outputFailure.calls.names().filter((name) => name === 'updateTranslationExecution').length, 1);
 });
 
 test('event handler rejection propagates after committed state remains queryable', async () => {
@@ -336,7 +555,7 @@ test('event handler rejection propagates after committed state remains queryable
   );
   assert.deepEqual(
     dependencies.translationRepository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.status),
-    ['completed']
+    ['running']
   );
   assert.deepEqual(
     dependencies.translationRepository.listTranslationOutputsBySession('session-1').map((output) => output.id),
@@ -435,13 +654,17 @@ function graphDependencies(options = {}) {
     createFakeSavedTranscriptTranslationProvider({
       result: options.providerResult || { translatedText: 'Bonjour' }
     });
+  const translationRepository = options.translationRepositoryFactory
+    ? options.translationRepositoryFactory(createTranslationRepositoryAdapter({ sessionRepository }))
+    : undefined;
 
   return {
     ...createApplicationDependencies({
-    sessionRepository,
-    savedTranscriptTranslationProvider: provider,
-    idGenerator: sequentialIdGenerator(),
-    clock: sequentialClock(),
+      sessionRepository,
+      ...(translationRepository ? { translationRepository } : {}),
+      savedTranscriptTranslationProvider: provider,
+      idGenerator: sequentialIdGenerator(),
+      clock: sequentialClock(),
       translationDomainEventHandlers: options.handlers || {}
     }),
     provider
@@ -532,6 +755,9 @@ function callRecorder() {
     },
     names() {
       return calls.map(([name]) => name);
+    },
+    entries() {
+      return calls.slice();
     }
   };
 }

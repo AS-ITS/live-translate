@@ -4,6 +4,17 @@
 
 ### Added
 
+- Phase 2C WP1 completion pass for saved-transcript re-translation
+  consistency: the application service now persists the `TranslationOutput`
+  before marking the `TranslationExecution` as `completed`, so output
+  persistence failure and output-created event publication failure cannot leave
+  a falsely completed execution. The successful orchestration order is now
+  request creation, execution creation, execution start, provider invocation,
+  output creation, then execution completion. Existing repository-before-event
+  publication semantics remain unchanged: repository writes and domain event
+  publication are not atomic, so a completion event publication failure may
+  still leave both the completed execution and output persisted. No rollback,
+  retry, transaction, or compensation mechanism was introduced.
 - Phase 2C WP4 Saved Transcript Re-translation HTTP API: added
   `POST /api/saved-transcripts/:sessionId/translations` with a request body
   containing `sourceLanguageCode` and `targetLanguageCode`, returning `201`

@@ -78,22 +78,22 @@ export function createSavedTranscriptRetranslationService({
       }
 
       const translatedText = validateProviderResult(providerResult);
-      const execution = await maybeAwait(
-        translationCommandService.updateTranslationExecution({
-          executionId: runningExecution.id,
-          transition: 'complete',
-          completedAt: clock()
-        })
-      );
       const output = await maybeAwait(
         translationCommandService.createTranslationOutput({
           id: idGenerator('translation-output'),
-          executionId: execution.id,
+          executionId: runningExecution.id,
           sequence: 0,
           translatedText,
           targetLanguageCode: operationInput.targetLanguageCode,
           providerMetadata: providerMetadataFor(providerResult),
           createdAt: clock()
+        })
+      );
+      const execution = await maybeAwait(
+        translationCommandService.updateTranslationExecution({
+          executionId: runningExecution.id,
+          transition: 'complete',
+          completedAt: clock()
         })
       );
 

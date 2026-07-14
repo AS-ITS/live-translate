@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2C WP3 Saved Transcript Re-translation Application Service:
+  resolves canonical saved source transcript text from legacy SessionRecord
+  detail, orchestrates native TranslationRequest / TranslationExecution /
+  TranslationOutput creation through the command service, persists successful
+  provider results and failed provider executions deterministically, and keeps
+  HTTP, UI, and real provider integration out of scope.
 - Phase 2C WP2 Saved Transcript Translation Provider Port: added a
   provider-neutral saved-transcript translation application port and
   deterministic fake adapter supporting configured success, rejected failure,

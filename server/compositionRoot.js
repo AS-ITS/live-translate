@@ -1,4 +1,5 @@
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationDomainEventPublisherAdapter } from '../src/infrastructure/translationDomainEventPublisherAdapter.js';
 import { createTranslationDomainEventSubscriber } from '../src/infrastructure/translationDomainEventSubscriber.js';
@@ -15,6 +16,10 @@ export function createApplicationDependencies(options = {}) {
     translationRepository,
     domainEventPublisher,
     translationDomainEventHandlers,
+    savedTranscriptTranslationProvider,
+    savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService,
+    idGenerator = createDefaultIdGenerator(),
+    clock = () => Date.now(),
     translationCommandServiceFactory = createDefaultTranslationCommandService,
     translationCommandControllerFactory = createDefaultTranslationCommandController,
     ...sessionReadOptions
@@ -29,6 +34,16 @@ export function createApplicationDependencies(options = {}) {
     translationCommandServiceFactory,
     translationCommandControllerFactory
   });
+  const savedTranscriptRetranslationService = savedTranscriptTranslationProvider
+    ? createSavedTranscriptRetranslationDependencies({
+        translationCommandService: translationCommandDependencies.translationCommandService,
+        savedTranscriptTranslationProvider,
+        sessionRepository: sessionReadDependencies.sessionRepository,
+        idGenerator,
+        clock,
+        savedTranscriptRetranslationServiceFactory
+      }).savedTranscriptRetranslationService
+    : undefined;
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
         sessionReadController: sessionReadDependencies.sessionReadController,
@@ -39,6 +54,7 @@ export function createApplicationDependencies(options = {}) {
   return {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
+    ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(requestHandler ? { requestHandler } : {})
   };
 }
@@ -94,6 +110,27 @@ export function createTranslationCommandDependencies({
   };
 }
 
+export function createSavedTranscriptRetranslationDependencies({
+  translationCommandService,
+  savedTranscriptTranslationProvider,
+  sessionRepository,
+  idGenerator = createDefaultIdGenerator(),
+  clock = () => Date.now(),
+  savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService
+} = {}) {
+  assertFactory(savedTranscriptRetranslationServiceFactory, 'savedTranscriptRetranslationServiceFactory');
+
+  const savedTranscriptRetranslationService = savedTranscriptRetranslationServiceFactory({
+    translationCommandService,
+    savedTranscriptTranslationProvider,
+    sessionRepository,
+    idGenerator,
+    clock
+  });
+
+  return { savedTranscriptRetranslationService };
+}
+
 function createTranslationDomainEventInfrastructure({ domainEventPublisher, translationDomainEventHandlers } = {}) {
   const eventBus = createInMemoryDomainEventBus();
   const resolvedDomainEventPublisher = domainEventPublisher || createTranslationDomainEventPublisherAdapter({ eventBus });
@@ -113,4 +150,13 @@ function assertFactory(factory, name) {
   if (typeof factory !== 'function') {
     throw new TypeError(`${name} must be a function.`);
   }
+}
+
+function createDefaultIdGenerator() {
+  let sequence = 0;
+
+  return function defaultIdGenerator(prefix = 'id') {
+    sequence += 1;
+    return `${prefix}-${Date.now()}-${sequence}`;
+  };
 }

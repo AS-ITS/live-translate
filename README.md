@@ -17,6 +17,7 @@ Status: In Progress
 Completed:
 
 - Phase 1 Demo
+- Phase 2C - Saved Transcript Re-translation
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -36,7 +37,7 @@ Documentation:
 
 Planned next capability:
 
-- Phase 2B
+- Phase 2 follow-up capability selection
   - Settings
   - Usage Metrics
   - Diagnostics

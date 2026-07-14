@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2C Saved Transcript Re-translation closeout: marked the capability as
+  completed after focused provider, application service, composition, HTTP,
+  event-ordering, failure-boundary, immutability, and export-surface
+  verification. The completed boundary remains deterministic and scoped; no
+  real external provider, UI, retry, rollback, transaction, compensation, or
+  deployment behavior is included.
 - Phase 2C WP1 completion pass for saved-transcript re-translation
   consistency: the application service now persists the `TranslationOutput`
   before marking the `TranslationExecution` as `completed`, so output

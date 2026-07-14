@@ -239,19 +239,34 @@ Scope:
   - `TranslationExecutionDTO`
 - Current UI single-output display must continue to work.
 
-### Phase 2C - Translation Capability Implementation
+### Phase 2C - Saved Transcript Re-translation
 
-Status: Planned after Phase 2B.
+Status: Completed.
 
 Scope:
 
-- Saved transcript re-translation.
-- Multiple outputs.
+- Saved transcript translation provider port.
+- Deterministic fake saved transcript provider.
+- Saved transcript re-translation application service.
+- TranslationCommandService orchestration.
+- Request, execution, and output persistence.
+- Translation domain event publication.
+- Production dependency composition.
+- HTTP request handling.
+- Public translation application export surface.
+- Partial-failure ordering correction so output creation occurs before the
+  execution is marked completed.
+- Focused production contract verification.
+
+Deferred:
+
+- Real external saved transcript translation provider.
 - Retry.
 - Cancel.
 - Delete.
-- Provider selection.
+- Provider selection UI.
 - Output version UI.
+- Transaction, rollback, compensation, or retry semantics.
 
 ### Phase 2 Deferred Scope
 

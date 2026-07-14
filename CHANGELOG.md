@@ -4,6 +4,7 @@
 
 ### Added
 
+- Phase 2B-4 WP8 Translation Domain Event handler factory with safe default no-op handlers.
 - Phase 2B-4 WP7 Translation Domain Event infrastructure composition in the production application dependency graph.
 
 ## Phase 2A Foundation Completed

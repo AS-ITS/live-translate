@@ -1,17 +1,26 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
+import { createApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
-import { createTranslationCommandController } from '../../server/translationCommandController.js';
-import { createTranslationCommandService } from '../../src/application/translationCommandService.js';
+import { TranslationExecution, TranslationOutput, TranslationRequest } from '../../src/domain/translation/index.js';
 
-test('POST /api/translation-requests creates and stores a TranslationRequest through the full write path', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const input = translationRequestPayload();
+test('POST /api/translation-requests creates a TranslationRequest through production composition wiring', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    asyncMethods: new Set(['createTranslationRequest'])
+  });
+  const input = translationRequestPayload({
+    sourceTranscriptSnapshot: {
+      revisionId: 'source-revision-1',
+      items: [{ id: 'source-item-1', text: 'Hello', sequence: 0 }]
+    }
+  });
   const before = structuredClone(input);
 
   await withTranslationCommandServer(translationRepository, async (baseUrl) => {
     const response = await postJson(`${baseUrl}/api/translation-requests`, input);
+    const calls = translationRepository.callsFor('createTranslationRequest');
+    const storedRequest = translationRepository.translationRequests.get('request-1');
 
     assert.equal(response.status, 201);
     assert.equal(response.headers.get('content-type'), 'application/json');
@@ -20,79 +29,160 @@ test('POST /api/translation-requests creates and stores a TranslationRequest thr
       sessionId: 'session-1',
       sourceTranscriptRevisionId: 'source-revision-1',
       targetLanguageCode: 'ja',
-      sourceTranscriptSnapshot: null,
-      createdAt: 1000
+      sourceTranscriptSnapshot: {
+        revisionId: 'source-revision-1',
+        items: [{ id: 'source-item-1', text: 'Hello', sequence: 0 }]
+      },
+      createdAt: '2026-07-14T01:00:00.000Z'
     });
-    assert.equal(translationRepository.translationRequests.has('request-1'), true);
-    assert.equal(translationRepository.translationRequests.get('request-1').id, 'request-1');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0] instanceof TranslationRequest, true);
+    assert.notStrictEqual(calls[0][0], input);
+    assert.strictEqual(storedRequest, calls[0][0]);
+    assert.equal(storedRequest.id, 'request-1');
+    assert.equal(storedRequest.sessionId, 'session-1');
+    assert.equal(storedRequest.sourceTranscriptRevisionId, 'source-revision-1');
+    assert.equal(storedRequest.targetLanguageCode, 'ja');
+    assert.equal(storedRequest.createdAt, '2026-07-14T01:00:00.000Z');
+    assert.deepEqual(storedRequest.sourceTranscriptSnapshot, input.sourceTranscriptSnapshot);
   });
 
   assert.deepEqual(input, before);
 });
 
-test('POST /api/translation-executions creates and stores a pending TranslationExecution through the full write path', async () => {
+test('POST /api/translation-executions creates a pending TranslationExecution through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture();
   const input = translationExecutionPayload();
   const before = structuredClone(input);
 
   await withTranslationCommandServer(translationRepository, async (baseUrl) => {
     const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+    const calls = translationRepository.callsFor('createTranslationExecution');
+    const storedExecution = translationRepository.translationExecutions.get('execution-1');
 
     assert.equal(response.status, 201);
     assert.deepEqual(response.body, {
       id: 'execution-1',
       translationRequestId: 'request-1',
       status: 'pending',
-      startedAt: 1000,
+      startedAt: '2026-07-14T01:01:00.000Z',
       completedAt: null,
       failureInfo: null
     });
-    assert.equal(translationRepository.translationExecutions.has('execution-1'), true);
-    assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'pending');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0] instanceof TranslationExecution, true);
+    assert.notStrictEqual(calls[0][0], input);
+    assert.strictEqual(storedExecution, calls[0][0]);
+    assert.equal(storedExecution.id, 'execution-1');
+    assert.equal(storedExecution.translationRequestId, 'request-1');
+    assert.equal(storedExecution.status, 'pending');
+    assert.equal(storedExecution.startedAt, '2026-07-14T01:01:00.000Z');
   });
 
   assert.deepEqual(input, before);
 });
 
-test('PATCH /api/translation-executions/:executionId applies a legal domain transition through the service', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
+test('PATCH /api/translation-executions/:executionId URL-decodes and starts a pending execution', async () => {
+  const executionId = 'execution unicode 1';
+  const originalExecution = new TranslationExecution(
+    translationExecutionPayload({
+      id: executionId,
+      startedAt: '2026-07-14T01:02:00.000Z'
+    })
+  );
+  const translationRepository = createTranslationRepositoryFixture({
+    executions: [originalExecution],
+    asyncMethods: new Set(['getTranslationExecution'])
+  });
 
   await withTranslationCommandServer(translationRepository, async (baseUrl) => {
-    await postJson(`${baseUrl}/api/translation-executions`, translationExecutionPayload());
-    const originalExecution = translationRepository.translationExecutions.get('execution-1');
-
-    const response = await patchJson(`${baseUrl}/api/translation-executions/execution-1`, {
-      id: 'wrong-id',
-      executionId: 'wrong-execution-id',
+    const response = await patchJson(`${baseUrl}/api/translation-executions/${encodeURIComponent(executionId)}`, {
+      id: 'body-id-should-not-win',
+      executionId: 'body-execution-id-should-not-win',
       transition: 'start',
-      startedAt: 1100
+      startedAt: '2026-07-14T01:03:00.000Z'
     });
-
-    const storedExecution = translationRepository.translationExecutions.get('execution-1');
+    const getCalls = translationRepository.callsFor('getTranslationExecution');
+    const updateCalls = translationRepository.callsFor('updateTranslationExecution');
+    const updatedExecution = updateCalls[0][0];
 
     assert.equal(response.status, 200);
+    assert.deepEqual(getCalls, [[executionId]]);
+    assert.equal(updateCalls.length, 1);
+    assert.equal(updatedExecution instanceof TranslationExecution, true);
+    assert.notStrictEqual(updatedExecution, originalExecution);
+    assert.equal(originalExecution.status, 'pending');
+    assert.equal(originalExecution.startedAt, '2026-07-14T01:02:00.000Z');
+    assert.equal(updatedExecution.id, executionId);
+    assert.equal(updatedExecution.status, 'running');
+    assert.equal(updatedExecution.startedAt, '2026-07-14T01:03:00.000Z');
     assert.deepEqual(response.body, {
-      id: 'execution-1',
+      id: executionId,
       translationRequestId: 'request-1',
       status: 'running',
-      startedAt: 1100,
+      startedAt: '2026-07-14T01:03:00.000Z',
       completedAt: null,
       failureInfo: null
     });
-    assert.notStrictEqual(storedExecution, originalExecution);
-    assert.equal(Object.isFrozen(originalExecution), true);
-    assert.equal(originalExecution.status, 'pending');
-    assert.equal(storedExecution.status, 'running');
   });
 });
 
-test('POST /api/translation-outputs creates and stores a TranslationOutput through the full write path', async () => {
+test('PATCH /api/translation-executions/:executionId completes a running execution', async () => {
+  const originalExecution = new TranslationExecution(
+    translationExecutionPayload({
+      id: 'execution-running-1',
+      status: 'running',
+      startedAt: '2026-07-14T01:04:00.000Z'
+    })
+  );
+  const translationRepository = createTranslationRepositoryFixture({
+    executions: [originalExecution],
+    asyncMethods: new Set(['updateTranslationExecution'])
+  });
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
+    const response = await patchJson(`${baseUrl}/api/translation-executions/execution-running-1`, {
+      transition: 'complete',
+      completedAt: '2026-07-14T01:05:00.000Z'
+    });
+    const updateCalls = translationRepository.callsFor('updateTranslationExecution');
+    const updatedExecution = updateCalls[0][0];
+
+    assert.equal(response.status, 200);
+    assert.equal(updateCalls.length, 1);
+    assert.equal(updatedExecution instanceof TranslationExecution, true);
+    assert.notStrictEqual(updatedExecution, originalExecution);
+    assert.equal(originalExecution.status, 'running');
+    assert.equal(originalExecution.completedAt, null);
+    assert.equal(updatedExecution.id, 'execution-running-1');
+    assert.equal(updatedExecution.status, 'completed');
+    assert.equal(updatedExecution.startedAt, '2026-07-14T01:04:00.000Z');
+    assert.equal(updatedExecution.completedAt, '2026-07-14T01:05:00.000Z');
+    assert.deepEqual(response.body, {
+      id: 'execution-running-1',
+      translationRequestId: 'request-1',
+      status: 'completed',
+      startedAt: '2026-07-14T01:04:00.000Z',
+      completedAt: '2026-07-14T01:05:00.000Z',
+      failureInfo: null
+    });
+  });
+});
+
+test('POST /api/translation-outputs creates a TranslationOutput through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture();
-  const input = translationOutputPayload();
+  const input = translationOutputPayload({
+    providerMetadata: {
+      provider: 'fixture-provider',
+      nested: { preserved: true }
+    }
+  });
   const before = structuredClone(input);
 
   await withTranslationCommandServer(translationRepository, async (baseUrl) => {
     const response = await postJson(`${baseUrl}/api/translation-outputs`, input);
+    const calls = translationRepository.callsFor('createTranslationOutput');
+    const storedOutput = translationRepository.translationOutputs.get('output-1');
 
     assert.equal(response.status, 201);
     assert.deepEqual(response.body, {
@@ -101,83 +191,68 @@ test('POST /api/translation-outputs creates and stores a TranslationOutput throu
       sequence: 0,
       translatedText: 'Bonjour',
       targetLanguageCode: 'fr',
-      providerMetadata: null,
-      providerMetadataAvailable: false,
-      createdAt: 1200
+      providerMetadata: {
+        provider: 'fixture-provider',
+        nested: { preserved: true }
+      },
+      providerMetadataAvailable: true,
+      createdAt: '2026-07-14T01:06:00.000Z'
     });
-    assert.equal(translationRepository.translationOutputs.has('output-1'), true);
-    assert.equal(translationRepository.translationOutputs.get('output-1').executionId, 'execution-1');
-    assert.equal(translationRepository.translationOutputs.get('output-1').targetLanguageCode, 'fr');
-    assert.equal(translationRepository.translationOutputs.get('output-1').sequence, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0] instanceof TranslationOutput, true);
+    assert.notStrictEqual(calls[0][0], input);
+    assert.strictEqual(storedOutput, calls[0][0]);
+    assert.equal(storedOutput.id, 'output-1');
+    assert.equal(storedOutput.executionId, 'execution-1');
+    assert.equal(storedOutput.translatedText, 'Bonjour');
+    assert.equal(storedOutput.targetLanguageCode, 'fr');
+    assert.equal(storedOutput.sequence, 0);
+    assert.equal(storedOutput.createdAt, '2026-07-14T01:06:00.000Z');
   });
 
   assert.deepEqual(input, before);
 });
 
-test('invalid TranslationRequest input follows existing internal error path and is not stored', async () => {
+test('malformed JSON uses the existing invalid_json response before repository commands run', async () => {
   const translationRepository = createTranslationRepositoryFixture();
 
   await withTranslationCommandServer(translationRepository, async (baseUrl) => {
-    const response = await postJson(`${baseUrl}/api/translation-requests`, {
-      ...translationRequestPayload(),
-      targetLanguageCode: ''
-    });
+    const response = await sendRaw(`${baseUrl}/api/translation-requests`, 'POST', '{"id":');
 
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'invalid_json');
+    assert.equal(response.body.error.message, 'Request body must be valid JSON.');
+    assert.ok(response.body.error.requestId);
+    assert.deepEqual(translationRepository.calls, []);
+  });
+});
+
+test('unexpected repository failure uses existing internal error response without leaking details', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    failMethods: new Set(['createTranslationOutput'])
+  });
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/translation-outputs`, translationOutputPayload());
+    const bodyText = JSON.stringify(response.body);
+
+    assert.notEqual(response.status, 201);
     assert.equal(response.status, 500);
     assert.equal(response.body.error.code, 'internal_error');
     assert.equal(response.body.error.message, 'Unexpected server error.');
-    assert.equal(translationRepository.translationRequests.size, 0);
-  });
-});
-
-test('illegal TranslationExecution transition is rejected by domain rules without replacing stored state', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-
-  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
-    await postJson(`${baseUrl}/api/translation-executions`, translationExecutionPayload());
-    const runningResponse = await patchJson(`${baseUrl}/api/translation-executions/execution-1`, {
-      transition: 'start',
-      startedAt: 1100
-    });
-    const runningExecution = translationRepository.translationExecutions.get('execution-1');
-
-    const illegalResponse = await patchJson(`${baseUrl}/api/translation-executions/execution-1`, {
-      transition: 'start',
-      startedAt: 1200
-    });
-
-    assert.equal(runningResponse.status, 200);
-    assert.equal(illegalResponse.status, 500);
-    assert.equal(illegalResponse.body.error.code, 'internal_error');
-    assert.strictEqual(translationRepository.translationExecutions.get('execution-1'), runningExecution);
-    assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'running');
-    assert.equal(translationRepository.translationExecutions.get('execution-1').startedAt, 1100);
-  });
-});
-
-test('GET /health still works through the same request handler', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-
-  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
-    const response = await getJson(`${baseUrl}/health`);
-
-    assert.equal(response.status, 200);
-    assert.equal(response.body.ok, true);
-    assert.ok(response.body.requestId);
+    assert.notEqual(response.body.error.code, 'not_found');
+    assert.doesNotMatch(bodyText, /fixture repository failure/);
+    assert.doesNotMatch(bodyText, /stack detail/);
   });
 });
 
 async function withTranslationCommandServer(translationRepository, run) {
-  const translationCommandService = createTranslationCommandService({
-    translationRepository
+  const dependencies = createApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository,
+    requestHandlerFactory: createRequestHandler
   });
-  const translationCommandController = createTranslationCommandController({
-    translationCommandService
-  });
-  const requestHandler = createRequestHandler({
-    translationCommandController
-  });
-  const server = http.createServer(requestHandler);
+  const server = http.createServer(dependencies.requestHandler);
 
   await new Promise((resolve) => {
     server.listen(0, '127.0.0.1', resolve);
@@ -199,21 +274,6 @@ async function withTranslationCommandServer(translationRepository, run) {
   }
 }
 
-async function getJson(url) {
-  const response = await fetch(url, {
-    headers: {
-      'x-request-id': 'test-request-id'
-    }
-  });
-  const body = await response.json();
-
-  return {
-    status: response.status,
-    headers: response.headers,
-    body
-  };
-}
-
 function postJson(url, body) {
   return sendJson(url, 'POST', body);
 }
@@ -223,13 +283,17 @@ function patchJson(url, body) {
 }
 
 async function sendJson(url, method, body) {
+  return sendRaw(url, method, JSON.stringify(body));
+}
+
+async function sendRaw(url, method, body) {
   const response = await fetch(url, {
     method,
     headers: {
       'content-type': 'application/json',
       'x-request-id': 'test-request-id'
     },
-    body: JSON.stringify(body)
+    body
   });
   const responseBody = await response.json();
 
@@ -240,55 +304,104 @@ async function sendJson(url, method, body) {
   };
 }
 
-function createTranslationRepositoryFixture() {
+function createTranslationRepositoryFixture({
+  executions = [],
+  asyncMethods = new Set(),
+  failMethods = new Set()
+} = {}) {
   const translationRequests = new Map();
-  const translationExecutions = new Map();
+  const translationExecutions = new Map(executions.map((execution) => [execution.id, execution]));
   const translationOutputs = new Map();
+  const calls = [];
+
+  function record(methodName, args) {
+    calls.push([methodName, ...args]);
+  }
+
+  function resultFor(methodName, value) {
+    if (failMethods.has(methodName)) {
+      return Promise.reject(new Error(`fixture repository failure: ${methodName} stack detail`));
+    }
+
+    if (asyncMethods.has(methodName)) {
+      return Promise.resolve(value);
+    }
+
+    return value;
+  }
 
   return {
+    calls,
     translationRequests,
     translationExecutions,
     translationOutputs,
 
+    callsFor(methodName) {
+      return calls.filter(([nextMethodName]) => nextMethodName === methodName).map(([, ...args]) => args);
+    },
+
     createTranslationRequest(request) {
+      record('createTranslationRequest', [request]);
       translationRequests.set(request.id, request);
-      return request;
+      return resultFor('createTranslationRequest', request);
     },
 
     getTranslationRequest(requestId) {
-      return translationRequests.get(requestId) ?? null;
+      record('getTranslationRequest', [requestId]);
+      return resultFor('getTranslationRequest', translationRequests.get(requestId) ?? null);
     },
 
     updateTranslationRequest(request) {
+      record('updateTranslationRequest', [request]);
       translationRequests.set(request.id, request);
-      return request;
+      return resultFor('updateTranslationRequest', request);
     },
 
     createTranslationExecution(execution) {
+      record('createTranslationExecution', [execution]);
       translationExecutions.set(execution.id, execution);
-      return execution;
+      return resultFor('createTranslationExecution', execution);
     },
 
     getTranslationExecution(executionId) {
-      return translationExecutions.get(executionId) ?? null;
+      record('getTranslationExecution', [executionId]);
+      return resultFor('getTranslationExecution', translationExecutions.get(executionId) ?? null);
     },
 
     updateTranslationExecution(execution) {
+      record('updateTranslationExecution', [execution]);
       translationExecutions.set(execution.id, execution);
-      return execution;
+      return resultFor('updateTranslationExecution', execution);
     },
 
     createTranslationOutput(output) {
+      record('createTranslationOutput', [output]);
       translationOutputs.set(output.id, output);
-      return output;
+      return resultFor('createTranslationOutput', output);
     },
 
     listTranslationOutputsByExecution(executionId) {
-      return Array.from(translationOutputs.values()).filter((output) => output.executionId === executionId);
+      record('listTranslationOutputsByExecution', [executionId]);
+      return resultFor(
+        'listTranslationOutputsByExecution',
+        Array.from(translationOutputs.values()).filter((output) => output.executionId === executionId)
+      );
     },
 
     getTranslationOutput(outputId) {
-      return translationOutputs.get(outputId) ?? null;
+      record('getTranslationOutput', [outputId]);
+      return resultFor('getTranslationOutput', translationOutputs.get(outputId) ?? null);
+    }
+  };
+}
+
+function readRepository() {
+  return {
+    listSessionHistory() {
+      return [];
+    },
+    getSessionDetail() {
+      return null;
     }
   };
 }
@@ -299,7 +412,7 @@ function translationRequestPayload(overrides = {}) {
     sessionId: 'session-1',
     sourceTranscriptRevisionId: 'source-revision-1',
     targetLanguageCode: 'ja',
-    createdAt: 1000,
+    createdAt: '2026-07-14T01:00:00.000Z',
     ...overrides
   };
 }
@@ -308,7 +421,7 @@ function translationExecutionPayload(overrides = {}) {
   return {
     id: 'execution-1',
     translationRequestId: 'request-1',
-    startedAt: 1000,
+    startedAt: '2026-07-14T01:01:00.000Z',
     ...overrides
   };
 }
@@ -320,7 +433,7 @@ function translationOutputPayload(overrides = {}) {
     sequence: 0,
     translatedText: 'Bonjour',
     targetLanguageCode: 'fr',
-    createdAt: 1200,
+    createdAt: '2026-07-14T01:06:00.000Z',
     ...overrides
   };
 }

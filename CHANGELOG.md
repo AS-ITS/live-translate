@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2C WP4 Saved Transcript Re-translation HTTP API: added
+  `POST /api/saved-transcripts/:sessionId/translations` with a request body
+  containing `sourceLanguageCode` and `targetLanguageCode`, returning `201`
+  with the serialized `request`, final `execution`, and `output` from the
+  saved-transcript re-translation application service. The endpoint returns
+  `503` when the optional re-translation capability is not configured. No real
+  translation provider, React UI, live-session integration, or fake provider
+  production wiring was added.
 - Phase 2C WP3 Saved Transcript Re-translation Application Service:
   resolves canonical saved source transcript text from legacy SessionRecord
   detail, orchestrates native TranslationRequest / TranslationExecution /

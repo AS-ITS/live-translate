@@ -13,6 +13,7 @@ const ERROR_RESPONSES = {
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
   auth_not_configured: { status: 503, message: 'Access gate is not configured.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
+  invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
   not_found: { status: 404, message: 'Route not found.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
@@ -20,6 +21,10 @@ const ERROR_RESPONSES = {
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
   session_not_found: { status: 404, message: 'Session not found.' },
+  saved_transcript_retranslation_unavailable: {
+    status: 503,
+    message: 'Saved transcript re-translation is not configured.'
+  },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
@@ -188,7 +193,7 @@ const { requestHandler: defaultRequestHandler } = createApplicationDependencies(
 });
 
 export function createRequestHandler(options = {}) {
-  const { sessionReadController, translationCommandController } = options;
+  const { sessionReadController, translationCommandController, savedTranscriptRetranslationController } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
     assertTranslationCommandController(translationCommandController);
@@ -197,7 +202,8 @@ export function createRequestHandler(options = {}) {
   return async function handleRequestWithDependencies(req, res) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
-      translationCommandController
+      translationCommandController,
+      savedTranscriptRetranslationController
     });
   };
 }
@@ -206,7 +212,11 @@ export async function handleRequest(req, res) {
   return defaultRequestHandler(req, res);
 }
 
-async function handleRequestWithSessionReadController(req, res, { sessionReadController, translationCommandController } = {}) {
+async function handleRequestWithSessionReadController(
+  req,
+  res,
+  { sessionReadController, translationCommandController, savedTranscriptRetranslationController } = {}
+) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -321,6 +331,40 @@ async function handleRequestWithSessionReadController(req, res, { sessionReadCon
     return;
   }
 
+  if (isSavedTranscriptRetranslationRoute(req.method, path)) {
+    try {
+      if (!savedTranscriptRetranslationController) {
+        throw createHttpError('saved_transcript_retranslation_unavailable');
+      }
+
+      const body = await readJson(req);
+      const sessionId = extractSavedTranscriptRetranslationSessionId(path);
+      const result = await savedTranscriptRetranslationController.translateSavedTranscript(
+        validateSavedTranscriptRetranslationRequest({ sessionId, body })
+      );
+
+      statusCode = 201;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = savedTranscriptRetranslationErrorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
+    }
+    return;
+  }
+
   if (req.method !== 'POST' || path !== '/api/live-token') {
     statusCode = 404;
     sendJson(res, statusCode, errorPayload('not_found', requestId), requestId);
@@ -396,6 +440,56 @@ function isTranslationCommandRoute(method, path) {
       path.length > '/api/translation-executions/'.length) ||
     (method === 'POST' && path === '/api/translation-outputs')
   );
+}
+
+function isSavedTranscriptRetranslationRoute(method, path) {
+  return method === 'POST' && path.startsWith('/api/saved-transcripts/') && path.endsWith('/translations');
+}
+
+function savedTranscriptRetranslationErrorCodeFor(error) {
+  if (typeof error.message === 'string' && error.message.startsWith('Session record not found:')) {
+    return 'session_not_found';
+  }
+
+  return errorCodeFor(error);
+}
+
+function extractSavedTranscriptRetranslationSessionId(path) {
+  const prefix = '/api/saved-transcripts/';
+  const suffix = '/translations';
+  const encodedSessionId = path.slice(prefix.length, -suffix.length);
+
+  try {
+    return decodeURIComponent(encodedSessionId);
+  } catch {
+    throw createHttpError('invalid_request');
+  }
+}
+
+function validateSavedTranscriptRetranslationRequest({ sessionId, body }) {
+  const validatedSessionId = validateRequiredString(sessionId);
+
+  if (!isPlainRequestObject(body)) {
+    throw createHttpError('invalid_request');
+  }
+
+  return {
+    sessionId: validatedSessionId,
+    sourceLanguageCode: validateRequiredString(body.sourceLanguageCode),
+    targetLanguageCode: validateRequiredString(body.targetLanguageCode)
+  };
+}
+
+function validateRequiredString(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw createHttpError('invalid_request');
+  }
+
+  return value;
+}
+
+function isPlainRequestObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function handleTranslationCommand(method, path, body, translationCommandController) {

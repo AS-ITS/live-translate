@@ -7,6 +7,7 @@ import { createInMemoryDomainEventBus } from '../src/infrastructure/inMemoryDoma
 import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
+import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionReadController } from './sessionReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 
@@ -18,6 +19,7 @@ export function createApplicationDependencies(options = {}) {
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService,
+    savedTranscriptRetranslationControllerFactory = createDefaultSavedTranscriptRetranslationController,
     idGenerator = createDefaultIdGenerator(),
     clock = () => Date.now(),
     translationCommandServiceFactory = createDefaultTranslationCommandService,
@@ -44,10 +46,14 @@ export function createApplicationDependencies(options = {}) {
         savedTranscriptRetranslationServiceFactory
       }).savedTranscriptRetranslationService
     : undefined;
+  const savedTranscriptRetranslationController = savedTranscriptRetranslationService
+    ? savedTranscriptRetranslationControllerFactory({ savedTranscriptRetranslationService })
+    : undefined;
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
         sessionReadController: sessionReadDependencies.sessionReadController,
-        translationCommandController: translationCommandDependencies.translationCommandController
+        translationCommandController: translationCommandDependencies.translationCommandController,
+        ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {})
       })
     : undefined;
 
@@ -55,6 +61,7 @@ export function createApplicationDependencies(options = {}) {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
+    ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
     ...(requestHandler ? { requestHandler } : {})
   };
 }

@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2G WP1 Resolver Explicit Provider Selection: extended
+  `TranslationProviderResolver` request-level selection so an optional explicit
+  `providerKey` takes precedence over `configuration.defaultProviderKey`,
+  validates explicit keys for string type and blankness only, delegates exact
+  provider lookup and unknown-provider errors unchanged to
+  `TranslationProviderRegistry`, and preserves configuration-driven default
+  resolution with no HTTP, composition root, provider implementation,
+  persistence, frontend, retry, fallback, or runtime provider management
+  changes.
 - Phase 2F WP7 Translation Provider Configuration closeout: completed the
   focused regression verification for configuration-driven provider resolution,
   documenting that the environment-backed configuration factory selects the

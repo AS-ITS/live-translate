@@ -15,7 +15,9 @@ export function createTranslationProviderResolver(input) {
         ? defaultProviderKey
         : options.providerKey;
 
-    assertProviderKey(selectedProviderKey, 'providerKey');
+    assertProviderKey(selectedProviderKey, 'providerKey', {
+      rejectSurroundingWhitespace: false
+    });
 
     return registry.get(selectedProviderKey);
   }
@@ -61,7 +63,7 @@ function assertConfiguration(configuration) {
   }
 }
 
-function assertProviderKey(providerKey, optionName) {
+function assertProviderKey(providerKey, optionName, { rejectSurroundingWhitespace = true } = {}) {
   if (typeof providerKey !== 'string') {
     throw new TypeError(`${optionName} must be a string.`);
   }
@@ -70,7 +72,7 @@ function assertProviderKey(providerKey, optionName) {
     throw new TypeError(`${optionName} must be a non-empty string.`);
   }
 
-  if (providerKey !== providerKey.trim()) {
+  if (rejectSurroundingWhitespace && providerKey !== providerKey.trim()) {
     throw new TypeError(`${optionName} must not include surrounding whitespace: ${providerKey}`);
   }
 }

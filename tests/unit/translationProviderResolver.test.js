@@ -271,6 +271,8 @@ test('rejects invalid explicit provider key types', () => {
   assert.throws(() => resolver.resolve({ providerKey: null }), /providerKey must be a string/);
   assert.throws(() => resolver.resolve({ providerKey: 1 }), /providerKey must be a string/);
   assert.throws(() => resolver.resolve({ providerKey: true }), /providerKey must be a string/);
+  assert.throws(() => resolver.resolve({ providerKey: {} }), /providerKey must be a string/);
+  assert.throws(() => resolver.resolve({ providerKey: [] }), /providerKey must be a string/);
 });
 
 test('rejects empty or whitespace-only provider keys', () => {
@@ -278,13 +280,6 @@ test('rejects empty or whitespace-only provider keys', () => {
 
   assert.throws(() => resolver.resolve({ providerKey: '' }), /providerKey must be a non-empty string/);
   assert.throws(() => resolver.resolve({ providerKey: '   ' }), /providerKey must be a non-empty string/);
-});
-
-test('rejects provider keys with surrounding whitespace', () => {
-  const resolver = createResolver();
-
-  assert.throws(() => resolver.resolve({ providerKey: ' gemini' }), /providerKey must not include surrounding whitespace/);
-  assert.throws(() => resolver.resolve({ providerKey: 'gemini ' }), /providerKey must not include surrounding whitespace/);
 });
 
 test('does not trim or normalize explicit keys', () => {
@@ -305,6 +300,23 @@ test('does not trim or normalize explicit keys', () => {
   assert.throws(() => resolver.resolve({ providerKey: 'GEMINI' }), registryError);
   assert.deepEqual(calls, [
     ['get', 'GEMINI']
+  ]);
+});
+
+test('passes nonblank explicit provider keys with surrounding whitespace unchanged to registry.get', () => {
+  const provider = translationProvider();
+  const calls = [];
+  const registry = fakeRegistry(
+    {
+      ' gemini ': provider
+    },
+    calls
+  );
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
+
+  assert.equal(resolver.resolve({ providerKey: ' gemini ' }), provider);
+  assert.deepEqual(calls, [
+    ['get', ' gemini ']
   ]);
 });
 

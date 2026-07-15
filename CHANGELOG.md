@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2E WP7 closeout and final regression: completed the full Translation
+  Provider architecture regression suite for the registry, resolver,
+  composition, saved-transcript integration, and production Gemini HTTP path.
+  The suite verified the default Gemini provider resolution path through the
+  controller, saved-transcript retranslation service, resolver, registry,
+  Gemini provider, Gemini client adapter, and fake GoogleGenAI client with one
+  resolver call, one registry lookup, one provider invocation, one
+  `generateContent` call, no skipped tests, no real Gemini API call, and no
+  HTTP, persistence, controller, retry, fallback, provider interface, frontend,
+  or production behavior change. Phase 2E is complete.
 - Phase 2E WP6 Provider Resolution End-to-End Verification: extended the
   production saved-transcript HTTP end-to-end test to prove the composed Gemini
   provider is registered, resolved once with no provider key through the

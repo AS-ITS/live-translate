@@ -19,6 +19,7 @@ Completed:
 - Phase 1 Demo
 - Phase 2C - Saved Transcript Re-translation
 - Phase 2D - Production Gemini Saved-Transcript Translation
+- Phase 2E - Translation Provider Architecture
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -31,12 +32,18 @@ Completed:
 - Security hardening
 - Testing documentation
 
-Phase 2D status:
+Phase 2E
+Status: Completed
 
-- Production Gemini saved-transcript translation path is available through the
-  existing saved-transcript re-translation application stack.
-- Final focused verification completed with fake GoogleGenAI clients only; no
-  real Gemini API call was performed.
+Phase 2E status:
+
+- Translation Provider Registry and Provider Resolver are complete for the
+  saved-transcript translation architecture.
+- Production composition resolves the default Gemini provider through the
+  registry/resolver path and injects it into saved-transcript retranslation.
+- Final regression verified saved transcript integration, default provider
+  resolution, production composition, and fake GoogleGenAI-only execution with
+  no real Gemini API call or HTTP/persistence behavior change.
 
 Documentation:
 

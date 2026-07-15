@@ -18,8 +18,9 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 2 follow-up capability selection.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
-in progress and not completed. Phase 2C Saved Transcript Re-translation and
-Phase 2D Production Gemini Saved-Transcript Translation are completed.
+in progress and not completed. Phase 2C Saved Transcript Re-translation,
+Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
+Translation Provider Architecture are completed.
 
 Completed Phase 1 capabilities include:
 
@@ -172,6 +173,12 @@ Deferred:
   - Production provider composition
   - Production HTTP integration verification
   - End-to-end flow verification with fake GoogleGenAI clients
+- Translation Provider Architecture: Completed
+  - Translation Provider Registry
+  - Provider Resolver
+  - Production Composition
+  - Default Provider Resolution
+  - Saved Transcript Integration
 - Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
@@ -207,6 +214,12 @@ Completed capabilities:
   - Production composition
   - Production integration verification
   - End-to-end flow verification
+- Translation Provider Architecture
+  - Translation Provider Registry
+  - Provider Resolver
+  - Production Composition
+  - Default Provider Resolution
+  - Saved Transcript Integration
 
 ### Phase 2B-1 - Architecture Foundation
 
@@ -313,6 +326,47 @@ Deferred:
 - Authentication and authorization changes.
 - Durable persistence or database schema changes.
 - UI activation or output version UI.
+
+### Phase 2E - Translation Provider Architecture
+
+Status: Completed.
+
+Scope:
+
+- Translation Provider Registry contract for exact provider-key registration,
+  lookup, listing, and provider identity preservation.
+- Provider Resolver contract for default provider resolution and explicit
+  provider selection without key normalization or fallback on explicit miss.
+- Production Composition that registers the Gemini saved-transcript provider,
+  resolves the configured default provider once, and injects the resolved
+  provider into the saved-transcript retranslation service.
+- Default Provider Resolution using Gemini for saved-transcript translation.
+- Saved Transcript Integration through the existing HTTP controller,
+  SavedTranscriptRetranslationService, TranslationProviderResolver,
+  TranslationProviderRegistry, GeminiSavedTranscriptTranslationProvider,
+  GeminiClientAdapter, GoogleGenAIClient, and fake GoogleGenAI test client.
+
+Closeout:
+
+- Final Phase 2E regression suite completed with all tests passing and no
+  skipped tests.
+- Production saved-transcript flow verified one resolver call, one registry
+  lookup, one provider translation invocation, and one fake GoogleGenAI
+  `generateContent` call.
+- HTTP response schema, status code, SessionRecord persistence,
+  TranslationOutput persistence, controller behavior, retry behavior, fallback
+  behavior, provider interface, and frontend behavior remain unchanged.
+- Automated verification used fake GoogleGenAI clients only; no real Gemini API
+  call was performed.
+
+Deferred:
+
+- Runtime provider switching.
+- Multiple providers.
+- Provider configuration UI.
+- Provider retries, fallback, metrics, health checks, caching, priorities, or
+  load balancing.
+- Real Gemini integration testing.
 
 ### Phase 2 Deferred Scope
 

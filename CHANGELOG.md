@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2E WP6 Provider Resolution End-to-End Verification: extended the
+  production saved-transcript HTTP end-to-end test to prove the composed Gemini
+  provider is registered, resolved once with no provider key through the
+  configured default provider, injected unchanged into the retranslation
+  service, invoked once with unchanged inputs, and forwarded through the Gemini
+  client adapter to a fake GoogleGenAI `generateContent` call exactly once while
+  preserving the Phase 2D `201` response body and persisted request,
+  execution, and output state with no real Gemini API call or production code
+  behavior change.
 - Phase 2E WP5 Saved Transcript Provider Resolution Integration verification:
   added focused production HTTP integration coverage proving saved-transcript
   retranslation resolves the configured Gemini provider through the translation

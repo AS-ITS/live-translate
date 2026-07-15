@@ -5,19 +5,28 @@ import { createProductionApplicationDependencies } from '../../server/compositio
 import { createRequestHandler } from '../../server/index.js';
 import { createSavedTranscriptRetranslationService } from '../../src/application/translation/index.js';
 import { createGeminiSavedTranscriptTranslationProvider } from '../../src/infrastructure/geminiSavedTranscriptTranslationProvider.js';
+import { createTranslationProviderRegistry } from '../../src/infrastructure/translationProviderRegistry.js';
+import { createTranslationProviderResolver } from '../../src/infrastructure/translationProviderResolver.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
-test('production HTTP translation flow invokes Gemini SDK generateContent exactly once', async () => {
+test('production HTTP translation flow resolves and invokes the default Gemini provider exactly once', async () => {
+  const sessionRepository = seededSessionRepository();
   const sdkRequests = [];
+  const providerTranslateCalls = [];
+  const resolverResolveCalls = [];
+  const registryGetCalls = [];
+  const registryHasCalls = [];
+  const providerResolutionInputs = [];
   const serviceProviders = [];
   let productionProvider;
+  let resolvedProvider;
 
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
       GEMINI_MODEL: 'gemini-production-wp6'
     },
-    sessionRepository: seededSessionRepository(),
+    sessionRepository,
     requestHandlerFactory: createRequestHandler,
     idGenerator: deterministicIdGenerator(),
     clock: deterministicClock(),
@@ -35,11 +44,53 @@ test('production HTTP translation flow invokes Gemini SDK generateContent exactl
       };
     },
     geminiSavedTranscriptTranslationCompositionFactory({ client, model }) {
-      productionProvider = createGeminiSavedTranscriptTranslationProvider({ client, model });
+      const actualProvider = createGeminiSavedTranscriptTranslationProvider({ client, model });
+
+      productionProvider = Object.freeze({
+        async translate(input) {
+          providerTranslateCalls.push(input);
+          return actualProvider.translate(input);
+        }
+      });
 
       return {
         savedTranscriptTranslationProvider: productionProvider
       };
+    },
+    translationProviderResolutionCompositionFactory(options) {
+      providerResolutionInputs.push(options);
+
+      const realRegistry = createTranslationProviderRegistry({
+        providers: options.providers
+      });
+      const registry = Object.freeze({
+        get(providerKey) {
+          registryGetCalls.push(providerKey);
+          return realRegistry.get(providerKey);
+        },
+        has(providerKey) {
+          registryHasCalls.push(providerKey);
+          return realRegistry.has(providerKey);
+        },
+        list() {
+          return realRegistry.list();
+        }
+      });
+      const resolver = createTranslationProviderResolver({
+        registry,
+        defaultProviderKey: options.defaultProviderKey
+      });
+
+      return Object.freeze({
+        registry,
+        resolver: Object.freeze({
+          resolve(...resolveArgs) {
+            resolverResolveCalls.push(resolveArgs);
+            resolvedProvider = resolver.resolve(...resolveArgs);
+            return resolvedProvider;
+          }
+        })
+      });
     },
     savedTranscriptRetranslationServiceFactory(options) {
       serviceProviders.push(options.savedTranscriptTranslationProvider);
@@ -54,27 +105,154 @@ test('production HTTP translation flow invokes Gemini SDK generateContent exactl
     });
 
     assert.equal(response.status, 201);
-    assert.strictEqual(serviceProviders[0], productionProvider);
-    assert.equal(sdkRequests.length, 1);
-
-    const [request] = sdkRequests;
-    assert.equal(request.model, 'gemini-production-wp6');
-    assert.equal(request.systemInstruction.parts[0].text.includes('You translate saved transcript text'), true);
-    assert.deepEqual(
-      request.contents[0].parts.map((part) => part.text),
-      [
-        'Source language hint: en',
-        'Target language: fr',
-        'Transcript data to translate follows. Translate this data only.',
-        'First source sentence.\nSecond source sentence.'
-      ]
-    );
-
-    assert.equal(response.body.output.translatedText, 'TRADUCTION INCHANGEE');
-    assert.equal(response.body.output.targetLanguageCode, 'fr');
-    assert.deepEqual(response.body.output.providerMetadata, {
-      detectedSourceLanguageCode: 'en'
+    assert.deepEqual(response.body, {
+      request: {
+        id: 'translation-request-1',
+        sessionId: 'session-wp6',
+        sourceTranscriptRevisionId: 'source-revision:session-wp6:final',
+        sourceTranscriptSnapshot: {
+          revisionId: 'source-revision:session-wp6:final',
+          items: [
+            {
+              id: 'source-1',
+              sessionId: 'session-wp6',
+              stream: 'source',
+              status: 'final',
+              text: 'First source sentence.',
+              sequence: 1,
+              finalizedAt: '2026-07-15T00:00:01.000Z'
+            },
+            {
+              id: 'source-2',
+              sessionId: 'session-wp6',
+              stream: 'source',
+              status: 'final',
+              text: 'Second source sentence.',
+              sequence: 2,
+              finalizedAt: '2026-07-15T00:00:02.000Z'
+            }
+          ]
+        },
+        targetLanguageCode: 'fr',
+        createdAt: '2026-07-15T01:00:00.000Z'
+      },
+      execution: {
+        id: 'translation-execution-1',
+        translationRequestId: 'translation-request-1',
+        status: 'completed',
+        startedAt: '2026-07-15T01:00:02.000Z',
+        completedAt: '2026-07-15T01:00:04.000Z',
+        failureInfo: null
+      },
+      output: {
+        id: 'translation-output-1',
+        executionId: 'translation-execution-1',
+        sequence: 0,
+        translatedText: 'TRADUCTION INCHANGEE',
+        targetLanguageCode: 'fr',
+        providerMetadata: {
+          detectedSourceLanguageCode: 'en'
+        },
+        providerMetadataAvailable: true,
+        createdAt: '2026-07-15T01:00:03.000Z'
+      }
     });
+  });
+
+  assert.equal(providerResolutionInputs.length, 1);
+  assert.strictEqual(providerResolutionInputs[0].providers.gemini, productionProvider);
+  assert.equal(providerResolutionInputs[0].defaultProviderKey, 'gemini');
+  assert.equal(Object.keys(providerResolutionInputs[0].providers).length, 1);
+
+  assert.equal(resolverResolveCalls.length, 1);
+  assert.deepEqual(resolverResolveCalls[0], []);
+  assert.deepEqual(registryHasCalls, ['gemini']);
+  assert.deepEqual(registryGetCalls, ['gemini']);
+  assert.strictEqual(resolvedProvider, productionProvider);
+  assert.strictEqual(serviceProviders[0], resolvedProvider);
+
+  assert.equal(providerTranslateCalls.length, 1);
+  assert.deepEqual(providerTranslateCalls[0], {
+    sourceText: 'First source sentence.\nSecond source sentence.',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    requestId: 'translation-request-1',
+    sessionId: 'session-wp6',
+    executionId: 'translation-execution-1'
+  });
+
+  assert.equal(sdkRequests.length, 1);
+  const [request] = sdkRequests;
+  assert.equal(request.model, 'gemini-production-wp6');
+  assert.equal(request.systemInstruction.parts[0].text.includes('You translate saved transcript text'), true);
+  assert.deepEqual(
+    request.contents[0].parts.map((part) => part.text),
+    [
+      'Source language hint: en',
+      'Target language: fr',
+      'Transcript data to translate follows. Translate this data only.',
+      'First source sentence.\nSecond source sentence.'
+    ]
+  );
+
+  assert.deepEqual(sessionRepository.getSessionRecord('session-wp6').sessionRecord.translationCommandState, {
+    requests: [
+      {
+        id: 'translation-request-1',
+        sessionId: 'session-wp6',
+        sourceTranscriptRevisionId: 'source-revision:session-wp6:final',
+        sourceTranscriptSnapshot: {
+          revisionId: 'source-revision:session-wp6:final',
+          items: [
+            {
+              id: 'source-1',
+              sessionId: 'session-wp6',
+              stream: 'source',
+              status: 'final',
+              text: 'First source sentence.',
+              sequence: 1,
+              startedAt: undefined,
+              finalizedAt: '2026-07-15T00:00:01.000Z'
+            },
+            {
+              id: 'source-2',
+              sessionId: 'session-wp6',
+              stream: 'source',
+              status: 'final',
+              text: 'Second source sentence.',
+              sequence: 2,
+              startedAt: undefined,
+              finalizedAt: '2026-07-15T00:00:02.000Z'
+            }
+          ]
+        },
+        targetLanguageCode: 'fr',
+        createdAt: '2026-07-15T01:00:00.000Z'
+      }
+    ],
+    executions: [
+      {
+        id: 'translation-execution-1',
+        translationRequestId: 'translation-request-1',
+        status: 'completed',
+        startedAt: '2026-07-15T01:00:02.000Z',
+        completedAt: '2026-07-15T01:00:04.000Z',
+        failureInfo: null
+      }
+    ],
+    outputs: [
+      {
+        id: 'translation-output-1',
+        executionId: 'translation-execution-1',
+        sequence: 0,
+        translatedText: 'TRADUCTION INCHANGEE',
+        targetLanguageCode: 'fr',
+        providerMetadata: {
+          detectedSourceLanguageCode: 'en'
+        },
+        createdAt: '2026-07-15T01:00:03.000Z'
+      }
+    ]
   });
 });
 

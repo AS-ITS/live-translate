@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2E WP4 Saved Transcript Provider Resolution Integration: activated
+  translation provider resolution in production saved-transcript retranslation
+  composition by registering the composed Gemini provider, resolving the
+  configured default provider once during composition, and injecting that
+  resolved provider unchanged into the application service. No HTTP, provider,
+  persistence, retry, fallback, runtime switching, UI, or real Gemini API
+  behavior was introduced.
 - Phase 2E WP3 Translation Provider Resolution Composition: added a focused
   infrastructure composition factory that assembles the translation provider
   registry and resolver through the existing WP1/WP2 factories, verifies

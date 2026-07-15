@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createApplicationDependencies,
+  createProductionApplicationDependencies,
   createSavedTranscriptRetranslationDependencies
 } from '../../server/compositionRoot.js';
 
@@ -105,6 +106,72 @@ test('application composition wires saved transcript re-translation once through
     'sessionReadController',
     'translationCommandController'
   ]);
+});
+
+test('production composition injects the resolver-selected saved transcript provider into the service', () => {
+  const calls = [];
+  const geminiProvider = provider();
+  const resolvedProvider = provider();
+  const savedTranscriptRetranslationService = { translateSavedTranscript() {} };
+  let resolverResolveCallCount = 0;
+
+  const dependencies = createProductionApplicationDependencies({
+    env: { GEMINI_API_KEY: 'unused-by-mock', GEMINI_MODEL: 'unused-by-mock' },
+    sessionRepository: repository(),
+    geminiEnvironmentFactory(options) {
+      calls.push(['environment', options]);
+      return { apiKey: 'api-key', model: 'model-name' };
+    },
+    googleGenAIClientFactory(options) {
+      calls.push(['googleClient', options]);
+      return { models: { generateContent() {} } };
+    },
+    geminiClientAdapterFactory(options) {
+      calls.push(['adapter', options]);
+      return { generateContent() {} };
+    },
+    geminiSavedTranscriptTranslationCompositionFactory(options) {
+      calls.push(['providerComposition', options]);
+      return { savedTranscriptTranslationProvider: geminiProvider };
+    },
+    translationProviderResolutionCompositionFactory(options) {
+      calls.push(['providerResolutionComposition', options]);
+      return {
+        resolver: {
+          resolve(...resolveArgs) {
+            resolverResolveCallCount += 1;
+            calls.push(['resolverResolve', resolveArgs]);
+            return resolvedProvider;
+          }
+        }
+      };
+    },
+    savedTranscriptRetranslationServiceFactory(options) {
+      calls.push(['serviceFactory', options]);
+      return savedTranscriptRetranslationService;
+    }
+  });
+
+  assert.strictEqual(dependencies.savedTranscriptRetranslationService, savedTranscriptRetranslationService);
+  assert.deepEqual(calls.map(([name]) => name), [
+    'environment',
+    'googleClient',
+    'adapter',
+    'providerComposition',
+    'providerResolutionComposition',
+    'resolverResolve',
+    'serviceFactory'
+  ]);
+  assert.deepEqual(calls[4][1], {
+    providers: {
+      gemini: geminiProvider
+    },
+    defaultProviderKey: 'gemini'
+  });
+  assert.equal(resolverResolveCallCount, 1);
+  assert.deepEqual(calls[5][1], []);
+  assert.strictEqual(calls[6][1].savedTranscriptTranslationProvider, resolvedProvider);
+  assert.notStrictEqual(calls[6][1].savedTranscriptTranslationProvider, geminiProvider);
 });
 
 function commandService() {

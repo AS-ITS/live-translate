@@ -10,8 +10,10 @@ test('production composition assembles Gemini provider and injects it into saved
   const env = { GEMINI_API_KEY: 'unused-by-mock', GEMINI_MODEL: 'unused-by-mock' };
   const googleClient = { models: { generateContent() {} } };
   const geminiClient = { generateContent() {} };
-  const provider = { translate() {} };
+  const geminiProvider = { translate() {} };
+  const resolvedProvider = { translate() {} };
   const service = { translateSavedTranscript() {} };
+  let resolverResolveCallCount = 0;
 
   const dependencies = createProductionApplicationDependencies({
     env,
@@ -30,7 +32,20 @@ test('production composition assembles Gemini provider and injects it into saved
     },
     geminiSavedTranscriptTranslationCompositionFactory(options) {
       calls.push(['providerComposition', options]);
-      return { savedTranscriptTranslationProvider: provider };
+      return { savedTranscriptTranslationProvider: geminiProvider };
+    },
+    translationProviderResolutionCompositionFactory(options) {
+      calls.push(['providerResolutionComposition', options]);
+      return {
+        registry: { get() {}, has() {}, list() {} },
+        resolver: {
+          resolve(...resolveArgs) {
+            resolverResolveCallCount += 1;
+            calls.push(['resolverResolve', resolveArgs]);
+            return resolvedProvider;
+          }
+        }
+      };
     },
     savedTranscriptRetranslationServiceFactory(options) {
       calls.push(['service', options]);
@@ -44,6 +59,8 @@ test('production composition assembles Gemini provider and injects it into saved
     'googleClient',
     'adapter',
     'providerComposition',
+    'providerResolutionComposition',
+    'resolverResolve',
     'service'
   ]);
   assert.deepEqual(calls[0][1], { env });
@@ -53,16 +70,28 @@ test('production composition assembles Gemini provider and injects it into saved
     client: geminiClient,
     model: 'exact-model'
   });
-  assert.strictEqual(calls[4][1].savedTranscriptTranslationProvider, provider);
-  assert.strictEqual(calls[4][1].translationCommandService, dependencies.translationCommandService);
-  assert.strictEqual(calls[4][1].sessionRepository, dependencies.sessionRepository);
-  assert.equal(typeof calls[4][1].idGenerator, 'function');
-  assert.equal(typeof calls[4][1].clock, 'function');
+  assert.deepEqual(calls[4][1], {
+    providers: {
+      gemini: geminiProvider
+    },
+    defaultProviderKey: 'gemini'
+  });
+  assert.strictEqual(calls[4][1].providers.gemini, geminiProvider);
+  assert.equal(resolverResolveCallCount, 1);
+  assert.deepEqual(calls[5][1], []);
+  assert.strictEqual(calls[6][1].savedTranscriptTranslationProvider, resolvedProvider);
+  assert.notStrictEqual(calls[6][1].savedTranscriptTranslationProvider, geminiProvider);
+  assert.strictEqual(calls[6][1].translationCommandService, dependencies.translationCommandService);
+  assert.strictEqual(calls[6][1].sessionRepository, dependencies.sessionRepository);
+  assert.equal(typeof calls[6][1].idGenerator, 'function');
+  assert.equal(typeof calls[6][1].clock, 'function');
 });
 
-test('production Gemini provider factory returns provider composition output exactly once', () => {
+test('production Gemini provider factory returns resolver output exactly once', () => {
   const calls = [];
-  const provider = { translate() {} };
+  const geminiProvider = { translate() {} };
+  const resolvedProvider = { translate() {} };
+  let resolverResolveCallCount = 0;
   const result = createProductionSavedTranscriptTranslationProvider({
     env: { GEMINI_API_KEY: 'unused-by-mock' },
     geminiEnvironmentFactory(options) {
@@ -79,12 +108,39 @@ test('production Gemini provider factory returns provider composition output exa
     },
     geminiSavedTranscriptTranslationCompositionFactory(options) {
       calls.push(['providerComposition', options]);
-      return { savedTranscriptTranslationProvider: provider };
+      return { savedTranscriptTranslationProvider: geminiProvider };
+    },
+    translationProviderResolutionCompositionFactory(options) {
+      calls.push(['providerResolutionComposition', options]);
+      return {
+        resolver: {
+          resolve(...resolveArgs) {
+            resolverResolveCallCount += 1;
+            calls.push(['resolverResolve', resolveArgs]);
+            return resolvedProvider;
+          }
+        }
+      };
     }
   });
 
-  assert.strictEqual(result, provider);
-  assert.deepEqual(calls.map(([name]) => name), ['environment', 'googleClient', 'adapter', 'providerComposition']);
+  assert.strictEqual(result, resolvedProvider);
+  assert.deepEqual(calls.map(([name]) => name), [
+    'environment',
+    'googleClient',
+    'adapter',
+    'providerComposition',
+    'providerResolutionComposition',
+    'resolverResolve'
+  ]);
+  assert.deepEqual(calls[4][1], {
+    providers: {
+      gemini: geminiProvider
+    },
+    defaultProviderKey: 'gemini'
+  });
+  assert.equal(resolverResolveCallCount, 1);
+  assert.deepEqual(calls[5][1], []);
 });
 
 test('production Gemini environment validation errors propagate without wrapping', () => {
@@ -104,6 +160,9 @@ test('production Gemini environment validation errors propagate without wrapping
           throw new Error('must not be called');
         },
         geminiSavedTranscriptTranslationCompositionFactory() {
+          throw new Error('must not be called');
+        },
+        translationProviderResolutionCompositionFactory() {
           throw new Error('must not be called');
         }
       }),

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2D WP1 Gemini saved-transcript translation provider contract: added a
+  Gemini-specific infrastructure factory with injected client, model, and prompt
+  builder dependencies, deterministic request construction, response
+  normalization, and focused error boundaries. This does not add real Gemini API
+  integration, production composition wiring, environment configuration, SDK
+  initialization, or network calls.
 - Phase 2C Saved Transcript Re-translation closeout: marked the capability as
   completed after focused provider, application service, composition, HTTP,
   event-ordering, failure-boundary, immutability, and export-surface

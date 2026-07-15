@@ -4,6 +4,18 @@
 
 ### Added
 
+- Phase 2F WP7 Translation Provider Configuration closeout: completed the
+  focused regression verification for configuration-driven provider resolution,
+  documenting that the environment-backed configuration factory selects the
+  default provider key, defaults to `gemini` when `TRANSLATION_PROVIDER` is
+  unset, preserves explicit `TRANSLATION_PROVIDER=gemini`, and passes the
+  shared configuration object through production composition into
+  `TranslationProviderResolver`. Production composition now owns creation of the
+  shared provider configuration, the resolver consumes the configuration object,
+  composition no longer extracts `defaultProviderKey`, and explicit Gemini
+  production HTTP integration was verified through fake GoogleGenAI only with
+  no real Gemini API calls and no HTTP, persistence, domain, frontend, retry, or
+  fallback behavior changes.
 - Phase 2F WP6 Configuration-driven Provider Resolution Integration
   Verification: extended production saved-transcript HTTP integration coverage
   to prove explicit `TRANSLATION_PROVIDER=gemini` is consumed by the shared

@@ -20,7 +20,8 @@ Current milestone: Phase 2 follow-up capability selection.
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
-Translation Provider Architecture are completed.
+Translation Provider Architecture are completed. Phase 2F Translation Provider
+Configuration is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -179,6 +180,14 @@ Deferred:
   - Production Composition
   - Default Provider Resolution
   - Saved Transcript Integration
+- Phase 2F - Translation Provider Configuration: Completed
+  - Configuration factory
+  - Environment default provider selection
+  - Production composition wiring
+  - Resolver configuration ownership
+  - Shared configuration propagation
+  - Explicit Gemini production HTTP verification
+  - Focused regression closeout
 - Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
@@ -220,6 +229,23 @@ Completed capabilities:
   - Production Composition
   - Default Provider Resolution
   - Saved Transcript Integration
+- Translation Provider Configuration
+  - Configuration factory
+  - Environment default provider selection
+  - Production composition wiring
+  - Resolver configuration ownership
+  - Shared configuration propagation
+  - Explicit Gemini production HTTP verification
+  - Focused regression closeout
+
+Future provider capabilities remain separate future work:
+
+- Request-level provider selection
+- Runtime provider switching
+- Fallback and retry
+- Provider health checks
+- Additional production providers
+- Frontend provider controls
 
 ### Phase 2B-1 - Architecture Foundation
 

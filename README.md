@@ -20,6 +20,7 @@ Completed:
 - Phase 2C - Saved Transcript Re-translation
 - Phase 2D - Production Gemini Saved-Transcript Translation
 - Phase 2E - Translation Provider Architecture
+- Phase 2F - Translation Provider Configuration
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -32,18 +33,29 @@ Completed:
 - Security hardening
 - Testing documentation
 
-Phase 2E
+Phase 2F
 Status: Completed
 
-Phase 2E status:
+Phase 2F status:
 
-- Translation Provider Registry and Provider Resolver are complete for the
-  saved-transcript translation architecture.
-- Production composition resolves the default Gemini provider through the
-  registry/resolver path and injects it into saved-transcript retranslation.
-- Final regression verified saved transcript integration, default provider
-  resolution, production composition, and fake GoogleGenAI-only execution with
-  no real Gemini API call or HTTP/persistence behavior change.
+- Translation provider selection is controlled by environment-driven
+  configuration through
+  `createTranslationProviderConfiguration({ environment })`.
+- Set `TRANSLATION_PROVIDER=gemini` to select the current production provider.
+  When unset, the default provider key is `gemini`.
+- Environment configuration determines the default translation provider key.
+  The resolver consumes the shared configuration object and resolves the
+  registered provider before the Saved Transcript Retranslation service is
+  constructed.
+- The configuration layer only stores the provider key. It does not validate
+  whether that provider exists in the registry.
+- The registry owns provider registration, the resolver owns provider
+  selection, and the service depends only on the resolved provider.
+- Runtime provider switching, per-request provider selection, fallback, retry,
+  provider health checks, and frontend provider controls are not supported.
+- Focused regression verified explicit `TRANSLATION_PROVIDER=gemini`, the
+  default `gemini` provider path, production HTTP `201` behavior, persistence,
+  and fake GoogleGenAI-only execution with no real Gemini API call.
 
 Documentation:
 

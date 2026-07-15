@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2F WP1 Translation Provider Configuration: added a standalone
+  immutable environment-backed configuration factory for selecting the default
+  translation provider key from `TRANSLATION_PROVIDER`, defaulting to `gemini`
+  when unset and preserving configured provider keys without validating provider
+  existence. Resolver, registry, production composition, HTTP API, Gemini
+  provider behavior, runtime provider switching, fallback, retry, SDK loading,
+  and real Gemini API usage remain unchanged.
 - Phase 2E WP7 closeout and final regression: completed the full Translation
   Provider architecture regression suite for the registry, resolver,
   composition, saved-transcript integration, and production Gemini HTTP path.

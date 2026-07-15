@@ -5,6 +5,10 @@ import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAda
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
+import {
+  DEFAULT_TRANSLATION_PROVIDER,
+  createTranslationProviderConfiguration
+} from '../src/infrastructure/translationProviderConfiguration.js';
 import { createTranslationProviderResolutionComposition } from '../src/infrastructure/translationProviderResolutionComposition.js';
 import { createTranslationDomainEventPublisherAdapter } from '../src/infrastructure/translationDomainEventPublisherAdapter.js';
 import { createTranslationDomainEventSubscriber } from '../src/infrastructure/translationDomainEventSubscriber.js';
@@ -79,6 +83,7 @@ export function createProductionApplicationDependencies(options = {}) {
     googleGenAIClientFactory = createDefaultGoogleGenAIClient,
     geminiClientAdapterFactory = createGeminiClientAdapter,
     geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
+    translationProviderConfigurationFactory = createTranslationProviderConfiguration,
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     ...applicationOptions
   } = options;
@@ -93,6 +98,7 @@ export function createProductionApplicationDependencies(options = {}) {
         googleGenAIClientFactory,
         geminiClientAdapterFactory,
         geminiSavedTranscriptTranslationCompositionFactory,
+        translationProviderConfigurationFactory,
         translationProviderResolutionCompositionFactory
       });
 
@@ -108,16 +114,21 @@ export function createProductionSavedTranscriptTranslationProvider({
   googleGenAIClientFactory = createDefaultGoogleGenAIClient,
   geminiClientAdapterFactory = createGeminiClientAdapter,
   geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
+  translationProviderConfigurationFactory = createTranslationProviderConfiguration,
   translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
   assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
   assertFactory(geminiClientAdapterFactory, 'geminiClientAdapterFactory');
   assertFactory(geminiSavedTranscriptTranslationCompositionFactory, 'geminiSavedTranscriptTranslationCompositionFactory');
+  assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
   assertFactory(translationProviderResolutionCompositionFactory, 'translationProviderResolutionCompositionFactory');
 
   const environment = geminiEnvironmentFactory({
     env
+  });
+  const configuration = translationProviderConfigurationFactory({
+    environment: env
   });
   const googleClient = googleGenAIClientFactory({
     apiKey: environment.apiKey
@@ -131,9 +142,9 @@ export function createProductionSavedTranscriptTranslationProvider({
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
     providers: {
-      gemini: geminiProvider
+      [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
     },
-    defaultProviderKey: 'gemini'
+    defaultProviderKey: configuration.defaultProviderKey
   });
   const provider = providerResolutionComposition.resolver.resolve();
 

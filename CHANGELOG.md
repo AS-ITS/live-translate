@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2F WP2 Translation Provider Configuration Composition: wired the
+  environment-backed translation provider configuration into production
+  saved-transcript provider composition so provider resolution receives
+  `configuration.defaultProviderKey` instead of a hardcoded default, while
+  keeping registry, resolver, service API, HTTP API, Gemini provider behavior,
+  translation logic, retry, fallback, runtime provider switching, database, and
+  frontend behavior unchanged.
 - Phase 2F WP1 Translation Provider Configuration: added a standalone
   immutable environment-backed configuration factory for selecting the default
   translation provider key from `TRANSLATION_PROVIDER`, defaulting to `gemini`

@@ -112,11 +112,17 @@ test('production composition injects the resolver-selected saved transcript prov
   const calls = [];
   const geminiProvider = provider();
   const resolvedProvider = provider();
+  const configuration = { defaultProviderKey: 'configured-provider' };
   const savedTranscriptRetranslationService = { translateSavedTranscript() {} };
   let resolverResolveCallCount = 0;
+  let configurationCallCount = 0;
 
   const dependencies = createProductionApplicationDependencies({
-    env: { GEMINI_API_KEY: 'unused-by-mock', GEMINI_MODEL: 'unused-by-mock' },
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock',
+      TRANSLATION_PROVIDER: configuration.defaultProviderKey
+    },
     sessionRepository: repository(),
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
@@ -133,6 +139,11 @@ test('production composition injects the resolver-selected saved transcript prov
     geminiSavedTranscriptTranslationCompositionFactory(options) {
       calls.push(['providerComposition', options]);
       return { savedTranscriptTranslationProvider: geminiProvider };
+    },
+    translationProviderConfigurationFactory(options) {
+      configurationCallCount += 1;
+      calls.push(['providerConfiguration', options]);
+      return configuration;
     },
     translationProviderResolutionCompositionFactory(options) {
       calls.push(['providerResolutionComposition', options]);
@@ -155,6 +166,7 @@ test('production composition injects the resolver-selected saved transcript prov
   assert.strictEqual(dependencies.savedTranscriptRetranslationService, savedTranscriptRetranslationService);
   assert.deepEqual(calls.map(([name]) => name), [
     'environment',
+    'providerConfiguration',
     'googleClient',
     'adapter',
     'providerComposition',
@@ -162,16 +174,19 @@ test('production composition injects the resolver-selected saved transcript prov
     'resolverResolve',
     'serviceFactory'
   ]);
-  assert.deepEqual(calls[4][1], {
+  assert.equal(configurationCallCount, 1);
+  assert.deepEqual(calls[5][1], {
     providers: {
       gemini: geminiProvider
     },
-    defaultProviderKey: 'gemini'
+    defaultProviderKey: configuration.defaultProviderKey
   });
+  assert.strictEqual(calls[5][1].defaultProviderKey, configuration.defaultProviderKey);
   assert.equal(resolverResolveCallCount, 1);
-  assert.deepEqual(calls[5][1], []);
-  assert.strictEqual(calls[6][1].savedTranscriptTranslationProvider, resolvedProvider);
-  assert.notStrictEqual(calls[6][1].savedTranscriptTranslationProvider, geminiProvider);
+  assert.deepEqual(calls[6][1], []);
+  assert.strictEqual(calls[7][1].savedTranscriptTranslationProvider, resolvedProvider);
+  assert.notStrictEqual(calls[7][1].savedTranscriptTranslationProvider, geminiProvider);
+  assert.ok(!Object.hasOwn(calls[7][1], 'configuration'));
 });
 
 function commandService() {

@@ -14,6 +14,8 @@ test('production composition assembles Gemini provider and injects it into saved
   const resolvedProvider = { translate() {} };
   const configuration = { defaultProviderKey: 'configured-provider' };
   const service = { translateSavedTranscript() {} };
+  const savedTranscriptRetranslationController = { translateSavedTranscript() {} };
+  const requestHandler = function requestHandler() {};
   let resolverResolveCallCount = 0;
   let configurationCallCount = 0;
   let geminiProviderCallCount = 0;
@@ -59,10 +61,20 @@ test('production composition assembles Gemini provider and injects it into saved
     savedTranscriptRetranslationServiceFactory(options) {
       calls.push(['service', options]);
       return service;
+    },
+    savedTranscriptRetranslationControllerFactory(options) {
+      calls.push(['controller', options]);
+      return savedTranscriptRetranslationController;
+    },
+    requestHandlerFactory(options) {
+      calls.push(['requestHandler', options]);
+      return requestHandler;
     }
   });
 
   assert.strictEqual(dependencies.savedTranscriptRetranslationService, service);
+  assert.strictEqual(dependencies.savedTranscriptRetranslationController, savedTranscriptRetranslationController);
+  assert.strictEqual(dependencies.requestHandler, requestHandler);
   assert.deepEqual(calls.map(([name]) => name), [
     'environment',
     'providerConfiguration',
@@ -71,7 +83,9 @@ test('production composition assembles Gemini provider and injects it into saved
     'providerComposition',
     'providerResolutionComposition',
     'resolverResolve',
-    'service'
+    'service',
+    'controller',
+    'requestHandler'
   ]);
   assert.deepEqual(calls[0][1], { env: { ...env, TRANSLATION_PROVIDER: configuration.defaultProviderKey } });
   assert.deepEqual(calls[1][1], { environment: { ...env, TRANSLATION_PROVIDER: configuration.defaultProviderKey } });
@@ -87,9 +101,10 @@ test('production composition assembles Gemini provider and injects it into saved
     providers: {
       gemini: geminiProvider
     },
-    defaultProviderKey: configuration.defaultProviderKey
+    configuration
   });
-  assert.strictEqual(calls[5][1].defaultProviderKey, configuration.defaultProviderKey);
+  assert.strictEqual(calls[5][1].configuration, configuration);
+  assert.ok(!Object.hasOwn(calls[5][1], 'defaultProviderKey'));
   assert.strictEqual(calls[5][1].providers.gemini, geminiProvider);
   assert.equal(resolverResolveCallCount, 1);
   assert.deepEqual(calls[6][1], []);
@@ -100,6 +115,14 @@ test('production composition assembles Gemini provider and injects it into saved
   assert.strictEqual(calls[7][1].sessionRepository, dependencies.sessionRepository);
   assert.equal(typeof calls[7][1].idGenerator, 'function');
   assert.equal(typeof calls[7][1].clock, 'function');
+  assert.deepEqual(calls[8][1], { savedTranscriptRetranslationService: service });
+  assert.deepEqual(calls[9][1], {
+    sessionReadController: dependencies.sessionReadController,
+    translationCommandController: dependencies.translationCommandController,
+    savedTranscriptRetranslationController
+  });
+  assert.ok(!Object.hasOwn(calls[9][1], 'configuration'));
+  assert.ok(!Object.hasOwn(calls[9][1], 'defaultProviderKey'));
 });
 
 test('production Gemini provider factory returns resolver output exactly once', () => {
@@ -164,9 +187,10 @@ test('production Gemini provider factory returns resolver output exactly once', 
     providers: {
       gemini: geminiProvider
     },
-    defaultProviderKey: configuration.defaultProviderKey
+    configuration
   });
-  assert.strictEqual(calls[5][1].defaultProviderKey, configuration.defaultProviderKey);
+  assert.strictEqual(calls[5][1].configuration, configuration);
+  assert.ok(!Object.hasOwn(calls[5][1], 'defaultProviderKey'));
   assert.equal(resolverResolveCallCount, 1);
   assert.deepEqual(calls[6][1], []);
 });

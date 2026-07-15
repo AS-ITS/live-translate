@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2F WP4 Translation Provider Configuration HTTP/API Integration:
+  moved the production HTTP saved-transcript translation provider-resolution
+  handoff to pass the shared translation provider configuration object instead
+  of an extracted provider key, updated the provider-resolution composition
+  adapter to construct the configured resolver from that object while
+  preserving its registered-default guard, and verified the HTTP path still
+  resolves once, invokes the selected provider once, returns the same response
+  shape, and preserves persistence behavior with no Gemini, frontend, retry, or
+  fallback changes.
 - Phase 2F WP3 Translation Provider Resolver Configuration Integration:
   refactored the translation provider resolver constructor to consume
   `configuration.defaultProviderKey` instead of a direct `defaultProviderKey`

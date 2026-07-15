@@ -108,7 +108,7 @@ test('unregistered default provider fails during construction', () => {
         providers: {
           gemini: translationProvider()
         },
-        defaultProviderKey: 'missing'
+        configuration: configuration('missing')
       }),
     /defaultProviderKey is not registered: missing/
   );
@@ -116,15 +116,15 @@ test('unregistered default provider fails during construction', () => {
 
 test('invalid providers input preserves registry validation', () => {
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers: undefined, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolutionComposition({ providers: undefined, configuration: configuration('gemini') }),
     /providers must be a plain object/
   );
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers: null, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolutionComposition({ providers: null, configuration: configuration('gemini') }),
     /providers must be a plain object/
   );
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers: [], defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolutionComposition({ providers: [], configuration: configuration('gemini') }),
     /providers must be a plain object/
   );
 });
@@ -135,16 +135,16 @@ test('invalid default provider key preserves resolver validation', () => {
   };
 
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers, defaultProviderKey: undefined }),
-    /defaultProviderKey must be a string/
+    () => createTranslationProviderResolutionComposition({ providers, configuration: undefined }),
+    /configuration must be an object/
   );
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers, defaultProviderKey: null }),
-    /defaultProviderKey must be a string/
+    () => createTranslationProviderResolutionComposition({ providers, configuration: null }),
+    /configuration must be an object/
   );
   assert.throws(
-    () => createTranslationProviderResolutionComposition({ providers, defaultProviderKey: '' }),
-    /defaultProviderKey must be a non-empty string/
+    () => createTranslationProviderResolutionComposition({ providers, configuration: configuration('') }),
+    /configuration\.defaultProviderKey must be a non-empty string/
   );
 });
 
@@ -242,8 +242,14 @@ test('composition does not call provider.translate', () => {
 function createComposition({ providers = { gemini: translationProvider() }, defaultProviderKey = 'gemini' } = {}) {
   return createTranslationProviderResolutionComposition({
     providers,
-    defaultProviderKey
+    configuration: configuration(defaultProviderKey)
   });
+}
+
+function configuration(defaultProviderKey) {
+  return {
+    defaultProviderKey
+  };
 }
 
 function translationProvider(overrides = {}) {

@@ -144,7 +144,7 @@ export function createProductionSavedTranscriptTranslationProvider({
     providers: {
       [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
     },
-    defaultProviderKey: configuration.defaultProviderKey
+    configuration
   });
   const provider = providerResolutionComposition.resolver.resolve();
 

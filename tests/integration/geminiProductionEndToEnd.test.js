@@ -78,8 +78,11 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
       });
       const resolver = createTranslationProviderResolver({
         registry,
-        defaultProviderKey: options.defaultProviderKey
+        configuration: options.configuration
       });
+      if (!registry.has(options.configuration.defaultProviderKey)) {
+        throw new Error(`defaultProviderKey is not registered: ${options.configuration.defaultProviderKey}`);
+      }
 
       return Object.freeze({
         registry,
@@ -161,7 +164,8 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
 
   assert.equal(providerResolutionInputs.length, 1);
   assert.strictEqual(providerResolutionInputs[0].providers.gemini, productionProvider);
-  assert.equal(providerResolutionInputs[0].defaultProviderKey, 'gemini');
+  assert.equal(providerResolutionInputs[0].configuration.defaultProviderKey, 'gemini');
+  assert.ok(!Object.hasOwn(providerResolutionInputs[0], 'defaultProviderKey'));
   assert.equal(Object.keys(providerResolutionInputs[0].providers).length, 1);
 
   assert.equal(resolverResolveCalls.length, 1);

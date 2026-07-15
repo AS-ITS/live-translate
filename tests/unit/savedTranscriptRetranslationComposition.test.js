@@ -179,9 +179,10 @@ test('production composition injects the resolver-selected saved transcript prov
     providers: {
       gemini: geminiProvider
     },
-    defaultProviderKey: configuration.defaultProviderKey
+    configuration
   });
-  assert.strictEqual(calls[5][1].defaultProviderKey, configuration.defaultProviderKey);
+  assert.strictEqual(calls[5][1].configuration, configuration);
+  assert.ok(!Object.hasOwn(calls[5][1], 'defaultProviderKey'));
   assert.equal(resolverResolveCallCount, 1);
   assert.deepEqual(calls[6][1], []);
   assert.strictEqual(calls[7][1].savedTranscriptTranslationProvider, resolvedProvider);

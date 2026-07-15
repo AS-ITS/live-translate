@@ -3,7 +3,7 @@ import { createTranslationProviderResolver } from './translationProviderResolver
 
 export function createTranslationProviderResolutionComposition({
   providers,
-  defaultProviderKey
+  configuration
 }) {
   const registry = createTranslationProviderRegistry({
     providers
@@ -11,13 +11,11 @@ export function createTranslationProviderResolutionComposition({
 
   const resolver = createTranslationProviderResolver({
     registry,
-    configuration: {
-      defaultProviderKey
-    }
+    configuration
   });
 
-  if (!registry.has(defaultProviderKey)) {
-    throw new Error(`defaultProviderKey is not registered: ${defaultProviderKey}`);
+  if (!registry.has(configuration.defaultProviderKey)) {
+    throw new Error(`defaultProviderKey is not registered: ${configuration.defaultProviderKey}`);
   }
 
   return Object.freeze({

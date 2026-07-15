@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2D WP3 GoogleGenAI construction and Gemini saved-transcript provider
+  composition: added focused official `GoogleGenAI` SDK client construction,
+  a production-facing Gemini saved-transcript translation composition factory
+  that reuses the WP1 provider plus WP2 environment and client adapter, and
+  focused unit coverage. Production application composition-root wiring,
+  HTTP activation, UI wiring, live-session flow, persistence, and real Gemini
+  network flow remain deferred.
 - Phase 2D WP2 Gemini client adapter and environment configuration: added a
   frozen infrastructure adapter that delegates directly to
   `client.models.generateContent(request)` without transformation, retry,

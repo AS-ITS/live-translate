@@ -1,0 +1,209 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+
+test('valid environment returns the expected frozen provider composition contract', () => {
+  const composition = createGeminiSavedTranscriptTranslationComposition({
+    env: env(),
+    GoogleGenAI: fakeGoogleGenAI()
+  });
+
+  assert.equal(Object.isFrozen(composition), true);
+  assert.deepEqual(Object.keys(composition), ['savedTranscriptTranslationProvider']);
+  assert.equal(typeof composition.savedTranscriptTranslationProvider.translate, 'function');
+});
+
+test('constructs SDK, adapter, and provider once with exact forwarded dependencies', () => {
+  const calls = [];
+  const promptBuilder = () => ({ systemInstruction: 'Translate only.', parts: ['Hello'] });
+  const sdkClient = { models: { generateContent() {} } };
+  const adaptedClient = { generateContent() {} };
+  const provider = { translate() {} };
+
+  const composition = createGeminiSavedTranscriptTranslationComposition({
+    env: env({ GEMINI_API_KEY: 'exact-api-key', GEMINI_MODEL: 'exact-model' }),
+    promptBuilder,
+    geminiEnvironmentFactory(options) {
+      calls.push(['environment', options]);
+      return { apiKey: 'exact-api-key', model: 'exact-model' };
+    },
+    googleGenAIClientFactory(options) {
+      calls.push(['sdk', options]);
+      return sdkClient;
+    },
+    geminiClientAdapterFactory(options) {
+      calls.push(['adapter', options]);
+      return adaptedClient;
+    },
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(['provider', options]);
+      return provider;
+    }
+  });
+
+  assert.strictEqual(composition.savedTranscriptTranslationProvider, provider);
+  assert.equal(calls.length, 4);
+  assert.deepEqual(calls[0], ['environment', { env: env({ GEMINI_API_KEY: 'exact-api-key', GEMINI_MODEL: 'exact-model' }) }]);
+  assert.deepEqual(calls[1], ['sdk', { apiKey: 'exact-api-key' }]);
+  assert.deepEqual(calls[2], ['adapter', { client: sdkClient }]);
+  assert.deepEqual(calls[3], [
+    'provider',
+    {
+      client: adaptedClient,
+      model: 'exact-model',
+      promptBuilder
+    }
+  ]);
+});
+
+test('injected GoogleGenAI constructor receives the API key exactly once', () => {
+  const constructorCalls = [];
+  class FakeGoogleGenAI {
+    constructor(options) {
+      constructorCalls.push(options);
+      this.models = {
+        generateContent() {
+          return { translatedText: 'Bonjour' };
+        }
+      };
+    }
+  }
+
+  createGeminiSavedTranscriptTranslationComposition({
+    env: env({ GEMINI_API_KEY: '  trimmed-api-key  ' }),
+    GoogleGenAI: FakeGoogleGenAI
+  });
+
+  assert.deepEqual(constructorCalls, [{ apiKey: 'trimmed-api-key' }]);
+});
+
+test('missing required configuration and invalid dependencies fail', () => {
+  const GoogleGenAI = fakeGoogleGenAI();
+
+  assert.throws(
+    () => createGeminiSavedTranscriptTranslationComposition({ env: {}, GoogleGenAI }),
+    /^Error: Missing GEMINI_API_KEY$/
+  );
+  assert.throws(
+    () => createGeminiSavedTranscriptTranslationComposition({ env: env(), GoogleGenAI: {} }),
+    /GoogleGenAI must be a constructable function/
+  );
+  assert.throws(
+    () =>
+      createGeminiSavedTranscriptTranslationComposition({
+        env: env(),
+        GoogleGenAI,
+        geminiEnvironmentFactory: {}
+      }),
+    /geminiEnvironmentFactory must be a function/
+  );
+});
+
+test('composition performs no generateContent call', () => {
+  let generateContentCallCount = 0;
+  class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        generateContent() {
+          generateContentCallCount += 1;
+          return { translatedText: 'Bonjour' };
+        }
+      };
+    }
+  }
+
+  createGeminiSavedTranscriptTranslationComposition({
+    env: env(),
+    GoogleGenAI: FakeGoogleGenAI
+  });
+
+  assert.equal(generateContentCallCount, 0);
+});
+
+test('separate composition invocations are isolated', () => {
+  const constructorCalls = [];
+  class FakeGoogleGenAI {
+    constructor(options) {
+      constructorCalls.push(options);
+      this.models = {
+        generateContent() {
+          return { translatedText: 'Bonjour' };
+        }
+      };
+    }
+  }
+
+  const first = createGeminiSavedTranscriptTranslationComposition({
+    env: env({ GEMINI_API_KEY: 'first-key' }),
+    GoogleGenAI: FakeGoogleGenAI
+  });
+  const second = createGeminiSavedTranscriptTranslationComposition({
+    env: env({ GEMINI_API_KEY: 'second-key' }),
+    GoogleGenAI: FakeGoogleGenAI
+  });
+
+  assert.notStrictEqual(first, second);
+  assert.notStrictEqual(first.savedTranscriptTranslationProvider, second.savedTranscriptTranslationProvider);
+  assert.deepEqual(constructorCalls, [{ apiKey: 'first-key' }, { apiKey: 'second-key' }]);
+});
+
+test('returned provider performs deterministic translation through fake SDK response', async () => {
+  const requests = [];
+  class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        async generateContent(request) {
+          requests.push(request);
+          return {
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: 'Bonjour' }]
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+  }
+
+  const { savedTranscriptTranslationProvider } = createGeminiSavedTranscriptTranslationComposition({
+    env: env({ GEMINI_MODEL: 'gemini-test-model' }),
+    GoogleGenAI: FakeGoogleGenAI
+  });
+
+  const result = await savedTranscriptTranslationProvider.translate({
+    sourceText: 'Hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr'
+  });
+
+  assert.deepEqual(result, {
+    translatedText: 'Bonjour',
+    detectedSourceLanguageCode: 'en'
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].model, 'gemini-test-model');
+  assert.equal(requests[0].contents[0].parts.at(-1).text, 'Hello');
+});
+
+function env(overrides = {}) {
+  return {
+    GEMINI_API_KEY: 'test-api-key',
+    GEMINI_MODEL: 'gemini-test-model',
+    ...overrides
+  };
+}
+
+function fakeGoogleGenAI() {
+  return class FakeGoogleGenAI {
+    constructor() {
+      this.models = {
+        generateContent() {
+          return { translatedText: 'Bonjour' };
+        }
+      };
+    }
+  };
+}

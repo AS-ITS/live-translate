@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2D WP7 final verification and closeout: completed the focused
+  regression pass for WP1-WP6 production Gemini saved-transcript translation,
+  confirming provider contract behavior, Gemini client adapter forwarding,
+  GoogleGenAI construction, production composition, and HTTP end-to-end flow
+  with fake SDK clients only. Phase 2D is complete with no real Gemini API
+  execution, public API changes, persistence changes, HTTP contract changes,
+  React changes, retry behavior, streaming behavior, or production behavior
+  expansion.
 - Phase 2D WP6 end-to-end Gemini translation flow verification: added focused
   integration coverage proving the production saved-transcript HTTP command path
   composes through the controller, application service, production Gemini

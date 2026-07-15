@@ -18,6 +18,7 @@ Completed:
 
 - Phase 1 Demo
 - Phase 2C - Saved Transcript Re-translation
+- Phase 2D - Production Gemini Saved-Transcript Translation
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -29,6 +30,13 @@ Completed:
 - Saved-session export
 - Security hardening
 - Testing documentation
+
+Phase 2D status:
+
+- Production Gemini saved-transcript translation path is available through the
+  existing saved-transcript re-translation application stack.
+- Final focused verification completed with fake GoogleGenAI clients only; no
+  real Gemini API call was performed.
 
 Documentation:
 

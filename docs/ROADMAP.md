@@ -15,11 +15,11 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2B-1 Architecture Foundation.
+Current milestone: Phase 2 follow-up capability selection.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
-in progress and not completed. Phase 2B-1 is documentation and contract work
-only.
+in progress and not completed. Phase 2C Saved Transcript Re-translation and
+Phase 2D Production Gemini Saved-Transcript Translation are completed.
 
 Completed Phase 1 capabilities include:
 
@@ -165,7 +165,14 @@ Deferred:
   - History List
   - Session Detail
   - Saved Session Export
-- Phase 2 overall: In Progress, Phase 2B-1 current
+- Production Gemini Saved-Transcript Translation: Completed
+  - Gemini saved-transcript provider contract
+  - Gemini client adapter and environment validation
+  - GoogleGenAI SDK client construction
+  - Production provider composition
+  - Production HTTP integration verification
+  - End-to-end flow verification with fake GoogleGenAI clients
+- Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
 
@@ -193,6 +200,13 @@ Completed capabilities:
   - History List
   - Session Detail
   - Saved Session Export
+- Production Gemini Saved-Transcript Translation
+  - Provider contract
+  - Client adapter
+  - SDK construction
+  - Production composition
+  - Production integration verification
+  - End-to-end flow verification
 
 ### Phase 2B-1 - Architecture Foundation
 
@@ -260,13 +274,45 @@ Scope:
 
 Deferred:
 
-- Real external saved transcript translation provider.
+- Provider selection beyond the production Gemini saved-transcript provider.
 - Retry.
 - Cancel.
 - Delete.
 - Provider selection UI.
 - Output version UI.
 - Transaction, rollback, compensation, or retry semantics.
+
+### Phase 2D - Production Gemini Saved-Transcript Translation
+
+Status: Completed.
+
+Scope:
+
+- Gemini saved-transcript translation provider contract.
+- Gemini client adapter and environment configuration validation.
+- GoogleGenAI SDK client construction.
+- Production saved-transcript provider composition.
+- Production composition-root activation.
+- Focused production integration verification.
+- End-to-end HTTP-to-provider flow verification using fake GoogleGenAI clients.
+
+Closeout:
+
+- Final focused regression verification completed for WP1-WP6.
+- Production Gemini path is available through the existing saved-transcript
+  re-translation application stack.
+- No real Gemini API call was performed during automated verification.
+- No public API, persistence, HTTP contract, React, retry, streaming, logging,
+  metrics, or database behavior was added as part of closeout.
+
+Deferred:
+
+- Real Gemini smoke execution.
+- Retry behavior.
+- Streaming saved-transcript translation.
+- Authentication and authorization changes.
+- Durable persistence or database schema changes.
+- UI activation or output version UI.
 
 ### Phase 2 Deferred Scope
 

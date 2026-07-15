@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2E WP2 Translation Provider Resolver: added a standalone
+  infrastructure resolver that selects an explicitly requested translation
+  provider key or the configured registered default provider key, delegates
+  exact provider lookup to the registry without normalization, validates
+  dependencies and resolve options synchronously, and exposes a frozen
+  `resolve`-only API. The resolver returns provider instances without invoking
+  translation and does not add runtime composition, HTTP wiring, fallback,
+  retries, SDK construction, environment loading, persistence, or real Gemini
+  API behavior.
 - Phase 2E WP1 Translation Provider Registry: added a standalone
   infrastructure registry contract for validating and looking up registered
   translation providers by exact provider key, with frozen `get`/`has`/`list`

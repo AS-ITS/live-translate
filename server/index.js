@@ -478,7 +478,8 @@ function validateSavedTranscriptRetranslationRequest({ sessionId, body }) {
   return {
     sessionId: validatedSessionId,
     sourceLanguageCode: validateRequiredString(body.sourceLanguageCode),
-    targetLanguageCode: validateRequiredString(body.targetLanguageCode)
+    targetLanguageCode: validateRequiredString(body.targetLanguageCode),
+    providerKey: body.providerKey
   };
 }
 

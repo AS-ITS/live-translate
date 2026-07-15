@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2G WP4 HTTP API Provider Selection Input: extended the saved
+  transcript retranslation HTTP request boundary to accept optional
+  `providerKey` and forward it unchanged to the existing service/controller
+  call while preserving omitted-key behavior and avoiding resolver,
+  composition, provider, persistence, retry, fallback, environment, frontend,
+  and domain changes.
 - Phase 2G WP3 Saved Transcript Retranslation Provider Selection Input:
   threaded optional `providerKey` input through the production saved-transcript
   retranslation composition boundary into the existing translation provider

@@ -31,9 +31,41 @@ test('POST /api/saved-transcripts/:sessionId/translations delegates once and ret
       input: {
         sessionId: 'session-1',
         sourceLanguageCode: 'en',
-        targetLanguageCode: 'zh-TW'
+        targetLanguageCode: 'zh-TW',
+        providerKey: undefined
       },
       argumentCount: 1
+    }
+  ]);
+});
+
+test('POST /api/saved-transcripts/:sessionId/translations forwards explicit providerKey unchanged', async () => {
+  const calls = [];
+  const result = translationResult();
+  const handler = createHandler({
+    translateSavedTranscript(input) {
+      calls.push(input);
+      return result;
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/saved-transcripts/session-1/translations',
+    body: JSON.stringify({
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+      providerKey: 'gemini'
+    })
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(calls, [
+    {
+      sessionId: 'session-1',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+      providerKey: 'gemini'
     }
   ]);
 });
@@ -241,7 +273,8 @@ test('saved transcript re-translation input preserves caller body and forwards o
     {
       sessionId: 'session-1',
       sourceLanguageCode: 'EN-us',
-      targetLanguageCode: 'zh-TW'
+      targetLanguageCode: 'zh-TW',
+      providerKey: undefined
     }
   ]);
 });

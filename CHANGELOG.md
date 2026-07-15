@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2F WP6 Configuration-driven Provider Resolution Integration
+  Verification: extended production saved-transcript HTTP integration coverage
+  to prove explicit `TRANSLATION_PROVIDER=gemini` is consumed by the shared
+  translation provider configuration factory, passed as the full configuration
+  object into provider-resolution composition, resolved once through
+  `TranslationProviderResolver` and `TranslationProviderRegistry`, injected into
+  `SavedTranscriptRetranslationService`, invoked once through the Gemini
+  provider and fake GoogleGenAI client, and preserves the existing `201`
+  response and translation persistence shape with no real Gemini API call or
+  production code changes.
 - Phase 2F WP5 Saved Transcript Retranslation Composition Migration:
   moved saved-transcript provider-resolution composition ownership fully to the
   shared translation provider configuration object by removing the composition

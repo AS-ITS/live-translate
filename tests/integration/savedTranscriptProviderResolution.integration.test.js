@@ -7,11 +7,17 @@ import { createSavedTranscriptRetranslationService } from '../../src/application
 import { createGeminiClientAdapter } from '../../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createGeminiSavedTranscriptTranslationProvider } from '../../src/infrastructure/geminiSavedTranscriptTranslationProvider.js';
+import { createTranslationProviderConfiguration } from '../../src/infrastructure/translationProviderConfiguration.js';
 import { createTranslationProviderRegistry } from '../../src/infrastructure/translationProviderRegistry.js';
 import { createTranslationProviderResolver } from '../../src/infrastructure/translationProviderResolver.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
-test('production saved-transcript HTTP flow resolves the Gemini provider through registry and resolver', async () => {
+test('production saved-transcript HTTP flow uses explicit provider configuration through registry and resolver', async () => {
+  const environment = {
+    GEMINI_API_KEY: 'test-api-key',
+    GEMINI_MODEL: 'gemini-provider-resolution',
+    TRANSLATION_PROVIDER: 'gemini'
+  };
   const sessionRepository = seededSessionRepository();
   const sdkRequests = [];
   const providerTranslateCalls = [];
@@ -19,15 +25,15 @@ test('production saved-transcript HTTP flow resolves the Gemini provider through
   const registryGetCalls = [];
   const registryHasCalls = [];
   const serviceFactoryOptions = [];
+  const providerConfigurationInputs = [];
+  const providerConfigurations = [];
   const providerResolutionInputs = [];
   let geminiProvider;
   let resolvedProvider;
+  let responseBody;
 
   const dependencies = createProductionApplicationDependencies({
-    env: {
-      GEMINI_API_KEY: 'test-api-key',
-      GEMINI_MODEL: 'gemini-provider-resolution'
-    },
+    env: environment,
     sessionRepository,
     requestHandlerFactory: createRequestHandler,
     idGenerator: deterministicIdGenerator(),
@@ -50,6 +56,12 @@ test('production saved-transcript HTTP flow resolves the Gemini provider through
           }
         }
       };
+    },
+    translationProviderConfigurationFactory(options) {
+      providerConfigurationInputs.push(options);
+      const configuration = createTranslationProviderConfiguration(options);
+      providerConfigurations.push(configuration);
+      return configuration;
     },
     geminiClientAdapterFactory(options) {
       return createGeminiClientAdapter(options);
@@ -119,6 +131,7 @@ test('production saved-transcript HTTP flow resolves the Gemini provider through
     });
 
     assert.equal(response.status, 201);
+    responseBody = response.body;
     assert.deepEqual(response.body, {
       request: {
         id: 'translation-request-1',
@@ -164,8 +177,15 @@ test('production saved-transcript HTTP flow resolves the Gemini provider through
     });
   });
 
+  assert.deepEqual(providerConfigurationInputs, [{ environment }]);
+  assert.equal(providerConfigurations.length, 1);
+  assert.deepEqual(providerConfigurations[0], { defaultProviderKey: 'gemini' });
+  assert.equal(environment.TRANSLATION_PROVIDER, 'gemini');
+
   assert.equal(providerResolutionInputs.length, 1);
   assert.strictEqual(providerResolutionInputs[0].providers.gemini, geminiProvider);
+  assert.strictEqual(providerResolutionInputs[0].configuration, providerConfigurations[0]);
+  assert.deepEqual(providerResolutionInputs[0].configuration, { defaultProviderKey: 'gemini' });
   assert.ok(!Object.hasOwn(providerResolutionInputs[0], 'defaultProviderKey'));
 
   assert.equal(resolverResolveCalls.length, 1);
@@ -203,6 +223,51 @@ test('production saved-transcript HTTP flow resolves the Gemini provider through
       'Hello resolved provider.'
     ]
   );
+
+  const sessionDetail = sessionRepository.getSessionRecord('session-provider-resolution');
+  const translationState = sessionDetail.sessionRecord.translationCommandState;
+  const serializedTranslationState = JSON.parse(JSON.stringify(translationState));
+  assert.deepEqual(Object.keys(translationState), ['requests', 'executions', 'outputs']);
+  assert.deepEqual(serializedTranslationState.requests, [responseBody.request]);
+  assert.deepEqual(serializedTranslationState.executions, [responseBody.execution]);
+  assert.deepEqual(serializedTranslationState.outputs, [
+    {
+      id: 'translation-output-1',
+      executionId: 'translation-execution-1',
+      sequence: 0,
+      translatedText: 'Bonjour resolu.',
+      targetLanguageCode: 'fr',
+      providerMetadata: {
+        detectedSourceLanguageCode: 'en'
+      },
+      createdAt: '2026-07-15T01:00:03.000Z'
+    }
+  ]);
+  assert.deepEqual(Object.keys(serializedTranslationState.requests[0]), [
+    'id',
+    'sessionId',
+    'sourceTranscriptRevisionId',
+    'sourceTranscriptSnapshot',
+    'targetLanguageCode',
+    'createdAt'
+  ]);
+  assert.deepEqual(Object.keys(serializedTranslationState.executions[0]), [
+    'id',
+    'translationRequestId',
+    'status',
+    'startedAt',
+    'completedAt',
+    'failureInfo'
+  ]);
+  assert.deepEqual(Object.keys(serializedTranslationState.outputs[0]), [
+    'id',
+    'executionId',
+    'sequence',
+    'translatedText',
+    'targetLanguageCode',
+    'providerMetadata',
+    'createdAt'
+  ]);
 });
 
 function seededSessionRepository() {

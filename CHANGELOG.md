@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2E WP5 Saved Transcript Provider Resolution Integration verification:
+  added focused production HTTP integration coverage proving saved-transcript
+  retranslation resolves the configured Gemini provider through the translation
+  provider resolver and registry, injects that resolved provider into the
+  application service, invokes provider translation and fake GoogleGenAI
+  content generation exactly once, and preserves the existing API response
+  contract with no runtime provider switching, fallback, retry, persistence,
+  controller, UI, or real Google API behavior changes.
 - Phase 2E WP4 Saved Transcript Provider Resolution Integration: activated
   translation provider resolution in production saved-transcript retranslation
   composition by registering the composed Gemini provider, resolving the

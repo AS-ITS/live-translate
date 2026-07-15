@@ -11,8 +11,14 @@ export function createTranslationProviderResolutionComposition({
 
   const resolver = createTranslationProviderResolver({
     registry,
-    defaultProviderKey
+    configuration: {
+      defaultProviderKey
+    }
   });
+
+  if (!registry.has(defaultProviderKey)) {
+    throw new Error(`defaultProviderKey is not registered: ${defaultProviderKey}`);
+  }
 
   return Object.freeze({
     registry,

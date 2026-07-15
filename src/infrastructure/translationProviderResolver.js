@@ -1,13 +1,11 @@
 export function createTranslationProviderResolver(input) {
   assertFactoryInput(arguments.length, input);
 
-  const { registry, defaultProviderKey } = input;
+  const { registry, configuration } = input;
   assertRegistry(registry);
-  assertProviderKey(defaultProviderKey, 'defaultProviderKey');
-
-  if (!registry.has(defaultProviderKey)) {
-    throw new Error(`defaultProviderKey is not registered: ${defaultProviderKey}`);
-  }
+  assertConfiguration(configuration);
+  const { defaultProviderKey } = configuration;
+  assertProviderKey(defaultProviderKey, 'configuration.defaultProviderKey');
 
   function resolve(options) {
     assertResolveOptions(arguments.length, options);
@@ -29,7 +27,13 @@ export function createTranslationProviderResolver(input) {
 
 function assertFactoryInput(argumentCount, input) {
   if (argumentCount === 0 || input === null || typeof input !== 'object' || Array.isArray(input)) {
-    throw new TypeError('factory input must be an object with registry and defaultProviderKey.');
+    throw new TypeError('factory input must be an object with registry and configuration.');
+  }
+
+  for (const optionName of Reflect.ownKeys(input)) {
+    if (optionName !== 'registry' && optionName !== 'configuration') {
+      throw new TypeError(`unsupported factory option: ${String(optionName)}`);
+    }
   }
 }
 
@@ -44,6 +48,16 @@ function assertRegistry(registry) {
 
   if (typeof registry.has !== 'function') {
     throw new TypeError('registry.has must be a function.');
+  }
+}
+
+function assertConfiguration(configuration) {
+  if (configuration === null || typeof configuration !== 'object' || Array.isArray(configuration)) {
+    throw new TypeError('configuration must be an object with defaultProviderKey.');
+  }
+
+  if (!Object.hasOwn(configuration, 'defaultProviderKey')) {
+    throw new TypeError('configuration.defaultProviderKey is required.');
   }
 }
 

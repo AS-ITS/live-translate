@@ -10,7 +10,7 @@ test('creates a resolver with a valid registry and registered default provider',
 
   const resolver = createTranslationProviderResolver({
     registry,
-    defaultProviderKey: 'gemini'
+    configuration: configuration('gemini')
   });
 
   assert.equal(resolver.resolve(), geminiProvider);
@@ -35,78 +35,107 @@ test('rejects missing factory options', () => {
 
 test('rejects missing registry', () => {
   assert.throws(
-    () => createTranslationProviderResolver({ defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ configuration: configuration('gemini') }),
     /registry must be an object/
+  );
+});
+
+test('rejects direct defaultProviderKey factory option', () => {
+  assert.throws(
+    () => createTranslationProviderResolver({ registry: fakeRegistry(), defaultProviderKey: 'gemini' }),
+    /unsupported factory option: defaultProviderKey/
   );
 });
 
 test('rejects invalid registry shapes', () => {
   assert.throws(
-    () => createTranslationProviderResolver({ registry: null, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: null, configuration: configuration('gemini') }),
     /registry must be an object/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: [], defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: [], configuration: configuration('gemini') }),
     /registry must be an object/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: 'registry', defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: 'registry', configuration: configuration('gemini') }),
     /registry must be an object/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: {}, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: {}, configuration: configuration('gemini') }),
     /registry\.get must be a function/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: { get: 'get', has() {} }, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: { get: 'get', has() {} }, configuration: configuration('gemini') }),
     /registry\.get must be a function/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: { get() {} }, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: { get() {} }, configuration: configuration('gemini') }),
     /registry\.has must be a function/
   );
   assert.throws(
-    () => createTranslationProviderResolver({ registry: { get() {}, has: true }, defaultProviderKey: 'gemini' }),
+    () => createTranslationProviderResolver({ registry: { get() {}, has: true }, configuration: configuration('gemini') }),
     /registry\.has must be a function/
   );
 });
 
-test('rejects missing default provider key', () => {
-  assert.throws(
-    () => createTranslationProviderResolver({ registry: fakeRegistry() }),
-    /defaultProviderKey must be a string/
-  );
-});
-
-test('rejects invalid default provider key shapes', () => {
-  const registry = fakeRegistry();
-
-  assert.throws(() => createTranslationProviderResolver({ registry, defaultProviderKey: null }), /defaultProviderKey must be a string/);
-  assert.throws(() => createTranslationProviderResolver({ registry, defaultProviderKey: 1 }), /defaultProviderKey must be a string/);
-  assert.throws(() => createTranslationProviderResolver({ registry, defaultProviderKey: '' }), /defaultProviderKey must be a non-empty string/);
-  assert.throws(() => createTranslationProviderResolver({ registry, defaultProviderKey: '   ' }), /defaultProviderKey must be a non-empty string/);
-  assert.throws(
-    () => createTranslationProviderResolver({ registry, defaultProviderKey: ' gemini' }),
-    /defaultProviderKey must not include surrounding whitespace/
-  );
-  assert.throws(
-    () => createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini ' }),
-    /defaultProviderKey must not include surrounding whitespace/
-  );
-});
-
-test('rejects an unregistered default provider key', () => {
-  const registry = fakeRegistry({
-    gemini: translationProvider()
+test('accepts configuration object', () => {
+  const resolver = createTranslationProviderResolver({
+    registry: fakeRegistry({
+      gemini: translationProvider()
+    }),
+    configuration: configuration('gemini')
   });
 
+  assert.equal(typeof resolver.resolve, 'function');
+});
+
+test('rejects missing configuration', () => {
   assert.throws(
-    () => createTranslationProviderResolver({ registry, defaultProviderKey: 'fake' }),
-    /defaultProviderKey is not registered: fake/
+    () => createTranslationProviderResolver({ registry: fakeRegistry() }),
+    /configuration must be an object/
   );
 });
 
-test('checks default availability through the registry contract', () => {
+test('rejects null configuration', () => {
+  const registry = fakeRegistry();
+
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: null }), /configuration must be an object/);
+});
+
+test('rejects non-object configuration', () => {
+  const registry = fakeRegistry();
+
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: [] }), /configuration must be an object/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: 'configuration' }), /configuration must be an object/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: 1 }), /configuration must be an object/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: true }), /configuration must be an object/);
+});
+
+test('rejects missing default provider key in configuration', () => {
+  assert.throws(
+    () => createTranslationProviderResolver({ registry: fakeRegistry(), configuration: {} }),
+    /configuration\.defaultProviderKey is required/
+  );
+});
+
+test('rejects invalid default provider key shapes in configuration', () => {
+  const registry = fakeRegistry();
+
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: configuration(null) }), /configuration\.defaultProviderKey must be a string/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: configuration(1) }), /configuration\.defaultProviderKey must be a string/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: configuration('') }), /configuration\.defaultProviderKey must be a non-empty string/);
+  assert.throws(() => createTranslationProviderResolver({ registry, configuration: configuration('   ') }), /configuration\.defaultProviderKey must be a non-empty string/);
+  assert.throws(
+    () => createTranslationProviderResolver({ registry, configuration: configuration(' gemini') }),
+    /configuration\.defaultProviderKey must not include surrounding whitespace/
+  );
+  assert.throws(
+    () => createTranslationProviderResolver({ registry, configuration: configuration('gemini ') }),
+    /configuration\.defaultProviderKey must not include surrounding whitespace/
+  );
+});
+
+test('does not verify the configured default provider during construction', () => {
   const calls = [];
   const registry = {
     get(providerKey) {
@@ -123,9 +152,9 @@ test('checks default availability through the registry contract', () => {
     }
   };
 
-  createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  createTranslationProviderResolver({ registry, configuration: configuration('fake') });
 
-  assert.deepEqual(calls, [['has', 'gemini']]);
+  assert.deepEqual(calls, []);
 });
 
 test('resolve resolves the configured default provider when providerKey is omitted or undefined', () => {
@@ -133,7 +162,7 @@ test('resolve resolves the configured default provider when providerKey is omitt
   const registry = fakeRegistry({
     gemini: geminiProvider
   });
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.equal(resolver.resolve(), geminiProvider);
   assert.equal(resolver.resolve({}), geminiProvider);
@@ -149,11 +178,10 @@ test('resolve passes the exact default key to registry.get and returns the exact
     },
     calls
   );
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'Gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('Gemini') });
 
   assert.equal(resolver.resolve(), geminiProvider);
   assert.deepEqual(calls, [
-    ['has', 'Gemini'],
     ['get', 'Gemini']
   ]);
 });
@@ -180,11 +208,10 @@ test('passes the explicit provider key unchanged to registry.get', () => {
     },
     calls
   );
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.equal(resolver.resolve({ providerKey: 'gemini.saved-transcript' }), selectedProvider);
   assert.deepEqual(calls, [
-    ['has', 'gemini'],
     ['get', 'gemini.saved-transcript']
   ]);
 });
@@ -273,11 +300,10 @@ test('does not trim or normalize explicit keys', () => {
       return providerKey === 'gemini';
     }
   };
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.throws(() => resolver.resolve({ providerKey: 'GEMINI' }), registryError);
   assert.deepEqual(calls, [
-    ['has', 'gemini'],
     ['get', 'GEMINI']
   ]);
 });
@@ -290,11 +316,10 @@ test('explicit unknown provider does not fall back to the default', () => {
     },
     calls
   );
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.throws(() => resolver.resolve({ providerKey: 'missing-provider' }), /translation provider not found: missing-provider/);
   assert.deepEqual(calls, [
-    ['has', 'gemini'],
     ['get', 'missing-provider']
   ]);
 });
@@ -309,7 +334,7 @@ test('preserves the exact error thrown by registry.get', () => {
       return true;
     }
   };
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   try {
     resolver.resolve({ providerKey: 'missing-provider' });
@@ -331,11 +356,10 @@ test('does not call registry.get with the default after explicit lookup failure'
       return providerKey === 'gemini';
     }
   };
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.throws(() => resolver.resolve({ providerKey: 'fake' }), /translation provider not found: fake/);
   assert.deepEqual(calls, [
-    ['has', 'gemini'],
     ['get', 'fake']
   ]);
 });
@@ -377,7 +401,7 @@ test('does not mutate the registry', () => {
     gemini: translationProvider()
   }));
 
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   resolver.resolve();
   assert.equal(Object.isFrozen(registry), true);
@@ -398,7 +422,7 @@ test('performs no SDK, environment, HTTP, persistence, retry, or fallback behavi
   const providers = {
     gemini: translationProvider()
   };
-  const resolver = createTranslationProviderResolver({ registry, defaultProviderKey: 'gemini' });
+  const resolver = createTranslationProviderResolver({ registry, configuration: configuration('gemini') });
 
   assert.equal(resolver.resolve(), providers.gemini);
   assert.equal(resolver.resolve(), providers.gemini);
@@ -408,8 +432,14 @@ test('performs no SDK, environment, HTTP, persistence, retry, or fallback behavi
 function createResolver({ providers = { gemini: translationProvider() }, defaultProviderKey = 'gemini' } = {}) {
   return createTranslationProviderResolver({
     registry: fakeRegistry(providers),
-    defaultProviderKey
+    configuration: configuration(defaultProviderKey)
   });
+}
+
+function configuration(defaultProviderKey) {
+  return {
+    defaultProviderKey
+  };
 }
 
 function fakeRegistry(providers = {}, calls = []) {

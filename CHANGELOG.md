@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2F WP3 Translation Provider Resolver Configuration Integration:
+  refactored the translation provider resolver constructor to consume
+  `configuration.defaultProviderKey` instead of a direct `defaultProviderKey`
+  option, removed construction-time default-provider registry existence
+  checks from the resolver, adapted the existing provider-resolution
+  composition boundary to pass a configuration object while preserving its
+  default-provider guard, and preserved explicit provider resolution,
+  configured default resolution, registry error propagation, no-fallback
+  behavior, provider identity, immutability, and
+  non-HTTP/non-Gemini/non-persistence behavior.
 - Phase 2F WP2 Translation Provider Configuration Composition: wired the
   environment-backed translation provider configuration into production
   saved-transcript provider composition so provider resolution receives

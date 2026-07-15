@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2E WP3 Translation Provider Resolution Composition: added a focused
+  infrastructure composition factory that assembles the translation provider
+  registry and resolver through the existing WP1/WP2 factories, verifies
+  default and explicit provider resolution, preserves provider identity and
+  exact provider-key behavior, and remains inactive in production runtime flows
+  with no real Gemini API calls.
 - Phase 2E WP2 Translation Provider Resolver: added a standalone
   infrastructure resolver that selects an explicitly requested translation
   provider key or the configured registered default provider key, delegates

@@ -1,7 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { createLiveToken } from './tokenService.js';
-import { createApplicationDependencies } from './compositionRoot.js';
+import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -188,7 +188,9 @@ function logProviderError(requestId, error) {
   });
 }
 
-const { requestHandler: defaultRequestHandler } = createApplicationDependencies({
+const createDefaultApplicationDependencies =
+  process.env.NODE_ENV === 'production' ? createProductionApplicationDependencies : createApplicationDependencies;
+const { requestHandler: defaultRequestHandler } = createDefaultApplicationDependencies({
   requestHandlerFactory: createRequestHandler
 });
 

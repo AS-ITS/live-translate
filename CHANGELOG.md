@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2D WP4 production Gemini saved-transcript provider activation: added
+  production composition-root wiring from Gemini environment, GoogleGenAI SDK
+  client, Gemini client adapter, and Gemini saved-transcript provider
+  composition into the saved-transcript re-translation application service,
+  with focused unit coverage and no HTTP, persistence, provider, prompt, retry,
+  fallback, or UI behavior changes.
 - Phase 2D WP3 GoogleGenAI construction and Gemini saved-transcript provider
   composition: added focused official `GoogleGenAI` SDK client construction,
   a production-facing Gemini saved-transcript translation composition factory

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2E WP1 Translation Provider Registry: added a standalone
+  infrastructure registry contract for validating and looking up registered
+  translation providers by exact provider key, with frozen `get`/`has`/`list`
+  API surface and focused unit coverage. Resolver, runtime, metadata,
+  production composition wiring, HTTP wiring, and Gemini provider registration
+  remain deferred.
 - Phase 2D WP7 final verification and closeout: completed the focused
   regression pass for WP1-WP6 production Gemini saved-transcript translation,
   confirming provider contract behavior, Gemini client adapter forwarding,

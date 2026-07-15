@@ -4,6 +4,11 @@
 
 ### Added
 
+- Phase 2D WP5 production Gemini integration verification: added focused
+  integration coverage for the saved-transcript HTTP path through production
+  Gemini composition into the Google GenAI SDK adapter shape, including
+  dependency invocation counts, request shape, result mapping, and exact
+  `generateContent` failure propagation with no retry or fallback behavior.
 - Phase 2D WP4 production Gemini saved-transcript provider activation: added
   production composition-root wiring from Gemini environment, GoogleGenAI SDK
   client, Gemini client adapter, and Gemini saved-transcript provider

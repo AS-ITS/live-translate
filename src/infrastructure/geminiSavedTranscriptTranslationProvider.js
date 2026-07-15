@@ -21,12 +21,7 @@ export function createGeminiSavedTranscriptTranslationProvider({ client, model, 
         promptBuilder
       });
 
-      let response;
-      try {
-        response = await client.generateContent(request);
-      } catch (error) {
-        throw new Error('Gemini saved transcript translation client rejected.', { cause: error });
-      }
+      const response = await client.generateContent(request);
 
       return normalizeGeminiSavedTranscriptTranslationResponse(response, {
         fallbackSourceLanguageCode: input.sourceLanguageCode

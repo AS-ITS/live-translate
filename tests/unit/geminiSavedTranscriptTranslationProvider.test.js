@@ -163,7 +163,7 @@ test('Promise and synchronous client results are supported', async () => {
   });
 });
 
-test('original client rejection is preserved as error cause and no retry occurs', async () => {
+test('original client rejection propagates unchanged and no retry occurs', async () => {
   const originalError = new Error('network disabled');
   const calls = [];
   const provider = createProvider({
@@ -175,15 +175,11 @@ test('original client rejection is preserved as error cause and no retry occurs'
     }
   });
 
-  await assert.rejects(provider.translate(translationInput()), (error) => {
-    assert.equal(error.message, 'Gemini saved transcript translation client rejected.');
-    assert.strictEqual(error.cause, originalError);
-    return true;
-  });
+  await assert.rejects(provider.translate(translationInput()), (error) => error === originalError);
   assert.equal(calls.length, 1);
 });
 
-test('synchronous client throw is preserved as error cause and no retry occurs', async () => {
+test('synchronous client throw propagates unchanged and no retry occurs', async () => {
   const originalError = new Error('client threw');
   let callCount = 0;
   const provider = createProvider({
@@ -195,10 +191,7 @@ test('synchronous client throw is preserved as error cause and no retry occurs',
     }
   });
 
-  await assert.rejects(provider.translate(translationInput()), (error) => {
-    assert.strictEqual(error.cause, originalError);
-    return true;
-  });
+  await assert.rejects(provider.translate(translationInput()), (error) => error === originalError);
   assert.equal(callCount, 1);
 });
 

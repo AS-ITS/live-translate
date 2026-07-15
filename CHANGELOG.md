@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2D WP2 Gemini client adapter and environment configuration: added a
+  frozen infrastructure adapter that delegates directly to
+  `client.models.generateContent(request)` without transformation, retry,
+  timeout, logging, or SDK construction, plus deterministic `GEMINI_API_KEY`
+  and `GEMINI_MODEL` validation for future saved-transcript provider
+  composition. This does not wire the adapter into production composition,
+  HTTP endpoints, application services, UI, persistence, or runtime
+  translation flow.
 - Phase 2D WP1 Gemini saved-transcript translation provider contract: added a
   Gemini-specific infrastructure factory with injected client, model, and prompt
   builder dependencies, deterministic request construction, response

@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2G WP3 Saved Transcript Retranslation Provider Selection Input:
+  threaded optional `providerKey` input through the production saved-transcript
+  retranslation composition boundary into the existing translation provider
+  resolution composition, preserving configuration-object forwarding, resolved
+  provider identity, default-provider resolver ownership, and unchanged
+  resolution error propagation with no HTTP, provider, registry, resolver,
+  persistence, retry, environment-variable, frontend, or Gemini behavior
+  changes.
 - Phase 2G WP1 Resolver Explicit Provider Selection: extended
   `TranslationProviderResolver` request-level selection so an optional explicit
   `providerKey` takes precedence over `configuration.defaultProviderKey`,

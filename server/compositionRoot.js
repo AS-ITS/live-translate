@@ -78,6 +78,7 @@ export function createApplicationDependencies(options = {}) {
 export function createProductionApplicationDependencies(options = {}) {
   const {
     env = process.env,
+    providerKey,
     savedTranscriptTranslationProvider,
     geminiEnvironmentFactory = createGeminiEnvironment,
     googleGenAIClientFactory = createDefaultGoogleGenAIClient,
@@ -99,7 +100,8 @@ export function createProductionApplicationDependencies(options = {}) {
         geminiClientAdapterFactory,
         geminiSavedTranscriptTranslationCompositionFactory,
         translationProviderConfigurationFactory,
-        translationProviderResolutionCompositionFactory
+        translationProviderResolutionCompositionFactory,
+        providerKey
       });
 
   return createApplicationDependencies({
@@ -110,6 +112,7 @@ export function createProductionApplicationDependencies(options = {}) {
 
 export function createProductionSavedTranscriptTranslationProvider({
   env = process.env,
+  providerKey,
   geminiEnvironmentFactory = createGeminiEnvironment,
   googleGenAIClientFactory = createDefaultGoogleGenAIClient,
   geminiClientAdapterFactory = createGeminiClientAdapter,
@@ -146,7 +149,10 @@ export function createProductionSavedTranscriptTranslationProvider({
     },
     configuration
   });
-  const provider = providerResolutionComposition.resolver.resolve();
+  const provider = providerResolutionComposition.resolve({
+    providerKey,
+    configuration
+  });
 
   return provider;
 }

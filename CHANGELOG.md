@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2D WP6 end-to-end Gemini translation flow verification: added focused
+  integration coverage proving the production saved-transcript HTTP command path
+  composes through the controller, application service, production Gemini
+  provider, client adapter, and fake Google GenAI SDK client, invoking
+  `generateContent` exactly once while forwarding the configured model, prompt
+  context, transcript text, source language, and target language without real
+  Gemini API calls or production behavior changes.
 - Phase 2D WP5 production Gemini integration verification: added focused
   integration coverage for the saved-transcript HTTP path through production
   Gemini composition into the Google GenAI SDK adapter shape, including

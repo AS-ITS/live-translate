@@ -3,19 +3,30 @@ import { createTranslationProviderResolver } from './translationProviderResolver
 
 export function createTranslationProviderResolutionComposition({
   providers,
-  configuration
+  configuration,
+  resolverFactory = createTranslationProviderResolver
 }) {
   const registry = createTranslationProviderRegistry({
     providers
   });
 
-  const resolver = createTranslationProviderResolver({
+  const resolver = resolverFactory({
     registry,
     configuration
   });
 
+  function resolve({ providerKey } = {}) {
+    const resolveOptions = Object.create({
+      configuration
+    });
+    resolveOptions.providerKey = providerKey;
+
+    return resolver.resolve(resolveOptions);
+  }
+
   return Object.freeze({
     registry,
-    resolver
+    resolver,
+    resolve
   });
 }

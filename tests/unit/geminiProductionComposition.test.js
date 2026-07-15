@@ -12,7 +12,8 @@ test('production composition assembles Gemini provider and injects it into saved
   const geminiClient = { generateContent() {} };
   const geminiProvider = { translate() {} };
   const resolvedProvider = { translate() {} };
-  const configuration = { defaultProviderKey: 'configured-provider' };
+  const configuredProviderKey = 'configured-provider';
+  const configuration = { defaultProviderKey: configuredProviderKey };
   const service = { translateSavedTranscript() {} };
   const savedTranscriptRetranslationController = { translateSavedTranscript() {} };
   const requestHandler = function requestHandler() {};
@@ -21,7 +22,7 @@ test('production composition assembles Gemini provider and injects it into saved
   let geminiProviderCallCount = 0;
 
   const dependencies = createProductionApplicationDependencies({
-    env: { ...env, TRANSLATION_PROVIDER: configuration.defaultProviderKey },
+    env: { ...env, TRANSLATION_PROVIDER: configuredProviderKey },
     sessionRepository: repository(),
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
@@ -87,8 +88,8 @@ test('production composition assembles Gemini provider and injects it into saved
     'controller',
     'requestHandler'
   ]);
-  assert.deepEqual(calls[0][1], { env: { ...env, TRANSLATION_PROVIDER: configuration.defaultProviderKey } });
-  assert.deepEqual(calls[1][1], { environment: { ...env, TRANSLATION_PROVIDER: configuration.defaultProviderKey } });
+  assert.deepEqual(calls[0][1], { env: { ...env, TRANSLATION_PROVIDER: configuredProviderKey } });
+  assert.deepEqual(calls[1][1], { environment: { ...env, TRANSLATION_PROVIDER: configuredProviderKey } });
   assert.deepEqual(calls[2][1], { apiKey: 'exact-api-key' });
   assert.deepEqual(calls[3][1], { client: googleClient });
   assert.deepEqual(calls[4][1], {
@@ -129,12 +130,13 @@ test('production Gemini provider factory returns resolver output exactly once', 
   const calls = [];
   const geminiProvider = { translate() {} };
   const resolvedProvider = { translate() {} };
-  const configuration = { defaultProviderKey: 'configured-provider' };
+  const configuredProviderKey = 'configured-provider';
+  const configuration = { defaultProviderKey: configuredProviderKey };
   let resolverResolveCallCount = 0;
   let configurationCallCount = 0;
   let geminiProviderCallCount = 0;
   const result = createProductionSavedTranscriptTranslationProvider({
-    env: { GEMINI_API_KEY: 'unused-by-mock', TRANSLATION_PROVIDER: configuration.defaultProviderKey },
+    env: { GEMINI_API_KEY: 'unused-by-mock', TRANSLATION_PROVIDER: configuredProviderKey },
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
       return { apiKey: 'api-key', model: 'model-name' };

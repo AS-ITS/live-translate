@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2F WP5 Saved Transcript Retranslation Composition Migration:
+  moved saved-transcript provider-resolution composition ownership fully to the
+  shared translation provider configuration object by removing the composition
+  guard that extracted `configuration.defaultProviderKey`, keeping production
+  saved-transcript composition passing the configuration object into provider
+  resolution and resolving through `TranslationProviderResolver` with no HTTP,
+  persistence, provider, Gemini, retry, fallback, frontend, or API behavior
+  changes.
 - Phase 2F WP4 Translation Provider Configuration HTTP/API Integration:
   moved the production HTTP saved-transcript translation provider-resolution
   handoff to pass the shared translation provider configuration object instead

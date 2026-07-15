@@ -112,7 +112,8 @@ test('production composition injects the resolver-selected saved transcript prov
   const calls = [];
   const geminiProvider = provider();
   const resolvedProvider = provider();
-  const configuration = { defaultProviderKey: 'configured-provider' };
+  const configuredProviderKey = 'configured-provider';
+  const configuration = { defaultProviderKey: configuredProviderKey };
   const savedTranscriptRetranslationService = { translateSavedTranscript() {} };
   let resolverResolveCallCount = 0;
   let configurationCallCount = 0;
@@ -121,7 +122,7 @@ test('production composition injects the resolver-selected saved transcript prov
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
       GEMINI_MODEL: 'unused-by-mock',
-      TRANSLATION_PROVIDER: configuration.defaultProviderKey
+      TRANSLATION_PROVIDER: configuredProviderKey
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory(options) {

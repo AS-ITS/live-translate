@@ -101,17 +101,15 @@ test('missing explicit provider does not fall back to the default', () => {
   assert.equal(composition.resolver.resolve(), geminiProvider);
 });
 
-test('unregistered default provider fails during construction', () => {
-  assert.throws(
-    () =>
-      createTranslationProviderResolutionComposition({
-        providers: {
-          gemini: translationProvider()
-        },
-        configuration: configuration('missing')
-      }),
-    /defaultProviderKey is not registered: missing/
-  );
+test('unregistered configured default provider is resolved by the resolver', () => {
+  const composition = createTranslationProviderResolutionComposition({
+    providers: {
+      gemini: translationProvider()
+    },
+    configuration: configuration('missing')
+  });
+
+  assert.throws(() => composition.resolver.resolve(), /translation provider not found: missing/);
 });
 
 test('invalid providers input preserves registry validation', () => {

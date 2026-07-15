@@ -14,10 +14,6 @@ export function createTranslationProviderResolutionComposition({
     configuration
   });
 
-  if (!registry.has(configuration.defaultProviderKey)) {
-    throw new Error(`defaultProviderKey is not registered: ${configuration.defaultProviderKey}`);
-  }
-
   return Object.freeze({
     registry,
     resolver

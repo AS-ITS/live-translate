@@ -10,12 +10,23 @@ import {
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
 
 const EXECUTION_TRANSITIONS = Object.freeze(['start', 'complete', 'fail', 'cancel']);
+const DEFAULT_TRANSLATION_EXECUTION_DISPATCHER = Object.freeze({
+  async dispatch() {
+    return undefined;
+  }
+});
 
-export function createTranslationCommandService({ translationRepository, repository, domainEventPublisher } = {}) {
+export function createTranslationCommandService({
+  translationRepository,
+  repository,
+  domainEventPublisher,
+  translationExecutionDispatcher = DEFAULT_TRANSLATION_EXECUTION_DISPATCHER
+} = {}) {
   const resolvedTranslationRepository = translationRepository ?? repository;
 
   assertTranslationRepository(resolvedTranslationRepository);
   assertDomainEventPublisher(domainEventPublisher);
+  assertTranslationExecutionDispatcher(translationExecutionDispatcher);
 
   return Object.freeze({
     createTranslationRequest(payload) {
@@ -37,14 +48,16 @@ export function createTranslationCommandService({ translationRepository, reposit
       const execution = createTranslationExecutionDomainObject(payload);
       const repositoryResult = resolvedTranslationRepository.createTranslationExecution(execution);
 
-      return publishAfterRepositoryResult(
+      return dispatchExecutionAndPublishAfterRepositoryResult(
         repositoryResult,
+        execution,
         () =>
           createTranslationExecutionCreatedEvent({
             occurredAt: execution.startedAt,
             execution
           }),
-        domainEventPublisher
+        domainEventPublisher,
+        translationExecutionDispatcher
       );
     },
 
@@ -122,6 +135,16 @@ function assertDomainEventPublisher(domainEventPublisher) {
   }
 }
 
+function assertTranslationExecutionDispatcher(translationExecutionDispatcher) {
+  if (!translationExecutionDispatcher || typeof translationExecutionDispatcher !== 'object') {
+    throw new TypeError('translationExecutionDispatcher is required.');
+  }
+
+  if (typeof translationExecutionDispatcher.dispatch !== 'function') {
+    throw new TypeError('translationExecutionDispatcher.dispatch must be a function.');
+  }
+}
+
 function updateExecution(translationRepository, domainEventPublisher, executionId, execution, transition, transitionPayload) {
   if (execution === null || execution === undefined) {
     throw new Error(`TranslationExecution ${executionId} was not found`);
@@ -170,6 +193,46 @@ function publishAfterRepositoryResult(repositoryResult, createEvent, domainEvent
       publishEventAndReturnResult(domainEventPublisher, createEvent(), resolvedRepositoryResult)
     );
   }
+
+  return publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
+}
+
+function dispatchExecutionAndPublishAfterRepositoryResult(
+  repositoryResult,
+  execution,
+  createEvent,
+  domainEventPublisher,
+  translationExecutionDispatcher
+) {
+  if (isPromiseLike(repositoryResult)) {
+    return repositoryResult.then((resolvedRepositoryResult) =>
+      dispatchExecutionPublishEventAndReturnResult(
+        translationExecutionDispatcher,
+        execution,
+        domainEventPublisher,
+        createEvent,
+        resolvedRepositoryResult
+      )
+    );
+  }
+
+  return dispatchExecutionPublishEventAndReturnResult(
+    translationExecutionDispatcher,
+    execution,
+    domainEventPublisher,
+    createEvent,
+    repositoryResult
+  );
+}
+
+async function dispatchExecutionPublishEventAndReturnResult(
+  translationExecutionDispatcher,
+  execution,
+  domainEventPublisher,
+  createEvent,
+  repositoryResult
+) {
+  await translationExecutionDispatcher.dispatch(execution);
 
   return publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
 }

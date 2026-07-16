@@ -124,7 +124,7 @@ test('createTranslationRequest does not swallow domain validation errors', () =>
   );
 });
 
-test('createTranslationExecution creates domain object and returns repository result unchanged', () => {
+test('createTranslationExecution creates domain object and returns repository result unchanged', async () => {
   const calls = [];
   const repositoryResult = { id: 'stored-execution-1' };
   const service = createTranslationCommandService({
@@ -144,7 +144,7 @@ test('createTranslationExecution creates domain object and returns repository re
     })
   });
 
-  const result = service.createTranslationExecution(executionPayload());
+  const result = await service.createTranslationExecution(executionPayload());
 
   assert.strictEqual(result, repositoryResult);
   assert.equal(calls.length, 1);
@@ -153,7 +153,7 @@ test('createTranslationExecution creates domain object and returns repository re
   assert.equal(Object.isFrozen(calls[0][1]), true);
 });
 
-test('createTranslationExecution forwards providerKey to TranslationExecution', () => {
+test('createTranslationExecution forwards providerKey to TranslationExecution', async () => {
   let createdExecution;
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
@@ -164,14 +164,14 @@ test('createTranslationExecution forwards providerKey to TranslationExecution', 
     })
   });
 
-  const result = service.createTranslationExecution(executionPayload({ providerKey: 'gemini' }));
+  const result = await service.createTranslationExecution(executionPayload({ providerKey: 'gemini' }));
 
   assert.strictEqual(result, createdExecution);
   assert.equal(createdExecution instanceof TranslationExecution, true);
   assert.equal(createdExecution.providerKey, 'gemini');
 });
 
-test('createTranslationExecution preserves undefined providerKey', () => {
+test('createTranslationExecution preserves undefined providerKey', async () => {
   let createdExecution;
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
@@ -182,7 +182,7 @@ test('createTranslationExecution preserves undefined providerKey', () => {
     })
   });
 
-  service.createTranslationExecution(executionPayload());
+  await service.createTranslationExecution(executionPayload());
 
   assert.equal(createdExecution.providerKey, undefined);
 });

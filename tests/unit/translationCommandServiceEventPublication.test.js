@@ -44,7 +44,7 @@ const CREATE_CASES = Object.freeze([
 ]);
 
 for (const createCase of CREATE_CASES) {
-  test(`${createCase.name} publishes factory event after repository success`, () => {
+  test(`${createCase.name} publishes factory event after repository success`, async () => {
     const calls = [];
     const repositoryResult = { id: `${createCase.name}-repository-result` };
     const input = createCase.payload();
@@ -67,7 +67,7 @@ for (const createCase of CREATE_CASES) {
       })
     });
 
-    const result = service[createCase.command](input);
+    const result = await service[createCase.command](input);
 
     assert.strictEqual(result, repositoryResult);
     assert.deepEqual(calls, [createCase.repositoryMethod, 'publish']);

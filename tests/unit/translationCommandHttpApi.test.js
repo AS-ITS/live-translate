@@ -92,6 +92,87 @@ test('POST /api/translation-executions delegates once and returns HTTP 201 with 
   assert.deepEqual(calls, [['createTranslationExecution', body]]);
 });
 
+test('POST /api/translation-executions forwards explicit providerKey unchanged', async () => {
+  const calls = [];
+  const result = { id: 'execution-1', status: 'pending' };
+  const body = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: 'gemini'
+  };
+  const handler = createHandler({
+    createTranslationExecution(input) {
+      calls.push(input);
+      return result;
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-executions',
+    body: JSON.stringify(body)
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.json(), result);
+  assert.deepEqual(calls, [body]);
+  assert.equal(calls[0].providerKey, 'gemini');
+});
+
+test('POST /api/translation-executions preserves omitted providerKey as undefined', async () => {
+  const calls = [];
+  const result = { id: 'execution-1', status: 'pending' };
+  const body = {
+    executionId: 'execution-1',
+    requestId: 'request-1'
+  };
+  const handler = createHandler({
+    createTranslationExecution(input) {
+      calls.push(input);
+      return result;
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-executions',
+    body: JSON.stringify(body)
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.json(), result);
+  assert.deepEqual(calls, [body]);
+  assert.equal(calls[0].providerKey, undefined);
+  assert.equal(Object.hasOwn(calls[0], 'providerKey'), false);
+});
+
+test('POST /api/translation-executions does not validate providerKey at HTTP boundary', async () => {
+  const calls = [];
+  const result = { id: 'execution-1', status: 'pending' };
+  const body = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: 123
+  };
+  const handler = createHandler({
+    createTranslationExecution(input) {
+      calls.push(input);
+      return result;
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-executions',
+    body: JSON.stringify(body)
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.json(), result);
+  assert.deepEqual(calls, [body]);
+  assert.equal(calls[0].providerKey, 123);
+});
+
 test('PATCH /api/translation-executions/:executionId URL-decodes and overrides body execution identifiers', async () => {
   const calls = [];
   const result = { id: 'execution/one', status: 'running' };

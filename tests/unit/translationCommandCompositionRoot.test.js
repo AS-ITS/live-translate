@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createApplicationDependencies,
+  createProductionApplicationDependencies,
   createTranslationCommandDependencies
 } from '../../server/compositionRoot.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
@@ -76,6 +77,50 @@ test('translation command dependencies use the service factory result to build t
   assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
+});
+
+test('production composition forwards create-execution providerKey from controller to service unchanged', () => {
+  const serviceCalls = [];
+  const input = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: 'gemini'
+  };
+  const dependencies = createProductionTranslationCommandDependencies({
+    createTranslationExecution(nextInput) {
+      serviceCalls.push(nextInput);
+      return { id: nextInput.executionId };
+    }
+  });
+
+  const result = dependencies.translationCommandController.createTranslationExecution(input);
+
+  assert.deepEqual(result, { id: 'execution-1' });
+  assert.deepEqual(serviceCalls, [input]);
+  assert.strictEqual(serviceCalls[0], input);
+  assert.equal(serviceCalls[0].providerKey, 'gemini');
+});
+
+test('production composition preserves omitted create-execution providerKey as undefined', () => {
+  const serviceCalls = [];
+  const input = {
+    executionId: 'execution-1',
+    requestId: 'request-1'
+  };
+  const dependencies = createProductionTranslationCommandDependencies({
+    createTranslationExecution(nextInput) {
+      serviceCalls.push(nextInput);
+      return { id: nextInput.executionId };
+    }
+  });
+
+  const result = dependencies.translationCommandController.createTranslationExecution(input);
+
+  assert.deepEqual(result, { id: 'execution-1' });
+  assert.deepEqual(serviceCalls, [input]);
+  assert.strictEqual(serviceCalls[0], input);
+  assert.equal(serviceCalls[0].providerKey, undefined);
+  assert.equal(Object.hasOwn(serviceCalls[0], 'providerKey'), false);
 });
 
 test('translation command dependencies create one usable publisher instance by default', () => {
@@ -250,6 +295,22 @@ function publisher(overrides = {}) {
 
 function controller(overrides = {}) {
   return service(overrides);
+}
+
+function createProductionTranslationCommandDependencies(serviceOverrides = {}) {
+  return createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    },
+    translationCommandServiceFactory() {
+      return service(serviceOverrides);
+    }
+  });
 }
 
 function readRepository(overrides = {}) {

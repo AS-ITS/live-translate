@@ -4,6 +4,28 @@
 
 ### Added
 
+- Phase 2H WP6 Translation Command Provider Metadata Vertical Integration:
+  added focused integration coverage proving `POST /api/translation-executions`
+  carries optional `providerKey` metadata through production composition from
+  HTTP, controller, application service, domain construction, and repository
+  persistence unchanged, including omitted-key `undefined` semantics. No
+  provider resolution, provider lookup, fallback, normalization, validation,
+  persistence migration, HTTP behavior, repository behavior, saved-transcript,
+  frontend, or production code changed.
+- Phase 2H WP5 Translation Command Production Composition:
+  added focused production-composition coverage proving the composed
+  Translation Command Controller forwards optional `providerKey` metadata
+  unchanged into `TranslationCommandService.createTranslationExecution`,
+  preserves omitted-key `undefined` semantics, and does not invoke provider
+  resolution for the translation command path. No provider lookup, HTTP,
+  persistence, saved-transcript, frontend, or domain behavior was changed.
+- Phase 2H WP4 Translation Command HTTP API Provider Metadata Input:
+  documented focused HTTP-boundary coverage proving
+  `POST /api/translation-executions` forwards optional `providerKey` metadata
+  unchanged into `TranslationCommandController.createTranslationExecution`,
+  preserves omitted-key `undefined` semantics, and does not validate invalid
+  provider metadata at the HTTP layer. No provider resolution, persistence,
+  saved-transcript, frontend, or environment behavior was changed.
 - Phase 2H WP3 Translation Command Controller Provider Metadata Input:
   kept the non-HTTP Translation Command Controller create-execution boundary as
   an unchanged pass-through into `TranslationCommandService.createTranslationExecution`,

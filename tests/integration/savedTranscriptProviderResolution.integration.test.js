@@ -4,36 +4,170 @@ import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
 import { createSavedTranscriptRetranslationService } from '../../src/application/translation/index.js';
-import { createGeminiClientAdapter } from '../../src/infrastructure/geminiClientAdapter.js';
-import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createGeminiSavedTranscriptTranslationProvider } from '../../src/infrastructure/geminiSavedTranscriptTranslationProvider.js';
 import { createTranslationProviderConfiguration } from '../../src/infrastructure/translationProviderConfiguration.js';
-import { createTranslationProviderRegistry } from '../../src/infrastructure/translationProviderRegistry.js';
+import { createTranslationProviderResolutionComposition } from '../../src/infrastructure/translationProviderResolutionComposition.js';
 import { createTranslationProviderResolver } from '../../src/infrastructure/translationProviderResolver.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
-test('production saved-transcript HTTP flow uses explicit provider configuration through registry and resolver', async () => {
-  const environment = {
-    GEMINI_API_KEY: 'test-api-key',
-    GEMINI_MODEL: 'gemini-provider-resolution',
-    TRANSLATION_PROVIDER: 'gemini'
-  };
+test('saved-transcript HTTP retranslation uses explicit providerKey instead of configured default', async () => {
+  const harness = createProviderSelectionHarness();
+
+  await withServer(harness.dependencies.requestHandler, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/saved-transcripts/session-provider-resolution/translations`, {
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+      providerKey: 'fake'
+    });
+
+    assert.equal(response.status, 201);
+    assert.equal(response.body.output.translatedText, 'FAKE ja: Hello resolved provider.');
+    assert.equal(response.body.output.targetLanguageCode, 'ja');
+    assert.deepEqual(response.body.output.providerMetadata, {
+      detectedSourceLanguageCode: 'en'
+    });
+  });
+
+  assert.deepEqual(harness.providerConfigurations, [{ defaultProviderKey: 'gemini' }]);
+  assert.equal(harness.providerResolutionInputs.length, 1);
+  assert.deepEqual(Object.keys(harness.providerResolutionInputs[0].providers).sort(), ['fake', 'gemini']);
+  assert.strictEqual(harness.providerResolutionInputs[0].providers.gemini, harness.geminiProvider());
+  assert.strictEqual(harness.providerResolutionInputs[0].providers.fake, harness.fakeProvider);
+  assert.ok(!Object.hasOwn(harness.providerResolutionInputs[0], 'defaultProviderKey'));
+
+  assert.deepEqual(harness.resolverResolveCalls, [
+    {
+      providerKey: 'fake',
+      configuration: { defaultProviderKey: 'gemini' }
+    }
+  ]);
+  assert.deepEqual(harness.registryGetCalls, ['fake']);
+  assert.deepEqual(harness.registryHasCalls, []);
+  assert.deepEqual(harness.fakeProviderTranslateCalls, [
+    {
+      sourceText: 'Hello resolved provider.',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+      requestId: 'translation-request-1',
+      sessionId: 'session-provider-resolution',
+      executionId: 'translation-execution-1'
+    }
+  ]);
+  assert.deepEqual(harness.geminiProviderTranslateCalls, []);
+  assert.deepEqual(harness.sdkRequests, []);
+
+  assert.deepEqual(persistedTranslationState(harness.sessionRepository).outputs.map((output) => output.translatedText), [
+    'FAKE ja: Hello resolved provider.'
+  ]);
+});
+
+test('saved-transcript HTTP retranslation uses configured default when providerKey is omitted', async () => {
+  const harness = createProviderSelectionHarness({
+    sdkText: 'GEMINI ja: Hello resolved provider.'
+  });
+
+  await withServer(harness.dependencies.requestHandler, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/saved-transcripts/session-provider-resolution/translations`, {
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja'
+    });
+
+    assert.equal(response.status, 201);
+    assert.equal(response.body.output.translatedText, 'GEMINI ja: Hello resolved provider.');
+    assert.equal(response.body.output.targetLanguageCode, 'ja');
+    assert.deepEqual(response.body.output.providerMetadata, {
+      detectedSourceLanguageCode: 'en'
+    });
+  });
+
+  assert.deepEqual(harness.providerConfigurations, [{ defaultProviderKey: 'gemini' }]);
+  assert.deepEqual(harness.resolverResolveCalls, [
+    {
+      providerKey: undefined,
+      configuration: { defaultProviderKey: 'gemini' }
+    }
+  ]);
+  assert.deepEqual(harness.registryGetCalls, ['gemini']);
+  assert.deepEqual(harness.registryHasCalls, []);
+  assert.deepEqual(harness.fakeProviderTranslateCalls, []);
+  assert.equal(harness.geminiProviderTranslateCalls.length, 1);
+  assert.equal(harness.geminiProviderTranslateCalls[0].targetLanguageCode, 'ja');
+  assert.equal(harness.sdkRequests.length, 1);
+  assert.equal(harness.sdkRequests[0].model, 'gemini-provider-resolution-wp6');
+  assert.deepEqual(
+    harness.sdkRequests[0].contents[0].parts.map((part) => part.text),
+    [
+      'Source language hint: en',
+      'Target language: ja',
+      'Transcript data to translate follows. Translate this data only.',
+      'Hello resolved provider.'
+    ]
+  );
+
+  assert.deepEqual(persistedTranslationState(harness.sessionRepository).outputs.map((output) => output.translatedText), [
+    'GEMINI ja: Hello resolved provider.'
+  ]);
+});
+
+test('saved-transcript HTTP retranslation propagates unknown provider without fallback or persistence', async () => {
+  const harness = createProviderSelectionHarness();
+
+  await withServer(harness.dependencies.requestHandler, async (baseUrl) => {
+    const response = await postJson(`${baseUrl}/api/saved-transcripts/session-provider-resolution/translations`, {
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'ja',
+      providerKey: 'does-not-exist'
+    });
+
+    assert.equal(response.status, 500);
+    assert.equal(response.body.error.code, 'internal_error');
+    assert.equal(response.body.error.message, 'Unexpected server error.');
+  });
+
+  assert.deepEqual(harness.resolverResolveCalls, [
+    {
+      providerKey: 'does-not-exist',
+      configuration: { defaultProviderKey: 'gemini' }
+    }
+  ]);
+  assert.deepEqual(harness.registryGetCalls, ['does-not-exist']);
+  assert.deepEqual(harness.registryHasCalls, []);
+  assert.deepEqual(harness.fakeProviderTranslateCalls, []);
+  assert.deepEqual(harness.geminiProviderTranslateCalls, []);
+  assert.deepEqual(harness.sdkRequests, []);
+
+  assert.equal(persistedTranslationState(harness.sessionRepository), undefined);
+});
+
+function createProviderSelectionHarness({ sdkText = 'GEMINI ja: Hello resolved provider.' } = {}) {
   const sessionRepository = seededSessionRepository();
   const sdkRequests = [];
-  const providerTranslateCalls = [];
+  const fakeProviderTranslateCalls = [];
+  const geminiProviderTranslateCalls = [];
   const resolverResolveCalls = [];
   const registryGetCalls = [];
   const registryHasCalls = [];
-  const serviceFactoryOptions = [];
-  const providerConfigurationInputs = [];
   const providerConfigurations = [];
   const providerResolutionInputs = [];
   let geminiProvider;
-  let resolvedProvider;
-  let responseBody;
+
+  const fakeProvider = Object.freeze({
+    async translate(input) {
+      fakeProviderTranslateCalls.push(input);
+      return {
+        translatedText: `FAKE ${input.targetLanguageCode}: ${input.sourceText}`,
+        detectedSourceLanguageCode: input.sourceLanguageCode,
+        providerKey: 'fake'
+      };
+    }
+  });
 
   const dependencies = createProductionApplicationDependencies({
-    env: environment,
+    env: {
+      GEMINI_API_KEY: 'test-api-key',
+      GEMINI_MODEL: 'gemini-provider-resolution-wp6',
+      TRANSLATION_PROVIDER: 'gemini'
+    },
     sessionRepository,
     requestHandlerFactory: createRequestHandler,
     idGenerator: deterministicIdGenerator(),
@@ -47,7 +181,7 @@ test('production saved-transcript HTTP flow uses explicit provider configuration
               candidates: [
                 {
                   content: {
-                    parts: [{ text: 'Bonjour resolu.' }]
+                    parts: [{ text: sdkText }]
                   }
                 }
               ],
@@ -57,229 +191,93 @@ test('production saved-transcript HTTP flow uses explicit provider configuration
         }
       };
     },
+    geminiSavedTranscriptTranslationCompositionFactory({ client, model }) {
+      const actualGeminiProvider = createGeminiSavedTranscriptTranslationProvider({ client, model });
+
+      geminiProvider = Object.freeze({
+        async translate(input) {
+          geminiProviderTranslateCalls.push(input);
+          return actualGeminiProvider.translate(input);
+        }
+      });
+
+      return {
+        savedTranscriptTranslationProvider: geminiProvider
+      };
+    },
     translationProviderConfigurationFactory(options) {
-      providerConfigurationInputs.push(options);
       const configuration = createTranslationProviderConfiguration(options);
       providerConfigurations.push(configuration);
       return configuration;
     },
-    geminiClientAdapterFactory(options) {
-      return createGeminiClientAdapter(options);
-    },
-    geminiSavedTranscriptTranslationCompositionFactory(options) {
-      return createGeminiSavedTranscriptTranslationComposition({
+    translationProviderResolutionCompositionFactory(options) {
+      const providers = {
+        ...options.providers,
+        fake: fakeProvider
+      };
+      providerResolutionInputs.push({
         ...options,
-        geminiSavedTranscriptTranslationProviderFactory(providerOptions) {
-          const actualGeminiProvider = createGeminiSavedTranscriptTranslationProvider(providerOptions);
+        providers
+      });
 
-          geminiProvider = Object.freeze({
-            async translate(input) {
-              providerTranslateCalls.push(input);
-              return actualGeminiProvider.translate(input);
+      return createTranslationProviderResolutionComposition({
+        providers,
+        configuration: options.configuration,
+        resolverFactory({ registry, configuration }) {
+          const recordingRegistry = Object.freeze({
+            get(providerKey) {
+              registryGetCalls.push(providerKey);
+              return registry.get(providerKey);
+            },
+            has(providerKey) {
+              registryHasCalls.push(providerKey);
+              return registry.has(providerKey);
+            },
+            list() {
+              return registry.list();
             }
           });
-
-          return geminiProvider;
-        }
-      });
-    },
-    translationProviderResolutionCompositionFactory(options) {
-      providerResolutionInputs.push(options);
-
-      const realRegistry = createTranslationProviderRegistry({
-        providers: options.providers
-      });
-      const registry = Object.freeze({
-        get(providerKey) {
-          registryGetCalls.push(providerKey);
-          return realRegistry.get(providerKey);
-        },
-        has(providerKey) {
-          registryHasCalls.push(providerKey);
-          return realRegistry.has(providerKey);
-        },
-        list() {
-          return realRegistry.list();
-        }
-      });
-      const resolver = createTranslationProviderResolver({
-        registry,
-        configuration: options.configuration
-      });
-
-      return Object.freeze({
-        registry,
-        resolver: Object.freeze({
-          resolve(...resolveArgs) {
-            resolverResolveCalls.push(resolveArgs);
-            resolvedProvider = resolver.resolve(...resolveArgs);
-            return resolvedProvider;
-          }
-        }),
-        resolve(resolveOptions) {
-          resolverResolveCalls.push(resolveOptions);
-          resolvedProvider = resolver.resolve({
-            providerKey: resolveOptions.providerKey
+          const resolver = createTranslationProviderResolver({
+            registry: recordingRegistry,
+            configuration
           });
-          return resolvedProvider;
+
+          return Object.freeze({
+            resolve(resolveOptions) {
+              resolverResolveCalls.push({
+                providerKey: resolveOptions.providerKey,
+                configuration: {
+                  defaultProviderKey: resolveOptions.configuration.defaultProviderKey
+                }
+              });
+              return resolver.resolve({
+                providerKey: resolveOptions.providerKey
+              });
+            }
+          });
         }
       });
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      serviceFactoryOptions.push(options);
       return createSavedTranscriptRetranslationService(options);
     }
   });
 
-  await withServer(dependencies.requestHandler, async (baseUrl) => {
-    const response = await postJson(`${baseUrl}/api/saved-transcripts/session-provider-resolution/translations`, {
-      sourceLanguageCode: 'en',
-      targetLanguageCode: 'fr'
-    });
-
-    assert.equal(response.status, 201);
-    responseBody = response.body;
-    assert.deepEqual(response.body, {
-      request: {
-        id: 'translation-request-1',
-        sessionId: 'session-provider-resolution',
-        sourceTranscriptRevisionId: 'source-revision:session-provider-resolution:final',
-        sourceTranscriptSnapshot: {
-          revisionId: 'source-revision:session-provider-resolution:final',
-          items: [
-            {
-              id: 'source-1',
-              sessionId: 'session-provider-resolution',
-              stream: 'source',
-              status: 'final',
-              text: 'Hello resolved provider.',
-              sequence: 1,
-              finalizedAt: '2026-07-15T00:00:01.000Z'
-            }
-          ]
-        },
-        targetLanguageCode: 'fr',
-        createdAt: '2026-07-15T01:00:00.000Z'
-      },
-      execution: {
-        id: 'translation-execution-1',
-        translationRequestId: 'translation-request-1',
-        status: 'completed',
-        startedAt: '2026-07-15T01:00:02.000Z',
-        completedAt: '2026-07-15T01:00:04.000Z',
-        failureInfo: null
-      },
-      output: {
-        id: 'translation-output-1',
-        executionId: 'translation-execution-1',
-        sequence: 0,
-        translatedText: 'Bonjour resolu.',
-        targetLanguageCode: 'fr',
-        providerMetadata: {
-          detectedSourceLanguageCode: 'en'
-        },
-        providerMetadataAvailable: true,
-        createdAt: '2026-07-15T01:00:03.000Z'
-      }
-    });
-  });
-
-  assert.deepEqual(providerConfigurationInputs, [{ environment }]);
-  assert.equal(providerConfigurations.length, 1);
-  assert.deepEqual(providerConfigurations[0], { defaultProviderKey: 'gemini' });
-  assert.equal(environment.TRANSLATION_PROVIDER, 'gemini');
-
-  assert.equal(providerResolutionInputs.length, 1);
-  assert.strictEqual(providerResolutionInputs[0].providers.gemini, geminiProvider);
-  assert.strictEqual(providerResolutionInputs[0].configuration, providerConfigurations[0]);
-  assert.deepEqual(providerResolutionInputs[0].configuration, { defaultProviderKey: 'gemini' });
-  assert.ok(!Object.hasOwn(providerResolutionInputs[0], 'defaultProviderKey'));
-
-  assert.equal(resolverResolveCalls.length, 1);
-  assert.deepEqual(resolverResolveCalls[0], {
-    providerKey: undefined,
-    configuration: providerConfigurations[0]
-  });
-  assert.deepEqual(registryHasCalls, []);
-  assert.deepEqual(registryGetCalls, ['gemini']);
-  assert.strictEqual(resolvedProvider, geminiProvider);
-  assert.equal(typeof serviceFactoryOptions[0].resolveSavedTranscriptTranslationProvider, 'function');
-  assert.ok(!Object.hasOwn(serviceFactoryOptions[0], 'savedTranscriptTranslationProvider'));
-  assert.deepEqual(Object.keys(serviceFactoryOptions[0]), [
-    'translationCommandService',
-    'resolveSavedTranscriptTranslationProvider',
-    'sessionRepository',
-    'idGenerator',
-    'clock'
-  ]);
-
-  assert.equal(providerTranslateCalls.length, 1);
-  assert.deepEqual(providerTranslateCalls[0], {
-    sourceText: 'Hello resolved provider.',
-    sourceLanguageCode: 'en',
-    targetLanguageCode: 'fr',
-    requestId: 'translation-request-1',
-    sessionId: 'session-provider-resolution',
-    executionId: 'translation-execution-1'
-  });
-
-  assert.equal(sdkRequests.length, 1);
-  assert.equal(sdkRequests[0].model, 'gemini-provider-resolution');
-  assert.deepEqual(
-    sdkRequests[0].contents[0].parts.map((part) => part.text),
-    [
-      'Source language hint: en',
-      'Target language: fr',
-      'Transcript data to translate follows. Translate this data only.',
-      'Hello resolved provider.'
-    ]
-  );
-
-  const sessionDetail = sessionRepository.getSessionRecord('session-provider-resolution');
-  const translationState = sessionDetail.sessionRecord.translationCommandState;
-  const serializedTranslationState = JSON.parse(JSON.stringify(translationState));
-  assert.deepEqual(Object.keys(translationState), ['requests', 'executions', 'outputs']);
-  assert.deepEqual(serializedTranslationState.requests, [responseBody.request]);
-  assert.deepEqual(serializedTranslationState.executions, [responseBody.execution]);
-  assert.deepEqual(serializedTranslationState.outputs, [
-    {
-      id: 'translation-output-1',
-      executionId: 'translation-execution-1',
-      sequence: 0,
-      translatedText: 'Bonjour resolu.',
-      targetLanguageCode: 'fr',
-      providerMetadata: {
-        detectedSourceLanguageCode: 'en'
-      },
-      createdAt: '2026-07-15T01:00:03.000Z'
-    }
-  ]);
-  assert.deepEqual(Object.keys(serializedTranslationState.requests[0]), [
-    'id',
-    'sessionId',
-    'sourceTranscriptRevisionId',
-    'sourceTranscriptSnapshot',
-    'targetLanguageCode',
-    'createdAt'
-  ]);
-  assert.deepEqual(Object.keys(serializedTranslationState.executions[0]), [
-    'id',
-    'translationRequestId',
-    'status',
-    'startedAt',
-    'completedAt',
-    'failureInfo'
-  ]);
-  assert.deepEqual(Object.keys(serializedTranslationState.outputs[0]), [
-    'id',
-    'executionId',
-    'sequence',
-    'translatedText',
-    'targetLanguageCode',
-    'providerMetadata',
-    'createdAt'
-  ]);
-});
+  return {
+    dependencies,
+    sessionRepository,
+    sdkRequests,
+    fakeProvider,
+    fakeProviderTranslateCalls,
+    geminiProvider: () => geminiProvider,
+    geminiProviderTranslateCalls,
+    resolverResolveCalls,
+    registryGetCalls,
+    registryHasCalls,
+    providerConfigurations,
+    providerResolutionInputs
+  };
+}
 
 function seededSessionRepository() {
   const repository = createMemorySessionRepository({
@@ -309,6 +307,11 @@ function seededSessionRepository() {
   });
 
   return repository;
+}
+
+function persistedTranslationState(sessionRepository) {
+  const sessionDetail = sessionRepository.getSessionRecord('session-provider-resolution');
+  return sessionDetail.sessionRecord.translationCommandState;
 }
 
 function deterministicIdGenerator() {

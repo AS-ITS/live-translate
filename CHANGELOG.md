@@ -4,6 +4,21 @@
 
 ### Added
 
+- Phase 2G WP7 Regression Validation and Closeout: completed documentation
+  closeout for Request-Scoped Provider Selection, marking Phase 2G complete and
+  documenting saved-transcript HTTP `providerKey` support, explicit request
+  override behavior, environment-backed default provider selection when omitted,
+  existing unknown-provider registry error propagation, and no provider
+  fallback semantics. No production behavior changed and automated regression
+  validation is deferred to manual execution.
+- Phase 2G WP6 HTTP Integration Provider Selection: added production HTTP
+  integration coverage proving saved-transcript retranslation performs
+  request-scoped provider selection from the optional request `providerKey`,
+  where explicit `fake` overrides configured `TRANSLATION_PROVIDER=gemini`,
+  omitted provider selection resolves the configured Gemini default, and an
+  unknown provider propagates the existing registry error without fallback,
+  provider execution, SDK use, or translation command persistence. No
+  production code changed.
 - Phase 2G WP5 Request-Scoped Provider Resolution Wiring: moved production
   saved-transcript retranslation provider selection from startup-time provider
   injection to a request-scoped resolver dependency, forwarding explicit and

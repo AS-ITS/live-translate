@@ -21,7 +21,8 @@ Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
 Translation Provider Architecture are completed. Phase 2F Translation Provider
-Configuration is completed.
+Configuration is completed. Phase 2G Request-Scoped Provider Selection is
+completed.
 
 Completed Phase 1 capabilities include:
 
@@ -188,6 +189,13 @@ Deferred:
   - Shared configuration propagation
   - Explicit Gemini production HTTP verification
   - Focused regression closeout
+- Phase 2G - Request-Scoped Provider Selection: Completed
+  - HTTP `providerKey` input for saved-transcript retranslation
+  - Explicit provider override through request-scoped resolution
+  - Omitted-provider behavior using `TRANSLATION_PROVIDER` default selection
+  - Existing registry error propagation for unknown providers
+  - No provider fallback semantics
+  - Production HTTP integration verification
 - Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
@@ -237,10 +245,16 @@ Completed capabilities:
   - Shared configuration propagation
   - Explicit Gemini production HTTP verification
   - Focused regression closeout
+- Request-Scoped Provider Selection
+  - HTTP `providerKey` support
+  - Explicit provider override
+  - Environment default behavior when omitted
+  - Unknown-provider registry error propagation
+  - No fallback semantics
+  - HTTP integration verification
 
 Future provider capabilities remain separate future work:
 
-- Request-level provider selection
 - Runtime provider switching
 - Fallback and retry
 - Provider health checks

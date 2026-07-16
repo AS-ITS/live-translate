@@ -21,6 +21,7 @@ Completed:
 - Phase 2D - Production Gemini Saved-Transcript Translation
 - Phase 2E - Translation Provider Architecture
 - Phase 2F - Translation Provider Configuration
+- Phase 2G - Request-Scoped Provider Selection
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -33,29 +34,28 @@ Completed:
 - Security hardening
 - Testing documentation
 
-Phase 2F
+Phase 2G
 Status: Completed
 
-Phase 2F status:
+Phase 2G status:
 
-- Translation provider selection is controlled by environment-driven
-  configuration through
-  `createTranslationProviderConfiguration({ environment })`.
-- Set `TRANSLATION_PROVIDER=gemini` to select the current production provider.
-  When unset, the default provider key is `gemini`.
-- Environment configuration determines the default translation provider key.
-  The resolver consumes the shared configuration object and resolves the
-  registered provider before the Saved Transcript Retranslation service is
-  constructed.
+- Saved Transcript Retranslation supports request-scoped provider selection.
+- The HTTP retranslation request accepts optional `providerKey`.
+- When `providerKey` is supplied, it is forwarded through the controller,
+  service, production provider-resolution composition, resolver, and registry,
+  and it overrides the configured default provider for that request.
+- When `providerKey` is omitted, provider resolution uses the environment-backed
+  default from `TRANSLATION_PROVIDER`; when unset, the default provider key is
+  `gemini`.
 - The configuration layer only stores the provider key. It does not validate
   whether that provider exists in the registry.
-- The registry owns provider registration, the resolver owns provider
-  selection, and the service depends only on the resolved provider.
-- Runtime provider switching, per-request provider selection, fallback, retry,
-  provider health checks, and frontend provider controls are not supported.
-- Focused regression verified explicit `TRANSLATION_PROVIDER=gemini`, the
-  default `gemini` provider path, production HTTP `201` behavior, persistence,
-  and fake GoogleGenAI-only execution with no real Gemini API call.
+- Unknown providers propagate the existing registry error. There is no provider
+  fallback, retry behavior, provider health check, runtime provider switching,
+  additional production provider activation, or frontend provider control.
+- Focused HTTP integration coverage verified explicit provider override,
+  omitted-provider default behavior, persistence on success, no persistence on
+  provider-resolution failure, and fake GoogleGenAI-only Gemini execution with
+  no real Gemini API call.
 
 Documentation:
 

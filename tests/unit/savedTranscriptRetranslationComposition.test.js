@@ -108,7 +108,7 @@ test('application composition wires saved transcript re-translation once through
   ]);
 });
 
-test('production composition forwards explicit providerKey through provider resolution', () => {
+test('production composition wires request-scoped provider resolver through provider resolution', () => {
   const calls = [];
   const geminiProvider = provider();
   const resolvedProvider = provider();
@@ -118,9 +118,9 @@ test('production composition forwards explicit providerKey through provider reso
   const savedTranscriptRetranslationService = { translateSavedTranscript() {} };
   let providerResolveCallCount = 0;
   let configurationCallCount = 0;
+  let resolveSavedTranscriptTranslationProvider;
 
   const dependencies = createProductionApplicationDependencies({
-    providerKey: requestedProviderKey,
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
       GEMINI_MODEL: 'unused-by-mock',
@@ -160,6 +160,7 @@ test('production composition forwards explicit providerKey through provider reso
     },
     savedTranscriptRetranslationServiceFactory(options) {
       calls.push(['serviceFactory', options]);
+      resolveSavedTranscriptTranslationProvider = options.resolveSavedTranscriptTranslationProvider;
       return savedTranscriptRetranslationService;
     }
   });
@@ -172,7 +173,6 @@ test('production composition forwards explicit providerKey through provider reso
     'adapter',
     'providerComposition',
     'providerResolutionComposition',
-    'providerResolve',
     'serviceFactory'
   ]);
   assert.equal(configurationCallCount, 1);
@@ -184,20 +184,34 @@ test('production composition forwards explicit providerKey through provider reso
   });
   assert.strictEqual(calls[5][1].configuration, configuration);
   assert.ok(!Object.hasOwn(calls[5][1], 'defaultProviderKey'));
+  assert.equal(providerResolveCallCount, 0);
+  assert.equal(typeof resolveSavedTranscriptTranslationProvider, 'function');
+  assert.deepEqual(Object.keys(calls[6][1]), [
+    'translationCommandService',
+    'resolveSavedTranscriptTranslationProvider',
+    'sessionRepository',
+    'idGenerator',
+    'clock'
+  ]);
+  assert.ok(!Object.hasOwn(calls[6][1], 'savedTranscriptTranslationProvider'));
+
+  const actualProvider = resolveSavedTranscriptTranslationProvider({
+    providerKey: requestedProviderKey
+  });
+
+  assert.strictEqual(actualProvider, resolvedProvider);
   assert.equal(providerResolveCallCount, 1);
-  assert.deepEqual(calls[6][1], {
+  assert.deepEqual(calls[7][1], {
     providerKey: requestedProviderKey,
     configuration
   });
-  assert.strictEqual(calls[7][1].savedTranscriptTranslationProvider, resolvedProvider);
-  assert.notStrictEqual(calls[7][1].savedTranscriptTranslationProvider, geminiProvider);
-  assert.ok(!Object.hasOwn(calls[7][1], 'configuration'));
 });
 
-test('production composition forwards omitted providerKey as undefined with the complete configuration', () => {
+test('production request-scoped resolver forwards omitted providerKey as undefined with the complete configuration', () => {
   const configuration = { defaultProviderKey: 'configured-provider' };
   const resolvedProvider = provider();
   const calls = [];
+  let resolveSavedTranscriptTranslationProvider;
 
   createProductionApplicationDependencies({
     env: {
@@ -231,11 +245,15 @@ test('production composition forwards omitted providerKey as undefined with the 
       };
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      assert.strictEqual(options.savedTranscriptTranslationProvider, resolvedProvider);
+      resolveSavedTranscriptTranslationProvider = options.resolveSavedTranscriptTranslationProvider;
+      assert.ok(!Object.hasOwn(options, 'savedTranscriptTranslationProvider'));
       return { translateSavedTranscript() {} };
     }
   });
 
+  const actualProvider = resolveSavedTranscriptTranslationProvider();
+
+  assert.strictEqual(actualProvider, resolvedProvider);
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], {
     providerKey: undefined,
@@ -243,9 +261,9 @@ test('production composition forwards omitted providerKey as undefined with the 
   });
 });
 
-test('production composition passes the resolved provider object unchanged to the service', () => {
+test('production request-scoped resolver returns the resolved provider object unchanged', () => {
   const resolvedProvider = provider();
-  let actualProvider;
+  let resolveSavedTranscriptTranslationProvider;
 
   createProductionApplicationDependencies({
     env: {
@@ -276,12 +294,12 @@ test('production composition passes the resolved provider object unchanged to th
       };
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      actualProvider = options.savedTranscriptTranslationProvider;
+      resolveSavedTranscriptTranslationProvider = options.resolveSavedTranscriptTranslationProvider;
       return { translateSavedTranscript() {} };
     }
   });
 
-  assert.strictEqual(actualProvider, resolvedProvider);
+  assert.strictEqual(resolveSavedTranscriptTranslationProvider({ providerKey: 'fake' }), resolvedProvider);
 });
 
 test('production composition does not extract configuration.defaultProviderKey locally', () => {
@@ -324,55 +342,57 @@ test('production composition does not extract configuration.defaultProviderKey l
       };
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      assert.strictEqual(options.savedTranscriptTranslationProvider, resolvedProvider);
+      assert.strictEqual(options.resolveSavedTranscriptTranslationProvider(), resolvedProvider);
       return { translateSavedTranscript() {} };
     }
   });
 });
 
-test('production composition propagates provider resolution errors unchanged without service fallback', () => {
+test('production request-scoped resolver propagates provider resolution errors unchanged without fallback', () => {
   const resolutionError = new Error('resolution failed');
   let serviceFactoryCallCount = 0;
+  let resolveSavedTranscriptTranslationProvider;
+
+  createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock'
+    },
+    sessionRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key', model: 'model-name' };
+    },
+    googleGenAIClientFactory() {
+      return { models: { generateContent() {} } };
+    },
+    geminiClientAdapterFactory() {
+      return { generateContent() {} };
+    },
+    geminiSavedTranscriptTranslationCompositionFactory() {
+      return { savedTranscriptTranslationProvider: provider() };
+    },
+    translationProviderConfigurationFactory() {
+      return { defaultProviderKey: 'gemini' };
+    },
+    translationProviderResolutionCompositionFactory() {
+      return {
+        resolve() {
+          throw resolutionError;
+        }
+      };
+    },
+    savedTranscriptRetranslationServiceFactory(options) {
+      serviceFactoryCallCount += 1;
+      resolveSavedTranscriptTranslationProvider = options.resolveSavedTranscriptTranslationProvider;
+      return { translateSavedTranscript() {} };
+    }
+  });
 
   assert.throws(
-    () =>
-      createProductionApplicationDependencies({
-        providerKey: 'missing-provider',
-        env: {
-          GEMINI_API_KEY: 'unused-by-mock',
-          GEMINI_MODEL: 'unused-by-mock'
-        },
-        sessionRepository: repository(),
-        geminiEnvironmentFactory() {
-          return { apiKey: 'api-key', model: 'model-name' };
-        },
-        googleGenAIClientFactory() {
-          return { models: { generateContent() {} } };
-        },
-        geminiClientAdapterFactory() {
-          return { generateContent() {} };
-        },
-        geminiSavedTranscriptTranslationCompositionFactory() {
-          return { savedTranscriptTranslationProvider: provider() };
-        },
-        translationProviderConfigurationFactory() {
-          return { defaultProviderKey: 'gemini' };
-        },
-        translationProviderResolutionCompositionFactory() {
-          return {
-            resolve() {
-              throw resolutionError;
-            }
-          };
-        },
-        savedTranscriptRetranslationServiceFactory() {
-          serviceFactoryCallCount += 1;
-          return { translateSavedTranscript() {} };
-        }
-      }),
+    () => resolveSavedTranscriptTranslationProvider({ providerKey: 'missing-provider' }),
     resolutionError
   );
-  assert.equal(serviceFactoryCallCount, 0);
+  assert.equal(serviceFactoryCallCount, 1);
 });
 
 function commandService() {

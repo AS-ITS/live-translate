@@ -89,11 +89,18 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
             resolvedProvider = resolver.resolve(...resolveArgs);
             return resolvedProvider;
           }
-        })
+        }),
+        resolve(resolveOptions) {
+          resolverResolveCalls.push(resolveOptions);
+          resolvedProvider = resolver.resolve({
+            providerKey: resolveOptions.providerKey
+          });
+          return resolvedProvider;
+        }
       });
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      serviceProviders.push(options.savedTranscriptTranslationProvider);
+      serviceProviders.push(options.resolveSavedTranscriptTranslationProvider);
       return createSavedTranscriptRetranslationService(options);
     }
   });
@@ -165,11 +172,12 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
   assert.equal(Object.keys(providerResolutionInputs[0].providers).length, 1);
 
   assert.equal(resolverResolveCalls.length, 1);
-  assert.deepEqual(resolverResolveCalls[0], []);
+  assert.equal(resolverResolveCalls[0].providerKey, undefined);
+  assert.strictEqual(resolverResolveCalls[0].configuration, providerResolutionInputs[0].configuration);
   assert.deepEqual(registryHasCalls, []);
   assert.deepEqual(registryGetCalls, ['gemini']);
   assert.strictEqual(resolvedProvider, productionProvider);
-  assert.strictEqual(serviceProviders[0], resolvedProvider);
+  assert.equal(typeof serviceProviders[0], 'function');
 
   assert.equal(providerTranslateCalls.length, 1);
   assert.deepEqual(providerTranslateCalls[0], {

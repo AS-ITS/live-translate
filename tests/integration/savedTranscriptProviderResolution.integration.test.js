@@ -115,7 +115,14 @@ test('production saved-transcript HTTP flow uses explicit provider configuration
             resolvedProvider = resolver.resolve(...resolveArgs);
             return resolvedProvider;
           }
-        })
+        }),
+        resolve(resolveOptions) {
+          resolverResolveCalls.push(resolveOptions);
+          resolvedProvider = resolver.resolve({
+            providerKey: resolveOptions.providerKey
+          });
+          return resolvedProvider;
+        }
       });
     },
     savedTranscriptRetranslationServiceFactory(options) {
@@ -189,14 +196,18 @@ test('production saved-transcript HTTP flow uses explicit provider configuration
   assert.ok(!Object.hasOwn(providerResolutionInputs[0], 'defaultProviderKey'));
 
   assert.equal(resolverResolveCalls.length, 1);
-  assert.deepEqual(resolverResolveCalls[0], []);
+  assert.deepEqual(resolverResolveCalls[0], {
+    providerKey: undefined,
+    configuration: providerConfigurations[0]
+  });
   assert.deepEqual(registryHasCalls, []);
   assert.deepEqual(registryGetCalls, ['gemini']);
   assert.strictEqual(resolvedProvider, geminiProvider);
-  assert.strictEqual(serviceFactoryOptions[0].savedTranscriptTranslationProvider, resolvedProvider);
+  assert.equal(typeof serviceFactoryOptions[0].resolveSavedTranscriptTranslationProvider, 'function');
+  assert.ok(!Object.hasOwn(serviceFactoryOptions[0], 'savedTranscriptTranslationProvider'));
   assert.deepEqual(Object.keys(serviceFactoryOptions[0]), [
     'translationCommandService',
-    'savedTranscriptTranslationProvider',
+    'resolveSavedTranscriptTranslationProvider',
     'sessionRepository',
     'idGenerator',
     'clock'

@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2G WP5 Request-Scoped Provider Resolution Wiring: moved production
+  saved-transcript retranslation provider selection from startup-time provider
+  injection to a request-scoped resolver dependency, forwarding explicit and
+  omitted `providerKey` values into the existing translation provider
+  resolution composition with the shared configuration object, preserving
+  default-provider ownership, exact resolved-provider pass-through,
+  resolution-error propagation, and existing successful persistence/event
+  ordering with no HTTP parsing, resolver, registry, provider implementation,
+  persistence schema, retry, fallback, or frontend behavior changes.
 - Phase 2G WP4 HTTP API Provider Selection Input: extended the saved
   transcript retranslation HTTP request boundary to accept optional
   `providerKey` and forward it unchanged to the existing service/controller

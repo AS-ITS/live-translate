@@ -34,6 +34,10 @@ test('factory returns frozen service shape and validates dependencies clearly', 
     /savedTranscriptTranslationProvider\.translate/
   );
   assert.throws(
+    () => createSavedTranscriptRetranslationService({ ...valid, resolveSavedTranscriptTranslationProvider: {} }),
+    /resolveSavedTranscriptTranslationProvider/
+  );
+  assert.throws(
     () => createSavedTranscriptRetranslationService({ ...valid, sessionRepository: {} }),
     /sessionRepository\.getSessionRecord/
   );
@@ -90,6 +94,82 @@ test('canonical source transcript is resolved without mutating session detail or
   assert.deepEqual(input, inputBefore);
   assert.deepEqual(dependencies.sessionRepository.getSessionRecord('session-1').transcriptItems, detailBefore.transcriptItems);
   assert.equal(dependencies.provider.getCalls()[0].sourceText, ' First line \nSecond line');
+});
+
+test('explicit providerKey is forwarded to resolver and the returned provider translates', async () => {
+  const provider = createFakeSavedTranscriptTranslationProvider({ result: { translatedText: 'Konnichiwa' } });
+  const resolverCalls = [];
+  const dependencies = serviceDependencies({
+    provider,
+    resolveSavedTranscriptTranslationProvider(options) {
+      resolverCalls.push(options);
+      return provider;
+    }
+  });
+
+  const result = await createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(
+    operationInput({ targetLanguageCode: 'ja', providerKey: 'fake' })
+  );
+
+  assert.deepEqual(resolverCalls, [{ providerKey: 'fake' }]);
+  assert.equal(provider.getCalls().length, 1);
+  assert.equal(provider.getCalls()[0].targetLanguageCode, 'ja');
+  assert.equal(result.output.translatedText, 'Konnichiwa');
+});
+
+test('omitted providerKey is forwarded to resolver as undefined without service default selection', async () => {
+  const provider = createFakeSavedTranscriptTranslationProvider({ result: { translatedText: 'Bonjour' } });
+  const resolverCalls = [];
+  const dependencies = serviceDependencies({
+    provider,
+    resolveSavedTranscriptTranslationProvider(options) {
+      resolverCalls.push(options);
+      return provider;
+    }
+  });
+
+  await createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(operationInput());
+
+  assert.deepEqual(resolverCalls, [{ providerKey: undefined }]);
+  assert.equal(provider.getCalls().length, 1);
+});
+
+test('resolved provider object is used unchanged for translation', async () => {
+  const fixedProvider = createFakeSavedTranscriptTranslationProvider({ result: { translatedText: 'Default' } });
+  const resolvedProvider = createFakeSavedTranscriptTranslationProvider({ result: { translatedText: 'Resolved' } });
+  const dependencies = serviceDependencies({
+    provider: fixedProvider,
+    resolveSavedTranscriptTranslationProvider() {
+      return resolvedProvider;
+    }
+  });
+
+  const result = await createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(operationInput());
+
+  assert.equal(result.output.translatedText, 'Resolved');
+  assert.deepEqual(fixedProvider.getCalls(), []);
+  assert.equal(resolvedProvider.getCalls().length, 1);
+});
+
+test('provider resolution error propagates unchanged and prevents translation command persistence', async () => {
+  const resolutionError = new Error('translation provider not found: does-not-exist');
+  const provider = createFakeSavedTranscriptTranslationProvider({ result: { translatedText: 'Bonjour' } });
+  const dependencies = serviceDependencies({
+    provider,
+    resolveSavedTranscriptTranslationProvider() {
+      throw resolutionError;
+    }
+  });
+
+  await assert.rejects(
+    createSavedTranscriptRetranslationService(dependencies).translateSavedTranscript(
+      operationInput({ providerKey: 'does-not-exist' })
+    ),
+    (actualError) => actualError === resolutionError
+  );
+
+  assert.deepEqual(provider.getCalls(), []);
+  assert.deepEqual(dependencies.calls.names(), []);
 });
 
 test('success flow creates request, running execution before provider, final execution, output, return value, and events', async () => {
@@ -630,6 +710,9 @@ function serviceDependencies(options = {}) {
   return {
     translationCommandService: commandService,
     savedTranscriptTranslationProvider: provider,
+    ...(options.resolveSavedTranscriptTranslationProvider
+      ? { resolveSavedTranscriptTranslationProvider: options.resolveSavedTranscriptTranslationProvider }
+      : {}),
     provider,
     sessionRepository,
     idGenerator: sequentialIdGenerator(),

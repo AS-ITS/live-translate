@@ -70,7 +70,7 @@ test('production Gemini saved-transcript path resolves through HTTP and invokes 
       });
     },
     savedTranscriptRetranslationServiceFactory(options) {
-      serviceProviders.push(options.savedTranscriptTranslationProvider);
+      serviceProviders.push(options.resolveSavedTranscriptTranslationProvider);
       return createSavedTranscriptRetranslationService(options);
     }
   });
@@ -87,8 +87,8 @@ test('production Gemini saved-transcript path resolves through HTTP and invokes 
     assert.equal(calls.count('adapter'), 1);
     assert.equal(calls.count('providerComposition'), 1);
     assert.equal(calls.count('provider'), 1);
-    assert.strictEqual(serviceProviders[0], composedProvider);
-    assert.notEqual(serviceProviders[0]?.constructor?.name, 'FakeSavedTranscriptTranslationProvider');
+    assert.equal(typeof serviceProviders[0], 'function');
+    assert.notEqual(composedProvider?.constructor?.name, 'FakeSavedTranscriptTranslationProvider');
 
     const request = sdkRequests[0];
     assert.equal(request.model, 'gemini-production-model');

@@ -8,12 +8,16 @@ const COMMAND_SERVICE_METHODS = Object.freeze([
 export function createSavedTranscriptRetranslationService({
   translationCommandService,
   savedTranscriptTranslationProvider,
+  resolveSavedTranscriptTranslationProvider,
   sessionRepository,
   idGenerator,
   clock
 } = {}) {
   assertCommandService(translationCommandService);
-  assertProvider(savedTranscriptTranslationProvider);
+  const resolveProvider = resolveProviderDependency({
+    savedTranscriptTranslationProvider,
+    resolveSavedTranscriptTranslationProvider
+  });
   assertSessionRepository(sessionRepository);
   assertFunction(idGenerator, 'idGenerator');
   assertFunction(clock, 'clock');
@@ -23,6 +27,12 @@ export function createSavedTranscriptRetranslationService({
       const operationInput = validateInput(input);
       const sessionDetail = await maybeAwait(sessionRepository.getSessionRecord(operationInput.sessionId));
       const sourceTranscript = resolveSavedSourceTranscript(sessionDetail, operationInput.sessionId);
+      const provider = await maybeAwait(
+        resolveProvider({
+          providerKey: operationInput.providerKey
+        })
+      );
+      assertProvider(provider);
       const requestId = idGenerator('translation-request');
       const executionId = idGenerator('translation-execution');
       const createdAt = clock();
@@ -57,7 +67,7 @@ export function createSavedTranscriptRetranslationService({
 
       let providerResult;
       try {
-        providerResult = await savedTranscriptTranslationProvider.translate({
+        providerResult = await provider.translate({
           sourceText: sourceTranscript.text,
           sourceLanguageCode: operationInput.sourceLanguageCode,
           targetLanguageCode: operationInput.targetLanguageCode,
@@ -110,7 +120,8 @@ function validateInput(input) {
   return {
     sessionId: assertNonEmptyString(input.sessionId, 'sessionId'),
     sourceLanguageCode: assertNonEmptyString(input.sourceLanguageCode, 'sourceLanguageCode'),
-    targetLanguageCode: assertNonEmptyString(input.targetLanguageCode, 'targetLanguageCode')
+    targetLanguageCode: assertNonEmptyString(input.targetLanguageCode, 'targetLanguageCode'),
+    providerKey: input.providerKey
   };
 }
 
@@ -201,6 +212,16 @@ function assertProvider(savedTranscriptTranslationProvider) {
   if (typeof savedTranscriptTranslationProvider.translate !== 'function') {
     throw new TypeError('savedTranscriptTranslationProvider.translate must be a function.');
   }
+}
+
+function resolveProviderDependency({ savedTranscriptTranslationProvider, resolveSavedTranscriptTranslationProvider }) {
+  if (resolveSavedTranscriptTranslationProvider !== undefined) {
+    assertFunction(resolveSavedTranscriptTranslationProvider, 'resolveSavedTranscriptTranslationProvider');
+    return resolveSavedTranscriptTranslationProvider;
+  }
+
+  assertProvider(savedTranscriptTranslationProvider);
+  return () => savedTranscriptTranslationProvider;
 }
 
 function assertSessionRepository(sessionRepository) {

@@ -27,6 +27,7 @@ export function createApplicationDependencies(options = {}) {
     domainEventPublisher,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
+    resolveSavedTranscriptTranslationProvider,
     savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService,
     savedTranscriptRetranslationControllerFactory = createDefaultSavedTranscriptRetranslationController,
     idGenerator = createDefaultIdGenerator(),
@@ -45,10 +46,14 @@ export function createApplicationDependencies(options = {}) {
     translationCommandServiceFactory,
     translationCommandControllerFactory
   });
-  const savedTranscriptRetranslationService = savedTranscriptTranslationProvider
+  const shouldCreateSavedTranscriptRetranslationService =
+    Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider') ||
+    Object.prototype.hasOwnProperty.call(options, 'resolveSavedTranscriptTranslationProvider');
+  const savedTranscriptRetranslationService = shouldCreateSavedTranscriptRetranslationService
     ? createSavedTranscriptRetranslationDependencies({
         translationCommandService: translationCommandDependencies.translationCommandService,
         savedTranscriptTranslationProvider,
+        resolveSavedTranscriptTranslationProvider,
         sessionRepository: sessionReadDependencies.sessionRepository,
         idGenerator,
         clock,
@@ -78,8 +83,8 @@ export function createApplicationDependencies(options = {}) {
 export function createProductionApplicationDependencies(options = {}) {
   const {
     env = process.env,
-    providerKey,
     savedTranscriptTranslationProvider,
+    resolveSavedTranscriptTranslationProvider,
     geminiEnvironmentFactory = createGeminiEnvironment,
     googleGenAIClientFactory = createDefaultGoogleGenAIClient,
     geminiClientAdapterFactory = createGeminiClientAdapter,
@@ -88,25 +93,28 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     ...applicationOptions
   } = options;
-  const resolvedSavedTranscriptTranslationProvider = Object.prototype.hasOwnProperty.call(
-    options,
-    'savedTranscriptTranslationProvider'
-  )
-    ? savedTranscriptTranslationProvider
-    : createProductionSavedTranscriptTranslationProvider({
-        env,
-        geminiEnvironmentFactory,
-        googleGenAIClientFactory,
-        geminiClientAdapterFactory,
-        geminiSavedTranscriptTranslationCompositionFactory,
-        translationProviderConfigurationFactory,
-        translationProviderResolutionCompositionFactory,
-        providerKey
-      });
+  const resolvedProviderDependencies = resolveSavedTranscriptProviderDependencies({
+    hasSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider'),
+    savedTranscriptTranslationProvider,
+    hasResolveSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(
+      options,
+      'resolveSavedTranscriptTranslationProvider'
+    ),
+    resolveSavedTranscriptTranslationProvider,
+    productionOptions: {
+      env,
+      geminiEnvironmentFactory,
+      googleGenAIClientFactory,
+      geminiClientAdapterFactory,
+      geminiSavedTranscriptTranslationCompositionFactory,
+      translationProviderConfigurationFactory,
+      translationProviderResolutionCompositionFactory
+    }
+  });
 
   return createApplicationDependencies({
     ...applicationOptions,
-    savedTranscriptTranslationProvider: resolvedSavedTranscriptTranslationProvider
+    ...resolvedProviderDependencies
   });
 }
 
@@ -155,6 +163,53 @@ export function createProductionSavedTranscriptTranslationProvider({
   });
 
   return provider;
+}
+
+export function createProductionSavedTranscriptTranslationProviderResolver({
+  env = process.env,
+  geminiEnvironmentFactory = createGeminiEnvironment,
+  googleGenAIClientFactory = createDefaultGoogleGenAIClient,
+  geminiClientAdapterFactory = createGeminiClientAdapter,
+  geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
+  translationProviderConfigurationFactory = createTranslationProviderConfiguration,
+  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
+} = {}) {
+  assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
+  assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
+  assertFactory(geminiClientAdapterFactory, 'geminiClientAdapterFactory');
+  assertFactory(geminiSavedTranscriptTranslationCompositionFactory, 'geminiSavedTranscriptTranslationCompositionFactory');
+  assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
+  assertFactory(translationProviderResolutionCompositionFactory, 'translationProviderResolutionCompositionFactory');
+
+  const environment = geminiEnvironmentFactory({
+    env
+  });
+  const configuration = translationProviderConfigurationFactory({
+    environment: env
+  });
+  const googleClient = googleGenAIClientFactory({
+    apiKey: environment.apiKey
+  });
+  const geminiClient = geminiClientAdapterFactory({
+    client: googleClient
+  });
+  const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
+    client: geminiClient,
+    model: environment.model
+  }).savedTranscriptTranslationProvider;
+  const providerResolutionComposition = translationProviderResolutionCompositionFactory({
+    providers: {
+      [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
+    },
+    configuration
+  });
+
+  return function resolveSavedTranscriptTranslationProvider({ providerKey } = {}) {
+    return providerResolutionComposition.resolve({
+      providerKey,
+      configuration
+    });
+  };
 }
 
 export function createSessionReadDependencies({ sessionRepository, sessionReadRepository } = {}) {
@@ -211,6 +266,7 @@ export function createTranslationCommandDependencies({
 export function createSavedTranscriptRetranslationDependencies({
   translationCommandService,
   savedTranscriptTranslationProvider,
+  resolveSavedTranscriptTranslationProvider,
   sessionRepository,
   idGenerator = createDefaultIdGenerator(),
   clock = () => Date.now(),
@@ -220,7 +276,8 @@ export function createSavedTranscriptRetranslationDependencies({
 
   const savedTranscriptRetranslationService = savedTranscriptRetranslationServiceFactory({
     translationCommandService,
-    savedTranscriptTranslationProvider,
+    ...(savedTranscriptTranslationProvider !== undefined ? { savedTranscriptTranslationProvider } : {}),
+    ...(resolveSavedTranscriptTranslationProvider !== undefined ? { resolveSavedTranscriptTranslationProvider } : {}),
     sessionRepository,
     idGenerator,
     clock
@@ -241,6 +298,26 @@ function createTranslationDomainEventInfrastructure({ domainEventPublisher, tran
   return {
     domainEventPublisher: resolvedDomainEventPublisher,
     unsubscribeTranslationDomainEvents
+  };
+}
+
+function resolveSavedTranscriptProviderDependencies({
+  hasSavedTranscriptTranslationProvider,
+  savedTranscriptTranslationProvider,
+  hasResolveSavedTranscriptTranslationProvider,
+  resolveSavedTranscriptTranslationProvider,
+  productionOptions
+}) {
+  if (hasSavedTranscriptTranslationProvider) {
+    return { savedTranscriptTranslationProvider };
+  }
+
+  if (hasResolveSavedTranscriptTranslationProvider) {
+    return { resolveSavedTranscriptTranslationProvider };
+  }
+
+  return {
+    resolveSavedTranscriptTranslationProvider: createProductionSavedTranscriptTranslationProviderResolver(productionOptions)
   };
 }
 

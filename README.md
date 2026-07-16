@@ -23,6 +23,7 @@ Completed:
 - Phase 2F - Translation Provider Configuration
 - Phase 2G - Request-Scoped Provider Selection
 - Phase 2H - Translation Command Provider Attribution
+- Phase 2I - Translation Execution Dispatcher
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -78,6 +79,36 @@ Phase 2H status:
   provider metadata propagation from request input through controller, service,
   domain construction, and repository persistence with no production behavior,
   persistence, provider-resolution, or saved-transcript behavior changes.
+
+Phase 2I
+Status: Completed
+
+Phase 2I status:
+
+- `TranslationExecutionDispatcher` is the application-layer execution
+  orchestration port for `TranslationExecution` creation.
+- Dispatch is asynchronous and is invoked immediately after
+  `TranslationExecution` repository persistence.
+- `TranslationCommandService` awaits dispatch completion before the request
+  completes. The dispatcher receives the original persisted
+  `TranslationExecution` instance, its return value is ignored, and dispatcher
+  errors propagate unchanged through the command path.
+- Current production composition injects `FakeTranslationExecutionDispatcher`.
+  The fake dispatcher records dispatches only; it does not execute providers,
+  create a queue, schedule work, run a worker, or perform background execution.
+- Current create-execution ordering is:
+  `create TranslationExecution` -> repository persistence ->
+  `TranslationExecutionDispatcher.dispatch()` -> existing domain-event
+  publication -> request completes.
+- Dispatch occurs after persistence, is awaited, does not change execution
+  state, does not create `TranslationOutput`, and does not resolve providers.
+- `providerKey` remains metadata only. Explicit keys are preserved, omitted
+  keys remain `undefined`, and the dispatcher does not resolve providers.
+  Saved Transcript Retranslation remains the only request-scoped
+  provider-resolution flow.
+- The dispatcher currently performs no execution, translation, retries,
+  scheduling, queueing, persistence, or execution-state updates. This is
+  intentional for Phase 2I.
 
 Documentation:
 

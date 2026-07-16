@@ -4,6 +4,22 @@
 
 ### Added
 
+- Phase 2I WP6 Regression Validation and Closeout: completed documentation
+  closeout for Translation Execution Dispatcher, marking Phase 2I complete and
+  documenting `TranslationExecutionDispatcher` as the awaited asynchronous
+  application-layer execution orchestration port invoked after
+  `TranslationExecution` persistence. Current production composition injects
+  `FakeTranslationExecutionDispatcher`, which records dispatches only; no
+  provider execution, queue, scheduler, worker, background execution,
+  translation, retry, persistence, execution-state update, or
+  `TranslationOutput` creation occurs. `providerKey` remains metadata only,
+  explicit keys are preserved, omitted keys remain `undefined`, the dispatcher
+  does not resolve providers, and Saved Transcript Retranslation remains the
+  only request-scoped provider-resolution flow. Focused regression validation
+  covered the dispatcher port, fake dispatcher, command-service dispatch
+  orchestration, composition wiring, HTTP translation command, vertical
+  integration, provider metadata preservation, domain-event composition, and
+  Saved Transcript Retranslation composition. No production code changed.
 - Phase 2H WP7 Regression Validation and Closeout: completed documentation
   closeout for Translation Command provider attribution, marking Phase 2H
   complete and documenting that `TranslationExecution.providerKey` is optional

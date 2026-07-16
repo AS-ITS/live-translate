@@ -23,6 +23,7 @@ Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
 Translation Provider Architecture are completed. Phase 2F Translation Provider
 Configuration is completed. Phase 2G Request-Scoped Provider Selection is
 completed. Phase 2H Translation Command Provider Attribution is completed.
+Phase 2I Translation Execution Dispatcher is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -207,6 +208,15 @@ Deferred:
     type/non-blank validation
   - Saved Transcript Retranslation remains the only provider-resolution path
   - Focused HTTP, composition, and vertical integration verification
+- Phase 2I - Translation Execution Dispatcher: Completed
+  - Application-layer execution orchestration port
+  - Asynchronous dispatch after `TranslationExecution` persistence
+  - Dispatch is awaited before request completion
+  - Current production composition uses a fake recording dispatcher only
+  - No provider execution, queue, scheduler, worker, or background execution
+  - Focused dispatcher, composition, HTTP, vertical integration, provider
+    metadata, domain-event composition, and saved-transcript composition
+    verification
 - Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
@@ -269,6 +279,12 @@ Completed capabilities:
   - No Translation Command provider resolution or registry interaction
   - Omitted-key `undefined` semantics
   - HTTP, composition, and vertical integration verification
+- Translation Execution Dispatcher
+  - Application-layer execution orchestration port
+  - Awaited asynchronous dispatch after execution persistence
+  - Fake production dispatcher records dispatches only
+  - No provider execution, queue, scheduler, worker, or background execution
+  - Focused regression closeout
 
 Future provider capabilities remain separate future work:
 
@@ -460,6 +476,89 @@ Deferred:
 - Provider validation in Translation Command.
 - Provider lookup, fallback, retry, health check, or registry interaction from
   Translation Command.
+
+### Phase 2I - Translation Execution Dispatcher
+
+Status: Completed.
+
+Scope:
+
+- `TranslationExecutionDispatcher` is the application-layer execution
+  orchestration port for execution creation.
+- Dispatch is asynchronous and is invoked immediately after
+  `TranslationExecution` repository persistence.
+- `TranslationCommandService` awaits dispatch completion before the request
+  completes.
+- The dispatcher receives the original persisted `TranslationExecution`
+  instance.
+- The dispatcher return value is ignored.
+- Dispatcher errors propagate unchanged through the command path.
+
+Current production composition:
+
+- Production composition currently injects
+  `FakeTranslationExecutionDispatcher`.
+- The fake dispatcher records dispatches only.
+- No provider execution occurs.
+- No queue exists.
+- No scheduler exists.
+- No worker exists.
+- No background execution exists.
+
+Current create-execution ordering:
+
+```text
+create TranslationExecution
+↓
+repository persistence
+↓
+TranslationExecutionDispatcher.dispatch()
+↓
+existing domain-event publication
+↓
+request completes
+```
+
+Dispatch occurs after persistence and is awaited. It does not change execution
+state, create `TranslationOutput`, or resolve providers.
+
+Provider metadata:
+
+- `providerKey` remains metadata only.
+- Explicit `providerKey` values are preserved.
+- Omitted `providerKey` remains `undefined`.
+- The dispatcher does not resolve providers.
+- Saved Transcript Retranslation remains the only request-scoped
+  provider-resolution flow.
+
+Current limitations:
+
+- The dispatcher performs no execution.
+- The dispatcher performs no translation.
+- The dispatcher performs no retries.
+- The dispatcher performs no scheduling.
+- The dispatcher performs no queueing.
+- The dispatcher performs no persistence.
+- The dispatcher performs no execution-state updates.
+- This behavior is intentional for Phase 2I.
+
+Closeout:
+
+- Focused regression coverage completed for the dispatcher port, fake
+  dispatcher, command-service dispatch orchestration, composition wiring, HTTP
+  translation command, vertical integration, provider metadata preservation,
+  domain-event composition, and Saved Transcript Retranslation composition.
+- No production code changed during closeout.
+
+Deferred:
+
+- Real dispatcher implementation.
+- Background execution.
+- Queue, scheduler, or worker behavior.
+- Provider resolution from the dispatcher.
+- Provider execution from the dispatcher.
+- Execution status updates from dispatch.
+- `TranslationOutput` creation from dispatch.
 
 ### Phase 2 Deferred Scope
 

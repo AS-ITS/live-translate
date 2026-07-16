@@ -7,6 +7,7 @@ import {
   recordRetryAttempt,
   resetRetryState
 } from '../../src/lib/retryPolicy.js';
+import { createRetryPolicy } from '../../src/application/translation/retryPolicy.js';
 
 test('first retry is allowed for recoverable failure', () => {
   const state = createRetryState();
@@ -164,4 +165,59 @@ test('reset clears retry state', () => {
   assert.equal(reset.attempts, 0);
   assert.equal(reset.firstAttemptAt, null);
   assert.equal(reset.lastAttemptAt, null);
+});
+
+test('application retry policy is immutable', () => {
+  const policy = createRetryPolicy();
+
+  assert.equal(Object.isFrozen(policy), true);
+  assert.deepEqual(Object.keys(policy), ['maxRetries', 'delayStrategy', 'canRetry', 'nextDelay']);
+});
+
+test('application retry policy defaults maxRetries to zero', () => {
+  const policy = createRetryPolicy();
+
+  assert.equal(policy.maxRetries, 0);
+});
+
+test('application retry policy default rejects retry after first failed attempt', () => {
+  const policy = createRetryPolicy();
+
+  assert.equal(policy.canRetry(1), false);
+});
+
+test('application retry policy nextDelay returns zero', () => {
+  const policy = createRetryPolicy();
+
+  assert.equal(policy.nextDelay(1), 0);
+});
+
+test('application retry policy custom retry count controls retry allowance', () => {
+  const policy = createRetryPolicy({ maxRetries: 2 });
+
+  assert.equal(policy.canRetry(1), true);
+  assert.equal(policy.canRetry(2), true);
+  assert.equal(policy.canRetry(3), false);
+});
+
+test('application retry policy accepts placeholder delay strategy configuration', () => {
+  const strategy = () => 125;
+  const policy = createRetryPolicy({ delayStrategy: strategy });
+
+  assert.strictEqual(policy.delayStrategy, strategy);
+  assert.equal(policy.nextDelay(1), 0);
+});
+
+test('application retry policy rejects invalid configuration', () => {
+  assert.throws(() => createRetryPolicy(null), /retryPolicy options must be an object/);
+  assert.throws(() => createRetryPolicy({ maxRetries: -1 }), /retryPolicy\.maxRetries/);
+  assert.throws(() => createRetryPolicy({ maxRetries: 1.5 }), /retryPolicy\.maxRetries/);
+  assert.throws(() => createRetryPolicy({ delayStrategy: 100 }), /retryPolicy\.delayStrategy/);
+});
+
+test('application retry policy rejects invalid attempts', () => {
+  const policy = createRetryPolicy();
+
+  assert.throws(() => policy.canRetry(0), /retryPolicy attempt must be a positive integer/);
+  assert.throws(() => policy.canRetry(1.5), /retryPolicy attempt must be a positive integer/);
 });

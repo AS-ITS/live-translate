@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2L WP2 TranslationExecutionRunner: extracted provider execution
+  orchestration from `TranslationCommandService` into a dedicated
+  application-layer runner that owns provider invocation, `TranslationOutput`
+  creation, completion persistence, and failure persistence while accepting the
+  new `RetryPolicy` as configuration only. `TranslationCommandService` now
+  delegates provider execution through the runner, preserving the existing
+  execution lifecycle, domain-event publication, repository behavior, and
+  no-retry default runtime semantics. No retry loop, backoff, scheduling,
+  queue, worker, HTTP, repository, provider, or composition wiring behavior was
+  added.
 - Phase 2K WP6 Documentation and Regression Closeout: completed Production
   Translation Runtime documentation, marked Phase 2K completed in the roadmap,
   documented Phase 2L Execution Reliability as the next phase, and recorded the

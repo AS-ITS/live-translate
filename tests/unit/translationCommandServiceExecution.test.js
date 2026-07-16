@@ -175,6 +175,35 @@ test('does not dispatch or resolve providers during provider execution orchestra
   ]);
 });
 
+test('delegates provider execution orchestration to translationExecutionRunner', async () => {
+  const calls = [];
+  let runnerInput;
+  const dependencies = serviceDependencies({
+    calls,
+    translationExecutionProvider: {
+      async execute() {
+        throw new Error('provider should not be called directly by command service');
+      }
+    },
+    translationExecutionRunner: {
+      async execute(input) {
+        calls.push(['runner.execute', input]);
+        runnerInput = input;
+        return input.repositoryResult;
+      }
+    }
+  });
+  const payload = executionPayload();
+
+  const result = await dependencies.service.createTranslationExecution(payload);
+
+  assert.equal(calls.filter((call) => call[0] === 'runner.execute').length, 1);
+  assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
+  assert.equal(runnerInput.execution instanceof TranslationExecution, true);
+  assert.strictEqual(runnerInput.payload, payload);
+  assert.strictEqual(result, calls[0][1]);
+});
+
 function serviceDependencies(options = {}) {
   const calls = options.calls ?? [];
   const repository = options.translationRepository ?? translationRepository({ calls });
@@ -183,6 +212,7 @@ function serviceDependencies(options = {}) {
     domainEventPublisher: domainEventPublisher(),
     translationExecutionDispatcher: options.translationExecutionDispatcher,
     translationExecutionProvider: options.translationExecutionProvider,
+    translationExecutionRunner: options.translationExecutionRunner,
     translationProviderResolver: options.translationProviderResolver
   });
 

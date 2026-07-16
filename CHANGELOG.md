@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2K WP5 Runtime Failure Lifecycle: added Translation Command runtime
+  failure handling so provider execution errors persist the created
+  `TranslationExecution` as `failed`, skip `TranslationOutput` creation, avoid
+  completed-state writes, and rethrow the original provider exception. Focused
+  unit and production vertical integration coverage proves provider execution
+  is called once, the HTTP error response keeps the existing generic internal
+  error contract, repository state retains the failed execution, and successful
+  production runtime persistence remains covered. No retry, timeout,
+  cancellation, error classification, logging, metrics, provider resolver,
+  composition, or HTTP API contract behavior was added.
 - Phase 2K WP4 Production Runtime Vertical Integration: added production
   vertical integration coverage proving `POST /api/translation-executions`
   uses production composition to build the runtime execution adapter, resolves a

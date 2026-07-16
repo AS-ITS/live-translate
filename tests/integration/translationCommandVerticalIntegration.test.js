@@ -204,6 +204,67 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
   assert.deepEqual(input, before);
 });
 
+test('POST /api/translation-executions persists failed execution when production runtime provider throws', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-failure-1',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const providerError = new Error('runtime provider failed');
+  const runtime = createRuntimeProviderResolutionFixture({ translateError: providerError });
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    providerKey: 'gemini'
+  });
+  const before = structuredClone(input);
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+      const bodyText = JSON.stringify(response.body);
+      const storedRequest = translationRepository.translationRequests.get('request-1');
+      const storedExecution = translationRepository.translationExecutions.get('execution-1');
+      const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error.code, 'internal_error');
+      assert.equal(response.body.error.message, 'Unexpected server error.');
+      assert.doesNotMatch(bodyText, /runtime provider failed/);
+      assert.equal(storedRequest instanceof TranslationRequest, true);
+      assert.equal(storedExecution instanceof TranslationExecution, true);
+      assert.equal(storedExecution.status, 'failed');
+      assert.notEqual(storedExecution.status, 'completed');
+      assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
+      assert.equal(storedOutputs.length, 0);
+      assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
+      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+      assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
+      assert.deepEqual(runtime.translateCalls, [
+        {
+          sourceText: 'hello',
+          sourceLanguageCode: 'en',
+          targetLanguageCode: 'fr',
+          requestId: undefined,
+          sessionId: undefined,
+          executionId: undefined
+        }
+      ]);
+    },
+    runtime.options
+  );
+
+  assert.deepEqual(input, before);
+});
+
 test('POST /api/translation-executions repository failure prevents provider execution writes', async () => {
   const translationRepository = createTranslationRepositoryFixture({
     failMethods: new Set(['createTranslationExecution'])
@@ -674,12 +735,15 @@ function translationOutputPayload(overrides = {}) {
   };
 }
 
-function createRuntimeProviderResolutionFixture() {
+function createRuntimeProviderResolutionFixture({ translateError } = {}) {
   const resolveCalls = [];
   const translateCalls = [];
   const provider = Object.freeze({
     translate(input) {
       translateCalls.push(input);
+      if (translateError) {
+        throw translateError;
+      }
       return {
         translatedText: `[runtime:${input.targetLanguageCode}] ${input.sourceText}`,
         detectedSourceLanguageCode: input.sourceLanguageCode

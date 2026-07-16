@@ -101,7 +101,7 @@ test('uses provider-returned translatedText without modification', async () => {
   assert.equal(createdOutput.translatedText, '  Provider text  ');
 });
 
-test('provider failures propagate without output or completion writes', async () => {
+test('provider failures mark execution failed, skip output, and propagate original error', async () => {
   const error = new Error('provider failed');
   const calls = [];
   const dependencies = serviceDependencies({
@@ -118,7 +118,19 @@ test('provider failures propagate without output or completion writes', async ()
     return actualError === error;
   });
 
-  assert.deepEqual(calls.map((call) => call[0]), ['createTranslationExecution', 'provider.execute']);
+  assert.deepEqual(calls.map((call) => call[0]), [
+    'createTranslationExecution',
+    'provider.execute',
+    'updateTranslationExecution'
+  ]);
+  assert.equal(calls.filter((call) => call[0] === 'provider.execute').length, 1);
+  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
+
+  const failedExecution = calls[2][1];
+  assert.equal(failedExecution instanceof TranslationExecution, true);
+  assert.equal(failedExecution.status, 'failed');
+  assert.notEqual(failedExecution.status, 'completed');
+  assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
 });
 
 test('does not dispatch or resolve providers during provider execution orchestration', async () => {

@@ -272,12 +272,18 @@ async function executeTranslationPublishEventsAndReturnResult(
     repositoryResult
   );
 
-  const providerResult = await translationExecutionProvider.execute({
-    sourceText: payload.sourceText,
-    sourceLanguageCode: payload.sourceLanguageCode,
-    targetLanguageCode: payload.targetLanguageCode,
-    providerKey: payload.providerKey
-  });
+  let providerResult;
+  try {
+    providerResult = await translationExecutionProvider.execute({
+      sourceText: payload.sourceText,
+      sourceLanguageCode: payload.sourceLanguageCode,
+      targetLanguageCode: payload.targetLanguageCode,
+      providerKey: payload.providerKey
+    });
+  } catch (error) {
+    await failExecutionAfterProviderError(translationRepository, domainEventPublisher, execution, payload);
+    throw error;
+  }
 
   const output = new TranslationOutput({
     id: payload.outputId ?? `${execution.id}-output-0`,
@@ -319,6 +325,24 @@ async function executeTranslationPublishEventsAndReturnResult(
   );
 
   return repositoryResult;
+}
+
+async function failExecutionAfterProviderError(translationRepository, domainEventPublisher, execution, payload) {
+  const failedExecution = execution.fail(
+    { reason: 'provider_execution_failed' },
+    payload.completedAt ?? execution.startedAt
+  );
+  const failedRepositoryResult = translationRepository.updateTranslationExecution(failedExecution);
+
+  await publishAfterRepositoryResult(
+    failedRepositoryResult,
+    () =>
+      createTranslationExecutionUpdatedEvent({
+        occurredAt: failedExecution.completedAt,
+        execution: failedExecution
+      }),
+    domainEventPublisher
+  );
 }
 
 function dispatchExecutionAndPublishAfterRepositoryResult(

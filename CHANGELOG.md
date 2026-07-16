@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2K WP3 Production Runtime Composition Wiring: wired production
+  Translation Command composition to build a production translation execution
+  provider from the existing translation provider resolver and inject only that
+  execution provider into `TranslationCommandService`. Focused composition
+  coverage verifies the resolver-to-runtime-provider dependency, preserves
+  supplied fake execution providers for fake/test composition, and keeps saved
+  transcript retranslation resolver wiring unchanged. No command service,
+  runtime adapter, provider resolver, HTTP API, repository, domain, retry,
+  timeout, or failure-handling behavior changed.
 - Phase 2J WP5 Translation Execution Vertical Integration: added production
   vertical integration coverage proving `POST /api/translation-executions`
   executes the production-composed `FakeTranslationExecutionProvider`, creates

@@ -6,7 +6,7 @@ import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
-import { createFakeTranslationExecutionProvider } from '../src/infrastructure/fakeTranslationExecutionProvider.js';
+import { createProductionTranslationExecutionProvider as createProductionTranslationExecutionProviderAdapter } from '../src/infrastructure/productionTranslationExecutionProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -89,9 +89,10 @@ export function createApplicationDependencies(options = {}) {
 export function createProductionApplicationDependencies(options = {}) {
   const {
     env = process.env,
-    translationExecutionProvider = createFakeTranslationExecutionProvider(),
+    translationExecutionProvider,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
+    productionTranslationExecutionProviderFactory = createDefaultProductionTranslationExecutionProvider,
     geminiEnvironmentFactory = createGeminiEnvironment,
     googleGenAIClientFactory = createDefaultGoogleGenAIClient,
     geminiClientAdapterFactory = createGeminiClientAdapter,
@@ -100,6 +101,25 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     ...applicationOptions
   } = options;
+  assertFactory(productionTranslationExecutionProviderFactory, 'productionTranslationExecutionProviderFactory');
+
+  const hasTranslationExecutionProvider = Object.prototype.hasOwnProperty.call(options, 'translationExecutionProvider');
+  const productionProviderResolutionComposition = hasTranslationExecutionProvider
+    ? undefined
+    : createProductionProviderResolutionComposition({
+        env,
+        geminiEnvironmentFactory,
+        googleGenAIClientFactory,
+        geminiClientAdapterFactory,
+        geminiSavedTranscriptTranslationCompositionFactory,
+        translationProviderConfigurationFactory,
+        translationProviderResolutionCompositionFactory
+      });
+  const resolvedTranslationExecutionProvider = hasTranslationExecutionProvider
+    ? translationExecutionProvider
+    : productionTranslationExecutionProviderFactory({
+        translationProviderResolver: resolveTranslationProviderResolver(productionProviderResolutionComposition)
+      });
   const resolvedProviderDependencies = resolveSavedTranscriptProviderDependencies({
     hasSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider'),
     savedTranscriptTranslationProvider,
@@ -116,12 +136,13 @@ export function createProductionApplicationDependencies(options = {}) {
       geminiSavedTranscriptTranslationCompositionFactory,
       translationProviderConfigurationFactory,
       translationProviderResolutionCompositionFactory
-    }
+    },
+    providerResolutionComposition: productionProviderResolutionComposition
   });
 
   return createApplicationDependencies({
     ...applicationOptions,
-    translationExecutionProvider,
+    translationExecutionProvider: resolvedTranslationExecutionProvider,
     ...resolvedProviderDependencies
   });
 }
@@ -322,7 +343,8 @@ function resolveSavedTranscriptProviderDependencies({
   savedTranscriptTranslationProvider,
   hasResolveSavedTranscriptTranslationProvider,
   resolveSavedTranscriptTranslationProvider,
-  productionOptions
+  productionOptions,
+  providerResolutionComposition
 }) {
   if (hasSavedTranscriptTranslationProvider) {
     return { savedTranscriptTranslationProvider };
@@ -332,9 +354,89 @@ function resolveSavedTranscriptProviderDependencies({
     return { resolveSavedTranscriptTranslationProvider };
   }
 
+  const resolvedProviderResolutionComposition =
+    providerResolutionComposition ?? createProductionProviderResolutionComposition(productionOptions);
+
   return {
-    resolveSavedTranscriptTranslationProvider: createProductionSavedTranscriptTranslationProviderResolver(productionOptions)
+    resolveSavedTranscriptTranslationProvider({ providerKey } = {}) {
+      return resolvedProviderResolutionComposition.resolve({
+        providerKey,
+        configuration: resolvedProviderResolutionComposition.configuration
+      });
+    }
   };
+}
+
+function createProductionProviderResolutionComposition({
+  env = process.env,
+  geminiEnvironmentFactory = createGeminiEnvironment,
+  googleGenAIClientFactory = createDefaultGoogleGenAIClient,
+  geminiClientAdapterFactory = createGeminiClientAdapter,
+  geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
+  translationProviderConfigurationFactory = createTranslationProviderConfiguration,
+  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
+} = {}) {
+  assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
+  assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
+  assertFactory(geminiClientAdapterFactory, 'geminiClientAdapterFactory');
+  assertFactory(geminiSavedTranscriptTranslationCompositionFactory, 'geminiSavedTranscriptTranslationCompositionFactory');
+  assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
+  assertFactory(translationProviderResolutionCompositionFactory, 'translationProviderResolutionCompositionFactory');
+
+  const environment = geminiEnvironmentFactory({
+    env
+  });
+  const configuration = translationProviderConfigurationFactory({
+    environment: env
+  });
+  const googleClient = googleGenAIClientFactory({
+    apiKey: environment.apiKey
+  });
+  const geminiClient = geminiClientAdapterFactory({
+    client: googleClient
+  });
+  const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
+    client: geminiClient,
+    model: environment.model
+  }).savedTranscriptTranslationProvider;
+  const providerResolutionComposition = translationProviderResolutionCompositionFactory({
+    providers: {
+      [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
+    },
+    configuration
+  });
+
+  return Object.freeze({
+    ...providerResolutionComposition,
+    configuration
+  });
+}
+
+function resolveTranslationProviderResolver(providerResolutionComposition) {
+  if (
+    providerResolutionComposition &&
+    typeof providerResolutionComposition === 'object' &&
+    providerResolutionComposition.resolver &&
+    typeof providerResolutionComposition.resolver.resolve === 'function'
+  ) {
+    return providerResolutionComposition.resolver;
+  }
+
+  if (
+    providerResolutionComposition &&
+    typeof providerResolutionComposition === 'object' &&
+    typeof providerResolutionComposition.resolve === 'function'
+  ) {
+    return providerResolutionComposition;
+  }
+
+  throw new TypeError('translationProviderResolutionComposition.resolver must provide resolve.');
+}
+
+function createDefaultProductionTranslationExecutionProvider({ translationProviderResolver } = {}) {
+  return createProductionTranslationExecutionProviderAdapter({
+    resolver: translationProviderResolver
+  });
 }
 
 function assertFactory(factory, name) {

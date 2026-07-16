@@ -7,6 +7,7 @@ import {
 } from '../../server/compositionRoot.js';
 import { TranslationExecution } from '../../src/domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
+import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
 
 test('application dependencies assemble translation command graph with injected repository', () => {
   const translationRepository = repository();
@@ -98,51 +99,90 @@ test('translation command dependencies use the service factory result to build t
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
 });
 
-test('production composition injects a default fake execution provider', async () => {
-  let persistedExecution;
-  let persistedOutput;
-  let completedExecution;
+test('production composition injects a production execution provider with the provider resolver', () => {
+  const runtimeProvider = {
+    async execute() {
+      return { translatedText: 'Bonjour' };
+    }
+  };
+  const resolver = {
+    resolve() {
+      throw new Error('resolver should not execute during composition');
+    }
+  };
+  const calls = [];
+  const serviceResult = service();
+  let observedServiceOptions;
+  let observedTranslationProviderResolver;
+
   const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock'
+    },
     sessionReadRepository: readRepository(),
-    translationRepository: repository({
-      createTranslationExecution(execution) {
-        persistedExecution = execution;
-        return execution;
-      },
-      createTranslationOutput(output) {
-        persistedOutput = output;
-        return output;
-      },
-      updateTranslationExecution(execution) {
-        completedExecution = execution;
-        return execution;
-      }
-    }),
+    translationRepository: repository(),
+    geminiEnvironmentFactory(options) {
+      calls.push(['environment', options]);
+      return { apiKey: 'api-key', model: 'model-name' };
+    },
+    googleGenAIClientFactory(options) {
+      calls.push(['googleClient', options]);
+      return { models: { generateContent() {} } };
+    },
+    geminiClientAdapterFactory(options) {
+      calls.push(['adapter', options]);
+      return { generateContent() {} };
+    },
+    geminiSavedTranscriptTranslationCompositionFactory(options) {
+      calls.push(['providerComposition', options]);
+      return { savedTranscriptTranslationProvider: { translate() {} } };
+    },
+    translationProviderConfigurationFactory(options) {
+      calls.push(['providerConfiguration', options]);
+      return { defaultProviderKey: 'gemini' };
+    },
+    translationProviderResolutionCompositionFactory(options) {
+      calls.push(['providerResolutionComposition', options]);
+      return {
+        resolver,
+        resolve() {
+          throw new Error('saved transcript resolver should not run');
+        }
+      };
+    },
+    productionTranslationExecutionProviderFactory(options) {
+      observedTranslationProviderResolver = options.translationProviderResolver;
+      calls.push(['productionExecutionProvider', options]);
+      return runtimeProvider;
+    },
     resolveSavedTranscriptTranslationProvider() {
       throw new Error('provider resolution should not run for translation command composition');
     },
     savedTranscriptRetranslationServiceFactory() {
       return { translateSavedTranscript() {} };
+    },
+    translationCommandServiceFactory(options) {
+      observedServiceOptions = options;
+      return serviceResult;
     }
   });
 
-  assert.equal(typeof dependencies.translationExecutionDispatcher.dispatch, 'function');
-  assert.equal(typeof dependencies.translationExecutionProvider.execute, 'function');
-  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
-
-  const result = await dependencies.translationCommandService.createTranslationExecution(
-    executionPayload({
-      sourceText: 'hello',
-      targetLanguageCode: 'fr'
-    })
-  );
-
-  assert.equal(result instanceof TranslationExecution, true);
-  assert.strictEqual(result, persistedExecution);
-  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
-  assert.equal(persistedOutput.translatedText, '[fake] hello');
-  assert.equal(persistedOutput.targetLanguageCode, 'fr');
-  assert.equal(completedExecution.status, 'completed');
+  assert.strictEqual(dependencies.translationExecutionProvider, runtimeProvider);
+  assert.strictEqual(dependencies.translationCommandService, serviceResult);
+  assert.strictEqual(observedServiceOptions.translationExecutionProvider, runtimeProvider);
+  assert.strictEqual(observedTranslationProviderResolver, resolver);
+  assert.deepEqual(calls.map(([name]) => name), [
+    'environment',
+    'providerConfiguration',
+    'googleClient',
+    'adapter',
+    'providerComposition',
+    'providerResolutionComposition',
+    'productionExecutionProvider'
+  ]);
+  assert.strictEqual(calls[6][1].translationProviderResolver, resolver);
+  assert.equal(Object.hasOwn(observedServiceOptions, 'translationProviderResolver'), false);
 });
 
 test('production composition injects supplied execution provider and uses it', async () => {
@@ -204,6 +244,112 @@ test('production composition injects supplied execution provider and uses it', a
   assert.equal(persistedOutput.translatedText, 'Bonjour');
   assert.equal(persistedOutput.targetLanguageCode, 'fr');
   assert.equal(completedExecution.status, 'completed');
+});
+
+test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged', async () => {
+  let persistedExecution;
+  let persistedOutput;
+  let completedExecution;
+  const fakeProvider = createFakeTranslationExecutionProvider();
+  const dependencies = createApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      },
+      createTranslationOutput(output) {
+        persistedOutput = output;
+        return output;
+      },
+      updateTranslationExecution(execution) {
+        completedExecution = execution;
+        return execution;
+      }
+    }),
+    translationExecutionProvider: fakeProvider
+  });
+
+  assert.strictEqual(dependencies.translationExecutionProvider, fakeProvider);
+
+  const result = await dependencies.translationCommandService.createTranslationExecution(
+    executionPayload({
+      sourceText: 'hello',
+      targetLanguageCode: 'fr'
+    })
+  );
+
+  assert.equal(result instanceof TranslationExecution, true);
+  assert.strictEqual(result, persistedExecution);
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
+  assert.equal(persistedOutput.translatedText, '[fake] hello');
+  assert.equal(persistedOutput.targetLanguageCode, 'fr');
+  assert.equal(completedExecution.status, 'completed');
+});
+
+test('production runtime wiring preserves saved transcript resolver composition', () => {
+  const resolver = {
+    resolve() {
+      throw new Error('runtime resolver should not run');
+    }
+  };
+  const savedTranscriptProvider = { translate() {} };
+  const savedTranscriptService = { translateSavedTranscript() {} };
+  const resolvedProvider = { translate() {} };
+  let resolveSavedTranscriptTranslationProvider;
+  let productionRuntimeResolver;
+
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock'
+    },
+    sessionReadRepository: readRepository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key', model: 'model-name' };
+    },
+    googleGenAIClientFactory() {
+      return { models: { generateContent() {} } };
+    },
+    geminiClientAdapterFactory() {
+      return { generateContent() {} };
+    },
+    geminiSavedTranscriptTranslationCompositionFactory() {
+      return { savedTranscriptTranslationProvider: savedTranscriptProvider };
+    },
+    translationProviderConfigurationFactory() {
+      return { defaultProviderKey: 'gemini' };
+    },
+    translationProviderResolutionCompositionFactory() {
+      return {
+        resolver,
+        resolve(options) {
+          assert.deepEqual(options, {
+            providerKey: 'gemini',
+            configuration: { defaultProviderKey: 'gemini' }
+          });
+          return resolvedProvider;
+        }
+      };
+    },
+    productionTranslationExecutionProviderFactory({ translationProviderResolver }) {
+      productionRuntimeResolver = translationProviderResolver;
+      return {
+        async execute() {
+          return { translatedText: 'Bonjour' };
+        }
+      };
+    },
+    savedTranscriptRetranslationServiceFactory(options) {
+      resolveSavedTranscriptTranslationProvider = options.resolveSavedTranscriptTranslationProvider;
+      assert.ok(!Object.hasOwn(options, 'savedTranscriptTranslationProvider'));
+      return savedTranscriptService;
+    }
+  });
+
+  assert.strictEqual(dependencies.savedTranscriptRetranslationService, savedTranscriptService);
+  assert.strictEqual(productionRuntimeResolver, resolver);
+  assert.strictEqual(resolveSavedTranscriptTranslationProvider({ providerKey: 'gemini' }), resolvedProvider);
 });
 
 test('application composition injects supplied dispatcher unchanged and awaits dispatch when provider is omitted', async () => {
@@ -562,6 +708,11 @@ function createProductionTranslationCommandDependencies(serviceOverrides = {}) {
   return createProductionApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
+    translationExecutionProvider: {
+      async execute() {
+        return { translatedText: 'translated' };
+      }
+    },
     resolveSavedTranscriptTranslationProvider() {
       throw new Error('provider resolution should not run for translation command composition');
     },

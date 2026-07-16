@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2J WP3 Translation Execution Provider Orchestration: added
+  application-layer `TranslationCommandService` orchestration for an explicitly
+  injected `translationExecutionProvider`, persisting the created execution,
+  invoking the provider once with source text, optional source language,
+  target language, and optional provider key unchanged, creating a
+  `TranslationOutput` from the provider-returned translated text, and then
+  persisting the execution as completed. Existing production composition,
+  dispatcher behavior, provider resolution, persistence adapters, HTTP behavior,
+  saved-transcript retranslation, and fake provider implementation were left
+  unchanged.
 - Phase 2I WP6 Regression Validation and Closeout: completed documentation
   closeout for Translation Execution Dispatcher, marking Phase 2I complete and
   documenting `TranslationExecutionDispatcher` as the awaited asynchronous

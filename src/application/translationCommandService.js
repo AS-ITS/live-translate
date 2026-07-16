@@ -20,13 +20,15 @@ export function createTranslationCommandService({
   translationRepository,
   repository,
   domainEventPublisher,
-  translationExecutionDispatcher = DEFAULT_TRANSLATION_EXECUTION_DISPATCHER
+  translationExecutionDispatcher = DEFAULT_TRANSLATION_EXECUTION_DISPATCHER,
+  translationExecutionProvider
 } = {}) {
   const resolvedTranslationRepository = translationRepository ?? repository;
 
   assertTranslationRepository(resolvedTranslationRepository);
   assertDomainEventPublisher(domainEventPublisher);
   assertTranslationExecutionDispatcher(translationExecutionDispatcher);
+  assertOptionalTranslationExecutionProvider(translationExecutionProvider);
 
   return Object.freeze({
     createTranslationRequest(payload) {
@@ -47,6 +49,17 @@ export function createTranslationCommandService({
     createTranslationExecution(payload) {
       const execution = createTranslationExecutionDomainObject(payload);
       const repositoryResult = resolvedTranslationRepository.createTranslationExecution(execution);
+
+      if (translationExecutionProvider) {
+        return executeTranslationAndPublishAfterRepositoryResult(
+          repositoryResult,
+          execution,
+          payload,
+          resolvedTranslationRepository,
+          domainEventPublisher,
+          translationExecutionProvider
+        );
+      }
 
       return dispatchExecutionAndPublishAfterRepositoryResult(
         repositoryResult,
@@ -145,6 +158,20 @@ function assertTranslationExecutionDispatcher(translationExecutionDispatcher) {
   }
 }
 
+function assertOptionalTranslationExecutionProvider(translationExecutionProvider) {
+  if (translationExecutionProvider === undefined) {
+    return;
+  }
+
+  if (!translationExecutionProvider || typeof translationExecutionProvider !== 'object') {
+    throw new TypeError('translationExecutionProvider must be an object.');
+  }
+
+  if (typeof translationExecutionProvider.execute !== 'function') {
+    throw new TypeError('translationExecutionProvider.execute must be a function.');
+  }
+}
+
 function updateExecution(translationRepository, domainEventPublisher, executionId, execution, transition, transitionPayload) {
   if (execution === null || execution === undefined) {
     throw new Error(`TranslationExecution ${executionId} was not found`);
@@ -195,6 +222,103 @@ function publishAfterRepositoryResult(repositoryResult, createEvent, domainEvent
   }
 
   return publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
+}
+
+function executeTranslationAndPublishAfterRepositoryResult(
+  repositoryResult,
+  execution,
+  payload,
+  translationRepository,
+  domainEventPublisher,
+  translationExecutionProvider
+) {
+  if (isPromiseLike(repositoryResult)) {
+    return repositoryResult.then((resolvedRepositoryResult) =>
+      executeTranslationPublishEventsAndReturnResult(
+        translationRepository,
+        execution,
+        payload,
+        domainEventPublisher,
+        translationExecutionProvider,
+        resolvedRepositoryResult
+      )
+    );
+  }
+
+  return executeTranslationPublishEventsAndReturnResult(
+    translationRepository,
+    execution,
+    payload,
+    domainEventPublisher,
+    translationExecutionProvider,
+    repositoryResult
+  );
+}
+
+async function executeTranslationPublishEventsAndReturnResult(
+  translationRepository,
+  execution,
+  payload,
+  domainEventPublisher,
+  translationExecutionProvider,
+  repositoryResult
+) {
+  await publishEventAndReturnResult(
+    domainEventPublisher,
+    createTranslationExecutionCreatedEvent({
+      occurredAt: execution.startedAt,
+      execution
+    }),
+    repositoryResult
+  );
+
+  const providerResult = await translationExecutionProvider.execute({
+    sourceText: payload.sourceText,
+    sourceLanguageCode: payload.sourceLanguageCode,
+    targetLanguageCode: payload.targetLanguageCode,
+    providerKey: payload.providerKey
+  });
+
+  const output = new TranslationOutput({
+    id: payload.outputId ?? `${execution.id}-output-0`,
+    executionId: execution.id,
+    sequence: payload.outputSequence ?? 0,
+    translatedText: providerResult.translatedText,
+    targetLanguageCode: payload.targetLanguageCode,
+    createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
+  });
+  const outputRepositoryResult = translationRepository.createTranslationOutput(output);
+  await publishAfterRepositoryResult(
+    outputRepositoryResult,
+    () =>
+      createTranslationOutputCreatedEvent({
+        occurredAt: output.createdAt,
+        output
+      }),
+    domainEventPublisher
+  );
+
+  const completedExecution = new TranslationExecution({
+    id: execution.id,
+    translationRequestId: execution.translationRequestId,
+    status: 'completed',
+    providerKey: execution.providerKey,
+    startedAt: execution.startedAt,
+    completedAt: payload.completedAt ?? execution.startedAt
+  });
+  const completedRepositoryResult = translationRepository.updateTranslationExecution(completedExecution);
+
+  await publishAfterRepositoryResult(
+    completedRepositoryResult,
+    () =>
+      createTranslationExecutionUpdatedEvent({
+        occurredAt: completedExecution.completedAt,
+        execution: completedExecution
+      }),
+    domainEventPublisher
+  );
+
+  return repositoryResult;
 }
 
 function dispatchExecutionAndPublishAfterRepositoryResult(

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2H WP2 Translation Command Service Provider Metadata Input:
+  made the Translation Command Service create-execution path explicitly forward
+  optional `providerKey` metadata into the Translation Execution domain model,
+  preserving omitted-key behavior and leaving provider-key validation solely in
+  the domain. No HTTP API, repository, provider resolver, provider registry,
+  composition, persistence, saved-transcript, or frontend behavior was changed.
 - Phase 2H WP1 Translation Execution Provider Metadata Domain Contract:
   added optional immutable `providerKey` attribution to the Translation
   Execution domain model with string/non-blank validation, omitted-key support,

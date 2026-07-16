@@ -34,7 +34,7 @@ export function createTranslationCommandService({ translationRepository, reposit
     },
 
     createTranslationExecution(payload) {
-      const execution = new TranslationExecution(payload);
+      const execution = createTranslationExecutionDomainObject(payload);
       const repositoryResult = resolvedTranslationRepository.createTranslationExecution(execution);
 
       return publishAfterRepositoryResult(
@@ -90,6 +90,10 @@ export function createTranslationCommandService({ translationRepository, reposit
       );
     }
   });
+}
+
+function createTranslationExecutionDomainObject(payload) {
+  return new TranslationExecution(payload);
 }
 
 function assertTranslationRepository(translationRepository) {

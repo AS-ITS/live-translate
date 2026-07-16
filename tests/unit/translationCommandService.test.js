@@ -153,6 +153,55 @@ test('createTranslationExecution creates domain object and returns repository re
   assert.equal(Object.isFrozen(calls[0][1]), true);
 });
 
+test('createTranslationExecution forwards providerKey to TranslationExecution', () => {
+  let createdExecution;
+  const service = createTranslationCommandService({
+    translationRepository: translationRepository({
+      createTranslationExecution(execution) {
+        createdExecution = execution;
+        return execution;
+      }
+    })
+  });
+
+  const result = service.createTranslationExecution(executionPayload({ providerKey: 'gemini' }));
+
+  assert.strictEqual(result, createdExecution);
+  assert.equal(createdExecution instanceof TranslationExecution, true);
+  assert.equal(createdExecution.providerKey, 'gemini');
+});
+
+test('createTranslationExecution preserves undefined providerKey', () => {
+  let createdExecution;
+  const service = createTranslationCommandService({
+    translationRepository: translationRepository({
+      createTranslationExecution(execution) {
+        createdExecution = execution;
+        return execution;
+      }
+    })
+  });
+
+  service.createTranslationExecution(executionPayload());
+
+  assert.equal(createdExecution.providerKey, undefined);
+});
+
+test('createTranslationExecution propagates providerKey validation errors', () => {
+  const service = createTranslationCommandService({
+    translationRepository: translationRepository({
+      createTranslationExecution() {
+        throw new Error('repository should not be called');
+      }
+    })
+  });
+
+  assert.throws(() => service.createTranslationExecution(executionPayload({ providerKey: '' })), {
+    name: 'RangeError',
+    message: 'providerKey must not be empty'
+  });
+});
+
 test('createTranslationExecution does not swallow domain validation errors', () => {
   const service = createTranslationCommandService({
     translationRepository: translationRepository()

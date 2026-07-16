@@ -6,6 +6,7 @@ import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
+import { createFakeTranslationExecutionProvider } from '../src/infrastructure/fakeTranslationExecutionProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -27,6 +28,7 @@ export function createApplicationDependencies(options = {}) {
     translationRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionProvider,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
@@ -45,6 +47,7 @@ export function createApplicationDependencies(options = {}) {
       : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionProvider,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory
@@ -86,6 +89,7 @@ export function createApplicationDependencies(options = {}) {
 export function createProductionApplicationDependencies(options = {}) {
   const {
     env = process.env,
+    translationExecutionProvider = createFakeTranslationExecutionProvider(),
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
     geminiEnvironmentFactory = createGeminiEnvironment,
@@ -117,6 +121,7 @@ export function createProductionApplicationDependencies(options = {}) {
 
   return createApplicationDependencies({
     ...applicationOptions,
+    translationExecutionProvider,
     ...resolvedProviderDependencies
   });
 }
@@ -238,6 +243,7 @@ export function createTranslationCommandDependencies({
   translationRepository,
   domainEventPublisher,
   translationExecutionDispatcher,
+  translationExecutionProvider,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController
@@ -255,7 +261,8 @@ export function createTranslationCommandDependencies({
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
-    translationExecutionDispatcher: resolvedTranslationExecutionDispatcher
+    translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
+    ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {})
   });
   const translationCommandController = translationCommandControllerFactory({
     translationCommandService
@@ -265,6 +272,7 @@ export function createTranslationCommandDependencies({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
+    ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {}),
     translationCommandService,
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents

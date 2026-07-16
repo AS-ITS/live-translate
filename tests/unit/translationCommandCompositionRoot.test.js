@@ -98,13 +98,23 @@ test('translation command dependencies use the service factory result to build t
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
 });
 
-test('production composition creates a default fake dispatcher and dispatches created executions', async () => {
+test('production composition injects a default fake execution provider', async () => {
   let persistedExecution;
+  let persistedOutput;
+  let completedExecution;
   const dependencies = createProductionApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository({
       createTranslationExecution(execution) {
         persistedExecution = execution;
+        return execution;
+      },
+      createTranslationOutput(output) {
+        persistedOutput = output;
+        return output;
+      },
+      updateTranslationExecution(execution) {
+        completedExecution = execution;
         return execution;
       }
     }),
@@ -117,17 +127,86 @@ test('production composition creates a default fake dispatcher and dispatches cr
   });
 
   assert.equal(typeof dependencies.translationExecutionDispatcher.dispatch, 'function');
+  assert.equal(typeof dependencies.translationExecutionProvider.execute, 'function');
   assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
 
-  const result = await dependencies.translationCommandService.createTranslationExecution(executionPayload());
+  const result = await dependencies.translationCommandService.createTranslationExecution(
+    executionPayload({
+      sourceText: 'hello',
+      targetLanguageCode: 'fr'
+    })
+  );
 
   assert.equal(result instanceof TranslationExecution, true);
   assert.strictEqual(result, persistedExecution);
-  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, [result]);
-  assert.strictEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions[0], result);
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
+  assert.equal(persistedOutput.translatedText, '[fake] hello');
+  assert.equal(persistedOutput.targetLanguageCode, 'fr');
+  assert.equal(completedExecution.status, 'completed');
 });
 
-test('production composition injects supplied dispatcher unchanged and awaits dispatch', async () => {
+test('production composition injects supplied execution provider and uses it', async () => {
+  const providerCalls = [];
+  let persistedExecution;
+  let persistedOutput;
+  let completedExecution;
+  const suppliedProvider = {
+    async execute(input) {
+      providerCalls.push(input);
+      return { translatedText: 'Bonjour' };
+    }
+  };
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      },
+      createTranslationOutput(output) {
+        persistedOutput = output;
+        return output;
+      },
+      updateTranslationExecution(execution) {
+        completedExecution = execution;
+        return execution;
+      }
+    }),
+    translationExecutionProvider: suppliedProvider,
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionProvider, suppliedProvider);
+
+  const result = await dependencies.translationCommandService.createTranslationExecution(
+    executionPayload({
+      sourceText: 'hello',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'fr',
+      providerKey: 'fake'
+    })
+  );
+
+  assert.strictEqual(result, persistedExecution);
+  assert.deepEqual(providerCalls, [
+    {
+      sourceText: 'hello',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'fr',
+      providerKey: 'fake'
+    }
+  ]);
+  assert.equal(persistedOutput.translatedText, 'Bonjour');
+  assert.equal(persistedOutput.targetLanguageCode, 'fr');
+  assert.equal(completedExecution.status, 'completed');
+});
+
+test('application composition injects supplied dispatcher unchanged and awaits dispatch when provider is omitted', async () => {
   const deferredDispatch = createDeferred();
   const dispatchCalls = [];
   let persistedExecution;
@@ -138,7 +217,7 @@ test('production composition injects supplied dispatcher unchanged and awaits di
       return deferredDispatch.promise;
     }
   };
-  const dependencies = createProductionApplicationDependencies({
+  const dependencies = createApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository({
       createTranslationExecution(execution) {
@@ -146,13 +225,7 @@ test('production composition injects supplied dispatcher unchanged and awaits di
         return execution;
       }
     }),
-    translationExecutionDispatcher: suppliedDispatcher,
-    resolveSavedTranscriptTranslationProvider() {
-      throw new Error('provider resolution should not run for translation command composition');
-    },
-    savedTranscriptRetranslationServiceFactory() {
-      return { translateSavedTranscript() {} };
-    }
+    translationExecutionDispatcher: suppliedDispatcher
   });
 
   assert.strictEqual(dependencies.translationExecutionDispatcher, suppliedDispatcher);
@@ -176,12 +249,12 @@ test('production composition injects supplied dispatcher unchanged and awaits di
   assert.equal(resolved, true);
 });
 
-test('production-composed dispatcher failure propagates after persistence without retry', async () => {
+test('application-composed dispatcher failure propagates after persistence without retry when provider is omitted', async () => {
   const dispatcherError = new Error('dispatch failed');
   let persistedExecution;
   let dispatchCalls = 0;
   let publishCalls = 0;
-  const dependencies = createProductionApplicationDependencies({
+  const dependencies = createApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository({
       createTranslationExecution(execution) {
@@ -200,12 +273,6 @@ test('production-composed dispatcher failure propagates after persistence withou
         assert.strictEqual(execution, persistedExecution);
         throw dispatcherError;
       }
-    },
-    resolveSavedTranscriptTranslationProvider() {
-      throw new Error('provider resolution should not run for translation command composition');
-    },
-    savedTranscriptRetranslationServiceFactory() {
-      return { translateSavedTranscript() {} };
     }
   });
 
@@ -217,6 +284,26 @@ test('production-composed dispatcher failure propagates after persistence withou
   assert.equal(persistedExecution instanceof TranslationExecution, true);
   assert.equal(dispatchCalls, 1);
   assert.equal(publishCalls, 0);
+});
+
+test('translation command service remains constructible when execution provider is undefined', async () => {
+  let persistedExecution;
+  const dependencies = createTranslationCommandDependencies({
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      }
+    }),
+    translationExecutionProvider: undefined
+  });
+
+  assert.equal(Object.hasOwn(dependencies, 'translationExecutionProvider'), false);
+
+  const result = await dependencies.translationCommandService.createTranslationExecution(executionPayload());
+
+  assert.strictEqual(result, persistedExecution);
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, [persistedExecution]);
 });
 
 test('production composition forwards create-execution providerKey from controller to service unchanged', () => {

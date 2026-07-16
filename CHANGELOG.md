@@ -4,6 +4,13 @@
 
 ### Added
 
+- Phase 2J WP4 Production Composition Wiring: wired production composition to
+  instantiate and inject the existing `FakeTranslationExecutionProvider` into
+  `TranslationCommandService`, with focused composition coverage for default
+  provider injection, supplied-provider execution wiring, and preserved
+  provider-omitted dispatcher behavior. No provider resolution, HTTP API,
+  repository, domain model, saved-transcript retranslation, dispatcher
+  implementation, or fake-provider behavior changed.
 - Phase 2J WP3 Translation Execution Provider Orchestration: added
   application-layer `TranslationCommandService` orchestration for an explicitly
   injected `translationExecutionProvider`, persisting the created execution,

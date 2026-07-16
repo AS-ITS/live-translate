@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2 follow-up capability selection.
+Current milestone: Phase 2L Execution Reliability.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -23,7 +23,8 @@ Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
 Translation Provider Architecture are completed. Phase 2F Translation Provider
 Configuration is completed. Phase 2G Request-Scoped Provider Selection is
 completed. Phase 2H Translation Command Provider Attribution is completed.
-Phase 2I Translation Execution Dispatcher is completed.
+Phase 2I Translation Execution Dispatcher is completed. Phase 2K Production
+Translation Runtime is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -217,7 +218,20 @@ Deferred:
   - Focused dispatcher, composition, HTTP, vertical integration, provider
     metadata, domain-event composition, and saved-transcript composition
     verification
-- Phase 2 overall: In Progress, follow-up capability selection current
+- Phase 2K - Production Translation Runtime: Completed
+  - Production Runtime Port
+  - Production Runtime Adapter
+  - Production Composition Wiring
+  - Runtime Vertical Integration
+  - Runtime Failure Lifecycle
+- Phase 2L - Execution Reliability: Planned
+  - Retry
+  - Timeout
+  - Cancellation
+  - Idempotency
+  - Error Classification
+  - Observability
+- Phase 2 overall: In Progress, Phase 2L Execution Reliability current
 
 ### Phase 2 Planning Rule
 
@@ -285,6 +299,12 @@ Completed capabilities:
   - Fake production dispatcher records dispatches only
   - No provider execution, queue, scheduler, worker, or background execution
   - Focused regression closeout
+- Production Translation Runtime
+  - Production Runtime Port
+  - Production Runtime Adapter
+  - Production Composition Wiring
+  - Runtime Vertical Integration
+  - Runtime Failure Lifecycle
 
 Future provider capabilities remain separate future work:
 
@@ -559,6 +579,106 @@ Deferred:
 - Provider execution from the dispatcher.
 - Execution status updates from dispatch.
 - `TranslationOutput` creation from dispatch.
+
+### Phase 2K - Production Translation Runtime
+
+Status: Completed.
+
+Scope:
+
+- Production Runtime Port.
+- Production Runtime Adapter.
+- Production Composition Wiring.
+- Runtime Vertical Integration.
+- Runtime Failure Lifecycle.
+
+Runtime architecture:
+
+- `ProductionTranslationExecutionProvider` is the application-layer execution
+  provider port used by Translation Command runtime execution.
+- The production runtime adapter resolves a provider through
+  `TranslationProviderResolver` for each execution request.
+- `providerKey` is forwarded to the resolver as provider-selection metadata.
+- The resolved provider receives provider input only: `sourceText`,
+  `sourceLanguageCode`, `targetLanguageCode`, `requestId`, `sessionId`, and
+  `executionId`.
+- `providerKey` is not passed into the resolved provider's `translate()` input.
+- Production composition builds the resolver-backed runtime adapter unless a
+  caller supplies an explicit `translationExecutionProvider`.
+- Supplied fake/test execution providers remain supported for deterministic
+  composition and focused tests.
+
+Runtime flow:
+
+```text
+Execution Created
+↓
+Provider Execute
+↓
+Output Created
+↓
+Execution Completed
+```
+
+Runtime failure lifecycle:
+
+```text
+Execution Created
+↓
+Provider Execute
+↓
+throws
+↓
+Execution Failed
+```
+
+Failure behavior:
+
+- Provider exceptions propagate unchanged.
+- The persisted `TranslationExecution` is updated to `failed`.
+- `TranslationOutput` is not created.
+- `completed` execution state is not written after provider failure.
+- Existing HTTP error responses remain unchanged and generic.
+
+Closeout:
+
+- Focused regression coverage completed for the production runtime port,
+  production runtime adapter, production composition wiring, Translation
+  Command service execution, and production runtime vertical integration.
+- Documentation updated in README, ROADMAP, and CHANGELOG.
+- No production runtime behavior changed during closeout.
+
+Deferred:
+
+- Retry.
+- Timeout.
+- Cancellation.
+- Idempotency.
+- Error Classification.
+- Observability.
+- Fallback.
+- Background workers.
+- Streaming.
+- Multi-provider orchestration.
+- HTTP API contract changes.
+- Resolver contract changes.
+
+### Phase 2L - Execution Reliability
+
+Status: Planned.
+
+Scope:
+
+- Retry.
+- Timeout.
+- Cancellation.
+- Idempotency.
+- Error Classification.
+- Observability.
+
+Phase 2L must build on the Phase 2K runtime lifecycle without changing the
+existing provider resolver contract or broadening runtime behavior unless that
+work package explicitly requires it.
 
 ### Phase 2 Deferred Scope
 

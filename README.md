@@ -24,6 +24,7 @@ Completed:
 - Phase 2G - Request-Scoped Provider Selection
 - Phase 2H - Translation Command Provider Attribution
 - Phase 2I - Translation Execution Dispatcher
+- Phase 2K - Production Translation Runtime
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -110,6 +111,46 @@ Phase 2I status:
   scheduling, queueing, persistence, or execution-state updates. This is
   intentional for Phase 2I.
 
+Phase 2K
+Status: Completed
+
+Phase 2K status:
+
+- Translation Command production composition now creates a Production
+  Translation Runtime for `POST /api/translation-executions`.
+- `ProductionTranslationExecutionProvider` is the application-layer runtime
+  provider port. It delegates `execute(input)` to an injected implementation,
+  returns the implementation result unchanged, and propagates implementation
+  errors unchanged.
+- The production runtime adapter resolves a translation provider through
+  `TranslationProviderResolver` for each execution request. It forwards
+  `providerKey` to the resolver, then calls the resolved provider's
+  `translate()` method with provider input only: `sourceText`,
+  `sourceLanguageCode`, `targetLanguageCode`, `requestId`, `sessionId`, and
+  `executionId`. It does not pass `providerKey` into provider translation
+  input.
+- `TranslationProviderResolver` owns provider selection. Explicit
+  `providerKey` values override the configured default provider for the
+  request; omitted keys use `TRANSLATION_PROVIDER`, defaulting to `gemini` when
+  unset. Unknown provider keys still propagate the existing registry error.
+  There is no fallback behavior.
+- Translation Command runtime success flow is:
+  `Execution Created` -> `Provider Execute` -> `Output Created` ->
+  `Execution Completed`.
+- Runtime failure lifecycle is:
+  `Execution Created` -> `Provider Execute` throws -> `Execution Failed`.
+  Provider errors skip `TranslationOutput` creation, avoid completed-state
+  writes, persist the execution as `failed`, and propagate the original
+  exception.
+- Fake runtime and production runtime remain separate. Fake/test composition
+  can still inject a supplied fake execution provider for deterministic
+  coverage. Production composition builds the resolver-backed runtime adapter
+  unless an explicit execution provider is supplied by the caller.
+- Phase 2K does not add retry, timeout, cancellation, idempotency, error
+  classification, logging, metrics, background workers, streaming,
+  multi-provider fallback, HTTP API changes, resolver contract changes, or
+  frontend provider controls.
+
 Documentation:
 
 - [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - High-level system architecture, runtime flow, module responsibilities, dependency boundaries, completed capabilities, and deferred architecture.
@@ -117,9 +158,10 @@ Documentation:
 
 Planned next capability:
 
-- Phase 2 follow-up capability selection
-  - Settings
-  - Usage Metrics
-  - Diagnostics
-  - Transcript Search
-  - Storage, only if justified
+- Phase 2L - Execution Reliability
+  - Retry
+  - Timeout
+  - Cancellation
+  - Idempotency
+  - Error Classification
+  - Observability

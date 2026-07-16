@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2K WP6 Documentation and Regression Closeout: completed Production
+  Translation Runtime documentation, marked Phase 2K completed in the roadmap,
+  documented Phase 2L Execution Reliability as the next phase, and recorded the
+  completed production runtime port, resolver-backed runtime adapter,
+  production composition wiring, runtime vertical integration, and runtime
+  failure lifecycle. Focused regression validation covered the production
+  runtime port, adapter, composition root, command-service execution, and
+  vertical integration. No production runtime behavior changed.
 - Phase 2K WP5 Runtime Failure Lifecycle: added Translation Command runtime
   failure handling so provider execution errors persist the created
   `TranslationExecution` as `failed`, skip `TranslationOutput` creation, avoid

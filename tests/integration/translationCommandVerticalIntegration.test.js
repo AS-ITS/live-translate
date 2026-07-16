@@ -85,14 +85,20 @@ test('POST /api/translation-executions creates a pending TranslationExecution th
 test('POST /api/translation-executions preserves explicit providerKey through production HTTP to persistence', async () => {
   const translationRepository = createTranslationRepositoryFixture();
   const input = translationExecutionPayload({
+    sourceText: 'hello',
+    targetLanguageCode: 'fr',
     providerKey: 'gemini'
   });
   const before = structuredClone(input);
 
   await withProductionTranslationCommandServer(translationRepository, async (baseUrl) => {
     const response = await postJson(`${baseUrl}/api/translation-executions`, input);
-    const calls = translationRepository.callsFor('createTranslationExecution');
+    const createExecutionCalls = translationRepository.callsFor('createTranslationExecution');
+    const updateExecutionCalls = translationRepository.callsFor('updateTranslationExecution');
+    const createOutputCalls = translationRepository.callsFor('createTranslationOutput');
     const storedExecution = translationRepository.translationExecutions.get('execution-1');
+    const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+    const storedOutput = storedOutputs[0];
 
     assert.equal(response.status, 201);
     assert.deepEqual(response.body, {
@@ -104,16 +110,25 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
       failureInfo: null,
       providerKey: 'gemini'
     });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0][0] instanceof TranslationExecution, true);
-    assert.strictEqual(storedExecution, calls[0][0]);
+    assert.equal(createExecutionCalls.length, 1);
+    assert.equal(createExecutionCalls[0][0] instanceof TranslationExecution, true);
+    assert.equal(updateExecutionCalls.length, 1);
+    assert.equal(createOutputCalls.length, 1);
+    assert.equal(storedOutputs.length, 1);
+    assert.strictEqual(storedExecution, updateExecutionCalls[0][0]);
+    assert.strictEqual(storedOutput, createOutputCalls[0][0]);
     assertExecutionFields(storedExecution, {
       executionId: 'execution-1',
       requestId: 'request-1',
       sessionId: undefined,
-      status: 'pending',
+      status: 'completed',
       providerKey: 'gemini'
     });
+    assert.equal(storedExecution.completedAt, '2026-07-14T01:01:00.000Z');
+    assert.equal(storedOutput instanceof TranslationOutput, true);
+    assert.equal(storedOutput.executionId, 'execution-1');
+    assert.equal(storedOutput.translatedText, '[fake] hello');
+    assert.equal(storedOutput.targetLanguageCode, 'fr');
   });
 
   assert.deepEqual(input, before);
@@ -121,13 +136,20 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
 
 test('POST /api/translation-executions preserves omitted providerKey as undefined through production HTTP to persistence', async () => {
   const translationRepository = createTranslationRepositoryFixture();
-  const input = translationExecutionPayload();
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    targetLanguageCode: 'fr'
+  });
   const before = structuredClone(input);
 
   await withProductionTranslationCommandServer(translationRepository, async (baseUrl) => {
     const response = await postJson(`${baseUrl}/api/translation-executions`, input);
-    const calls = translationRepository.callsFor('createTranslationExecution');
+    const createExecutionCalls = translationRepository.callsFor('createTranslationExecution');
+    const updateExecutionCalls = translationRepository.callsFor('updateTranslationExecution');
+    const createOutputCalls = translationRepository.callsFor('createTranslationOutput');
     const storedExecution = translationRepository.translationExecutions.get('execution-1');
+    const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+    const storedOutput = storedOutputs[0];
 
     assert.equal(response.status, 201);
     assert.deepEqual(response.body, {
@@ -138,229 +160,54 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
       completedAt: null,
       failureInfo: null
     });
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0][0] instanceof TranslationExecution, true);
-    assert.strictEqual(storedExecution, calls[0][0]);
+    assert.equal(createExecutionCalls.length, 1);
+    assert.equal(createExecutionCalls[0][0] instanceof TranslationExecution, true);
+    assert.equal(updateExecutionCalls.length, 1);
+    assert.equal(createOutputCalls.length, 1);
+    assert.equal(storedOutputs.length, 1);
+    assert.strictEqual(storedExecution, updateExecutionCalls[0][0]);
+    assert.strictEqual(storedOutput, createOutputCalls[0][0]);
     assertExecutionFields(storedExecution, {
       executionId: 'execution-1',
       requestId: 'request-1',
       sessionId: undefined,
-      status: 'pending',
+      status: 'completed',
       providerKey: undefined
     });
+    assert.equal(Object.hasOwn(storedExecution, 'providerKey'), true);
+    assert.equal(storedExecution.completedAt, '2026-07-14T01:01:00.000Z');
+    assert.equal(storedOutput instanceof TranslationOutput, true);
+    assert.equal(storedOutput.executionId, 'execution-1');
+    assert.equal(storedOutput.translatedText, '[fake] hello');
+    assert.equal(storedOutput.targetLanguageCode, 'fr');
   });
 
   assert.deepEqual(input, before);
 });
 
-test('POST /api/translation-executions dispatches once through production-composed command path', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const translationExecutionDispatcher = createRecordingDispatcher();
-  const domainEvents = [];
-  const input = translationExecutionPayload();
-
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
-      const createCalls = translationRepository.callsFor('createTranslationExecution');
-      const storedExecution = translationRepository.translationExecutions.get('execution-1');
-
-      assert.equal(response.status, 201);
-      assert.deepEqual(response.body, {
-        id: 'execution-1',
-        translationRequestId: 'request-1',
-        status: 'pending',
-        startedAt: '2026-07-14T01:01:00.000Z',
-        completedAt: null,
-        failureInfo: null
-      });
-      assert.equal(createCalls.length, 1);
-      assert.equal(translationExecutionDispatcher.calls.length, 1);
-      assert.equal(translationExecutionDispatcher.calls[0].length, 1);
-      assert.equal(translationExecutionDispatcher.dispatchedExecutions.length, 1);
-      assert.equal(translationExecutionDispatcher.dispatchedExecutions[0] instanceof TranslationExecution, true);
-      assert.strictEqual(storedExecution, createCalls[0][0]);
-      assert.strictEqual(translationExecutionDispatcher.dispatchedExecutions[0], storedExecution);
-      assert.equal(translationExecutionDispatcher.dispatchedExecutions[0].id, response.body.id);
-      assert.equal(domainEvents.length, 1);
-      assert.strictEqual(domainEvents[0].payload.execution, storedExecution);
-    },
-    {
-      translationExecutionDispatcher,
-      translationDomainEventHandlers: {
-        executionCreated(event) {
-          domainEvents.push(event);
-        }
-      }
-    }
-  );
-});
-
-test('POST /api/translation-executions dispatches the original persisted execution with explicit provider metadata', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const translationExecutionDispatcher = createRecordingDispatcher();
-  const input = translationExecutionPayload({
-    providerKey: 'gemini'
-  });
-
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
-      const createCalls = translationRepository.callsFor('createTranslationExecution');
-      const storedExecution = translationRepository.translationExecutions.get('execution-1');
-      const dispatchedExecution = translationExecutionDispatcher.dispatchedExecutions[0];
-
-      assert.equal(response.status, 201);
-      assert.deepEqual(response.body, {
-        id: 'execution-1',
-        translationRequestId: 'request-1',
-        status: 'pending',
-        startedAt: '2026-07-14T01:01:00.000Z',
-        completedAt: null,
-        failureInfo: null,
-        providerKey: 'gemini'
-      });
-      assert.equal(createCalls.length, 1);
-      assert.equal(translationExecutionDispatcher.calls.length, 1);
-      assert.strictEqual(storedExecution, createCalls[0][0]);
-      assert.strictEqual(dispatchedExecution, storedExecution);
-      assertExecutionFields(dispatchedExecution, {
-        executionId: response.body.id,
-        requestId: 'request-1',
-        sessionId: undefined,
-        status: 'pending',
-        providerKey: 'gemini'
-      });
-      assert.equal(storedExecution.providerKey, 'gemini');
-      assert.equal(dispatchedExecution.providerKey, 'gemini');
-      assert.equal(storedExecution.completedAt, null);
-      assert.equal(storedExecution.failureInfo, null);
-      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
-      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-    },
-    { translationExecutionDispatcher }
-  );
-});
-
-test('POST /api/translation-executions dispatches omitted provider metadata as undefined without defaulting', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const translationExecutionDispatcher = createRecordingDispatcher();
-  const input = translationExecutionPayload();
-
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
-      const storedExecution = translationRepository.translationExecutions.get('execution-1');
-      const dispatchedExecution = translationExecutionDispatcher.dispatchedExecutions[0];
-
-      assert.equal(response.status, 201);
-      assert.equal(Object.hasOwn(response.body, 'providerKey'), false);
-      assert.equal(translationExecutionDispatcher.calls.length, 1);
-      assert.strictEqual(dispatchedExecution, storedExecution);
-      assert.equal(storedExecution.providerKey, undefined);
-      assert.equal(dispatchedExecution.providerKey, undefined);
-      assert.equal(Object.hasOwn(storedExecution, 'providerKey'), true);
-      assert.equal(Object.hasOwn(dispatchedExecution, 'providerKey'), true);
-      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
-      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-    },
-    { translationExecutionDispatcher }
-  );
-});
-
-test('POST /api/translation-executions waits for dispatcher settlement before completing HTTP response', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const deferredDispatch = createDeferred();
-  const translationExecutionDispatcher = createRecordingDispatcher({
-    result: deferredDispatch.promise
-  });
-  let responseSettled = false;
-
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const responsePromise = postJson(`${baseUrl}/api/translation-executions`, translationExecutionPayload()).then(
-        (response) => {
-          responseSettled = true;
-          return response;
-        }
-      );
-
-      await waitFor(() => translationExecutionDispatcher.calls.length === 1);
-
-      assert.equal(responseSettled, false);
-      assert.equal(translationExecutionDispatcher.calls[0].length, 1);
-      assert.equal(translationExecutionDispatcher.dispatchedExecutions[0] instanceof TranslationExecution, true);
-
-      deferredDispatch.resolve();
-
-      const response = await responsePromise;
-
-      assert.equal(response.status, 201);
-      assert.equal(responseSettled, true);
-    },
-    { translationExecutionDispatcher }
-  );
-});
-
-test('POST /api/translation-executions maps dispatcher failure through existing HTTP error handling', async () => {
-  const translationRepository = createTranslationRepositoryFixture();
-  const dispatcherError = new Error('deterministic dispatcher failure with stack detail');
-  const translationExecutionDispatcher = createRecordingDispatcher({
-    error: dispatcherError
-  });
-
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const response = await postJson(`${baseUrl}/api/translation-executions`, translationExecutionPayload());
-      const bodyText = JSON.stringify(response.body);
-      const storedExecution = translationRepository.translationExecutions.get('execution-1');
-
-      assert.equal(response.status, 500);
-      assert.equal(response.body.error.code, 'internal_error');
-      assert.equal(response.body.error.message, 'Unexpected server error.');
-      assert.ok(response.body.error.requestId);
-      assert.doesNotMatch(bodyText, /deterministic dispatcher failure/);
-      assert.doesNotMatch(bodyText, /stack detail/);
-      assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
-      assert.equal(translationExecutionDispatcher.calls.length, 1);
-      assert.strictEqual(translationExecutionDispatcher.dispatchedExecutions[0], storedExecution);
-      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
-      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-      assert.equal(storedExecution.status, 'pending');
-      assert.equal(storedExecution.completedAt, null);
-    },
-    { translationExecutionDispatcher }
-  );
-});
-
-test('POST /api/translation-executions repository failure prevents dispatch', async () => {
+test('POST /api/translation-executions repository failure prevents provider execution writes', async () => {
   const translationRepository = createTranslationRepositoryFixture({
     failMethods: new Set(['createTranslationExecution'])
   });
-  const translationExecutionDispatcher = createRecordingDispatcher();
 
-  await withProductionTranslationCommandServer(
-    translationRepository,
-    async (baseUrl) => {
-      const response = await postJson(`${baseUrl}/api/translation-executions`, translationExecutionPayload());
-      const bodyText = JSON.stringify(response.body);
+  await withProductionTranslationCommandServer(translationRepository, async (baseUrl) => {
+    const response = await postJson(
+      `${baseUrl}/api/translation-executions`,
+      translationExecutionPayload({
+        sourceText: 'hello',
+        targetLanguageCode: 'fr'
+      })
+    );
+    const bodyText = JSON.stringify(response.body);
 
-      assert.equal(response.status, 500);
-      assert.equal(response.body.error.code, 'internal_error');
-      assert.equal(response.body.error.message, 'Unexpected server error.');
-      assert.doesNotMatch(bodyText, /fixture repository failure/);
-      assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
-      assert.equal(translationExecutionDispatcher.calls.length, 0);
-      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
-      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-    },
-    { translationExecutionDispatcher }
-  );
+    assert.equal(response.status, 500);
+    assert.equal(response.body.error.code, 'internal_error');
+    assert.equal(response.body.error.message, 'Unexpected server error.');
+    assert.doesNotMatch(bodyText, /fixture repository failure/);
+    assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
+    assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
+    assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+  });
 });
 
 test('PATCH /api/translation-executions/:executionId URL-decodes and starts a pending execution', async () => {
@@ -806,49 +653,4 @@ function assertExecutionFields(execution, expected) {
   assert.equal(execution.sessionId, expected.sessionId);
   assert.equal(execution.status, expected.status);
   assert.equal(execution.providerKey, expected.providerKey);
-}
-
-function createRecordingDispatcher({ result, error } = {}) {
-  const calls = [];
-
-  return {
-    calls,
-
-    get dispatchedExecutions() {
-      return calls.map(([execution]) => execution);
-    },
-
-    async dispatch(...args) {
-      calls.push(args);
-
-      if (error) {
-        throw error;
-      }
-
-      return result;
-    }
-  };
-}
-
-function createDeferred() {
-  let resolve;
-  let reject;
-  const promise = new Promise((innerResolve, innerReject) => {
-    resolve = innerResolve;
-    reject = innerReject;
-  });
-
-  return { promise, resolve, reject };
-}
-
-async function waitFor(predicate) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (predicate()) {
-      return;
-    }
-
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-
-  assert.fail('Timed out waiting for condition.');
 }

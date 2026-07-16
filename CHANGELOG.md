@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2J WP5 Translation Execution Vertical Integration: added production
+  vertical integration coverage proving `POST /api/translation-executions`
+  executes the production-composed `FakeTranslationExecutionProvider`, creates
+  exactly one `TranslationOutput` with `[fake] ${sourceText}` text, completes
+  the persisted execution, preserves explicit `providerKey` metadata unchanged,
+  and keeps omitted `providerKey` as `undefined`. No application, domain,
+  repository, composition root, HTTP API, provider resolution, dispatcher,
+  saved-transcript retranslation, persistence schema, or fake-provider behavior
+  changed.
 - Phase 2J WP4 Production Composition Wiring: wired production composition to
   instantiate and inject the existing `FakeTranslationExecutionProvider` into
   `TranslationCommandService`, with focused composition coverage for default

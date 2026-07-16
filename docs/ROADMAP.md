@@ -22,7 +22,7 @@ in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
 Translation Provider Architecture are completed. Phase 2F Translation Provider
 Configuration is completed. Phase 2G Request-Scoped Provider Selection is
-completed.
+completed. Phase 2H Translation Command Provider Attribution is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -196,6 +196,17 @@ Deferred:
   - Existing registry error propagation for unknown providers
   - No provider fallback semantics
   - Production HTTP integration verification
+- Phase 2H - Translation Command Provider Attribution: Completed
+  - Optional `TranslationExecution.providerKey` metadata
+  - Translation Command HTTP, controller, service, domain, and persistence
+    propagation
+  - Omitted `providerKey` remains `undefined`
+  - Provider names are not resolved, normalized, defaulted, or looked up by
+    Translation Command
+  - Invalid provider names are intentionally not validated beyond domain
+    type/non-blank validation
+  - Saved Transcript Retranslation remains the only provider-resolution path
+  - Focused HTTP, composition, and vertical integration verification
 - Phase 2 overall: In Progress, follow-up capability selection current
 
 ### Phase 2 Planning Rule
@@ -252,6 +263,12 @@ Completed capabilities:
   - Unknown-provider registry error propagation
   - No fallback semantics
   - HTTP integration verification
+- Translation Command Provider Attribution
+  - Optional `TranslationExecution.providerKey` metadata
+  - Metadata-only propagation through Translation Command
+  - No Translation Command provider resolution or registry interaction
+  - Omitted-key `undefined` semantics
+  - HTTP, composition, and vertical integration verification
 
 Future provider capabilities remain separate future work:
 
@@ -407,6 +424,42 @@ Deferred:
 - Provider retries, fallback, metrics, health checks, caching, priorities, or
   load balancing.
 - Real Gemini integration testing.
+
+### Phase 2H - Translation Command Provider Attribution
+
+Status: Completed.
+
+Scope:
+
+- Optional immutable `providerKey` attribution on `TranslationExecution`.
+- Translation Command create-execution input accepts `providerKey` as metadata
+  and forwards it through HTTP, controller, application service, domain
+  construction, and repository persistence.
+- Omitted `providerKey` remains `undefined`.
+- Provider names are not normalized, defaulted, looked up, or resolved by the
+  Translation Command path.
+- Invalid provider names are intentionally not validated by HTTP, controller,
+  service, composition, repository, or provider infrastructure; when supplied,
+  the domain only enforces string and non-blank semantics.
+- Saved Transcript Retranslation remains the only production path that performs
+  provider resolution through provider-resolution composition, resolver, and
+  registry.
+
+Closeout:
+
+- Focused regression coverage completed for WP1-WP6.
+- HTTP, production-composition, and vertical integration tests verify
+  `providerKey` propagation and omitted-key behavior.
+- No production behavior, provider resolution, provider lookup, fallback,
+  domain lifecycle, repository behavior, persistence migration,
+  saved-transcript behavior, or frontend behavior changed during closeout.
+
+Deferred:
+
+- Runtime provider switching from Translation Command.
+- Provider validation in Translation Command.
+- Provider lookup, fallback, retry, health check, or registry interaction from
+  Translation Command.
 
 ### Phase 2 Deferred Scope
 

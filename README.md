@@ -22,6 +22,7 @@ Completed:
 - Phase 2E - Translation Provider Architecture
 - Phase 2F - Translation Provider Configuration
 - Phase 2G - Request-Scoped Provider Selection
+- Phase 2H - Translation Command Provider Attribution
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -56,6 +57,27 @@ Phase 2G status:
   omitted-provider default behavior, persistence on success, no persistence on
   provider-resolution failure, and fake GoogleGenAI-only Gemini execution with
   no real Gemini API call.
+
+Phase 2H
+Status: Completed
+
+Phase 2H status:
+
+- `TranslationExecution` can optionally store `providerKey` as provider
+  attribution metadata.
+- Translation Command accepts and persists `providerKey` without resolving,
+  looking up, normalizing, or defaulting providers.
+- When `providerKey` is omitted, it remains `undefined`.
+- Invalid provider names are intentionally not resolved or checked by the
+  Translation Command path; only the domain string/non-blank validation applies
+  when a value is supplied.
+- Saved Transcript Retranslation remains the only production path that performs
+  provider resolution through the provider-resolution composition, resolver,
+  and registry.
+- Focused HTTP, composition, and vertical integration coverage verified
+  provider metadata propagation from request input through controller, service,
+  domain construction, and repository persistence with no production behavior,
+  persistence, provider-resolution, or saved-transcript behavior changes.
 
 Documentation:
 

@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2H WP7 Regression Validation and Closeout: completed documentation
+  closeout for Translation Command provider attribution, marking Phase 2H
+  complete and documenting that `TranslationExecution.providerKey` is optional
+  metadata only, omitted keys remain `undefined`, Translation Command never
+  resolves, looks up, normalizes, defaults, or falls back providers, invalid
+  provider names are intentionally not validated beyond domain string/non-blank
+  validation, and Saved Transcript Retranslation remains the only production
+  provider-resolution path. No production behavior, domain behavior,
+  repository behavior, provider resolution, persistence, saved-transcript,
+  frontend, or runtime behavior changed.
 - Phase 2H WP6 Translation Command Provider Metadata Vertical Integration:
   added focused integration coverage proving `POST /api/translation-executions`
   carries optional `providerKey` metadata through production composition from

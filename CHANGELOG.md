@@ -4,6 +4,12 @@
 
 ### Added
 
+- Phase 2H WP1 Translation Execution Provider Metadata Domain Contract:
+  added optional immutable `providerKey` attribution to the Translation
+  Execution domain model with string/non-blank validation, omitted-key support,
+  and lifecycle transition preservation. No persistence, HTTP API, provider
+  resolution, composition, provider implementation, read-model, repository, or
+  saved-transcript retranslation behavior was changed.
 - Phase 2G WP7 Regression Validation and Closeout: completed documentation
   closeout for Request-Scoped Provider Selection, marking Phase 2G complete and
   documenting saved-transcript HTTP `providerKey` support, explicit request

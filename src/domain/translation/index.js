@@ -42,6 +42,7 @@ export class TranslationExecution {
     this.id = assertRequiredString(input.id, 'id');
     this.translationRequestId = assertRequiredString(input.translationRequestId, 'translationRequestId');
     this.status = assertExecutionStatus(input.status ?? 'pending');
+    this.providerKey = assertOptionalString(input.providerKey, 'providerKey');
     this.startedAt = assertTimestamp(input.startedAt, 'startedAt');
     this.completedAt = input.completedAt ?? null;
     this.failureInfo = deepClone(input.failureInfo ?? null);
@@ -86,6 +87,7 @@ export class TranslationExecution {
       id: this.id,
       translationRequestId: this.translationRequestId,
       status: nextStatus,
+      providerKey: this.providerKey,
       startedAt: patch.startedAt ?? this.startedAt,
       completedAt: patch.completedAt ?? null,
       failureInfo: patch.failureInfo ?? null
@@ -156,6 +158,14 @@ function assertRequiredString(value, field) {
   }
 
   return value;
+}
+
+function assertOptionalString(value, field) {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return assertRequiredString(value, field);
 }
 
 function assertRequiredValue(value, field) {

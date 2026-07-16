@@ -144,11 +144,31 @@ test('TranslationExecution constructs a valid initial execution', () => {
   assert.equal(execution.id, 'execution-1');
   assert.equal(execution.translationRequestId, 'request-1');
   assert.equal(execution.status, 'pending');
+  assert.equal(execution.providerKey, undefined);
   assert.equal(execution.startedAt, 1000);
   assert.equal(execution.completedAt, null);
   assert.equal(execution.failureInfo, null);
   assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['pending', 'running', 'completed', 'failed', 'cancelled']);
   assert.equal(Object.isFrozen(execution), true);
+});
+
+test('TranslationExecution accepts and preserves provider key attribution', () => {
+  const execution = createPendingExecution({ providerKey: 'gemini' });
+
+  assert.equal(execution.providerKey, 'gemini');
+  assert.equal(execution.start(1100).providerKey, 'gemini');
+  assert.equal(execution.start(1100).complete(1200).providerKey, 'gemini');
+});
+
+test('TranslationExecution rejects blank provider key attribution', () => {
+  assert.throws(() => createPendingExecution({ providerKey: '' }), /providerKey/);
+  assert.throws(() => createPendingExecution({ providerKey: '   ' }), /providerKey/);
+});
+
+test('TranslationExecution rejects non-string provider key attribution', () => {
+  for (const providerKey of [null, 1, true, {}, []]) {
+    assert.throws(() => createPendingExecution({ providerKey }), /providerKey must be a string/);
+  }
 });
 
 test('TranslationExecution supports every allowed transition', () => {

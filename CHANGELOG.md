@@ -4,6 +4,16 @@
 
 ### Added
 
+- Phase 2K WP4 Production Runtime Vertical Integration: added production
+  vertical integration coverage proving `POST /api/translation-executions`
+  uses production composition to build the runtime execution adapter, resolves a
+  deterministic translation provider through the provider resolver exactly once,
+  executes the resolved provider exactly once without passing `providerKey` into
+  provider input, persists exactly one `TranslationOutput`, completes the
+  `TranslationExecution`, preserves explicit `providerKey`, and keeps omitted
+  `providerKey` as `undefined`. No production runtime, provider resolver,
+  provider implementation, HTTP API, repository, domain, retry, timeout, or
+  failure-lifecycle behavior changed.
 - Phase 2K WP3 Production Runtime Composition Wiring: wired production
   Translation Command composition to build a production translation execution
   provider from the existing translation provider resolver and inject only that

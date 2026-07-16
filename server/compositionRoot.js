@@ -5,6 +5,7 @@ import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAda
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
+import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -25,6 +26,7 @@ export function createApplicationDependencies(options = {}) {
     requestHandlerFactory,
     translationRepository,
     domainEventPublisher,
+    translationExecutionDispatcher,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
@@ -42,6 +44,7 @@ export function createApplicationDependencies(options = {}) {
       ? translationRepository
       : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
     domainEventPublisher,
+    translationExecutionDispatcher,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory
@@ -234,6 +237,7 @@ export function createSessionReadDependencies({ sessionRepository, sessionReadRe
 export function createTranslationCommandDependencies({
   translationRepository,
   domainEventPublisher,
+  translationExecutionDispatcher,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController
@@ -246,9 +250,12 @@ export function createTranslationCommandDependencies({
     translationDomainEventHandlers
   });
   const resolvedDomainEventPublisher = translationDomainEventInfrastructure.domainEventPublisher;
+  const resolvedTranslationExecutionDispatcher =
+    translationExecutionDispatcher ?? createFakeTranslationExecutionDispatcher();
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
-    domainEventPublisher: resolvedDomainEventPublisher
+    domainEventPublisher: resolvedDomainEventPublisher,
+    translationExecutionDispatcher: resolvedTranslationExecutionDispatcher
   });
   const translationCommandController = translationCommandControllerFactory({
     translationCommandService
@@ -257,6 +264,7 @@ export function createTranslationCommandDependencies({
   return {
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
+    translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
     translationCommandService,
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents

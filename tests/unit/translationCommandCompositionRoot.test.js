@@ -5,11 +5,13 @@ import {
   createProductionApplicationDependencies,
   createTranslationCommandDependencies
 } from '../../server/compositionRoot.js';
+import { TranslationExecution } from '../../src/domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
 
 test('application dependencies assemble translation command graph with injected repository', () => {
   const translationRepository = repository();
   const domainEventPublisher = publisher();
+  const translationExecutionDispatcher = dispatcher();
   const translationCommandService = service();
   const translationCommandController = controller();
   const requestHandlerResult = function requestHandler() {};
@@ -19,6 +21,7 @@ test('application dependencies assemble translation command graph with injected 
     sessionReadRepository: readRepository(),
     translationRepository,
     domainEventPublisher,
+    translationExecutionDispatcher,
     translationCommandServiceFactory(options) {
       calls.push(['serviceFactory', options]);
       return translationCommandService;
@@ -35,12 +38,18 @@ test('application dependencies assemble translation command graph with injected 
 
   assert.strictEqual(dependencies.translationRepository, translationRepository);
   assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
+  assert.strictEqual(dependencies.translationExecutionDispatcher, translationExecutionDispatcher);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
   assert.strictEqual(dependencies.requestHandler, requestHandlerResult);
   assert.strictEqual(calls[0][1].translationRepository, translationRepository);
   assert.strictEqual(calls[0][1].domainEventPublisher, domainEventPublisher);
-  assert.deepEqual(Object.keys(calls[0][1]), ['translationRepository', 'domainEventPublisher']);
+  assert.strictEqual(calls[0][1].translationExecutionDispatcher, translationExecutionDispatcher);
+  assert.deepEqual(Object.keys(calls[0][1]), [
+    'translationRepository',
+    'domainEventPublisher',
+    'translationExecutionDispatcher'
+  ]);
   assert.strictEqual(calls[1][1].translationCommandService, translationCommandService);
   assert.deepEqual(Object.keys(calls[1][1]), ['translationCommandService']);
   assert.strictEqual(calls[2][1].translationCommandController, translationCommandController);
@@ -51,18 +60,26 @@ test('application dependencies assemble translation command graph with injected 
 test('translation command dependencies use the service factory result to build the controller', () => {
   const translationRepository = repository();
   const domainEventPublisher = publisher();
+  const translationExecutionDispatcher = dispatcher();
   const translationCommandService = service();
   const translationCommandController = controller();
   let injectedRepository;
   let injectedPublisher;
+  let injectedDispatcher;
   let injectedService;
 
   const dependencies = createTranslationCommandDependencies({
     translationRepository,
     domainEventPublisher,
-    translationCommandServiceFactory({ translationRepository: nextRepository, domainEventPublisher: nextPublisher }) {
+    translationExecutionDispatcher,
+    translationCommandServiceFactory({
+      translationRepository: nextRepository,
+      domainEventPublisher: nextPublisher,
+      translationExecutionDispatcher: nextDispatcher
+    }) {
       injectedRepository = nextRepository;
       injectedPublisher = nextPublisher;
+      injectedDispatcher = nextDispatcher;
       return translationCommandService;
     },
     translationCommandControllerFactory({ translationCommandService: nextService }) {
@@ -73,10 +90,133 @@ test('translation command dependencies use the service factory result to build t
 
   assert.strictEqual(injectedRepository, translationRepository);
   assert.strictEqual(injectedPublisher, domainEventPublisher);
+  assert.strictEqual(injectedDispatcher, translationExecutionDispatcher);
   assert.strictEqual(injectedService, translationCommandService);
   assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
+  assert.strictEqual(dependencies.translationExecutionDispatcher, translationExecutionDispatcher);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
+});
+
+test('production composition creates a default fake dispatcher and dispatches created executions', async () => {
+  let persistedExecution;
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      }
+    }),
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.equal(typeof dependencies.translationExecutionDispatcher.dispatch, 'function');
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
+
+  const result = await dependencies.translationCommandService.createTranslationExecution(executionPayload());
+
+  assert.equal(result instanceof TranslationExecution, true);
+  assert.strictEqual(result, persistedExecution);
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, [result]);
+  assert.strictEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions[0], result);
+});
+
+test('production composition injects supplied dispatcher unchanged and awaits dispatch', async () => {
+  const deferredDispatch = createDeferred();
+  const dispatchCalls = [];
+  let persistedExecution;
+  let resolved = false;
+  const suppliedDispatcher = {
+    dispatch(...args) {
+      dispatchCalls.push(args);
+      return deferredDispatch.promise;
+    }
+  };
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      }
+    }),
+    translationExecutionDispatcher: suppliedDispatcher,
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionDispatcher, suppliedDispatcher);
+  assert.equal(Object.hasOwn(dependencies.translationExecutionDispatcher, 'dispatchedExecutions'), false);
+
+  const resultPromise = dependencies.translationCommandService.createTranslationExecution(executionPayload()).then((result) => {
+    resolved = true;
+    return result;
+  });
+
+  await Promise.resolve();
+
+  assert.equal(resolved, false);
+  assert.equal(dispatchCalls.length, 1);
+  assert.equal(dispatchCalls[0].length, 1);
+  assert.strictEqual(dispatchCalls[0][0], persistedExecution);
+
+  deferredDispatch.resolve();
+
+  assert.strictEqual(await resultPromise, persistedExecution);
+  assert.equal(resolved, true);
+});
+
+test('production-composed dispatcher failure propagates after persistence without retry', async () => {
+  const dispatcherError = new Error('dispatch failed');
+  let persistedExecution;
+  let dispatchCalls = 0;
+  let publishCalls = 0;
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      }
+    }),
+    domainEventPublisher: publisher({
+      publish() {
+        publishCalls += 1;
+      }
+    }),
+    translationExecutionDispatcher: {
+      async dispatch(execution) {
+        dispatchCalls += 1;
+        assert.strictEqual(execution, persistedExecution);
+        throw dispatcherError;
+      }
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  await assert.rejects(
+    dependencies.translationCommandService.createTranslationExecution(executionPayload()),
+    dispatcherError
+  );
+
+  assert.equal(persistedExecution instanceof TranslationExecution, true);
+  assert.equal(dispatchCalls, 1);
+  assert.equal(publishCalls, 0);
 });
 
 test('production composition forwards create-execution providerKey from controller to service unchanged', () => {
@@ -127,11 +267,13 @@ test('translation command dependencies create one usable publisher instance by d
   const translationRepository = repository();
   const translationCommandService = service();
   let injectedPublisher;
+  let injectedDispatcher;
 
   const dependencies = createTranslationCommandDependencies({
     translationRepository,
-    translationCommandServiceFactory({ domainEventPublisher: nextPublisher }) {
+    translationCommandServiceFactory({ domainEventPublisher: nextPublisher, translationExecutionDispatcher }) {
       injectedPublisher = nextPublisher;
+      injectedDispatcher = translationExecutionDispatcher;
       return translationCommandService;
     },
     translationCommandControllerFactory() {
@@ -140,7 +282,9 @@ test('translation command dependencies create one usable publisher instance by d
   });
 
   assert.equal(typeof dependencies.domainEventPublisher.publish, 'function');
+  assert.equal(typeof dependencies.translationExecutionDispatcher.dispatch, 'function');
   assert.strictEqual(injectedPublisher, dependencies.domainEventPublisher);
+  assert.strictEqual(injectedDispatcher, dependencies.translationExecutionDispatcher);
 });
 
 test('application dependencies preserve existing session read controller wiring', () => {
@@ -293,8 +437,38 @@ function publisher(overrides = {}) {
   };
 }
 
+function dispatcher(overrides = {}) {
+  return {
+    dispatch:
+      overrides.dispatch ||
+      async function dispatch() {
+        return undefined;
+      }
+  };
+}
+
 function controller(overrides = {}) {
   return service(overrides);
+}
+
+function executionPayload(overrides = {}) {
+  return {
+    id: 'execution-1',
+    translationRequestId: 'request-1',
+    startedAt: 1000,
+    ...overrides
+  };
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+
+  return { promise, resolve, reject };
 }
 
 function createProductionTranslationCommandDependencies(serviceOverrides = {}) {

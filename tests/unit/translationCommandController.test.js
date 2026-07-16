@@ -50,6 +50,95 @@ test('createTranslationExecution delegates once with unchanged argument and retu
   assertDelegatesOnce('createTranslationExecution');
 });
 
+test('createTranslationExecution forwards providerKey unchanged with existing fields', () => {
+  const calls = [];
+  const serviceResult = { id: 'execution-result' };
+  const input = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: 'gemini',
+    createdAt: '2026-07-16T08:00:00.000Z'
+  };
+  const controller = createTranslationCommandController({
+    translationCommandService: translationCommandService({
+      createTranslationExecution(nextInput) {
+        calls.push(nextInput);
+        return serviceResult;
+      }
+    })
+  });
+
+  const result = controller.createTranslationExecution(input);
+
+  assert.strictEqual(result, serviceResult);
+  assert.equal(calls.length, 1);
+  assert.strictEqual(calls[0], input);
+  assert.deepEqual(calls[0], {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: 'gemini',
+    createdAt: '2026-07-16T08:00:00.000Z'
+  });
+});
+
+test('createTranslationExecution does not default omitted providerKey', () => {
+  let serviceInput;
+  const input = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    createdAt: '2026-07-16T08:00:00.000Z'
+  };
+  const controller = createTranslationCommandController({
+    translationCommandService: translationCommandService({
+      createTranslationExecution(nextInput) {
+        serviceInput = nextInput;
+        return { id: 'execution-result' };
+      }
+    })
+  });
+
+  controller.createTranslationExecution(input);
+
+  assert.strictEqual(serviceInput, input);
+  assert.equal(Object.hasOwn(serviceInput, 'providerKey'), false);
+});
+
+test('createTranslationExecution forwards invalid providerKey without controller validation', () => {
+  let serviceInput;
+  const input = {
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    providerKey: '   ',
+    createdAt: '2026-07-16T08:00:00.000Z'
+  };
+  const controller = createTranslationCommandController({
+    translationCommandService: translationCommandService({
+      createTranslationExecution(nextInput) {
+        serviceInput = nextInput;
+        return { id: 'execution-result' };
+      }
+    })
+  });
+
+  controller.createTranslationExecution(input);
+
+  assert.strictEqual(serviceInput, input);
+  assert.equal(serviceInput.providerKey, '   ');
+});
+
+test('createTranslationExecution propagates service errors unchanged', () => {
+  const serviceError = new Error('service failed');
+  const controller = createTranslationCommandController({
+    translationCommandService: translationCommandService({
+      createTranslationExecution() {
+        throw serviceError;
+      }
+    })
+  });
+
+  assert.throws(() => controller.createTranslationExecution({ executionId: 'execution-1' }), serviceError);
+});
+
 test('updateTranslationExecution delegates once with unchanged argument and return value', () => {
   assertDelegatesOnce('updateTranslationExecution');
 });

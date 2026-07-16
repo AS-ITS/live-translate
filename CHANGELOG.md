@@ -4,6 +4,15 @@
 
 ### Added
 
+- Phase 2H WP3 Translation Command Controller Provider Metadata Input:
+  kept the non-HTTP Translation Command Controller create-execution boundary as
+  an unchanged pass-through into `TranslationCommandService.createTranslationExecution`,
+  with focused coverage proving optional `providerKey` metadata is forwarded
+  exactly as received, omitted keys are not defaulted, invalid values are not
+  validated by the controller, and service results/errors remain unchanged. No
+  HTTP API, repository, provider resolver, provider registry, composition,
+  persistence, saved-transcript, provider implementation, or frontend behavior
+  was changed.
 - Phase 2H WP2 Translation Command Service Provider Metadata Input:
   made the Translation Command Service create-execution path explicitly forward
   optional `providerKey` metadata into the Translation Execution domain model,

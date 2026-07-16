@@ -14,7 +14,7 @@ export function createTranslationCommandController({ translationCommandService }
     },
 
     createTranslationExecution(input) {
-      return translationCommandService.createTranslationExecution(input);
+      return translationCommandService.createTranslationExecution(forwardTranslationExecutionInput(input));
     },
 
     updateTranslationExecution(input) {
@@ -25,6 +25,10 @@ export function createTranslationCommandController({ translationCommandService }
       return translationCommandService.createTranslationOutput(input);
     }
   });
+}
+
+function forwardTranslationExecutionInput(input) {
+  return input;
 }
 
 function assertTranslationCommandService(translationCommandService) {

@@ -27,6 +27,7 @@ Completed:
 - Phase 2K - Production Translation Runtime
 - Phase 2L - Execution Reliability
 - Phase 2M - Runtime Provider Resolution
+- Phase 2N - Gemini Translation Execution Provider
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -330,6 +331,55 @@ rethrow resolver error
   not add real OpenAI, Azure, additional Gemini provider implementations,
   fallback, provider health checks, provider-selection UI, HTTP API changes, or
   retry policy changes.
+
+Phase 2N
+Status: Completed
+
+Phase 2N status:
+
+- Production Translation Command execution now has a concrete
+  `GeminiTranslationExecutionProvider` backed by `GeminiClient`.
+- Production composition wires `GEMINI_API_KEY` and `GEMINI_MODEL` into the
+  Gemini execution path:
+
+```text
+TranslationExecutionRunner
+        |
+        v
+TranslationExecutionProviderResolver
+        |
+        v
+GeminiTranslationExecutionProvider
+        |
+        v
+GeminiClient
+        |
+        v
+Gemini HTTP client
+```
+
+- `providerKey: "gemini"` resolves to the Gemini execution provider. Omitted
+  provider keys still use the configured default provider key, defaulting to
+  `gemini`.
+- `GeminiClient` builds deterministic Gemini `generateContent` HTTP requests,
+  normalizes Gemini-style responses into the existing provider result format,
+  and maps Gemini HTTP failures for 400, 401, 403, 429, 5xx, and generic HTTP
+  failures while preserving the existing exception propagation lifecycle.
+- Production vertical integration is verified with a fake HTTP client, proving
+  `TranslationOutput` creation, `TranslationExecution` completion, failed
+  execution persistence, and no real Gemini API call during automated tests.
+- Fake execution provider injection and fake resolver tests remain supported
+  for deterministic test composition.
+- Real Gemini API validation still requires a configured `GEMINI_API_KEY` and
+  `GEMINI_MODEL` and remains outside automated test execution.
+
+Current Phase 2N limitations:
+
+- No streaming translation execution.
+- No retry policy changes.
+- No timeout handling.
+- No metrics or logging changes.
+- No provider fallback or multi-provider runtime behavior.
 
 Documentation:
 

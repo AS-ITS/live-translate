@@ -4,6 +4,7 @@ import {
   buildDefaultGeminiExecutionPrompt,
   buildGeminiExecutionRequest,
   createGeminiClient,
+  GeminiHttpError,
   normalizeGeminiExecutionResponse
 } from '../../src/infrastructure/geminiClient.js';
 
@@ -202,18 +203,67 @@ test('response detected language falls back to input source language', async () 
   });
 });
 
-test('HTTP error status throws and does not retry', async () => {
+test('HTTP error status maps failures and does not retry', async () => {
+  for (const { status, code } of [
+    { status: 400, code: 'bad_request' },
+    { status: 401, code: 'unauthorized' },
+    { status: 403, code: 'forbidden' },
+    { status: 429, code: 'rate_limited' },
+    { status: 500, code: 'server_error' },
+    { status: 503, code: 'server_error' },
+    { status: 418, code: 'http_error' }
+  ]) {
+    const calls = [];
+    const client = createClient({
+      httpClient: {
+        post(request) {
+          calls.push(request);
+          return httpResponse({ ok: false, status, body: { error: code } });
+        }
+      }
+    });
+
+    await assert.rejects(
+      client.execute(executionInput()),
+      (error) => {
+        assert.equal(error instanceof GeminiHttpError, true);
+        assert.equal(error.name, 'GeminiHttpError');
+        assert.equal(error.status, status);
+        assert.equal(error.code, code);
+        assert.match(error.message, new RegExp(`${code}.*${status}`));
+        return true;
+      }
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('HTTP error status without numeric status maps to generic HTTP error', async () => {
   const calls = [];
   const client = createClient({
     httpClient: {
       post(request) {
         calls.push(request);
-        return httpResponse({ ok: false, status: 503, body: { error: 'unavailable' } });
+        return {
+          ok: false,
+          async json() {
+            return { error: 'unknown' };
+          }
+        };
       }
     }
   });
 
-  await assert.rejects(client.execute(executionInput()), /Gemini HTTP request failed with status 503/);
+  await assert.rejects(
+    client.execute(executionInput()),
+    (error) => {
+      assert.equal(error instanceof GeminiHttpError, true);
+      assert.equal(error.status, undefined);
+      assert.equal(error.code, 'http_error');
+      assert.match(error.message, /http_error/);
+      return true;
+    }
+  );
   assert.equal(calls.length, 1);
 });
 

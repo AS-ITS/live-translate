@@ -95,7 +95,12 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
       )
     ]
   });
-  const runtime = createRuntimeProviderResolutionFixture();
+  const runtime = createRuntimeProviderResolutionFixture({
+    responseBody: {
+      translatedText: '[gemini:fr] hello',
+      detectedSourceLanguageCode: 'en'
+    }
+  });
   const input = translationExecutionPayload({
     sourceText: 'hello',
     sourceLanguageCode: 'en',
@@ -121,24 +126,18 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
         failureInfo: null,
         providerKey: 'gemini'
       });
-      assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
-      assert.deepEqual(runtime.translateCalls, [
-        {
-          sourceText: 'hello',
-          sourceLanguageCode: 'en',
-          targetLanguageCode: 'fr',
-          requestId: undefined,
-          sessionId: undefined,
-          executionId: undefined
-        }
-      ]);
-      assert.equal(Object.hasOwn(runtime.translateCalls[0], 'providerKey'), false);
+      assert.equal(runtime.httpCalls.length, 1);
+      assert.equal(runtime.httpCalls[0].path, '/v1beta/models/gemini-runtime-model:generateContent');
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.at(-1).text, 'hello');
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.some((part) => part.text === 'Target language: fr'), true);
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.some((part) => part.text === 'Source language hint: en'), true);
+      assert.deepEqual(runtime.httpCalls[0].body.metadata, {});
       assertCompletedRuntimePersistence(translationRepository, {
         requestId: 'request-1',
         sessionId: 'session-runtime-1',
         executionId: 'execution-1',
         providerKey: 'gemini',
-        translatedText: '[runtime:fr] hello',
+        translatedText: '[gemini:fr] hello',
         targetLanguageCode: 'fr'
       });
       assertNoFailedExecutionPersistence(translationRepository);
@@ -160,7 +159,12 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
       )
     ]
   });
-  const runtime = createRuntimeProviderResolutionFixture();
+  const runtime = createRuntimeProviderResolutionFixture({
+    responseBody: {
+      translatedText: '[gemini:fr] hello',
+      detectedSourceLanguageCode: 'en'
+    }
+  });
   const input = translationExecutionPayload({
     sourceText: 'hello',
     sourceLanguageCode: 'en',
@@ -184,24 +188,18 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
         completedAt: null,
         failureInfo: null
       });
-      assert.deepEqual(runtime.resolveCalls, [{ providerKey: undefined }]);
-      assert.deepEqual(runtime.translateCalls, [
-        {
-          sourceText: 'hello',
-          sourceLanguageCode: 'en',
-          targetLanguageCode: 'fr',
-          requestId: undefined,
-          sessionId: undefined,
-          executionId: undefined
-        }
-      ]);
-      assert.equal(Object.hasOwn(runtime.translateCalls[0], 'providerKey'), false);
+      assert.equal(runtime.httpCalls.length, 1);
+      assert.equal(runtime.httpCalls[0].path, '/v1beta/models/gemini-runtime-model:generateContent');
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.at(-1).text, 'hello');
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.some((part) => part.text === 'Target language: fr'), true);
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.some((part) => part.text === 'Source language hint: en'), true);
+      assert.deepEqual(runtime.httpCalls[0].body.metadata, {});
       assertCompletedRuntimePersistence(translationRepository, {
         requestId: 'request-1',
         sessionId: 'session-runtime-2',
         executionId: 'execution-1',
         providerKey: undefined,
-        translatedText: '[runtime:fr] hello',
+        translatedText: '[gemini:fr] hello',
         targetLanguageCode: 'fr'
       });
       assertNoFailedExecutionPersistence(translationRepository);
@@ -224,7 +222,7 @@ test('POST /api/translation-executions persists failed execution when production
     ]
   });
   const providerError = new Error('runtime provider failed');
-  const runtime = createRuntimeProviderResolutionFixture({ translateError: providerError });
+  const runtime = createRuntimeProviderResolutionFixture({ postError: providerError });
   const input = translationExecutionPayload({
     sourceText: 'hello',
     sourceLanguageCode: 'en',
@@ -260,19 +258,8 @@ test('POST /api/translation-executions persists failed execution when production
       assert.equal(updateCalls[0][0].status, 'failed');
       assert.equal(updateCalls.some(([execution]) => execution.status === 'completed'), false);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-      assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
-      assert.deepEqual(runtime.translateCalls, [
-        {
-          sourceText: 'hello',
-          sourceLanguageCode: 'en',
-          targetLanguageCode: 'fr',
-          requestId: undefined,
-          sessionId: undefined,
-          executionId: undefined
-        }
-      ]);
-      assert.equal(Object.hasOwn(runtime.translateCalls[0], 'providerKey'), false);
-      assert.deepEqual(runtime.fallbackTranslateCalls, []);
+      assert.equal(runtime.httpCalls.length, 1);
+      assert.equal(runtime.httpCalls[0].body.contents[0].parts.at(-1).text, 'hello');
     },
     runtime.options
   );
@@ -292,7 +279,7 @@ test('POST /api/translation-executions propagates original production provider e
     ]
   });
   const providerError = new Error('runtime provider failed by identity');
-  const runtime = createRuntimeProviderResolutionFixture({ translateError: providerError });
+  const runtime = createRuntimeProviderResolutionFixture({ postError: providerError });
   const dependencies = createProductionApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository,
@@ -318,9 +305,7 @@ test('POST /api/translation-executions propagates original production provider e
     (actualError) => actualError === providerError
   );
 
-  assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
-  assert.equal(runtime.translateCalls.length, 1);
-  assert.deepEqual(runtime.fallbackTranslateCalls, []);
+  assert.equal(runtime.httpCalls.length, 1);
   assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
   assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
   assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
@@ -351,8 +336,7 @@ test('POST /api/translation-executions repository failure prevents provider exec
       assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
       assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-      assert.deepEqual(runtime.resolveCalls, []);
-      assert.deepEqual(runtime.translateCalls, []);
+      assert.deepEqual(runtime.httpCalls, []);
     },
     runtime.options
   );
@@ -952,65 +936,38 @@ function translationOutputPayload(overrides = {}) {
   };
 }
 
-function createRuntimeProviderResolutionFixture({ translateError } = {}) {
-  const resolveCalls = [];
-  const translateCalls = [];
-  const fallbackTranslateCalls = [];
-  const provider = Object.freeze({
-    translate(input) {
-      translateCalls.push(input);
-      if (translateError) {
-        throw translateError;
-      }
-      return {
-        translatedText: `[runtime:${input.targetLanguageCode}] ${input.sourceText}`,
-        detectedSourceLanguageCode: input.sourceLanguageCode
-      };
-    }
-  });
-  const fallbackProvider = Object.freeze({
-    translate(input) {
-      fallbackTranslateCalls.push(input);
-      return {
-        translatedText: `[fallback:${input.targetLanguageCode}] ${input.sourceText}`
-      };
-    }
-  });
+function createRuntimeProviderResolutionFixture({
+  postError,
+  responseBody = {
+    translatedText: '[gemini:fr] hello',
+    detectedSourceLanguageCode: 'en'
+  }
+} = {}) {
+  const httpCalls = [];
 
   return {
-    resolveCalls,
-    translateCalls,
-    fallbackTranslateCalls,
+    httpCalls,
     options: {
       env: {
-        GEMINI_API_KEY: 'unused-by-runtime-provider-fixture',
-        GEMINI_MODEL: 'unused-by-runtime-provider-fixture'
+        GEMINI_API_KEY: 'gemini-runtime-api-key',
+        GEMINI_MODEL: 'gemini-runtime-model'
       },
-      geminiEnvironmentFactory() {
-        return { apiKey: 'unused-api-key', model: 'unused-model' };
-      },
-      googleGenAIClientFactory() {
-        return { models: { generateContent() {} } };
-      },
-      geminiClientAdapterFactory() {
-        return { generateContent() {} };
-      },
-      geminiSavedTranscriptTranslationCompositionFactory() {
-        return { savedTranscriptTranslationProvider: provider, fallbackProvider };
-      },
-      translationProviderConfigurationFactory() {
-        return { defaultProviderKey: 'gemini' };
-      },
-      translationProviderResolutionCompositionFactory() {
+      geminiHttpClientFactory({ apiKey }) {
+        assert.equal(apiKey, 'gemini-runtime-api-key');
         return {
-          resolver: {
-            resolve(options) {
-              resolveCalls.push(options);
-              return provider;
+          post(request) {
+            httpCalls.push(request);
+
+            if (postError) {
+              throw postError;
             }
-          },
-          resolve() {
-            throw new Error('saved transcript provider resolution should not run for translation command requests');
+
+            return {
+              ok: true,
+              async json() {
+                return responseBody;
+              }
+            };
           }
         };
       }

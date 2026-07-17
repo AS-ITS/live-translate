@@ -4,6 +4,20 @@
 
 ### Added
 
+- Phase 2N WP5 Failure Mapping and Closeout: completed Gemini Translation
+  Execution Provider closeout, including stable `GeminiHttpError` mapping for
+  Gemini HTTP 400, 401, 403, 429, 5xx, and generic HTTP failures while
+  preserving the existing exception propagation lifecycle and explicit invalid
+  response errors. Documented that production Translation Command composition
+  now supports the concrete `GeminiTranslationExecutionProvider` backed by
+  `GeminiClient`, registers `gemini` through
+  `TranslationExecutionProviderResolver`, uses `GEMINI_API_KEY` and
+  `GEMINI_MODEL`, and has fake HTTP vertical integration coverage proving
+  provider dispatch, `TranslationOutput` persistence, completed and failed
+  execution lifecycles, and no real Gemini API call during automated tests.
+  Fake provider and fake resolver coverage remains supported. Real Gemini API
+  validation still requires configured credentials and remains outside
+  automated closeout.
 - Phase 2M WP4 Documentation Closeout: completed Runtime Provider Resolution
   documentation in README and ROADMAP, marking Phase 2M complete and recording
   the delivered `TranslationExecutionProviderResolver` runtime boundary,

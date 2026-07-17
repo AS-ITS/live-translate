@@ -5,6 +5,15 @@ const REQUIRED_EXECUTION_FIELDS = Object.freeze([
 
 const METADATA_FIELDS = Object.freeze(['requestId', 'sessionId', 'executionId']);
 
+export class GeminiHttpError extends Error {
+  constructor({ status, code, message }) {
+    super(message);
+    this.name = 'GeminiHttpError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export function createGeminiClient({ httpClient, model, promptBuilder = buildDefaultGeminiExecutionPrompt } = {}) {
   assertHttpClient(httpClient);
   assertModel(model);
@@ -178,12 +187,47 @@ function assertHttpResponse(response) {
   }
 
   if (response.ok === false) {
-    throw new Error(`Gemini HTTP request failed with status ${response.status ?? 'unknown'}.`);
+    throw createGeminiHttpError(response.status);
   }
 
   if (typeof response.json !== 'function') {
     throw new TypeError('Gemini HTTP response json must be a function.');
   }
+}
+
+function createGeminiHttpError(status) {
+  const normalizedStatus = typeof status === 'number' ? status : undefined;
+  const code = mapGeminiHttpErrorCode(normalizedStatus);
+
+  return new GeminiHttpError({
+    status: normalizedStatus,
+    code,
+    message: `Gemini HTTP request failed: ${code}${normalizedStatus === undefined ? '' : ` (${normalizedStatus})`}.`
+  });
+}
+
+function mapGeminiHttpErrorCode(status) {
+  if (status === 400) {
+    return 'bad_request';
+  }
+
+  if (status === 401) {
+    return 'unauthorized';
+  }
+
+  if (status === 403) {
+    return 'forbidden';
+  }
+
+  if (status === 429) {
+    return 'rate_limited';
+  }
+
+  if (typeof status === 'number' && status >= 500 && status <= 599) {
+    return 'server_error';
+  }
+
+  return 'http_error';
 }
 
 function buildMetadata(input) {

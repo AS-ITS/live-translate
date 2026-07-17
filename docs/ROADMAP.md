@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2P Translation Execution Lifecycle completed.
+Current milestone: Phase 3A Async Execution Runtime completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -28,6 +28,7 @@ Translation Runtime is completed. Phase 2L Execution Reliability is completed.
 Phase 2M Runtime Provider Resolution is completed. Phase 2N Gemini Translation
 Execution Provider is completed. Phase 2O Production Gemini Translation
 Execution is completed. Phase 2P Translation Execution Lifecycle is completed.
+Phase 3A Async Execution Runtime is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -258,6 +259,19 @@ Deferred:
   - Success lifecycle persisted as `created -> queued -> running -> completed`
   - Failure lifecycle persisted as `created -> queued -> running -> failed`
   - Focused domain, application service, and vertical integration verification
+- Phase 3A - Async Execution Runtime: Completed
+  - Execution Queue
+  - Async Submission
+  - TranslationExecutionWorker
+  - Repository Lookup
+  - Production Composition
+  - HTTP Contract
+  - Success Vertical Integration
+  - Failure Vertical Integration
+  - Worker Runtime
+  - Current limitations: in-memory queue, Worker Runtime not automatically
+    started, no durable queue, no cancellation, no timeout, and no multi-worker
+    coordination
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
@@ -1216,6 +1230,106 @@ Deferred:
 - Provider behavior changes.
 - HTTP contract changes.
 - Persistence-format changes.
+
+### Phase 3A - Async Execution Runtime
+
+Status: Completed.
+
+Scope:
+
+- Add a minimal Translation Execution Queue contract.
+- Add deterministic in-memory FIFO queue behavior.
+- Change Translation Command submission to persist `created`, persist `queued`,
+  enqueue an identifier-only job, and return a queued execution.
+- Add `TranslationExecutionWorker` to dequeue one job, load persisted
+  execution/request objects, and delegate execution to
+  `TranslationExecutionRunner`.
+- Add repository lookup support for `findExecutionById(executionId)` and
+  `findRequestById(requestId)`.
+- Wire production composition so `TranslationCommandService` and
+  `TranslationExecutionWorker` share the same queue and repository.
+- Update `POST /api/translation-executions` to return `202 Accepted` for
+  asynchronous submission.
+- Add success and failure vertical integration coverage for HTTP submission,
+  queueing, worker processing, provider execution, output persistence, and
+  final lifecycle states.
+- Add `TranslationExecutionWorkerRuntime` as a start/stop polling adapter around
+  `TranslationExecutionWorker.processNext()`.
+
+Current async submission flow:
+
+```text
+POST /api/translation-executions
+↓
+persist created
+↓
+persist queued
+↓
+enqueue job
+↓
+202 Accepted
+```
+
+Current worker processing flow:
+
+```text
+TranslationExecutionWorkerRuntime
+↓
+TranslationExecutionWorker
+↓
+TranslationExecutionRunner
+↓
+TranslationExecutionProvider
+↓
+completed / failed
+```
+
+Success lifecycle:
+
+```text
+created
+↓
+queued
+↓
+running
+↓
+completed
+```
+
+Failure lifecycle:
+
+```text
+created
+↓
+queued
+↓
+running
+↓
+failed
+```
+
+Completed work:
+
+- Execution Queue.
+- Async Submission.
+- TranslationExecutionWorker.
+- Repository Lookup.
+- Production Composition.
+- HTTP Contract.
+- Success Vertical Integration.
+- Failure Vertical Integration.
+- Worker Runtime.
+
+Current limitations:
+
+- In-memory queue only.
+- Worker Runtime is not automatically started by production startup.
+- Durable queue is not supported.
+- Cancellation is not supported.
+- Timeout handling is not supported.
+- Multi-worker processing is not supported.
+- Queue retry and dead-letter queue behavior are not supported.
+- Metrics are not supported.
 
 ### Phase 2 Deferred Scope
 

@@ -13,6 +13,7 @@ test('application dependencies assemble translation command graph with injected 
   const translationRepository = repository();
   const domainEventPublisher = publisher();
   const translationExecutionDispatcher = dispatcher();
+  const translationExecutionQueue = queue();
   const translationCommandService = service();
   const translationCommandController = controller();
   const requestHandlerResult = function requestHandler() {};
@@ -23,6 +24,7 @@ test('application dependencies assemble translation command graph with injected 
     translationRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionQueue,
     translationCommandServiceFactory(options) {
       calls.push(['serviceFactory', options]);
       return translationCommandService;
@@ -40,16 +42,19 @@ test('application dependencies assemble translation command graph with injected 
   assert.strictEqual(dependencies.translationRepository, translationRepository);
   assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
   assert.strictEqual(dependencies.translationExecutionDispatcher, translationExecutionDispatcher);
+  assert.strictEqual(dependencies.translationExecutionQueue, translationExecutionQueue);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
   assert.strictEqual(dependencies.requestHandler, requestHandlerResult);
   assert.strictEqual(calls[0][1].translationRepository, translationRepository);
   assert.strictEqual(calls[0][1].domainEventPublisher, domainEventPublisher);
   assert.strictEqual(calls[0][1].translationExecutionDispatcher, translationExecutionDispatcher);
+  assert.strictEqual(calls[0][1].translationExecutionQueue, translationExecutionQueue);
   assert.deepEqual(Object.keys(calls[0][1]), [
     'translationRepository',
     'domainEventPublisher',
-    'translationExecutionDispatcher'
+    'translationExecutionDispatcher',
+    'translationExecutionQueue'
   ]);
   assert.strictEqual(calls[1][1].translationCommandService, translationCommandService);
   assert.deepEqual(Object.keys(calls[1][1]), ['translationCommandService']);
@@ -62,25 +67,30 @@ test('translation command dependencies use the service factory result to build t
   const translationRepository = repository();
   const domainEventPublisher = publisher();
   const translationExecutionDispatcher = dispatcher();
+  const translationExecutionQueue = queue();
   const translationCommandService = service();
   const translationCommandController = controller();
   let injectedRepository;
   let injectedPublisher;
   let injectedDispatcher;
+  let injectedQueue;
   let injectedService;
 
   const dependencies = createTranslationCommandDependencies({
     translationRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionQueue,
     translationCommandServiceFactory({
       translationRepository: nextRepository,
       domainEventPublisher: nextPublisher,
-      translationExecutionDispatcher: nextDispatcher
+      translationExecutionDispatcher: nextDispatcher,
+      translationExecutionQueue: nextQueue
     }) {
       injectedRepository = nextRepository;
       injectedPublisher = nextPublisher;
       injectedDispatcher = nextDispatcher;
+      injectedQueue = nextQueue;
       return translationCommandService;
     },
     translationCommandControllerFactory({ translationCommandService: nextService }) {
@@ -92,9 +102,11 @@ test('translation command dependencies use the service factory result to build t
   assert.strictEqual(injectedRepository, translationRepository);
   assert.strictEqual(injectedPublisher, domainEventPublisher);
   assert.strictEqual(injectedDispatcher, translationExecutionDispatcher);
+  assert.strictEqual(injectedQueue, translationExecutionQueue);
   assert.strictEqual(injectedService, translationCommandService);
   assert.strictEqual(dependencies.domainEventPublisher, domainEventPublisher);
   assert.strictEqual(dependencies.translationExecutionDispatcher, translationExecutionDispatcher);
+  assert.strictEqual(dependencies.translationExecutionQueue, translationExecutionQueue);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
 });
@@ -215,11 +227,132 @@ test('production composition injects an execution provider resolver for the prod
   assert.equal(observedServiceOptions.retryPolicy.maxRetries, 0);
 });
 
-test('production composition executes the Gemini provider for providerKey gemini', async () => {
+test('production composition wires shared queue repository runner and worker', async () => {
+  const translationRepository = repository();
+  const suppliedQueue = queue();
+  const runner = { execute() {} };
+  const worker = { processNext() {} };
+  const geminiProviderInputs = [];
+  const geminiProvider = {
+    async execute(input) {
+      geminiProviderInputs.push(input);
+      return { translatedText: 'Bonjour' };
+    }
+  };
+  let observedServiceOptions;
+  let observedRunnerOptions;
+  let observedWorkerOptions;
+
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository,
+    translationExecutionQueue: suppliedQueue,
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return geminiProvider;
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    },
+    translationExecutionRunnerFactory(options) {
+      observedRunnerOptions = options;
+      return runner;
+    },
+    translationExecutionWorkerFactory(options) {
+      observedWorkerOptions = options;
+      return worker;
+    },
+    translationCommandServiceFactory(options) {
+      observedServiceOptions = options;
+      return service();
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionQueue, suppliedQueue);
+  assert.strictEqual(dependencies.translationExecutionRunner, runner);
+  assert.strictEqual(dependencies.translationExecutionWorker, worker);
+  assert.strictEqual(observedServiceOptions.translationExecutionQueue, suppliedQueue);
+  assert.strictEqual(observedServiceOptions.translationRepository, translationRepository);
+  assert.strictEqual(observedWorkerOptions.translationExecutionQueue, suppliedQueue);
+  assert.strictEqual(observedWorkerOptions.translationRepository, translationRepository);
+  assert.notStrictEqual(observedWorkerOptions.translationExecutionRunner, runner);
+  assert.equal(typeof observedWorkerOptions.translationExecutionRunner.execute, 'function');
+  assert.equal(typeof observedWorkerOptions.translationExecutionRunner.run, 'function');
+  assert.strictEqual(observedRunnerOptions.translationRepository, translationRepository);
+  assert.strictEqual(observedRunnerOptions.retryPolicy, dependencies.retryPolicy);
+
+  const providerResult = await observedRunnerOptions.translationExecutionProvider.execute({
+    providerKey: 'gemini',
+    sourceText: 'hello'
+  });
+
+  assert.deepEqual(providerResult, { translatedText: 'Bonjour' });
+  assert.deepEqual(geminiProviderInputs, [{ providerKey: 'gemini', sourceText: 'hello' }]);
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('gemini'), geminiProvider);
+});
+
+test('production composition allows worker and runner override without rebuilding worker dependencies', () => {
+  const suppliedRunner = { execute() {} };
+  const suppliedWorker = { processNext() {} };
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    translationExecutionRunner: suppliedRunner,
+    translationExecutionWorker: suppliedWorker,
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    translationExecutionRunnerFactory() {
+      throw new Error('runner factory should not run when runner is supplied');
+    },
+    translationExecutionWorkerFactory() {
+      throw new Error('worker factory should not run when worker is supplied');
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionRunner, suppliedRunner);
+  assert.strictEqual(dependencies.translationExecutionWorker, suppliedWorker);
+});
+
+test('production composition queues execution for providerKey gemini without executing provider', async () => {
   const httpCalls = [];
   let persistedExecution;
-  let persistedOutput;
-  let completedExecution;
+  let queuedExecution;
+  const queuedJobs = [];
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
@@ -232,12 +365,16 @@ test('production composition executes the Gemini provider for providerKey gemini
         return execution;
       },
       createTranslationOutput(output) {
-        persistedOutput = output;
-        return output;
+        throw new Error(`output should not be created: ${output.id}`);
       },
       updateTranslationExecution(execution) {
-        completedExecution = execution;
+        queuedExecution = execution;
         return execution;
+      }
+    }),
+    translationExecutionQueue: queue({
+      enqueue(job) {
+        queuedJobs.push(job);
       }
     }),
     geminiHttpClientFactory({ apiKey }) {
@@ -277,20 +414,18 @@ test('production composition executes the Gemini provider for providerKey gemini
     })
   );
 
-  assert.strictEqual(result, persistedExecution);
-  assert.equal(httpCalls.length, 1);
-  assert.equal(httpCalls[0].path, '/v1beta/models/gemini-composed-model:generateContent');
-  assert.equal(httpCalls[0].body.contents[0].parts.at(-1).text, 'hello');
-  assert.equal(persistedOutput.translatedText, 'Bonjour');
-  assert.equal(persistedOutput.targetLanguageCode, 'fr');
-  assert.equal(completedExecution.status, 'completed');
+  assert.equal(persistedExecution.status, 'created');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
+  assert.equal(httpCalls.length, 0);
+  assert.deepEqual(queuedJobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
-test('production composition executes the default Gemini provider when providerKey is omitted', async () => {
+test('production composition queues default Gemini execution when providerKey is omitted', async () => {
   const httpCalls = [];
   let persistedExecution;
-  let persistedOutput;
-  let completedExecution;
+  let queuedExecution;
+  const queuedJobs = [];
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
@@ -303,12 +438,16 @@ test('production composition executes the default Gemini provider when providerK
         return execution;
       },
       createTranslationOutput(output) {
-        persistedOutput = output;
-        return output;
+        throw new Error(`output should not be created: ${output.id}`);
       },
       updateTranslationExecution(execution) {
-        completedExecution = execution;
+        queuedExecution = execution;
         return execution;
+      }
+    }),
+    translationExecutionQueue: queue({
+      enqueue(job) {
+        queuedJobs.push(job);
       }
     }),
     geminiHttpClientFactory({ apiKey }) {
@@ -349,19 +488,18 @@ test('production composition executes the default Gemini provider when providerK
     })
   );
 
-  assert.strictEqual(result, persistedExecution);
-  assert.equal(httpCalls.length, 1);
-  assert.equal(httpCalls[0].path, '/v1beta/models/gemini-default-model:generateContent');
-  assert.equal(persistedOutput.translatedText, 'Bonjour');
-  assert.equal(persistedOutput.targetLanguageCode, 'fr');
-  assert.equal(completedExecution.status, 'completed');
+  assert.equal(persistedExecution.status, 'created');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
+  assert.equal(httpCalls.length, 0);
+  assert.deepEqual(queuedJobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
-test('production composition injects supplied execution provider and uses it', async () => {
+test('production composition injects supplied execution provider and queues without using it', async () => {
   const providerCalls = [];
   let persistedExecution;
-  let persistedOutput;
-  let completedExecution;
+  let queuedExecution;
+  const queuedJobs = [];
   const suppliedProvider = {
     async execute(input) {
       providerCalls.push(input);
@@ -376,12 +514,16 @@ test('production composition injects supplied execution provider and uses it', a
         return execution;
       },
       createTranslationOutput(output) {
-        persistedOutput = output;
-        return output;
+        throw new Error(`output should not be created: ${output.id}`);
       },
       updateTranslationExecution(execution) {
-        completedExecution = execution;
+        queuedExecution = execution;
         return execution;
+      }
+    }),
+    translationExecutionQueue: queue({
+      enqueue(job) {
+        queuedJobs.push(job);
       }
     }),
     translationExecutionProvider: suppliedProvider,
@@ -406,24 +548,18 @@ test('production composition injects supplied execution provider and uses it', a
     })
   );
 
-  assert.strictEqual(result, persistedExecution);
-  assert.deepEqual(providerCalls, [
-    {
-      sourceText: 'hello',
-      sourceLanguageCode: 'en',
-      targetLanguageCode: 'fr',
-      providerKey: 'fake'
-    }
-  ]);
-  assert.equal(persistedOutput.translatedText, 'Bonjour');
-  assert.equal(persistedOutput.targetLanguageCode, 'fr');
-  assert.equal(completedExecution.status, 'completed');
+  assert.equal(persistedExecution.status, 'created');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(providerCalls, []);
+  assert.deepEqual(queuedJobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
-test('production composition default retry policy does not retry provider failures', async () => {
+test('production composition does not call failing provider during request submission', async () => {
   const providerError = new Error('provider failed');
   let providerCalls = 0;
-  let failedExecution;
+  let queuedExecution;
+  const queuedJobs = [];
   const suppliedProvider = {
     async execute() {
       providerCalls += 1;
@@ -440,8 +576,13 @@ test('production composition default retry policy does not retry provider failur
         throw new Error('output should not be created on provider failure');
       },
       updateTranslationExecution(execution) {
-        failedExecution = execution;
+        queuedExecution = execution;
         return execution;
+      }
+    }),
+    translationExecutionQueue: queue({
+      enqueue(job) {
+        queuedJobs.push(job);
       }
     }),
     translationExecutionProvider: suppliedProvider,
@@ -457,24 +598,23 @@ test('production composition default retry policy does not retry provider failur
   assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve(undefined), suppliedProvider);
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
-  await assert.rejects(
-    dependencies.translationCommandService.createTranslationExecution(
-      executionPayload({
-        sourceText: 'hello',
-        targetLanguageCode: 'fr'
-      })
-    ),
-    (actualError) => actualError === providerError
+  const result = await dependencies.translationCommandService.createTranslationExecution(
+    executionPayload({
+      sourceText: 'hello',
+      targetLanguageCode: 'fr'
+    })
   );
 
-  assert.equal(providerCalls, 1);
-  assert.equal(failedExecution.status, 'failed');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
+  assert.equal(providerCalls, 0);
+  assert.deepEqual(queuedJobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
-test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged', async () => {
+test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged and queues execution', async () => {
   let persistedExecution;
-  let persistedOutput;
-  let completedExecution;
+  let queuedExecution;
+  const queuedJobs = [];
   const fakeProvider = createFakeTranslationExecutionProvider();
   const dependencies = createProductionApplicationDependencies({
     sessionReadRepository: readRepository(),
@@ -484,12 +624,16 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
         return execution;
       },
       createTranslationOutput(output) {
-        persistedOutput = output;
-        return output;
+        throw new Error(`output should not be created: ${output.id}`);
       },
       updateTranslationExecution(execution) {
-        completedExecution = execution;
+        queuedExecution = execution;
         return execution;
+      }
+    }),
+    translationExecutionQueue: queue({
+      enqueue(job) {
+        queuedJobs.push(job);
       }
     }),
     translationExecutionProvider: fakeProvider,
@@ -543,11 +687,11 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   );
 
   assert.equal(result instanceof TranslationExecution, true);
-  assert.strictEqual(result, persistedExecution);
+  assert.equal(persistedExecution.status, 'created');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
   assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
-  assert.equal(persistedOutput.translatedText, '[fake] hello');
-  assert.equal(persistedOutput.targetLanguageCode, 'fr');
-  assert.equal(completedExecution.status, 'completed');
+  assert.deepEqual(queuedJobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
 test('production runtime wiring preserves saved transcript resolver composition', () => {
@@ -620,15 +764,15 @@ test('production runtime wiring preserves saved transcript resolver composition'
   assert.strictEqual(resolveSavedTranscriptTranslationProvider({ providerKey: 'gemini' }), resolvedProvider);
 });
 
-test('application composition injects supplied dispatcher unchanged and awaits dispatch when provider is omitted', async () => {
-  const deferredDispatch = createDeferred();
-  const dispatchCalls = [];
+test('application composition injects supplied queue unchanged and awaits enqueue', async () => {
+  const deferredEnqueue = createDeferred();
+  const queueCalls = [];
   let persistedExecution;
   let resolved = false;
-  const suppliedDispatcher = {
-    dispatch(...args) {
-      dispatchCalls.push(args);
-      return deferredDispatch.promise;
+  const suppliedQueue = {
+    enqueue(...args) {
+      queueCalls.push(args);
+      return deferredEnqueue.promise;
     }
   };
   const dependencies = createApplicationDependencies({
@@ -639,11 +783,12 @@ test('application composition injects supplied dispatcher unchanged and awaits d
         return execution;
       }
     }),
-    translationExecutionDispatcher: suppliedDispatcher
+    domainEventPublisher: publisher(),
+    translationExecutionQueue: suppliedQueue
   });
 
-  assert.strictEqual(dependencies.translationExecutionDispatcher, suppliedDispatcher);
-  assert.equal(Object.hasOwn(dependencies.translationExecutionDispatcher, 'dispatchedExecutions'), false);
+  assert.strictEqual(dependencies.translationExecutionQueue, suppliedQueue);
+  assert.equal(Object.hasOwn(dependencies.translationExecutionQueue, 'jobs'), false);
 
   const resultPromise = dependencies.translationCommandService.createTranslationExecution(executionPayload()).then((result) => {
     resolved = true;
@@ -651,28 +796,41 @@ test('application composition injects supplied dispatcher unchanged and awaits d
   });
 
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 
   assert.equal(resolved, false);
-  assert.equal(dispatchCalls.length, 1);
-  assert.equal(dispatchCalls[0].length, 1);
-  assert.strictEqual(dispatchCalls[0][0], persistedExecution);
+  assert.equal(queueCalls.length, 1);
+  assert.equal(queueCalls[0].length, 1);
+  assert.deepEqual(queueCalls[0][0], {
+    executionId: persistedExecution.id,
+    requestId: persistedExecution.translationRequestId
+  });
 
-  deferredDispatch.resolve();
+  deferredEnqueue.resolve();
 
-  assert.strictEqual(await resultPromise, persistedExecution);
+  const result = await resultPromise;
+  assert.equal(result instanceof TranslationExecution, true);
+  assert.equal(result.status, 'queued');
   assert.equal(resolved, true);
 });
 
-test('application-composed dispatcher failure propagates after persistence without retry when provider is omitted', async () => {
-  const dispatcherError = new Error('dispatch failed');
+test('application-composed enqueue failure propagates after queued persistence', async () => {
+  const queueError = new Error('queue enqueue failed');
   let persistedExecution;
-  let dispatchCalls = 0;
+  let queuedExecution;
+  let enqueueCalls = 0;
   let publishCalls = 0;
   const dependencies = createApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository({
       createTranslationExecution(execution) {
         persistedExecution = execution;
+        return execution;
+      },
+      updateTranslationExecution(execution) {
+        queuedExecution = execution;
         return execution;
       }
     }),
@@ -681,31 +839,40 @@ test('application-composed dispatcher failure propagates after persistence witho
         publishCalls += 1;
       }
     }),
-    translationExecutionDispatcher: {
-      async dispatch(execution) {
-        dispatchCalls += 1;
-        assert.strictEqual(execution, persistedExecution);
-        throw dispatcherError;
+    translationExecutionQueue: queue({
+      async enqueue(job) {
+        enqueueCalls += 1;
+        assert.deepEqual(job, {
+          executionId: persistedExecution.id,
+          requestId: persistedExecution.translationRequestId
+        });
+        throw queueError;
       }
-    }
+    })
   });
 
   await assert.rejects(
     dependencies.translationCommandService.createTranslationExecution(executionPayload()),
-    dispatcherError
+    queueError
   );
 
   assert.equal(persistedExecution instanceof TranslationExecution, true);
-  assert.equal(dispatchCalls, 1);
-  assert.equal(publishCalls, 0);
+  assert.equal(queuedExecution.status, 'queued');
+  assert.equal(enqueueCalls, 1);
+  assert.equal(publishCalls, 2);
 });
 
 test('translation command service remains constructible when execution provider is undefined', async () => {
   let persistedExecution;
+  let queuedExecution;
   const dependencies = createTranslationCommandDependencies({
     translationRepository: repository({
       createTranslationExecution(execution) {
         persistedExecution = execution;
+        return execution;
+      },
+      updateTranslationExecution(execution) {
+        queuedExecution = execution;
         return execution;
       }
     }),
@@ -716,8 +883,11 @@ test('translation command service remains constructible when execution provider 
 
   const result = await dependencies.translationCommandService.createTranslationExecution(executionPayload());
 
-  assert.strictEqual(result, persistedExecution);
-  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, [persistedExecution]);
+  assert.equal(persistedExecution.status, 'created');
+  assert.strictEqual(result, queuedExecution);
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(dependencies.translationExecutionDispatcher.dispatchedExecutions, []);
+  assert.equal(dependencies.translationExecutionQueue.size(), 1);
 });
 
 test('production composition forwards create-execution providerKey from controller to service unchanged', () => {
@@ -863,8 +1033,8 @@ test('composition root does not execute repository commands while assembling dep
   assert.deepEqual(calls, []);
 });
 
-test('composition root does not create provider, database, queue, event bus, or frontend dependencies', () => {
-  const unexpectedDependencyNames = ['provider', 'database', 'queue', 'eventBus', 'frontend'];
+test('composition root does not create provider, database, event bus, or frontend dependencies', () => {
+  const unexpectedDependencyNames = ['provider', 'database', 'eventBus', 'frontend'];
   const observedFactoryOptions = [];
 
   createApplicationDependencies({
@@ -943,6 +1113,21 @@ function dispatcher(overrides = {}) {
     dispatch:
       overrides.dispatch ||
       async function dispatch() {
+        return undefined;
+      }
+  };
+}
+
+function queue(overrides = {}) {
+  return {
+    enqueue:
+      overrides.enqueue ||
+      function enqueue() {
+        return undefined;
+      },
+    dequeue:
+      overrides.dequeue ||
+      function dequeue() {
         return undefined;
       }
   };

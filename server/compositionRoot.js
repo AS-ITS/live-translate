@@ -1,6 +1,8 @@
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
+import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
+import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
@@ -10,6 +12,7 @@ import { createGeminiTranslationExecutionProvider } from '../src/infrastructure/
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
 import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
+import { createInMemoryTranslationExecutionQueue } from '../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -31,6 +34,9 @@ export function createApplicationDependencies(options = {}) {
     translationRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionQueue,
+    translationExecutionRunner,
+    translationExecutionWorker,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -42,6 +48,8 @@ export function createApplicationDependencies(options = {}) {
     clock = () => Date.now(),
     translationCommandServiceFactory = createDefaultTranslationCommandService,
     translationCommandControllerFactory = createDefaultTranslationCommandController,
+    translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
+    translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
     ...sessionReadOptions
   } = options;
   const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
@@ -51,11 +59,16 @@ export function createApplicationDependencies(options = {}) {
       : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
     domainEventPublisher,
     translationExecutionDispatcher,
+    translationExecutionQueue,
+    translationExecutionRunner,
+    translationExecutionWorker,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
-    translationCommandControllerFactory
+    translationCommandControllerFactory,
+    translationExecutionRunnerFactory,
+    translationExecutionWorkerFactory
   });
   const shouldCreateSavedTranscriptRetranslationService =
     Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider') ||
@@ -302,14 +315,21 @@ export function createTranslationCommandDependencies({
   translationRepository,
   domainEventPublisher,
   translationExecutionDispatcher,
+  translationExecutionQueue,
+  translationExecutionRunner,
+  translationExecutionWorker,
   translationExecutionProvider,
   translationExecutionProviderResolver,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
-  translationCommandControllerFactory = createDefaultTranslationCommandController
+  translationCommandControllerFactory = createDefaultTranslationCommandController,
+  translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
+  translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
   assertFactory(translationCommandControllerFactory, 'translationCommandControllerFactory');
+  assertFactory(translationExecutionRunnerFactory, 'translationExecutionRunnerFactory');
+  assertFactory(translationExecutionWorkerFactory, 'translationExecutionWorkerFactory');
 
   const translationDomainEventInfrastructure = createTranslationDomainEventInfrastructure({
     domainEventPublisher,
@@ -318,16 +338,45 @@ export function createTranslationCommandDependencies({
   const resolvedDomainEventPublisher = translationDomainEventInfrastructure.domainEventPublisher;
   const resolvedTranslationExecutionDispatcher =
     translationExecutionDispatcher ?? createFakeTranslationExecutionDispatcher();
+  const resolvedTranslationExecutionQueue = translationExecutionQueue ?? createInMemoryTranslationExecutionQueue();
   const resolvedTranslationExecutionProviderResolver =
     translationExecutionProviderResolver ??
     (translationExecutionProvider !== undefined
       ? createFakeTranslationExecutionProviderResolver({ translationExecutionProvider })
       : undefined);
   const resolvedRetryPolicy = resolvedTranslationExecutionProviderResolver !== undefined ? createRetryPolicy() : undefined;
+  const resolvedTranslationExecutionRunner =
+    translationExecutionRunner ??
+    (resolvedTranslationExecutionProviderResolver !== undefined
+      ? translationExecutionRunnerFactory({
+          translationRepository,
+          translationExecutionProvider: createResolverBackedTranslationExecutionProvider(
+            resolvedTranslationExecutionProviderResolver
+          ),
+          retryPolicy: resolvedRetryPolicy
+        })
+      : undefined);
+  const resolvedWorkerTranslationExecutionRunner =
+    resolvedTranslationExecutionRunner === undefined
+      ? undefined
+      : createWorkerTranslationExecutionRunner({
+          translationExecutionRunner: resolvedTranslationExecutionRunner,
+          translationRepository
+        });
+  const resolvedTranslationExecutionWorker =
+    translationExecutionWorker ??
+    (resolvedWorkerTranslationExecutionRunner !== undefined
+      ? translationExecutionWorkerFactory({
+          translationExecutionQueue: resolvedTranslationExecutionQueue,
+          translationRepository,
+          translationExecutionRunner: resolvedWorkerTranslationExecutionRunner
+        })
+      : undefined);
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
+    translationExecutionQueue: resolvedTranslationExecutionQueue,
     ...(resolvedTranslationExecutionProviderResolver !== undefined
       ? { translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver }
       : {}),
@@ -341,11 +390,18 @@ export function createTranslationCommandDependencies({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
+    translationExecutionQueue: resolvedTranslationExecutionQueue,
     ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {}),
     ...(resolvedTranslationExecutionProviderResolver !== undefined
       ? { translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver }
       : {}),
     ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {}),
+    ...(resolvedTranslationExecutionRunner !== undefined
+      ? { translationExecutionRunner: resolvedTranslationExecutionRunner }
+      : {}),
+    ...(resolvedTranslationExecutionWorker !== undefined
+      ? { translationExecutionWorker: resolvedTranslationExecutionWorker }
+      : {}),
     translationCommandService,
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents
@@ -388,6 +444,69 @@ function createTranslationDomainEventInfrastructure({ domainEventPublisher, tran
     domainEventPublisher: resolvedDomainEventPublisher,
     unsubscribeTranslationDomainEvents
   };
+}
+
+function createResolverBackedTranslationExecutionProvider(translationExecutionProviderResolver) {
+  return Object.freeze({
+    async execute(input) {
+      const provider = await translationExecutionProviderResolver.resolve(input?.providerKey);
+
+      return provider.execute(input);
+    }
+  });
+}
+
+function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository }) {
+  return Object.freeze({
+    execute(input) {
+      return translationExecutionRunner.execute(input);
+    },
+
+    async run({ execution, request } = {}) {
+      const runningExecution = execution.start(execution.startedAt);
+      const repositoryResult = await translationRepository.updateTranslationExecution(runningExecution);
+
+      return translationExecutionRunner.execute({
+        execution: runningExecution,
+        payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
+        repositoryResult
+      });
+    }
+  });
+}
+
+function createTranslationExecutionPayloadFromPersistedState({ execution, request }) {
+  const sourceTranscriptSnapshot = request.sourceTranscriptSnapshot ?? {};
+
+  return {
+    requestId: request.id,
+    sessionId: request.sessionId,
+    executionId: execution.id,
+    sourceText: sourceTextFromSnapshot(sourceTranscriptSnapshot),
+    sourceLanguageCode: sourceTranscriptSnapshot.sourceLanguageCode,
+    targetLanguageCode: request.targetLanguageCode,
+    providerKey: execution.providerKey,
+    completedAt: execution.startedAt
+  };
+}
+
+function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
+  if (typeof sourceTranscriptSnapshot.sourceText === 'string') {
+    return sourceTranscriptSnapshot.sourceText;
+  }
+
+  if (typeof sourceTranscriptSnapshot.text === 'string') {
+    return sourceTranscriptSnapshot.text;
+  }
+
+  if (Array.isArray(sourceTranscriptSnapshot.items)) {
+    return sourceTranscriptSnapshot.items
+      .map((item) => item?.text)
+      .filter((text) => typeof text === 'string' && text.length > 0)
+      .join('\n');
+  }
+
+  return undefined;
 }
 
 function resolveSavedTranscriptProviderDependencies({

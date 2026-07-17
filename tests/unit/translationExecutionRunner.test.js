@@ -354,6 +354,11 @@ function translationRepository(overrides = {}) {
       function getTranslationRequest() {
         return null;
       },
+    findRequestById:
+      overrides.findRequestById ||
+      function findRequestById() {
+        return null;
+      },
     updateTranslationRequest:
       overrides.updateTranslationRequest ||
       function updateTranslationRequest(request) {
@@ -372,6 +377,11 @@ function translationRepository(overrides = {}) {
     getTranslationExecution:
       overrides.getTranslationExecution ||
       function getTranslationExecution() {
+        return null;
+      },
+    findExecutionById:
+      overrides.findExecutionById ||
+      function findExecutionById() {
         return null;
       },
     updateTranslationExecution:

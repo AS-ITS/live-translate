@@ -1,10 +1,12 @@
 export const TRANSLATION_REPOSITORY_METHODS = Object.freeze([
   'createTranslationRequest',
   'getTranslationRequest',
+  'findRequestById',
   'updateTranslationRequest',
   'listTranslationRequestsBySession',
   'createTranslationExecution',
   'getTranslationExecution',
+  'findExecutionById',
   'updateTranslationExecution',
   'listTranslationExecutionsByRequest',
   'createTranslationOutput',

@@ -37,6 +37,10 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
       );
     },
 
+    findRequestById(requestId) {
+      return repository.getTranslationRequest(requestId);
+    },
+
     updateTranslationRequest(request) {
       const translationRequest = new TranslationRequest(request);
 
@@ -106,6 +110,10 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
       return mapMaybePromise(findSessionRecord(sessionRepository, (state) => findById(state.executions, executionId)), (result) =>
         result ? toTranslationExecution(result.entity) : null
       );
+    },
+
+    findExecutionById(executionId) {
+      return repository.getTranslationExecution(executionId);
     },
 
     updateTranslationExecution(execution) {

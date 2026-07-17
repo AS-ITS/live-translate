@@ -7,12 +7,30 @@ import {
   createTranslationOutputCreatedEvent,
   createTranslationRequestCreatedEvent
 } from '../domain/translation/index.js';
-import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
-import { createTranslationExecutionRunner } from './translationExecutionRunner.js';
 
 const EXECUTION_TRANSITIONS = Object.freeze(['queue', 'start', 'complete', 'fail']);
+const TRANSLATION_COMMAND_REPOSITORY_METHODS = Object.freeze([
+  'createTranslationRequest',
+  'getTranslationRequest',
+  'updateTranslationRequest',
+  'listTranslationRequestsBySession',
+  'createTranslationExecution',
+  'getTranslationExecution',
+  'updateTranslationExecution',
+  'listTranslationExecutionsByRequest',
+  'createTranslationOutput',
+  'listTranslationOutputsByExecution',
+  'listTranslationOutputsBySession',
+  'listTranslationOutputsByRequest',
+  'getTranslationOutput'
+]);
 const DEFAULT_TRANSLATION_EXECUTION_DISPATCHER = Object.freeze({
   async dispatch() {
+    return undefined;
+  }
+});
+const DEFAULT_TRANSLATION_EXECUTION_QUEUE = Object.freeze({
+  enqueue() {
     return undefined;
   }
 });
@@ -22,6 +40,7 @@ export function createTranslationCommandService({
   repository,
   domainEventPublisher,
   translationExecutionDispatcher = DEFAULT_TRANSLATION_EXECUTION_DISPATCHER,
+  translationExecutionQueue = DEFAULT_TRANSLATION_EXECUTION_QUEUE,
   translationExecutionProviderResolver,
   translationExecutionRunner,
   retryPolicy
@@ -31,20 +50,7 @@ export function createTranslationCommandService({
   assertTranslationRepository(resolvedTranslationRepository);
   assertDomainEventPublisher(domainEventPublisher);
   assertTranslationExecutionDispatcher(translationExecutionDispatcher);
-
-  const resolvedTranslationExecutionRunner =
-    translationExecutionRunner ??
-    (translationExecutionProviderResolver
-      ? createTranslationExecutionRunner({
-          translationRepository: resolvedTranslationRepository,
-          translationExecutionProvider: createResolverBackedTranslationExecutionProvider(
-            translationExecutionProviderResolver
-          ),
-          retryPolicy
-        })
-      : undefined);
-
-  assertOptionalTranslationExecutionRunner(resolvedTranslationExecutionRunner);
+  assertTranslationExecutionQueue(translationExecutionQueue);
 
   return Object.freeze({
     createTranslationRequest(payload) {
@@ -66,18 +72,7 @@ export function createTranslationCommandService({
       const execution = createTranslationExecutionDomainObject(payload);
       const repositoryResult = resolvedTranslationRepository.createTranslationExecution(execution);
 
-      if (resolvedTranslationExecutionRunner) {
-        return executeTranslationAndPublishAfterRepositoryResult(
-          repositoryResult,
-          execution,
-          payload,
-          domainEventPublisher,
-          resolvedTranslationExecutionRunner,
-          resolvedTranslationRepository
-        );
-      }
-
-      return dispatchExecutionAndPublishAfterRepositoryResult(
+      return enqueueExecutionAndPublishAfterRepositoryResult(
         repositoryResult,
         execution,
         () =>
@@ -86,7 +81,8 @@ export function createTranslationCommandService({
             execution
           }),
         domainEventPublisher,
-        translationExecutionDispatcher
+        resolvedTranslationRepository,
+        translationExecutionQueue
       );
     },
 
@@ -143,7 +139,7 @@ function assertTranslationRepository(translationRepository) {
     throw new TypeError('translationRepository is required.');
   }
 
-  for (const methodName of TRANSLATION_REPOSITORY_METHODS) {
+  for (const methodName of TRANSLATION_COMMAND_REPOSITORY_METHODS) {
     assertMethod(translationRepository, methodName);
   }
 }
@@ -174,50 +170,13 @@ function assertTranslationExecutionDispatcher(translationExecutionDispatcher) {
   }
 }
 
-function assertOptionalTranslationExecutionRunner(translationExecutionRunner) {
-  if (translationExecutionRunner === undefined) {
-    return;
+function assertTranslationExecutionQueue(translationExecutionQueue) {
+  if (!translationExecutionQueue || typeof translationExecutionQueue !== 'object') {
+    throw new TypeError('translationExecutionQueue is required.');
   }
 
-  if (!translationExecutionRunner || typeof translationExecutionRunner !== 'object') {
-    throw new TypeError('translationExecutionRunner must be an object.');
-  }
-
-  if (typeof translationExecutionRunner.execute !== 'function') {
-    throw new TypeError('translationExecutionRunner.execute must be a function.');
-  }
-}
-
-function createResolverBackedTranslationExecutionProvider(translationExecutionProviderResolver) {
-  assertTranslationExecutionProviderResolver(translationExecutionProviderResolver);
-
-  return Object.freeze({
-    async execute(input) {
-      const provider = await translationExecutionProviderResolver.resolve(input.providerKey);
-      assertTranslationExecutionProvider(provider);
-
-      return provider.execute(input);
-    }
-  });
-}
-
-function assertTranslationExecutionProviderResolver(translationExecutionProviderResolver) {
-  if (!translationExecutionProviderResolver || typeof translationExecutionProviderResolver !== 'object') {
-    throw new TypeError('translationExecutionProviderResolver is required.');
-  }
-
-  if (typeof translationExecutionProviderResolver.resolve !== 'function') {
-    throw new TypeError('translationExecutionProviderResolver.resolve must be a function.');
-  }
-}
-
-function assertTranslationExecutionProvider(translationExecutionProvider) {
-  if (!translationExecutionProvider || typeof translationExecutionProvider !== 'object') {
-    throw new TypeError('resolved translationExecutionProvider is required.');
-  }
-
-  if (typeof translationExecutionProvider.execute !== 'function') {
-    throw new TypeError('resolved translationExecutionProvider.execute must be a function.');
+  if (typeof translationExecutionQueue.enqueue !== 'function') {
+    throw new TypeError('translationExecutionQueue.enqueue must be a function.');
   }
 }
 
@@ -273,81 +232,56 @@ function publishAfterRepositoryResult(repositoryResult, createEvent, domainEvent
   return publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
 }
 
-function executeTranslationAndPublishAfterRepositoryResult(
+function enqueueExecutionAndPublishAfterRepositoryResult(
   repositoryResult,
   execution,
-  payload,
+  createEvent,
   domainEventPublisher,
-  translationExecutionRunner,
-  translationRepository
+  translationRepository,
+  translationExecutionQueue
 ) {
   if (isPromiseLike(repositoryResult)) {
     return repositoryResult.then((resolvedRepositoryResult) =>
-      executeTranslationPublishEventsAndReturnResult(
+      enqueueExecutionPublishEventsAndReturnResult(
         execution,
-        payload,
+        createEvent,
         domainEventPublisher,
-        translationExecutionRunner,
         translationRepository,
+        translationExecutionQueue,
         resolvedRepositoryResult
       )
     );
   }
 
-  return executeTranslationPublishEventsAndReturnResult(
+  return enqueueExecutionPublishEventsAndReturnResult(
     execution,
-    payload,
+    createEvent,
     domainEventPublisher,
-    translationExecutionRunner,
     translationRepository,
+    translationExecutionQueue,
     repositoryResult
   );
 }
 
-async function executeTranslationPublishEventsAndReturnResult(
+async function enqueueExecutionPublishEventsAndReturnResult(
   execution,
-  payload,
+  createEvent,
   domainEventPublisher,
-  translationExecutionRunner,
   translationRepository,
+  translationExecutionQueue,
   repositoryResult
 ) {
-  await publishEventAndReturnResult(
-    domainEventPublisher,
-    createTranslationExecutionCreatedEvent({
-      occurredAt: execution.startedAt,
-      execution
-    }),
-    repositoryResult
-  );
+  await publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
 
   const queuedExecution = execution.queue();
   const queuedRepositoryResult = await translationRepository.updateTranslationExecution(queuedExecution);
   await publishTranslationExecutionUpdatedEvent(domainEventPublisher, queuedExecution, queuedRepositoryResult);
-
-  const runningExecution = queuedExecution.start(payload.startedAt);
-  const runningRepositoryResult = await translationRepository.updateTranslationExecution(runningExecution);
-  await publishTranslationExecutionUpdatedEvent(domainEventPublisher, runningExecution, runningRepositoryResult);
-
-  return translationExecutionRunner.execute({
-    execution: runningExecution,
-    payload,
-    repositoryResult,
-    onTranslationOutputCreated({ output, repositoryResult: outputRepositoryResult }) {
-      return publishAfterRepositoryResult(
-        outputRepositoryResult,
-        () =>
-          createTranslationOutputCreatedEvent({
-            occurredAt: output.createdAt,
-            output
-          }),
-        domainEventPublisher
-      );
-    },
-    onTranslationExecutionUpdated({ execution: updatedExecution, repositoryResult: executionRepositoryResult }) {
-      return publishTranslationExecutionUpdatedEvent(domainEventPublisher, updatedExecution, executionRepositoryResult);
-    }
+  await translationExecutionQueue.enqueue({
+    executionId: queuedExecution.id,
+    requestId: queuedExecution.translationRequestId
   });
+
+  return queuedExecution;
 }
 
 function publishTranslationExecutionUpdatedEvent(domainEventPublisher, execution, repositoryResult) {

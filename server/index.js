@@ -505,7 +505,7 @@ function handleTranslationCommand(method, path, body, translationCommandControll
 
   if (method === 'POST' && path === '/api/translation-executions') {
     return {
-      status: 201,
+      status: 202,
       result: translationCommandController.createTranslationExecution(body)
     };
   }

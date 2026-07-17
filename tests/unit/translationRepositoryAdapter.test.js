@@ -48,6 +48,7 @@ test('creates, gets, and updates TranslationRequest without mutating input or un
 
   const created = repository.createTranslationRequest(input);
   const fetched = repository.getTranslationRequest('request-1');
+  const found = repository.findRequestById('request-1');
   const updated = repository.updateTranslationRequest(
     new TranslationRequest({
       ...requestPayload({ targetLanguageCode: 'de' }),
@@ -58,6 +59,9 @@ test('creates, gets, and updates TranslationRequest without mutating input or un
 
   assert.equal(created instanceof TranslationRequest, true);
   assert.equal(fetched instanceof TranslationRequest, true);
+  assert.equal(found instanceof TranslationRequest, true);
+  assert.notStrictEqual(found, fetched);
+  assert.equal(found.id, 'request-1');
   assert.equal(updated.targetLanguageCode, 'de');
   assert.deepEqual(input, before);
   assert.equal(detail.sessionRecord.metadata.preserved, true);
@@ -67,6 +71,9 @@ test('creates, gets, and updates TranslationRequest without mutating input or un
 
   assert.throws(() => {
     fetched.sourceTranscriptSnapshot.items[0].nested.preserved = false;
+  }, TypeError);
+  assert.throws(() => {
+    found.sourceTranscriptSnapshot.items[0].nested.preserved = false;
   }, TypeError);
   assert.equal(repository.getTranslationRequest('request-1').sourceTranscriptSnapshot.revisionId, 'source-revision-2');
 });
@@ -102,6 +109,7 @@ test('request missing session, missing entity, duplicate, and conflicting identi
     /Session record not found: missing-session/
   );
   assert.equal(repository.getTranslationRequest('missing-request'), null);
+  assert.equal(repository.findRequestById('missing-request'), null);
   assert.equal(repository.updateTranslationRequest(requestPayload({ id: 'missing-request' })), null);
 
   repository.createTranslationRequest(requestPayload());
@@ -119,6 +127,7 @@ test('creates, gets, and updates TranslationExecution while preserving lifecycle
 
   const created = repository.createTranslationExecution(executionInput);
   const fetched = repository.getTranslationExecution('execution-1');
+  const found = repository.findExecutionById('execution-1');
   const updated = repository.updateTranslationExecution(
     new TranslationExecution({
       ...executionPayload(),
@@ -129,7 +138,11 @@ test('creates, gets, and updates TranslationExecution while preserving lifecycle
   );
 
   assert.equal(created instanceof TranslationExecution, true);
-  assert.equal(fetched.status, 'pending');
+  assert.equal(fetched.status, 'created');
+  assert.equal(found instanceof TranslationExecution, true);
+  assert.notStrictEqual(found, fetched);
+  assert.equal(found.id, 'execution-1');
+  assert.equal(found.status, 'created');
   assert.equal(updated.status, 'failed');
   assert.equal(updated.startedAt, '2026-07-14T01:01:00.000Z');
   assert.equal(updated.completedAt, '2026-07-14T01:03:00.000Z');
@@ -160,7 +173,7 @@ test('lists only TranslationExecutions for a request and keeps unrelated executi
   );
 
   assert.equal(updated.status, 'completed');
-  assert.equal(repository.getTranslationExecution('execution-2').status, 'pending');
+  assert.equal(repository.getTranslationExecution('execution-2').status, 'created');
   assert.deepEqual(
     repository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.id),
     ['execution-1', 'execution-3']
@@ -181,6 +194,7 @@ test('execution missing request, missing entity, duplicate, and conflicting iden
     /TranslationRequest missing-request was not found/
   );
   assert.equal(repository.getTranslationExecution('missing-execution'), null);
+  assert.equal(repository.findExecutionById('missing-execution'), null);
   assert.equal(repository.updateTranslationExecution(executionPayload({ id: 'missing-execution' })), null);
 
   repository.createTranslationExecution(executionPayload());
@@ -305,6 +319,7 @@ test('separate repository instances have isolated translation command state', ()
     ['request-b']
   );
   assert.equal(repositoryB.getTranslationExecution('execution-a'), null);
+  assert.equal(repositoryB.findExecutionById('execution-a'), null);
   assert.deepEqual(repositoryB.listTranslationOutputsBySession('session-1'), []);
 });
 
@@ -319,8 +334,10 @@ test('supports async legacy session repository method results', async () => {
   await firstCreateResult;
   assert.equal((await repository.createTranslationRequest(requestPayload({ id: 'request-async' }))).id, 'request-async');
   assert.equal((await repository.getTranslationRequest('request-async')).id, 'request-async');
+  assert.equal((await repository.findRequestById('request-async')).id, 'request-async');
 
   await repository.createTranslationExecution(executionPayload({ id: 'execution-async', translationRequestId: 'request-async' }));
+  assert.equal((await repository.findExecutionById('execution-async')).id, 'execution-async');
   await repository.createTranslationOutput(outputPayload({ id: 'output-async', executionId: 'execution-async' }));
 
   assert.deepEqual(
@@ -462,7 +479,7 @@ function executionPayload(overrides = {}) {
   return {
     id: 'execution-1',
     translationRequestId: 'request-1',
-    status: 'pending',
+    status: 'created',
     startedAt: '2026-07-14T01:01:00.000Z',
     completedAt: null,
     failureInfo: null,

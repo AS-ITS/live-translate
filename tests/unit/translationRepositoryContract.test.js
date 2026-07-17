@@ -8,10 +8,12 @@ import {
 const EXPECTED_METHODS = [
   'createTranslationRequest',
   'getTranslationRequest',
+  'findRequestById',
   'updateTranslationRequest',
   'listTranslationRequestsBySession',
   'createTranslationExecution',
   'getTranslationExecution',
+  'findExecutionById',
   'updateTranslationExecution',
   'listTranslationExecutionsByRequest',
   'createTranslationOutput',

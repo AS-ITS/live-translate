@@ -30,6 +30,7 @@ Completed:
 - Phase 2N - Gemini Translation Execution Provider
 - Phase 2O - Production Gemini Translation Execution
 - Phase 2P - Translation Execution Lifecycle
+- Phase 3A - Async Execution Runtime
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -507,6 +508,113 @@ failed
 - Focused domain, application service, and production vertical integration
   coverage verifies lifecycle order for success and failure.
 
+Phase 3A
+Status: Completed
+
+Phase 3A status:
+
+- HTTP submission and execution processing are now separated for
+  `POST /api/translation-executions`.
+- The HTTP request path validates input, creates and persists the execution,
+  marks it `queued`, enqueues an identifier-only job, and returns `202
+  Accepted` without waiting for provider execution.
+- The queue job contains only:
+
+```json
+{
+  "executionId": "execution-123",
+  "requestId": "request-123"
+}
+```
+
+- `TranslationOutput` is created only by Worker processing after provider
+  execution succeeds. The HTTP submission response does not include output.
+- The first queue adapter is deterministic in-memory FIFO. It is not durable
+  and is not shared across processes.
+- The Worker Runtime is a polling adapter around
+  `TranslationExecutionWorker.processNext()`. It supports `start()` and
+  `stop()`, avoids reentrant worker execution, and continues polling after a
+  worker error.
+- Runtime construction exists, but production startup does not automatically
+  start the Worker Runtime.
+
+HTTP async submission flow:
+
+```text
+POST /api/translation-executions
+        |
+        v
+persist created
+        |
+        v
+persist queued
+        |
+        v
+enqueue job
+        |
+        v
+202 Accepted
+```
+
+Worker execution flow:
+
+```text
+Worker Runtime
+        |
+        v
+TranslationExecutionWorker
+        |
+        v
+TranslationExecutionRunner
+        |
+        v
+Provider
+        |
+        v
+completed / failed
+```
+
+Async execution success lifecycle:
+
+```text
+created
+  |
+  v
+queued
+  |
+  v
+running
+  |
+  v
+completed
+```
+
+Async execution failure lifecycle:
+
+```text
+created
+  |
+  v
+queued
+  |
+  v
+running
+  |
+  v
+failed
+```
+
+Current Phase 3A limitations:
+
+- In-memory queue only.
+- Worker Runtime is not automatically started by production startup.
+- No durable queue.
+- No cancellation.
+- No timeout handling.
+- No multi-worker coordination.
+- No queue retry or dead-letter queue.
+- No metrics.
+
 Documentation:
 
 - [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - High-level system architecture, runtime flow, module responsibilities, dependency boundaries, completed capabilities, and deferred architecture.
@@ -520,4 +628,6 @@ Future execution reliability enhancement candidates:
 - Idempotency.
 - Error classification.
 - Observability and retry metrics.
-- Queue or worker-based execution.
+- Durable queue execution.
+- Production startup wiring for Worker Runtime.
+- Multi-worker coordination.

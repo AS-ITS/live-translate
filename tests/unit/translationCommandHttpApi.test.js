@@ -70,9 +70,9 @@ test('POST /api/translation-requests delegates body once and returns HTTP 201 wi
   assert.deepEqual(calls, [['createTranslationRequest', body]]);
 });
 
-test('POST /api/translation-executions delegates once and returns HTTP 201 with controller result', async () => {
+test('POST /api/translation-executions delegates once and returns HTTP 202 with queued controller result', async () => {
   const calls = [];
-  const result = { id: 'execution-1', status: 'pending' };
+  const result = { id: 'execution-1', status: 'queued' };
   const body = { id: 'execution-1', translationRequestId: 'request-1' };
   const handler = createHandler({
     createTranslationExecution(input) {
@@ -87,14 +87,16 @@ test('POST /api/translation-executions delegates once and returns HTTP 201 with 
     body: JSON.stringify(body)
   });
 
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 202);
   assert.deepEqual(response.json(), result);
+  assert.equal(Object.hasOwn(response.json(), 'output'), false);
+  assert.equal(Object.hasOwn(response.json(), 'translatedText'), false);
   assert.deepEqual(calls, [['createTranslationExecution', body]]);
 });
 
 test('POST /api/translation-executions forwards explicit providerKey unchanged', async () => {
   const calls = [];
-  const result = { id: 'execution-1', status: 'pending' };
+  const result = { id: 'execution-1', status: 'queued' };
   const body = {
     executionId: 'execution-1',
     requestId: 'request-1',
@@ -113,7 +115,7 @@ test('POST /api/translation-executions forwards explicit providerKey unchanged',
     body: JSON.stringify(body)
   });
 
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 202);
   assert.deepEqual(response.json(), result);
   assert.deepEqual(calls, [body]);
   assert.equal(calls[0].providerKey, 'gemini');
@@ -121,7 +123,7 @@ test('POST /api/translation-executions forwards explicit providerKey unchanged',
 
 test('POST /api/translation-executions preserves omitted providerKey as undefined', async () => {
   const calls = [];
-  const result = { id: 'execution-1', status: 'pending' };
+  const result = { id: 'execution-1', status: 'queued' };
   const body = {
     executionId: 'execution-1',
     requestId: 'request-1'
@@ -139,7 +141,7 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
     body: JSON.stringify(body)
   });
 
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 202);
   assert.deepEqual(response.json(), result);
   assert.deepEqual(calls, [body]);
   assert.equal(calls[0].providerKey, undefined);
@@ -148,7 +150,7 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
 
 test('POST /api/translation-executions does not validate providerKey at HTTP boundary', async () => {
   const calls = [];
-  const result = { id: 'execution-1', status: 'pending' };
+  const result = { id: 'execution-1', status: 'queued' };
   const body = {
     executionId: 'execution-1',
     requestId: 'request-1',
@@ -167,7 +169,7 @@ test('POST /api/translation-executions does not validate providerKey at HTTP bou
     body: JSON.stringify(body)
   });
 
-  assert.equal(response.status, 201);
+  assert.equal(response.status, 202);
   assert.deepEqual(response.json(), result);
   assert.deepEqual(calls, [body]);
   assert.equal(calls[0].providerKey, 123);
@@ -306,6 +308,24 @@ test('Promise controller rejections follow existing internal error handling', as
     method: 'POST',
     url: '/api/translation-outputs',
     body: JSON.stringify({ id: 'output-1' })
+  });
+  const body = response.json();
+
+  assert.equal(response.status, 500);
+  assert.equal(body.error.code, 'internal_error');
+});
+
+test('POST /api/translation-executions enqueue rejection follows existing internal error handling', async () => {
+  const handler = createHandler({
+    createTranslationExecution() {
+      return Promise.reject(new Error('queue enqueue failed'));
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-executions',
+    body: JSON.stringify({ id: 'execution-1', translationRequestId: 'request-1' })
   });
   const body = response.json();
 

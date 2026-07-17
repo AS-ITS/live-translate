@@ -170,6 +170,95 @@ The active session and saved history remain separate. The active session keeps
 running independently of history rendering, and saved history is a read-only
 view of finalized records.
 
+### Translation Execution Async Runtime
+
+`POST /api/translation-executions` is an asynchronous submission endpoint. The
+HTTP request path creates and queues execution work, but it does not wait for
+provider execution and does not create `TranslationOutput`.
+
+```text
+HTTP
+↓
+TranslationCommandService
+↓
+TranslationExecutionQueue
+↓
+TranslationExecutionWorkerRuntime
+↓
+TranslationExecutionWorker
+↓
+TranslationExecutionRunner
+↓
+TranslationExecutionProvider
+```
+
+Submission flow:
+
+```text
+POST /api/translation-executions
+↓
+persist created
+↓
+persist queued
+↓
+enqueue job
+↓
+202 Accepted
+```
+
+Worker processing flow:
+
+```text
+TranslationExecutionWorkerRuntime
+↓
+TranslationExecutionWorker
+↓
+dequeue one job
+↓
+load TranslationExecution
+↓
+load TranslationRequest
+↓
+TranslationExecutionRunner
+↓
+TranslationExecutionProvider
+↓
+completed / failed
+```
+
+Success lifecycle:
+
+```text
+created
+→ queued
+→ running
+→ completed
+```
+
+Failure lifecycle:
+
+```text
+created
+→ queued
+→ running
+→ failed
+```
+
+Runtime boundaries:
+
+- `TranslationExecutionQueue` is an infrastructure-independent application
+  boundary. The current adapter is deterministic in-memory FIFO.
+- Queue jobs contain only `executionId` and `requestId`.
+- `TranslationExecutionWorkerRuntime` is a polling adapter. It starts and stops
+  polling, prevents reentrant `processNext()` calls, and keeps polling after
+  worker errors.
+- `TranslationExecutionWorker` processes one queue job per `processNext()` call.
+- Queue and Worker are decoupled: submission only enqueues, and worker
+  processing loads persisted objects by identifier before delegating to
+  `TranslationExecutionRunner`.
+- Production composition creates the queue, runner, and worker, but production
+  startup does not automatically start the Worker Runtime.
+
 ## 5. Authentication and Token Flow
 
 - `GEMINI_API_KEY` exists only on the backend.

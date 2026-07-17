@@ -1,312 +1,161 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTranslationCommandService } from '../../src/application/translationCommandService.js';
-import { TranslationExecution, TranslationOutput } from '../../src/domain/translation/index.js';
+import { TranslationExecution } from '../../src/domain/translation/index.js';
 
-test('success persists created queued running completed lifecycle around provider and output', async () => {
+test('createTranslationExecution persists created then queued and returns queued execution', async () => {
   const calls = [];
-  const providerInputs = [];
-  const resolverInputs = [];
-  const resolvedProvider = {
-    async execute(input) {
-      calls.push(['provider.execute', input]);
-      providerInputs.push(input);
-      return providerResult({ translatedText: 'Bonjour' });
-    }
-  };
-  const dependencies = serviceDependencies({
-    calls,
-    translationExecutionProviderResolver: {
-      resolve(providerKey) {
-        calls.push(['resolver.resolve', providerKey]);
-        resolverInputs.push(providerKey);
-        return resolvedProvider;
-      }
-    }
-  });
-  const payload = executionPayload({
-    sourceText: 'hello',
-    sourceLanguageCode: 'en',
-    targetLanguageCode: 'fr',
-    providerKey: 'fake'
-  });
+  const dependencies = serviceDependencies({ calls });
 
-  const result = await dependencies.service.createTranslationExecution(payload);
+  const result = await dependencies.service.createTranslationExecution(executionPayload());
 
-  assert.deepEqual(resolverInputs, ['fake']);
-  assert.equal(providerInputs.length, 1);
-  assert.deepEqual(providerInputs[0], {
-    sourceText: 'hello',
-    sourceLanguageCode: 'en',
-    targetLanguageCode: 'fr',
-    providerKey: 'fake'
-  });
   assert.equal(result instanceof TranslationExecution, true);
-  assert.deepEqual(callNames(calls), [
-    'createTranslationExecution',
-    'updateTranslationExecution',
-    'updateTranslationExecution',
-    'resolver.resolve',
-    'provider.execute',
-    'createTranslationOutput',
-    'updateTranslationExecution'
-  ]);
-  assert.deepEqual(executionStatuses(calls), ['created', 'queued', 'running', 'completed']);
-  assert.equal(callIndex(calls, 'provider.execute') > statusCallIndex(calls, 'running'), true);
-  assert.equal(callIndex(calls, 'createTranslationOutput') < statusCallIndex(calls, 'completed'), true);
-
-  const createdExecution = calls[0][1];
-  const queuedExecution = calls[1][1];
-  const runningExecution = calls[2][1];
-  const output = calls[5][1];
-  const completedExecution = calls[6][1];
-
-  assert.equal(createdExecution.status, 'created');
-  assert.equal(queuedExecution.status, 'queued');
-  assert.equal(runningExecution.status, 'running');
-  assert.equal(output instanceof TranslationOutput, true);
-  assert.equal(output.translatedText, 'Bonjour');
-  assert.equal(output.targetLanguageCode, 'fr');
-  assert.equal(completedExecution instanceof TranslationExecution, true);
-  assert.equal(completedExecution.status, 'completed');
-  assert.equal(completedExecution.completedAt, payload.startedAt);
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(callNames(calls), ['createTranslationExecution', 'updateTranslationExecution', 'queue.enqueue']);
+  assert.deepEqual(executionStatuses(calls), ['created', 'queued']);
 });
 
-test('preserves omitted optional provider input fields as undefined', async () => {
-  let providerInput;
+test('queue enqueue is called once with execution and request identifiers only', async () => {
+  const queueJobs = [];
   const dependencies = serviceDependencies({
-    translationExecutionProviderResolver: {
-      resolve() {
-        return {
-          async execute(input) {
-            providerInput = input;
-            return providerResult();
-          }
-        };
-      }
-    }
-  });
-
-  const payload = executionPayload({
-    sourceText: 'hello',
-    targetLanguageCode: 'fr'
-  });
-  delete payload.sourceLanguageCode;
-
-  await dependencies.service.createTranslationExecution(payload);
-
-  assert.deepEqual(providerInput, {
-    sourceText: 'hello',
-    sourceLanguageCode: undefined,
-    targetLanguageCode: 'fr',
-    providerKey: undefined
-  });
-  assert.equal(Object.hasOwn(providerInput, 'sourceLanguageCode'), true);
-  assert.equal(Object.hasOwn(providerInput, 'providerKey'), true);
-});
-
-test('uses provider-returned translatedText without modification', async () => {
-  let createdOutput;
-  const dependencies = serviceDependencies({
-    translationRepository: translationRepository({
-      createTranslationOutput(output) {
-        createdOutput = output;
-        return output;
-      }
-    }),
-    translationExecutionProviderResolver: {
-      resolve() {
-        return {
-          async execute() {
-            return providerResult({ translatedText: '  Provider text  ' });
-          }
-        };
-      }
-    }
-  });
-
-  await dependencies.service.createTranslationExecution(executionPayload());
-
-  assert.equal(createdOutput.translatedText, '  Provider text  ');
-});
-
-test('provider failures follow queued running failed lifecycle, skip output, and propagate original error', async () => {
-  const error = new Error('provider failed');
-  const calls = [];
-  const dependencies = serviceDependencies({
-    calls,
-    translationExecutionProviderResolver: {
-      resolve(providerKey) {
-        calls.push(['resolver.resolve', providerKey]);
-        return {
-          async execute() {
-            calls.push(['provider.execute']);
-            throw error;
-          }
-        };
-      }
-    }
-  });
-
-  await assert.rejects(dependencies.service.createTranslationExecution(executionPayload()), (actualError) => {
-    return actualError === error;
-  });
-
-  assert.deepEqual(callNames(calls), [
-    'createTranslationExecution',
-    'updateTranslationExecution',
-    'updateTranslationExecution',
-    'resolver.resolve',
-    'provider.execute',
-    'updateTranslationExecution'
-  ]);
-  assert.deepEqual(executionStatuses(calls), ['created', 'queued', 'running', 'failed']);
-  assert.equal(callIndex(calls, 'provider.execute') > statusCallIndex(calls, 'running'), true);
-  assert.deepEqual(calls[3], ['resolver.resolve', undefined]);
-  assert.equal(calls.filter((call) => call[0] === 'provider.execute').length, 1);
-  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
-
-  const createdExecution = calls[0][1];
-  const queuedExecution = calls[1][1];
-  const runningExecution = calls[2][1];
-  const failedExecution = calls[5][1];
-
-  assert.equal(createdExecution.status, 'created');
-  assert.equal(queuedExecution.status, 'queued');
-  assert.equal(runningExecution.status, 'running');
-  assert.equal(failedExecution instanceof TranslationExecution, true);
-  assert.equal(failedExecution.status, 'failed');
-  assert.notEqual(failedExecution.status, 'completed');
-  assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
-});
-
-test('resolver failures mark execution failed, skip provider and output, and propagate original error', async () => {
-  const error = new Error('translation execution provider not found: missing');
-  const calls = [];
-  const dependencies = serviceDependencies({
-    calls,
-    translationExecutionProviderResolver: {
-      resolve(providerKey) {
-        calls.push(['resolver.resolve', providerKey]);
-        throw error;
-      }
-    }
-  });
-
-  await assert.rejects(
-    dependencies.service.createTranslationExecution(
-      executionPayload({
-        providerKey: 'missing'
-      })
-    ),
-    (actualError) => actualError === error
-  );
-
-  assert.deepEqual(callNames(calls), [
-    'createTranslationExecution',
-    'updateTranslationExecution',
-    'updateTranslationExecution',
-    'resolver.resolve',
-    'updateTranslationExecution'
-  ]);
-  assert.deepEqual(calls[3], ['resolver.resolve', 'missing']);
-  assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
-  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
-
-  const failedExecution = calls[4][1];
-  assert.equal(failedExecution instanceof TranslationExecution, true);
-  assert.equal(failedExecution.status, 'failed');
-  assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
-});
-
-test('resolves provider during execution orchestration without dispatching', async () => {
-  const calls = [];
-  const resolvedProvider = {
-    async execute(input) {
-      calls.push(['provider.execute', input]);
-      return providerResult();
-    }
-  };
-  const dependencies = serviceDependencies({
-    calls,
-    translationExecutionDispatcher: {
-      async dispatch() {
-        calls.push(['dispatcher.dispatch']);
-        throw new Error('dispatcher should not be called');
-      }
-    },
-    translationExecutionProviderResolver: {
-      resolve(providerKey) {
-        calls.push(['resolver.resolve', providerKey]);
-        return resolvedProvider;
+    translationExecutionQueue: {
+      enqueue(job) {
+        queueJobs.push(job);
       }
     }
   });
 
   await dependencies.service.createTranslationExecution(
     executionPayload({
-      providerKey: 'unregistered-provider',
-      sourceText: 'hello',
-      targetLanguageCode: 'fr'
+      id: 'execution-42',
+      translationRequestId: 'request-42'
     })
   );
 
-  assert.equal(calls.some((call) => call[0] === 'dispatcher.dispatch'), false);
-  assert.deepEqual(callNames(calls), [
-    'createTranslationExecution',
-    'updateTranslationExecution',
-    'updateTranslationExecution',
-    'resolver.resolve',
-    'provider.execute',
-    'createTranslationOutput',
-    'updateTranslationExecution'
+  assert.deepEqual(queueJobs, [
+    {
+      executionId: 'execution-42',
+      requestId: 'request-42'
+    }
   ]);
-  assert.deepEqual(calls[3], ['resolver.resolve', 'unregistered-provider']);
+  assert.deepEqual(Object.keys(queueJobs[0]), ['executionId', 'requestId']);
 });
 
-test('delegates provider execution orchestration to translationExecutionRunner', async () => {
+test('provider resolver provider dispatcher and runner are not called during request submission', async () => {
   const calls = [];
-  let runnerInput;
   const dependencies = serviceDependencies({
     calls,
+    translationExecutionDispatcher: {
+      dispatch() {
+        calls.push(['dispatcher.dispatch']);
+        throw new Error('dispatcher should not be called');
+      }
+    },
     translationExecutionProviderResolver: {
       resolve() {
-        throw new Error('resolver should not be called when explicit runner is supplied');
+        calls.push(['resolver.resolve']);
+        throw new Error('resolver should not be called');
       }
     },
     translationExecutionRunner: {
-      async execute(input) {
-        calls.push(['runner.execute', input]);
-        runnerInput = input;
-        return input.repositoryResult;
+      execute() {
+        calls.push(['runner.execute']);
+        throw new Error('runner should not be called');
       }
     }
   });
-  const payload = executionPayload();
 
-  const result = await dependencies.service.createTranslationExecution(payload);
+  await dependencies.service.createTranslationExecution(executionPayload());
 
-  assert.equal(calls.filter((call) => call[0] === 'runner.execute').length, 1);
+  assert.equal(calls.some((call) => call[0] === 'dispatcher.dispatch'), false);
+  assert.equal(calls.some((call) => call[0] === 'resolver.resolve'), false);
   assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
-  assert.equal(runnerInput.execution instanceof TranslationExecution, true);
-  assert.equal(runnerInput.execution.status, 'running');
-  assert.strictEqual(runnerInput.payload, payload);
-  assert.strictEqual(result, calls[0][1]);
+  assert.equal(calls.some((call) => call[0] === 'runner.execute'), false);
+});
+
+test('request submission does not create output or write running completed or failed states', async () => {
+  const calls = [];
+  const dependencies = serviceDependencies({ calls });
+
+  await dependencies.service.createTranslationExecution(executionPayload());
+
+  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
+  assert.equal(executionStatuses(calls).includes('running'), false);
+  assert.equal(executionStatuses(calls).includes('completed'), false);
+  assert.equal(executionStatuses(calls).includes('failed'), false);
+});
+
+test('enqueue error propagates unchanged after created and queued persistence', async () => {
+  const enqueueError = new Error('queue unavailable');
+  const calls = [];
+  const dependencies = serviceDependencies({
+    calls,
+    translationExecutionQueue: {
+      enqueue(job) {
+        calls.push(['queue.enqueue', job]);
+        throw enqueueError;
+      }
+    }
+  });
+
+  await assert.rejects(
+    dependencies.service.createTranslationExecution(executionPayload()),
+    (actualError) => actualError === enqueueError
+  );
+
+  assert.deepEqual(callNames(calls), ['createTranslationExecution', 'updateTranslationExecution', 'queue.enqueue']);
+  assert.deepEqual(executionStatuses(calls), ['created', 'queued']);
+  assert.equal(executionStatuses(calls).includes('failed'), false);
+});
+
+test('repository create receives the unchanged created execution domain object', async () => {
+  let createdExecution;
+  const dependencies = serviceDependencies({
+    translationRepository: translationRepository({
+      createTranslationExecution(execution) {
+        createdExecution = execution;
+        return execution;
+      }
+    })
+  });
+  const payload = executionPayload({
+    id: 'execution-created',
+    translationRequestId: 'request-created',
+    startedAt: 2000,
+    providerKey: 'gemini'
+  });
+
+  await dependencies.service.createTranslationExecution(payload);
+
+  assert.equal(createdExecution instanceof TranslationExecution, true);
+  assert.equal(createdExecution.id, 'execution-created');
+  assert.equal(createdExecution.translationRequestId, 'request-created');
+  assert.equal(createdExecution.startedAt, 2000);
+  assert.equal(createdExecution.providerKey, 'gemini');
+  assert.equal(createdExecution.status, 'created');
 });
 
 function serviceDependencies(options = {}) {
   const calls = options.calls ?? [];
   const repository = options.translationRepository ?? translationRepository({ calls });
+  const queue =
+    options.translationExecutionQueue ??
+    {
+      enqueue(job) {
+        calls.push(['queue.enqueue', job]);
+      }
+    };
   const service = createTranslationCommandService({
     translationRepository: repository,
     domainEventPublisher: domainEventPublisher(),
     translationExecutionDispatcher: options.translationExecutionDispatcher,
+    translationExecutionQueue: queue,
     translationExecutionProviderResolver: options.translationExecutionProviderResolver,
     translationExecutionRunner: options.translationExecutionRunner,
     retryPolicy: options.retryPolicy
   });
 
-  return { calls, repository, service };
+  return { calls, repository, queue, service };
 }
 
 function translationRepository(overrides = {}) {
@@ -404,30 +253,12 @@ function executionPayload(overrides = {}) {
   };
 }
 
-function providerResult(overrides = {}) {
-  return {
-    translatedText: 'translated text',
-    detectedSourceLanguageCode: 'en',
-    ...overrides
-  };
-}
-
 function callNames(calls) {
   return calls.map((call) => call[0]);
-}
-
-function callIndex(calls, name) {
-  return callNames(calls).indexOf(name);
 }
 
 function executionStatuses(calls) {
   return calls
     .filter((call) => ['createTranslationExecution', 'updateTranslationExecution'].includes(call[0]))
     .map((call) => call[1].status);
-}
-
-function statusCallIndex(calls, status) {
-  return calls.findIndex(
-    (call) => ['createTranslationExecution', 'updateTranslationExecution'].includes(call[0]) && call[1].status === status
-  );
 }

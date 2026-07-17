@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 3A WP10 Documentation Closeout: documented Async Execution Runtime,
+  Queue / Worker architecture, `202 Accepted` asynchronous submission for
+  `POST /api/translation-executions`, Worker Runtime polling behavior, and
+  current implementation limitations including in-memory queue only, no
+  automatic runtime startup, no durable queue, no cancellation, no timeout, no
+  multi-worker processing, and no metrics. No production code, tests, HTTP
+  contract, queue, worker, runner, retry policy, provider resolver, or
+  persistence-format behavior changed.
 - Phase 2P WP6 Documentation Closeout: completed Translation Execution
   Lifecycle documentation and closeout. README and ROADMAP now document the
   implemented `TranslationExecution` statuses (`created`, `queued`, `running`,

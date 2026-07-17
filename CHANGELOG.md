@@ -4,6 +4,14 @@
 
 ### Added
 
+- Phase 2L WP5 Composition Wiring: wired production translation command
+  composition to create the default `RetryPolicy`, build a
+  `TranslationExecutionRunner` with the `TranslationRepository`,
+  production `TranslationExecutionProvider`, and default policy, and inject the
+  runner into `TranslationCommandService`. The default policy remains
+  `maxRetries = 0`, so production execution still performs no retries and no
+  retry runtime configuration, backoff, timers, queue, logging, metrics, or
+  persistence behavior was added.
 - Phase 2L WP4 Exhausted Retry Failure Semantics: verified
   `TranslationExecutionRunner` keeps executions active through retryable
   intermediate provider failures, persists exactly one failed execution only

@@ -1,6 +1,8 @@
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
+import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
+import { createTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
@@ -279,11 +281,20 @@ export function createTranslationCommandDependencies({
   const resolvedDomainEventPublisher = translationDomainEventInfrastructure.domainEventPublisher;
   const resolvedTranslationExecutionDispatcher =
     translationExecutionDispatcher ?? createFakeTranslationExecutionDispatcher();
+  const resolvedRetryPolicy = translationExecutionProvider !== undefined ? createRetryPolicy() : undefined;
+  const resolvedTranslationExecutionRunner =
+    translationExecutionProvider !== undefined
+      ? createTranslationExecutionRunner({
+          translationRepository,
+          translationExecutionProvider,
+          retryPolicy: resolvedRetryPolicy
+        })
+      : undefined;
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
-    ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {})
+    ...(resolvedTranslationExecutionRunner !== undefined ? { translationExecutionRunner: resolvedTranslationExecutionRunner } : {})
   });
   const translationCommandController = translationCommandControllerFactory({
     translationCommandService
@@ -294,6 +305,10 @@ export function createTranslationCommandDependencies({
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
     ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {}),
+    ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {}),
+    ...(resolvedTranslationExecutionRunner !== undefined
+      ? { translationExecutionRunner: resolvedTranslationExecutionRunner }
+      : {}),
     translationCommandService,
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents

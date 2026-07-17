@@ -169,8 +169,10 @@ test('production composition injects a production execution provider with the pr
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, runtimeProvider);
+  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(dependencies.retryPolicy.maxRetries, 0);
   assert.strictEqual(dependencies.translationCommandService, serviceResult);
-  assert.strictEqual(observedServiceOptions.translationExecutionProvider, runtimeProvider);
+  assert.strictEqual(observedServiceOptions.translationExecutionRunner, dependencies.translationExecutionRunner);
   assert.strictEqual(observedTranslationProviderResolver, resolver);
   assert.deepEqual(calls.map(([name]) => name), [
     'environment',
@@ -183,6 +185,8 @@ test('production composition injects a production execution provider with the pr
   ]);
   assert.strictEqual(calls[6][1].translationProviderResolver, resolver);
   assert.equal(Object.hasOwn(observedServiceOptions, 'translationProviderResolver'), false);
+  assert.equal(Object.hasOwn(observedServiceOptions, 'translationExecutionProvider'), false);
+  assert.equal(Object.hasOwn(observedServiceOptions, 'retryPolicy'), false);
 });
 
 test('production composition injects supplied execution provider and uses it', async () => {
@@ -222,6 +226,8 @@ test('production composition injects supplied execution provider and uses it', a
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, suppliedProvider);
+  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   const result = await dependencies.translationCommandService.createTranslationExecution(
     executionPayload({
@@ -244,6 +250,57 @@ test('production composition injects supplied execution provider and uses it', a
   assert.equal(persistedOutput.translatedText, 'Bonjour');
   assert.equal(persistedOutput.targetLanguageCode, 'fr');
   assert.equal(completedExecution.status, 'completed');
+});
+
+test('production composition default retry policy does not retry provider failures', async () => {
+  const providerError = new Error('provider failed');
+  let providerCalls = 0;
+  let failedExecution;
+  const suppliedProvider = {
+    async execute() {
+      providerCalls += 1;
+      throw providerError;
+    }
+  };
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        return execution;
+      },
+      createTranslationOutput() {
+        throw new Error('output should not be created on provider failure');
+      },
+      updateTranslationExecution(execution) {
+        failedExecution = execution;
+        return execution;
+      }
+    }),
+    translationExecutionProvider: suppliedProvider,
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command composition');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionProvider, suppliedProvider);
+  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(dependencies.retryPolicy.maxRetries, 0);
+
+  await assert.rejects(
+    dependencies.translationCommandService.createTranslationExecution(
+      executionPayload({
+        sourceText: 'hello',
+        targetLanguageCode: 'fr'
+      })
+    ),
+    (actualError) => actualError === providerError
+  );
+
+  assert.equal(providerCalls, 1);
+  assert.equal(failedExecution.status, 'failed');
 });
 
 test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged', async () => {
@@ -271,6 +328,8 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, fakeProvider);
+  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   const result = await dependencies.translationCommandService.createTranslationExecution(
     executionPayload({

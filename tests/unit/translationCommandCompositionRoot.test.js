@@ -99,7 +99,7 @@ test('translation command dependencies use the service factory result to build t
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
 });
 
-test('production composition injects a production execution provider with the provider resolver', () => {
+test('production composition injects an execution provider resolver for the production provider', () => {
   const runtimeProvider = {
     async execute() {
       return { translatedText: 'Bonjour' };
@@ -169,10 +169,14 @@ test('production composition injects a production execution provider with the pr
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, runtimeProvider);
-  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
   assert.strictEqual(dependencies.translationCommandService, serviceResult);
-  assert.strictEqual(observedServiceOptions.translationExecutionRunner, dependencies.translationExecutionRunner);
+  assert.strictEqual(
+    observedServiceOptions.translationExecutionProviderResolver,
+    dependencies.translationExecutionProviderResolver
+  );
+  assert.strictEqual(observedServiceOptions.translationExecutionProviderResolver.resolve('gemini'), runtimeProvider);
   assert.strictEqual(observedTranslationProviderResolver, resolver);
   assert.deepEqual(calls.map(([name]) => name), [
     'environment',
@@ -186,7 +190,7 @@ test('production composition injects a production execution provider with the pr
   assert.strictEqual(calls[6][1].translationProviderResolver, resolver);
   assert.equal(Object.hasOwn(observedServiceOptions, 'translationProviderResolver'), false);
   assert.equal(Object.hasOwn(observedServiceOptions, 'translationExecutionProvider'), false);
-  assert.equal(Object.hasOwn(observedServiceOptions, 'retryPolicy'), false);
+  assert.equal(observedServiceOptions.retryPolicy.maxRetries, 0);
 });
 
 test('production composition injects supplied execution provider and uses it', async () => {
@@ -226,7 +230,7 @@ test('production composition injects supplied execution provider and uses it', a
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, suppliedProvider);
-  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('fake'), suppliedProvider);
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   const result = await dependencies.translationCommandService.createTranslationExecution(
@@ -286,7 +290,7 @@ test('production composition default retry policy does not retry provider failur
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, suppliedProvider);
-  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve(undefined), suppliedProvider);
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   await assert.rejects(
@@ -328,7 +332,7 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, fakeProvider);
-  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('unknown-provider'), fakeProvider);
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   const result = await dependencies.translationCommandService.createTranslationExecution(

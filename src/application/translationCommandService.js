@@ -22,7 +22,7 @@ export function createTranslationCommandService({
   repository,
   domainEventPublisher,
   translationExecutionDispatcher = DEFAULT_TRANSLATION_EXECUTION_DISPATCHER,
-  translationExecutionProvider,
+  translationExecutionProviderResolver,
   translationExecutionRunner,
   retryPolicy
 } = {}) {
@@ -34,10 +34,12 @@ export function createTranslationCommandService({
 
   const resolvedTranslationExecutionRunner =
     translationExecutionRunner ??
-    (translationExecutionProvider
+    (translationExecutionProviderResolver
       ? createTranslationExecutionRunner({
           translationRepository: resolvedTranslationRepository,
-          translationExecutionProvider,
+          translationExecutionProvider: createResolverBackedTranslationExecutionProvider(
+            translationExecutionProviderResolver
+          ),
           retryPolicy
         })
       : undefined);
@@ -182,6 +184,39 @@ function assertOptionalTranslationExecutionRunner(translationExecutionRunner) {
 
   if (typeof translationExecutionRunner.execute !== 'function') {
     throw new TypeError('translationExecutionRunner.execute must be a function.');
+  }
+}
+
+function createResolverBackedTranslationExecutionProvider(translationExecutionProviderResolver) {
+  assertTranslationExecutionProviderResolver(translationExecutionProviderResolver);
+
+  return Object.freeze({
+    async execute(input) {
+      const provider = await translationExecutionProviderResolver.resolve(input.providerKey);
+      assertTranslationExecutionProvider(provider);
+
+      return provider.execute(input);
+    }
+  });
+}
+
+function assertTranslationExecutionProviderResolver(translationExecutionProviderResolver) {
+  if (!translationExecutionProviderResolver || typeof translationExecutionProviderResolver !== 'object') {
+    throw new TypeError('translationExecutionProviderResolver is required.');
+  }
+
+  if (typeof translationExecutionProviderResolver.resolve !== 'function') {
+    throw new TypeError('translationExecutionProviderResolver.resolve must be a function.');
+  }
+}
+
+function assertTranslationExecutionProvider(translationExecutionProvider) {
+  if (!translationExecutionProvider || typeof translationExecutionProvider !== 'object') {
+    throw new TypeError('resolved translationExecutionProvider is required.');
+  }
+
+  if (typeof translationExecutionProvider.execute !== 'function') {
+    throw new TypeError('resolved translationExecutionProvider.execute must be a function.');
   }
 }
 

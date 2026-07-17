@@ -2,12 +2,12 @@ import { createSessionQueryService } from '../src/application/sessionQueryServic
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
-import { createTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
+import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 import { createProductionTranslationExecutionProvider as createProductionTranslationExecutionProviderAdapter } from '../src/infrastructure/productionTranslationExecutionProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
@@ -31,6 +31,7 @@ export function createApplicationDependencies(options = {}) {
     domainEventPublisher,
     translationExecutionDispatcher,
     translationExecutionProvider,
+    translationExecutionProviderResolver,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
@@ -50,6 +51,7 @@ export function createApplicationDependencies(options = {}) {
     domainEventPublisher,
     translationExecutionDispatcher,
     translationExecutionProvider,
+    translationExecutionProviderResolver,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory
@@ -92,6 +94,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const {
     env = process.env,
     translationExecutionProvider,
+    translationExecutionProviderResolver,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
     productionTranslationExecutionProviderFactory = createDefaultProductionTranslationExecutionProvider,
@@ -106,7 +109,11 @@ export function createProductionApplicationDependencies(options = {}) {
   assertFactory(productionTranslationExecutionProviderFactory, 'productionTranslationExecutionProviderFactory');
 
   const hasTranslationExecutionProvider = Object.prototype.hasOwnProperty.call(options, 'translationExecutionProvider');
-  const productionProviderResolutionComposition = hasTranslationExecutionProvider
+  const hasTranslationExecutionProviderResolver = Object.prototype.hasOwnProperty.call(
+    options,
+    'translationExecutionProviderResolver'
+  );
+  const productionProviderResolutionComposition = hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
     ? undefined
     : createProductionProviderResolutionComposition({
         env,
@@ -119,8 +126,15 @@ export function createProductionApplicationDependencies(options = {}) {
       });
   const resolvedTranslationExecutionProvider = hasTranslationExecutionProvider
     ? translationExecutionProvider
-    : productionTranslationExecutionProviderFactory({
-        translationProviderResolver: resolveTranslationProviderResolver(productionProviderResolutionComposition)
+    : hasTranslationExecutionProviderResolver
+      ? undefined
+      : productionTranslationExecutionProviderFactory({
+          translationProviderResolver: resolveTranslationProviderResolver(productionProviderResolutionComposition)
+        });
+  const resolvedTranslationExecutionProviderResolver = hasTranslationExecutionProviderResolver
+    ? translationExecutionProviderResolver
+    : createFakeTranslationExecutionProviderResolver({
+        translationExecutionProvider: resolvedTranslationExecutionProvider
       });
   const resolvedProviderDependencies = resolveSavedTranscriptProviderDependencies({
     hasSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider'),
@@ -145,6 +159,7 @@ export function createProductionApplicationDependencies(options = {}) {
   return createApplicationDependencies({
     ...applicationOptions,
     translationExecutionProvider: resolvedTranslationExecutionProvider,
+    translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     ...resolvedProviderDependencies
   });
 }
@@ -267,6 +282,7 @@ export function createTranslationCommandDependencies({
   domainEventPublisher,
   translationExecutionDispatcher,
   translationExecutionProvider,
+  translationExecutionProviderResolver,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController
@@ -281,20 +297,20 @@ export function createTranslationCommandDependencies({
   const resolvedDomainEventPublisher = translationDomainEventInfrastructure.domainEventPublisher;
   const resolvedTranslationExecutionDispatcher =
     translationExecutionDispatcher ?? createFakeTranslationExecutionDispatcher();
-  const resolvedRetryPolicy = translationExecutionProvider !== undefined ? createRetryPolicy() : undefined;
-  const resolvedTranslationExecutionRunner =
-    translationExecutionProvider !== undefined
-      ? createTranslationExecutionRunner({
-          translationRepository,
-          translationExecutionProvider,
-          retryPolicy: resolvedRetryPolicy
-        })
-      : undefined;
+  const resolvedTranslationExecutionProviderResolver =
+    translationExecutionProviderResolver ??
+    (translationExecutionProvider !== undefined
+      ? createFakeTranslationExecutionProviderResolver({ translationExecutionProvider })
+      : undefined);
+  const resolvedRetryPolicy = resolvedTranslationExecutionProviderResolver !== undefined ? createRetryPolicy() : undefined;
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
-    ...(resolvedTranslationExecutionRunner !== undefined ? { translationExecutionRunner: resolvedTranslationExecutionRunner } : {})
+    ...(resolvedTranslationExecutionProviderResolver !== undefined
+      ? { translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver }
+      : {}),
+    ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {})
   });
   const translationCommandController = translationCommandControllerFactory({
     translationCommandService
@@ -305,10 +321,10 @@ export function createTranslationCommandDependencies({
     domainEventPublisher: resolvedDomainEventPublisher,
     translationExecutionDispatcher: resolvedTranslationExecutionDispatcher,
     ...(translationExecutionProvider !== undefined ? { translationExecutionProvider } : {}),
-    ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {}),
-    ...(resolvedTranslationExecutionRunner !== undefined
-      ? { translationExecutionRunner: resolvedTranslationExecutionRunner }
+    ...(resolvedTranslationExecutionProviderResolver !== undefined
+      ? { translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver }
       : {}),
+    ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {}),
     translationCommandService,
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents

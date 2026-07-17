@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createApplicationDependencies, createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
 import { TranslationExecution, TranslationOutput, TranslationRequest } from '../../src/domain/translation/index.js';
+import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
 
 test('POST /api/translation-requests creates a TranslationRequest through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture({
@@ -107,7 +108,7 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
     async (baseUrl, dependencies) => {
       const response = await postJson(`${baseUrl}/api/translation-executions`, input);
 
-      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
       assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 201);
       assert.deepEqual(response.body, {
@@ -171,7 +172,7 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
     async (baseUrl, dependencies) => {
       const response = await postJson(`${baseUrl}/api/translation-executions`, input);
 
-      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
       assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 201);
       assert.deepEqual(response.body, {
@@ -241,7 +242,7 @@ test('POST /api/translation-executions persists failed execution when production
       const storedOutputs = Array.from(translationRepository.translationOutputs.values());
       const updateCalls = translationRepository.callsFor('updateTranslationExecution');
 
-      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
       assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 500);
       assert.equal(response.body.error.code, 'internal_error');
@@ -301,7 +302,7 @@ test('POST /api/translation-executions propagates original production provider e
     }
   });
 
-  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   await assert.rejects(
@@ -353,6 +354,66 @@ test('POST /api/translation-executions repository failure prevents provider exec
       assert.deepEqual(runtime.translateCalls, []);
     },
     runtime.options
+  );
+});
+
+test('POST /api/translation-executions reaches fake execution provider through execution provider resolver', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-fake-resolver',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const fakeProvider = createFakeTranslationExecutionProvider();
+  const resolverCalls = [];
+  const resolver = {
+    resolve(providerKey) {
+      resolverCalls.push(providerKey);
+      return fakeProvider;
+    }
+  };
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    providerKey: 'fake'
+  });
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+
+      assert.strictEqual(dependencies.translationExecutionProviderResolver, resolver);
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
+      assert.equal(response.status, 201);
+      assert.deepEqual(response.body, {
+        id: 'execution-1',
+        translationRequestId: 'request-1',
+        status: 'pending',
+        startedAt: '2026-07-14T01:01:00.000Z',
+        completedAt: null,
+        failureInfo: null,
+        providerKey: 'fake'
+      });
+      assert.deepEqual(resolverCalls, ['fake']);
+      assertCompletedRuntimePersistence(translationRepository, {
+        requestId: 'request-1',
+        sessionId: 'session-runtime-fake-resolver',
+        executionId: 'execution-1',
+        providerKey: 'fake',
+        translatedText: '[fake] hello',
+        targetLanguageCode: 'fr'
+      });
+      assertNoFailedExecutionPersistence(translationRepository);
+    },
+    {
+      translationExecutionProviderResolver: resolver
+    }
   );
 });
 

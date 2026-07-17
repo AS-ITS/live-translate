@@ -1,5 +1,7 @@
+import { promises as fileSystem } from 'node:fs';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
+import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
@@ -13,8 +15,12 @@ import { createGeminiTranslationExecutionProvider } from '../src/infrastructure/
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
 import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
+import { createDualWriteTranslationExecutionQueue } from '../src/infrastructure/dualWriteTranslationExecutionQueue.js';
+import { createFileDurableTranslationExecutionQueueRepository } from '../src/infrastructure/fileDurableTranslationExecutionQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../src/infrastructure/inMemoryTranslationExecutionQueue.js';
+import { createSystemClock } from '../src/infrastructure/systemClock.js';
 import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../src/infrastructure/translationExecutionWorkerRuntime.js';
+import { createTranslationQueueConfiguration } from '../src/infrastructure/translationQueueConfiguration.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -126,6 +132,12 @@ export function createProductionApplicationDependencies(options = {}) {
     geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
     translationProviderConfigurationFactory = createTranslationProviderConfiguration,
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
+    translationQueueConfigurationFactory = createTranslationQueueConfiguration,
+    fileDurableTranslationExecutionQueueRepositoryFactory = createFileDurableTranslationExecutionQueueRepository,
+    dualWriteTranslationExecutionQueueFactory = createDualWriteTranslationExecutionQueue,
+    startupTranslationExecutionQueueRecoveryFactory = createDefaultStartupTranslationExecutionQueueRecovery,
+    durableQueueFileSystem = fileSystem,
+    translationQueueClock = createSystemClock(),
     ...applicationOptions
   } = options;
 
@@ -195,13 +207,64 @@ export function createProductionApplicationDependencies(options = {}) {
     },
     providerResolutionComposition: productionProviderResolutionComposition
   });
-
-  return createApplicationDependencies({
+  const queueConfiguration = translationQueueConfigurationFactory({
+    environment: env
+  });
+  const durableTranslationExecutionQueueRepository = queueConfiguration.durableQueueEnabled
+    ? fileDurableTranslationExecutionQueueRepositoryFactory({
+        fileSystem: durableQueueFileSystem,
+        filePath: queueConfiguration.durableQueueFilePath
+      })
+    : undefined;
+  const primaryTranslationExecutionQueue =
+    durableTranslationExecutionQueueRepository !== undefined
+      ? Object.prototype.hasOwnProperty.call(applicationOptions, 'translationExecutionQueue')
+        ? applicationOptions.translationExecutionQueue
+        : createInMemoryTranslationExecutionQueue()
+      : undefined;
+  const activeTranslationExecutionQueue =
+    durableTranslationExecutionQueueRepository !== undefined
+      ? dualWriteTranslationExecutionQueueFactory({
+          primaryQueue: primaryTranslationExecutionQueue,
+          durableRepository: durableTranslationExecutionQueueRepository,
+          clock: translationQueueClock
+        })
+      : applicationOptions.translationExecutionQueue;
+  const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
+    ...(activeTranslationExecutionQueue !== undefined
+      ? { translationExecutionQueue: activeTranslationExecutionQueue }
+      : {}),
     translationExecutionProvider: resolvedTranslationExecutionProvider,
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     ...resolvedProviderDependencies
   });
+  const startupTranslationExecutionQueueRecovery =
+    durableTranslationExecutionQueueRepository !== undefined
+      ? startupTranslationExecutionQueueRecoveryFactory({
+          durableRepository: durableTranslationExecutionQueueRepository,
+          activeQueue: primaryTranslationExecutionQueue
+        })
+      : undefined;
+  const translationExecutionWorkerRuntime =
+    startupTranslationExecutionQueueRecovery !== undefined &&
+    applicationDependencies.translationExecutionWorkerRuntime !== undefined
+      ? createRecoveryBackedWorkerRuntime({
+          startupTranslationExecutionQueueRecovery,
+          translationExecutionWorkerRuntime: applicationDependencies.translationExecutionWorkerRuntime
+        })
+      : applicationDependencies.translationExecutionWorkerRuntime;
+
+  return {
+    ...applicationDependencies,
+    ...(translationExecutionWorkerRuntime !== undefined ? { translationExecutionWorkerRuntime } : {}),
+    ...(durableTranslationExecutionQueueRepository !== undefined
+      ? { durableTranslationExecutionQueueRepository }
+      : {}),
+    ...(startupTranslationExecutionQueueRecovery !== undefined
+      ? { startupTranslationExecutionQueueRecovery }
+      : {})
+  };
 }
 
 export function createProductionSavedTranscriptTranslationProvider({
@@ -492,6 +555,23 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
         payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
         repositoryResult
       });
+    }
+  });
+}
+
+function createRecoveryBackedWorkerRuntime({ startupTranslationExecutionQueueRecovery, translationExecutionWorkerRuntime }) {
+  return Object.freeze({
+    async start() {
+      await startupTranslationExecutionQueueRecovery.recover();
+      return translationExecutionWorkerRuntime.start();
+    },
+
+    stop() {
+      return translationExecutionWorkerRuntime.stop();
+    },
+
+    isRunning() {
+      return translationExecutionWorkerRuntime.isRunning();
     }
   });
 }

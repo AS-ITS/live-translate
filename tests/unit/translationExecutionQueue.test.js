@@ -9,29 +9,25 @@ import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructur
 const INVALID_EXECUTION_ID_ERROR = /Translation execution queue job executionId must be a non-empty string/;
 const INVALID_REQUEST_ID_ERROR = /Translation execution queue job requestId must be a non-empty string/;
 
-test('application contract exposes enqueue dequeue isEmpty and size only', () => {
+test('application contract exposes enqueue dequeue and size only', () => {
   const queue = createTranslationExecutionQueue(queueImplementation());
 
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'size']);
   assert.equal(Object.isFrozen(queue), true);
 });
 
-test('application contract requires enqueue dequeue isEmpty and size methods', () => {
+test('application contract requires enqueue dequeue and size methods', () => {
   assert.throws(() => assertTranslationExecutionQueue(undefined), /translationExecutionQueue implementation is required/);
   assert.throws(
-    () => createTranslationExecutionQueue({ dequeue() {}, isEmpty() {}, size() {} }),
+    () => createTranslationExecutionQueue({ dequeue() {}, size() {} }),
     /translationExecutionQueue.enqueue must be a function/
   );
   assert.throws(
-    () => createTranslationExecutionQueue({ enqueue() {}, isEmpty() {}, size() {} }),
+    () => createTranslationExecutionQueue({ enqueue() {}, size() {} }),
     /translationExecutionQueue.dequeue must be a function/
   );
   assert.throws(
-    () => createTranslationExecutionQueue({ enqueue() {}, dequeue() {}, size() {} }),
-    /translationExecutionQueue.isEmpty must be a function/
-  );
-  assert.throws(
-    () => createTranslationExecutionQueue({ enqueue() {}, dequeue() {}, isEmpty() {} }),
+    () => createTranslationExecutionQueue({ enqueue() {}, dequeue() {} }),
     /translationExecutionQueue.size must be a function/
   );
 });
@@ -40,7 +36,7 @@ test('in-memory queue implements the application contract', () => {
   const queue = createInMemoryTranslationExecutionQueue();
 
   assert.doesNotThrow(() => assertTranslationExecutionQueue(queue));
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'size']);
   assert.equal(Object.isFrozen(queue), true);
 });
 
@@ -59,34 +55,29 @@ test('in-memory queue enqueues and dequeues in FIFO order', () => {
   assert.strictEqual(queue.dequeue(), third);
 });
 
-test('empty in-memory queue dequeue returns undefined', () => {
+test('empty in-memory queue dequeue returns null', () => {
   const queue = createInMemoryTranslationExecutionQueue();
 
-  assert.equal(queue.dequeue(), undefined);
+  assert.equal(queue.dequeue(), null);
 });
 
-test('in-memory queue isEmpty and size reflect queue state', () => {
+test('in-memory queue size reflects queue state', () => {
   const queue = createInMemoryTranslationExecutionQueue();
   const first = createJob({ executionId: 'execution-1', requestId: 'request-1' });
   const second = createJob({ executionId: 'execution-2', requestId: 'request-2' });
 
-  assert.equal(queue.isEmpty(), true);
   assert.equal(queue.size(), 0);
 
   queue.enqueue(first);
-  assert.equal(queue.isEmpty(), false);
   assert.equal(queue.size(), 1);
 
   queue.enqueue(second);
-  assert.equal(queue.isEmpty(), false);
   assert.equal(queue.size(), 2);
 
   queue.dequeue();
-  assert.equal(queue.isEmpty(), false);
   assert.equal(queue.size(), 1);
 
   queue.dequeue();
-  assert.equal(queue.isEmpty(), true);
   assert.equal(queue.size(), 0);
 });
 
@@ -108,9 +99,6 @@ function queueImplementation() {
     },
     dequeue() {
       return jobs.shift();
-    },
-    isEmpty() {
-      return jobs.length === 0;
     },
     size() {
       return jobs.length;

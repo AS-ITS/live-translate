@@ -10,11 +10,7 @@ export function createInMemoryTranslationExecutionQueue() {
     },
 
     dequeue() {
-      return jobs.shift();
-    },
-
-    isEmpty() {
-      return jobs.length === 0;
+      return jobs.shift() ?? null;
     },
 
     size() {

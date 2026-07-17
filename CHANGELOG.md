@@ -4,6 +4,90 @@
 
 ### Added
 
+- Phase 3C WP7 Documentation Closeout: updated README, ROADMAP, architecture
+  overview, and the main architecture document to reflect the current Durable
+  Queue foundation, including feature-gated composition, dual-write enqueue
+  persistence, file-backed durable repository storage, startup recovery, replay
+  flow, and Phase 3C completion. The documentation now explicitly records the
+  current limitations: durable items are removed immediately after startup
+  replay into the active queue, and acknowledgement, completion-driven removal,
+  replay deduplication, lease, visibility timeout, retry, dead-letter queue,
+  multi-worker support, locking, and concurrency control remain future work. No
+  production runtime, Worker, queue, repository, recovery, replay, HTTP API,
+  configuration, execution lifecycle, or test behavior changed.
+- Phase 3C WP6 Startup Recovery / Durable Queue Replay: added the Startup
+  Translation Execution Queue Recovery application service that replays durable
+  queue items one at a time with `peek -> active enqueue -> durable dequeue`,
+  preserves FIFO order, converts durable items back to the active queue
+  `{ executionId, requestId }` schema, and stops with original error propagation
+  on peek, active enqueue, or durable dequeue failures. Production composition
+  now creates recovery only when `TRANSLATION_DURABLE_QUEUE_ENABLED=true` and
+  wraps Worker Runtime startup so recovery completes before polling starts.
+  Recovery targets the underlying in-memory primary queue used by the active
+  dual-write queue. No HTTP API, execution lifecycle, Worker processing logic,
+  acknowledgement, durable dequeue after success, replay deduplication, lease,
+  visibility timeout, retry, dead-letter queue, reconciliation, locking,
+  multi-worker, concurrency, or metrics behavior changed.
+- Phase 3C WP5 Dual-write Enqueue Persistence: added the dual-write
+  Translation Execution Queue adapter that writes durable queue items with
+  deterministic `enqueuedAt` timestamps before enqueueing the existing
+  in-memory primary queue, delegates `dequeue` and `size` only to the primary
+  queue, preserves caller input immutability, and propagates durable and primary
+  write failures unchanged without rollback or compensation. Production
+  composition now uses the dual-write queue only when
+  `TRANSLATION_DURABLE_QUEUE_ENABLED=true`, while the disabled path keeps the
+  existing in-memory queue behavior. Feature-enabled vertical coverage verifies
+  `POST /api/translation-executions` persists the durable item and enqueues the
+  in-memory job without changing the HTTP `202` response shape, Worker Runtime,
+  durable dequeue behavior, execution lifecycle, restart recovery, replay,
+  acknowledgement, lease, retry, dead-letter queue, locking, concurrency, or
+  metrics behavior.
+- Phase 3C WP4 Production Composition Wiring: added Translation Queue
+  Configuration for `TRANSLATION_DURABLE_QUEUE_ENABLED` and
+  `TRANSLATION_DURABLE_QUEUE_FILE`, and wired production composition to create
+  the file-backed durable queue repository only when the feature flag is
+  enabled. The repository is exposed as
+  `durableTranslationExecutionQueueRepository` for future work, while the
+  active `TranslationExecutionQueue` remains the existing in-memory queue by
+  default and when the durable repository is enabled. No durable queue
+  activation, queue replacement, Worker Runtime integration, enqueue/dequeue
+  persistence, worker replay, restart recovery, HTTP API, execution lifecycle,
+  acknowledgement, lease, retry, dead-letter queue, concurrency, or metrics
+  behavior changed.
+- Phase 3C WP3 File-backed Durable Translation Execution Queue Repository:
+  added the JSON file-backed durable queue repository adapter with async
+  `enqueue`, `peek`, `dequeue`, `size`, and `clear`, pretty UTF-8 storage using
+  deterministic item key order, full-file read/write semantics, FIFO behavior,
+  reload persistence, and deterministic
+  `invalid_translation_execution_queue_storage` failures for corrupted storage.
+  The adapter passes the reusable durable queue repository contract and
+  adapter-specific storage tests. No production composition, Worker Runtime,
+  Worker, HTTP API, execution lifecycle, restart recovery, replay, file locking,
+  acknowledgement, lease, retry, dead-letter queue, concurrency, or metrics
+  behavior changed.
+- Phase 3C WP2 Durable Translation Execution Queue Repository Contract: added
+  the durable queue repository application port with `enqueue`, `dequeue`,
+  `peek`, `size`, and `clear`, defined the durable queue item schema with
+  `executionId`, `requestId`, and ISO UTC `enqueuedAt`, and added stable
+  validation using `invalid_translation_execution_queue_item`. Added a fake
+  in-memory durable queue repository plus reusable contract coverage for FIFO,
+  peek without removal, dequeue removal, size, clear, empty queue `null`
+  behavior, validation failure state preservation, input immutability, and
+  immutable dequeue results. No production composition, Worker Runtime, HTTP
+  API, execution lifecycle, durable storage, restart recovery, lease,
+  acknowledgement, retry, dead-letter queue, concurrency, or metrics behavior
+  changed.
+- Phase 3C WP1 Translation Execution Queue Port Contract: tightened the
+  Translation Execution Queue application port to the minimal `enqueue`,
+  `dequeue`, and `size` contract, added stable queue-item validation with the
+  `invalid_translation_execution_queue_item` code, normalized empty dequeue to
+  `null`, and added reusable contract coverage for FIFO ordering, empty
+  dequeue, size/removal semantics, validation failures, queue-state preservation,
+  and input immutability. The production in-memory queue now passes the same
+  contract tests. Runtime polling continues to use the same queue and worker
+  lifecycle through `size()` without adding durable persistence, recovery,
+  retry, lease, acknowledgement, dead-letter queue, concurrency, metrics, or
+  HTTP behavior changes.
 - Phase 3B WP6 Documentation Closeout: completed documentation for Queue
   Abstraction, Worker Runtime Lifecycle (`start`, `stop`, `restart`, and
   `isRunning`), Worker Loop behavior, graceful shutdown, production Runtime

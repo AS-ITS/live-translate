@@ -211,7 +211,7 @@ Worker processing flow:
 ```text
 TranslationExecutionWorkerRuntime
 ↓
-check TranslationExecutionQueue.isEmpty()
+check TranslationExecutionQueue.size()
 ↓
 TranslationExecutionWorker
 ↓
@@ -249,15 +249,15 @@ created
 Runtime boundaries:
 
 - `TranslationExecutionQueue` is an infrastructure-independent application
-  boundary. Its contract is `enqueue(item)`, `dequeue()`, `isEmpty()`, and
-  `size()`. The current adapter is deterministic in-memory FIFO.
+  boundary. Its contract is `enqueue(item)`, `dequeue()`, and `size()`. The
+  default adapter is deterministic in-memory FIFO.
 - Queue jobs contain only `executionId` and `requestId`.
 - `TranslationExecutionWorkerRuntime` is a polling adapter. It exposes
   `start()`, `stop()`, and `isRunning()`, prevents reentrant `processNext()`
   calls, and keeps polling after worker errors.
 - `start()` begins one Worker Loop. Repeated `start()` calls do not create
   additional loops.
-- The Worker Loop checks `queue.isEmpty()` before invoking the Worker. Empty
+- The Worker Loop checks `queue.size()` before invoking the Worker. Empty
   queues wait for the next scheduled poll without executing idle worker work.
 - Newly enqueued jobs are picked up on later polls without restarting the
   Runtime. A running Runtime processes jobs one at a time in FIFO order.
@@ -277,6 +277,97 @@ Runtime boundaries:
   preserving newly queued work, Runtime restart processing remaining FIFO work,
   and completed / failed lifecycle persistence through the production runner and
   provider path.
+
+### Durable Queue Components
+
+Phase 3C adds a feature-gated durable queue foundation around the existing
+in-memory execution queue. It does not replace Worker processing, execution
+lifecycle, provider execution, or HTTP behavior.
+
+Components:
+
+- `TranslationExecutionQueue`: application queue port used by Translation
+  Command submission, Worker, Worker Runtime, and composition. Jobs contain
+  `executionId` and `requestId`.
+- `DualWriteTranslationExecutionQueue`: infrastructure adapter used only when
+  the durable queue feature is enabled. It writes a durable queue item first and
+  then enqueues the existing active in-memory queue.
+- `DurableTranslationExecutionQueueRepository`: application repository port for
+  durable queue storage. Its contract is `enqueue`, `peek`, `dequeue`, `size`,
+  and `clear`.
+- `FileDurableTranslationExecutionQueueRepository`: JSON file-backed durable
+  repository adapter. It stores FIFO items with `executionId`, `requestId`, and
+  ISO UTC `enqueuedAt`.
+- `StartupTranslationExecutionQueueRecovery`: application service that replays
+  durable queue items into the active in-memory queue before Worker Runtime
+  polling starts.
+
+Feature flags:
+
+- `TRANSLATION_DURABLE_QUEUE_ENABLED`: disabled by default. When set to `true`,
+  production composition enables dual-write enqueue persistence and startup
+  recovery.
+- `TRANSLATION_DURABLE_QUEUE_FILE`: optional file path for the file-backed
+  durable queue repository. When omitted, the default file is
+  `translation-execution-queue.json`.
+
+Feature-enabled enqueue flow:
+
+```text
+POST /api/translation-executions
+↓
+persist created
+↓
+persist queued
+↓
+DualWriteTranslationExecutionQueue.enqueue()
+↓
+DurableTranslationExecutionQueueRepository.enqueue()
+↓
+InMemoryTranslationExecutionQueue.enqueue()
+↓
+202 Accepted
+```
+
+Startup sequence:
+
+```text
+Worker Startup
+↓
+StartupTranslationExecutionQueueRecovery.recover()
+↓
+Replay Durable Queue
+↓
+TranslationExecutionWorkerRuntime.start()
+↓
+Worker Polling
+```
+
+Replay flow:
+
+```text
+DurableTranslationExecutionQueueRepository.peek()
+↓
+InMemoryTranslationExecutionQueue.enqueue({ executionId, requestId })
+↓
+DurableTranslationExecutionQueueRepository.dequeue()
+↓
+repeat until durable repository is empty
+```
+
+Current limitations:
+
+- Replay removes each item from the durable repository immediately after it is
+  enqueued into the active in-memory queue.
+- No acknowledgement.
+- No completion-driven durable removal.
+- No replay deduplication.
+- No lease.
+- No visibility timeout.
+- No retry.
+- No dead-letter queue.
+- No multi-worker support.
+- No locking or concurrency control.
 
 ## 5. Authentication and Token Flow
 

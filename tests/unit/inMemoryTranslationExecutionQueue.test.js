@@ -13,16 +13,15 @@ test('module exports createInMemoryTranslationExecutionQueue factory', async () 
   assert.equal(moduleExports.createInMemoryTranslationExecutionQueue, createInMemoryTranslationExecutionQueue);
 });
 
-test('factory returns queue object with enqueue dequeue isEmpty and size only', () => {
+test('factory returns queue object with enqueue dequeue and size only', () => {
   const queue = createInMemoryTranslationExecutionQueue();
 
   assert.equal(typeof queue, 'object');
   assert.notEqual(queue, null);
   assert.equal(Object.isFrozen(queue), true);
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'size']);
   assert.equal(typeof queue.enqueue, 'function');
   assert.equal(typeof queue.dequeue, 'function');
-  assert.equal(typeof queue.isEmpty, 'function');
   assert.equal(typeof queue.size, 'function');
 });
 
@@ -34,15 +33,12 @@ test('application contract wraps a queue without depending on infrastructure', (
     dequeue() {
       return undefined;
     },
-    isEmpty() {
-      return true;
-    },
     size() {
       return 0;
     }
   });
 
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'size']);
   assert.equal(Object.isFrozen(queue), true);
 });
 
@@ -70,10 +66,10 @@ test('multiple jobs dequeue in FIFO order', () => {
   assert.strictEqual(queue.dequeue(), third);
 });
 
-test('dequeue returns undefined when queue is empty', () => {
+test('dequeue returns null when queue is empty', () => {
   const queue = createInMemoryTranslationExecutionQueue();
 
-  assert.equal(queue.dequeue(), undefined);
+  assert.equal(queue.dequeue(), null);
 });
 
 test('dequeue removes the job from the queue', () => {
@@ -83,7 +79,7 @@ test('dequeue removes the job from the queue', () => {
   queue.enqueue(job);
   assert.strictEqual(queue.dequeue(), job);
 
-  assert.equal(queue.dequeue(), undefined);
+  assert.equal(queue.dequeue(), null);
 });
 
 test('enqueue rejects missing executionId', () => {
@@ -139,19 +135,6 @@ test('size reflects enqueue and dequeue operations', () => {
 
   queue.dequeue();
   assert.equal(queue.size(), 0);
-});
-
-test('isEmpty reflects enqueue and dequeue operations', () => {
-  const queue = createInMemoryTranslationExecutionQueue();
-  const job = createJob();
-
-  assert.equal(queue.isEmpty(), true);
-
-  queue.enqueue(job);
-  assert.equal(queue.isEmpty(), false);
-
-  queue.dequeue();
-  assert.equal(queue.isEmpty(), true);
 });
 
 test('enqueue does not execute provider or worker behavior', () => {

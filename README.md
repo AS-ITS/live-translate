@@ -32,6 +32,7 @@ Completed:
 - Phase 2P - Translation Execution Lifecycle
 - Phase 3A - Async Execution Runtime
 - Phase 3B - Queue Abstraction and Worker Runtime Lifecycle
+- Phase 3C - Durable Queue Foundation
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -546,8 +547,7 @@ Phase 3B status:
 
 - `TranslationExecutionQueue` is the application queue abstraction used by
   command submission, Worker, Worker Runtime, and production composition.
-- The queue contract is `enqueue(item)`, `dequeue()`, `isEmpty()`, and
-  `size()`.
+- The queue contract is `enqueue(item)`, `dequeue()`, and `size()`.
 - The production queue adapter remains deterministic in-memory FIFO. It is not
   durable and is not shared across processes.
 - Production composition creates and exposes the shared Queue, Worker, and
@@ -560,7 +560,7 @@ Phase 3B status:
     execution is still finishing.
   - Restart after stop resumes processing remaining queued work.
 - Worker Loop behavior:
-  - The Runtime checks `queue.isEmpty()` before invoking the Worker.
+  - The Runtime checks `queue.size()` before invoking the Worker.
   - Empty queues wait for the next scheduled poll without executing idle worker
     work.
   - Newly enqueued work is picked up on a later poll without restarting the
@@ -672,6 +672,72 @@ Future execution reliability enhancement candidates:
 - Idempotency.
 - Error classification.
 - Observability and retry metrics.
-- Durable queue execution.
 - Production startup wiring for Worker Runtime.
 - Multi-worker coordination.
+
+Phase 3C
+Status: Completed
+
+Phase 3C Durable Queue status:
+
+- Durable Queue is feature-gated by `TRANSLATION_DURABLE_QUEUE_ENABLED`.
+- The default behavior is disabled. When disabled, Translation Command keeps
+  using the active in-memory `TranslationExecutionQueue` path only.
+- When enabled, production composition creates a file-backed durable queue
+  repository and wraps the active queue with dual-write enqueue persistence.
+- When enabled, Worker Runtime startup runs durable queue recovery before worker
+  polling starts.
+- The HTTP API, execution lifecycle, Worker processing behavior, and provider
+  execution behavior are unchanged.
+
+Architecture:
+
+```text
+HTTP Request
+      │
+      ▼
+TranslationExecutionQueue
+      │
+      ├── In-Memory Queue (Active)
+      │
+      └── Durable Queue Repository (Feature-gated)
+```
+
+Startup Recovery:
+
+```text
+Worker Startup
+
+↓
+
+Startup Recovery
+
+↓
+
+Replay Durable Queue
+
+↓
+
+Worker Polling
+```
+
+Feature flags:
+
+- `TRANSLATION_DURABLE_QUEUE_ENABLED`: defaults to disabled. Set to `true` to
+  enable dual-write enqueue persistence and startup recovery.
+- `TRANSLATION_DURABLE_QUEUE_FILE`: optional durable queue file path. When
+  omitted, the default file is `translation-execution-queue.json`.
+
+Current Durable Queue limitations:
+
+- Replay removes each item from the durable repository immediately after it is
+  enqueued into the active in-memory queue.
+- No acknowledgement.
+- No completion-driven removal.
+- No replay deduplication.
+- No lease.
+- No visibility timeout.
+- No retry.
+- No dead-letter queue.
+- No multi-worker support.
+- No locking or concurrency control.

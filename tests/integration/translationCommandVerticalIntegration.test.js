@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { promises as fileSystem } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createApplicationDependencies, createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
@@ -246,6 +249,92 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
   assert.deepEqual(input, before);
 });
 
+test('POST /api/translation-executions dual-writes durable queue when feature is enabled', async () => {
+  const durableQueueFilePath = join(
+    tmpdir(),
+    `live-translate-dual-write-${process.pid}-${Date.now()}-translation-queue.json`
+  );
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-durable-queue',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const input = translationExecutionPayload({
+    sourceText: 'hello durable queue',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr'
+  });
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+
+      assertQueuedExecutionResponse(response);
+      assertQueuedSubmissionPersistence(translationRepository);
+      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 1);
+      assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), {
+        executionId: 'execution-1',
+        requestId: 'request-1',
+        enqueuedAt: '2026-07-17T08:00:00.000Z'
+      });
+      assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
+        items: [
+          {
+            executionId: 'execution-1',
+            requestId: 'request-1',
+            enqueuedAt: '2026-07-17T08:00:00.000Z'
+          }
+        ]
+      });
+      assert.equal(dependencies.translationExecutionQueue.size(), 1);
+      assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), {
+        executionId: 'execution-1',
+        requestId: 'request-1'
+      });
+      assert.equal(dependencies.translationExecutionQueue.size(), 0);
+      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 1);
+      assertNoWorkerProcessing(translationRepository);
+    },
+    {
+      env: {
+        GEMINI_API_KEY: 'gemini-runtime-api-key',
+        GEMINI_MODEL: 'gemini-runtime-model',
+        TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
+        TRANSLATION_DURABLE_QUEUE_FILE: durableQueueFilePath
+      },
+      translationQueueClock: {
+        now() {
+          return '2026-07-17T08:00:00.000Z';
+        }
+      },
+      geminiHttpClientFactory({ apiKey }) {
+        assert.equal(apiKey, 'gemini-runtime-api-key');
+        return {
+          post() {
+            throw new Error('Gemini HTTP client should not be called during submission');
+          }
+        };
+      },
+      geminiClientFactory() {
+        return {
+          async translate() {
+            throw new Error('Gemini client should not execute during submission');
+          }
+        };
+      },
+      geminiTranslationExecutionProviderFactory(options) {
+        return createDefaultGeminiTranslationExecutionProvider(options);
+      }
+    }
+  );
+});
+
 test('POST queued execution is processed successfully by worker through production runner and provider', async () => {
   const translationRepository = createTranslationRepositoryFixture({
     requests: [
@@ -309,7 +398,7 @@ test('POST queued execution is processed successfully by worker through producti
         targetLanguageCode: 'fr'
       });
       assertNoFailedExecutionPersistence(translationRepository);
-      assert.equal(dependencies.translationExecutionQueue.dequeue(), undefined);
+      assert.equal(dependencies.translationExecutionQueue.dequeue(), null);
     },
     {
       env: {
@@ -380,7 +469,7 @@ test('production worker runtime completes queued execution after start', async (
       await scheduler.runNext();
 
       assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), true);
-      assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+      assert.equal(dependencies.translationExecutionQueue.size(), 0);
       assert.deepEqual(geminiClientCalls, [
         {
           sourceText: 'hello from runtime start',
@@ -485,9 +574,175 @@ test('production worker runtime stop and restart preserves queued FIFO work', as
       assertExecutionLifecycleFor(translationRepository, 'execution-1', ['created', 'queued', 'running', 'completed']);
       assertExecutionLifecycleFor(translationRepository, 'execution-2', ['created', 'queued', 'running', 'completed']);
       assertExecutionLifecycleFor(translationRepository, 'execution-3', ['created', 'queued', 'running', 'completed']);
-      assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+      assert.equal(dependencies.translationExecutionQueue.size(), 0);
     },
     productionRuntimeOptions({ scheduler, geminiClientCalls })
+  );
+});
+
+test('production worker runtime startup replays durable queue into active in-memory queue in FIFO order', async () => {
+  const scheduler = createFakeScheduler();
+  const durableQueueFilePath = join(
+    tmpdir(),
+    `live-translate-startup-replay-${process.pid}-${Date.now()}-translation-queue.json`
+  );
+  await fileSystem.writeFile(
+    durableQueueFilePath,
+    JSON.stringify(
+      {
+        items: [
+          {
+            executionId: 'execution-1',
+            requestId: 'request-1',
+            enqueuedAt: '2026-07-17T08:00:00.000Z'
+          },
+          {
+            executionId: 'execution-2',
+            requestId: 'request-2',
+            enqueuedAt: '2026-07-17T08:00:01.000Z'
+          },
+          {
+            executionId: 'execution-3',
+            requestId: 'request-3',
+            enqueuedAt: '2026-07-17T08:00:02.000Z'
+          }
+        ]
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-1',
+          sessionId: 'session-startup-replay',
+          targetLanguageCode: 'fr',
+          sourceTranscriptSnapshot: {
+            sourceText: 'first replay text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      ),
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-2',
+          sessionId: 'session-startup-replay',
+          targetLanguageCode: 'fr',
+          sourceTranscriptSnapshot: {
+            sourceText: 'second replay text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      ),
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-3',
+          sessionId: 'session-startup-replay',
+          targetLanguageCode: 'fr',
+          sourceTranscriptSnapshot: {
+            sourceText: 'third replay text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      )
+    ],
+    executions: [
+      new TranslationExecution(
+        translationExecutionPayload({
+          id: 'execution-1',
+          translationRequestId: 'request-1',
+          status: 'queued'
+        })
+      ),
+      new TranslationExecution(
+        translationExecutionPayload({
+          id: 'execution-2',
+          translationRequestId: 'request-2',
+          status: 'queued'
+        })
+      ),
+      new TranslationExecution(
+        translationExecutionPayload({
+          id: 'execution-3',
+          translationRequestId: 'request-3',
+          status: 'queued'
+        })
+      )
+    ]
+  });
+  const geminiClientCalls = [];
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (_baseUrl, dependencies) => {
+      await dependencies.translationExecutionWorkerRuntime.start();
+
+      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 0);
+      assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
+        items: []
+      });
+      assert.equal(dependencies.translationExecutionQueue.size(), 3);
+      assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), true);
+      assert.equal(scheduler.pendingCount(), 1);
+
+      assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+        status: 'processed',
+        executionId: 'execution-1'
+      });
+      assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+        status: 'processed',
+        executionId: 'execution-2'
+      });
+      assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+        status: 'processed',
+        executionId: 'execution-3'
+      });
+
+      assert.deepEqual(
+        geminiClientCalls.map((call) => call.sourceText),
+        ['first replay text', 'second replay text', 'third replay text']
+      );
+      assert.equal(dependencies.translationExecutionQueue.size(), 0);
+    },
+    {
+      env: {
+        GEMINI_API_KEY: 'gemini-runtime-api-key',
+        GEMINI_MODEL: 'gemini-runtime-model',
+        TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
+        TRANSLATION_DURABLE_QUEUE_FILE: durableQueueFilePath
+      },
+      geminiHttpClientFactory({ apiKey }) {
+        assert.equal(apiKey, 'gemini-runtime-api-key');
+        return {
+          post() {
+            throw new Error('Gemini HTTP client should not be called when fake GeminiClient is supplied');
+          }
+        };
+      },
+      geminiClientFactory() {
+        return {
+          async translate(request) {
+            geminiClientCalls.push(request);
+            return {
+              translatedText: `[startup:${request.targetLanguageCode}] ${request.sourceText}`
+            };
+          }
+        };
+      },
+      geminiTranslationExecutionProviderFactory(options) {
+        return createDefaultGeminiTranslationExecutionProvider(options);
+      },
+      translationExecutionWorkerRuntimeFactory(options) {
+        return createDefaultTranslationExecutionWorkerRuntime({
+          ...options,
+          scheduler,
+          pollIntervalMs: 25
+        });
+      }
+    }
   );
 });
 
@@ -623,7 +878,7 @@ test('worker processing rethrows provider error and persists failed lifecycle', 
       assert.equal(persistedRequest.targetLanguageCode, 'fr');
       assert.equal(persistedRequest.sourceTranscriptSnapshot.sourceLanguageCode, 'en');
       assert.equal(persistedRequest.sourceTranscriptSnapshot.sourceText, 'hello failure path');
-      assert.equal(dependencies.translationExecutionQueue.dequeue(), undefined);
+      assert.equal(dependencies.translationExecutionQueue.dequeue(), null);
     },
     {
       env: {
@@ -1616,7 +1871,7 @@ function assertQueuedSubmissionPersistence(translationRepository, { providerKey 
 
 function assertQueuedJob(dependencies, expected = { executionId: 'execution-1', requestId: 'request-1' }) {
   assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), expected);
-  assert.equal(dependencies.translationExecutionQueue.dequeue(), undefined);
+  assert.equal(dependencies.translationExecutionQueue.dequeue(), null);
 }
 
 function assertExecutionLifecycleFor(translationRepository, executionId, expectedStatuses) {

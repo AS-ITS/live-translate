@@ -335,7 +335,7 @@ test('work enqueued after stop is not processed until restart', async () => {
 
   assert.equal(runtime.isRunning(), true);
   assert.deepEqual(processedJobs, ['job-1', 'job-2']);
-  assert.equal(executionQueue.isEmpty(), true);
+  assert.equal(executionQueue.size(), 0);
 });
 
 test('empty queue keeps polling without executing worker', async () => {
@@ -381,7 +381,7 @@ test('queued work after empty poll is processed without restarting runtime', asy
 
   assert.equal(runtime.isRunning(), true);
   assert.deepEqual(processedJobs, ['job-1']);
-  assert.equal(executionQueue.isEmpty(), true);
+  assert.equal(executionQueue.size(), 0);
   assert.equal(scheduler.pendingCount(), 1);
 });
 
@@ -406,7 +406,7 @@ test('runtime processes multiple jobs in FIFO order without restart', async () =
   await scheduler.runNext();
 
   assert.deepEqual(processedJobs, ['job-1', 'job-2', 'job-3']);
-  assert.equal(executionQueue.isEmpty(), true);
+  assert.equal(executionQueue.size(), 0);
   assert.equal(runtime.isRunning(), true);
   assert.equal(scheduler.pendingCount(), 1);
 });
@@ -431,7 +431,7 @@ test('worker returns to waiting after processing queued work', async () => {
   await scheduler.runNext();
 
   assert.deepEqual(processedJobs, ['job-1']);
-  assert.equal(executionQueue.isEmpty(), true);
+  assert.equal(executionQueue.size(), 0);
   assert.equal(runtime.isRunning(), true);
   assert.equal(scheduler.pendingCount(), 1);
 });

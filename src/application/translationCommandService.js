@@ -35,10 +35,7 @@ const DEFAULT_TRANSLATION_EXECUTION_QUEUE = Object.freeze({
     return undefined;
   },
   dequeue() {
-    return undefined;
-  },
-  isEmpty() {
-    return true;
+    return null;
   },
   size() {
     return 0;

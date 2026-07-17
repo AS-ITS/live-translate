@@ -340,21 +340,402 @@ test('production composition creates an in-memory execution queue by default', (
     }
   });
 
-  assert.deepEqual(Object.keys(dependencies.translationExecutionQueue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
-  assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+  assert.deepEqual(Object.keys(dependencies.translationExecutionQueue), ['enqueue', 'dequeue', 'size']);
   assert.equal(dependencies.translationExecutionQueue.size(), 0);
 
   const job = { executionId: 'execution-1', requestId: 'request-1' };
   dependencies.translationExecutionQueue.enqueue(job);
 
-  assert.equal(dependencies.translationExecutionQueue.isEmpty(), false);
   assert.equal(dependencies.translationExecutionQueue.size(), 1);
   assert.strictEqual(dependencies.translationExecutionQueue.dequeue(), job);
-  assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+  assert.equal(dependencies.translationExecutionQueue.size(), 0);
   assert.equal(typeof dependencies.translationExecutionWorkerRuntime.start, 'function');
   assert.equal(typeof dependencies.translationExecutionWorkerRuntime.stop, 'function');
   assert.equal(typeof dependencies.translationExecutionWorkerRuntime.isRunning, 'function');
   assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), false);
+});
+
+test('production composition does not create durable queue repository by default', () => {
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory() {
+      throw new Error('durable queue repository should not be created by default');
+    },
+    dualWriteTranslationExecutionQueueFactory() {
+      throw new Error('dual-write queue should not be created by default');
+    },
+    startupTranslationExecutionQueueRecoveryFactory() {
+      throw new Error('startup recovery should not be created by default');
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.equal(Object.hasOwn(dependencies, 'durableTranslationExecutionQueueRepository'), false);
+  assert.equal(Object.hasOwn(dependencies, 'startupTranslationExecutionQueueRecovery'), false);
+});
+
+test('production composition creates durable queue repository when feature flag is enabled', () => {
+  const durableRepository = {
+    enqueue() {},
+    dequeue() {},
+    peek() {},
+    size() {},
+    clear() {}
+  };
+  const fileSystem = Object.freeze({
+    access() {},
+    mkdir() {},
+    readFile() {},
+    writeFile() {}
+  });
+  const calls = [];
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
+      TRANSLATION_DURABLE_QUEUE_FILE: '/tmp/translation-queue.json'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    durableQueueFileSystem: fileSystem,
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory(options) {
+      calls.push(options);
+      return durableRepository;
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.strictEqual(dependencies.durableTranslationExecutionQueueRepository, durableRepository);
+  assert.deepEqual(calls, [
+    {
+      fileSystem,
+      filePath: '/tmp/translation-queue.json'
+    }
+  ]);
+});
+
+test('production composition uses file-backed durable repository factory when enabled', () => {
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
+      TRANSLATION_DURABLE_QUEUE_FILE: '/tmp/translation-queue.json'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    durableQueueFileSystem: {
+      access() {
+        throw new Error('durable repository storage should not be read during composition');
+      },
+      mkdir() {
+        throw new Error('durable repository storage should not be written during composition');
+      },
+      readFile() {
+        throw new Error('durable repository storage should not be read during composition');
+      },
+      writeFile() {
+        throw new Error('durable repository storage should not be written during composition');
+      }
+    },
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.deepEqual(Object.keys(dependencies.durableTranslationExecutionQueueRepository), [
+    'enqueue',
+    'dequeue',
+    'peek',
+    'size',
+    'clear'
+  ]);
+  assert.equal(Object.isFrozen(dependencies.durableTranslationExecutionQueueRepository), true);
+});
+
+test('production composition dual-writes enqueue and keeps dequeue size on primary queue when enabled', async () => {
+  const durableItems = [];
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory() {
+      return {
+        enqueue(item) {
+          durableItems.push(item);
+        },
+        dequeue() {
+          throw new Error('durable repository dequeue should not be used by active queue');
+        },
+        peek() {},
+        size() {
+          throw new Error('durable repository size should not be used by active queue');
+        },
+        clear() {}
+      };
+    },
+    translationQueueClock: {
+      now() {
+        return '2026-07-17T08:00:00.000Z';
+      }
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.deepEqual(Object.keys(dependencies.translationExecutionQueue), ['enqueue', 'dequeue', 'size']);
+  assert.equal(dependencies.translationExecutionQueue.size(), 0);
+
+  const job = { executionId: 'execution-1', requestId: 'request-1' };
+  await dependencies.translationExecutionQueue.enqueue(job);
+
+  assert.equal(dependencies.translationExecutionQueue.size(), 1);
+  assert.deepEqual(durableItems, [
+    {
+      executionId: 'execution-1',
+      requestId: 'request-1',
+      enqueuedAt: '2026-07-17T08:00:00.000Z'
+    }
+  ]);
+  assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), job);
+  assert.equal(dependencies.translationExecutionQueue.size(), 0);
+  assert.equal(Object.hasOwn(dependencies, 'durableTranslationExecutionQueueRepository'), true);
+});
+
+test('production composition injects active dual-write queue into service worker and runtime when enabled', () => {
+  const durableRepository = {
+    enqueue() {},
+    dequeue() {},
+    peek() {},
+    size() {},
+    clear() {}
+  };
+  const activeQueue = queue();
+  const observed = {};
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory() {
+      return durableRepository;
+    },
+    dualWriteTranslationExecutionQueueFactory(options) {
+      observed.dualWriteOptions = options;
+      return activeQueue;
+    },
+    translationCommandServiceFactory(options) {
+      observed.serviceQueue = options.translationExecutionQueue;
+      return service();
+    },
+    translationExecutionWorkerFactory(options) {
+      observed.workerQueue = options.translationExecutionQueue;
+      return { processNext() {} };
+    },
+    translationExecutionWorkerRuntimeFactory(options) {
+      observed.runtimeQueue = options.translationExecutionQueue;
+      return { start() {}, stop() {}, isRunning() { return false; } };
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionQueue, activeQueue);
+  assert.strictEqual(dependencies.durableTranslationExecutionQueueRepository, durableRepository);
+  assert.strictEqual(observed.dualWriteOptions.durableRepository, durableRepository);
+  assert.deepEqual(Object.keys(observed.dualWriteOptions.primaryQueue), ['enqueue', 'dequeue', 'size']);
+  assert.strictEqual(observed.serviceQueue, activeQueue);
+  assert.strictEqual(observed.workerQueue, activeQueue);
+  assert.strictEqual(observed.runtimeQueue, activeQueue);
+});
+
+test('production composition creates startup recovery when durable queue is enabled', () => {
+  const durableRepository = {
+    enqueue() {},
+    dequeue() {},
+    peek() {},
+    size() {},
+    clear() {}
+  };
+  const recovery = { recover() {} };
+  let observedRecoveryOptions;
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory() {
+      return durableRepository;
+    },
+    startupTranslationExecutionQueueRecoveryFactory(options) {
+      observedRecoveryOptions = options;
+      return recovery;
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.strictEqual(dependencies.startupTranslationExecutionQueueRecovery, recovery);
+  assert.strictEqual(observedRecoveryOptions.durableRepository, durableRepository);
+  assert.deepEqual(Object.keys(observedRecoveryOptions.activeQueue), ['enqueue', 'dequeue', 'size']);
+});
+
+test('production runtime start awaits startup recovery before starting worker runtime when enabled', async () => {
+  const calls = [];
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env',
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    fileDurableTranslationExecutionQueueRepositoryFactory() {
+      return {
+        enqueue() {},
+        dequeue() {},
+        peek() {},
+        size() {},
+        clear() {}
+      };
+    },
+    startupTranslationExecutionQueueRecoveryFactory() {
+      return {
+        async recover() {
+          calls.push('recover');
+        }
+      };
+    },
+    translationExecutionWorkerRuntimeFactory() {
+      return {
+        start() {
+          calls.push('runtime.start');
+        },
+        stop() {
+          calls.push('runtime.stop');
+        },
+        isRunning() {
+          return false;
+        }
+      };
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  await dependencies.translationExecutionWorkerRuntime.start();
+
+  assert.deepEqual(calls, ['recover', 'runtime.start']);
+  dependencies.translationExecutionWorkerRuntime.stop();
+  assert.deepEqual(calls, ['recover', 'runtime.start', 'runtime.stop']);
 });
 
 test('production composition allows worker and runner override without rebuilding worker dependencies', () => {

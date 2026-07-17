@@ -69,6 +69,82 @@ The backend must not return the real Gemini API key or any long-lived credential
 The backend must not proxy audio, store transcripts, or maintain session state in
 the MVP.
 
+## Translation Execution Durable Queue
+
+`POST /api/translation-executions` uses an asynchronous Translation Execution
+path. The HTTP request persists a created execution, marks it queued, enqueues an
+identifier-only job, and returns `202 Accepted` without waiting for provider
+execution.
+
+Phase 3C adds a feature-gated Durable Queue foundation:
+
+```text
+HTTP Request
+      │
+      ▼
+TranslationExecutionQueue
+      │
+      ├── In-Memory Queue (Active)
+      │
+      └── Durable Queue Repository (Feature-gated)
+```
+
+Components:
+
+- `TranslationExecutionQueue`: application queue port for `enqueue`,
+  `dequeue`, and `size`.
+- `DualWriteTranslationExecutionQueue`: feature-enabled adapter that writes the
+  durable repository first, then enqueues the active in-memory queue.
+- `DurableTranslationExecutionQueueRepository`: durable repository port for
+  `enqueue`, `peek`, `dequeue`, `size`, and `clear`.
+- `FileDurableTranslationExecutionQueueRepository`: JSON file-backed repository
+  adapter storing FIFO items with `executionId`, `requestId`, and `enqueuedAt`.
+- `StartupTranslationExecutionQueueRecovery`: startup recovery service that
+  replays durable items into the active in-memory queue before Worker Runtime
+  polling begins.
+
+Startup recovery:
+
+```text
+Worker Startup
+
+↓
+
+Startup Recovery
+
+↓
+
+Replay Durable Queue
+
+↓
+
+Worker Polling
+```
+
+Replay uses `peek -> active enqueue -> durable dequeue` until the durable
+repository is empty. The durable item is removed immediately after replaying
+into the active in-memory queue; completion-driven acknowledgement is not
+implemented.
+
+Configuration:
+
+- `TRANSLATION_DURABLE_QUEUE_ENABLED` defaults to disabled. When enabled, it
+  activates dual-write enqueue persistence and startup recovery.
+- `TRANSLATION_DURABLE_QUEUE_FILE` optionally selects the JSON durable queue
+  file. When omitted, the default is `translation-execution-queue.json`.
+
+Current limitations:
+
+- No acknowledgement.
+- No completion-driven removal.
+- No replay deduplication.
+- No lease.
+- No visibility timeout.
+- No retry.
+- No dead-letter queue.
+- No multi-worker support.
+- No locking or concurrency control.
+
 ## Gemini Live Session Flow
 
 1. User starts a session in the browser.
@@ -186,4 +262,3 @@ Expected transitions:
 ├── package.json
 └── vite.config.js
 ```
-

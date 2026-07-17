@@ -75,7 +75,7 @@ export function createTranslationExecutionWorkerRuntime({
     isProcessing = true;
 
     try {
-      if (!translationExecutionQueue.isEmpty()) {
+      if (translationExecutionQueue.size() > 0) {
         await translationExecutionWorker.processNext();
       }
     } catch (error) {

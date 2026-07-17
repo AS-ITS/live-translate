@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3B Queue Abstraction completed.
+Current milestone: Phase 3C Durable Queue Foundation completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -31,7 +31,9 @@ Execution is completed. Phase 2P Translation Execution Lifecycle is completed.
 Phase 3A Async Execution Runtime is completed. Phase 3B WP1 Queue Abstraction,
 WP2 Worker Runtime Lifecycle, WP3 Worker Loop, and WP4 Graceful Shutdown are
 completed. Phase 3B WP5 Runtime Integration and WP6 Documentation Closeout are
-completed.
+completed. Phase 3C WP1 Queue Port, WP2 Repository Contract, WP3 File
+Repository, WP4 Feature-gated Composition, WP5 Dual-write Enqueue, WP6 Startup
+Recovery, and WP7 Documentation are completed.
 
 Completed Phase 1 capabilities include:
 
@@ -275,6 +277,18 @@ Deferred:
   - Current limitations: in-memory queue, Worker Runtime not automatically
     started, no durable queue, no cancellation, no timeout, and no multi-worker
     coordination
+- Phase 3C - Durable Queue Foundation: Completed
+  - WP1 Queue Port
+  - WP2 Repository Contract
+  - WP3 File Repository
+  - WP4 Feature-gated Composition
+  - WP5 Dual-write Enqueue
+  - WP6 Startup Recovery
+  - WP7 Documentation
+  - Current limitations: replay removes durable items immediately after active
+    enqueue, no acknowledgement, no replay deduplication, no lease, no
+    visibility timeout, no retry, no dead-letter queue, no multi-worker
+    support, and no locking
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
@@ -1340,8 +1354,8 @@ Status: Completed.
 
 Completed:
 
-- `ExecutionQueue` application contract for `enqueue(item)`, `dequeue()`,
-  `isEmpty()`, and `size()`.
+- `ExecutionQueue` application contract for `enqueue(item)`, `dequeue()`, and
+  `size()`.
 - In-memory FIFO queue implements the shared contract.
 - Worker, command service, and composition validation depend on the queue
   abstraction instead of partial one-off method checks.
@@ -1369,9 +1383,70 @@ Completed:
 
 Deferred:
 
-- Durable queue adapters.
 - Redis, RabbitMQ, or other external queue infrastructure.
 - Retry, timeout, cancellation, priority, or parallel worker behavior.
+
+### Phase 3C - Durable Queue Foundation
+
+Status: Completed.
+
+Completed:
+
+- WP1 Queue Port.
+- WP2 Repository Contract.
+- WP3 File Repository.
+- WP4 Feature-gated Composition.
+- WP5 Dual-write Enqueue.
+- WP6 Startup Recovery.
+- WP7 Documentation.
+
+Implemented behavior:
+
+- Durable Queue is feature-gated by `TRANSLATION_DURABLE_QUEUE_ENABLED`.
+- The default path remains disabled and uses the active in-memory queue only.
+- When enabled, production composition creates
+  `FileDurableTranslationExecutionQueueRepository`.
+- When enabled, production composition wraps the active in-memory queue with
+  `DualWriteTranslationExecutionQueue`.
+- Dual-write enqueue persists a durable queue item before enqueueing the active
+  in-memory queue.
+- When enabled, Worker Runtime startup runs
+  `StartupTranslationExecutionQueueRecovery` before polling begins.
+- Startup recovery replays durable items with
+  `peek -> active enqueue -> durable dequeue`.
+- HTTP API behavior, execution lifecycle, Worker processing, and provider
+  execution behavior are unchanged.
+
+Current limitations:
+
+- Replay removes each item from the durable repository immediately after it is
+  enqueued into the active in-memory queue.
+- No acknowledgement.
+- No completion-driven removal.
+- No replay deduplication.
+- No lease.
+- No visibility timeout.
+- No retry.
+- No dead-letter queue.
+- No multi-worker support.
+- No locking or concurrency control.
+
+### Phase 3D - Reliable Durable Queue
+
+Status: Planned.
+
+Candidate scope:
+
+- Acknowledgement.
+- Completion-driven removal.
+- Replay reconciliation.
+- Duplicate prevention.
+- Lease.
+- Visibility timeout.
+- Retry.
+- Dead-letter queue.
+- Multi-worker safety.
+- Locking or concurrency control.
 
 ### Phase 2 Deferred Scope
 

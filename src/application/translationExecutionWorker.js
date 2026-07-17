@@ -16,7 +16,7 @@ export function createTranslationExecutionWorker({
     async processNext() {
       const job = await translationExecutionQueue.dequeue();
 
-      if (job === undefined) {
+      if (job === null || job === undefined) {
         return IDLE_RESULT;
       }
 

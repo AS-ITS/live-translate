@@ -1,11 +1,11 @@
 const INVALID_QUEUE_IMPLEMENTATION_MESSAGE = 'translationExecutionQueue implementation is required.';
 const INVALID_ENQUEUE_MESSAGE = 'translationExecutionQueue.enqueue must be a function.';
 const INVALID_DEQUEUE_MESSAGE = 'translationExecutionQueue.dequeue must be a function.';
-const INVALID_IS_EMPTY_MESSAGE = 'translationExecutionQueue.isEmpty must be a function.';
 const INVALID_SIZE_MESSAGE = 'translationExecutionQueue.size must be a function.';
 const INVALID_JOB_MESSAGE = 'Translation execution queue job must be an object.';
 const INVALID_EXECUTION_ID_MESSAGE = 'Translation execution queue job executionId must be a non-empty string.';
 const INVALID_REQUEST_ID_MESSAGE = 'Translation execution queue job requestId must be a non-empty string.';
+export const INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE = 'invalid_translation_execution_queue_item';
 
 export function createTranslationExecutionQueue(implementation = {}) {
   assertQueueImplementation(implementation);
@@ -17,11 +17,7 @@ export function createTranslationExecutionQueue(implementation = {}) {
     },
 
     dequeue() {
-      return implementation.dequeue();
-    },
-
-    isEmpty() {
-      return implementation.isEmpty();
+      return implementation.dequeue() ?? null;
     },
 
     size() {
@@ -32,7 +28,7 @@ export function createTranslationExecutionQueue(implementation = {}) {
 
 export function assertTranslationExecutionQueueJob(job) {
   if (!isRecord(job)) {
-    throw new TypeError(INVALID_JOB_MESSAGE);
+    throwInvalidQueueItem(INVALID_JOB_MESSAGE);
   }
 
   assertNonEmptyString(job.executionId, INVALID_EXECUTION_ID_MESSAGE);
@@ -56,10 +52,6 @@ function assertQueueImplementation(implementation) {
     throw new TypeError(INVALID_DEQUEUE_MESSAGE);
   }
 
-  if (typeof implementation.isEmpty !== 'function') {
-    throw new TypeError(INVALID_IS_EMPTY_MESSAGE);
-  }
-
   if (typeof implementation.size !== 'function') {
     throw new TypeError(INVALID_SIZE_MESSAGE);
   }
@@ -67,10 +59,16 @@ function assertQueueImplementation(implementation) {
 
 function assertNonEmptyString(value, message) {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new TypeError(message);
+    throwInvalidQueueItem(message);
   }
 }
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function throwInvalidQueueItem(message) {
+  const error = new TypeError(message);
+  error.code = INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE;
+  throw error;
 }

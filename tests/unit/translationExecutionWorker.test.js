@@ -154,7 +154,7 @@ test('dequeue removes processed job from queue', async () => {
   await worker.processNext();
 
   assert.equal(queue.size(), 0);
-  assert.equal(queue.dequeue(), undefined);
+  assert.equal(queue.dequeue(), null);
 });
 
 test('worker can delegate to existing execute runner method', async () => {

@@ -4,6 +4,18 @@
 
 ### Added
 
+- Phase 2M WP4 Documentation Closeout: completed Runtime Provider Resolution
+  documentation in README and ROADMAP, marking Phase 2M complete and recording
+  the delivered `TranslationExecutionProviderResolver` runtime boundary,
+  resolver-backed `TranslationCommandService` execution, default provider
+  behavior, deterministic unknown-provider failure lifecycle, current supported
+  provider keys (`fake` for supplied fake/test execution providers and `gemini`
+  for the current production runtime wrapper), and current limitation that no
+  additional real provider implementations, fallback, health checks, frontend
+  provider controls, HTTP API changes, or retry policy changes were added.
+  Focused regression validation covered the fake resolver, Translation Command
+  service execution, production composition wiring, and production HTTP
+  vertical integration. No production code changed.
 - Phase 2L WP7 Documentation and Closeout: completed Execution Reliability
   documentation in README and ROADMAP, marking Phase 2L complete and recording
   the delivered `RetryPolicy` abstraction, `TranslationExecutionRunner`, retry

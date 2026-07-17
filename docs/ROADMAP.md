@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2L Execution Reliability closeout completed.
+Current milestone: Phase 2M Runtime Provider Resolution closeout completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -25,6 +25,7 @@ Configuration is completed. Phase 2G Request-Scoped Provider Selection is
 completed. Phase 2H Translation Command Provider Attribution is completed.
 Phase 2I Translation Execution Dispatcher is completed. Phase 2K Production
 Translation Runtime is completed. Phase 2L Execution Reliability is completed.
+Phase 2M Runtime Provider Resolution is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -231,7 +232,13 @@ Deferred:
   - Exhausted retry semantics
   - Production composition wiring
   - Production vertical integration
-- Phase 2 overall: In Progress, Phase 2L Execution Reliability completed
+- Phase 2M - Runtime Provider Resolution: Completed
+  - TranslationExecutionProviderResolver application boundary
+  - Resolver-backed Translation Command runtime execution
+  - Default runtime provider behavior
+  - Deterministic unknown-provider failure behavior
+  - Focused unit and vertical integration verification
+- Phase 2 overall: In Progress, Phase 2M Runtime Provider Resolution completed
 
 ### Phase 2 Planning Rule
 
@@ -305,6 +312,19 @@ Completed capabilities:
   - Production Composition Wiring
   - Runtime Vertical Integration
   - Runtime Failure Lifecycle
+- Execution Reliability
+  - RetryPolicy abstraction
+  - TranslationExecutionRunner
+  - Retry execution
+  - Exhausted retry semantics
+  - Production composition wiring
+  - Production vertical integration
+- Runtime Provider Resolution
+  - TranslationExecutionProviderResolver application boundary
+  - Provider resolution before execution-provider invocation
+  - Default provider behavior for omitted `providerKey`
+  - Deterministic unknown-provider failure lifecycle
+  - Focused unit and vertical integration verification
 
 Future provider capabilities remain separate future work:
 
@@ -793,6 +813,132 @@ Future enhancement candidates:
 - Idempotency.
 - Error classification.
 - Observability.
+
+### Phase 2M - Runtime Provider Resolution
+
+Status: Completed.
+
+Scope:
+
+- `TranslationExecutionProviderResolver` application boundary.
+- Resolver-backed Translation Command runtime execution.
+- Fake runtime execution provider resolver behavior.
+- Production composition provider-key registration.
+- Runtime provider resolution vertical integration.
+
+Runtime provider-resolution architecture:
+
+```text
+HTTP
+    |
+    v
+TranslationCommandController
+    |
+    v
+TranslationCommandService
+    |
+    v
+TranslationExecutionRunner
+    |--------> RetryPolicy
+    |
+    v
+resolver-backed execution provider
+    |
+    v
+TranslationExecutionProviderResolver
+    |
+    v
+TranslationExecutionProvider
+    |
+    v
+repository persistence
+```
+
+Responsibilities:
+
+- `TranslationCommandService` builds the runtime execution path from the
+  injected `translationExecutionProviderResolver`.
+- During `TranslationExecutionRunner` execution, the resolver-backed execution
+  provider passes the execution `providerKey` to
+  `translationExecutionProviderResolver.resolve(providerKey)`.
+- `TranslationExecutionProviderResolver` owns runtime execution provider
+  selection. It does not execute providers, persist records, orchestrate
+  retries, create outputs, or manage lifecycle state.
+- The resolved `TranslationExecutionProvider` receives the existing execution
+  provider input shape: `sourceText`, `sourceLanguageCode`,
+  `targetLanguageCode`, and `providerKey`.
+- `TranslationExecutionRunner` continues to own retry checks, provider
+  invocation through the resolved provider, `TranslationOutput` persistence,
+  completed-state persistence, failed-state persistence, and original exception
+  propagation.
+
+Runtime success flow:
+
+```text
+create execution
+↓
+resolve execution provider
+↓
+provider execute
+↓
+persist output
+↓
+mark completed
+```
+
+Runtime provider-resolution failure flow:
+
+```text
+create execution
+↓
+resolve execution provider
+↓
+throws
+↓
+mark failed
+↓
+rethrow resolver error
+```
+
+Current provider behavior:
+
+- Explicit `providerKey` is used for runtime execution provider resolution.
+- Omitted `providerKey` resolves to the resolver's configured default provider.
+- The fake resolver default provider key is `fake`.
+- Production composition registers the current production runtime execution
+  provider wrapper under `gemini`, preserving existing omitted-provider and
+  explicit Gemini behavior.
+- Current supported runtime execution provider keys are `fake` for supplied
+  fake/test execution providers and `gemini` for the current production runtime
+  execution provider wrapper.
+- Unknown runtime execution provider keys throw
+  `translation execution provider not found: <providerKey>`.
+- Unknown-provider resolution failures persist the created execution as
+  `failed`, create no `TranslationOutput`, write no completed execution state,
+  and rethrow the original resolver exception. Existing generic HTTP 500
+  behavior remains unchanged.
+
+Closeout:
+
+- Focused regression coverage completed for the fake resolver, Translation
+  Command service execution, production composition wiring, and production HTTP
+  vertical integration.
+- The successful execution lifecycle and existing API contract remain
+  unchanged.
+- No production provider implementation, retry policy, HTTP API, persistence
+  schema, frontend behavior, fallback behavior, provider health check, or
+  provider-selection UI was added.
+
+Current limitations:
+
+- Runtime provider selection is limited to the existing fake execution provider
+  shape and production Gemini runtime wrapper.
+- No real OpenAI, Azure, or additional Gemini execution provider was added.
+- No fallback provider selection.
+- No provider health checks.
+- No frontend provider controls.
+- No runtime provider metrics or observability.
+- No retry policy changes.
 
 ### Phase 2 Deferred Scope
 

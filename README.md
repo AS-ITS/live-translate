@@ -26,6 +26,7 @@ Completed:
 - Phase 2I - Translation Execution Dispatcher
 - Phase 2K - Production Translation Runtime
 - Phase 2L - Execution Reliability
+- Phase 2M - Runtime Provider Resolution
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -257,6 +258,78 @@ Current Phase 2L limitations:
 - No timeout handling.
 - No cancellation.
 - No environment-configurable retry policy.
+
+Phase 2M
+Status: Completed
+
+Phase 2M status:
+
+- `TranslationExecutionProviderResolver` is the application-layer runtime
+  provider-resolution boundary for Translation Command execution.
+- `TranslationCommandService` now builds the runtime path from a
+  `translationExecutionProviderResolver`; during runner execution, the
+  resolver-backed execution provider calls `resolve(providerKey)` before
+  invoking the resolved provider.
+- `TranslationExecutionRunner` still owns retry checks, `TranslationOutput`
+  creation, completed-state persistence, failed-state persistence, and original
+  exception propagation.
+- Runtime execution flow is:
+
+```text
+create execution
+        |
+        v
+TranslationExecutionRunner
+        |
+        v
+resolve execution provider
+        |
+        v
+provider execute
+        |
+        v
+persist output
+        |
+        v
+mark completed
+```
+
+- Provider-resolution failure uses the existing provider-failure lifecycle:
+
+```text
+create execution
+        |
+        v
+TranslationExecutionRunner
+        |
+        v
+resolve execution provider
+        |
+        v
+mark failed
+        |
+        v
+rethrow resolver error
+```
+
+- When `providerKey` is omitted, the resolver uses its configured default
+  provider key.
+- The fake resolver default provider key is `fake`. Production composition
+  registers the production runtime execution provider under `gemini` so current
+  omitted-provider and explicit Gemini production behavior is preserved.
+- Current supported runtime execution provider keys are:
+  - `fake` for supplied fake/test execution providers.
+  - `gemini` for the current production runtime execution provider wrapper.
+- Unknown runtime execution provider keys throw a deterministic
+  `translation execution provider not found: <providerKey>` error. The created
+  execution is persisted as `failed`, no `TranslationOutput` is created, no
+  completed-state write occurs, and the original resolver exception is
+  rethrown at the application boundary.
+- Current runtime provider selection remains limited to the existing fake
+  execution provider shape and production Gemini runtime wrapper. Phase 2M does
+  not add real OpenAI, Azure, additional Gemini provider implementations,
+  fallback, provider health checks, provider-selection UI, HTTP API changes, or
+  retry policy changes.
 
 Documentation:
 

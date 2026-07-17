@@ -191,7 +191,11 @@ test('production composition injects an execution provider resolver for the prod
   assert.strictEqual(observedServiceOptions.translationExecutionProviderResolver.resolve(undefined), geminiProvider);
   assert.throws(
     () => observedServiceOptions.translationExecutionProviderResolver.resolve('fake'),
-    /translation execution provider not found: fake/
+    (error) => {
+      assert.equal(error instanceof Error, true);
+      assert.equal(error.message, 'translation execution provider not found: fake');
+      return true;
+    }
   );
   assert.deepEqual(calls.map(([name]) => name), [
     'environment',
@@ -277,6 +281,77 @@ test('production composition executes the Gemini provider for providerKey gemini
   assert.equal(httpCalls.length, 1);
   assert.equal(httpCalls[0].path, '/v1beta/models/gemini-composed-model:generateContent');
   assert.equal(httpCalls[0].body.contents[0].parts.at(-1).text, 'hello');
+  assert.equal(persistedOutput.translatedText, 'Bonjour');
+  assert.equal(persistedOutput.targetLanguageCode, 'fr');
+  assert.equal(completedExecution.status, 'completed');
+});
+
+test('production composition executes the default Gemini provider when providerKey is omitted', async () => {
+  const httpCalls = [];
+  let persistedExecution;
+  let persistedOutput;
+  let completedExecution;
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'gemini-default-model'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository({
+      createTranslationExecution(execution) {
+        persistedExecution = execution;
+        return execution;
+      },
+      createTranslationOutput(output) {
+        persistedOutput = output;
+        return output;
+      },
+      updateTranslationExecution(execution) {
+        completedExecution = execution;
+        return execution;
+      }
+    }),
+    geminiHttpClientFactory({ apiKey }) {
+      assert.equal(apiKey, 'api-key-from-env');
+      return {
+        post(request) {
+          httpCalls.push(request);
+          return {
+            ok: true,
+            async json() {
+              return {
+                translatedText: 'Bonjour',
+                detectedSourceLanguageCode: 'en'
+              };
+            }
+          };
+        }
+      };
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
+  });
+
+  assert.strictEqual(
+    dependencies.translationExecutionProviderResolver.resolve(undefined),
+    dependencies.translationExecutionProviderResolver.resolve('gemini')
+  );
+
+  const result = await dependencies.translationCommandService.createTranslationExecution(
+    executionPayload({
+      sourceText: 'hello',
+      sourceLanguageCode: 'en',
+      targetLanguageCode: 'fr'
+    })
+  );
+
+  assert.strictEqual(result, persistedExecution);
+  assert.equal(httpCalls.length, 1);
+  assert.equal(httpCalls[0].path, '/v1beta/models/gemini-default-model:generateContent');
   assert.equal(persistedOutput.translatedText, 'Bonjour');
   assert.equal(persistedOutput.targetLanguageCode, 'fr');
   assert.equal(completedExecution.status, 'completed');
@@ -401,7 +476,7 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   let persistedOutput;
   let completedExecution;
   const fakeProvider = createFakeTranslationExecutionProvider();
-  const dependencies = createApplicationDependencies({
+  const dependencies = createProductionApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository: repository({
       createTranslationExecution(execution) {
@@ -417,7 +492,34 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
         return execution;
       }
     }),
-    translationExecutionProvider: fakeProvider
+    translationExecutionProvider: fakeProvider,
+    geminiEnvironmentFactory() {
+      throw new Error('Gemini environment should not be created for supplied fake provider');
+    },
+    geminiHttpClientFactory() {
+      throw new Error('Gemini HTTP client should not be created for supplied fake provider');
+    },
+    geminiClientFactory() {
+      throw new Error('Gemini client should not be created for supplied fake provider');
+    },
+    geminiTranslationExecutionProviderFactory() {
+      throw new Error('Gemini execution provider should not be created for supplied fake provider');
+    },
+    googleGenAIClientFactory() {
+      throw new Error('Google GenAI client should not be created for supplied fake provider');
+    },
+    geminiClientAdapterFactory() {
+      throw new Error('Gemini saved-transcript client adapter should not be created for supplied fake provider');
+    },
+    geminiSavedTranscriptTranslationCompositionFactory() {
+      throw new Error('Gemini saved-transcript provider should not be created for supplied fake provider');
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    },
+    savedTranscriptRetranslationServiceFactory() {
+      return { translateSavedTranscript() {} };
+    }
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, fakeProvider);
@@ -425,7 +527,11 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve(undefined), fakeProvider);
   assert.throws(
     () => dependencies.translationExecutionProviderResolver.resolve('unknown-provider'),
-    /translation execution provider not found: unknown-provider/
+    (error) => {
+      assert.equal(error instanceof Error, true);
+      assert.equal(error.message, 'translation execution provider not found: unknown-provider');
+      return true;
+    }
   );
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 

@@ -28,6 +28,7 @@ Completed:
 - Phase 2L - Execution Reliability
 - Phase 2M - Runtime Provider Resolution
 - Phase 2N - Gemini Translation Execution Provider
+- Phase 2O - Production Gemini Translation Execution
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -380,6 +381,56 @@ Current Phase 2N limitations:
 - No timeout handling.
 - No metrics or logging changes.
 - No provider fallback or multi-provider runtime behavior.
+
+Phase 2O
+Status: Completed
+
+Production Translation Execution Architecture:
+
+```text
+TranslationCommandService
+        |
+        v
+TranslationExecutionProviderResolver
+        |
+        v
+GeminiTranslationExecutionProvider
+        |
+        v
+GeminiClient
+        |
+        v
+Gemini API
+```
+
+Phase 2O status:
+
+- Production Translation Command execution defaults to the `gemini` provider
+  through `TranslationExecutionProviderResolver`.
+- Production composition creates `GeminiClient`, wraps it with
+  `GeminiTranslationExecutionProvider`, and registers the provider under
+  `gemini`.
+- Test and supplied-provider composition continues to use
+  `FakeTranslationExecutionProvider` for deterministic execution without
+  calling Gemini.
+- `GeminiTranslationExecutionProvider` is only an infrastructure adapter. It
+  maps Translation Execution provider input to `GeminiClient`, calls the client,
+  and maps the client response back to `translatedText` and
+  `detectedSourceLanguageCode`.
+- Translation execution success and failure lifecycle behavior remains
+  unchanged: success persists one `TranslationOutput` and marks the execution
+  completed; provider failure persists the execution as `failed`, creates no
+  output, and rethrows the original provider error through the application
+  boundary.
+
+Current Phase 2O limitations:
+
+- No streaming translation execution.
+- No retry policy changes.
+- No timeout handling.
+- No metrics or logging changes.
+- No provider fallback or multi-provider runtime behavior.
+- No real Gemini API validation in automated tests.
 
 Documentation:
 

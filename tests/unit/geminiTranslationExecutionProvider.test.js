@@ -21,61 +21,103 @@ test('rejects invalid client dependencies', () => {
   assert.throws(() => createGeminiTranslationExecutionProvider({ client: [] }), /client is required/);
   assert.throws(
     () => createGeminiTranslationExecutionProvider({ client: {} }),
-    /client\.execute must be a function/
+    /client\.translate must be a function/
+  );
+  assert.throws(
+    () => createGeminiTranslationExecutionProvider({ client: { translate: 'not-a-function' } }),
+    /client\.translate must be a function/
   );
   assert.throws(
     () => createGeminiTranslationExecutionProvider({ client: { execute: 'not-a-function' } }),
-    /client\.execute must be a function/
+    /client\.translate must be a function/
   );
 });
 
-test('execute is async and returns the client result unchanged', async () => {
-  const result = providerResult();
+test('execute calls GeminiClient.translate once and maps request and response', async () => {
+  const calls = [];
+  const result = providerResult({ ignored: 'metadata' });
   const provider = createGeminiTranslationExecutionProvider({
-    client: client({ result })
+    client: client({
+      translate(request) {
+        calls.push(request);
+        return result;
+      }
+    })
   });
 
-  const actualResult = provider.execute(translationInput());
-
-  assert.equal(typeof actualResult.then, 'function');
-  assert.strictEqual(await actualResult, result);
-});
-
-test('execute calls the client once with the original input object', async () => {
-  const calls = [];
   const input = Object.freeze(
     translationInput({
       requestId: 'request-1',
       sessionId: 'session-1',
-      executionId: 'execution-1'
+      executionId: 'execution-1',
+      ignoredField: 'ignored'
     })
   );
+  const actualResult = provider.execute(input);
+
+  assert.equal(typeof actualResult.then, 'function');
+  assert.deepEqual(await actualResult, {
+    translatedText: 'Bonjour',
+    detectedSourceLanguageCode: 'en'
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    sourceText: 'Hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    requestId: 'request-1',
+    sessionId: 'session-1',
+    executionId: 'execution-1'
+  });
+  assert.equal(Object.hasOwn(calls[0], 'providerKey'), false);
+  assert.equal(Object.hasOwn(calls[0], 'ignoredField'), false);
+});
+
+test('execute omits undefined optional request fields', async () => {
+  const calls = [];
   const provider = createGeminiTranslationExecutionProvider({
     client: client({
-      execute(inputValue) {
-        calls.push(inputValue);
+      translate(request) {
+        calls.push(request);
         return providerResult();
       }
     })
   });
 
-  await provider.execute(input);
+  await provider.execute(
+    translationInput({
+      sourceLanguageCode: undefined,
+      requestId: undefined,
+      sessionId: undefined,
+      executionId: undefined
+    })
+  );
 
-  assert.equal(calls.length, 1);
-  assert.strictEqual(calls[0], input);
+  assert.deepEqual(calls, [
+    {
+      sourceText: 'Hello',
+      targetLanguageCode: 'fr'
+    }
+  ]);
 });
 
-test('execute propagates client errors unchanged', async () => {
+test('execute rethrows GeminiClient.translate errors unchanged', async () => {
   const error = new Error('client failed');
+  error.name = 'GeminiClientError';
   const provider = createGeminiTranslationExecutionProvider({
     client: client({
-      execute() {
+      translate() {
         throw error;
       }
     })
   });
 
-  await assert.rejects(provider.execute(translationInput()), (actualError) => actualError === error);
+  await assert.rejects(provider.execute(translationInput()), (actualError) => {
+    assert.strictEqual(actualError, error);
+    assert.equal(actualError.name, 'GeminiClientError');
+    assert.equal(actualError.message, 'client failed');
+    return true;
+  });
 });
 
 test('execute does not mutate input', async () => {
@@ -95,20 +137,60 @@ test('execute does not mutate input', async () => {
 });
 
 test('works through TranslationExecutionProvider without changing the result', async () => {
-  const result = providerResult({ translatedText: 'Salut' });
   const geminiProvider = createGeminiTranslationExecutionProvider({
-    client: client({ result })
+    client: client({
+      translate() {
+        return providerResult({ translatedText: 'Salut' });
+      }
+    })
   });
   const provider = createTranslationExecutionProvider(geminiProvider);
 
   const actualResult = await provider.execute(translationInput());
 
-  assert.strictEqual(actualResult, result);
+  assert.deepEqual(actualResult, {
+    translatedText: 'Salut',
+    detectedSourceLanguageCode: 'en'
+  });
 });
 
-function client({ result = providerResult(), execute } = {}) {
+test('uses legacy client.execute when translate is unavailable with the same mapping', async () => {
+  const calls = [];
+  const provider = createGeminiTranslationExecutionProvider({
+    client: Object.freeze({
+      execute(request) {
+        calls.push(request);
+        return providerResult({ translatedText: 'Salut' });
+      }
+    })
+  });
+
+  const actualResult = await provider.execute(
+    translationInput({
+      requestId: 'request-legacy',
+      sessionId: 'session-legacy',
+      executionId: 'execution-legacy'
+    })
+  );
+
+  assert.deepEqual(actualResult, {
+    translatedText: 'Salut',
+    detectedSourceLanguageCode: 'en'
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], {
+    sourceText: 'Hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    requestId: 'request-legacy',
+    sessionId: 'session-legacy',
+    executionId: 'execution-legacy'
+  });
+});
+
+function client({ result = providerResult(), translate } = {}) {
   return Object.freeze({
-    execute: execute ?? (() => result)
+    translate: translate ?? (() => result)
   });
 }
 

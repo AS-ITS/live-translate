@@ -6,6 +6,8 @@ import { createRequestHandler } from '../../server/index.js';
 import { TranslationExecution, TranslationOutput, TranslationRequest } from '../../src/domain/translation/index.js';
 import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
 import { createFakeTranslationExecutionProviderResolver } from '../../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
+import { GeminiHttpError } from '../../src/infrastructure/geminiClient.js';
+import { createGeminiTranslationExecutionProvider as createDefaultGeminiTranslationExecutionProvider } from '../../src/infrastructure/geminiTranslationExecutionProvider.js';
 
 test('POST /api/translation-requests creates a TranslationRequest through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture({
@@ -143,6 +145,104 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
       assertNoFailedExecutionPersistence(translationRepository);
     },
     runtime.options
+  );
+
+  assert.deepEqual(input, before);
+});
+
+test('POST /api/translation-executions completes through GeminiTranslationExecutionProvider and fake GeminiClient', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-gemini-client',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const geminiClientCalls = [];
+  const providerFactoryCalls = [];
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr'
+  });
+  const before = structuredClone(input);
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+
+      assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
+      assert.strictEqual(
+        dependencies.translationExecutionProviderResolver.resolve(undefined),
+        dependencies.translationExecutionProviderResolver.resolve('gemini')
+      );
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
+      assert.equal(response.status, 201);
+      assert.deepEqual(response.body, {
+        id: 'execution-1',
+        translationRequestId: 'request-1',
+        status: 'pending',
+        startedAt: '2026-07-14T01:01:00.000Z',
+        completedAt: null,
+        failureInfo: null
+      });
+      assert.equal(providerFactoryCalls.length, 1);
+      assert.strictEqual(providerFactoryCalls[0].client, providerFactoryCalls[0].geminiClient);
+      assert.deepEqual(geminiClientCalls, [
+        {
+          sourceText: 'hello',
+          sourceLanguageCode: 'en',
+          targetLanguageCode: 'fr'
+        }
+      ]);
+      assertCompletedRuntimePersistence(translationRepository, {
+        requestId: 'request-1',
+        sessionId: 'session-runtime-gemini-client',
+        executionId: 'execution-1',
+        providerKey: undefined,
+        translatedText: '[gemini-client:fr] hello',
+        targetLanguageCode: 'fr'
+      });
+      assertNoFailedExecutionPersistence(translationRepository);
+    },
+    {
+      env: {
+        GEMINI_API_KEY: 'gemini-runtime-api-key',
+        GEMINI_MODEL: 'gemini-runtime-model'
+      },
+      geminiHttpClientFactory({ apiKey }) {
+        assert.equal(apiKey, 'gemini-runtime-api-key');
+        return {
+          post() {
+            throw new Error('Gemini HTTP client should not be called when fake GeminiClient is supplied');
+          }
+        };
+      },
+      geminiClientFactory({ httpClient, model }) {
+        assert.equal(typeof httpClient.post, 'function');
+        assert.equal(model, 'gemini-runtime-model');
+        return {
+          async translate(request) {
+            geminiClientCalls.push(request);
+            return {
+              translatedText: `[gemini-client:${request.targetLanguageCode}] ${request.sourceText}`,
+              detectedSourceLanguageCode: request.sourceLanguageCode
+            };
+          }
+        };
+      },
+      geminiTranslationExecutionProviderFactory(options) {
+        providerFactoryCalls.push({
+          ...options,
+          geminiClient: options.client
+        });
+        return createDefaultGeminiTranslationExecutionProvider(options);
+      }
+    }
   );
 
   assert.deepEqual(input, before);
@@ -309,6 +409,125 @@ test('POST /api/translation-executions propagates original production provider e
   assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
   assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
   assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
+});
+
+test('POST /api/translation-executions persists failed execution when fake GeminiClient throws GeminiHttpError', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-gemini-http-error',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const geminiError = new GeminiHttpError({
+    status: 429,
+    code: 'rate_limited',
+    message: 'Gemini HTTP request failed: rate_limited (429).'
+  });
+  const runtime = createGeminiClientErrorRuntimeFixture({ error: geminiError });
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    providerKey: 'gemini'
+  });
+  const before = structuredClone(input);
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+      const bodyText = JSON.stringify(response.body);
+      const storedExecution = translationRepository.translationExecutions.get('execution-1');
+      const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+      const updateCalls = translationRepository.callsFor('updateTranslationExecution');
+
+      assert.equal(typeof dependencies.translationExecutionProviderResolver.resolve, 'function');
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
+      assert.equal(response.status, 429);
+      assert.equal(response.body.error.code, 'rate_limited');
+      assert.equal(response.body.error.message, 'Too many requests. Please try again later.');
+      assert.doesNotMatch(bodyText, /Gemini HTTP request failed/);
+      assert.equal(runtime.geminiClientCalls.length, 1);
+      assert.deepEqual(runtime.geminiClientCalls[0], {
+        sourceText: 'hello',
+        sourceLanguageCode: 'en',
+        targetLanguageCode: 'fr'
+      });
+      assert.equal(storedExecution instanceof TranslationExecution, true);
+      assert.equal(storedExecution.status, 'failed');
+      assert.notEqual(storedExecution.status, 'completed');
+      assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
+      assert.equal(storedOutputs.length, 0);
+      assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
+      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+      assert.equal(updateCalls.length, 1);
+      assert.equal(updateCalls[0][0].status, 'failed');
+      assert.equal(updateCalls.some(([execution]) => execution.status === 'completed'), false);
+    },
+    runtime.options
+  );
+
+  assert.deepEqual(input, before);
+});
+
+test('GeminiHttpError from fake GeminiClient is rethrown unchanged through application boundary', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-gemini-http-error-boundary',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const geminiError = new GeminiHttpError({
+    status: 503,
+    code: 'server_error',
+    message: 'Gemini HTTP request failed: server_error (503).'
+  });
+  const runtime = createGeminiClientErrorRuntimeFixture({ error: geminiError });
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository,
+    ...runtime.options,
+    requestHandlerFactory: createRequestHandler,
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command requests');
+    }
+  });
+
+  await assert.rejects(
+    dependencies.translationCommandController.createTranslationExecution(
+      translationExecutionPayload({
+        sourceText: 'hello',
+        sourceLanguageCode: 'en',
+        targetLanguageCode: 'fr',
+        providerKey: 'gemini'
+      })
+    ),
+    (actualError) => {
+      assert.strictEqual(actualError, geminiError);
+      assert.equal(actualError.name, 'GeminiHttpError');
+      assert.equal(actualError.status, 503);
+      assert.equal(actualError.code, 'server_error');
+      assert.equal(actualError.message, 'Gemini HTTP request failed: server_error (503).');
+      return true;
+    }
+  );
+
+  assert.equal(runtime.geminiClientCalls.length, 1);
+  assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
+  assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+  assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+  assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
+  assert.deepEqual(translationRepository.translationExecutions.get('execution-1').failureInfo, {
+    reason: 'provider_execution_failed'
+  });
 });
 
 test('POST /api/translation-executions repository failure prevents provider execution writes', async () => {
@@ -970,6 +1189,41 @@ function createRuntimeProviderResolutionFixture({
             };
           }
         };
+      }
+    }
+  };
+}
+
+function createGeminiClientErrorRuntimeFixture({ error }) {
+  const geminiClientCalls = [];
+
+  return {
+    geminiClientCalls,
+    options: {
+      env: {
+        GEMINI_API_KEY: 'gemini-runtime-api-key',
+        GEMINI_MODEL: 'gemini-runtime-model'
+      },
+      geminiHttpClientFactory({ apiKey }) {
+        assert.equal(apiKey, 'gemini-runtime-api-key');
+        return {
+          post() {
+            throw new Error('Gemini HTTP client should not be called when fake GeminiClient is supplied');
+          }
+        };
+      },
+      geminiClientFactory({ httpClient, model }) {
+        assert.equal(typeof httpClient.post, 'function');
+        assert.equal(model, 'gemini-runtime-model');
+        return {
+          async translate(request) {
+            geminiClientCalls.push(request);
+            throw error;
+          }
+        };
+      },
+      geminiTranslationExecutionProviderFactory(options) {
+        return createDefaultGeminiTranslationExecutionProvider(options);
       }
     }
   };

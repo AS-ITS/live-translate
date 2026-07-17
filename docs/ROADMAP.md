@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2N Gemini Translation Execution Provider closeout completed.
+Current milestone: Phase 2O Production Gemini Translation Execution completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -26,7 +26,8 @@ completed. Phase 2H Translation Command Provider Attribution is completed.
 Phase 2I Translation Execution Dispatcher is completed. Phase 2K Production
 Translation Runtime is completed. Phase 2L Execution Reliability is completed.
 Phase 2M Runtime Provider Resolution is completed. Phase 2N Gemini Translation
-Execution Provider is completed.
+Execution Provider is completed. Phase 2O Production Gemini Translation
+Execution is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -247,7 +248,12 @@ Deferred:
   - Gemini HTTP failure mapping for 400, 401, 403, 429, 5xx, and invalid
     responses
   - Fake HTTP vertical integration verification with no real Gemini API call
-- Phase 2 overall: In Progress, Phase 2N Gemini Translation Execution Provider completed
+- Phase 2O - Production Gemini Translation Execution: Completed
+  - Gemini `TranslationExecutionProvider`
+  - Production composition defaulting to `gemini`
+  - Unit, composition, vertical integration, and error integration coverage
+  - Fake provider path preserved for test composition
+- Phase 2 overall: In Progress, Phase 2O Production Gemini Translation Execution completed
 
 ### Phase 2 Planning Rule
 
@@ -340,6 +346,12 @@ Completed capabilities:
   - Gemini runtime composition registration
   - Fake HTTP integration verification
   - Failure mapping closeout
+- Production Gemini Translation Execution
+  - `GeminiTranslationExecutionProvider` adapter integration
+  - Production `gemini` provider default
+  - Unit and composition verification
+  - Vertical integration and error integration verification
+  - Fake provider path preserved
 
 Future provider capabilities remain separate future work:
 
@@ -1016,6 +1028,82 @@ Deferred:
 - Real Gemini API validation. It still requires configured `GEMINI_API_KEY` and
   `GEMINI_MODEL`.
 - Streaming.
+- Retry policy changes.
+- Timeout handling.
+- Metrics or logging changes.
+- Provider fallback.
+- Multiple production runtime providers.
+
+### Phase 2O - Production Gemini Translation Execution
+
+Status: Completed.
+
+Scope:
+
+- `GeminiTranslationExecutionProvider` as the production
+  `TranslationExecutionProvider` adapter.
+- Production composition creates `GeminiClient`, creates
+  `GeminiTranslationExecutionProvider`, registers it under `gemini`, and uses
+  `gemini` as the default provider when `TRANSLATION_PROVIDER` is unset.
+- Test and supplied-provider composition keeps `FakeTranslationExecutionProvider`
+  behavior unchanged.
+- Unit, composition, vertical integration, and error integration coverage for
+  the Gemini translation execution path.
+
+Production execution architecture:
+
+```text
+TranslationCommandService
+    |
+    v
+TranslationExecutionProviderResolver
+    |
+    v
+GeminiTranslationExecutionProvider
+    |
+    v
+GeminiClient
+    |
+    v
+Gemini API
+```
+
+Current behavior:
+
+- `providerKey: "gemini"` resolves to the production Gemini execution provider.
+- Omitted provider keys use the configured default provider key. When
+  `TRANSLATION_PROVIDER` is unset, the default remains `gemini`.
+- `GeminiTranslationExecutionProvider` performs adapter-level request/response
+  mapping only. It does not own orchestration, persistence, retry, timeout,
+  logging, metrics, or fallback behavior.
+- Successful execution uses the existing lifecycle:
+  `Execution Created` -> `Gemini Provider Execute` -> `TranslationOutput
+  Created` -> `Execution Completed`.
+- Provider failure uses the existing lifecycle:
+  `Execution Created` -> `Gemini Provider Execute` throws -> `Execution
+  Failed`. No `TranslationOutput` is created, and the original provider error is
+  rethrown through the application boundary.
+
+Closeout:
+
+- Unit tests cover `GeminiTranslationExecutionProvider` request mapping,
+  response mapping, direct error propagation, and legacy client compatibility.
+- Composition tests verify Gemini provider wiring, default `gemini` behavior,
+  supplied fake provider isolation, and deterministic unknown-provider failure.
+- Vertical integration verifies `POST /api/translation-executions` can execute
+  through `TranslationCommandService`,
+  `TranslationExecutionProviderResolver`,
+  `GeminiTranslationExecutionProvider`, and a fake `GeminiClient` to persist one
+  `TranslationOutput` and complete the execution.
+- Error integration verifies `GeminiHttpError` from a fake `GeminiClient` keeps
+  the existing failed-execution lifecycle, creates no output, and is rethrown
+  unchanged at the application boundary.
+
+Deferred:
+
+- Real Gemini API validation. It still requires configured `GEMINI_API_KEY` and
+  `GEMINI_MODEL`.
+- Streaming or live translation execution through this command path.
 - Retry policy changes.
 - Timeout handling.
 - Metrics or logging changes.

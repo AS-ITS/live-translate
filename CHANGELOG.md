@@ -4,6 +4,22 @@
 
 ### Added
 
+- Phase 2O WP7 Documentation and Closeout: completed Production Gemini
+  Translation Execution documentation and closeout. Added the concrete
+  `GeminiTranslationExecutionProvider` production adapter for Translation
+  Execution, wired production composition to create `GeminiClient`, wrap it in
+  the Gemini execution provider, register it as `gemini`, and keep `gemini` as
+  the default production provider when `TRANSLATION_PROVIDER` is unset. Test and
+  supplied-provider composition continues to use
+  `FakeTranslationExecutionProvider` without invoking the Gemini production
+  path. Focused unit, composition, vertical integration, and error integration
+  coverage now verifies request and response mapping, provider wiring, default
+  `gemini` resolution, fake-provider isolation, successful
+  `TranslationOutput` persistence and completed execution lifecycle, failed
+  execution persistence, no output on provider failure, and unchanged
+  `GeminiHttpError` propagation at the application boundary. No retry, timeout,
+  streaming, metrics, logging, fallback, HTTP API, persistence schema, frontend
+  behavior, or real Gemini API validation was added.
 - Phase 2N WP5 Failure Mapping and Closeout: completed Gemini Translation
   Execution Provider closeout, including stable `GeminiHttpError` mapping for
   Gemini HTTP 400, 401, 403, 429, 5xx, and generic HTTP failures while

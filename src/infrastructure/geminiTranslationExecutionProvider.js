@@ -1,9 +1,15 @@
 export function createGeminiTranslationExecutionProvider({ client } = {}) {
   assertClient(client);
+  const translate = resolveTranslate(client);
 
   return Object.freeze({
     async execute(input) {
-      return await client.execute(input);
+      const result = await translate.call(client, mapProviderInputToGeminiRequest(input));
+
+      return Object.freeze({
+        translatedText: result?.translatedText,
+        detectedSourceLanguageCode: result?.detectedSourceLanguageCode
+      });
     }
   });
 }
@@ -13,7 +19,22 @@ function assertClient(client) {
     throw new TypeError('client is required.');
   }
 
-  if (typeof client.execute !== 'function') {
-    throw new TypeError('client.execute must be a function.');
+  if (typeof client.translate !== 'function' && typeof client.execute !== 'function') {
+    throw new TypeError('client.translate must be a function.');
   }
+}
+
+function resolveTranslate(client) {
+  return typeof client.translate === 'function' ? client.translate : client.execute;
+}
+
+function mapProviderInputToGeminiRequest(input) {
+  return Object.freeze({
+    sourceText: input?.sourceText,
+    ...(input?.sourceLanguageCode === undefined ? {} : { sourceLanguageCode: input.sourceLanguageCode }),
+    targetLanguageCode: input?.targetLanguageCode,
+    ...(input?.requestId === undefined ? {} : { requestId: input.requestId }),
+    ...(input?.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+    ...(input?.executionId === undefined ? {} : { executionId: input.executionId })
+  });
 }

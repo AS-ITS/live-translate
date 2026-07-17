@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createTranslationCommandService } from '../../src/application/translationCommandService.js';
 import { TranslationExecution, TranslationOutput } from '../../src/domain/translation/index.js';
 
-test('executes provider once with unchanged input and completes persistence flow', async () => {
+test('success persists created queued running completed lifecycle around provider and output', async () => {
   const calls = [];
   const providerInputs = [];
   const resolverInputs = [];
@@ -42,17 +42,28 @@ test('executes provider once with unchanged input and completes persistence flow
     providerKey: 'fake'
   });
   assert.equal(result instanceof TranslationExecution, true);
-  assert.deepEqual(calls.map((call) => call[0]), [
+  assert.deepEqual(callNames(calls), [
     'createTranslationExecution',
+    'updateTranslationExecution',
+    'updateTranslationExecution',
     'resolver.resolve',
     'provider.execute',
     'createTranslationOutput',
     'updateTranslationExecution'
   ]);
+  assert.deepEqual(executionStatuses(calls), ['created', 'queued', 'running', 'completed']);
+  assert.equal(callIndex(calls, 'provider.execute') > statusCallIndex(calls, 'running'), true);
+  assert.equal(callIndex(calls, 'createTranslationOutput') < statusCallIndex(calls, 'completed'), true);
 
-  const output = calls[3][1];
-  const completedExecution = calls[4][1];
+  const createdExecution = calls[0][1];
+  const queuedExecution = calls[1][1];
+  const runningExecution = calls[2][1];
+  const output = calls[5][1];
+  const completedExecution = calls[6][1];
 
+  assert.equal(createdExecution.status, 'created');
+  assert.equal(queuedExecution.status, 'queued');
+  assert.equal(runningExecution.status, 'running');
   assert.equal(output instanceof TranslationOutput, true);
   assert.equal(output.translatedText, 'Bonjour');
   assert.equal(output.targetLanguageCode, 'fr');
@@ -119,7 +130,7 @@ test('uses provider-returned translatedText without modification', async () => {
   assert.equal(createdOutput.translatedText, '  Provider text  ');
 });
 
-test('provider failures mark execution failed, skip output, and propagate original error', async () => {
+test('provider failures follow queued running failed lifecycle, skip output, and propagate original error', async () => {
   const error = new Error('provider failed');
   const calls = [];
   const dependencies = serviceDependencies({
@@ -141,17 +152,28 @@ test('provider failures mark execution failed, skip output, and propagate origin
     return actualError === error;
   });
 
-  assert.deepEqual(calls.map((call) => call[0]), [
+  assert.deepEqual(callNames(calls), [
     'createTranslationExecution',
+    'updateTranslationExecution',
+    'updateTranslationExecution',
     'resolver.resolve',
     'provider.execute',
     'updateTranslationExecution'
   ]);
-  assert.deepEqual(calls[1], ['resolver.resolve', undefined]);
+  assert.deepEqual(executionStatuses(calls), ['created', 'queued', 'running', 'failed']);
+  assert.equal(callIndex(calls, 'provider.execute') > statusCallIndex(calls, 'running'), true);
+  assert.deepEqual(calls[3], ['resolver.resolve', undefined]);
   assert.equal(calls.filter((call) => call[0] === 'provider.execute').length, 1);
   assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
 
-  const failedExecution = calls[3][1];
+  const createdExecution = calls[0][1];
+  const queuedExecution = calls[1][1];
+  const runningExecution = calls[2][1];
+  const failedExecution = calls[5][1];
+
+  assert.equal(createdExecution.status, 'created');
+  assert.equal(queuedExecution.status, 'queued');
+  assert.equal(runningExecution.status, 'running');
   assert.equal(failedExecution instanceof TranslationExecution, true);
   assert.equal(failedExecution.status, 'failed');
   assert.notEqual(failedExecution.status, 'completed');
@@ -180,16 +202,18 @@ test('resolver failures mark execution failed, skip provider and output, and pro
     (actualError) => actualError === error
   );
 
-  assert.deepEqual(calls.map((call) => call[0]), [
+  assert.deepEqual(callNames(calls), [
     'createTranslationExecution',
+    'updateTranslationExecution',
+    'updateTranslationExecution',
     'resolver.resolve',
     'updateTranslationExecution'
   ]);
-  assert.deepEqual(calls[1], ['resolver.resolve', 'missing']);
+  assert.deepEqual(calls[3], ['resolver.resolve', 'missing']);
   assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
   assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
 
-  const failedExecution = calls[2][1];
+  const failedExecution = calls[4][1];
   assert.equal(failedExecution instanceof TranslationExecution, true);
   assert.equal(failedExecution.status, 'failed');
   assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
@@ -228,14 +252,16 @@ test('resolves provider during execution orchestration without dispatching', asy
   );
 
   assert.equal(calls.some((call) => call[0] === 'dispatcher.dispatch'), false);
-  assert.deepEqual(calls.map((call) => call[0]), [
+  assert.deepEqual(callNames(calls), [
     'createTranslationExecution',
+    'updateTranslationExecution',
+    'updateTranslationExecution',
     'resolver.resolve',
     'provider.execute',
     'createTranslationOutput',
     'updateTranslationExecution'
   ]);
-  assert.deepEqual(calls[1], ['resolver.resolve', 'unregistered-provider']);
+  assert.deepEqual(calls[3], ['resolver.resolve', 'unregistered-provider']);
 });
 
 test('delegates provider execution orchestration to translationExecutionRunner', async () => {
@@ -263,6 +289,7 @@ test('delegates provider execution orchestration to translationExecutionRunner',
   assert.equal(calls.filter((call) => call[0] === 'runner.execute').length, 1);
   assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
   assert.equal(runnerInput.execution instanceof TranslationExecution, true);
+  assert.equal(runnerInput.execution.status, 'running');
   assert.strictEqual(runnerInput.payload, payload);
   assert.strictEqual(result, calls[0][1]);
 });
@@ -383,4 +410,24 @@ function providerResult(overrides = {}) {
     detectedSourceLanguageCode: 'en',
     ...overrides
   };
+}
+
+function callNames(calls) {
+  return calls.map((call) => call[0]);
+}
+
+function callIndex(calls, name) {
+  return callNames(calls).indexOf(name);
+}
+
+function executionStatuses(calls) {
+  return calls
+    .filter((call) => ['createTranslationExecution', 'updateTranslationExecution'].includes(call[0]))
+    .map((call) => call[1].status);
+}
+
+function statusCallIndex(calls, status) {
+  return calls.findIndex(
+    (call) => ['createTranslationExecution', 'updateTranslationExecution'].includes(call[0]) && call[1].status === status
+  );
 }

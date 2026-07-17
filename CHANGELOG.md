@@ -4,6 +4,56 @@
 
 ### Added
 
+- Phase 2P WP6 Documentation Closeout: completed Translation Execution
+  Lifecycle documentation and closeout. README and ROADMAP now document the
+  implemented `TranslationExecution` statuses (`created`, `queued`, `running`,
+  `completed`, `failed`), the success lifecycle (`created`, `queued`,
+  `running`, `completed`), the provider-failure lifecycle (`created`, `queued`,
+  `running`, `failed`), provider execution after persisted `running`, output
+  persistence before `completed`, no output on failure, unchanged provider-error
+  propagation, and Phase 2P completion. No production code, tests, retry, queue
+  runtime, timeout, cancellation, metrics, provider behavior, HTTP contract, or
+  persistence-format behavior changed.
+- Phase 2P WP5 Execution Lifecycle Vertical Integration: extended production
+  composition vertical integration coverage to verify persisted
+  `TranslationExecution` lifecycle order for successful execution (`created`,
+  `queued`, `running`, `completed`) and provider failure (`created`, `queued`,
+  `running`, `failed`). Coverage verifies `TranslationOutput` is created only
+  on success, no output is created on failure, provider errors are propagated
+  unchanged through the application boundary, and existing HTTP/provider
+  behavior remains unchanged. No retry, queue runtime, timeout, cancellation,
+  metrics, provider, or persistence-format behavior was added.
+- Phase 2P WP4 Lifecycle Unit Test Consolidation: consolidated focused
+  `TranslationCommandService` lifecycle coverage to assert exact persisted
+  execution status order for success (`created`, `queued`, `running`,
+  `completed`) and provider failure (`created`, `queued`, `running`, `failed`).
+  Tests now explicitly verify provider execution happens only after `running`
+  is persisted, `TranslationOutput` is persisted before `completed`, no output
+  is created on provider failure, and the original provider error is rethrown
+  unchanged. No production behavior, retry, queue runtime, timeout,
+  cancellation, metrics, HTTP, provider behavior, or persistence format changed.
+- Phase 2P WP3 Failure Execution Lifecycle: verified provider execution
+  failures now use the persisted `created`, `queued`, `running`, and `failed`
+  lifecycle introduced by WP2. The failed state is persisted after the provider
+  throws, no `TranslationOutput` is created on failure, the original provider
+  exception is rethrown unchanged, and provider invocation count remains
+  unchanged. No retry, timeout, queue runtime, error mapping, metrics, HTTP, or
+  provider behavior was added.
+- Phase 2P WP2 Success Execution Lifecycle: updated
+  `TranslationCommandService` successful provider execution orchestration to
+  persist `TranslationExecution` transitions in `created`, `queued`, `running`,
+  and `completed` order. Provider resolution, provider invocation input,
+  invocation count, `TranslationOutput` persistence before completion, and
+  failure persistence behavior remain unchanged. No queue runtime, retry,
+  timeout, cancellation, metrics, HTTP, or provider behavior was added.
+- Phase 2P WP1 Extend Translation Execution Status: updated the
+  `TranslationExecution` domain lifecycle to support explicit `created`,
+  `queued`, `running`, `completed`, and `failed` statuses, added the `queue()`
+  transition method, preserved explicit `start()`, `complete()`, and `fail()`
+  behavior, and added focused domain coverage for the new queued/running
+  lifecycle and deterministic rejection of unsupported legacy statuses. No
+  application orchestration, provider execution, HTTP, retry, queue runtime,
+  timeout, cancellation, or metrics behavior was added.
 - Phase 2O WP7 Documentation and Closeout: completed Production Gemini
   Translation Execution documentation and closeout. Added the concrete
   `GeminiTranslationExecutionProvider` production adapter for Translation

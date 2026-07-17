@@ -29,6 +29,7 @@ Completed:
 - Phase 2M - Runtime Provider Resolution
 - Phase 2N - Gemini Translation Execution Provider
 - Phase 2O - Production Gemini Translation Execution
+- Phase 2P - Translation Execution Lifecycle
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -139,10 +140,11 @@ Phase 2K status:
   unset. Unknown provider keys still propagate the existing registry error.
   There is no fallback behavior.
 - Translation Command runtime success flow is:
-  `Execution Created` -> `Provider Execute` -> `Output Created` ->
-  `Execution Completed`.
+  `Execution Created` -> `Execution Queued` -> `Execution Running` ->
+  `Provider Execute` -> `Output Created` -> `Execution Completed`.
 - Runtime failure lifecycle is:
-  `Execution Created` -> `Provider Execute` throws -> `Execution Failed`.
+  `Execution Created` -> `Execution Queued` -> `Execution Running` ->
+  `Provider Execute` throws -> `Execution Failed`.
   Provider errors skip `TranslationOutput` creation, avoid completed-state
   writes, persist the execution as `failed`, and propagate the original
   exception.
@@ -200,6 +202,12 @@ Successful execution lifecycle:
 create execution
         |
         v
+mark queued
+        |
+        v
+mark running
+        |
+        v
 provider execute
         |
         v
@@ -213,6 +221,12 @@ Failure lifecycle:
 
 ```text
 create execution
+        |
+        v
+mark queued
+        |
+        v
+mark running
         |
         v
 provider execute
@@ -281,6 +295,12 @@ Phase 2M status:
 create execution
         |
         v
+mark queued
+        |
+        v
+mark running
+        |
+        v
 TranslationExecutionRunner
         |
         v
@@ -300,6 +320,12 @@ mark completed
 
 ```text
 create execution
+        |
+        v
+mark queued
+        |
+        v
+mark running
         |
         v
 TranslationExecutionRunner
@@ -417,11 +443,13 @@ Phase 2O status:
   maps Translation Execution provider input to `GeminiClient`, calls the client,
   and maps the client response back to `translatedText` and
   `detectedSourceLanguageCode`.
-- Translation execution success and failure lifecycle behavior remains
-  unchanged: success persists one `TranslationOutput` and marks the execution
-  completed; provider failure persists the execution as `failed`, creates no
-  output, and rethrows the original provider error through the application
-  boundary.
+- Translation execution success persists `created`, `queued`, `running`, and
+  `completed` execution states in order. The provider is invoked only after
+  `running` is persisted, and one `TranslationOutput` is persisted before the
+  `completed` state.
+- Translation execution failure persists `created`, `queued`, `running`, and
+  `failed` execution states in order. Provider failure creates no output and
+  rethrows the original provider error through the application boundary.
 
 Current Phase 2O limitations:
 
@@ -431,6 +459,53 @@ Current Phase 2O limitations:
 - No metrics or logging changes.
 - No provider fallback or multi-provider runtime behavior.
 - No real Gemini API validation in automated tests.
+
+Phase 2P
+Status: Completed
+
+Phase 2P status:
+
+- `TranslationExecution` supports the explicit statuses `created`, `queued`,
+  `running`, `completed`, and `failed`.
+- Successful Translation Command execution persists this lifecycle:
+
+```text
+created
+  |
+  v
+queued
+  |
+  v
+running
+  |
+  v
+completed
+```
+
+- Provider failure persists this lifecycle:
+
+```text
+created
+  |
+  v
+queued
+  |
+  v
+running
+  |
+  v
+failed
+```
+
+- `queued` and `running` are domain states only. Phase 2P does not add a queue
+  runtime, scheduler, worker, timeout, cancellation, metrics, provider behavior,
+  HTTP contract changes, or persistence-format changes.
+- Existing provider behavior is preserved: provider execution happens once by
+  default, provider input/output contracts remain unchanged, success creates one
+  `TranslationOutput`, failure creates no output, and original provider errors
+  propagate unchanged at the application boundary.
+- Focused domain, application service, and production vertical integration
+  coverage verifies lifecycle order for success and failure.
 
 Documentation:
 

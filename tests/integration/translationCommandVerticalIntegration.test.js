@@ -54,7 +54,7 @@ test('POST /api/translation-requests creates a TranslationRequest through produc
   assert.deepEqual(input, before);
 });
 
-test('POST /api/translation-executions creates a pending TranslationExecution through production composition wiring', async () => {
+test('POST /api/translation-executions creates a created TranslationExecution through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture();
   const input = translationExecutionPayload();
   const before = structuredClone(input);
@@ -68,7 +68,7 @@ test('POST /api/translation-executions creates a pending TranslationExecution th
     assert.deepEqual(response.body, {
       id: 'execution-1',
       translationRequestId: 'request-1',
-      status: 'pending',
+      status: 'created',
       startedAt: '2026-07-14T01:01:00.000Z',
       completedAt: null,
       failureInfo: null
@@ -79,7 +79,7 @@ test('POST /api/translation-executions creates a pending TranslationExecution th
     assert.strictEqual(storedExecution, calls[0][0]);
     assert.equal(storedExecution.id, 'execution-1');
     assert.equal(storedExecution.translationRequestId, 'request-1');
-    assert.equal(storedExecution.status, 'pending');
+    assert.equal(storedExecution.status, 'created');
     assert.equal(storedExecution.startedAt, '2026-07-14T01:01:00.000Z');
   });
 
@@ -122,7 +122,7 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
       assert.deepEqual(response.body, {
         id: 'execution-1',
         translationRequestId: 'request-1',
-        status: 'pending',
+        status: 'created',
         startedAt: '2026-07-14T01:01:00.000Z',
         completedAt: null,
         failureInfo: null,
@@ -185,7 +185,7 @@ test('POST /api/translation-executions completes through GeminiTranslationExecut
       assert.deepEqual(response.body, {
         id: 'execution-1',
         translationRequestId: 'request-1',
-        status: 'pending',
+        status: 'created',
         startedAt: '2026-07-14T01:01:00.000Z',
         completedAt: null,
         failureInfo: null
@@ -283,7 +283,7 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
       assert.deepEqual(response.body, {
         id: 'execution-1',
         translationRequestId: 'request-1',
-        status: 'pending',
+        status: 'created',
         startedAt: '2026-07-14T01:01:00.000Z',
         completedAt: null,
         failureInfo: null
@@ -354,8 +354,7 @@ test('POST /api/translation-executions persists failed execution when production
       assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
       assert.equal(storedOutputs.length, 0);
       assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
-      assert.equal(updateCalls.length, 1);
-      assert.equal(updateCalls[0][0].status, 'failed');
+      assert.deepEqual(executionStatusesFromUpdateCalls(updateCalls), ['queued', 'running', 'failed']);
       assert.equal(updateCalls.some(([execution]) => execution.status === 'completed'), false);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
       assert.equal(runtime.httpCalls.length, 1);
@@ -407,7 +406,10 @@ test('POST /api/translation-executions propagates original production provider e
 
   assert.equal(runtime.httpCalls.length, 1);
   assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-  assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+  assert.deepEqual(
+    executionStatusesFromUpdateCalls(translationRepository.callsFor('updateTranslationExecution')),
+    ['queued', 'running', 'failed']
+  );
   assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
 });
 
@@ -464,8 +466,7 @@ test('POST /api/translation-executions persists failed execution when fake Gemin
       assert.equal(storedOutputs.length, 0);
       assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-      assert.equal(updateCalls.length, 1);
-      assert.equal(updateCalls[0][0].status, 'failed');
+      assert.deepEqual(executionStatusesFromUpdateCalls(updateCalls), ['queued', 'running', 'failed']);
       assert.equal(updateCalls.some(([execution]) => execution.status === 'completed'), false);
     },
     runtime.options
@@ -523,7 +524,10 @@ test('GeminiHttpError from fake GeminiClient is rethrown unchanged through appli
   assert.equal(runtime.geminiClientCalls.length, 1);
   assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
   assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-  assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+  assert.deepEqual(
+    executionStatusesFromUpdateCalls(translationRepository.callsFor('updateTranslationExecution')),
+    ['queued', 'running', 'failed']
+  );
   assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
   assert.deepEqual(translationRepository.translationExecutions.get('execution-1').failureInfo, {
     reason: 'provider_execution_failed'
@@ -594,7 +598,7 @@ test('POST /api/translation-executions reaches fake execution provider through e
       assert.deepEqual(response.body, {
         id: 'execution-1',
         translationRequestId: 'request-1',
-        status: 'pending',
+        status: 'created',
         startedAt: '2026-07-14T01:01:00.000Z',
         completedAt: null,
         failureInfo: null,
@@ -647,7 +651,7 @@ test('POST /api/translation-executions resolves omitted providerKey through fake
       assert.deepEqual(response.body, {
         id: 'execution-1',
         translationRequestId: 'request-1',
-        status: 'pending',
+        status: 'created',
         startedAt: '2026-07-14T01:01:00.000Z',
         completedAt: null,
         failureInfo: null
@@ -708,8 +712,7 @@ test('POST /api/translation-executions marks execution failed when fake resolver
       assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
       assert.equal(storedOutputs.length, 0);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
-      assert.equal(updateCalls.length, 1);
-      assert.equal(updateCalls[0][0].status, 'failed');
+      assert.deepEqual(executionStatusesFromUpdateCalls(updateCalls), ['queued', 'running', 'failed']);
     },
     {
       translationExecutionProviderResolver: resolver
@@ -717,7 +720,7 @@ test('POST /api/translation-executions marks execution failed when fake resolver
   );
 });
 
-test('PATCH /api/translation-executions/:executionId URL-decodes and starts a pending execution', async () => {
+test('PATCH /api/translation-executions/:executionId URL-decodes and starts a created execution', async () => {
   const executionId = 'execution unicode 1';
   const originalExecution = new TranslationExecution(
     translationExecutionPayload({
@@ -746,7 +749,7 @@ test('PATCH /api/translation-executions/:executionId URL-decodes and starts a pe
     assert.equal(updateCalls.length, 1);
     assert.equal(updatedExecution instanceof TranslationExecution, true);
     assert.notStrictEqual(updatedExecution, originalExecution);
-    assert.equal(originalExecution.status, 'pending');
+    assert.equal(originalExecution.status, 'created');
     assert.equal(originalExecution.startedAt, '2026-07-14T01:02:00.000Z');
     assert.equal(updatedExecution.id, executionId);
     assert.equal(updatedExecution.status, 'running');
@@ -1242,12 +1245,26 @@ function assertCompletedRuntimePersistence(
 
   assert.equal(createExecutionCalls.length, 1);
   assert.equal(createExecutionCalls[0][0] instanceof TranslationExecution, true);
-  assert.equal(updateExecutionCalls.length, 1);
-  assert.equal(updateExecutionCalls[0][0].status, 'completed');
+  assert.deepEqual(executionStatusesFromCreateAndUpdateCalls(createExecutionCalls, updateExecutionCalls), [
+    'created',
+    'queued',
+    'running',
+    'completed'
+  ]);
   assert.equal(updateExecutionCalls.some(([execution]) => execution.status === 'failed'), false);
   assert.equal(createOutputCalls.length, 1);
   assert.equal(storedOutputs.length, 1);
-  assert.strictEqual(storedExecution, updateExecutionCalls[0][0]);
+  assert.equal(
+    callIndexForExecutionStatus(translationRepository.calls, 'running') <
+      callIndexForMethod(translationRepository.calls, 'createTranslationOutput'),
+    true
+  );
+  assert.equal(
+    callIndexForMethod(translationRepository.calls, 'createTranslationOutput') <
+      callIndexForExecutionStatus(translationRepository.calls, 'completed'),
+    true
+  );
+  assert.strictEqual(storedExecution, updateExecutionCalls.at(-1)[0]);
   assert.strictEqual(storedOutput, createOutputCalls[0][0]);
   assertExecutionFields(storedExecution, {
     executionId,
@@ -1270,6 +1287,25 @@ function assertNoFailedExecutionPersistence(translationRepository) {
   const updateExecutionCalls = translationRepository.callsFor('updateTranslationExecution');
 
   assert.equal(updateExecutionCalls.some(([execution]) => execution.status === 'failed'), false);
+}
+
+function executionStatusesFromCreateAndUpdateCalls(createExecutionCalls, updateExecutionCalls) {
+  return [...createExecutionCalls, ...updateExecutionCalls].map(([execution]) => execution.status);
+}
+
+function executionStatusesFromUpdateCalls(updateExecutionCalls) {
+  return updateExecutionCalls.map(([execution]) => execution.status);
+}
+
+function callIndexForMethod(calls, methodName) {
+  return calls.findIndex(([nextMethodName]) => nextMethodName === methodName);
+}
+
+function callIndexForExecutionStatus(calls, status) {
+  return calls.findIndex(
+    ([methodName, execution]) =>
+      ['createTranslationExecution', 'updateTranslationExecution'].includes(methodName) && execution.status === status
+  );
 }
 
 function assertExecutionFields(execution, expected) {

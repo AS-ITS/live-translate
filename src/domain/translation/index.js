@@ -6,15 +6,15 @@ export {
   createTranslationRequestCreatedEvent
 } from './events.js';
 
-export const TRANSLATION_EXECUTION_STATUSES = Object.freeze(['pending', 'running', 'completed', 'failed', 'cancelled']);
+export const TRANSLATION_EXECUTION_STATUSES = Object.freeze(['created', 'queued', 'running', 'completed', 'failed']);
 
-const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed']);
 const ALLOWED_EXECUTION_TRANSITIONS = Object.freeze({
-  pending: Object.freeze(['running', 'failed', 'cancelled']),
-  running: Object.freeze(['completed', 'failed', 'cancelled']),
+  created: Object.freeze(['queued', 'running', 'failed']),
+  queued: Object.freeze(['running', 'failed']),
+  running: Object.freeze(['completed', 'failed']),
   completed: Object.freeze([]),
-  failed: Object.freeze([]),
-  cancelled: Object.freeze([])
+  failed: Object.freeze([])
 });
 
 export class TranslationRequest {
@@ -41,7 +41,7 @@ export class TranslationExecution {
 
     this.id = assertRequiredString(input.id, 'id');
     this.translationRequestId = assertRequiredString(input.translationRequestId, 'translationRequestId');
-    this.status = assertExecutionStatus(input.status ?? 'pending');
+    this.status = assertExecutionStatus(input.status ?? 'created');
     this.providerKey = assertOptionalString(input.providerKey, 'providerKey');
     this.startedAt = assertTimestamp(input.startedAt, 'startedAt');
     this.completedAt = input.completedAt ?? null;
@@ -49,6 +49,10 @@ export class TranslationExecution {
 
     validateExecutionState(this);
     deepFreeze(this);
+  }
+
+  queue() {
+    return this.transitionTo('queued');
   }
 
   start(startedAt = this.startedAt) {
@@ -66,13 +70,6 @@ export class TranslationExecution {
     return this.transitionTo('failed', {
       completedAt: assertTimestamp(completedAt, 'completedAt'),
       failureInfo: deepClone(assertRequiredValue(failureInfo, 'failureInfo'))
-    });
-  }
-
-  cancel(completedAt) {
-    return this.transitionTo('cancelled', {
-      completedAt: assertTimestamp(completedAt, 'completedAt'),
-      failureInfo: null
     });
   }
 

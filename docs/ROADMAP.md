@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2O Production Gemini Translation Execution completed.
+Current milestone: Phase 2P Translation Execution Lifecycle completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -27,7 +27,7 @@ Phase 2I Translation Execution Dispatcher is completed. Phase 2K Production
 Translation Runtime is completed. Phase 2L Execution Reliability is completed.
 Phase 2M Runtime Provider Resolution is completed. Phase 2N Gemini Translation
 Execution Provider is completed. Phase 2O Production Gemini Translation
-Execution is completed.
+Execution is completed. Phase 2P Translation Execution Lifecycle is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -253,7 +253,12 @@ Deferred:
   - Production composition defaulting to `gemini`
   - Unit, composition, vertical integration, and error integration coverage
   - Fake provider path preserved for test composition
-- Phase 2 overall: In Progress, Phase 2O Production Gemini Translation Execution completed
+- Phase 2P - Translation Execution Lifecycle: Completed
+  - `created`, `queued`, `running`, `completed`, and `failed` execution states
+  - Success lifecycle persisted as `created -> queued -> running -> completed`
+  - Failure lifecycle persisted as `created -> queued -> running -> failed`
+  - Focused domain, application service, and vertical integration verification
+- Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
 
@@ -352,6 +357,12 @@ Completed capabilities:
   - Unit and composition verification
   - Vertical integration and error integration verification
   - Fake provider path preserved
+- Translation Execution Lifecycle
+  - Explicit `TranslationExecution` statuses: `created`, `queued`, `running`,
+    `completed`, and `failed`
+  - Success lifecycle: `created -> queued -> running -> completed`
+  - Failure lifecycle: `created -> queued -> running -> failed`
+  - Focused domain, application service, and vertical integration closeout
 
 Future provider capabilities remain separate future work:
 
@@ -759,9 +770,11 @@ Current production behavior:
 - Provider execution occurs once.
 - Provider failures are not retried.
 - Successful execution immediately persists one `TranslationOutput` and marks
-  the execution `completed`.
-- Failed execution immediately marks the execution `failed` after the first
-  provider failure.
+  the execution `completed` after `created`, `queued`, and `running` states are
+  persisted.
+- Failed execution immediately marks the execution `failed` after `created`,
+  `queued`, and `running` states are persisted and the first provider failure
+  occurs.
 - `nextDelay()` is consulted for future compatibility only. No wait, sleep,
   timer, or backoff strategy is executed.
 
@@ -769,6 +782,10 @@ Success lifecycle:
 
 ```text
 create execution
+↓
+mark queued
+↓
+mark running
 ↓
 provider execute
 ↓
@@ -781,6 +798,10 @@ Failure lifecycle:
 
 ```text
 create execution
+↓
+mark queued
+↓
+mark running
 ↓
 provider execute
 ↓
@@ -904,6 +925,10 @@ Runtime success flow:
 ```text
 create execution
 ↓
+mark queued
+↓
+mark running
+↓
 resolve execution provider
 ↓
 provider execute
@@ -917,6 +942,10 @@ Runtime provider-resolution failure flow:
 
 ```text
 create execution
+↓
+mark queued
+↓
+mark running
 ↓
 resolve execution provider
 ↓
@@ -940,10 +969,10 @@ Current provider behavior:
   execution provider wrapper.
 - Unknown runtime execution provider keys throw
   `translation execution provider not found: <providerKey>`.
-- Unknown-provider resolution failures persist the created execution as
-  `failed`, create no `TranslationOutput`, write no completed execution state,
-  and rethrow the original resolver exception. Existing generic HTTP 500
-  behavior remains unchanged.
+- Unknown-provider resolution failures persist `created`, `queued`, `running`,
+  and `failed` execution states, create no `TranslationOutput`, write no
+  completed execution state, and rethrow the original resolver exception.
+  Existing generic HTTP 500 behavior remains unchanged.
 
 Closeout:
 
@@ -1076,13 +1105,15 @@ Current behavior:
 - `GeminiTranslationExecutionProvider` performs adapter-level request/response
   mapping only. It does not own orchestration, persistence, retry, timeout,
   logging, metrics, or fallback behavior.
-- Successful execution uses the existing lifecycle:
-  `Execution Created` -> `Gemini Provider Execute` -> `TranslationOutput
-  Created` -> `Execution Completed`.
-- Provider failure uses the existing lifecycle:
-  `Execution Created` -> `Gemini Provider Execute` throws -> `Execution
-  Failed`. No `TranslationOutput` is created, and the original provider error is
-  rethrown through the application boundary.
+- Successful execution uses the current lifecycle:
+  `Execution Created` -> `Execution Queued` -> `Execution Running` ->
+  `Gemini Provider Execute` -> `TranslationOutput Created` ->
+  `Execution Completed`.
+- Provider failure uses the current lifecycle:
+  `Execution Created` -> `Execution Queued` -> `Execution Running` ->
+  `Gemini Provider Execute` throws -> `Execution Failed`. No
+  `TranslationOutput` is created, and the original provider error is rethrown
+  through the application boundary.
 
 Closeout:
 
@@ -1109,6 +1140,82 @@ Deferred:
 - Metrics or logging changes.
 - Provider fallback.
 - Multiple production runtime providers.
+
+### Phase 2P - Translation Execution Lifecycle
+
+Status: Completed.
+
+Scope:
+
+- Extend the `TranslationExecution` domain lifecycle with `created`, `queued`,
+  `running`, `completed`, and `failed`.
+- Persist successful Translation Command execution states in order:
+  `created -> queued -> running -> completed`.
+- Persist provider-failure execution states in order:
+  `created -> queued -> running -> failed`.
+- Preserve existing provider invocation count, provider input/output contracts,
+  `TranslationOutput` persistence behavior, HTTP API contract, and original
+  provider-error propagation.
+
+Current behavior:
+
+- `TranslationExecution` defaults to `created`.
+- `TranslationCommandService` persists `queued` after creation and `running`
+  before invoking the configured execution provider.
+- Successful provider execution persists one `TranslationOutput` before the
+  execution is marked `completed`.
+- Provider failure creates no `TranslationOutput`, persists the execution as
+  `failed`, and rethrows the original provider exception unchanged.
+- `queued` is a domain lifecycle state only. Phase 2P does not introduce a queue
+  runtime, scheduler, worker, retry behavior, timeout handling, cancellation,
+  metrics, provider behavior, HTTP contract changes, or persistence-format
+  changes.
+
+Success lifecycle:
+
+```text
+created
+↓
+queued
+↓
+running
+↓
+completed
+```
+
+Failure lifecycle:
+
+```text
+created
+↓
+queued
+↓
+running
+↓
+failed
+```
+
+Closeout:
+
+- Domain tests verify supported statuses, explicit `queue()` and `start()`
+  transitions, completed and failed terminal behavior, and deterministic
+  rejection of unsupported legacy statuses.
+- Application service tests verify persisted lifecycle order, provider execution
+  after `running`, output before `completed`, no output on provider failure, and
+  original provider error identity.
+- Production vertical integration verifies the same success and failure
+  lifecycle order through production composition.
+
+Deferred:
+
+- Queue runtime.
+- Scheduler or worker execution.
+- Timeout handling.
+- Cancellation.
+- Metrics or logging changes.
+- Provider behavior changes.
+- HTTP contract changes.
+- Persistence-format changes.
 
 ### Phase 2 Deferred Scope
 

@@ -143,59 +143,70 @@ test('TranslationExecution constructs a valid initial execution', () => {
 
   assert.equal(execution.id, 'execution-1');
   assert.equal(execution.translationRequestId, 'request-1');
-  assert.equal(execution.status, 'pending');
+  assert.equal(execution.status, 'created');
   assert.equal(execution.providerKey, undefined);
   assert.equal(execution.startedAt, 1000);
   assert.equal(execution.completedAt, null);
   assert.equal(execution.failureInfo, null);
-  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['pending', 'running', 'completed', 'failed', 'cancelled']);
+  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['created', 'queued', 'running', 'completed', 'failed']);
   assert.equal(Object.isFrozen(execution), true);
 });
 
 test('TranslationExecution accepts and preserves provider key attribution', () => {
-  const execution = createPendingExecution({ providerKey: 'gemini' });
+  const execution = createCreatedExecution({ providerKey: 'gemini' });
 
   assert.equal(execution.providerKey, 'gemini');
+  assert.equal(execution.queue().providerKey, 'gemini');
   assert.equal(execution.start(1100).providerKey, 'gemini');
-  assert.equal(execution.start(1100).complete(1200).providerKey, 'gemini');
+  assert.equal(execution.queue().start(1100).complete(1200).providerKey, 'gemini');
 });
 
 test('TranslationExecution rejects blank provider key attribution', () => {
-  assert.throws(() => createPendingExecution({ providerKey: '' }), /providerKey/);
-  assert.throws(() => createPendingExecution({ providerKey: '   ' }), /providerKey/);
+  assert.throws(() => createCreatedExecution({ providerKey: '' }), /providerKey/);
+  assert.throws(() => createCreatedExecution({ providerKey: '   ' }), /providerKey/);
 });
 
 test('TranslationExecution rejects non-string provider key attribution', () => {
   for (const providerKey of [null, 1, true, {}, []]) {
-    assert.throws(() => createPendingExecution({ providerKey }), /providerKey must be a string/);
+    assert.throws(() => createCreatedExecution({ providerKey }), /providerKey must be a string/);
   }
 });
 
 test('TranslationExecution supports every allowed transition', () => {
-  const pending = createPendingExecution();
+  const created = createCreatedExecution();
 
-  assert.equal(pending.start(1100).status, 'running');
-  assert.equal(pending.fail({ reason: 'provider_error' }, 1200).status, 'failed');
-  assert.equal(pending.cancel(1200).status, 'cancelled');
+  assert.equal(created.queue().status, 'queued');
+  assert.equal(created.start(1100).status, 'running');
+  assert.equal(created.fail({ reason: 'provider_error' }, 1200).status, 'failed');
 
-  const running = pending.start(1100);
+  const queued = created.queue();
+  assert.equal(queued.start(1200).status, 'running');
+  assert.equal(queued.fail({ reason: 'provider_error' }, 1300).status, 'failed');
+
+  const running = queued.start(1100);
   assert.equal(running.complete(1300).status, 'completed');
   assert.equal(running.fail({ reason: 'provider_error' }, 1300).status, 'failed');
-  assert.equal(running.cancel(1300).status, 'cancelled');
 });
 
 test('TranslationExecution rejects representative illegal transitions', () => {
-  const pending = createPendingExecution();
-  const running = pending.start(1100);
+  const created = createCreatedExecution();
+  const queued = created.queue();
+  const running = queued.start(1100);
   const completed = running.complete(1200);
   const failed = running.fail({ reason: 'provider_error' }, 1200);
-  const cancelled = running.cancel(1200);
 
-  assert.throws(() => pending.complete(1200), /transition/);
+  assert.throws(() => created.complete(1200), /transition/);
+  assert.throws(() => queued.queue(), /transition/);
+  assert.throws(() => queued.complete(1200), /transition/);
   assert.throws(() => running.start(1200), /transition/);
+  assert.throws(() => running.queue(), /transition/);
   assert.throws(() => completed.fail({ reason: 'later' }, 1300), /transition/);
-  assert.throws(() => failed.cancel(1300), /transition/);
-  assert.throws(() => cancelled.start(1300), /transition/);
+  assert.throws(() => failed.start(1300), /transition/);
+});
+
+test('TranslationExecution rejects unsupported legacy statuses', () => {
+  assert.throws(() => createCreatedExecution({ status: 'pending' }), /status is not supported: pending/);
+  assert.throws(() => createCreatedExecution({ status: 'cancelled', completedAt: 1200 }), /status is not supported: cancelled/);
 });
 
 test('TranslationExecution completed state requires completion timestamp', () => {
@@ -240,13 +251,17 @@ test('TranslationExecution non-failed state rejects failure information', () => 
 });
 
 test('TranslationExecution transition returns new object and preserves original', () => {
-  const pending = createPendingExecution();
-  const running = pending.start(1100);
+  const created = createCreatedExecution();
+  const queued = created.queue();
+  const running = queued.start(1100);
 
-  assert.notEqual(running, pending);
-  assert.equal(pending.status, 'pending');
-  assert.equal(pending.startedAt, 1000);
-  assert.equal(pending.completedAt, null);
+  assert.notEqual(queued, created);
+  assert.notEqual(running, queued);
+  assert.equal(created.status, 'created');
+  assert.equal(created.startedAt, 1000);
+  assert.equal(created.completedAt, null);
+  assert.equal(queued.status, 'queued');
+  assert.equal(queued.startedAt, 1000);
   assert.equal(running.status, 'running');
   assert.equal(running.startedAt, 1100);
 });
@@ -256,7 +271,7 @@ test('TranslationExecution failure information is deeply immutable', () => {
     reason: 'provider_error',
     providerMetadata: { code: 'UNAVAILABLE', details: ['retry later'] }
   };
-  const failed = createPendingExecution().start(1100).fail(failureInfo, 1200);
+  const failed = createCreatedExecution().queue().start(1100).fail(failureInfo, 1200);
 
   failureInfo.reason = 'changed';
   failureInfo.providerMetadata.code = 'changed';
@@ -342,7 +357,7 @@ test('TranslationOutput provider metadata is deeply immutable', () => {
   });
 });
 
-function createPendingExecution(overrides = {}) {
+function createCreatedExecution(overrides = {}) {
   return new TranslationExecution({
     id: 'execution-1',
     translationRequestId: 'request-1',

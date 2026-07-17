@@ -4,6 +4,29 @@
 
 ### Added
 
+- Phase 2L WP7 Documentation and Closeout: completed Execution Reliability
+  documentation in README and ROADMAP, marking Phase 2L complete and recording
+  the delivered `RetryPolicy` abstraction, `TranslationExecutionRunner`, retry
+  execution, exhausted retry lifecycle, production composition wiring, and
+  production vertical integration coverage. Current production composition uses
+  the default `RetryPolicy(maxRetries = 0)`, so provider execution attempts
+  remain exactly one on failure. Backoff, sleep, timers, scheduling, queue or
+  worker execution, retry metrics, retry persistence, timeout handling,
+  cancellation, environment-configurable retry policy, and HTTP contract changes
+  remain future work.
+- Phase 2L WP6 Vertical Integration: added production HTTP vertical
+  integration coverage for the translation execution reliability path through
+  `TranslationCommandController`, `TranslationCommandService`,
+  `TranslationExecutionRunner`, `ProductionTranslationExecutionProvider`,
+  provider resolution, and repository persistence. The tests prove successful
+  execution resolves and executes the provider once, persists one output,
+  completes once, preserves explicit and omitted `providerKey` attribution, and
+  does not forward `providerKey` into resolved provider input. Provider failure
+  coverage proves the default production retry policy remains `maxRetries = 0`,
+  provider attempts remain exactly one, failed execution persistence happens
+  once, no output or completed state is persisted, fallback provider execution
+  does not occur, the original provider error is preserved at the application
+  boundary, and the existing generic HTTP 500 contract is unchanged.
 - Phase 2L WP5 Composition Wiring: wired production translation command
   composition to create the default `RetryPolicy`, build a
   `TranslationExecutionRunner` with the `TranslationRepository`,

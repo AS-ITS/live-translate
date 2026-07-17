@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 2L Execution Reliability.
+Current milestone: Phase 2L Execution Reliability closeout completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -24,7 +24,7 @@ Translation Provider Architecture are completed. Phase 2F Translation Provider
 Configuration is completed. Phase 2G Request-Scoped Provider Selection is
 completed. Phase 2H Translation Command Provider Attribution is completed.
 Phase 2I Translation Execution Dispatcher is completed. Phase 2K Production
-Translation Runtime is completed.
+Translation Runtime is completed. Phase 2L Execution Reliability is completed.
 
 Completed Phase 1 capabilities include:
 
@@ -224,14 +224,14 @@ Deferred:
   - Production Composition Wiring
   - Runtime Vertical Integration
   - Runtime Failure Lifecycle
-- Phase 2L - Execution Reliability: Planned
-  - Retry
-  - Timeout
-  - Cancellation
-  - Idempotency
-  - Error Classification
-  - Observability
-- Phase 2 overall: In Progress, Phase 2L Execution Reliability current
+- Phase 2L - Execution Reliability: Completed
+  - RetryPolicy abstraction
+  - TranslationExecutionRunner
+  - Retry execution
+  - Exhausted retry semantics
+  - Production composition wiring
+  - Production vertical integration
+- Phase 2 overall: In Progress, Phase 2L Execution Reliability completed
 
 ### Phase 2 Planning Rule
 
@@ -665,20 +665,134 @@ Deferred:
 
 ### Phase 2L - Execution Reliability
 
-Status: Planned.
+Status: Completed.
 
 Scope:
 
-- Retry.
-- Timeout.
-- Cancellation.
-- Idempotency.
-- Error Classification.
-- Observability.
+- RetryPolicy abstraction.
+- TranslationExecutionRunner.
+- Retry execution.
+- Exhausted retry semantics.
+- Production composition wiring.
+- Production vertical integration.
 
-Phase 2L must build on the Phase 2K runtime lifecycle without changing the
-existing provider resolver contract or broadening runtime behavior unless that
-work package explicitly requires it.
+Execution reliability architecture:
+
+```text
+HTTP
+    |
+    v
+TranslationCommandController
+    |
+    v
+TranslationCommandService
+    |
+    v
+TranslationExecutionRunner
+    |--------> RetryPolicy
+    |
+    v
+TranslationExecutionProvider
+```
+
+Responsibilities:
+
+- `TranslationCommandService` orchestrates command handling, domain object
+  creation, repository persistence, and command-domain event publication.
+- `TranslationExecutionRunner` owns provider execution, output creation,
+  execution completion persistence, and execution failure persistence.
+- `RetryPolicy` decides whether a failed provider attempt is eligible for
+  another attempt.
+- `TranslationExecutionProvider` performs translation execution through the
+  configured runtime provider path.
+
+Current production behavior:
+
+- Production composition uses `RetryPolicy(maxRetries = 0)`.
+- Provider execution occurs once.
+- Provider failures are not retried.
+- Successful execution immediately persists one `TranslationOutput` and marks
+  the execution `completed`.
+- Failed execution immediately marks the execution `failed` after the first
+  provider failure.
+- `nextDelay()` is consulted for future compatibility only. No wait, sleep,
+  timer, or backoff strategy is executed.
+
+Success lifecycle:
+
+```text
+create execution
+↓
+provider execute
+↓
+persist output
+↓
+mark completed
+```
+
+Failure lifecycle:
+
+```text
+create execution
+↓
+provider execute
+↓
+mark failed
+↓
+rethrow provider error
+```
+
+Configured retry lifecycle:
+
+```text
+attempt
+↓
+failure
+↓
+RetryPolicy
+↓
+next attempt
+
+...
+
+retry exhausted
+↓
+mark failed
+```
+
+Failed execution persistence occurs only after retry exhaustion. With the
+current production default, exhaustion happens after the first failed provider
+attempt because `maxRetries = 0`.
+
+Closeout:
+
+- Focused regression coverage completed for `RetryPolicy`,
+  `TranslationExecutionRunner`, production composition wiring, Translation
+  Command service execution, and production HTTP vertical integration.
+- Production vertical integration verifies provider resolution, provider input
+  shape, explicit and omitted `providerKey` attribution, one output on success,
+  completed lifecycle on success, failed lifecycle on provider failure, no
+  fallback provider execution, and exactly one provider attempt on failure.
+- Existing HTTP success and generic internal-error contracts remain unchanged.
+- No runtime retry configuration, environment retry configuration, HTTP fields,
+  status codes, repository schema changes, queue, worker, timers, logging, or
+  metrics were added.
+
+Future enhancement candidates:
+
+- Exponential backoff.
+- Sleep or timer-backed delays.
+- Scheduling.
+- Background workers.
+- Queue execution.
+- Retry metrics.
+- Retry persistence or attempt history.
+- Timeout handling.
+- Cancellation.
+- Environment-configurable retry policy.
+- Idempotency.
+- Error classification.
+- Observability.
 
 ### Phase 2 Deferred Scope
 

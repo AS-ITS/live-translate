@@ -25,6 +25,7 @@ Completed:
 - Phase 2H - Translation Command Provider Attribution
 - Phase 2I - Translation Execution Dispatcher
 - Phase 2K - Production Translation Runtime
+- Phase 2L - Execution Reliability
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -151,17 +152,123 @@ Phase 2K status:
   multi-provider fallback, HTTP API changes, resolver contract changes, or
   frontend provider controls.
 
+Phase 2L
+Status: Completed
+
+Phase 2L status:
+
+- Translation Command execution now follows this production pipeline:
+
+```text
+HTTP
+    |
+    v
+TranslationCommandController
+    |
+    v
+TranslationCommandService
+    |
+    v
+TranslationExecutionRunner
+    |--------> RetryPolicy
+    |
+    v
+TranslationExecutionProvider
+```
+
+- `TranslationCommandService` orchestrates command handling, domain creation,
+  repository persistence, and command-domain event publication.
+- `TranslationExecutionRunner` owns provider execution, `TranslationOutput`
+  creation, completion persistence, and failure persistence for execution
+  commands.
+- `RetryPolicy` determines whether a failed provider attempt is eligible for
+  another attempt.
+- `TranslationExecutionProvider` performs translation execution through the
+  configured runtime provider path.
+- Production composition uses `RetryPolicy(maxRetries = 0)`. Provider execution
+  occurs once, provider failures are not retried, successful execution
+  immediately completes, and exhausted execution immediately fails.
+- `nextDelay()` is consulted only for future compatibility. The current runner
+  does not wait, sleep, schedule timers, or execute a backoff strategy.
+
+Successful execution lifecycle:
+
+```text
+create execution
+        |
+        v
+provider execute
+        |
+        v
+persist output
+        |
+        v
+mark completed
+```
+
+Failure lifecycle:
+
+```text
+create execution
+        |
+        v
+provider execute
+        |
+        v
+mark failed
+        |
+        v
+rethrow provider error
+```
+
+Configured retry lifecycle:
+
+```text
+attempt
+    |
+    v
+failure
+    |
+    v
+RetryPolicy
+    |
+    v
+next attempt
+
+...
+
+retry exhausted
+        |
+        v
+mark failed
+```
+
+Failed execution persistence occurs only after retry exhaustion. With the
+current production default, exhaustion happens after the first failed provider
+attempt because `maxRetries = 0`.
+
+Current Phase 2L limitations:
+
+- No exponential backoff.
+- No sleep or timers.
+- No scheduling, background worker, or queue execution.
+- No retry metrics.
+- No retry persistence or attempt history.
+- No timeout handling.
+- No cancellation.
+- No environment-configurable retry policy.
+
 Documentation:
 
 - [docs/architecture/architecture-overview.md](docs/architecture/architecture-overview.md) - High-level system architecture, runtime flow, module responsibilities, dependency boundaries, completed capabilities, and deferred architecture.
 - [docs/architecture/domain-model.md](docs/architecture/domain-model.md) - Core domain objects, ownership, lifecycle, relationships, and future extension boundaries.
 
-Planned next capability:
+Future execution reliability enhancement candidates:
 
-- Phase 2L - Execution Reliability
-  - Retry
-  - Timeout
-  - Cancellation
-  - Idempotency
-  - Error Classification
-  - Observability
+- Exponential backoff and delay strategies.
+- Timeout handling.
+- Cancellation.
+- Idempotency.
+- Error classification.
+- Observability and retry metrics.
+- Queue or worker-based execution.

@@ -104,9 +104,11 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
 
   await withProductionTranslationCommandServer(
     translationRepository,
-    async (baseUrl) => {
+    async (baseUrl, dependencies) => {
       const response = await postJson(`${baseUrl}/api/translation-executions`, input);
 
+      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 201);
       assert.deepEqual(response.body, {
         id: 'execution-1',
@@ -137,6 +139,7 @@ test('POST /api/translation-executions preserves explicit providerKey through pr
         translatedText: '[runtime:fr] hello',
         targetLanguageCode: 'fr'
       });
+      assertNoFailedExecutionPersistence(translationRepository);
     },
     runtime.options
   );
@@ -165,9 +168,11 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
 
   await withProductionTranslationCommandServer(
     translationRepository,
-    async (baseUrl) => {
+    async (baseUrl, dependencies) => {
       const response = await postJson(`${baseUrl}/api/translation-executions`, input);
 
+      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 201);
       assert.deepEqual(response.body, {
         id: 'execution-1',
@@ -197,6 +202,7 @@ test('POST /api/translation-executions preserves omitted providerKey as undefine
         translatedText: '[runtime:fr] hello',
         targetLanguageCode: 'fr'
       });
+      assertNoFailedExecutionPersistence(translationRepository);
     },
     runtime.options
   );
@@ -227,13 +233,16 @@ test('POST /api/translation-executions persists failed execution when production
 
   await withProductionTranslationCommandServer(
     translationRepository,
-    async (baseUrl) => {
+    async (baseUrl, dependencies) => {
       const response = await postJson(`${baseUrl}/api/translation-executions`, input);
       const bodyText = JSON.stringify(response.body);
       const storedRequest = translationRepository.translationRequests.get('request-1');
       const storedExecution = translationRepository.translationExecutions.get('execution-1');
       const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+      const updateCalls = translationRepository.callsFor('updateTranslationExecution');
 
+      assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+      assert.equal(dependencies.retryPolicy.maxRetries, 0);
       assert.equal(response.status, 500);
       assert.equal(response.body.error.code, 'internal_error');
       assert.equal(response.body.error.message, 'Unexpected server error.');
@@ -245,7 +254,9 @@ test('POST /api/translation-executions persists failed execution when production
       assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
       assert.equal(storedOutputs.length, 0);
       assert.equal(translationRepository.callsFor('createTranslationExecution').length, 1);
-      assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+      assert.equal(updateCalls.length, 1);
+      assert.equal(updateCalls[0][0].status, 'failed');
+      assert.equal(updateCalls.some(([execution]) => execution.status === 'completed'), false);
       assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
       assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
       assert.deepEqual(runtime.translateCalls, [
@@ -258,11 +269,59 @@ test('POST /api/translation-executions persists failed execution when production
           executionId: undefined
         }
       ]);
+      assert.equal(Object.hasOwn(runtime.translateCalls[0], 'providerKey'), false);
+      assert.deepEqual(runtime.fallbackTranslateCalls, []);
     },
     runtime.options
   );
 
   assert.deepEqual(input, before);
+});
+
+test('POST /api/translation-executions propagates original production provider error through application boundary', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-failure-2',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const providerError = new Error('runtime provider failed by identity');
+  const runtime = createRuntimeProviderResolutionFixture({ translateError: providerError });
+  const dependencies = createProductionApplicationDependencies({
+    sessionReadRepository: readRepository(),
+    translationRepository,
+    ...runtime.options,
+    requestHandlerFactory: createRequestHandler,
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('provider resolution should not run for translation command requests');
+    }
+  });
+
+  assert.equal(typeof dependencies.translationExecutionRunner.execute, 'function');
+  assert.equal(dependencies.retryPolicy.maxRetries, 0);
+
+  await assert.rejects(
+    dependencies.translationCommandController.createTranslationExecution(
+      translationExecutionPayload({
+        sourceText: 'hello',
+        sourceLanguageCode: 'en',
+        targetLanguageCode: 'fr',
+        providerKey: 'gemini'
+      })
+    ),
+    (actualError) => actualError === providerError
+  );
+
+  assert.deepEqual(runtime.resolveCalls, [{ providerKey: 'gemini' }]);
+  assert.equal(runtime.translateCalls.length, 1);
+  assert.deepEqual(runtime.fallbackTranslateCalls, []);
+  assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+  assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 1);
+  assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'failed');
 });
 
 test('POST /api/translation-executions repository failure prevents provider execution writes', async () => {
@@ -507,7 +566,7 @@ async function withProductionTranslationCommandServer(translationRepository, run
 
   try {
     const { port } = server.address();
-    await run(`http://127.0.0.1:${port}`);
+    await run(`http://127.0.0.1:${port}`, dependencies);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => {
@@ -738,6 +797,7 @@ function translationOutputPayload(overrides = {}) {
 function createRuntimeProviderResolutionFixture({ translateError } = {}) {
   const resolveCalls = [];
   const translateCalls = [];
+  const fallbackTranslateCalls = [];
   const provider = Object.freeze({
     translate(input) {
       translateCalls.push(input);
@@ -750,10 +810,19 @@ function createRuntimeProviderResolutionFixture({ translateError } = {}) {
       };
     }
   });
+  const fallbackProvider = Object.freeze({
+    translate(input) {
+      fallbackTranslateCalls.push(input);
+      return {
+        translatedText: `[fallback:${input.targetLanguageCode}] ${input.sourceText}`
+      };
+    }
+  });
 
   return {
     resolveCalls,
     translateCalls,
+    fallbackTranslateCalls,
     options: {
       env: {
         GEMINI_API_KEY: 'unused-by-runtime-provider-fixture',
@@ -769,7 +838,7 @@ function createRuntimeProviderResolutionFixture({ translateError } = {}) {
         return { generateContent() {} };
       },
       geminiSavedTranscriptTranslationCompositionFactory() {
-        return { savedTranscriptTranslationProvider: provider };
+        return { savedTranscriptTranslationProvider: provider, fallbackProvider };
       },
       translationProviderConfigurationFactory() {
         return { defaultProviderKey: 'gemini' };
@@ -805,6 +874,8 @@ function assertCompletedRuntimePersistence(
   assert.equal(createExecutionCalls.length, 1);
   assert.equal(createExecutionCalls[0][0] instanceof TranslationExecution, true);
   assert.equal(updateExecutionCalls.length, 1);
+  assert.equal(updateExecutionCalls[0][0].status, 'completed');
+  assert.equal(updateExecutionCalls.some(([execution]) => execution.status === 'failed'), false);
   assert.equal(createOutputCalls.length, 1);
   assert.equal(storedOutputs.length, 1);
   assert.strictEqual(storedExecution, updateExecutionCalls[0][0]);
@@ -824,6 +895,12 @@ function assertCompletedRuntimePersistence(
   assert.equal(storedOutput.targetLanguageCode, targetLanguageCode);
   assert.deepEqual(translationRepository.listTranslationOutputsByRequest(requestId), [storedOutput]);
   assert.deepEqual(translationRepository.listTranslationOutputsBySession(sessionId), [storedOutput]);
+}
+
+function assertNoFailedExecutionPersistence(translationRepository) {
+  const updateExecutionCalls = translationRepository.callsFor('updateTranslationExecution');
+
+  assert.equal(updateExecutionCalls.some(([execution]) => execution.status === 'failed'), false);
 }
 
 function assertExecutionFields(execution, expected) {

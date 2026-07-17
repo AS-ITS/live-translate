@@ -332,7 +332,12 @@ test('fake composition keeps supplied FakeTranslationExecutionProvider unchanged
   });
 
   assert.strictEqual(dependencies.translationExecutionProvider, fakeProvider);
-  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('unknown-provider'), fakeProvider);
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('fake'), fakeProvider);
+  assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve(undefined), fakeProvider);
+  assert.throws(
+    () => dependencies.translationExecutionProviderResolver.resolve('unknown-provider'),
+    /translation execution provider not found: unknown-provider/
+  );
   assert.equal(dependencies.retryPolicy.maxRetries, 0);
 
   const result = await dependencies.translationCommandService.createTranslationExecution(

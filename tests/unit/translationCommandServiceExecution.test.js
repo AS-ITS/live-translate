@@ -158,6 +158,43 @@ test('provider failures mark execution failed, skip output, and propagate origin
   assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
 });
 
+test('resolver failures mark execution failed, skip provider and output, and propagate original error', async () => {
+  const error = new Error('translation execution provider not found: missing');
+  const calls = [];
+  const dependencies = serviceDependencies({
+    calls,
+    translationExecutionProviderResolver: {
+      resolve(providerKey) {
+        calls.push(['resolver.resolve', providerKey]);
+        throw error;
+      }
+    }
+  });
+
+  await assert.rejects(
+    dependencies.service.createTranslationExecution(
+      executionPayload({
+        providerKey: 'missing'
+      })
+    ),
+    (actualError) => actualError === error
+  );
+
+  assert.deepEqual(calls.map((call) => call[0]), [
+    'createTranslationExecution',
+    'resolver.resolve',
+    'updateTranslationExecution'
+  ]);
+  assert.deepEqual(calls[1], ['resolver.resolve', 'missing']);
+  assert.equal(calls.some((call) => call[0] === 'provider.execute'), false);
+  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
+
+  const failedExecution = calls[2][1];
+  assert.equal(failedExecution instanceof TranslationExecution, true);
+  assert.equal(failedExecution.status, 'failed');
+  assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
+});
+
 test('resolves provider during execution orchestration without dispatching', async () => {
   const calls = [];
   const resolvedProvider = {

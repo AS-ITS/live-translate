@@ -30,27 +30,76 @@ test('requires an injected translation execution provider', () => {
   );
 });
 
-test('always returns the injected provider', () => {
+test('requires valid configured provider keys', () => {
+  const provider = createFakeTranslationExecutionProvider();
+
+  assert.throws(
+    () => createFakeTranslationExecutionProviderResolver({ translationExecutionProvider: provider, providerKey: null }),
+    /providerKey must be a string/
+  );
+  assert.throws(
+    () => createFakeTranslationExecutionProviderResolver({ translationExecutionProvider: provider, providerKey: '' }),
+    /providerKey must be a non-empty string/
+  );
+  assert.throws(
+    () =>
+      createFakeTranslationExecutionProviderResolver({
+        translationExecutionProvider: provider,
+        defaultProviderKey: 1
+      }),
+    /defaultProviderKey must be a string/
+  );
+  assert.throws(
+    () =>
+      createFakeTranslationExecutionProviderResolver({
+        translationExecutionProvider: provider,
+        defaultProviderKey: '   '
+      }),
+    /defaultProviderKey must be a non-empty string/
+  );
+});
+
+test('resolves explicit fake provider key to the injected provider', () => {
   const provider = createFakeTranslationExecutionProvider();
   const resolver = createFakeTranslationExecutionProviderResolver({
     translationExecutionProvider: provider
   });
 
   assert.strictEqual(resolver.resolve('fake'), provider);
-  assert.strictEqual(resolver.resolve('gemini'), provider);
-  assert.strictEqual(resolver.resolve('unknown-provider'), provider);
 });
 
-test('unknown and undefined providerKey do not throw', () => {
+test('omitted providerKey resolves to the default provider', () => {
   const provider = createFakeTranslationExecutionProvider();
   const resolver = createFakeTranslationExecutionProviderResolver({
     translationExecutionProvider: provider
   });
 
-  assert.doesNotThrow(() => resolver.resolve('unknown-provider'));
   assert.doesNotThrow(() => resolver.resolve(undefined));
-  assert.strictEqual(resolver.resolve('unknown-provider'), provider);
   assert.strictEqual(resolver.resolve(undefined), provider);
+});
+
+test('supports configured provider key and default provider key', () => {
+  const provider = createFakeTranslationExecutionProvider();
+  const resolver = createFakeTranslationExecutionProviderResolver({
+    translationExecutionProvider: provider,
+    providerKey: 'gemini',
+    defaultProviderKey: 'gemini'
+  });
+
+  assert.strictEqual(resolver.resolve('gemini'), provider);
+  assert.strictEqual(resolver.resolve(undefined), provider);
+});
+
+test('unknown providerKey throws a deterministic error', () => {
+  const provider = createFakeTranslationExecutionProvider();
+  const resolver = createFakeTranslationExecutionProviderResolver({
+    translationExecutionProvider: provider
+  });
+
+  assert.throws(
+    () => resolver.resolve('unknown-provider'),
+    /translation execution provider not found: unknown-provider/
+  );
 });
 
 test('works through TranslationExecutionProviderResolver without changing the provider', () => {

@@ -134,7 +134,8 @@ export function createProductionApplicationDependencies(options = {}) {
   const resolvedTranslationExecutionProviderResolver = hasTranslationExecutionProviderResolver
     ? translationExecutionProviderResolver
     : createFakeTranslationExecutionProviderResolver({
-        translationExecutionProvider: resolvedTranslationExecutionProvider
+        translationExecutionProvider: resolvedTranslationExecutionProvider,
+        providerKey: hasTranslationExecutionProvider ? 'fake' : DEFAULT_TRANSLATION_PROVIDER
       });
   const resolvedProviderDependencies = resolveSavedTranscriptProviderDependencies({
     hasSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider'),

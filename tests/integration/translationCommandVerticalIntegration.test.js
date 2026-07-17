@@ -5,6 +5,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createRequestHandler } from '../../server/index.js';
 import { TranslationExecution, TranslationOutput, TranslationRequest } from '../../src/domain/translation/index.js';
 import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
+import { createFakeTranslationExecutionProviderResolver } from '../../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 
 test('POST /api/translation-requests creates a TranslationRequest through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture({
@@ -369,13 +370,9 @@ test('POST /api/translation-executions reaches fake execution provider through e
     ]
   });
   const fakeProvider = createFakeTranslationExecutionProvider();
-  const resolverCalls = [];
-  const resolver = {
-    resolve(providerKey) {
-      resolverCalls.push(providerKey);
-      return fakeProvider;
-    }
-  };
+  const resolver = createFakeTranslationExecutionProviderResolver({
+    translationExecutionProvider: fakeProvider
+  });
   const input = translationExecutionPayload({
     sourceText: 'hello',
     sourceLanguageCode: 'en',
@@ -400,7 +397,6 @@ test('POST /api/translation-executions reaches fake execution provider through e
         failureInfo: null,
         providerKey: 'fake'
       });
-      assert.deepEqual(resolverCalls, ['fake']);
       assertCompletedRuntimePersistence(translationRepository, {
         requestId: 'request-1',
         sessionId: 'session-runtime-fake-resolver',
@@ -410,6 +406,107 @@ test('POST /api/translation-executions reaches fake execution provider through e
         targetLanguageCode: 'fr'
       });
       assertNoFailedExecutionPersistence(translationRepository);
+    },
+    {
+      translationExecutionProviderResolver: resolver
+    }
+  );
+});
+
+test('POST /api/translation-executions resolves omitted providerKey through fake resolver default', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-fake-default',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const fakeProvider = createFakeTranslationExecutionProvider();
+  const resolver = createFakeTranslationExecutionProviderResolver({
+    translationExecutionProvider: fakeProvider
+  });
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr'
+  });
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+
+      assert.strictEqual(dependencies.translationExecutionProviderResolver, resolver);
+      assert.equal(response.status, 201);
+      assert.deepEqual(response.body, {
+        id: 'execution-1',
+        translationRequestId: 'request-1',
+        status: 'pending',
+        startedAt: '2026-07-14T01:01:00.000Z',
+        completedAt: null,
+        failureInfo: null
+      });
+      assertCompletedRuntimePersistence(translationRepository, {
+        requestId: 'request-1',
+        sessionId: 'session-runtime-fake-default',
+        executionId: 'execution-1',
+        providerKey: undefined,
+        translatedText: '[fake] hello',
+        targetLanguageCode: 'fr'
+      });
+      assertNoFailedExecutionPersistence(translationRepository);
+    },
+    {
+      translationExecutionProviderResolver: resolver
+    }
+  );
+});
+
+test('POST /api/translation-executions marks execution failed when fake resolver rejects unknown provider', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-fake-missing',
+          targetLanguageCode: 'fr'
+        })
+      )
+    ]
+  });
+  const fakeProvider = createFakeTranslationExecutionProvider();
+  const resolver = createFakeTranslationExecutionProviderResolver({
+    translationExecutionProvider: fakeProvider
+  });
+  const input = translationExecutionPayload({
+    sourceText: 'hello',
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    providerKey: 'missing-provider'
+  });
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+      const bodyText = JSON.stringify(response.body);
+      const storedExecution = translationRepository.translationExecutions.get('execution-1');
+      const storedOutputs = Array.from(translationRepository.translationOutputs.values());
+      const updateCalls = translationRepository.callsFor('updateTranslationExecution');
+
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error.code, 'internal_error');
+      assert.equal(response.body.error.message, 'Unexpected server error.');
+      assert.doesNotMatch(bodyText, /missing-provider/);
+      assert.equal(storedExecution instanceof TranslationExecution, true);
+      assert.equal(storedExecution.status, 'failed');
+      assert.deepEqual(storedExecution.failureInfo, { reason: 'provider_execution_failed' });
+      assert.equal(storedOutputs.length, 0);
+      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+      assert.equal(updateCalls.length, 1);
+      assert.equal(updateCalls[0][0].status, 'failed');
     },
     {
       translationExecutionProviderResolver: resolver

@@ -4,6 +4,23 @@
 
 ### Added
 
+- Phase 2L WP4 Exhausted Retry Failure Semantics: verified
+  `TranslationExecutionRunner` keeps executions active through retryable
+  intermediate provider failures, persists exactly one failed execution only
+  after retry exhaustion, creates no `TranslationOutput`, writes no completed
+  state, stops at `1 + maxRetries` provider attempts, and rethrows the final
+  provider error by identity. Default `maxRetries = 0` behavior remains a
+  single provider attempt followed by the existing failed-execution persistence.
+- Phase 2L WP3 Retry Execution: added retry execution inside
+  `TranslationExecutionRunner` using the injected `RetryPolicy`, retrying
+  provider execution until success or retry exhaustion, calling `nextDelay()` for
+  future compatibility without sleeping or scheduling, persisting exactly one
+  `TranslationOutput` and one completion on success, and marking the execution
+  failed only after retries are exhausted. The default production policy remains
+  `maxRetries = 0`, so production runtime behavior is unchanged unless a
+  different policy is explicitly injected. No backoff, timers, scheduling,
+  queue, worker, cancellation, retry metrics, retry persistence, HTTP, or
+  composition behavior was added.
 - Phase 2L WP2 TranslationExecutionRunner: extracted provider execution
   orchestration from `TranslationCommandService` into a dedicated
   application-layer runner that owns provider invocation, `TranslationOutput`

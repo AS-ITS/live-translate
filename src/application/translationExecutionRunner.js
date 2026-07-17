@@ -20,12 +20,7 @@ export function createTranslationExecutionRunner({
 
       let providerResult;
       try {
-        providerResult = await translationExecutionProvider.execute({
-          sourceText: payload.sourceText,
-          sourceLanguageCode: payload.sourceLanguageCode,
-          targetLanguageCode: payload.targetLanguageCode,
-          providerKey: payload.providerKey
-        });
+        providerResult = await executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload);
       } catch (error) {
         await failExecutionAfterProviderError(translationRepository, execution, payload, onTranslationExecutionUpdated);
         throw error;
@@ -64,6 +59,28 @@ export function createTranslationExecutionRunner({
       return repositoryResult;
     }
   });
+}
+
+async function executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload) {
+  let attempt = 1;
+
+  while (true) {
+    try {
+      return await translationExecutionProvider.execute({
+        sourceText: payload.sourceText,
+        sourceLanguageCode: payload.sourceLanguageCode,
+        targetLanguageCode: payload.targetLanguageCode,
+        providerKey: payload.providerKey
+      });
+    } catch (error) {
+      if (!retryPolicy.canRetry(attempt)) {
+        throw error;
+      }
+
+      retryPolicy.nextDelay(attempt);
+      attempt += 1;
+    }
+  }
 }
 
 async function failExecutionAfterProviderError(

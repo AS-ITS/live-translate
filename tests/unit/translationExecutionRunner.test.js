@@ -98,35 +98,6 @@ test('provider failure rethrows the original provider error', async () => {
   await assert.rejects(runner.execute(runnerInput()), (actualError) => actualError === error);
 });
 
-test('retryPolicy is accepted but does not alter execution behavior', async () => {
-  let canRetryCalls = 0;
-  let nextDelayCalls = 0;
-  const retryPolicy = Object.freeze({
-    maxRetries: 5,
-    canRetry() {
-      canRetryCalls += 1;
-      throw new Error('retry policy should not be evaluated yet');
-    },
-    nextDelay() {
-      nextDelayCalls += 1;
-      throw new Error('retry delay should not be evaluated yet');
-    }
-  });
-  const calls = [];
-  const runner = createTranslationExecutionRunner({
-    translationRepository: translationRepository({ calls }),
-    translationExecutionProvider: provider(),
-    retryPolicy
-  });
-
-  await runner.execute(runnerInput());
-
-  assert.equal(canRetryCalls, 0);
-  assert.equal(nextDelayCalls, 0);
-  assert.equal(calls.filter((call) => call[0] === 'createTranslationOutput').length, 1);
-  assert.equal(calls.filter((call) => call[0] === 'updateTranslationExecution').length, 1);
-});
-
 test('provider is never executed more than once with default retry policy', async () => {
   let providerCalls = 0;
   const runner = createTranslationExecutionRunner({
@@ -143,6 +114,218 @@ test('provider is never executed more than once with default retry policy', asyn
   await assert.rejects(runner.execute(runnerInput()), /provider failed/);
 
   assert.equal(providerCalls, 1);
+});
+
+test('successful retry persists one output, completes once, and never marks failed', async () => {
+  const calls = [];
+  const providerCalls = [];
+  const retryPolicy = createRetryPolicy({ maxRetries: 2 });
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: {
+      async execute() {
+        const attempt = providerCalls.length + 1;
+        providerCalls.push(attempt);
+
+        if (attempt < 3) {
+          throw new Error(`attempt ${attempt} failed`);
+        }
+
+        return providerResult({ translatedText: 'successful attempt 3' });
+      }
+    },
+    retryPolicy
+  });
+
+  await runner.execute(runnerInput());
+
+  const outputCalls = calls.filter((call) => call[0] === 'createTranslationOutput');
+  const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
+
+  assert.deepEqual(providerCalls, [1, 2, 3]);
+  assert.equal(outputCalls.length, 1);
+  assert.equal(outputCalls[0][1].translatedText, 'successful attempt 3');
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0][1].status, 'completed');
+  assert.equal(updateCalls.some((call) => call[1].status === 'failed'), false);
+});
+
+test('default production retry policy executes once, fails execution, and rethrows original error', async () => {
+  const calls = [];
+  const error = new Error('default policy provider failure');
+  let providerCalls = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+        throw error;
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 0 })
+  });
+
+  await assert.rejects(runner.execute(runnerInput()), (actualError) => actualError === error);
+
+  const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
+  assert.equal(providerCalls, 1);
+  assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0][1].status, 'failed');
+  assert.equal(updateCalls.some((call) => call[1].status === 'completed'), false);
+});
+
+test('exhausted retry marks failed once, creates no output, and rethrows final provider error', async () => {
+  const calls = [];
+  const errors = [new Error('attempt 1 failed'), new Error('attempt 2 failed'), new Error('attempt 3 failed')];
+  const providerCalls = [];
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: {
+      async execute() {
+        const attempt = providerCalls.length + 1;
+        providerCalls.push(attempt);
+
+        assert.equal(calls.some((call) => call[0] === 'updateTranslationExecution'), false);
+        assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
+
+        throw errors[attempt - 1];
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 2 })
+  });
+
+  await assert.rejects(runner.execute(runnerInput()), (actualError) => actualError === errors[2]);
+
+  const outputCalls = calls.filter((call) => call[0] === 'createTranslationOutput');
+  const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
+
+  assert.deepEqual(providerCalls, [1, 2, 3]);
+  assert.equal(outputCalls.length, 0);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0][1].status, 'failed');
+  assert.deepEqual(updateCalls[0][1].failureInfo, { reason: 'provider_execution_failed' });
+  assert.equal(updateCalls.some((call) => call[1].status === 'completed'), false);
+});
+
+test('retryable intermediate failures do not persist failed, completed, or output state', async () => {
+  const calls = [];
+  const observedCallsDuringRetries = [];
+  let providerCalls = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+
+        if (providerCalls <= 2) {
+          observedCallsDuringRetries.push([...calls]);
+          throw new Error(`retryable failure ${providerCalls}`);
+        }
+
+        assert.deepEqual(observedCallsDuringRetries, [[], []]);
+        assert.equal(calls.length, 0);
+
+        return providerResult({ translatedText: 'third attempt succeeded' });
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 2 })
+  });
+
+  await runner.execute(runnerInput());
+
+  const outputCalls = calls.filter((call) => call[0] === 'createTranslationOutput');
+  const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
+
+  assert.equal(providerCalls, 3);
+  assert.equal(outputCalls.length, 1);
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0][1].status, 'completed');
+});
+
+test('retry attempt boundary is exactly one provider execution plus maxRetries', async () => {
+  for (const maxRetries of [0, 1, 2]) {
+    const error = new Error(`maxRetries ${maxRetries} terminal failure`);
+    let providerCalls = 0;
+    const runner = createTranslationExecutionRunner({
+      translationRepository: translationRepository(),
+      translationExecutionProvider: {
+        async execute() {
+          providerCalls += 1;
+          throw error;
+        }
+      },
+      retryPolicy: createRetryPolicy({ maxRetries })
+    });
+
+    await assert.rejects(runner.execute(runnerInput()), (actualError) => actualError === error);
+
+    assert.equal(providerCalls, 1 + maxRetries);
+  }
+});
+
+test('retry stops immediately after first successful execution', async () => {
+  let providerCalls = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository(),
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+
+        if (providerCalls === 1) {
+          throw new Error('first attempt failed');
+        }
+
+        if (providerCalls === 2) {
+          return providerResult({ translatedText: 'second attempt succeeded' });
+        }
+
+        throw new Error('third execution should never occur');
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 3 })
+  });
+
+  await runner.execute(runnerInput());
+
+  assert.equal(providerCalls, 2);
+});
+
+test('retry policy is consulted after failures and delay value does not affect execution', async () => {
+  const canRetryAttempts = [];
+  const nextDelayAttempts = [];
+  let providerCalls = 0;
+  const retryPolicy = Object.freeze({
+    canRetry(attempt) {
+      canRetryAttempts.push(attempt);
+      return attempt === 1;
+    },
+    nextDelay(attempt) {
+      nextDelayAttempts.push(attempt);
+      return 60000;
+    }
+  });
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository(),
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+
+        if (providerCalls === 1) {
+          throw new Error('first attempt failed');
+        }
+
+        return providerResult({ translatedText: 'retried without waiting' });
+      }
+    },
+    retryPolicy
+  });
+
+  await runner.execute(runnerInput());
+
+  assert.deepEqual(canRetryAttempts, [1]);
+  assert.deepEqual(nextDelayAttempts, [1]);
+  assert.equal(providerCalls, 2);
 });
 
 function runnerInput(overrides = {}) {

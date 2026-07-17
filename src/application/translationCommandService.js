@@ -7,6 +7,7 @@ import {
   createTranslationOutputCreatedEvent,
   createTranslationRequestCreatedEvent
 } from '../domain/translation/index.js';
+import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 
 const EXECUTION_TRANSITIONS = Object.freeze(['queue', 'start', 'complete', 'fail']);
 const TRANSLATION_COMMAND_REPOSITORY_METHODS = Object.freeze([
@@ -32,6 +33,15 @@ const DEFAULT_TRANSLATION_EXECUTION_DISPATCHER = Object.freeze({
 const DEFAULT_TRANSLATION_EXECUTION_QUEUE = Object.freeze({
   enqueue() {
     return undefined;
+  },
+  dequeue() {
+    return undefined;
+  },
+  isEmpty() {
+    return true;
+  },
+  size() {
+    return 0;
   }
 });
 
@@ -167,16 +177,6 @@ function assertTranslationExecutionDispatcher(translationExecutionDispatcher) {
 
   if (typeof translationExecutionDispatcher.dispatch !== 'function') {
     throw new TypeError('translationExecutionDispatcher.dispatch must be a function.');
-  }
-}
-
-function assertTranslationExecutionQueue(translationExecutionQueue) {
-  if (!translationExecutionQueue || typeof translationExecutionQueue !== 'object') {
-    throw new TypeError('translationExecutionQueue is required.');
-  }
-
-  if (typeof translationExecutionQueue.enqueue !== 'function') {
-    throw new TypeError('translationExecutionQueue.enqueue must be a function.');
   }
 }
 

@@ -3,6 +3,7 @@ import { createSavedTranscriptRetranslationService as createDefaultSavedTranscri
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
+import { assertTranslationExecutionQueue } from '../src/application/translation/translationExecutionQueue.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
@@ -13,6 +14,7 @@ import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenA
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
 import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 import { createInMemoryTranslationExecutionQueue } from '../src/infrastructure/inMemoryTranslationExecutionQueue.js';
+import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../src/infrastructure/translationExecutionWorkerRuntime.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -37,6 +39,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionQueue,
     translationExecutionRunner,
     translationExecutionWorker,
+    translationExecutionWorkerRuntime,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -50,6 +53,7 @@ export function createApplicationDependencies(options = {}) {
     translationCommandControllerFactory = createDefaultTranslationCommandController,
     translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
     translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
+    translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
     ...sessionReadOptions
   } = options;
   const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
@@ -62,13 +66,15 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionQueue,
     translationExecutionRunner,
     translationExecutionWorker,
+    translationExecutionWorkerRuntime,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory,
     translationExecutionRunnerFactory,
-    translationExecutionWorkerFactory
+    translationExecutionWorkerFactory,
+    translationExecutionWorkerRuntimeFactory
   });
   const shouldCreateSavedTranscriptRetranslationService =
     Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider') ||
@@ -318,18 +324,21 @@ export function createTranslationCommandDependencies({
   translationExecutionQueue,
   translationExecutionRunner,
   translationExecutionWorker,
+  translationExecutionWorkerRuntime,
   translationExecutionProvider,
   translationExecutionProviderResolver,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController,
   translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
-  translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker
+  translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
+  translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
   assertFactory(translationCommandControllerFactory, 'translationCommandControllerFactory');
   assertFactory(translationExecutionRunnerFactory, 'translationExecutionRunnerFactory');
   assertFactory(translationExecutionWorkerFactory, 'translationExecutionWorkerFactory');
+  assertFactory(translationExecutionWorkerRuntimeFactory, 'translationExecutionWorkerRuntimeFactory');
 
   const translationDomainEventInfrastructure = createTranslationDomainEventInfrastructure({
     domainEventPublisher,
@@ -339,6 +348,7 @@ export function createTranslationCommandDependencies({
   const resolvedTranslationExecutionDispatcher =
     translationExecutionDispatcher ?? createFakeTranslationExecutionDispatcher();
   const resolvedTranslationExecutionQueue = translationExecutionQueue ?? createInMemoryTranslationExecutionQueue();
+  assertTranslationExecutionQueue(resolvedTranslationExecutionQueue);
   const resolvedTranslationExecutionProviderResolver =
     translationExecutionProviderResolver ??
     (translationExecutionProvider !== undefined
@@ -372,6 +382,14 @@ export function createTranslationCommandDependencies({
           translationExecutionRunner: resolvedWorkerTranslationExecutionRunner
         })
       : undefined);
+  const resolvedTranslationExecutionWorkerRuntime =
+    translationExecutionWorkerRuntime ??
+    (resolvedTranslationExecutionWorker !== undefined
+      ? translationExecutionWorkerRuntimeFactory({
+          translationExecutionWorker: resolvedTranslationExecutionWorker,
+          translationExecutionQueue: resolvedTranslationExecutionQueue
+        })
+      : undefined);
   const translationCommandService = translationCommandServiceFactory({
     translationRepository,
     domainEventPublisher: resolvedDomainEventPublisher,
@@ -401,6 +419,9 @@ export function createTranslationCommandDependencies({
       : {}),
     ...(resolvedTranslationExecutionWorker !== undefined
       ? { translationExecutionWorker: resolvedTranslationExecutionWorker }
+      : {}),
+    ...(resolvedTranslationExecutionWorkerRuntime !== undefined
+      ? { translationExecutionWorkerRuntime: resolvedTranslationExecutionWorkerRuntime }
       : {}),
     translationCommandService,
     translationCommandController,

@@ -232,6 +232,7 @@ test('production composition wires shared queue repository runner and worker', a
   const suppliedQueue = queue();
   const runner = { execute() {} };
   const worker = { processNext() {} };
+  const runtime = { start() {}, stop() {}, isRunning() { return false; } };
   const geminiProviderInputs = [];
   const geminiProvider = {
     async execute(input) {
@@ -242,6 +243,7 @@ test('production composition wires shared queue repository runner and worker', a
   let observedServiceOptions;
   let observedRunnerOptions;
   let observedWorkerOptions;
+  let observedRuntimeOptions;
 
   const dependencies = createProductionApplicationDependencies({
     env: {
@@ -277,6 +279,10 @@ test('production composition wires shared queue repository runner and worker', a
       observedWorkerOptions = options;
       return worker;
     },
+    translationExecutionWorkerRuntimeFactory(options) {
+      observedRuntimeOptions = options;
+      return runtime;
+    },
     translationCommandServiceFactory(options) {
       observedServiceOptions = options;
       return service();
@@ -286,6 +292,7 @@ test('production composition wires shared queue repository runner and worker', a
   assert.strictEqual(dependencies.translationExecutionQueue, suppliedQueue);
   assert.strictEqual(dependencies.translationExecutionRunner, runner);
   assert.strictEqual(dependencies.translationExecutionWorker, worker);
+  assert.strictEqual(dependencies.translationExecutionWorkerRuntime, runtime);
   assert.strictEqual(observedServiceOptions.translationExecutionQueue, suppliedQueue);
   assert.strictEqual(observedServiceOptions.translationRepository, translationRepository);
   assert.strictEqual(observedWorkerOptions.translationExecutionQueue, suppliedQueue);
@@ -293,6 +300,8 @@ test('production composition wires shared queue repository runner and worker', a
   assert.notStrictEqual(observedWorkerOptions.translationExecutionRunner, runner);
   assert.equal(typeof observedWorkerOptions.translationExecutionRunner.execute, 'function');
   assert.equal(typeof observedWorkerOptions.translationExecutionRunner.run, 'function');
+  assert.strictEqual(observedRuntimeOptions.translationExecutionWorker, worker);
+  assert.strictEqual(observedRuntimeOptions.translationExecutionQueue, suppliedQueue);
   assert.strictEqual(observedRunnerOptions.translationRepository, translationRepository);
   assert.strictEqual(observedRunnerOptions.retryPolicy, dependencies.retryPolicy);
 
@@ -306,9 +315,52 @@ test('production composition wires shared queue repository runner and worker', a
   assert.strictEqual(dependencies.translationExecutionProviderResolver.resolve('gemini'), geminiProvider);
 });
 
+test('production composition creates an in-memory execution queue by default', () => {
+  const dependencies = createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'api-key-from-env',
+      GEMINI_MODEL: 'model-from-env'
+    },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    geminiEnvironmentFactory() {
+      return { apiKey: 'api-key-from-env', model: 'model-from-env' };
+    },
+    geminiHttpClientFactory() {
+      return { post() {} };
+    },
+    geminiClientFactory() {
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() {
+      return { execute() {} };
+    },
+    resolveSavedTranscriptTranslationProvider() {
+      throw new Error('saved transcript provider resolution should not run');
+    }
+  });
+
+  assert.deepEqual(Object.keys(dependencies.translationExecutionQueue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
+  assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+  assert.equal(dependencies.translationExecutionQueue.size(), 0);
+
+  const job = { executionId: 'execution-1', requestId: 'request-1' };
+  dependencies.translationExecutionQueue.enqueue(job);
+
+  assert.equal(dependencies.translationExecutionQueue.isEmpty(), false);
+  assert.equal(dependencies.translationExecutionQueue.size(), 1);
+  assert.strictEqual(dependencies.translationExecutionQueue.dequeue(), job);
+  assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+  assert.equal(typeof dependencies.translationExecutionWorkerRuntime.start, 'function');
+  assert.equal(typeof dependencies.translationExecutionWorkerRuntime.stop, 'function');
+  assert.equal(typeof dependencies.translationExecutionWorkerRuntime.isRunning, 'function');
+  assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), false);
+});
+
 test('production composition allows worker and runner override without rebuilding worker dependencies', () => {
   const suppliedRunner = { execute() {} };
   const suppliedWorker = { processNext() {} };
+  const suppliedRuntime = { start() {}, stop() {}, isRunning() { return false; } };
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
@@ -318,6 +370,7 @@ test('production composition allows worker and runner override without rebuildin
     translationRepository: repository(),
     translationExecutionRunner: suppliedRunner,
     translationExecutionWorker: suppliedWorker,
+    translationExecutionWorkerRuntime: suppliedRuntime,
     geminiEnvironmentFactory() {
       return { apiKey: 'api-key-from-env', model: 'model-from-env' };
     },
@@ -346,6 +399,7 @@ test('production composition allows worker and runner override without rebuildin
 
   assert.strictEqual(dependencies.translationExecutionRunner, suppliedRunner);
   assert.strictEqual(dependencies.translationExecutionWorker, suppliedWorker);
+  assert.strictEqual(dependencies.translationExecutionWorkerRuntime, suppliedRuntime);
 });
 
 test('production composition queues execution for providerKey gemini without executing provider', async () => {
@@ -773,6 +827,15 @@ test('application composition injects supplied queue unchanged and awaits enqueu
     enqueue(...args) {
       queueCalls.push(args);
       return deferredEnqueue.promise;
+    },
+    dequeue() {
+      return undefined;
+    },
+    isEmpty() {
+      return true;
+    },
+    size() {
+      return 0;
     }
   };
   const dependencies = createApplicationDependencies({
@@ -1129,6 +1192,16 @@ function queue(overrides = {}) {
       overrides.dequeue ||
       function dequeue() {
         return undefined;
+      },
+    isEmpty:
+      overrides.isEmpty ||
+      function isEmpty() {
+        return true;
+      },
+    size:
+      overrides.size ||
+      function size() {
+        return 0;
       }
   };
 }

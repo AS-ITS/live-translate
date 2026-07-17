@@ -1,4 +1,5 @@
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
+import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 
@@ -36,16 +37,6 @@ export function createTranslationExecutionWorker({
       };
     }
   });
-}
-
-function assertTranslationExecutionQueue(translationExecutionQueue) {
-  if (!translationExecutionQueue || typeof translationExecutionQueue !== 'object') {
-    throw new TypeError('translationExecutionQueue is required.');
-  }
-
-  if (typeof translationExecutionQueue.dequeue !== 'function') {
-    throw new TypeError('translationExecutionQueue.dequeue must be a function.');
-  }
 }
 
 function assertTranslationRepository(translationRepository) {

@@ -1,17 +1,20 @@
-import { assertTranslationExecutionQueueJob } from '../application/translation/translationExecutionQueue.js';
+import { createTranslationExecutionQueue } from '../application/translation/translationExecutionQueue.js';
 
 export function createInMemoryTranslationExecutionQueue() {
   const jobs = [];
 
-  return Object.freeze({
+  return createTranslationExecutionQueue({
     enqueue(job) {
-      assertTranslationExecutionQueueJob(job);
       jobs.push(job);
       return undefined;
     },
 
     dequeue() {
       return jobs.shift();
+    },
+
+    isEmpty() {
+      return jobs.length === 0;
     },
 
     size() {

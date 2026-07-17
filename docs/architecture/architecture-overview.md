@@ -211,6 +211,8 @@ Worker processing flow:
 ```text
 TranslationExecutionWorkerRuntime
 ↓
+check TranslationExecutionQueue.isEmpty()
+↓
 TranslationExecutionWorker
 ↓
 dequeue one job
@@ -247,17 +249,34 @@ created
 Runtime boundaries:
 
 - `TranslationExecutionQueue` is an infrastructure-independent application
-  boundary. The current adapter is deterministic in-memory FIFO.
+  boundary. Its contract is `enqueue(item)`, `dequeue()`, `isEmpty()`, and
+  `size()`. The current adapter is deterministic in-memory FIFO.
 - Queue jobs contain only `executionId` and `requestId`.
-- `TranslationExecutionWorkerRuntime` is a polling adapter. It starts and stops
-  polling, prevents reentrant `processNext()` calls, and keeps polling after
-  worker errors.
+- `TranslationExecutionWorkerRuntime` is a polling adapter. It exposes
+  `start()`, `stop()`, and `isRunning()`, prevents reentrant `processNext()`
+  calls, and keeps polling after worker errors.
+- `start()` begins one Worker Loop. Repeated `start()` calls do not create
+  additional loops.
+- The Worker Loop checks `queue.isEmpty()` before invoking the Worker. Empty
+  queues wait for the next scheduled poll without executing idle worker work.
+- Newly enqueued jobs are picked up on later polls without restarting the
+  Runtime. A running Runtime processes jobs one at a time in FIFO order.
+- `stop()` prevents future polling and new queue work, but it does not cancel an
+  in-flight `TranslationExecutionWorker.processNext()` call. The current
+  execution can finish normally; the Runtime reports stopped after that work
+  completes.
+- Restart after stop resumes processing remaining queued work.
 - `TranslationExecutionWorker` processes one queue job per `processNext()` call.
 - Queue and Worker are decoupled: submission only enqueues, and worker
   processing loads persisted objects by identifier before delegating to
   `TranslationExecutionRunner`.
-- Production composition creates the queue, runner, and worker, but production
-  startup does not automatically start the Worker Runtime.
+- Production composition creates the queue, runner, worker, and Worker Runtime,
+  but production startup does not automatically start the Worker Runtime.
+- Production integration coverage verifies `POST -> queued`, queued execution
+  processing through Worker, Runtime start of existing queue work, Runtime stop
+  preserving newly queued work, Runtime restart processing remaining FIFO work,
+  and completed / failed lifecycle persistence through the production runner and
+  provider path.
 
 ## 5. Authentication and Token Flow
 

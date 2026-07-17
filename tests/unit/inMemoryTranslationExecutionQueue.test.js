@@ -13,15 +13,16 @@ test('module exports createInMemoryTranslationExecutionQueue factory', async () 
   assert.equal(moduleExports.createInMemoryTranslationExecutionQueue, createInMemoryTranslationExecutionQueue);
 });
 
-test('factory returns queue object with enqueue dequeue and size only', () => {
+test('factory returns queue object with enqueue dequeue isEmpty and size only', () => {
   const queue = createInMemoryTranslationExecutionQueue();
 
   assert.equal(typeof queue, 'object');
   assert.notEqual(queue, null);
   assert.equal(Object.isFrozen(queue), true);
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'size']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
   assert.equal(typeof queue.enqueue, 'function');
   assert.equal(typeof queue.dequeue, 'function');
+  assert.equal(typeof queue.isEmpty, 'function');
   assert.equal(typeof queue.size, 'function');
 });
 
@@ -32,10 +33,16 @@ test('application contract wraps a queue without depending on infrastructure', (
     },
     dequeue() {
       return undefined;
+    },
+    isEmpty() {
+      return true;
+    },
+    size() {
+      return 0;
     }
   });
 
-  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue']);
+  assert.deepEqual(Object.keys(queue), ['enqueue', 'dequeue', 'isEmpty', 'size']);
   assert.equal(Object.isFrozen(queue), true);
 });
 
@@ -132,6 +139,19 @@ test('size reflects enqueue and dequeue operations', () => {
 
   queue.dequeue();
   assert.equal(queue.size(), 0);
+});
+
+test('isEmpty reflects enqueue and dequeue operations', () => {
+  const queue = createInMemoryTranslationExecutionQueue();
+  const job = createJob();
+
+  assert.equal(queue.isEmpty(), true);
+
+  queue.enqueue(job);
+  assert.equal(queue.isEmpty(), false);
+
+  queue.dequeue();
+  assert.equal(queue.isEmpty(), true);
 });
 
 test('enqueue does not execute provider or worker behavior', () => {

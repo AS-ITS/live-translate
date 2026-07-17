@@ -8,6 +8,7 @@ import { createFakeTranslationExecutionProvider } from '../../src/infrastructure
 import { createFakeTranslationExecutionProviderResolver } from '../../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 import { GeminiHttpError } from '../../src/infrastructure/geminiClient.js';
 import { createGeminiTranslationExecutionProvider as createDefaultGeminiTranslationExecutionProvider } from '../../src/infrastructure/geminiTranslationExecutionProvider.js';
+import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../../src/infrastructure/translationExecutionWorkerRuntime.js';
 
 test('POST /api/translation-requests creates a TranslationRequest through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture({
@@ -341,6 +342,152 @@ test('POST queued execution is processed successfully by worker through producti
         return createDefaultGeminiTranslationExecutionProvider(options);
       }
     }
+  );
+});
+
+test('production worker runtime completes queued execution after start', async () => {
+  const scheduler = createFakeScheduler();
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          sessionId: 'session-runtime-start',
+          targetLanguageCode: 'fr',
+          sourceTranscriptSnapshot: {
+            sourceText: 'hello from runtime start',
+            sourceLanguageCode: 'en'
+          }
+        })
+      )
+    ]
+  });
+  const geminiClientCalls = [];
+  const input = translationExecutionPayload();
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+
+      assertQueuedExecutionResponse(response);
+      assert.equal(typeof dependencies.translationExecutionWorkerRuntime.start, 'function');
+      assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), false);
+      assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'queued');
+      assert.equal(dependencies.translationExecutionQueue.size(), 1);
+      assert.deepEqual(geminiClientCalls, []);
+
+      dependencies.translationExecutionWorkerRuntime.start();
+      await scheduler.runNext();
+
+      assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), true);
+      assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+      assert.deepEqual(geminiClientCalls, [
+        {
+          sourceText: 'hello from runtime start',
+          sourceLanguageCode: 'en',
+          targetLanguageCode: 'fr'
+        }
+      ]);
+      assertExecutionLifecycleFor(translationRepository, 'execution-1', ['created', 'queued', 'running', 'completed']);
+      assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'completed');
+      assert.equal(translationRepository.translationOutputs.get('execution-1-output-0').translatedText, '[runtime:fr] hello from runtime start');
+    },
+    productionRuntimeOptions({ scheduler, geminiClientCalls })
+  );
+});
+
+test('production worker runtime stop and restart preserves queued FIFO work', async () => {
+  const scheduler = createFakeScheduler();
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-1',
+          sessionId: 'session-runtime-restart',
+          targetLanguageCode: 'fr',
+          sourceTranscriptSnapshot: {
+            sourceText: 'first queued text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      ),
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-2',
+          sessionId: 'session-runtime-restart',
+          targetLanguageCode: 'de',
+          sourceTranscriptSnapshot: {
+            sourceText: 'second queued text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      ),
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'request-3',
+          sessionId: 'session-runtime-restart',
+          targetLanguageCode: 'ja',
+          sourceTranscriptSnapshot: {
+            sourceText: 'third queued text',
+            sourceLanguageCode: 'en'
+          }
+        })
+      )
+    ]
+  });
+  const geminiClientCalls = [];
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const firstResponse = await postJson(
+        `${baseUrl}/api/translation-executions`,
+        translationExecutionPayload({ id: 'execution-1', translationRequestId: 'request-1' })
+      );
+      const secondResponse = await postJson(
+        `${baseUrl}/api/translation-executions`,
+        translationExecutionPayload({ id: 'execution-2', translationRequestId: 'request-2' })
+      );
+
+      assertQueuedExecutionResponse(firstResponse);
+      assertQueuedExecutionResponse(secondResponse, { executionId: 'execution-2', requestId: 'request-2' });
+      assert.equal(dependencies.translationExecutionQueue.size(), 2);
+
+      dependencies.translationExecutionWorkerRuntime.start();
+      await scheduler.runNext();
+
+      assert.equal(translationRepository.translationExecutions.get('execution-1').status, 'completed');
+      assert.equal(translationRepository.translationExecutions.get('execution-2').status, 'queued');
+      assert.deepEqual(geminiClientCalls.map((call) => call.sourceText), ['first queued text']);
+
+      dependencies.translationExecutionWorkerRuntime.stop();
+      const thirdResponse = await postJson(
+        `${baseUrl}/api/translation-executions`,
+        translationExecutionPayload({ id: 'execution-3', translationRequestId: 'request-3' })
+      );
+      await scheduler.runAll();
+
+      assertQueuedExecutionResponse(thirdResponse, { executionId: 'execution-3', requestId: 'request-3' });
+      assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), false);
+      assert.equal(translationRepository.translationExecutions.get('execution-2').status, 'queued');
+      assert.equal(translationRepository.translationExecutions.get('execution-3').status, 'queued');
+      assert.equal(dependencies.translationExecutionQueue.size(), 2);
+
+      dependencies.translationExecutionWorkerRuntime.start();
+      await scheduler.runNext();
+      await scheduler.runNext();
+
+      assert.deepEqual(geminiClientCalls.map((call) => call.sourceText), [
+        'first queued text',
+        'second queued text',
+        'third queued text'
+      ]);
+      assertExecutionLifecycleFor(translationRepository, 'execution-1', ['created', 'queued', 'running', 'completed']);
+      assertExecutionLifecycleFor(translationRepository, 'execution-2', ['created', 'queued', 'running', 'completed']);
+      assertExecutionLifecycleFor(translationRepository, 'execution-3', ['created', 'queued', 'running', 'completed']);
+      assert.equal(dependencies.translationExecutionQueue.isEmpty(), true);
+    },
+    productionRuntimeOptions({ scheduler, geminiClientCalls })
   );
 });
 
@@ -1300,6 +1447,45 @@ function createRuntimeProviderResolutionFixture({
   };
 }
 
+function productionRuntimeOptions({ scheduler, geminiClientCalls }) {
+  return {
+    env: {
+      GEMINI_API_KEY: 'gemini-runtime-api-key',
+      GEMINI_MODEL: 'gemini-runtime-model'
+    },
+    geminiHttpClientFactory({ apiKey }) {
+      assert.equal(apiKey, 'gemini-runtime-api-key');
+      return {
+        post() {
+          throw new Error('Gemini HTTP client should not be called when fake GeminiClient is supplied');
+        }
+      };
+    },
+    geminiClientFactory({ httpClient, model }) {
+      assert.equal(typeof httpClient.post, 'function');
+      assert.equal(model, 'gemini-runtime-model');
+      return {
+        async translate(request) {
+          geminiClientCalls.push(request);
+          return {
+            translatedText: `[runtime:${request.targetLanguageCode}] ${request.sourceText}`
+          };
+        }
+      };
+    },
+    geminiTranslationExecutionProviderFactory(options) {
+      return createDefaultGeminiTranslationExecutionProvider(options);
+    },
+    translationExecutionWorkerRuntimeFactory(options) {
+      return createDefaultTranslationExecutionWorkerRuntime({
+        ...options,
+        scheduler,
+        pollIntervalMs: 25
+      });
+    }
+  };
+}
+
 function createGeminiClientErrorRuntimeFixture({ error }) {
   const geminiClientCalls = [];
 
@@ -1335,10 +1521,61 @@ function createGeminiClientErrorRuntimeFixture({ error }) {
   };
 }
 
-function assertQueuedExecutionResponse(response, { providerKey } = {}) {
+function createFakeScheduler() {
+  let nextHandle = 1;
+  const scheduled = [];
+
+  return {
+    set(callback, delayMs) {
+      const entry = {
+        handle: nextHandle,
+        callback,
+        delayMs,
+        active: true
+      };
+      nextHandle += 1;
+      scheduled.push(entry);
+      return entry.handle;
+    },
+
+    clear(handle) {
+      const entry = scheduled.find((candidate) => candidate.handle === handle);
+
+      if (entry) {
+        entry.active = false;
+      }
+    },
+
+    pendingCount() {
+      return scheduled.filter((entry) => entry.active).length;
+    },
+
+    async runNext() {
+      const entry = scheduled.find((candidate) => candidate.active);
+
+      if (!entry) {
+        return undefined;
+      }
+
+      entry.active = false;
+      return entry.callback();
+    },
+
+    async runAll() {
+      while (this.pendingCount() > 0) {
+        await this.runNext();
+      }
+    }
+  };
+}
+
+function assertQueuedExecutionResponse(
+  response,
+  { executionId = 'execution-1', requestId = 'request-1', providerKey } = {}
+) {
   const expected = {
-    id: 'execution-1',
-    translationRequestId: 'request-1',
+    id: executionId,
+    translationRequestId: requestId,
     status: 'queued',
     startedAt: '2026-07-14T01:01:00.000Z',
     completedAt: null,
@@ -1380,6 +1617,17 @@ function assertQueuedSubmissionPersistence(translationRepository, { providerKey 
 function assertQueuedJob(dependencies, expected = { executionId: 'execution-1', requestId: 'request-1' }) {
   assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), expected);
   assert.equal(dependencies.translationExecutionQueue.dequeue(), undefined);
+}
+
+function assertExecutionLifecycleFor(translationRepository, executionId, expectedStatuses) {
+  const createExecutionCalls = translationRepository.callsFor('createTranslationExecution');
+  const updateExecutionCalls = translationRepository.callsFor('updateTranslationExecution');
+  const statuses = [...createExecutionCalls, ...updateExecutionCalls]
+    .map(([execution]) => execution)
+    .filter((execution) => execution.id === executionId)
+    .map((execution) => execution.status);
+
+  assert.deepEqual(statuses, expectedStatuses);
 }
 
 function assertNoWorkerProcessing(translationRepository) {

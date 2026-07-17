@@ -197,6 +197,15 @@ function queue(jobs = []) {
   return {
     dequeue() {
       return entries.shift();
+    },
+    enqueue(job) {
+      entries.push(job);
+    },
+    isEmpty() {
+      return entries.length === 0;
+    },
+    size() {
+      return entries.length;
     }
   };
 }

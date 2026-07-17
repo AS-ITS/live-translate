@@ -31,6 +31,7 @@ Completed:
 - Phase 2O - Production Gemini Translation Execution
 - Phase 2P - Translation Execution Lifecycle
 - Phase 3A - Async Execution Runtime
+- Phase 3B - Queue Abstraction and Worker Runtime Lifecycle
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -532,11 +533,49 @@ Phase 3A status:
 - The first queue adapter is deterministic in-memory FIFO. It is not durable
   and is not shared across processes.
 - The Worker Runtime is a polling adapter around
-  `TranslationExecutionWorker.processNext()`. It supports `start()` and
-  `stop()`, avoids reentrant worker execution, and continues polling after a
-  worker error.
+  `TranslationExecutionWorker.processNext()`. It supports `start()`, `stop()`,
+  and `isRunning()`, avoids reentrant worker execution, and continues polling
+  after a worker error.
 - Runtime construction exists, but production startup does not automatically
   start the Worker Runtime.
+
+Phase 3B
+Status: Completed
+
+Phase 3B status:
+
+- `TranslationExecutionQueue` is the application queue abstraction used by
+  command submission, Worker, Worker Runtime, and production composition.
+- The queue contract is `enqueue(item)`, `dequeue()`, `isEmpty()`, and
+  `size()`.
+- The production queue adapter remains deterministic in-memory FIFO. It is not
+  durable and is not shared across processes.
+- Production composition creates and exposes the shared Queue, Worker, and
+  Worker Runtime. It does not automatically start the Runtime.
+- Worker Runtime lifecycle:
+  - `start()` begins the polling loop when stopped.
+  - Repeated `start()` calls do not create additional loops.
+  - `stop()` prevents future polling and new queue work.
+  - `isRunning()` reports true while the loop is active or a current worker
+    execution is still finishing.
+  - Restart after stop resumes processing remaining queued work.
+- Worker Loop behavior:
+  - The Runtime checks `queue.isEmpty()` before invoking the Worker.
+  - Empty queues wait for the next scheduled poll without executing idle worker
+    work.
+  - Newly enqueued work is picked up on a later poll without restarting the
+    Runtime.
+  - A running Runtime processes queued executions one at a time in FIFO order.
+- Graceful shutdown behavior:
+  - `stop()` does not cancel or interrupt an in-flight
+    `TranslationExecutionWorker.processNext()` call.
+  - The current execution can finish and persist its normal lifecycle state.
+  - After that current work finishes, the Runtime stops and does not process
+    additional queued work until restarted.
+- Production integration coverage verifies `POST -> Queue -> Worker ->
+  completed`, queued state while the Runtime is not started, Runtime start
+  completing existing queued work, Runtime stop preserving newly queued work,
+  and Runtime restart processing remaining FIFO work.
 
 HTTP async submission flow:
 
@@ -559,6 +598,9 @@ enqueue job
 Worker execution flow:
 
 ```text
+TranslationExecutionQueue
+        |
+        v
 Worker Runtime
         |
         v
@@ -604,15 +646,17 @@ running
 failed
 ```
 
-Current Phase 3A limitations:
+Current Phase 3B limitations:
 
 - In-memory queue only.
 - Worker Runtime is not automatically started by production startup.
 - No durable queue.
+- No external queue such as Redis or RabbitMQ.
 - No cancellation.
 - No timeout handling.
 - No multi-worker coordination.
 - No queue retry or dead-letter queue.
+- No priority scheduling.
 - No metrics.
 
 Documentation:

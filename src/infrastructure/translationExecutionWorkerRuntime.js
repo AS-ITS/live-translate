@@ -1,3 +1,5 @@
+import { assertTranslationExecutionQueue } from '../application/translation/translationExecutionQueue.js';
+
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 
 const DEFAULT_SCHEDULER = Object.freeze({
@@ -12,11 +14,13 @@ const DEFAULT_SCHEDULER = Object.freeze({
 
 export function createTranslationExecutionWorkerRuntime({
   translationExecutionWorker,
+  translationExecutionQueue,
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   scheduler = DEFAULT_SCHEDULER,
   logger
 } = {}) {
   assertTranslationExecutionWorker(translationExecutionWorker);
+  assertTranslationExecutionQueue(translationExecutionQueue);
   assertPollIntervalMs(pollIntervalMs);
   assertScheduler(scheduler);
   assertLogger(logger);
@@ -37,6 +41,10 @@ export function createTranslationExecutionWorkerRuntime({
   function stop() {
     isStarted = false;
     clearScheduledPoll();
+  }
+
+  function isRunning() {
+    return isStarted || isProcessing;
   }
 
   function scheduleNextPoll() {
@@ -67,7 +75,9 @@ export function createTranslationExecutionWorkerRuntime({
     isProcessing = true;
 
     try {
-      await translationExecutionWorker.processNext();
+      if (!translationExecutionQueue.isEmpty()) {
+        await translationExecutionWorker.processNext();
+      }
     } catch (error) {
       logRuntimeError(error);
     } finally {
@@ -90,7 +100,8 @@ export function createTranslationExecutionWorkerRuntime({
 
   return Object.freeze({
     start,
-    stop
+    stop,
+    isRunning
   });
 }
 

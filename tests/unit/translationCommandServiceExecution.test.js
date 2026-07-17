@@ -21,6 +21,15 @@ test('queue enqueue is called once with execution and request identifiers only',
     translationExecutionQueue: {
       enqueue(job) {
         queueJobs.push(job);
+      },
+      dequeue() {
+        return undefined;
+      },
+      isEmpty() {
+        return true;
+      },
+      size() {
+        return 0;
       }
     }
   });
@@ -94,6 +103,15 @@ test('enqueue error propagates unchanged after created and queued persistence', 
       enqueue(job) {
         calls.push(['queue.enqueue', job]);
         throw enqueueError;
+      },
+      dequeue() {
+        return undefined;
+      },
+      isEmpty() {
+        return true;
+      },
+      size() {
+        return 0;
       }
     }
   });
@@ -143,6 +161,15 @@ function serviceDependencies(options = {}) {
     {
       enqueue(job) {
         calls.push(['queue.enqueue', job]);
+      },
+      dequeue() {
+        return undefined;
+      },
+      isEmpty() {
+        return true;
+      },
+      size() {
+        return 0;
       }
     };
   const service = createTranslationCommandService({

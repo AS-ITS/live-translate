@@ -4,6 +4,56 @@
 
 ### Added
 
+- Phase 3B WP6 Documentation Closeout: completed documentation for Queue
+  Abstraction, Worker Runtime Lifecycle (`start`, `stop`, `restart`, and
+  `isRunning`), Worker Loop behavior, graceful shutdown, production Runtime
+  integration, and current limitations including no automatic Runtime startup,
+  in-memory queue only, no durable or external queue, no retry, no timeout, no
+  cancellation, no priority scheduling, no parallel workers, and no metrics.
+  Updated README, ROADMAP, architecture overview, and changelog only. No
+  production code, test logic, HTTP API, execution lifecycle, FIFO queue,
+  Worker, Runtime, retry, timeout, cancellation, or external queue behavior
+  changed.
+- Phase 3B WP5 Runtime Integration: added production vertical integration
+  coverage proving Queue, Worker, and Worker Runtime collaborate through the
+  production composition graph. Coverage verifies `POST -> Queue -> Worker ->
+  completed`, confirms queued executions remain `queued` while the Runtime is
+  not started, proves Runtime start completes existing queue work, verifies
+  Runtime stop leaves newly submitted work queued, and proves restart resumes
+  remaining FIFO work. No HTTP API, execution lifecycle, FIFO queue, retry,
+  timeout, cancellation, parallel worker, or external queue behavior changed.
+- Phase 3B WP4 Graceful Shutdown: refined
+  `TranslationExecutionWorkerRuntime.stop()` so it prevents future polling and
+  new queue work while allowing an in-flight Worker execution to finish before
+  the runtime reports stopped. Focused coverage verifies in-flight work
+  completion, Worker Loop shutdown after the current job, queued work after
+  stop remaining unprocessed, and restart processing the remaining queue work.
+  No FIFO queue, HTTP API, execution lifecycle, retry, timeout, cancellation,
+  automatic startup, or parallel worker behavior changed.
+- Phase 3B WP3 Worker Loop: made `TranslationExecutionWorkerRuntime` poll the
+  shared Queue abstraction before invoking the Worker, so an empty queue waits
+  for the next scheduled poll without repeatedly executing idle worker work,
+  while newly enqueued jobs are processed on later polls without restarting the
+  runtime. Focused coverage verifies empty-queue waiting, automatic recovery
+  after enqueue, FIFO processing across multiple jobs, and continued waiting
+  after a job completes. No FIFO queue, HTTP API, execution lifecycle, retry,
+  timeout, cancellation, graceful shutdown, or parallel worker behavior changed.
+- Phase 3B WP2 Worker Runtime Lifecycle: added explicit
+  `TranslationExecutionWorkerRuntime.isRunning()` state, verified safe
+  start/stop/restart behavior, kept repeated `start()` from creating multiple
+  polling loops, kept repeated or pre-start `stop()` safe, and wired production
+  composition to create and expose the Worker Runtime without automatically
+  starting it. No FIFO queue, HTTP API, execution lifecycle, retry, timeout,
+  cancellation, graceful shutdown, or parallel worker behavior changed.
+- Phase 3B WP1 Queue Abstraction: formalized the Translation Execution Queue
+  application contract around `enqueue(item)`, `dequeue()`, `isEmpty()`, and
+  `size()`, updated the in-memory FIFO queue to implement that contract,
+  switched worker, command, and composition validation to the shared queue
+  abstraction, and added focused contract coverage for FIFO dequeue order,
+  empty dequeue behavior, queue size/emptiness state, alternate queue
+  implementations, and production in-memory queue composition. No HTTP API,
+  execution lifecycle, retry, timeout, cancellation, priority, parallel worker,
+  or external queue behavior was added.
 - Phase 3A WP10 Documentation Closeout: documented Async Execution Runtime,
   Queue / Worker architecture, `202 Accepted` asynchronous submission for
   `POST /api/translation-executions`, Worker Runtime polling behavior, and

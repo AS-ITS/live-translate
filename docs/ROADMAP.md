@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3A Async Execution Runtime completed.
+Current milestone: Phase 3B Queue Abstraction completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -28,7 +28,10 @@ Translation Runtime is completed. Phase 2L Execution Reliability is completed.
 Phase 2M Runtime Provider Resolution is completed. Phase 2N Gemini Translation
 Execution Provider is completed. Phase 2O Production Gemini Translation
 Execution is completed. Phase 2P Translation Execution Lifecycle is completed.
-Phase 3A Async Execution Runtime is completed.
+Phase 3A Async Execution Runtime is completed. Phase 3B WP1 Queue Abstraction,
+WP2 Worker Runtime Lifecycle, WP3 Worker Loop, and WP4 Graceful Shutdown are
+completed. Phase 3B WP5 Runtime Integration and WP6 Documentation Closeout are
+completed.
 
 Completed Phase 1 capabilities include:
 
@@ -1330,6 +1333,45 @@ Current limitations:
 - Multi-worker processing is not supported.
 - Queue retry and dead-letter queue behavior are not supported.
 - Metrics are not supported.
+
+### Phase 3B - Queue Abstraction
+
+Status: Completed.
+
+Completed:
+
+- `ExecutionQueue` application contract for `enqueue(item)`, `dequeue()`,
+  `isEmpty()`, and `size()`.
+- In-memory FIFO queue implements the shared contract.
+- Worker, command service, and composition validation depend on the queue
+  abstraction instead of partial one-off method checks.
+- Production composition still creates the in-memory queue by default.
+- `TranslationExecutionWorkerRuntime` exposes `start()`, `stop()`, and
+  `isRunning()`.
+- Worker Runtime start/stop/restart behavior is repeatable and prevents
+  duplicate polling loops.
+- Production composition creates and exposes the Worker Runtime without
+  automatically starting it.
+- Worker Runtime checks the shared queue before invoking the Worker, waits on
+  empty queues through scheduled polling, resumes after new enqueue activity,
+  and can process multiple queued jobs across the same running loop.
+- Worker Runtime stop requests prevent new queue work while allowing the
+  in-flight Worker execution to finish before the runtime reports stopped.
+- Restart after graceful stop resumes processing remaining queued work.
+- Production vertical integration verifies `POST -> Queue -> Worker ->
+  completed`, unstarted Runtime queued state, Runtime start of existing queue
+  work, Runtime stop preserving newly queued work, and Runtime restart
+  processing remaining FIFO work.
+- Documentation closeout updated README, roadmap, architecture overview, and
+  changelog with current Queue abstraction, Worker Runtime lifecycle, Worker
+  Loop, graceful shutdown, runtime integration status, and implementation
+  limitations.
+
+Deferred:
+
+- Durable queue adapters.
+- Redis, RabbitMQ, or other external queue infrastructure.
+- Retry, timeout, cancellation, priority, or parallel worker behavior.
 
 ### Phase 2 Deferred Scope
 

@@ -2,13 +2,14 @@ import { createSessionQueryService } from '../src/application/sessionQueryServic
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
+import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
 import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+import { createGeminiTranslationExecutionProvider } from '../src/infrastructure/geminiTranslationExecutionProvider.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
 import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
-import { createProductionTranslationExecutionProvider as createProductionTranslationExecutionProviderAdapter } from '../src/infrastructure/productionTranslationExecutionProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -97,8 +98,10 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionProviderResolver,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
-    productionTranslationExecutionProviderFactory = createDefaultProductionTranslationExecutionProvider,
     geminiEnvironmentFactory = createGeminiEnvironment,
+    geminiHttpClientFactory = createGeminiHttpClient,
+    geminiClientFactory = createGeminiClient,
+    geminiTranslationExecutionProviderFactory = createGeminiTranslationExecutionProvider,
     googleGenAIClientFactory = createDefaultGoogleGenAIClient,
     geminiClientAdapterFactory = createGeminiClientAdapter,
     geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
@@ -106,48 +109,65 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     ...applicationOptions
   } = options;
-  assertFactory(productionTranslationExecutionProviderFactory, 'productionTranslationExecutionProviderFactory');
 
   const hasTranslationExecutionProvider = Object.prototype.hasOwnProperty.call(options, 'translationExecutionProvider');
   const hasTranslationExecutionProviderResolver = Object.prototype.hasOwnProperty.call(
     options,
     'translationExecutionProviderResolver'
   );
-  const productionProviderResolutionComposition = hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
-    ? undefined
-    : createProductionProviderResolutionComposition({
-        env,
-        geminiEnvironmentFactory,
-        googleGenAIClientFactory,
-        geminiClientAdapterFactory,
-        geminiSavedTranscriptTranslationCompositionFactory,
-        translationProviderConfigurationFactory,
-        translationProviderResolutionCompositionFactory
-      });
+  const hasSavedTranscriptTranslationProvider = Object.prototype.hasOwnProperty.call(
+    options,
+    'savedTranscriptTranslationProvider'
+  );
+  const hasResolveSavedTranscriptTranslationProvider = Object.prototype.hasOwnProperty.call(
+    options,
+    'resolveSavedTranscriptTranslationProvider'
+  );
+  const productionProviderResolutionComposition =
+    hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider
+      ? undefined
+      : createProductionProviderResolutionComposition({
+          env,
+          geminiEnvironmentFactory,
+          googleGenAIClientFactory,
+          geminiClientAdapterFactory,
+          geminiSavedTranscriptTranslationCompositionFactory,
+          translationProviderConfigurationFactory,
+          translationProviderResolutionCompositionFactory
+        });
+  const productionTranslationExecutionProviderResolutionComposition =
+    hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
+      ? undefined
+      : createProductionTranslationExecutionProviderResolutionComposition({
+          env,
+          geminiEnvironmentFactory,
+          geminiHttpClientFactory,
+          geminiClientFactory,
+          geminiTranslationExecutionProviderFactory,
+          translationProviderConfigurationFactory
+        });
   const resolvedTranslationExecutionProvider = hasTranslationExecutionProvider
     ? translationExecutionProvider
-    : hasTranslationExecutionProviderResolver
-      ? undefined
-      : productionTranslationExecutionProviderFactory({
-          translationProviderResolver: resolveTranslationProviderResolver(productionProviderResolutionComposition)
-        });
+    : undefined;
   const resolvedTranslationExecutionProviderResolver = hasTranslationExecutionProviderResolver
     ? translationExecutionProviderResolver
-    : createFakeTranslationExecutionProviderResolver({
-        translationExecutionProvider: resolvedTranslationExecutionProvider,
-        providerKey: hasTranslationExecutionProvider ? 'fake' : DEFAULT_TRANSLATION_PROVIDER
-      });
+    : hasTranslationExecutionProvider
+      ? createFakeTranslationExecutionProviderResolver({
+          translationExecutionProvider: resolvedTranslationExecutionProvider,
+          providerKey: 'fake'
+        })
+      : productionTranslationExecutionProviderResolutionComposition.resolver;
   const resolvedProviderDependencies = resolveSavedTranscriptProviderDependencies({
-    hasSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider'),
+    hasSavedTranscriptTranslationProvider,
     savedTranscriptTranslationProvider,
-    hasResolveSavedTranscriptTranslationProvider: Object.prototype.hasOwnProperty.call(
-      options,
-      'resolveSavedTranscriptTranslationProvider'
-    ),
+    hasResolveSavedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
     productionOptions: {
       env,
       geminiEnvironmentFactory,
+      geminiHttpClientFactory,
+      geminiClientFactory,
+      geminiTranslationExecutionProviderFactory,
       googleGenAIClientFactory,
       geminiClientAdapterFactory,
       geminiSavedTranscriptTranslationCompositionFactory,
@@ -399,6 +419,51 @@ function resolveSavedTranscriptProviderDependencies({
   };
 }
 
+function createProductionTranslationExecutionProviderResolutionComposition({
+  env = process.env,
+  geminiEnvironmentFactory = createGeminiEnvironment,
+  geminiHttpClientFactory = createGeminiHttpClient,
+  geminiClientFactory = createGeminiClient,
+  geminiTranslationExecutionProviderFactory = createGeminiTranslationExecutionProvider,
+  translationProviderConfigurationFactory = createTranslationProviderConfiguration
+} = {}) {
+  assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
+  assertFactory(geminiHttpClientFactory, 'geminiHttpClientFactory');
+  assertFactory(geminiClientFactory, 'geminiClientFactory');
+  assertFactory(geminiTranslationExecutionProviderFactory, 'geminiTranslationExecutionProviderFactory');
+  assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
+
+  const environment = geminiEnvironmentFactory({
+    env
+  });
+  const configuration = translationProviderConfigurationFactory({
+    environment: env
+  });
+  const httpClient = geminiHttpClientFactory({
+    apiKey: environment.apiKey
+  });
+  const geminiClient = geminiClientFactory({
+    httpClient,
+    model: environment.model
+  });
+  const geminiProvider = geminiTranslationExecutionProviderFactory({
+    client: geminiClient
+  });
+  const resolver = createProductionTranslationExecutionProviderResolver({
+    providers: {
+      [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
+    },
+    defaultProviderKey: configuration.defaultProviderKey
+  });
+
+  return Object.freeze({
+    configuration,
+    geminiClient,
+    geminiProvider,
+    resolver
+  });
+}
+
 function createProductionProviderResolutionComposition({
   env = process.env,
   geminiEnvironmentFactory = createGeminiEnvironment,
@@ -444,30 +509,21 @@ function createProductionProviderResolutionComposition({
   });
 }
 
-function resolveTranslationProviderResolver(providerResolutionComposition) {
-  if (
-    providerResolutionComposition &&
-    typeof providerResolutionComposition === 'object' &&
-    providerResolutionComposition.resolver &&
-    typeof providerResolutionComposition.resolver.resolve === 'function'
-  ) {
-    return providerResolutionComposition.resolver;
-  }
+function createProductionTranslationExecutionProviderResolver({ providers, defaultProviderKey }) {
+  assertExecutionProviderMap(providers);
+  assertProviderKey(defaultProviderKey, 'defaultProviderKey');
 
-  if (
-    providerResolutionComposition &&
-    typeof providerResolutionComposition === 'object' &&
-    typeof providerResolutionComposition.resolve === 'function'
-  ) {
-    return providerResolutionComposition;
-  }
+  return Object.freeze({
+    resolve(providerKey) {
+      const resolvedProviderKey = providerKey ?? defaultProviderKey;
+      assertProviderKey(resolvedProviderKey, 'providerKey');
 
-  throw new TypeError('translationProviderResolutionComposition.resolver must provide resolve.');
-}
+      if (!Object.hasOwn(providers, resolvedProviderKey)) {
+        throw new Error(`translation execution provider not found: ${resolvedProviderKey}`);
+      }
 
-function createDefaultProductionTranslationExecutionProvider({ translationProviderResolver } = {}) {
-  return createProductionTranslationExecutionProviderAdapter({
-    resolver: translationProviderResolver
+      return providers[resolvedProviderKey];
+    }
   });
 }
 
@@ -475,6 +531,64 @@ function assertFactory(factory, name) {
   if (typeof factory !== 'function') {
     throw new TypeError(`${name} must be a function.`);
   }
+}
+
+function assertExecutionProviderMap(providers) {
+  if (!providers || typeof providers !== 'object' || Array.isArray(providers)) {
+    throw new TypeError('translation execution providers must be an object.');
+  }
+
+  for (const [providerKey, provider] of Object.entries(providers)) {
+    assertProviderKey(providerKey, 'providerKey');
+
+    if (!provider || typeof provider !== 'object' || typeof provider.execute !== 'function') {
+      throw new TypeError(`translation execution provider must provide execute: ${providerKey}`);
+    }
+  }
+}
+
+function assertProviderKey(providerKey, fieldName) {
+  if (typeof providerKey !== 'string') {
+    throw new TypeError(`${fieldName} must be a string.`);
+  }
+
+  if (providerKey.trim() === '') {
+    throw new TypeError(`${fieldName} must be a non-empty string.`);
+  }
+}
+
+function createGeminiHttpClient({
+  apiKey,
+  fetchImpl = globalThis.fetch,
+  baseUrl = 'https://generativelanguage.googleapis.com'
+} = {}) {
+  if (typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+    throw new TypeError('apiKey must be a non-empty string.');
+  }
+
+  if (typeof fetchImpl !== 'function') {
+    throw new TypeError('fetchImpl must be a function.');
+  }
+
+  if (typeof baseUrl !== 'string' || baseUrl.trim().length === 0) {
+    throw new TypeError('baseUrl must be a non-empty string.');
+  }
+
+  const normalizedApiKey = apiKey.trim();
+  const normalizedBaseUrl = baseUrl.replace(/\/+$/, '');
+
+  return Object.freeze({
+    post(request) {
+      return fetchImpl(`${normalizedBaseUrl}${request.path}`, {
+        method: request.method,
+        headers: {
+          ...request.headers,
+          'x-goog-api-key': normalizedApiKey
+        },
+        body: JSON.stringify(request.body)
+      });
+    }
+  });
 }
 
 function createDefaultIdGenerator() {

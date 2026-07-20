@@ -15,7 +15,8 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3C Durable Queue Foundation completed.
+Current milestone: Phase 3E Durable Queue Deduplication & Idempotent Recovery
+completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -34,6 +35,10 @@ completed. Phase 3B WP5 Runtime Integration and WP6 Documentation Closeout are
 completed. Phase 3C WP1 Queue Port, WP2 Repository Contract, WP3 File
 Repository, WP4 Feature-gated Composition, WP5 Dual-write Enqueue, WP6 Startup
 Recovery, and WP7 Documentation are completed.
+Phase 3E WP1 Durable Queue Identity Contract, WP2 Idempotent Durable Enqueue,
+WP3 Active In-Memory Queue Deduplication, WP4 Idempotent Startup Recovery, WP5
+Worker Lifecycle Guard, WP6 Output Uniqueness Protection, WP7 Vertical
+Integration Tests, and WP8 Documentation Closeout are completed.
 
 Completed Phase 1 capabilities include:
 
@@ -285,10 +290,19 @@ Deferred:
   - WP5 Dual-write Enqueue
   - WP6 Startup Recovery
   - WP7 Documentation
-  - Current limitations: startup recovery replays durable items without
-    removing them; Worker acknowledgement removes an item after terminal
-    execution. No lease, visibility timeout, retry, dead-letter queue,
-    multi-worker support, or locking.
+  - Superseded reliability details are recorded in Phase 3E below.
+- Phase 3E - Durable Queue Deduplication & Idempotent Recovery: Completed
+  - WP1 Durable Queue Identity Contract
+  - WP2 Idempotent Durable Enqueue
+  - WP3 Active In-Memory Queue Deduplication
+  - WP4 Idempotent Startup Recovery
+  - WP5 Worker Lifecycle Guard
+  - WP6 Output Uniqueness Protection
+  - WP7 Deduplication & Recovery Vertical Integration Tests
+  - WP8 Documentation Closeout
+  - Remaining work: lease/visibility-timeout renewal, retry scheduling,
+    dead-letter queue, multi-worker/distributed locking, provider-level
+    idempotency, and event-publishing deduplication.
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
@@ -1433,18 +1447,52 @@ Current limitations:
 
 ### Phase 3D - Reliable Durable Queue
 
-Status: Planned.
+Status: Completed as a prerequisite to Phase 3E.
 
-Candidate scope:
+Completed foundation:
 
-- Replay reconciliation.
-- Duplicate prevention.
-- Lease.
-- Visibility timeout.
-- Retry.
+- Durable acknowledgement, lease claim, and expired-lease recovery policy.
+- Phase 3E retains this policy and does not add lease renewal, retry, or
+  distributed coordination.
+
+### Phase 3E - Durable Queue Deduplication & Idempotent Recovery
+
+Status: Completed.
+
+Completed:
+
+- WP1 Durable Queue Identity Contract.
+- WP2 Idempotent Durable Enqueue.
+- WP3 Active In-Memory Queue Deduplication.
+- WP4 Idempotent Startup Recovery.
+- WP5 Worker Lifecycle Guard.
+- WP6 Output Uniqueness Protection.
+- WP7 Deduplication & Recovery Vertical Integration Tests.
+- WP8 Documentation Closeout.
+
+Implemented behavior:
+
+- `executionId` is the durable and active queue item identity. Matching
+  `requestId` enqueue is idempotent; a different request ID fails with
+  `translation_execution_queue_item_conflict`.
+- Repeated recovery retains durable FIFO order, replays no duplicate active
+  item, and does not replay durable `completed` or `failed` work.
+- Workers process only persisted `queued` executions; `created`, `running`,
+  `completed`, and `failed` executions are skipped before provider invocation.
+- Output persistence retains one authoritative `TranslationOutput` per
+  execution.
+- Production-composition vertical tests cover duplicate submission, repeated
+  recovery, terminal durable work, lifecycle skips, one provider call, and one
+  output per processable execution using fake providers only.
+
+Deferred:
+
+- Lease / visibility-timeout renewal.
+- Retry scheduling.
 - Dead-letter queue.
-- Multi-worker safety.
-- Locking or concurrency control.
+- Multi-worker / distributed locking.
+- Provider-level idempotency.
+- Event-publishing deduplication.
 
 ### Phase 2 Deferred Scope
 

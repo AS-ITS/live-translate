@@ -44,6 +44,34 @@ test('polling calls processNext', async () => {
   assert.deepEqual(calls, ['processNext']);
 });
 
+test('non-processable worker result is not logged as an error and polling continues', async () => {
+  const scheduler = createFakeScheduler();
+  const loggedErrors = [];
+  const runtime = createTranslationExecutionWorkerRuntime({
+    translationExecutionWorker: worker({
+      processNext() {
+        return {
+          processed: false,
+          reason: 'execution_not_processable',
+          executionId: 'execution-1',
+          status: 'completed'
+        };
+      }
+    }),
+    translationExecutionQueue: queue(['job-1']),
+    scheduler,
+    logger(error) {
+      loggedErrors.push(error);
+    }
+  });
+
+  runtime.start();
+  await scheduler.runNext();
+
+  assert.deepEqual(loggedErrors, []);
+  assert.equal(scheduler.pendingCount(), 1);
+});
+
 test('stop clears scheduled polling', () => {
   const scheduler = createFakeScheduler();
   const runtime = createTranslationExecutionWorkerRuntime({

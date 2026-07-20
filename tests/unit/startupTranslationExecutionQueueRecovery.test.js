@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStartupTranslationExecutionQueueRecovery } from '../../src/application/translation/startupTranslationExecutionQueueRecovery.js';
+import {
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
+  TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+} from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
+import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
+import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 
 test('empty repository completes without enqueue or dequeue', async () => {
   const calls = [];
@@ -132,10 +138,81 @@ test('repeated recovery is idempotent and preserves FIFO active queue ordering',
   assert.equal(await repository.size(), 2);
 });
 
-test('recovery replays duplicate durable executions only once while preserving first-seen FIFO order', async () => {
+test('separate recovery instances do not duplicate active queue items', async () => {
+  const repository = durableRepository({
+    items: [durableItem({ executionId: 'execution-1', requestId: 'request-1' })]
+  });
+  const queue = createInMemoryTranslationExecutionQueue();
+
+  await createStartupTranslationExecutionQueueRecovery({ durableRepository: repository, activeQueue: queue }).recover();
+  await createStartupTranslationExecutionQueueRecovery({ durableRepository: repository, activeQueue: queue }).recover();
+
+  assert.equal(queue.size(), 1);
+  assert.deepEqual(queue.dequeue(), { executionId: 'execution-1', requestId: 'request-1' });
+});
+
+test('completed and failed durable items are not replayed or changed', async () => {
+  const repository = createFakeDurableTranslationExecutionQueueRepository();
+  const queued = durableItem({
+    executionId: 'execution-1',
+    requestId: 'request-1',
+    status: 'queued',
+    leasedUntil: null
+  });
+  const completed = durableItem({
+    executionId: 'execution-2',
+    requestId: 'request-2',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.COMPLETED,
+    leasedUntil: '2026-07-17T07:00:00.000Z'
+  });
+  const failed = durableItem({
+    executionId: 'execution-3',
+    requestId: 'request-3',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.FAILED,
+    leasedUntil: '2026-07-17T07:00:00.000Z'
+  });
+  const queue = createInMemoryTranslationExecutionQueue();
+
+  await repository.enqueue(queued);
+  await repository.enqueue(completed);
+  await repository.enqueue(failed);
+
+  await createStartupTranslationExecutionQueueRecovery({
+    durableRepository: repository,
+    activeQueue: queue,
+    clock: () => '2026-07-17T08:00:00.000Z'
+  }).recover();
+
+  assert.deepEqual(queue.dequeue(), { executionId: queued.executionId, requestId: queued.requestId });
+  assert.equal(queue.dequeue(), null);
+  assert.deepEqual(await repository.list(), [queued, completed, failed]);
+});
+
+test('expired processing item replays without resetting its status', async () => {
+  const repository = createFakeDurableTranslationExecutionQueueRepository();
+  const item = durableItem({
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING,
+    leasedUntil: '2026-07-17T07:00:00.000Z'
+  });
+  const queue = createInMemoryTranslationExecutionQueue();
+  await repository.enqueue(item);
+
+  await createStartupTranslationExecutionQueueRecovery({
+    durableRepository: repository,
+    activeQueue: queue,
+    clock: () => '2026-07-17T08:00:00.000Z'
+  }).recover();
+
+  assert.deepEqual(queue.dequeue(), { executionId: item.executionId, requestId: item.requestId });
+  assert.deepEqual(await repository.list(), [{ ...item, leasedUntil: null }]);
+});
+
+test('conflicting persisted durable execution identity fails before active enqueue or lease release', async () => {
   const queue = activeQueue();
+  const calls = [];
   const recovery = createStartupTranslationExecutionQueueRecovery({
     durableRepository: durableRepository({
+      calls,
       items: [
         durableItem({ executionId: 'execution-1', requestId: 'request-1' }),
         durableItem({ executionId: 'execution-1', requestId: 'duplicate-request' }),
@@ -145,12 +222,13 @@ test('recovery replays duplicate durable executions only once while preserving f
     activeQueue: queue
   });
 
-  await recovery.recover();
+  await assert.rejects(
+    recovery.recover(),
+    (error) => error instanceof Error && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+  );
 
-  assert.deepEqual(queue.items, [
-    { executionId: 'execution-1', requestId: 'request-1' },
-    { executionId: 'execution-2', requestId: 'request-2' }
-  ]);
+  assert.deepEqual(queue.items, []);
+  assert.deepEqual(calls, [['durable.list']]);
 });
 
 test('active enqueue failure stops recovery without durable dequeue and rethrows original error', async () => {

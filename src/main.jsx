@@ -9,6 +9,7 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import {
@@ -57,6 +58,7 @@ function App() {
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
+  const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
@@ -113,7 +115,7 @@ function App() {
 
     try {
       await session.start();
-      createCurrentSessionRecord();
+      await createCurrentSessionRecord();
       setStatus('listening');
     } catch (nextError) {
       await session.stop().catch(() => {});
@@ -131,7 +133,7 @@ function App() {
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
-    finalizeCurrentSessionRecord({
+    await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
       failureCategory: 'user_intent'
@@ -285,7 +287,7 @@ function App() {
     return reconnectControllerRef.current;
   }
 
-  function createCurrentSessionRecord() {
+  async function createCurrentSessionRecord() {
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
@@ -296,6 +298,7 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    await syncSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
     return record;
   }
@@ -309,6 +312,7 @@ function App() {
       if (appended.length > 0) {
         const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
         if (activeSessionRecord) {
+          void syncSessionSnapshot(activeSessionRecordId);
           void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
         }
       }
@@ -317,7 +321,7 @@ function App() {
     });
   }
 
-  function finalizeCurrentSessionRecord(options) {
+  async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
     activeSessionRecordIdRef.current = null;
 
@@ -325,14 +329,21 @@ function App() {
       const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
 
       if (finalized) {
-        refreshHistoryRecords();
-        void translationCommandLifecycle().recordSessionFinalized(finalized);
+        await syncSessionSnapshot(sessionId);
+        await translationCommandLifecycle().recordSessionFinalized(finalized);
+        await refreshHistoryRecords();
       }
 
       return finalized;
     } catch {
       return null;
     }
+  }
+
+  async function syncSessionSnapshot(sessionId) {
+    const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
+    if (!detail) return null;
+    return sessionSnapshotApiClientRef.current.sync({ session: detail.sessionRecord, transcriptItems: detail.transcriptItems });
   }
 
   async function refreshHistoryRecords() {

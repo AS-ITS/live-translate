@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE } from '../../src/application/translation/translationExecutionQueue.js';
+import { TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 
 export function runTranslationExecutionQueueContract({ createQueue }) {
@@ -50,6 +51,47 @@ export function runTranslationExecutionQueueContract({ createQueue }) {
     assert.strictEqual(queue.dequeue(), first);
     assert.strictEqual(queue.dequeue(), second);
     assert.strictEqual(queue.dequeue(), third);
+  });
+
+  test('same identity enqueue is idempotent and preserves FIFO order', () => {
+    const queue = createQueue();
+    const first = createItem({ executionId: 'execution-1', requestId: 'request-1' });
+    const second = createItem({ executionId: 'execution-2', requestId: 'request-2' });
+
+    queue.enqueue(first);
+    queue.enqueue(second);
+    queue.enqueue({ ...first, metadata: { retry: true } });
+
+    assert.equal(queue.size(), 2);
+    assert.strictEqual(queue.dequeue(), first);
+    assert.strictEqual(queue.dequeue(), second);
+  });
+
+  test('conflicting execution identity rejects without changing queue state', () => {
+    const queue = createQueue();
+    const first = createItem({ executionId: 'execution-1', requestId: 'request-1' });
+
+    queue.enqueue(first);
+
+    assert.throws(
+      () => queue.enqueue(createItem({ executionId: 'execution-1', requestId: 'other-request' })),
+      (error) => error instanceof Error && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+    );
+
+    assert.equal(queue.size(), 1);
+    assert.strictEqual(queue.dequeue(), first);
+  });
+
+  test('dequeued execution can be enqueued again', () => {
+    const queue = createQueue();
+    const item = createItem();
+
+    queue.enqueue(item);
+    assert.strictEqual(queue.dequeue(), item);
+    queue.enqueue(item);
+
+    assert.equal(queue.size(), 1);
+    assert.strictEqual(queue.dequeue(), item);
   });
 
   test('empty queue dequeue returns null', () => {

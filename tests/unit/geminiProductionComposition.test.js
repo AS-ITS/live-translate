@@ -125,6 +125,7 @@ test('production composition assembles Gemini provider and injects saved transcr
   assert.deepEqual(calls[7][1], { savedTranscriptRetranslationService: service });
   assert.deepEqual(calls[8][1], {
     sessionReadController: dependencies.sessionReadController,
+    sessionRepository: dependencies.sessionRepository,
     translationCommandController: dependencies.translationCommandController,
     savedTranscriptRetranslationController
   });

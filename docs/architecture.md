@@ -117,6 +117,31 @@ New durable queue items are stored as `queued`. Older persisted items without a
 `status` field are normalized to `queued` when loaded; unknown or invalid
 statuses are rejected.
 
+Phase 3E applies the following defence-in-depth order without changing the
+queue port, FIFO behavior, or the HTTP `202 Accepted` submission contract:
+
+1. `executionId` is the durable and active queue item identity; an identical
+   `requestId` is the same item, while a different one fails with
+   `translation_execution_queue_item_conflict`.
+2. Durable enqueue is idempotent and retains the original FIFO position,
+   status, lease, timestamps, and persisted fields.
+3. Active in-memory enqueue uses the same identity rule and retains one active
+   item until dequeue.
+4. Startup recovery filters durable status and can safely replay the same FIFO
+   batch repeatedly without adding active duplicates.
+5. The Worker checks persisted execution lifecycle before claim or provider
+   execution.
+6. Output persistence is idempotent by `executionId`; the first output remains
+   authoritative.
+
+| Execution / durable state | Behavior |
+| --- | --- |
+| `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
+| `processing` | Recovery follows the existing Phase 3D lease-expiry policy only and does not reset status in Phase 3E. |
+| `completed` | Recovery does not replay it; the Worker skips a completed execution. |
+| `failed` | Recovery does not replay it; the Worker skips a failed execution. |
+| `created` / `running` execution | The Worker skips it and does not call the provider. |
+
 Startup recovery:
 
 ```text
@@ -153,16 +178,33 @@ Configuration:
   file. When omitted, the default is `translation-execution-queue.json`.
 - `TRANSLATION_QUEUE_LEASE_MS` defaults to `300000` milliseconds.
 
+Recovery filters durable items by status: `queued` items replay in FIFO order,
+lease-expired `processing` items replay without changing status, and `completed`
+or `failed` items are not replayed. Conflicting persisted identities fail before
+replay. Expired leases are released only for recoverable `queued` or
+`processing` items.
+
+Before provider execution, the Worker reads the persisted execution and request.
+Only `queued` executions proceed to durable claim and provider work; `created`,
+`running`, `completed`, and `failed` executions return an
+`execution_not_processable` skip result without changing queue durability,
+execution state, or outputs.
+
+`TranslationOutput` persistence is idempotent by `executionId`: the first
+output is retained, and later create attempts for the same execution return the
+persisted output without changing its content, metadata, or timestamps.
+
 Current limitations:
 
-- No recovery filtering; startup recovery may replay durable items regardless
-  of status until filtering is added.
-- No lease.
-- No visibility timeout.
+- No visibility timeout renewal.
 - No retry.
 - No dead-letter queue.
 - No multi-worker support.
 - No locking or concurrency control.
+- These safeguards reduce duplicate processing risk; they are not
+  multi-process exactly-once delivery.
+- Provider external idempotency keys and event-publishing deduplication are out
+  of scope.
 
 ## Gemini Live Session Flow
 

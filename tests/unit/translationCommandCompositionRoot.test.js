@@ -60,7 +60,7 @@ test('application dependencies assemble translation command graph with injected 
   assert.deepEqual(Object.keys(calls[1][1]), ['translationCommandService']);
   assert.strictEqual(calls[2][1].translationCommandController, translationCommandController);
   assert.strictEqual(calls[2][1].sessionReadController, dependencies.sessionReadController);
-  assert.deepEqual(Object.keys(calls[2][1]).sort(), ['sessionReadController', 'translationCommandController']);
+  assert.deepEqual(Object.keys(calls[2][1]).sort(), ['sessionReadController', 'sessionRepository', 'translationCommandController']);
 });
 
 test('translation command dependencies use the service factory result to build the controller', () => {

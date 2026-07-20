@@ -33,6 +33,7 @@ Completed:
 - Phase 3A - Async Execution Runtime
 - Phase 3B - Queue Abstraction and Worker Runtime Lifecycle
 - Phase 3C - Durable Queue Foundation
+- Phase 3E - Durable Queue Deduplication & Idempotent Recovery
 - Real-time Gemini Live translation
 - Ephemeral token flow
 - Transcript handling
@@ -675,10 +676,10 @@ Future execution reliability enhancement candidates:
 - Production startup wiring for Worker Runtime.
 - Multi-worker coordination.
 
-Phase 3C
+Phase 3E
 Status: Completed
 
-Phase 3C Durable Queue status:
+Phase 3E Durable Queue reliability status:
 
 - Durable Queue is feature-gated by `TRANSLATION_DURABLE_QUEUE_ENABLED`.
 - The default behavior is disabled. When disabled, Translation Command keeps
@@ -687,8 +688,19 @@ Phase 3C Durable Queue status:
   repository and wraps the active queue with dual-write enqueue persistence.
 - When enabled, Worker Runtime startup runs durable queue recovery before worker
   polling starts.
-- The HTTP API, execution lifecycle, Worker processing behavior, and provider
-  execution behavior are unchanged.
+- Queue item identity is `executionId` across the durable and active queues.
+  Re-enqueueing the same `executionId` and `requestId` is idempotent; pairing an
+  existing `executionId` with a different `requestId` fails deterministically
+  with `translation_execution_queue_item_conflict`.
+- Repeated startup recovery preserves durable FIFO order and creates at most one
+  active item per execution. Durable `completed` and `failed` items are not
+  replayed.
+- Workers only process persisted `queued` executions. `created`, `running`,
+  `completed`, and `failed` executions are skipped without provider invocation.
+- `TranslationOutput` persistence is idempotent by execution ID: the first
+  output remains authoritative and later writes do not overwrite it.
+- The HTTP `202 Accepted` contract and existing FIFO queue behavior are
+  unchanged.
 
 Architecture:
 
@@ -732,9 +744,11 @@ Current Durable Queue limitations:
 
 - Startup recovery replays durable items without removing them. The Worker
   acknowledges and removes an item only after terminal execution completion.
-- No lease.
-- No visibility timeout.
-- No retry.
+- Lease expiry handling applies only to the existing Phase 3D policy; this does
+  not provide multi-process exactly-once delivery.
+- No visibility-timeout renewal or retry scheduling.
 - No dead-letter queue.
 - No multi-worker support.
 - No locking or concurrency control.
+- Provider-level idempotency keys and event-publishing deduplication are not in
+  scope.

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDualWriteTranslationExecutionQueue } from '../../src/infrastructure/dualWriteTranslationExecutionQueue.js';
+import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
+import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 
 test('enqueue writes durable repository before primary queue', async () => {
   const calls = [];
@@ -50,6 +52,25 @@ test('duplicate durable execution is a successful no-op without primary enqueue'
   await queue.enqueue(createItem());
 
   assert.deepEqual(calls.map(([name]) => name), ['durable.contains']);
+});
+
+test('durable enqueue succeeds while duplicate active enqueue preserves one primary item', async () => {
+  const primaryQueue = createInMemoryTranslationExecutionQueue();
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository();
+  const item = createItem();
+  primaryQueue.enqueue(item);
+
+  const queue = createDualWriteTranslationExecutionQueue({
+    primaryQueue,
+    durableRepository,
+    clock: fixedClock()
+  });
+
+  await queue.enqueue(item);
+
+  assert.equal(await durableRepository.size(), 1);
+  assert.equal(primaryQueue.size(), 1);
+  assert.strictEqual(primaryQueue.dequeue(), item);
 });
 
 test('contains failure prevents durable and primary enqueue and propagates unchanged', async () => {

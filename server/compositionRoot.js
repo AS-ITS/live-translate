@@ -109,8 +109,9 @@ export function createApplicationDependencies(options = {}) {
     : undefined;
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
-        sessionReadController: sessionReadDependencies.sessionReadController,
-        translationCommandController: translationCommandDependencies.translationCommandController,
+      sessionReadController: sessionReadDependencies.sessionReadController,
+      sessionRepository: sessionReadDependencies.sessionRepository,
+      translationCommandController: translationCommandDependencies.translationCommandController,
         ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {})
       })
     : undefined;

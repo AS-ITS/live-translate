@@ -2,6 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
+import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -197,6 +198,7 @@ const { requestHandler: defaultRequestHandler } = createDefaultApplicationDepend
 export function createRequestHandler(options = {}) {
   const {
     sessionReadController,
+    sessionRepository,
     translationCommandController,
     savedTranscriptRetranslationController,
     liveTokenCreator = createLiveToken
@@ -209,6 +211,7 @@ export function createRequestHandler(options = {}) {
   return async function handleRequestWithDependencies(req, res) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
+      sessionRepository,
       translationCommandController,
       savedTranscriptRetranslationController,
       liveTokenCreator
@@ -223,7 +226,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, translationCommandController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -252,6 +255,21 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
+    try {
+      for (const record of await sessionRepository.listSessionRecords()) {
+        await sessionRepository.deleteSessionRecord(record.id);
+      }
+      statusCode = 204;
+      sendJson(res, statusCode, {}, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && path === '/api/sessions') {
     try {
       const sessions = await sessionReadController.listSessions();
@@ -273,6 +291,24 @@ async function handleRequestWithSessionReadController(
         clientIp,
         origin
       });
+    }
+    return;
+  }
+
+  if (req.method === 'PUT' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
+    try {
+      const sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
+      const body = await readJson(req);
+      if (body?.session?.id !== sessionId) throw createHttpError('invalid_request');
+      const result = await createSessionSnapshotSyncService({ sessionRepository }).sync(body);
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }

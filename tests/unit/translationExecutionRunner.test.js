@@ -43,6 +43,35 @@ test('successful execution creates one TranslationOutput', async () => {
   assert.equal(outputCalls[0][1].targetLanguageCode, 'fr');
 });
 
+test('idempotent output persistence retains one original output across repeated runner execution', async () => {
+  const outputs = [];
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({
+      createTranslationOutput(output) {
+        const existingOutput = outputs.find((candidate) => candidate.executionId === output.executionId);
+        if (existingOutput !== undefined) {
+          return existingOutput;
+        }
+
+        outputs.push(output);
+        return output;
+      }
+    }),
+    translationExecutionProvider: provider({ translatedText: 'First translation' })
+  });
+  const input = runnerInput();
+
+  await runner.execute(input);
+  await runner.execute({
+    ...input,
+    payload: { ...input.payload, outputId: 'execution-1-output-duplicate', outputCreatedAt: 2000 }
+  });
+
+  assert.equal(outputs.length, 1);
+  assert.equal(outputs[0].id, 'execution-1-output-0');
+  assert.equal(outputs[0].translatedText, 'First translation');
+});
+
 test('successful execution marks execution completed', async () => {
   const calls = [];
   const payload = executionPayload({ completedAt: 2000 });

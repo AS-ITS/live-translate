@@ -6,6 +6,7 @@ import {
 import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
+const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
 
 export function createTranslationExecutionWorker({
   translationExecutionQueue,
@@ -36,6 +37,15 @@ export function createTranslationExecutionWorker({
 
       const request = await translationRepository.findRequestById(job.requestId);
       assertFoundRequest(request, job.requestId);
+
+      if (execution.status !== 'queued') {
+        return {
+          processed: false,
+          reason: EXECUTION_NOT_PROCESSABLE_REASON,
+          executionId: job.executionId,
+          status: execution.status
+        };
+      }
 
       if (durableTranslationExecutionQueueRepository !== undefined) {
         await durableTranslationExecutionQueueRepository.claim(job.executionId, addLease(clock(), leaseDurationMs));

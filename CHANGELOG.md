@@ -4,6 +4,48 @@
 
 ### Added
 
+- Phase 3E WP8 Documentation Closeout: documented durable and active queue
+  identity, idempotent enqueue and recovery, lifecycle safeguards, output
+  uniqueness, and production-composition vertical coverage. The README,
+  architecture documents, and roadmap now record the remaining limitations:
+  no multi-process exactly-once delivery, provider idempotency, or event
+  publishing deduplication.
+- Phase 3E WP7 Deduplication & Recovery Vertical Integration Tests: added
+  production-composition coverage with a fake provider for duplicate durable
+  submission, repeated FIFO recovery, terminal durable items, and worker
+  lifecycle skips. The scenarios verify a single provider invocation and
+  output per processable execution without external API calls.
+- Phase 3E WP6 Output Uniqueness Protection: translation output persistence is
+  now idempotent by execution ID. The first output remains authoritative, and
+  later create attempts return it without overwriting content, metadata, or
+  timestamps.
+- Phase 3E WP5 Worker Lifecycle Guard: workers now return an
+  `execution_not_processable` skip result for persisted created, running,
+  completed, or failed executions. Skipped jobs load their request but do not
+  claim or change durable items, invoke providers, create outputs, or update
+  execution lifecycle state.
+- Phase 3E WP4 Idempotent Startup Recovery: recovery now rejects conflicting
+  persisted queue identities before replay or lease release, replays only
+  queued and lease-expired processing items, and leaves completed and failed
+  items untouched. Repeated recovery relies on active queue idempotency to
+  preserve a single FIFO work item without changing durable item metadata.
+- Phase 3E WP3 Active In-Memory Queue Deduplication: active execution queue
+  enqueue now uses the shared durable identity contract. Matching identities are
+  no-ops that retain FIFO order; conflicting request identities fail with
+  `translation_execution_queue_item_conflict`; executions may be enqueued again
+  after dequeue. Dual-write and recovery coverage verifies no duplicate active
+  work is created.
+- Phase 3E WP2 Idempotent Durable Enqueue: durable repository enqueue now
+  explicitly preserves the existing item as a no-op for matching queue item
+  identity. Repeated writes retain FIFO position, status, lease, timestamps,
+  and all persisted fields, including after file-backed repository reload.
+- Phase 3E WP1 Durable Queue Identity Contract: centralized durable queue item
+  identity comparison on `executionId` and `requestId`. Re-enqueueing the same
+  identity preserves the existing no-op behavior, while an existing
+  `executionId` paired with a different `requestId` now fails deterministically
+  with `translation_execution_queue_item_conflict`. The fake and file-backed
+  repositories share contract coverage, including file reload semantics; FIFO,
+  status lifecycle, and JSON persistence format remain unchanged.
 - Phase 3D WP5 Lease & Visibility Timeout: durable queue items now persist an
   optional `leasedUntil` timestamp, legacy items load with no lease, and the
   repository supports claim, expiry inspection, and expired-lease release.

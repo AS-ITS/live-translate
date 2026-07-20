@@ -1,6 +1,10 @@
 import {
+  compareDurableTranslationExecutionQueueItemIdentity,
+  createTranslationExecutionQueueItemConflictError,
   createDurableTranslationExecutionQueueItem,
-  createDurableTranslationExecutionQueueRepository
+  createDurableTranslationExecutionQueueRepository,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
 } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 
 export function createFakeDurableTranslationExecutionQueueRepository() {
@@ -8,11 +12,17 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
 
   return createDurableTranslationExecutionQueueRepository({
     enqueue(item) {
-      if (items.some((existingItem) => existingItem.executionId === item.executionId)) {
+      const existingItem = items.find((candidate) => candidate.executionId === item.executionId);
+      if (existingItem === undefined) {
+        items.push(createDurableTranslationExecutionQueueItem(item));
         return undefined;
       }
 
-      items.push(createDurableTranslationExecutionQueueItem(item));
+      if (compareDurableTranslationExecutionQueueItemIdentity(existingItem, item)
+        === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.CONFLICT) {
+        throw createTranslationExecutionQueueItemConflictError();
+      }
+
       return undefined;
     },
 
@@ -95,12 +105,18 @@ function updateLease(items, executionId, leasedUntil) {
 function releaseExpiredLeases(items, now) {
   let released = 0;
   for (let index = 0; index < items.length; index += 1) {
-    if (items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
+    if (isRecoverableStatus(items[index].status)
+      && items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
       items[index] = createDurableTranslationExecutionQueueItem({ ...items[index], leasedUntil: null });
       released += 1;
     }
   }
   return released;
+}
+
+function isRecoverableStatus(status) {
+  return status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
+    || status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING;
 }
 
 function findItem(items, executionId) { return items.find((item) => item.executionId === executionId); }

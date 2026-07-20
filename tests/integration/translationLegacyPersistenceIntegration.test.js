@@ -149,6 +149,20 @@ test('translation command HTTP path persists command state through production co
       createdAt: '2026-07-14T01:04:00.000Z'
     });
 
+    const duplicateOutputResponse = await postJson(
+      `${baseUrl}/api/translation-outputs`,
+      translationOutputPayload({
+        id: 'output-duplicate',
+        executionId,
+        translatedText: 'Should not replace persisted output',
+        providerMetadata: { provider: 'duplicate' },
+        createdAt: '2026-07-14T01:05:00.000Z'
+      })
+    );
+
+    assert.equal(duplicateOutputResponse.status, 201);
+    assert.deepEqual(duplicateOutputResponse.body, outputResponse.body);
+
     assertCommandState(sessionRepository, {
       requests: [
         {

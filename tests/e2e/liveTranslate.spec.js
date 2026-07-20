@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
+  const resetResponse = await page.request.delete('/api/test/sessions');
+  expect(resetResponse.status()).toBe(204);
   page.liveTokenRequests = [];
   page.failLiveTokenRequestAt = null;
 

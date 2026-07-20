@@ -172,6 +172,11 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
 
           const state = translationCommandStateFor(result.sessionRecord);
 
+          const existingOutput = state.outputs.find((storedOutput) => storedOutput.executionId === translationOutput.executionId);
+          if (existingOutput !== undefined) {
+            return toTranslationOutput(existingOutput);
+          }
+
           if (state.outputs.some((storedOutput) => storedOutput.id === translationOutput.id)) {
             throw new Error(`TranslationOutput already exists: ${translationOutput.id}`);
           }

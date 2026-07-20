@@ -2,12 +2,32 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE } from '../../src/application/translation/translationExecutionQueue.js';
 import {
+  compareDurableTranslationExecutionQueueItemIdentity,
   createDurableTranslationExecutionQueueItem,
-  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
+  TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
 } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
 
 export function runDurableQueueRepositoryContract({ createRepository }) {
+  test('durable queue item identity compares same conflict and distinct items', () => {
+    const item = createItem();
+
+    assert.equal(
+      compareDurableTranslationExecutionQueueItemIdentity(item, createItem()),
+      DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.SAME
+    );
+    assert.equal(
+      compareDurableTranslationExecutionQueueItemIdentity(item, createItem({ requestId: 'other-request' })),
+      DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.CONFLICT
+    );
+    assert.equal(
+      compareDurableTranslationExecutionQueueItemIdentity(item, createItem({ executionId: 'other-execution' })),
+      DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.DISTINCT
+    );
+  });
+
   test('durable queue item statuses expose the supported immutable lifecycle set', () => {
     assert.deepEqual(DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES, {
       QUEUED: 'queued',
@@ -163,6 +183,8 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
       { executionId: 'execution-1', requestId: 'request-1' },
       { executionId: '', requestId: 'request-1', enqueuedAt: enqueuedAt() },
       { executionId: 'execution-1', requestId: '   ', enqueuedAt: enqueuedAt() },
+      { executionId: 1, requestId: 'request-1', enqueuedAt: enqueuedAt() },
+      { executionId: 'execution-1', requestId: false, enqueuedAt: enqueuedAt() },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-17T08:00:00Z' },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-17T08:00:00.000+00:00' },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: 'not-a-date' },
@@ -325,18 +347,46 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.list(), [item]);
   });
 
-  test('duplicate enqueue is a successful no-op that preserves FIFO ordering', async () => {
+  test('same identity enqueue is idempotent and preserves item fields status and FIFO ordering', async () => {
+    const repository = createRepository();
+    const items = Object.values(DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES).map((status, index) =>
+      createItem({
+        executionId: `execution-${index + 1}`,
+        requestId: `request-${index + 1}`,
+        status,
+        leasedUntil: status === 'processing' ? '2026-07-17T08:05:00.000Z' : null
+      })
+    );
+
+    for (const item of items) {
+      await repository.enqueue(item);
+      await repository.enqueue({
+        ...item,
+        enqueuedAt: '2026-07-17T09:00:00.000Z',
+        status: 'queued',
+        leasedUntil: null
+      });
+    }
+
+    assert.deepEqual(await repository.list(), items);
+    assert.equal(await repository.size(), items.length);
+  });
+
+  test('execution identity conflicts reject deterministically without changing FIFO state', async () => {
     const repository = createRepository();
     const first = createItem({ executionId: 'execution-1', requestId: 'request-1' });
-    const duplicate = createItem({ executionId: 'execution-1', requestId: 'other-request', status: 'processing' });
+    const conflicting = createItem({ executionId: 'execution-1', requestId: 'other-request' });
     const second = createItem({ executionId: 'execution-2', requestId: 'request-2' });
 
     await repository.enqueue(first);
     await repository.enqueue(second);
-    await repository.enqueue(duplicate);
+
+    await assert.rejects(
+      () => repository.enqueue(conflicting),
+      (error) => error instanceof Error && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+    );
 
     assert.deepEqual(await repository.list(), [first, second]);
-    assert.equal(await repository.size(), 2);
   });
 
   test('an acknowledged execution can be enqueued again', async () => {
@@ -363,6 +413,40 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.equal(await repository.isLeaseExpired('execution-1', lease), true);
     assert.equal(await repository.releaseExpired(lease), 1);
     assert.deepEqual(await repository.list(), [first, second]);
+  });
+
+  test('releaseExpired preserves terminal item leases', async () => {
+    const repository = createRepository();
+    const lease = '2026-07-17T08:05:00.000Z';
+    const processing = createItem({
+      executionId: 'execution-processing',
+      requestId: 'request-processing',
+      status: 'processing',
+      leasedUntil: lease
+    });
+    const completed = createItem({
+      executionId: 'execution-completed',
+      requestId: 'request-completed',
+      status: 'completed',
+      leasedUntil: lease
+    });
+    const failed = createItem({
+      executionId: 'execution-failed',
+      requestId: 'request-failed',
+      status: 'failed',
+      leasedUntil: lease
+    });
+
+    await repository.enqueue(processing);
+    await repository.enqueue(completed);
+    await repository.enqueue(failed);
+
+    assert.equal(await repository.releaseExpired(lease), 1);
+    assert.deepEqual(await repository.list(), [
+      { ...processing, leasedUntil: null },
+      completed,
+      failed
+    ]);
   });
 }
 

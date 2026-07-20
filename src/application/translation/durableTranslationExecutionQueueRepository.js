@@ -23,6 +23,13 @@ const INVALID_REQUEST_ID_MESSAGE = 'Durable translation execution queue item req
 const INVALID_ENQUEUED_AT_MESSAGE = 'Durable translation execution queue item enqueuedAt must be an ISO-8601 UTC string.';
 const INVALID_STATUS_MESSAGE = 'Durable translation execution queue item status is not supported.';
 
+export const TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE = 'translation_execution_queue_item_conflict';
+export const DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY = Object.freeze({
+  SAME: 'same',
+  CONFLICT: 'conflict',
+  DISTINCT: 'distinct'
+});
+
 export const DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES = Object.freeze({
   QUEUED: 'queued',
   PROCESSING: 'processing',
@@ -117,8 +124,7 @@ export function assertDurableTranslationExecutionQueueItem(item) {
     throwInvalidQueueItem(INVALID_ITEM_MESSAGE);
   }
 
-  assertNonEmptyString(item.executionId, INVALID_EXECUTION_ID_MESSAGE);
-  assertNonEmptyString(item.requestId, INVALID_REQUEST_ID_MESSAGE);
+  assertDurableTranslationExecutionQueueItemIdentity(item);
   assertIsoUtcString(item.enqueuedAt, INVALID_ENQUEUED_AT_MESSAGE);
 
   if (Object.hasOwn(item, 'status')) {
@@ -128,6 +134,34 @@ export function assertDurableTranslationExecutionQueueItem(item) {
   if (Object.hasOwn(item, 'leasedUntil') && item.leasedUntil !== null) {
     assertIsoUtcString(item.leasedUntil, 'Durable translation execution queue item leasedUntil must be an ISO-8601 UTC string.');
   }
+}
+
+export function assertDurableTranslationExecutionQueueItemIdentity(item) {
+  if (!isRecord(item)) {
+    throwInvalidQueueItem(INVALID_ITEM_MESSAGE);
+  }
+
+  assertNonEmptyString(item.executionId, INVALID_EXECUTION_ID_MESSAGE);
+  assertNonEmptyString(item.requestId, INVALID_REQUEST_ID_MESSAGE);
+}
+
+export function compareDurableTranslationExecutionQueueItemIdentity(existingItem, candidateItem) {
+  assertDurableTranslationExecutionQueueItemIdentity(existingItem);
+  assertDurableTranslationExecutionQueueItemIdentity(candidateItem);
+
+  if (existingItem.executionId !== candidateItem.executionId) {
+    return DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.DISTINCT;
+  }
+
+  return existingItem.requestId === candidateItem.requestId
+    ? DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.SAME
+    : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.CONFLICT;
+}
+
+export function createTranslationExecutionQueueItemConflictError() {
+  const error = new Error('Translation execution queue item conflict.');
+  error.code = TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE;
+  return error;
 }
 
 export function createDurableTranslationExecutionQueueItem(item) {

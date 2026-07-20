@@ -208,12 +208,14 @@ test('execution missing request, missing entity, duplicate, and conflicting iden
   );
 });
 
-test('creates, lists, and gets TranslationOutput with deterministic ordering and defensive copies', () => {
+test('creates, lists, and gets one TranslationOutput per execution with defensive copies', () => {
   const repository = seededRepositoryWithExecution();
+  repository.createTranslationExecution(executionPayload({ id: 'execution-2' }));
+  repository.createTranslationExecution(executionPayload({ id: 'execution-3' }));
   const outputs = [
     outputPayload({ id: 'output-b', sequence: 2, createdAt: '2026-07-14T01:06:02.000Z' }),
-    outputPayload({ id: 'output-c', sequence: 1, createdAt: '2026-07-14T01:06:02.000Z' }),
-    outputPayload({ id: 'output-a', sequence: 1, createdAt: '2026-07-14T01:06:01.000Z' })
+    outputPayload({ id: 'output-c', executionId: 'execution-2', sequence: 1, createdAt: '2026-07-14T01:06:02.000Z' }),
+    outputPayload({ id: 'output-a', executionId: 'execution-3', sequence: 1, createdAt: '2026-07-14T01:06:01.000Z' })
   ];
   const before = structuredClone(outputs);
 
@@ -223,12 +225,9 @@ test('creates, lists, and gets TranslationOutput with deterministic ordering and
   }
 
   const listed = repository.listTranslationOutputsByExecution('execution-1');
-  const fetched = repository.getTranslationOutput('output-a');
+  const fetched = repository.getTranslationOutput('output-b');
 
-  assert.deepEqual(
-    listed.map((output) => output.id),
-    ['output-a', 'output-c', 'output-b']
-  );
+  assert.deepEqual(listed.map((output) => output.id), ['output-b']);
   assert.equal(fetched.translatedText, 'Bonjour');
   assert.deepEqual(outputs, before);
 
@@ -297,7 +296,36 @@ test('output missing execution and duplicate identifier behavior is deterministi
   );
 
   repository.createTranslationOutput(outputPayload());
-  assert.throws(() => repository.createTranslationOutput(outputPayload()), /TranslationOutput already exists: output-1/);
+  repository.createTranslationExecution(executionPayload({ id: 'execution-2' }));
+  assert.throws(
+    () => repository.createTranslationOutput(outputPayload({ executionId: 'execution-2' })),
+    /TranslationOutput already exists: output-1/
+  );
+});
+
+test('output creation is idempotent by execution and preserves the original persisted output', () => {
+  const repository = seededRepositoryWithExecution();
+  const first = outputPayload({
+    id: 'output-first',
+    executionId: 'execution-1',
+    translatedText: 'First translation',
+    providerMetadata: { attempt: 1 },
+    createdAt: 1000
+  });
+  const duplicate = outputPayload({
+    id: 'output-duplicate',
+    executionId: 'execution-1',
+    translatedText: 'Overwritten translation',
+    providerMetadata: { attempt: 2 },
+    createdAt: 2000
+  });
+
+  const firstResult = repository.createTranslationOutput(first);
+  const duplicateResult = repository.createTranslationOutput(duplicate);
+
+  assert.deepEqual(firstResult, new TranslationOutput(first));
+  assert.deepEqual(duplicateResult, new TranslationOutput(first));
+  assert.deepEqual(repository.listTranslationOutputsByExecution('execution-1'), [new TranslationOutput(first)]);
 });
 
 test('separate repository instances have isolated translation command state', () => {

@@ -66,6 +66,27 @@ test('runner.run is called once with loaded execution and request', async () => 
   assert.strictEqual(runnerCalls[0][1].request, request);
 });
 
+for (const status of ['created', 'running', 'completed', 'failed']) {
+  test(`${status} execution is skipped before durable claim or runner execution`, async () => {
+    const calls = [];
+    const worker = createTranslationExecutionWorker(
+      workerDependencies({
+        calls,
+        translationRepository: repository({ calls, execution: executionWithStatus(status) }),
+        durableTranslationExecutionQueueRepository: durableRepository({ calls })
+      })
+    );
+
+    assert.deepEqual(await worker.processNext(), {
+      processed: false,
+      reason: 'execution_not_processable',
+      executionId: 'execution-1',
+      status
+    });
+    assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById']);
+  });
+}
+
 test('durable queue claim is persisted before runner starts', async () => {
   const calls = [];
   const worker = createTranslationExecutionWorker(
@@ -418,6 +439,14 @@ function translationExecution(overrides = {}) {
     status: 'queued',
     startedAt: 1000,
     ...overrides
+  });
+}
+
+function executionWithStatus(status) {
+  return translationExecution({
+    status,
+    ...(status === 'completed' ? { completedAt: 1100 } : {}),
+    ...(status === 'failed' ? { completedAt: 1100, failureInfo: { code: 'failed' } } : {})
   });
 }
 

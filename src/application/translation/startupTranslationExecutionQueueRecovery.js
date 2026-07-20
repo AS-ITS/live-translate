@@ -1,5 +1,10 @@
 import { assertTranslationExecutionQueue } from './translationExecutionQueue.js';
-import { assertDurableTranslationExecutionQueueRepository } from './durableTranslationExecutionQueueRepository.js';
+import {
+  assertDurableTranslationExecutionQueueRepository,
+  compareDurableTranslationExecutionQueueItemIdentity,
+  createTranslationExecutionQueueItemConflictError,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY
+} from './durableTranslationExecutionQueueRepository.js';
 
 export function createStartupTranslationExecutionQueueRecovery({ durableRepository, activeQueue, clock = () => new Date().toISOString() } = {}) {
   assertDurableTranslationExecutionQueueRepository(durableRepository);
@@ -13,8 +18,20 @@ export function createStartupTranslationExecutionQueueRecovery({ durableReposito
       const items = await durableRepository.list();
       const now = clock();
       const eligibleItems = [];
+      const itemsByExecutionId = new Map();
 
       for (const item of items) {
+        const existingItem = itemsByExecutionId.get(item.executionId);
+        if (existingItem !== undefined) {
+          if (compareDurableTranslationExecutionQueueItemIdentity(existingItem, item)
+            === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.CONFLICT) {
+            throw createTranslationExecutionQueueItemConflictError();
+          }
+
+          continue;
+        }
+
+        itemsByExecutionId.set(item.executionId, item);
         const noLease = item.leasedUntil === null || item.leasedUntil === undefined;
         const expired = !noLease && item.leasedUntil <= now;
         const status = item.status ?? 'queued';

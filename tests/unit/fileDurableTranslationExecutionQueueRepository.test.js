@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { createFileDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fileDurableTranslationExecutionQueueRepository.js';
+import { TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { runDurableQueueRepositoryContract } from './durableTranslationExecutionQueueRepositoryContract.test.js';
 
 const INVALID_STORAGE_ERROR_CODE = 'invalid_translation_execution_queue_storage';
@@ -117,18 +118,40 @@ test('acknowledgement persists removal and preserves remaining FIFO order after 
   assert.deepEqual(await secondRepository.list(), [first, third]);
 });
 
-test('duplicate enqueue leaves persisted storage unchanged across repository reload', async () => {
+test('same identity enqueue leaves persisted storage unchanged across repository reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+  const item = createItem({
+    status: 'processing',
+    leasedUntil: '2026-07-17T08:05:00.000Z'
+  });
+
+  await firstRepository.enqueue(item);
+  const beforeDuplicate = await fileSystem.readFile(filePath, 'utf8');
+  await firstRepository.enqueue(createItem({
+    enqueuedAt: '2026-07-17T09:00:00.000Z',
+    status: 'queued'
+  }));
+
+  assert.equal(await fileSystem.readFile(filePath, 'utf8'), beforeDuplicate);
+
+  const secondRepository = createRepository({ filePath });
+  assert.deepEqual(await secondRepository.list(), [item]);
+});
+
+test('execution identity conflict remains deterministic after repository reload', async () => {
   const filePath = temporaryFilePath();
   const firstRepository = createRepository({ filePath });
   const item = createItem();
 
   await firstRepository.enqueue(item);
-  const beforeDuplicate = await fileSystem.readFile(filePath, 'utf8');
-  await firstRepository.enqueue(createItem({ requestId: 'different-request', status: 'processing' }));
-
-  assert.equal(await fileSystem.readFile(filePath, 'utf8'), beforeDuplicate);
 
   const secondRepository = createRepository({ filePath });
+  await assert.rejects(
+    () => secondRepository.enqueue(createItem({ requestId: 'different-request' })),
+    (error) => error instanceof Error && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+  );
+
   assert.deepEqual(await secondRepository.list(), [item]);
 });
 

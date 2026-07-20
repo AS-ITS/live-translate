@@ -308,6 +308,29 @@ Durable queue item statuses are centralized and limited to `queued`,
 unknown statuses fail storage validation. These statuses do not change the
 `TranslationExecution` domain lifecycle.
 
+Phase 3E adds six aligned duplicate-protection boundaries while retaining the
+queue contract, FIFO semantics, and HTTP `202 Accepted` response:
+
+1. `executionId` is the durable and active queue identity. The same
+   `requestId` is idempotent; a different request ID fails with
+   `translation_execution_queue_item_conflict`.
+2. Durable enqueue preserves the original item and its persisted metadata.
+3. Active in-memory enqueue retains at most one active item per execution until
+   dequeue.
+4. Startup recovery filters durable state and can replay the same FIFO batch
+   repeatedly without duplicate active work.
+5. The Worker guards persisted execution lifecycle before claim or provider
+   execution.
+6. `TranslationOutput` persistence retains the first output for an execution.
+
+| Execution / durable state | Behavior |
+| --- | --- |
+| `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
+| `processing` | Only the existing Phase 3D lease-expiry policy applies; Phase 3E does not reset its status. |
+| `completed` | Recovery does not replay it; the Worker skips a completed execution. |
+| `failed` | Recovery does not replay it; the Worker skips a failed execution. |
+| `created` / `running` execution | The Worker skips it and does not invoke the provider. |
+
 Feature flags:
 
 - `TRANSLATION_DURABLE_QUEUE_ENABLED`: disabled by default. When set to `true`,
@@ -386,16 +409,31 @@ execution. The Worker removes an item only by acknowledging it after the Runner
 has completed or failed; acknowledgement errors propagate without rerunning the
 Runner or provider.
 
+Recovery replays queued items and lease-expired processing items in FIFO order;
+completed and failed durable items are not replayed. Conflicting persisted
+identities fail before replay, and expired leases are released only for
+recoverable items.
+
+The Worker loads persisted execution and request records before durable claim or
+provider execution. Only queued executions proceed; created, running, completed,
+and failed executions return an `execution_not_processable` skip result without
+changing durable queue state or execution lifecycle.
+
+Translation output persistence is idempotent by execution ID. The first stored
+output remains authoritative; subsequent create attempts return it without
+overwriting output content or metadata.
+
 Current limitations:
 
-- Recovery filtering is not implemented; startup recovery may replay durable
-  items regardless of status until filtering is added.
-- No lease.
-- No visibility timeout.
+- No visibility timeout renewal.
 - No retry.
 - No dead-letter queue.
 - No multi-worker support.
 - No locking or concurrency control.
+- These layers lower duplicate-processing risk but do not provide
+  multi-process exactly-once delivery.
+- Provider-level external idempotency keys and event-publishing deduplication
+  remain out of scope.
 
 ## 5. Authentication and Token Flow
 

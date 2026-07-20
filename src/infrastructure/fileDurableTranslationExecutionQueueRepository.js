@@ -1,7 +1,11 @@
 import { dirname } from 'node:path';
 import {
+  compareDurableTranslationExecutionQueueItemIdentity,
+  createTranslationExecutionQueueItemConflictError,
   createDurableTranslationExecutionQueueItem,
-  createDurableTranslationExecutionQueueRepository
+  createDurableTranslationExecutionQueueRepository,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
 } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 
 export const INVALID_TRANSLATION_EXECUTION_QUEUE_STORAGE_CODE = 'invalid_translation_execution_queue_storage';
@@ -16,12 +20,18 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
     async enqueue(item) {
       const storage = await readStorage({ fileSystem, filePath });
 
-      if (storage.items.some((existingItem) => existingItem.executionId === item.executionId)) {
+      const existingItem = storage.items.find((candidate) => candidate.executionId === item.executionId);
+      if (existingItem === undefined) {
+        storage.items.push(createDurableTranslationExecutionQueueItem(item));
+        await writeStorage({ fileSystem, filePath, storage });
         return undefined;
       }
 
-      storage.items.push(createDurableTranslationExecutionQueueItem(item));
-      await writeStorage({ fileSystem, filePath, storage });
+      if (compareDurableTranslationExecutionQueueItemIdentity(existingItem, item)
+        === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY.CONFLICT) {
+        throw createTranslationExecutionQueueItemConflictError();
+      }
+
       return undefined;
     },
 
@@ -182,12 +192,18 @@ function updateLease(items, executionId, leasedUntil) {
 function releaseExpiredLeases(items, now) {
   let released = 0;
   for (let index = 0; index < items.length; index += 1) {
-    if (items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
+    if (isRecoverableStatus(items[index].status)
+      && items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
       items[index] = createDurableTranslationExecutionQueueItem({ ...items[index], leasedUntil: null });
       released += 1;
     }
   }
   return released;
+}
+
+function isRecoverableStatus(status) {
+  return status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
+    || status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING;
 }
 
 function throwNotFound(executionId) { throw new Error(`Durable translation execution queue item ${executionId} was not found`); }

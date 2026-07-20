@@ -1,5 +1,30 @@
 # Changelog
 
+- Phase 3H WP5 Lease Lifecycle Vertical Integration & Documentation Closeout:
+  completed production-composition coverage for normal claims, active leases,
+  expired reclaim/new ownership, stale acknowledgement rejection, and reclaimed
+  provider failure. Phase 3H is complete; renewal, fencing, retry/DLQ, and
+  distributed coordination remain deferred.
+
+- Phase 3H WP4 Lease Ownership-aware Acknowledgement: durable workers now
+  remove processing items only through lease-matching `acknowledgeClaim`, while
+  startup reconciliation retains its system `acknowledge` removal path.
+
+- Phase 3H WP3 Lease-aware Startup Recovery and Expired Lease Reclaim:
+  startup recovery now uses `leaseExpiresAt` as the sole processing ownership
+  expiry decision, reclaims eligible expired items through `queued`, and leaves
+  active leases and terminal execution reconciliation unchanged.
+
+- Phase 3H WP2 Worker Lease Claim Integration: durable workers now validate and
+  generate claim lease metadata before Runner execution, preserve `claimedAt`
+  for recovery compatibility, and receive lease duration, clock, and ID factory
+  dependencies only when the durable queue is enabled.
+
+- Phase 3H WP1 Durable Queue Lease Metadata & Repository Contract: made
+  `leaseId` and `leaseExpiresAt` required for durable processing items, with
+  validation, atomic claim support, fake/file adapter persistence, legacy
+  queued-item loading, and focused contract tests.
+
 ## Unreleased
 
 ### Added

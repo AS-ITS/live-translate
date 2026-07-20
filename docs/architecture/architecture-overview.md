@@ -294,7 +294,8 @@ Components:
   then enqueues the existing active in-memory queue.
 - `DurableTranslationExecutionQueueRepository`: application repository port for
   durable queue storage. Its contract is `enqueue`, `peek`, `list`, `dequeue`,
-  `size`, `clear`, `updateStatus`, `acknowledge`, and `contains`.
+  `size`, `clear`, `updateStatus`, system `acknowledge`, lease-aware
+  `acknowledgeClaim`, `contains`, and `claim`.
 - `FileDurableTranslationExecutionQueueRepository`: JSON file-backed durable
   repository adapter. It stores FIFO items with `executionId`, `requestId`, and
   ISO UTC `enqueuedAt`, plus durable queue item `status`.
@@ -326,7 +327,7 @@ queue contract, FIFO semantics, and HTTP `202 Accepted` response:
 | Execution / durable state | Behavior |
 | --- | --- |
 | `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
-| `processing` | For an expired complete lease, recovery checks execution and output state. `queued` and output-less `running` executions may replay; output-bearing `running` executions reconcile to completed; failed/no-output executions reconcile only their durable item to failed. Missing, mismatched, valid, and legacy items remain durable. |
+| `processing` | An active `leaseExpiresAt` remains durable and is not replayed. An expired lease is cleared and reclaimed through `queued`; recovery then checks execution and output state before replay or terminal reconciliation. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
 | `failed` | Recovery does not replay it; startup acknowledges only a failed execution with no output. The Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not invoke the provider. |
@@ -393,31 +394,32 @@ TranslationExecutionQueue.dequeue()
 ↓
 load TranslationExecution and TranslationRequest
 ↓
-DurableTranslationExecutionQueueRepository.updateStatus(executionId, "processing")
+DurableTranslationExecutionQueueRepository.claim(executionId, { leaseId, leaseExpiresAt })
 ↓
 TranslationExecutionRunner.run()
 ↓
-DurableTranslationExecutionQueueRepository.acknowledge(executionId)
+DurableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId })
 ```
 
 The claim happens only when the durable queue feature is enabled and the Worker
-has a durable queue repository. The runner starts only after the status update
-succeeds.
+has a durable queue repository. The runner starts only after claim succeeds.
 
 Durable queue items remain stored through startup recovery and runner
-execution. The Worker removes an item only by acknowledging it after the Runner
-has persisted `completed` or `failed` execution state; acknowledgement errors
-propagate without rerunning the Runner or provider, and leave the item stored.
+execution. The Worker removes an item only after the Runner has persisted
+`completed` or `failed`, through `acknowledgeClaim(executionId, { leaseId })`.
+Startup terminal reconciliation uses system `acknowledge(executionId)` without
+a Worker lease; acknowledgement errors retain the item.
 
-Recovery replays queued items in FIFO order. For an expired processing item
-with complete lease metadata, it loads the execution and output state before
-requeue. A queued execution follows the normal requeue path; an output-less
-running execution uses its explicit domain recovery transition to queued first.
+Recovery replays queued items in FIFO order. An active processing lease remains
+unchanged. An expired processing item has its old lease cleared and returns to
+queued before recovery loads execution and output state for replay or terminal
+reconciliation. A queued execution follows the normal requeue path; an
+output-less running execution uses its explicit domain recovery transition to queued first.
 An output-bearing running execution instead uses the command-service completed
 transition, marks the durable item completed, and acknowledges it without
 provider replay. A completed execution with output and an expired processing
 item likewise finalizes its durable item. Terminal failed, missing, mismatched,
-valid-lease, and legacy items remain in storage. A durable completed item is
+and active-lease items remain in storage. A durable completed item is
 acknowledged at startup only when its execution is completed and has output.
 An expired processing item with a failed execution and no output is marked and
 acknowledged as failed without changing execution state or failure metadata;
@@ -440,6 +442,7 @@ Current limitations:
 - Failed reconciliation requires no output and leaves output-bearing failed
   executions durable.
 - No retry/backoff or dead-letter queue.
+- No lease renewal/heartbeat or execution fencing after lease expiry.
 - No multi-worker locking or cross-process deduplication policy.
 - These layers do not provide multi-process exactly-once delivery.
 - Provider-level external idempotency keys and event-publishing deduplication

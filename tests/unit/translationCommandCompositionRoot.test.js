@@ -402,7 +402,7 @@ test('production composition creates durable queue repository when feature flag 
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {},
+    acknowledge() {}, acknowledgeClaim() {},
     contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
   };
   const fileSystem = Object.freeze({
@@ -502,6 +502,7 @@ test('production composition uses file-backed durable repository factory when en
     'clear',
     'updateStatus',
     'acknowledge',
+    'acknowledgeClaim',
     'contains', 'claim', 'requeueExpiredProcessing'
   ]);
   assert.equal(Object.isFrozen(dependencies.durableTranslationExecutionQueueRepository), true);
@@ -549,6 +550,9 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
         acknowledge() {
           throw new Error('durable repository acknowledge should not be used by active queue');
         },
+        acknowledgeClaim() {
+          throw new Error('durable repository worker acknowledgement should not be used by active queue');
+        },
         contains() {
           return false;
         }, claim() {}, requeueExpiredProcessing() { return null; }
@@ -594,12 +598,13 @@ test('production composition injects active dual-write queue into service worker
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {},
+    acknowledge() {}, acknowledgeClaim() {},
     contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
   };
   const activeQueue = queue();
   const observed = {};
   const leaseIdFactory = () => 'lease-from-composition';
+  const queueClock = { now: () => '2026-07-20T00:00:00.000Z' };
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
@@ -638,6 +643,7 @@ test('production composition injects active dual-write queue into service worker
       observed.workerDurableRepository = options.durableTranslationExecutionQueueRepository;
       observed.workerLeaseDurationMs = options.leaseDurationMs;
       observed.workerLeaseIdFactory = options.leaseIdFactory;
+      observed.workerClock = options.clock;
       return { processNext() {} };
     },
     translationExecutionWorkerRuntimeFactory(options) {
@@ -647,7 +653,8 @@ test('production composition injects active dual-write queue into service worker
     resolveSavedTranscriptTranslationProvider() {
       throw new Error('saved transcript provider resolution should not run');
     },
-    translationQueueLeaseIdFactory: leaseIdFactory
+    translationQueueLeaseIdFactory: leaseIdFactory,
+    translationQueueClock: queueClock
   });
 
   assert.strictEqual(dependencies.translationExecutionQueue, activeQueue);
@@ -659,6 +666,7 @@ test('production composition injects active dual-write queue into service worker
   assert.strictEqual(observed.workerDurableRepository, durableRepository);
   assert.equal(observed.workerLeaseDurationMs, 1000);
   assert.strictEqual(observed.workerLeaseIdFactory, leaseIdFactory);
+  assert.equal(observed.workerClock(), '2026-07-20T00:00:00.000Z');
   assert.strictEqual(observed.runtimeQueue, activeQueue);
 });
 
@@ -671,7 +679,7 @@ test('production composition creates startup recovery when durable queue is enab
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {},
+    acknowledge() {}, acknowledgeClaim() {},
     contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
   };
   const recovery = { recover() {} };
@@ -747,6 +755,7 @@ test('production runtime start awaits startup recovery before starting worker ru
         clear() {},
         updateStatus() {},
         acknowledge() {},
+        acknowledgeClaim() {},
         contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
       };
     },

@@ -327,6 +327,9 @@ function durableRepository(overrides = {}) {
       function acknowledge() {
         throw new Error('dual-write queue should not acknowledge durable items');
       },
+    acknowledgeClaim() {
+      throw new Error('dual-write queue should not acknowledge durable worker claims');
+    },
     contains:
       overrides.contains ||
       function contains(executionId) {

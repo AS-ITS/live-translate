@@ -10,6 +10,7 @@ const REQUIRED_METHODS = Object.freeze([
   'clear',
   'updateStatus',
   'acknowledge',
+  'acknowledgeClaim',
   'contains',
   'claim',
   'requeueExpiredProcessing'
@@ -23,6 +24,7 @@ const INVALID_STATUS_MESSAGE = 'Durable translation execution queue item status 
 
 export const TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE = 'translation_execution_queue_item_conflict';
 export const TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE = 'translation_execution_queue_item_not_found';
+export const TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE = 'translation_execution_queue_lease_ownership_error';
 export const DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY = Object.freeze({
   SAME: 'same',
   CONFLICT: 'conflict',
@@ -76,6 +78,12 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
       return createDurableTranslationExecutionQueueItem(await implementation.acknowledge(executionId));
     },
 
+    async acknowledgeClaim(executionId, claim) {
+      assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
+      assertDurableTranslationExecutionQueueLeaseOwnership(claim);
+      return createDurableTranslationExecutionQueueItem(await implementation.acknowledgeClaim(executionId, claim));
+    },
+
     async contains(executionId) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
       return implementation.contains(executionId);
@@ -84,7 +92,7 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
     async claim(executionId, lease) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
       assertDurableTranslationExecutionQueueLease(lease);
-      return implementation.claim(executionId, lease);
+      return createDurableTranslationExecutionQueueItem(await implementation.claim(executionId, lease));
     },
 
     async requeueExpiredProcessing(executionId, now) {
@@ -158,6 +166,12 @@ export function createDurableTranslationExecutionQueueItemNotClaimableError() {
   return error;
 }
 
+export function createDurableTranslationExecutionQueueLeaseOwnershipError() {
+  const error = new TypeError('Durable translation execution queue item lease ownership does not match.');
+  error.code = TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE;
+  return error;
+}
+
 export function createDurableTranslationExecutionQueueItem(item) {
   assertDurableTranslationExecutionQueueItem(item);
 
@@ -177,10 +191,10 @@ export function normalizeDurableTranslationExecutionQueueItem(item) {
     : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED;
   assertDurableTranslationExecutionQueueItemStatus(status);
 
-  if (status !== DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING) {
-    assertNoLeaseMetadata(item);
-  } else if (hasAnyLeaseMetadata(item)) {
+  if (status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING) {
     assertDurableTranslationExecutionQueueLease(item);
+  } else {
+    assertNoLeaseMetadata(item);
   }
 
   return createNormalizedDurableTranslationExecutionQueueItem({ ...item, status });
@@ -192,12 +206,15 @@ export function assertDurableTranslationExecutionQueueLease(lease) {
   }
 
   assertNonEmptyString(lease.leaseId, 'Durable translation execution queue item leaseId must be a non-empty string.');
-  assertIsoUtcString(lease.claimedAt, 'Durable translation execution queue item claimedAt must be an ISO-8601 UTC string.');
   assertIsoUtcString(lease.leaseExpiresAt, 'Durable translation execution queue item leaseExpiresAt must be an ISO-8601 UTC string.');
+}
 
-  if (lease.claimedAt >= lease.leaseExpiresAt) {
-    throwInvalidQueueItem('Durable translation execution queue item leaseExpiresAt must be after claimedAt.');
+export function assertDurableTranslationExecutionQueueLeaseOwnership(claim) {
+  if (!isRecord(claim)) {
+    throwInvalidQueueItem('Durable translation execution queue acknowledgement claim must be an object.');
   }
+
+  assertNonEmptyString(claim.leaseId, 'Durable translation execution queue item leaseId must be a non-empty string.');
 }
 
 function createNormalizedDurableTranslationExecutionQueueItem(item) {
@@ -213,7 +230,7 @@ function createNormalizedDurableTranslationExecutionQueueItem(item) {
   if (item.status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING
     && hasAnyLeaseMetadata(item)) {
     normalized.leaseId = item.leaseId;
-    normalized.claimedAt = item.claimedAt;
+    if (Object.hasOwn(item, 'claimedAt')) normalized.claimedAt = item.claimedAt;
     normalized.leaseExpiresAt = item.leaseExpiresAt;
   }
 

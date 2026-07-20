@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3G WP6 Failed Execution Reconciliation completed.
+Current milestone: Phase 3H Durable Queue Lease Lifecycle completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -319,6 +319,14 @@ Deferred:
   - Remaining work: processing-item crash recovery; lease, heartbeat, and
     visibility-timeout recovery policy; retry/backoff; dead-letter queue;
     multi-worker locking and cross-process deduplication policy.
+- Phase 3H - Durable Queue Lease Lifecycle: Completed
+  - WP1 Lease metadata and repository contract
+  - WP2 Worker atomic claim with injected lease dependencies
+  - WP3 Lease-aware startup recovery and expired reclaim
+  - WP4 Lease ownership-aware Worker acknowledgement
+  - WP5 Production vertical integration and documentation closeout
+  - Remaining work: renewal/heartbeat, execution fencing after expiry,
+    distributed coordination, retry/backoff, dead-letter queues, and metrics.
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule

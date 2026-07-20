@@ -97,11 +97,12 @@ Components:
   durable repository first, then enqueues the active in-memory queue.
 - `DurableTranslationExecutionQueueRepository`: durable repository port for
   `enqueue`, `peek`, `list`, `dequeue`, `size`, `clear`, `updateStatus`,
-  `acknowledge`, `contains`, and atomic `claim`.
+  system `acknowledge`, lease-aware `acknowledgeClaim`, `contains`, and atomic
+  `claim`.
 - `FileDurableTranslationExecutionQueueRepository`: JSON file-backed repository
   adapter storing FIFO items with `executionId`, `requestId`, ISO UTC
   `enqueuedAt`, durable queue item `status`, and complete processing lease
-  metadata: `leaseId`, `claimedAt`, and `leaseExpiresAt`.
+  metadata: `leaseId` and `leaseExpiresAt`.
 - `StartupTranslationExecutionQueueRecovery`: startup recovery service that
   replays durable items into the active in-memory queue before Worker Runtime
   polling begins.
@@ -138,10 +139,21 @@ queue port, FIFO behavior, or the HTTP `202 Accepted` submission contract:
 | Execution / durable state | Behavior |
 | --- | --- |
 | `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
-| `processing` | Recovery requeues only when its complete lease has expired; valid and legacy processing items remain durable. |
+| `processing` | Recovery requeues only when its `leaseExpiresAt` has expired; active leases remain durable. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
 | `failed` | Recovery does not replay it; the Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not call the provider. |
+
+Durable lease lifecycle:
+
+```text
+queued
+  → Worker claim(leaseId, leaseExpiresAt)
+  → processing
+  → Runner success / failure
+  → acknowledgeClaim(leaseId)
+  → remove
+```
 
 Startup recovery:
 
@@ -168,9 +180,12 @@ Worker Polling
 Replay uses `list -> active enqueue` to load durable items into the active
 in-memory queue without removing them. Before a Worker executes a recovered or
 newly enqueued job, it atomically claims the durable queue item from `queued`
-to `processing` with a generated `leaseId`, `claimedAt`, and `leaseExpiresAt`.
+to `processing` with a generated `leaseId` and `leaseExpiresAt`.
+The Worker also retains `claimedAt` as compatibility metadata; recovery expiry
+decisions use only `leaseExpiresAt`.
 After the Runner persists a terminal `completed` or `failed` execution, the
-Worker acknowledges the durable item and removes it.
+Worker acknowledges the durable item and removes it only when its claim lease
+matches; startup reconciliation uses the system acknowledgement path.
 If acknowledgement fails, the item remains stored and the acknowledgement error
 propagates unchanged.
 
@@ -190,14 +205,17 @@ requeues. A `running` execution with an output uses the existing command
 service `complete` transition, then marks and acknowledges the durable item as
 `completed`; it never replays the provider. A completed execution with output
 and an expired processing item follows the same durable finalization path.
-Missing executions, failed executions with output, valid leases, legacy
-processing items, and mismatched output state remain unchanged and are not
-replayed.
+Missing executions, failed executions with output, active leases, and mismatched
+output state remain unchanged and are not replayed.
 An expired processing item with a failed execution and no output is separately
 reconciled by marking and acknowledging only the durable item as `failed`; the
 execution and its failure metadata are never rewritten. A failed durable item
 is acknowledged at startup only for that same failed/no-output state.
 Conflicting persisted identities fail before replay.
+
+Lease renewal, heartbeat, execution fencing after expiry, distributed locking,
+retry/backoff, dead-letter queues, and lease ownership checks outside Worker
+acknowledgement remain out of scope.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,

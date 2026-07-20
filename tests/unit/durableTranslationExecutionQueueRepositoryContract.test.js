@@ -7,6 +7,7 @@ import {
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
   TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE,
+  TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE,
   TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE
 } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
@@ -193,11 +194,12 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: 'unknown' },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: 1 },
       createItem({ leaseId: 'lease-1' }),
-      createItem({ claimedAt: claimedAt() }),
+      createItem({ claimedAt: '2026-07-17T08:01:00.000Z' }),
       createItem({ leaseExpiresAt: leaseExpiresAt() }),
       createItem({ status: 'processing' }),
-      createItem({ status: 'processing', leaseId: 'lease-1', claimedAt: claimedAt() }),
-      createItem({ status: 'processing', ...lease({ claimedAt: leaseExpiresAt(), leaseExpiresAt: claimedAt() }) })
+      createItem({ status: 'processing', leaseId: 'lease-1' }),
+      createItem({ status: 'processing', leaseExpiresAt: leaseExpiresAt() }),
+      createItem({ status: 'processing', ...lease({ leaseExpiresAt: 'not-a-date' }) })
     ]) {
       await assert.rejects(
         () => repository.enqueue(invalidItem),
@@ -261,7 +263,9 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     const itemLease = lease();
 
     await repository.enqueue(createItem());
-    await repository.claim('execution-1', itemLease);
+    const claimed = await repository.claim('execution-1', itemLease);
+    assert.deepEqual(claimed, createProcessingItem(itemLease));
+    assert.equal(Object.isFrozen(claimed), true);
     assert.deepEqual(await repository.peek(), createProcessingItem(itemLease));
   });
 
@@ -278,6 +282,12 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     await repository.claim('execution-1', lease());
     await repository.updateStatus('execution-1', 'failed');
     assert.deepEqual(await repository.peek(), createItem({ status: 'failed' }));
+
+    await repository.clear();
+    await repository.enqueue(createItem());
+    await repository.claim('execution-1', lease());
+    await repository.updateStatus('execution-1', 'queued');
+    assert.deepEqual(await repository.peek(), createItem());
   });
 
   test('status update preserves identity payload item count and queue ordering', async () => {
@@ -377,6 +387,75 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.list(), [item]);
   });
 
+  test('acknowledgeClaim removes only the processing item owned by the supplied lease', async () => {
+    const repository = createRepository();
+    const item = createItem();
+    const itemLease = lease();
+
+    await repository.enqueue(item);
+    await repository.claim(item.executionId, itemLease);
+
+    const acknowledged = await repository.acknowledgeClaim(item.executionId, { leaseId: itemLease.leaseId });
+
+    assert.deepEqual(acknowledged, createProcessingItem(itemLease));
+    assert.equal(Object.isFrozen(acknowledged), true);
+    assert.deepEqual(await repository.list(), []);
+  });
+
+  test('acknowledgeClaim rejects invalid ownership without changing durable state', async () => {
+    const repository = createRepository();
+    const item = createItem();
+    const itemLease = lease();
+    const processingItem = createProcessingItem(itemLease);
+    await repository.enqueue(item);
+    await repository.claim(item.executionId, itemLease);
+
+    for (const claim of [null, undefined, {}, { leaseId: '' }, { leaseId: 'other-lease' }]) {
+      await assert.rejects(
+        () => repository.acknowledgeClaim(item.executionId, claim),
+        (error) => error instanceof TypeError && (
+          error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+          || error.code === TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE
+        )
+      );
+      assert.deepEqual(await repository.peek(), processingItem);
+    }
+  });
+
+  test('acknowledgeClaim rejects missing and non-processing items without changing durable state', async () => {
+    const repository = createRepository();
+    const item = createItem();
+
+    await assert.rejects(
+      () => repository.acknowledgeClaim(item.executionId, { leaseId: 'lease-1' }),
+      (error) => error instanceof Error && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE
+    );
+
+    await repository.enqueue(item);
+    await assert.rejects(
+      () => repository.acknowledgeClaim(item.executionId, { leaseId: 'lease-1' }),
+      (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+    );
+    assert.deepEqual(await repository.peek(), item);
+  });
+
+  test('old lease cannot acknowledge an item reclaimed and claimed by a new worker', async () => {
+    const repository = createRepository();
+    const item = createItem();
+    const firstLease = lease({ leaseId: 'lease-1' });
+    const secondLease = lease({ leaseId: 'lease-2' });
+    await repository.enqueue(item);
+    await repository.claim(item.executionId, firstLease);
+    await repository.updateStatus(item.executionId, 'queued');
+    await repository.claim(item.executionId, secondLease);
+
+    await assert.rejects(
+      () => repository.acknowledgeClaim(item.executionId, { leaseId: firstLease.leaseId }),
+      (error) => error instanceof TypeError && error.code === TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE
+    );
+    assert.deepEqual(await repository.peek(), createProcessingItem(secondLease));
+  });
+
   test('contains returns whether an execution exists without changing storage', async () => {
     const repository = createRepository();
     const item = createItem();
@@ -451,7 +530,15 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     );
     await repository.enqueue(item);
 
-    for (const invalidLease of [null, undefined, {}, { leaseId: '', claimedAt: claimedAt(), leaseExpiresAt: leaseExpiresAt() }, { leaseId: 'lease-1', claimedAt: claimedAt(), leaseExpiresAt: claimedAt() }]) {
+    for (const invalidLease of [
+      null,
+      undefined,
+      {},
+      { leaseExpiresAt: leaseExpiresAt() },
+      { leaseId: 'lease-1' },
+      { leaseId: '', leaseExpiresAt: leaseExpiresAt() },
+      { leaseId: 'lease-1', leaseExpiresAt: 'not-a-date' }
+    ]) {
       await assert.rejects(
         () => repository.claim(item.executionId, invalidLease),
         (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
@@ -539,10 +626,6 @@ function enqueuedAt() {
   return '2026-07-17T08:00:00.000Z';
 }
 
-function claimedAt() {
-  return '2026-07-17T08:01:00.000Z';
-}
-
 function leaseExpiresAt() {
   return '2026-07-17T08:05:00.000Z';
 }
@@ -550,7 +633,6 @@ function leaseExpiresAt() {
 function lease(overrides = {}) {
   return {
     leaseId: 'lease-1',
-    claimedAt: claimedAt(),
     leaseExpiresAt: leaseExpiresAt(),
     ...overrides
   };

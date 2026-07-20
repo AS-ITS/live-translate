@@ -213,15 +213,16 @@ test('expired processing item is atomically requeued and replayed after queued F
   assert.deepEqual(await repository.list(), [queued, durableItem({ executionId: item.executionId, requestId: item.requestId })]);
 });
 
-test('valid and legacy processing items remain stored without replay', async () => {
-  const validProcessing = processingItem({ executionId: 'execution-processing', requestId: 'request-processing', leaseExpiresAt: '2026-07-17T09:00:00.000Z' });
-  const legacyProcessing = durableItem({
-    executionId: 'execution-legacy',
-    requestId: 'request-legacy',
-    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING
+test('active processing lease remains unchanged and is not replayed regardless of claimedAt', async () => {
+  const validProcessing = processingItem({
+    executionId: 'execution-processing',
+    requestId: 'request-processing',
+    claimedAt: '2026-07-17T10:00:00.000Z',
+    leaseExpiresAt: '2026-07-17T09:00:00.000Z'
   });
   const queue = createInMemoryTranslationExecutionQueue();
-  const repository = durableRepository({ items: [validProcessing, legacyProcessing] });
+  const calls = [];
+  const repository = durableRepository({ calls, items: [validProcessing] });
 
   await createStartupTranslationExecutionQueueRecovery({
     durableRepository: repository,
@@ -230,7 +231,88 @@ test('valid and legacy processing items remain stored without replay', async () 
   }).recover();
 
   assert.equal(queue.size(), 0);
-  assert.deepEqual(await repository.list(), [validProcessing, legacyProcessing]);
+  assert.deepEqual(calls, [['durable.list']]);
+  assert.deepEqual(await repository.list(), [validProcessing]);
+});
+
+test('processing lease that expires exactly now is reclaimed then replayed without its old lease', async () => {
+  const repository = createFakeDurableTranslationExecutionQueueRepository();
+  const item = processingItem({ leaseExpiresAt: '2026-07-17T08:00:00.000Z' });
+  const queue = createInMemoryTranslationExecutionQueue();
+  await repository.enqueue(item);
+
+  await createStartupTranslationExecutionQueueRecovery({
+    durableRepository: repository,
+    activeQueue: queue,
+    translationRepository: recoveryTranslationRepository({
+      executions: new Map([[item.executionId, { status: 'queued' }]])
+    }),
+    clock: () => '2026-07-17T08:00:00.000Z'
+  }).recover();
+
+  assert.deepEqual(queue.dequeue(), { executionId: item.executionId, requestId: item.requestId });
+  assert.deepEqual(await repository.peek(), durableItem());
+});
+
+test('reclaim update failure preserves processing item and does not enqueue', async () => {
+  const reclaimError = new Error('reclaim failed');
+  const item = processingItem();
+  const calls = [];
+  const queue = activeQueue({ calls });
+  const repository = durableRepository({
+    calls,
+    items: [item],
+    updateStatus() {
+      throw reclaimError;
+    }
+  });
+
+  await assert.rejects(
+    createStartupTranslationExecutionQueueRecovery({
+      durableRepository: repository,
+      activeQueue: queue,
+      translationRepository: recoveryTranslationRepository({
+        calls,
+        executions: new Map([[item.executionId, { status: 'queued' }]])
+      }),
+      clock: () => '2026-07-17T08:00:00.000Z'
+    }).recover(),
+    (error) => error === reclaimError
+  );
+
+  assert.deepEqual(queue.items, []);
+  assert.deepEqual(await repository.list(), [item]);
+});
+
+test('active enqueue failure leaves reclaimed durable item queued for the next recovery', async () => {
+  const enqueueError = new Error('active enqueue failed');
+  const repository = createFakeDurableTranslationExecutionQueueRepository();
+  const item = processingItem();
+  await repository.enqueue(item);
+  const translationRepository = recoveryTranslationRepository({
+    executions: new Map([[item.executionId, { status: 'queued' }]])
+  });
+
+  await assert.rejects(
+    createStartupTranslationExecutionQueueRecovery({
+      durableRepository: repository,
+      activeQueue: activeQueue({ enqueue() { throw enqueueError; } }),
+      translationRepository,
+      clock: () => '2026-07-17T08:00:00.000Z'
+    }).recover(),
+    (error) => error === enqueueError
+  );
+  assert.deepEqual(await repository.peek(), durableItem());
+
+  const retryQueue = createInMemoryTranslationExecutionQueue();
+  await createStartupTranslationExecutionQueueRecovery({
+    durableRepository: repository,
+    activeQueue: retryQueue,
+    translationRepository,
+    clock: () => '2026-07-17T08:00:00.000Z'
+  }).recover();
+
+  assert.deepEqual(retryQueue.dequeue(), { executionId: item.executionId, requestId: item.requestId });
 });
 
 test('running execution with persisted output reconciles through the command service without active replay', async () => {
@@ -406,6 +488,9 @@ function durableRepository(overrides = {}) {
     async acknowledge(executionId) {
       calls?.push(['durable.acknowledge', executionId]);
       return overrides.acknowledge ? overrides.acknowledge(executionId) : undefined;
+    },
+    async acknowledgeClaim() {
+      throw new Error('recovery should not acknowledge a worker claim');
     },
     async contains() {
       throw new Error('recovery should not query durable item existence');

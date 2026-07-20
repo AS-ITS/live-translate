@@ -19,7 +19,9 @@ export function createTranslationExecutionWorker({
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionRunner(translationExecutionRunner);
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
-  assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory);
+  if (durableTranslationExecutionQueueRepository !== undefined) {
+    assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory);
+  }
 
   return Object.freeze({
     async processNext() {
@@ -44,8 +46,9 @@ export function createTranslationExecutionWorker({
         };
       }
 
+      let claimedDurableItem;
       if (durableTranslationExecutionQueueRepository !== undefined) {
-        await durableTranslationExecutionQueueRepository.claim(
+        claimedDurableItem = await durableTranslationExecutionQueueRepository.claim(
           job.executionId,
           createLease({ clock, leaseIdFactory, leaseDurationMs })
         );
@@ -68,7 +71,13 @@ export function createTranslationExecutionWorker({
         assertFoundExecution(persistedExecution, job.executionId);
 
         if (isTerminalExecution(persistedExecution)) {
-          await durableTranslationExecutionQueueRepository.acknowledge(job.executionId);
+          try {
+            await durableTranslationExecutionQueueRepository.acknowledgeClaim(job.executionId, {
+              leaseId: claimedDurableItem.leaseId
+            });
+          } catch (error) {
+            if (!runnerFailed) throw error;
+          }
         }
       }
 
@@ -96,13 +105,30 @@ function assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory) {
 
 function createLease({ clock, leaseIdFactory, leaseDurationMs }) {
   const claimedAt = clock();
+  assertIsoUtcTimestamp(claimedAt, 'clock must return an ISO-8601 UTC string.');
+
+  const leaseId = leaseIdFactory();
+  if (typeof leaseId !== 'string' || leaseId.trim().length === 0) {
+    throw new TypeError('leaseIdFactory must return a non-empty string.');
+  }
+
   const timestamp = new Date(claimedAt).getTime();
-  if (Number.isNaN(timestamp)) throw new TypeError('clock must return an ISO-8601 UTC string.');
   return {
-    leaseId: leaseIdFactory(),
+    leaseId,
     claimedAt,
     leaseExpiresAt: new Date(timestamp + leaseDurationMs).toISOString()
   };
+}
+
+function assertIsoUtcTimestamp(value, message) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    throw new TypeError(message);
+  }
+
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime()) || timestamp.toISOString() !== value) {
+    throw new TypeError(message);
+  }
 }
 
 function assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository) {

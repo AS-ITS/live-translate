@@ -33,6 +33,159 @@ test('production composition keeps duplicate durable submissions to one active i
   });
 });
 
+test('production composition persists and acknowledges the worker claim lease around a successful runner', async () => {
+  let releaseProvider;
+  let providerStarted;
+  const providerStartedPromise = new Promise((resolve) => { providerStarted = resolve; });
+  const providerReleasePromise = new Promise((resolve) => { releaseProvider = resolve; });
+
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    const executionId = 'execution-lease-success';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+
+    const processing = dependencies.translationExecutionWorker.processNext();
+    await providerStartedPromise;
+
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), [{
+      executionId,
+      requestId: 'request-lease-success',
+      enqueuedAt: '2026-07-20T00:00:00.000Z',
+      status: 'processing',
+      leaseId: 'lease-L1',
+      claimedAt: '2026-07-20T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-20T00:05:00.000Z'
+    }]);
+    assert.equal(providerCalls.length, 1);
+
+    releaseProvider({ translatedText: 'done' });
+    await processing;
+
+    assert.equal((await dependencies.translationRepository.getTranslationExecution(executionId)).status, 'completed');
+    assert.equal((await dependencies.translationRepository.listTranslationOutputsByExecution(executionId)).length, 1);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  }, {
+    translationQueueLeaseIdFactory: () => 'lease-L1',
+    providerExecute: async () => {
+      providerStarted();
+      return providerReleasePromise;
+    }
+  });
+});
+
+test('production recovery preserves an active lease while replaying other queued durable work', async () => {
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-active-lease' });
+    await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-replay-queued' });
+    dependencies.translationExecutionQueue.dequeue();
+    dependencies.translationExecutionQueue.dequeue();
+    const activeLease = {
+      leaseId: 'lease-active',
+      claimedAt: '2026-07-20T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-20T00:05:00.000Z'
+    };
+    await dependencies.durableTranslationExecutionQueueRepository.claim('execution-active-lease', activeLease);
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+
+    assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), {
+      executionId: 'execution-replay-queued',
+      requestId: 'request-replay-queued'
+    });
+    assert.equal(dependencies.translationExecutionQueue.size(), 0);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), [
+      {
+        executionId: 'execution-active-lease',
+        requestId: 'request-active-lease',
+        enqueuedAt: '2026-07-20T00:00:00.000Z',
+        status: 'processing',
+        ...activeLease
+      },
+      {
+        executionId: 'execution-replay-queued',
+        requestId: 'request-replay-queued',
+        enqueuedAt: '2026-07-20T00:00:00.000Z',
+        status: 'queued'
+      }
+    ]);
+    assert.deepEqual(providerCalls, []);
+  });
+});
+
+test('reclaimed lease receives a new worker lease and rejects stale acknowledgement before completion', async () => {
+  let releaseProvider;
+  let providerStarted;
+  const providerStartedPromise = new Promise((resolve) => { providerStarted = resolve; });
+  const providerReleasePromise = new Promise((resolve) => { releaseProvider = resolve; });
+
+  await withProductionFixture(async ({ dependencies }) => {
+    const executionId = 'execution-reclaimed-lease';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+    dependencies.translationExecutionQueue.dequeue();
+    await dependencies.durableTranslationExecutionQueueRepository.claim(executionId, expiredLease({ leaseId: 'lease-L1' }));
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), {
+      executionId,
+      requestId: 'request-reclaimed-lease',
+      enqueuedAt: '2026-07-20T00:00:00.000Z',
+      status: 'queued'
+    });
+
+    const processing = dependencies.translationExecutionWorker.processNext();
+    await providerStartedPromise;
+    const claimedByWorkerB = await dependencies.durableTranslationExecutionQueueRepository.peek();
+    assert.equal(claimedByWorkerB.leaseId, 'lease-L2');
+    assert.equal(claimedByWorkerB.leaseExpiresAt, '2026-07-20T00:05:00.000Z');
+    await assert.rejects(
+      () => dependencies.durableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId: 'lease-L1' }),
+      (error) => error.code === 'translation_execution_queue_lease_ownership_error'
+    );
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), claimedByWorkerB);
+
+    releaseProvider({ translatedText: 'done' });
+    await processing;
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  }, {
+    translationQueueLeaseIdFactory: () => 'lease-L2',
+    providerExecute: async () => {
+      providerStarted();
+      return providerReleasePromise;
+    }
+  });
+});
+
+test('reclaimed work keeps provider failure identity and acknowledges its new lease', async () => {
+  const providerError = new Error('reclaimed provider failed');
+  let rejectProvider;
+  let providerStarted;
+  const providerStartedPromise = new Promise((resolve) => { providerStarted = resolve; });
+  const providerFailurePromise = new Promise((resolve, reject) => { rejectProvider = reject; });
+
+  await withProductionFixture(async ({ dependencies }) => {
+    const executionId = 'execution-reclaimed-failure';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+    dependencies.translationExecutionQueue.dequeue();
+    await dependencies.durableTranslationExecutionQueueRepository.claim(executionId, expiredLease({ leaseId: 'lease-L1' }));
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+
+    const processing = dependencies.translationExecutionWorker.processNext();
+    await providerStartedPromise;
+    assert.equal((await dependencies.durableTranslationExecutionQueueRepository.peek()).leaseId, 'lease-L2');
+    rejectProvider(providerError);
+
+    await assert.rejects(processing, (error) => error === providerError);
+    assert.equal((await dependencies.translationRepository.getTranslationExecution(executionId)).status, 'failed');
+    assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution(executionId), []);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  }, {
+    translationQueueLeaseIdFactory: () => 'lease-L2',
+    providerExecute: async () => {
+      providerStarted();
+      return providerFailurePromise;
+    }
+  });
+});
+
 test('production composition recovers queued work, completes it, and acknowledges durable items', async () => {
   await withProductionFixture(async ({ dependencies, providerCalls }) => {
     await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-first' });
@@ -465,7 +618,7 @@ test('production composition propagates acknowledgement failure after terminal p
       const repository = createFileDurableTranslationExecutionQueueRepository(options);
       return Object.freeze({
         ...repository,
-        async acknowledge() {
+        async acknowledgeClaim() {
           throw acknowledgementError;
         }
       });
@@ -507,6 +660,9 @@ async function withProductionFixture(run, options = {}) {
   const translationExecutionProvider = Object.freeze({
     async execute(input) {
       providerCalls.push(input);
+      if (options.providerExecute !== undefined) {
+        return options.providerExecute(input);
+      }
       if (options.providerError !== undefined) {
         throw options.providerError;
       }
@@ -608,10 +764,11 @@ function executionFor({ executionId, requestId, status }) {
   return new TranslationExecution(base);
 }
 
-function expiredLease() {
+function expiredLease(overrides = {}) {
   return {
     leaseId: 'expired-lease',
     claimedAt: '2026-07-19T23:54:00.000Z',
-    leaseExpiresAt: '2026-07-19T23:59:00.000Z'
+    leaseExpiresAt: '2026-07-19T23:59:00.000Z',
+    ...overrides
   };
 }

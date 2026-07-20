@@ -677,7 +677,7 @@ Future execution reliability enhancement candidates:
 - Production startup wiring for Worker Runtime.
 - Multi-worker coordination.
 
-Phase 3G WP6
+Phase 3H Durable Queue Lease Lifecycle
 Status: Completed
 
 Phase 3F Durable Queue reliability status:
@@ -706,8 +706,12 @@ Phase 3F Durable Queue reliability status:
 - Workers only process persisted `queued` executions. `created`, `running`,
   `completed`, and `failed` executions are skipped without provider invocation.
 - The Worker acknowledges and removes a durable item only after the execution
-  has been persisted as `completed` or `failed`. If acknowledgement fails, the
-  item remains and the acknowledgement error propagates unchanged.
+  has been persisted as `completed` or `failed`, using the lease-aware
+  `acknowledgeClaim(executionId, { leaseId })` API. Startup terminal
+  reconciliation uses the separate system `acknowledge(executionId)` API.
+- A processing item with an active `leaseExpiresAt` remains durable and is not
+  replayed. An expired lease is cleared, requeued, and must be claimed anew by
+  a Worker before provider execution.
 - `TranslationOutput` persistence is idempotent by execution ID: the first
   output remains authoritative and later writes do not overwrite it.
 - The HTTP `202 Accepted` contract and existing FIFO queue behavior are
@@ -757,6 +761,7 @@ Current Durable Queue limitations:
   does not infer results for missing-output or mismatched durable items. Failed
   reconciliation requires no output and preserves the original failure.
 - No retry/backoff scheduling or dead-letter queue.
+- No lease renewal or heartbeat, and no execution fencing after a lease expires.
 - No multi-worker locking or cross-process deduplication policy.
 - Provider-level idempotency keys and event-publishing deduplication are out of
   scope.

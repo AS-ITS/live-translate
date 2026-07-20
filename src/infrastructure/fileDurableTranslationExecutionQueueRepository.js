@@ -3,6 +3,7 @@ import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
   createDurableTranslationExecutionQueueItemNotClaimableError,
+  createDurableTranslationExecutionQueueLeaseOwnershipError,
   createTranslationExecutionQueueItemNotFoundError,
   createDurableTranslationExecutionQueueItem,
   createDurableTranslationExecutionQueueRepository,
@@ -90,6 +91,19 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       return item;
     },
 
+    async acknowledgeClaim(executionId, claim) {
+      const storage = await readStorage({ fileSystem, filePath });
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = storage.items[itemIndex];
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId) throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+
+      storage.items.splice(itemIndex, 1);
+      await writeStorage({ fileSystem, filePath, storage });
+      return item;
+    },
+
     async contains(executionId) {
       const storage = await readExistingStorage({ fileSystem, filePath });
       return storage !== null && storage.items.some((item) => item.executionId === executionId);
@@ -103,12 +117,14 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
         throw createDurableTranslationExecutionQueueItemNotClaimableError();
       }
 
-      storage.items[itemIndex] = createDurableTranslationExecutionQueueItem({
+      const claimedItem = createDurableTranslationExecutionQueueItem({
         ...storage.items[itemIndex],
         status: 'processing',
         ...lease
       });
+      storage.items[itemIndex] = claimedItem;
       await writeStorage({ fileSystem, filePath, storage });
+      return claimedItem;
     },
 
     async requeueExpiredProcessing(executionId, now) {
@@ -179,7 +195,7 @@ function serializeStorage(storage) {
         ...(item.status === 'processing' && item.leaseId !== undefined
           ? {
               leaseId: item.leaseId,
-              claimedAt: item.claimedAt,
+              ...(item.claimedAt === undefined ? {} : { claimedAt: item.claimedAt }),
               leaseExpiresAt: item.leaseExpiresAt
             }
           : {})
@@ -192,7 +208,7 @@ function serializeStorage(storage) {
 
 function createUpdatedItem(item, status) {
   const nextItem = { ...item, status };
-  if (status === 'completed' || status === 'failed') {
+  if (status === 'queued' || status === 'completed' || status === 'failed') {
     delete nextItem.leaseId;
     delete nextItem.claimedAt;
     delete nextItem.leaseExpiresAt;
@@ -204,7 +220,6 @@ function isExpiredProcessingItem(item, now) {
   return item !== undefined
     && item.status === 'processing'
     && item.leaseId !== undefined
-    && item.claimedAt !== undefined
     && item.leaseExpiresAt !== undefined
     && item.leaseExpiresAt <= now;
 }

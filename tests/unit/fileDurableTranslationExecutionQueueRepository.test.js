@@ -100,6 +100,37 @@ test('updated status survives repository reload', async () => {
   assert.deepEqual(await secondRepository.peek(), createProcessingItem());
 });
 
+test('claim persists the processing lease metadata and returns the claimed item', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const expected = createProcessingItem();
+
+  await repository.enqueue(createItem());
+
+  assert.deepEqual(await repository.claim('execution-1', lease()), expected);
+  assert.deepEqual(await readStorage(filePath), { items: [expected] });
+});
+
+test('lease-aware acknowledgement preserves file storage on ownership mismatch', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  await repository.enqueue(createItem());
+  await repository.claim('execution-1', lease());
+  const storageBeforeMismatch = await fileSystem.readFile(filePath, 'utf8');
+
+  await assert.rejects(
+    () => repository.acknowledgeClaim('execution-1', { leaseId: 'other-lease' }),
+    (error) => error instanceof TypeError && error.code === 'translation_execution_queue_lease_ownership_error'
+  );
+
+  assert.equal(await fileSystem.readFile(filePath, 'utf8'), storageBeforeMismatch);
+  assert.deepEqual(await createRepository({ filePath }).peek(), createProcessingItem());
+
+  assert.deepEqual(await repository.acknowledgeClaim('execution-1', { leaseId: 'lease-1' }), createProcessingItem());
+  assert.deepEqual(await readStorage(filePath), { items: [] });
+});
+
 test('acknowledgement persists removal and preserves remaining FIFO order after reload', async () => {
   const filePath = temporaryFilePath();
   const firstRepository = createRepository({ filePath });
@@ -186,7 +217,7 @@ test('persisted item without status loads as queued', async () => {
   assert.deepEqual(await repository.peek(), createItem());
 });
 
-test('legacy processing storage without lease metadata loads unchanged', async () => {
+test('persisted processing storage without lease metadata fails deterministic validation', async () => {
   const filePath = temporaryFilePath();
   const repository = createRepository({ filePath });
   const legacyProcessing = {
@@ -199,25 +230,25 @@ test('legacy processing storage without lease metadata loads unchanged', async (
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
   await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyProcessing] }, null, 2)}\n`, 'utf8');
 
-  assert.deepEqual(await repository.peek(), legacyProcessing);
-  assert.deepEqual(JSON.parse(await fileSystem.readFile(filePath, 'utf8')), { items: [legacyProcessing] });
+  await assert.rejects(() => repository.peek(), storageErrorMatcher);
 });
 
-test('legacy processing storage is not requeued or rewritten', async () => {
+test('persisted processing storage with invalid lease metadata fails deterministic validation', async () => {
   const filePath = temporaryFilePath();
   const repository = createRepository({ filePath });
-  const legacyProcessing = {
+  const invalidProcessing = {
     executionId: 'execution-legacy',
     requestId: 'request-legacy',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
-    status: 'processing'
+    status: 'processing',
+    leaseId: 'lease-1',
+    leaseExpiresAt: 'not-a-date'
   };
 
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
-  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyProcessing] }, null, 2)}\n`, 'utf8');
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [invalidProcessing] }, null, 2)}\n`, 'utf8');
 
-  assert.equal(await repository.requeueExpiredProcessing('execution-legacy', '2026-07-17T08:05:00.000Z'), null);
-  assert.deepEqual(JSON.parse(await fileSystem.readFile(filePath, 'utf8')), { items: [legacyProcessing] });
+  await assert.rejects(() => repository.peek(), storageErrorMatcher);
 });
 
 test('expired processing requeue persists without lease metadata after reload', async () => {
@@ -326,7 +357,6 @@ function createProcessingItem(overrides = {}) {
     ...createItem(),
     status: 'processing',
     leaseId: 'lease-1',
-    claimedAt: '2026-07-17T08:01:00.000Z',
     leaseExpiresAt: '2026-07-17T08:05:00.000Z',
     ...overrides
   };
@@ -335,7 +365,6 @@ function createProcessingItem(overrides = {}) {
 function lease() {
   return {
     leaseId: 'lease-1',
-    claimedAt: '2026-07-17T08:01:00.000Z',
     leaseExpiresAt: '2026-07-17T08:05:00.000Z'
   };
 }

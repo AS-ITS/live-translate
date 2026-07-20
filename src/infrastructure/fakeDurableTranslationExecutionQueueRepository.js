@@ -2,6 +2,7 @@ import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
   createDurableTranslationExecutionQueueItemNotClaimableError,
+  createDurableTranslationExecutionQueueLeaseOwnershipError,
   createTranslationExecutionQueueItemNotFoundError,
   createDurableTranslationExecutionQueueItem,
   createDurableTranslationExecutionQueueRepository,
@@ -69,6 +70,15 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
       return items.splice(itemIndex, 1)[0];
     },
 
+    acknowledgeClaim(executionId, claim) {
+      const itemIndex = items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = items[itemIndex];
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId) throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      return items.splice(itemIndex, 1)[0];
+    },
+
     contains(executionId) {
       return items.some((item) => item.executionId === executionId);
     },
@@ -80,11 +90,13 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
         throw createDurableTranslationExecutionQueueItemNotClaimableError();
       }
 
-      items[itemIndex] = createDurableTranslationExecutionQueueItem({
+      const claimedItem = createDurableTranslationExecutionQueueItem({
         ...items[itemIndex],
         status: 'processing',
         ...lease
       });
+      items[itemIndex] = claimedItem;
+      return claimedItem;
     },
 
     requeueExpiredProcessing(executionId, now) {
@@ -103,7 +115,6 @@ function isExpiredProcessingItem(item, now) {
   return item !== undefined
     && item.status === 'processing'
     && item.leaseId !== undefined
-    && item.claimedAt !== undefined
     && item.leaseExpiresAt !== undefined
     && item.leaseExpiresAt <= now;
 }
@@ -118,7 +129,7 @@ function createRequeuedItem(item) {
 
 function createUpdatedItem(item, status) {
   const nextItem = { ...item, status };
-  if (status === 'completed' || status === 'failed') {
+  if (status === 'queued' || status === 'completed' || status === 'failed') {
     delete nextItem.leaseId;
     delete nextItem.claimedAt;
     delete nextItem.leaseExpiresAt;

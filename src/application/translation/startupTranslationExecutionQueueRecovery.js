@@ -96,10 +96,8 @@ export function createStartupTranslationExecutionQueueRecovery({
           await translationRepository.updateTranslationExecution(execution.resumeAfterExpiredLease());
         }
 
-        const requeuedItem = await durableRepository.requeueExpiredProcessing(item.executionId, now);
-        if (requeuedItem !== null) {
-          await enqueueOnce(requeuedItem);
-        }
+        await durableRepository.updateStatus(item.executionId, DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED);
+        await enqueueOnce(item);
       }
 
       for (const item of completedItems) {
@@ -160,10 +158,7 @@ async function completeExecution(translationCommandService, execution) {
 }
 
 function hasExpiredCompleteLease(item, now) {
-  return item.leaseId !== undefined
-    && item.claimedAt !== undefined
-    && item.leaseExpiresAt !== undefined
-    && item.leaseExpiresAt <= now;
+  return new Date(item.leaseExpiresAt).getTime() <= new Date(now).getTime();
 }
 
 function assertOptionalRecoveryTranslationRepository(translationRepository) {

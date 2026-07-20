@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { handleRequest } from '../../server/index.js';
+import { createRequestHandler } from '../../server/index.js';
+import { buildTokenConfig, normalizeTokenRequest } from '../../server/tokenService.js';
+
+let requestHandler;
 
 function resetMock() {
   globalThis.__mockGoogleGenAI = {
@@ -34,7 +37,7 @@ async function request({ method = 'POST', url = '/api/live-token', body = '', he
     }
   };
 
-  await handleRequest(req, response);
+  await requestHandler(req, response);
 
   return {
     status: response.statusCode,
@@ -49,6 +52,25 @@ async function postJson(body) {
 
 test.beforeEach(() => {
   resetMock();
+  requestHandler = createRequestHandler({
+    async liveTokenCreator(body) {
+      if (!process.env.GEMINI_API_KEY) {
+        throw new Error('GEMINI_API_KEY is not configured');
+      }
+      if (process.env.MOCK_GOOGLE_GENAI_AUTH_ERROR) {
+        throw new Error('Failed to create Gemini ephemeral token', {
+          cause: new Error(process.env.MOCK_GOOGLE_GENAI_AUTH_ERROR)
+        });
+      }
+      const config = buildTokenConfig(normalizeTokenRequest(body));
+      globalThis.__mockGoogleGenAI.clients.push({ httpOptions: config.httpOptions });
+      globalThis.__mockGoogleGenAI.tokenCreates.push({ config });
+      return {
+        token: process.env.MOCK_GOOGLE_GENAI_TOKEN_NAME || 'mock-token-name',
+        expiresAt: config.expireTime
+      };
+    }
+  });
 });
 
 test.afterEach(() => {

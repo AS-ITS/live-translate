@@ -11,10 +11,10 @@ test('empty repository completes without enqueue or dequeue', async () => {
 
   await recovery.recover();
 
-  assert.deepEqual(calls, [['durable.peek']]);
+  assert.deepEqual(calls, [['durable.list']]);
 });
 
-test('replays a single item into active queue and removes durable item', async () => {
+test('replays a single item into active queue and keeps durable item for worker claim', async () => {
   const repository = durableRepository({
     items: [durableItem({ executionId: 'execution-1', requestId: 'request-1' })]
   });
@@ -27,7 +27,7 @@ test('replays a single item into active queue and removes durable item', async (
   await recovery.recover();
 
   assert.deepEqual(queue.items, [{ executionId: 'execution-1', requestId: 'request-1' }]);
-  assert.equal(await repository.size(), 0);
+  assert.equal(await repository.size(), 1);
 });
 
 test('replays multiple items in FIFO order', async () => {
@@ -69,13 +69,9 @@ test('replay operations preserve item order', async () => {
   await recovery.recover();
 
   assert.deepEqual(calls, [
-    ['durable.peek'],
+    ['durable.list'],
     ['active.enqueue', { executionId: 'execution-1', requestId: 'request-1' }],
-    ['durable.dequeue'],
-    ['durable.peek'],
-    ['active.enqueue', { executionId: 'execution-2', requestId: 'request-2' }],
-    ['durable.dequeue'],
-    ['durable.peek']
+    ['active.enqueue', { executionId: 'execution-2', requestId: 'request-2' }]
   ]);
 });
 
@@ -98,7 +94,7 @@ test('active enqueue receives queue schema without enqueuedAt', async () => {
   assert.equal(Object.hasOwn(queueItems[0], 'enqueuedAt'), false);
 });
 
-test('replay completion leaves durable repository empty', async () => {
+test('replay completion leaves durable repository intact for future acknowledgement', async () => {
   const repository = durableRepository({
     items: [
       durableItem({ executionId: 'execution-1', requestId: 'request-1' }),
@@ -112,8 +108,49 @@ test('replay completion leaves durable repository empty', async () => {
 
   await recovery.recover();
 
-  assert.equal(await repository.size(), 0);
-  assert.equal(await repository.peek(), null);
+  assert.equal(await repository.size(), 2);
+  assert.deepEqual(await repository.peek(), durableItem({ executionId: 'execution-1', requestId: 'request-1' }));
+});
+
+test('repeated recovery is idempotent and preserves FIFO active queue ordering', async () => {
+  const repository = durableRepository({
+    items: [
+      durableItem({ executionId: 'execution-1', requestId: 'request-1' }),
+      durableItem({ executionId: 'execution-2', requestId: 'request-2' })
+    ]
+  });
+  const queue = activeQueue();
+  const recovery = createStartupTranslationExecutionQueueRecovery({ durableRepository: repository, activeQueue: queue });
+
+  await recovery.recover();
+  await recovery.recover();
+
+  assert.deepEqual(queue.items, [
+    { executionId: 'execution-1', requestId: 'request-1' },
+    { executionId: 'execution-2', requestId: 'request-2' }
+  ]);
+  assert.equal(await repository.size(), 2);
+});
+
+test('recovery replays duplicate durable executions only once while preserving first-seen FIFO order', async () => {
+  const queue = activeQueue();
+  const recovery = createStartupTranslationExecutionQueueRecovery({
+    durableRepository: durableRepository({
+      items: [
+        durableItem({ executionId: 'execution-1', requestId: 'request-1' }),
+        durableItem({ executionId: 'execution-1', requestId: 'duplicate-request' }),
+        durableItem({ executionId: 'execution-2', requestId: 'request-2' })
+      ]
+    }),
+    activeQueue: queue
+  });
+
+  await recovery.recover();
+
+  assert.deepEqual(queue.items, [
+    { executionId: 'execution-1', requestId: 'request-1' },
+    { executionId: 'execution-2', requestId: 'request-2' }
+  ]);
 });
 
 test('active enqueue failure stops recovery without durable dequeue and rethrows original error', async () => {
@@ -135,60 +172,22 @@ test('active enqueue failure stops recovery without durable dequeue and rethrows
   });
 
   await assert.rejects(recovery.recover(), (error) => error === enqueueError);
-  assert.deepEqual(calls, [['durable.peek'], ['active.enqueue']]);
+  assert.deepEqual(calls, [['durable.list'], ['active.enqueue']]);
   assert.equal(await repository.size(), 1);
 });
 
-test('durable dequeue failure stops recovery and rethrows original error without rollback', async () => {
-  const dequeueError = new Error('dequeue failed');
-  const calls = [];
-  const queue = activeQueue({ calls });
+test('list failure rethrows original error', async () => {
+  const listError = new Error('list failed');
   const recovery = createStartupTranslationExecutionQueueRecovery({
     durableRepository: durableRepository({
-      calls,
-      items: [durableItem({ executionId: 'execution-1', requestId: 'request-1' })],
-      dequeue() {
-        calls.push(['durable.dequeue']);
-        throw dequeueError;
-      }
-    }),
-    activeQueue: queue
-  });
-
-  await assert.rejects(recovery.recover(), (error) => error === dequeueError);
-  assert.deepEqual(queue.items, [{ executionId: 'execution-1', requestId: 'request-1' }]);
-});
-
-test('durable dequeue failure leaves durable item for future replay', async () => {
-  const dequeueError = new Error('dequeue failed');
-  const repository = durableRepository({
-    items: [durableItem({ executionId: 'execution-1', requestId: 'request-1' })],
-    dequeue() {
-      throw dequeueError;
-    }
-  });
-  const recovery = createStartupTranslationExecutionQueueRecovery({
-    durableRepository: repository,
-    activeQueue: activeQueue()
-  });
-
-  await assert.rejects(recovery.recover(), (error) => error === dequeueError);
-
-  assert.equal(await repository.size(), 1);
-});
-
-test('peek failure rethrows original error', async () => {
-  const peekError = new Error('peek failed');
-  const recovery = createStartupTranslationExecutionQueueRecovery({
-    durableRepository: durableRepository({
-      peek() {
-        throw peekError;
+      list() {
+        throw listError;
       }
     }),
     activeQueue: activeQueue()
   });
 
-  await assert.rejects(recovery.recover(), (error) => error === peekError);
+  await assert.rejects(recovery.recover(), (error) => error === listError);
 });
 
 function durableItem(overrides = {}) {
@@ -212,6 +211,10 @@ function durableRepository(overrides = {}) {
       calls?.push(['durable.peek']);
       return overrides.peek ? overrides.peek() : (items[0] ?? null);
     },
+    async list() {
+      calls?.push(['durable.list']);
+      return overrides.list ? overrides.list() : [...items];
+    },
     async dequeue() {
       if (overrides.dequeue) {
         return overrides.dequeue();
@@ -224,7 +227,20 @@ function durableRepository(overrides = {}) {
     },
     async clear() {
       throw new Error('recovery should not clear durable repository');
-    }
+    },
+    async updateStatus() {
+      throw new Error('recovery should not update durable status');
+    },
+    async acknowledge() {
+      throw new Error('recovery should not acknowledge durable items');
+    },
+    async contains() {
+      throw new Error('recovery should not query durable item existence');
+    },
+    async claim() { throw new Error('recovery should not claim'); },
+    async releaseExpired() { return 0; },
+    async isLeaseExpired() { return false; },
+    async renewLease() { throw new Error('recovery should not renew leases'); }
   };
 }
 

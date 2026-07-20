@@ -292,6 +292,7 @@ test('GET /api/sessions/:sessionId maps missing legacy session to structured 404
 
 test('unexpected legacy persistence errors use internal error handling', async () => {
   const sessionRepository = {
+    ...legacyRepository(),
     listSessionRecords() {
       return [];
     },
@@ -424,11 +425,18 @@ async function getJson(url) {
 
 function legacyRepository({ records = [], details = {} } = {}) {
   return {
+    createSessionRecord() {},
+    updateSessionRecord() {},
+    appendTranscriptItem() {},
+    finalizeSessionRecord() {},
     listSessionRecords() {
       return records;
     },
     getSessionRecord(id) {
       return details[id] ?? null;
+    },
+    deleteSessionRecord() {
+      return false;
     }
   };
 }

@@ -195,7 +195,12 @@ const { requestHandler: defaultRequestHandler } = createDefaultApplicationDepend
 });
 
 export function createRequestHandler(options = {}) {
-  const { sessionReadController, translationCommandController, savedTranscriptRetranslationController } = options;
+  const {
+    sessionReadController,
+    translationCommandController,
+    savedTranscriptRetranslationController,
+    liveTokenCreator = createLiveToken
+  } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
     assertTranslationCommandController(translationCommandController);
@@ -205,7 +210,8 @@ export function createRequestHandler(options = {}) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
       translationCommandController,
-      savedTranscriptRetranslationController
+      savedTranscriptRetranslationController,
+      liveTokenCreator
     });
   };
 }
@@ -217,7 +223,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, translationCommandController, savedTranscriptRetranslationController } = {}
+  { sessionReadController, translationCommandController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -382,7 +388,7 @@ async function handleRequestWithSessionReadController(
 
     const body = await readJson(req);
     targetLanguageCode = body.targetLanguageCode || 'zh-Hant';
-    const token = await createLiveToken(body);
+    const token = await liveTokenCreator(body);
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);
     logEvent({

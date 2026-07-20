@@ -3,10 +3,10 @@ import test from 'node:test';
 import { createTranslationCommandService } from '../../src/application/translationCommandService.js';
 import { TranslationExecution } from '../../src/domain/translation/index.js';
 
-test('createTranslationExecution persists first, dispatches second, and returns the persisted execution', async () => {
+test('createTranslationExecution persists created then queued, enqueues, and does not dispatch', async () => {
   const calls = [];
   let persistedExecution;
-  let dispatchedExecution;
+  const jobs = [];
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
       createTranslationExecution(execution) {
@@ -20,6 +20,11 @@ test('createTranslationExecution persists first, dispatches second, and returns 
         calls.push('domainEventPublisher.publish');
       }
     }),
+    translationExecutionQueue: {
+      enqueue(job) { jobs.push(job); calls.push('queue.enqueue'); },
+      dequeue() { return null; },
+      size() { return 0; }
+    },
     translationExecutionDispatcher: {
       async dispatch(execution) {
         dispatchedExecution = execution;
@@ -31,43 +36,36 @@ test('createTranslationExecution persists first, dispatches second, and returns 
 
   const result = await service.createTranslationExecution(executionPayload());
 
-  assert.deepEqual(calls, [
-    'repository.createTranslationExecution',
-    'translationExecutionDispatcher.dispatch',
-    'domainEventPublisher.publish'
-  ]);
+  assert.deepEqual(calls, ['repository.createTranslationExecution', 'domainEventPublisher.publish', 'domainEventPublisher.publish', 'queue.enqueue']);
   assert.equal(persistedExecution instanceof TranslationExecution, true);
-  assert.strictEqual(dispatchedExecution, persistedExecution);
-  assert.strictEqual(result, persistedExecution);
+  assert.equal(persistedExecution.status, 'created');
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(jobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
-test('dispatcher receives only the original TranslationExecution argument', async () => {
-  let persistedExecution;
-  let dispatchArguments;
+test('submission does not invoke the dispatcher', async () => {
+  let dispatchCalls = 0;
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
-      createTranslationExecution(execution) {
-        persistedExecution = execution;
-        return execution;
-      }
+      createTranslationExecution(execution) { return execution; }
     }),
     domainEventPublisher: domainEventPublisher(),
     translationExecutionDispatcher: {
       async dispatch(...args) {
-        dispatchArguments = args;
+        void args;
+        dispatchCalls += 1;
       }
     }
   });
 
   await service.createTranslationExecution(executionPayload());
 
-  assert.equal(dispatchArguments.length, 1);
-  assert.strictEqual(dispatchArguments[0], persistedExecution);
+  assert.equal(dispatchCalls, 0);
 });
 
-test('repository failure prevents dispatch', async () => {
+test('repository failure prevents queue enqueue', async () => {
   const repositoryError = new Error('repository failed');
-  let dispatchCalls = 0;
+  let enqueueCalls = 0;
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
       createTranslationExecution() {
@@ -75,20 +73,16 @@ test('repository failure prevents dispatch', async () => {
       }
     }),
     domainEventPublisher: domainEventPublisher(),
-    translationExecutionDispatcher: {
-      async dispatch() {
-        dispatchCalls += 1;
-      }
-    }
+    translationExecutionQueue: { enqueue() { enqueueCalls += 1; }, dequeue() { return null; }, size() { return 0; } }
   });
 
   assert.throws(() => service.createTranslationExecution(executionPayload()), repositoryError);
-  assert.equal(dispatchCalls, 0);
+  assert.equal(enqueueCalls, 0);
 });
 
-test('async repository failure prevents dispatch', async () => {
+test('async repository failure prevents queue enqueue', async () => {
   const repositoryError = new Error('async repository failed');
-  let dispatchCalls = 0;
+  let enqueueCalls = 0;
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
       createTranslationExecution() {
@@ -96,19 +90,15 @@ test('async repository failure prevents dispatch', async () => {
       }
     }),
     domainEventPublisher: domainEventPublisher(),
-    translationExecutionDispatcher: {
-      async dispatch() {
-        dispatchCalls += 1;
-      }
-    }
+    translationExecutionQueue: { enqueue() { enqueueCalls += 1; }, dequeue() { return null; }, size() { return 0; } }
   });
 
   await assert.rejects(service.createTranslationExecution(executionPayload()), repositoryError);
-  assert.equal(dispatchCalls, 0);
+  assert.equal(enqueueCalls, 0);
 });
 
-test('dispatcher failure propagates after repository success without retry or rollback', async () => {
-  const dispatcherError = new Error('dispatch failed');
+test('queue failure propagates after created and queued persistence without retry or rollback', async () => {
+  const queueError = new Error('queue failed');
   const calls = [];
   let persistedExecution;
   const service = createTranslationCommandService({
@@ -127,22 +117,16 @@ test('dispatcher failure propagates after repository success without retry or ro
         calls.push('publish');
       }
     }),
-    translationExecutionDispatcher: {
-      async dispatch(execution) {
-        assert.strictEqual(execution, persistedExecution);
-        calls.push('dispatch');
-        throw dispatcherError;
-      }
-    }
+    translationExecutionQueue: { enqueue() { calls.push('enqueue'); throw queueError; }, dequeue() { return null; }, size() { return 0; } }
   });
 
-  await assert.rejects(service.createTranslationExecution(executionPayload()), dispatcherError);
+  await assert.rejects(service.createTranslationExecution(executionPayload()), queueError);
 
-  assert.deepEqual(calls, ['createTranslationExecution', 'dispatch']);
+  assert.deepEqual(calls, ['createTranslationExecution', 'publish', 'updateTranslationExecution', 'publish', 'enqueue']);
 });
 
-test('service waits for dispatch before publishing and resolving', async () => {
-  const deferredDispatch = createDeferred();
+test('service waits for queue enqueue before resolving', async () => {
+  const deferredEnqueue = createDeferred();
   const calls = [];
   let resolved = false;
   const service = createTranslationCommandService({
@@ -157,13 +141,7 @@ test('service waits for dispatch before publishing and resolving', async () => {
         calls.push('publish');
       }
     }),
-    translationExecutionDispatcher: {
-      dispatch(execution) {
-        void execution;
-        calls.push('dispatch');
-        return deferredDispatch.promise;
-      }
-    }
+    translationExecutionQueue: { enqueue() { calls.push('enqueue'); return deferredEnqueue.promise; }, dequeue() { return null; }, size() { return 0; } }
   });
 
   const resultPromise = service.createTranslationExecution(executionPayload()).then((result) => {
@@ -172,15 +150,16 @@ test('service waits for dispatch before publishing and resolving', async () => {
   });
 
   await Promise.resolve();
+  await Promise.resolve();
 
-  assert.deepEqual(calls, ['createTranslationExecution', 'dispatch']);
+  assert.deepEqual(calls, ['createTranslationExecution', 'publish', 'publish']);
   assert.equal(resolved, false);
 
-  deferredDispatch.resolve();
+  deferredEnqueue.resolve();
 
   const result = await resultPromise;
   assert.equal(result instanceof TranslationExecution, true);
-  assert.deepEqual(calls, ['createTranslationExecution', 'dispatch', 'publish']);
+  assert.deepEqual(calls, ['createTranslationExecution', 'publish', 'publish', 'enqueue']);
   assert.equal(resolved, true);
 });
 

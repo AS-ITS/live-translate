@@ -293,14 +293,20 @@ Components:
   the durable queue feature is enabled. It writes a durable queue item first and
   then enqueues the existing active in-memory queue.
 - `DurableTranslationExecutionQueueRepository`: application repository port for
-  durable queue storage. Its contract is `enqueue`, `peek`, `dequeue`, `size`,
-  and `clear`.
+  durable queue storage. Its contract is `enqueue`, `peek`, `list`, `dequeue`,
+  `size`, `clear`, `updateStatus`, `acknowledge`, and `contains`.
 - `FileDurableTranslationExecutionQueueRepository`: JSON file-backed durable
   repository adapter. It stores FIFO items with `executionId`, `requestId`, and
-  ISO UTC `enqueuedAt`.
+  ISO UTC `enqueuedAt`, plus durable queue item `status`.
 - `StartupTranslationExecutionQueueRecovery`: application service that replays
   durable queue items into the active in-memory queue before Worker Runtime
   polling starts.
+
+Durable queue item statuses are centralized and limited to `queued`,
+`processing`, `completed`, and `failed`. New durable queue items default to
+`queued`; older persisted items without `status` load as `queued`, while
+unknown statuses fail storage validation. These statuses do not change the
+`TranslationExecution` domain lifecycle.
 
 Feature flags:
 
@@ -322,6 +328,8 @@ persist queued
 ↓
 DualWriteTranslationExecutionQueue.enqueue()
 ↓
+DurableTranslationExecutionQueueRepository.contains(executionId)
+↓
 DurableTranslationExecutionQueueRepository.enqueue()
 ↓
 InMemoryTranslationExecutionQueue.enqueue()
@@ -338,6 +346,8 @@ StartupTranslationExecutionQueueRecovery.recover()
 ↓
 Replay Durable Queue
 ↓
+Claim Durable Queue Item
+↓
 TranslationExecutionWorkerRuntime.start()
 ↓
 Worker Polling
@@ -346,22 +356,40 @@ Worker Polling
 Replay flow:
 
 ```text
-DurableTranslationExecutionQueueRepository.peek()
+DurableTranslationExecutionQueueRepository.list()
 ↓
 InMemoryTranslationExecutionQueue.enqueue({ executionId, requestId })
 ↓
-DurableTranslationExecutionQueueRepository.dequeue()
-↓
-repeat until durable repository is empty
+repeat once per executionId
 ```
+
+Worker claim flow:
+
+```text
+TranslationExecutionQueue.dequeue()
+↓
+load TranslationExecution and TranslationRequest
+↓
+DurableTranslationExecutionQueueRepository.updateStatus(executionId, "processing")
+↓
+TranslationExecutionRunner.run()
+↓
+DurableTranslationExecutionQueueRepository.acknowledge(executionId)
+```
+
+The claim happens only when the durable queue feature is enabled and the Worker
+has a durable queue repository. The runner starts only after the status update
+succeeds.
+
+Durable queue items remain stored through startup recovery and runner
+execution. The Worker removes an item only by acknowledging it after the Runner
+has completed or failed; acknowledgement errors propagate without rerunning the
+Runner or provider.
 
 Current limitations:
 
-- Replay removes each item from the durable repository immediately after it is
-  enqueued into the active in-memory queue.
-- No acknowledgement.
-- No completion-driven durable removal.
-- No replay deduplication.
+- Recovery filtering is not implemented; startup recovery may replay durable
+  items regardless of status until filtering is added.
 - No lease.
 - No visibility timeout.
 - No retry.

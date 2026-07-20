@@ -87,6 +87,105 @@ test('recreated repository reads persisted queue data', async () => {
   assert.equal(await secondRepository.size(), 0);
 });
 
+test('updated status survives repository reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+
+  await firstRepository.enqueue(createItem());
+  await firstRepository.updateStatus('execution-1', 'processing');
+
+  const secondRepository = createRepository({ filePath });
+
+  assert.deepEqual(await secondRepository.peek(), createItem({ status: 'processing' }));
+});
+
+test('acknowledgement persists removal and preserves remaining FIFO order after reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+  const first = createItem({ executionId: 'execution-1', requestId: 'request-1' });
+  const second = createItem({ executionId: 'execution-2', requestId: 'request-2' });
+  const third = createItem({ executionId: 'execution-3', requestId: 'request-3' });
+
+  await firstRepository.enqueue(first);
+  await firstRepository.enqueue(second);
+  await firstRepository.enqueue(third);
+  await firstRepository.acknowledge('execution-2');
+
+  assert.deepEqual(await readStorage(filePath), { items: [first, third] });
+
+  const secondRepository = createRepository({ filePath });
+  assert.deepEqual(await secondRepository.list(), [first, third]);
+});
+
+test('duplicate enqueue leaves persisted storage unchanged across repository reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+  const item = createItem();
+
+  await firstRepository.enqueue(item);
+  const beforeDuplicate = await fileSystem.readFile(filePath, 'utf8');
+  await firstRepository.enqueue(createItem({ requestId: 'different-request', status: 'processing' }));
+
+  assert.equal(await fileSystem.readFile(filePath, 'utf8'), beforeDuplicate);
+
+  const secondRepository = createRepository({ filePath });
+  assert.deepEqual(await secondRepository.list(), [item]);
+});
+
+test('contains on missing storage returns false without creating storage', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  assert.equal(await repository.contains('execution-1'), false);
+  await assert.rejects(() => fileSystem.access(filePath), { code: 'ENOENT' });
+});
+
+test('persisted item without status loads as queued', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(
+    filePath,
+    `${JSON.stringify(
+      {
+        items: [
+          {
+            executionId: 'execution-1',
+            requestId: 'request-1',
+            enqueuedAt: '2026-07-17T08:00:00.000Z'
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+
+  assert.deepEqual(await repository.peek(), createItem());
+});
+
+test('persisted item with invalid status throws deterministic storage error', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(
+    filePath,
+    JSON.stringify(
+      {
+        items: [createItem({ status: 'unknown' })]
+      },
+      null,
+      2
+    ),
+    'utf8'
+  );
+
+  await assert.rejects(() => repository.peek(), storageErrorMatcher);
+});
+
 test('invalid JSON storage throws deterministic storage error', async () => {
   const filePath = temporaryFilePath();
   const repository = createRepository({ filePath });
@@ -132,6 +231,8 @@ function createItem(overrides = {}) {
     executionId: 'execution-1',
     requestId: 'request-1',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
+    status: 'queued',
+    leasedUntil: null,
     ...overrides
   };
 }

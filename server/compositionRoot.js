@@ -46,6 +46,10 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunner,
     translationExecutionWorker,
     translationExecutionWorkerRuntime,
+    durableTranslationExecutionQueueRepository,
+    translationQueueLeaseMs,
+    translationQueueLeaseRenewalMs,
+    translationQueueClock,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -73,6 +77,10 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunner,
     translationExecutionWorker,
     translationExecutionWorkerRuntime,
+    durableTranslationExecutionQueueRepository,
+    translationQueueLeaseMs,
+    translationQueueLeaseRenewalMs,
+    translationQueueClock,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -154,11 +162,22 @@ export function createProductionApplicationDependencies(options = {}) {
     options,
     'resolveSavedTranscriptTranslationProvider'
   );
+  const needsProductionProviderComposition =
+    !(hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider) ||
+    !(hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver);
+  const productionEnvironment = needsProductionProviderComposition
+    ? geminiEnvironmentFactory({ env })
+    : undefined;
+  const productionProviderConfiguration = needsProductionProviderComposition
+    ? translationProviderConfigurationFactory({ environment: env })
+    : undefined;
   const productionProviderResolutionComposition =
     hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider
       ? undefined
       : createProductionProviderResolutionComposition({
           env,
+          environment: productionEnvironment,
+          configuration: productionProviderConfiguration,
           geminiEnvironmentFactory,
           googleGenAIClientFactory,
           geminiClientAdapterFactory,
@@ -171,6 +190,8 @@ export function createProductionApplicationDependencies(options = {}) {
       ? undefined
       : createProductionTranslationExecutionProviderResolutionComposition({
           env,
+          environment: productionEnvironment,
+          configuration: productionProviderConfiguration,
           geminiEnvironmentFactory,
           geminiHttpClientFactory,
           geminiClientFactory,
@@ -235,6 +256,12 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
+    ...(durableTranslationExecutionQueueRepository !== undefined
+      ? { durableTranslationExecutionQueueRepository }
+      : {}),
+    translationQueueLeaseMs: queueConfiguration.leaseMs,
+    translationQueueLeaseRenewalMs: queueConfiguration.leaseRenewalMs,
+    translationQueueClock,
     translationExecutionProvider: resolvedTranslationExecutionProvider,
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     ...resolvedProviderDependencies
@@ -243,7 +270,8 @@ export function createProductionApplicationDependencies(options = {}) {
     durableTranslationExecutionQueueRepository !== undefined
       ? startupTranslationExecutionQueueRecoveryFactory({
           durableRepository: durableTranslationExecutionQueueRepository,
-          activeQueue: primaryTranslationExecutionQueue
+          activeQueue: primaryTranslationExecutionQueue,
+          clock: translationQueueClock.now.bind(translationQueueClock)
         })
       : undefined;
   const translationExecutionWorkerRuntime =
@@ -388,6 +416,10 @@ export function createTranslationCommandDependencies({
   translationExecutionRunner,
   translationExecutionWorker,
   translationExecutionWorkerRuntime,
+  durableTranslationExecutionQueueRepository,
+  translationQueueLeaseMs,
+  translationQueueLeaseRenewalMs,
+  translationQueueClock,
   translationExecutionProvider,
   translationExecutionProviderResolver,
   translationDomainEventHandlers,
@@ -442,7 +474,15 @@ export function createTranslationCommandDependencies({
       ? translationExecutionWorkerFactory({
           translationExecutionQueue: resolvedTranslationExecutionQueue,
           translationRepository,
-          translationExecutionRunner: resolvedWorkerTranslationExecutionRunner
+          translationExecutionRunner: resolvedWorkerTranslationExecutionRunner,
+          ...(durableTranslationExecutionQueueRepository !== undefined
+            ? { durableTranslationExecutionQueueRepository }
+            : {}),
+          ...(translationQueueLeaseMs !== undefined ? { leaseDurationMs: translationQueueLeaseMs } : {}),
+          ...(translationQueueLeaseRenewalMs !== undefined
+            ? { leaseRenewalMs: translationQueueLeaseRenewalMs }
+            : {}),
+          ...(translationQueueClock !== undefined ? { clock: translationQueueClock.now.bind(translationQueueClock) } : {})
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =
@@ -641,6 +681,8 @@ function resolveSavedTranscriptProviderDependencies({
 
 function createProductionTranslationExecutionProviderResolutionComposition({
   env = process.env,
+  environment,
+  configuration,
   geminiEnvironmentFactory = createGeminiEnvironment,
   geminiHttpClientFactory = createGeminiHttpClient,
   geminiClientFactory = createGeminiClient,
@@ -653,18 +695,14 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   assertFactory(geminiTranslationExecutionProviderFactory, 'geminiTranslationExecutionProviderFactory');
   assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
 
-  const environment = geminiEnvironmentFactory({
-    env
-  });
-  const configuration = translationProviderConfigurationFactory({
-    environment: env
-  });
+  const resolvedEnvironment = environment ?? geminiEnvironmentFactory({ env });
+  const resolvedConfiguration = configuration ?? translationProviderConfigurationFactory({ environment: env });
   const httpClient = geminiHttpClientFactory({
-    apiKey: environment.apiKey
+    apiKey: resolvedEnvironment.apiKey
   });
   const geminiClient = geminiClientFactory({
     httpClient,
-    model: environment.model
+    model: resolvedEnvironment.model
   });
   const geminiProvider = geminiTranslationExecutionProviderFactory({
     client: geminiClient
@@ -673,11 +711,11 @@ function createProductionTranslationExecutionProviderResolutionComposition({
     providers: {
       [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
     },
-    defaultProviderKey: configuration.defaultProviderKey
+    configuration: resolvedConfiguration
   });
 
   return Object.freeze({
-    configuration,
+    configuration: resolvedConfiguration,
     geminiClient,
     geminiProvider,
     resolver
@@ -686,6 +724,8 @@ function createProductionTranslationExecutionProviderResolutionComposition({
 
 function createProductionProviderResolutionComposition({
   env = process.env,
+  environment,
+  configuration,
   geminiEnvironmentFactory = createGeminiEnvironment,
   googleGenAIClientFactory = createDefaultGoogleGenAIClient,
   geminiClientAdapterFactory = createGeminiClientAdapter,
@@ -700,41 +740,39 @@ function createProductionProviderResolutionComposition({
   assertFactory(translationProviderConfigurationFactory, 'translationProviderConfigurationFactory');
   assertFactory(translationProviderResolutionCompositionFactory, 'translationProviderResolutionCompositionFactory');
 
-  const environment = geminiEnvironmentFactory({
-    env
-  });
-  const configuration = translationProviderConfigurationFactory({
-    environment: env
-  });
+  const resolvedEnvironment = environment ?? geminiEnvironmentFactory({ env });
+  const resolvedConfiguration = configuration ?? translationProviderConfigurationFactory({ environment: env });
   const googleClient = googleGenAIClientFactory({
-    apiKey: environment.apiKey
+    apiKey: resolvedEnvironment.apiKey
   });
   const geminiClient = geminiClientAdapterFactory({
     client: googleClient
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: environment.model
+    model: resolvedEnvironment.model
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
     providers: {
       [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
     },
-    configuration
+    configuration: resolvedConfiguration
   });
 
   return Object.freeze({
     ...providerResolutionComposition,
-    configuration
+    configuration: resolvedConfiguration
   });
 }
 
-function createProductionTranslationExecutionProviderResolver({ providers, defaultProviderKey }) {
+function createProductionTranslationExecutionProviderResolver({ providers, configuration }) {
   assertExecutionProviderMap(providers);
-  assertProviderKey(defaultProviderKey, 'defaultProviderKey');
+  assertProviderConfiguration(configuration);
 
   return Object.freeze({
     resolve(providerKey) {
+      const defaultProviderKey = configuration.defaultProviderKey;
+      assertProviderKey(defaultProviderKey, 'configuration.defaultProviderKey');
       const resolvedProviderKey = providerKey ?? defaultProviderKey;
       assertProviderKey(resolvedProviderKey, 'providerKey');
 
@@ -745,6 +783,12 @@ function createProductionTranslationExecutionProviderResolver({ providers, defau
       return providers[resolvedProviderKey];
     }
   });
+}
+
+function assertProviderConfiguration(configuration) {
+  if (!configuration || typeof configuration !== 'object' || !Object.hasOwn(configuration, 'defaultProviderKey')) {
+    throw new TypeError('configuration.defaultProviderKey is required.');
+  }
 }
 
 function assertFactory(factory, name) {

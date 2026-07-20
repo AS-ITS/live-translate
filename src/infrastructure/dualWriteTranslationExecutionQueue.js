@@ -3,6 +3,7 @@ import {
   createTranslationExecutionQueue
 } from '../application/translation/translationExecutionQueue.js';
 import { assertDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
+import { DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 
 export function createDualWriteTranslationExecutionQueue({ primaryQueue, durableRepository, clock } = {}) {
   assertTranslationExecutionQueue(primaryQueue);
@@ -11,10 +12,15 @@ export function createDualWriteTranslationExecutionQueue({ primaryQueue, durable
 
   return createTranslationExecutionQueue({
     async enqueue(item) {
+      if (await durableRepository.contains(item.executionId)) {
+        return undefined;
+      }
+
       await durableRepository.enqueue({
         executionId: item.executionId,
         requestId: item.requestId,
-        enqueuedAt: clock.now()
+        enqueuedAt: clock.now(),
+        status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
       });
 
       return primaryQueue.enqueue({

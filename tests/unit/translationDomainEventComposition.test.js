@@ -34,7 +34,7 @@ test('request created event routes to requestCreated with original event and agg
   assert.strictEqual(receivedEvent.payload.request, result);
 });
 
-test('execution created event routes only to executionCreated', async () => {
+test('execution creation routes created then queued update events', async () => {
   const calls = handlerCalls();
   const repository = repositorySpy();
   const dependencies = createApplicationDependencies({
@@ -44,9 +44,10 @@ test('execution created event routes only to executionCreated', async () => {
 
   await dependencies.translationCommandService.createTranslationExecution(executionPayload());
 
-  assert.deepEqual(calls.names(), ['executionCreated']);
+  assert.deepEqual(calls.names(), ['executionCreated', 'executionUpdated']);
   assert.equal(calls.firstEvent().type, TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED);
-  assert.strictEqual(calls.firstEvent().payload.execution, repository.executions.get('execution-1'));
+  assert.equal(calls.firstEvent().payload.execution.status, 'created');
+  assert.equal(repository.executions.get('execution-1').status, 'queued');
 });
 
 test('execution updated event routes updated execution and preserves transition timestamp semantics', async () => {
@@ -108,7 +109,7 @@ test('exact handler mapping does not cross-dispatch between translation event ty
   assert.deepEqual(calls.takeNames(), ['requestCreated']);
 
   await dependencies.translationCommandService.createTranslationExecution(executionPayload());
-  assert.deepEqual(calls.takeNames(), ['executionCreated']);
+  assert.deepEqual(calls.takeNames(), ['executionCreated', 'executionUpdated']);
 
   await dependencies.translationCommandService.updateTranslationExecution({
     executionId: 'execution-update',
@@ -333,7 +334,7 @@ function executionPayload(overrides = {}) {
   return {
     id: 'execution-1',
     translationRequestId: 'request-1',
-    status: 'pending',
+    status: 'created',
     startedAt: '2026-07-14T01:01:00.000Z',
     completedAt: null,
     failureInfo: null,

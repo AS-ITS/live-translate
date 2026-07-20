@@ -96,12 +96,26 @@ Components:
 - `DualWriteTranslationExecutionQueue`: feature-enabled adapter that writes the
   durable repository first, then enqueues the active in-memory queue.
 - `DurableTranslationExecutionQueueRepository`: durable repository port for
-  `enqueue`, `peek`, `dequeue`, `size`, and `clear`.
+  `enqueue`, `peek`, `list`, `dequeue`, `size`, `clear`, `updateStatus`,
+  `acknowledge`, and `contains`.
 - `FileDurableTranslationExecutionQueueRepository`: JSON file-backed repository
-  adapter storing FIFO items with `executionId`, `requestId`, and `enqueuedAt`.
+  adapter storing FIFO items with `executionId`, `requestId`, ISO UTC
+  `enqueuedAt`, durable queue item `status`, and optional `leasedUntil`.
 - `StartupTranslationExecutionQueueRecovery`: startup recovery service that
   replays durable items into the active in-memory queue before Worker Runtime
   polling begins.
+
+Durable queue item lifecycle status is separate from the
+`TranslationExecution` domain lifecycle. Durable queue items support only:
+
+- `queued`
+- `processing`
+- `completed`
+- `failed`
+
+New durable queue items are stored as `queued`. Older persisted items without a
+`status` field are normalized to `queued` when loaded; unknown or invalid
+statuses are rejected.
 
 Startup recovery:
 
@@ -118,13 +132,18 @@ Replay Durable Queue
 
 ↓
 
+Claim Durable Queue Item
+
+↓
+
 Worker Polling
 ```
 
-Replay uses `peek -> active enqueue -> durable dequeue` until the durable
-repository is empty. The durable item is removed immediately after replaying
-into the active in-memory queue; completion-driven acknowledgement is not
-implemented.
+Replay uses `list -> active enqueue` to load durable items into the active
+in-memory queue without removing them. Before a Worker executes a recovered or
+newly enqueued job, it claims the durable queue item by updating its status from
+`queued` to `processing`. After the Runner persists a terminal `completed` or
+`failed` execution, the Worker acknowledges the durable item and removes it.
 
 Configuration:
 
@@ -132,12 +151,12 @@ Configuration:
   activates dual-write enqueue persistence and startup recovery.
 - `TRANSLATION_DURABLE_QUEUE_FILE` optionally selects the JSON durable queue
   file. When omitted, the default is `translation-execution-queue.json`.
+- `TRANSLATION_QUEUE_LEASE_MS` defaults to `300000` milliseconds.
 
 Current limitations:
 
-- No acknowledgement.
-- No completion-driven removal.
-- No replay deduplication.
+- No recovery filtering; startup recovery may replay durable items regardless
+  of status until filtering is added.
 - No lease.
 - No visibility timeout.
 - No retry.

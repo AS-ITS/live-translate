@@ -85,11 +85,11 @@ test('translation command HTTP path persists command state through production co
       })
     );
 
-    assert.equal(executionResponse.status, 201);
+    assert.equal(executionResponse.status, 202);
     assert.deepEqual(executionResponse.body, {
       id: executionId,
       translationRequestId: 'request-1',
-      status: 'pending',
+      status: 'queued',
       startedAt: '2026-07-14T01:01:00.000Z',
       completedAt: null,
       failureInfo: null
@@ -415,7 +415,7 @@ function translationExecutionPayload(overrides = {}) {
   return {
     id: 'execution-1',
     translationRequestId: 'request-1',
-    status: 'pending',
+    status: 'created',
     startedAt: '2026-07-14T01:01:00.000Z',
     completedAt: null,
     failureInfo: null,

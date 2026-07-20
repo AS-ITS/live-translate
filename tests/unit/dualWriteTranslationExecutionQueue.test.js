@@ -11,6 +11,10 @@ test('enqueue writes durable repository before primary queue', async () => {
       }
     }),
     durableRepository: durableRepository({
+      contains() {
+        calls.push(['durable.contains']);
+        return false;
+      },
       enqueue(item) {
         calls.push(['durable.enqueue', item]);
       }
@@ -20,7 +24,54 @@ test('enqueue writes durable repository before primary queue', async () => {
 
   await queue.enqueue(createItem());
 
-  assert.deepEqual(calls.map(([name]) => name), ['durable.enqueue', 'primary.enqueue']);
+  assert.deepEqual(calls.map(([name]) => name), ['durable.contains', 'durable.enqueue', 'primary.enqueue']);
+});
+
+test('duplicate durable execution is a successful no-op without primary enqueue', async () => {
+  const calls = [];
+  const queue = createDualWriteTranslationExecutionQueue({
+    primaryQueue: primaryQueue({
+      enqueue() {
+        calls.push(['primary.enqueue']);
+      }
+    }),
+    durableRepository: durableRepository({
+      contains() {
+        calls.push(['durable.contains']);
+        return true;
+      },
+      enqueue() {
+        calls.push(['durable.enqueue']);
+      }
+    }),
+    clock: fixedClock()
+  });
+
+  await queue.enqueue(createItem());
+
+  assert.deepEqual(calls.map(([name]) => name), ['durable.contains']);
+});
+
+test('contains failure prevents durable and primary enqueue and propagates unchanged', async () => {
+  const containsError = new Error('contains failed');
+  const queue = createDualWriteTranslationExecutionQueue({
+    primaryQueue: primaryQueue({
+      enqueue() {
+        throw new Error('primary enqueue should not run');
+      }
+    }),
+    durableRepository: durableRepository({
+      contains() {
+        throw containsError;
+      },
+      enqueue() {
+        throw new Error('durable enqueue should not run');
+      }
+    }),
+    clock: fixedClock()
+  });
+
+  await assert.rejects(queue.enqueue(createItem()), (error) => error === containsError);
 });
 
 test('durable item contains executionId requestId and clock enqueuedAt', async () => {
@@ -41,7 +92,8 @@ test('durable item contains executionId requestId and clock enqueuedAt', async (
     {
       executionId: 'execution-2',
       requestId: 'request-2',
-      enqueuedAt: '2026-07-17T09:10:11.000Z'
+      enqueuedAt: '2026-07-17T09:10:11.000Z',
+      status: 'queued'
     }
   ]);
 });
@@ -125,7 +177,8 @@ test('primary failure rethrows original error and keeps durable item', async () 
     {
       executionId: 'execution-1',
       requestId: 'request-1',
-      enqueuedAt: '2026-07-17T08:00:00.000Z'
+      enqueuedAt: '2026-07-17T08:00:00.000Z',
+      status: 'queued'
     }
   ]);
 });
@@ -228,6 +281,11 @@ function durableRepository(overrides = {}) {
       function peek() {
         return items[0] ?? null;
       },
+    list:
+      overrides.list ||
+      function list() {
+        return [...items];
+      },
     size:
       overrides.size ||
       function size() {
@@ -237,6 +295,25 @@ function durableRepository(overrides = {}) {
       overrides.clear ||
       function clear() {
         items.length = 0;
-      }
+      },
+    updateStatus:
+      overrides.updateStatus ||
+      function updateStatus() {
+        throw new Error('dual-write queue should not update durable status');
+      },
+    acknowledge:
+      overrides.acknowledge ||
+      function acknowledge() {
+        throw new Error('dual-write queue should not acknowledge durable items');
+      },
+    contains:
+      overrides.contains ||
+      function contains(executionId) {
+        return items.some((item) => item.executionId === executionId);
+      },
+    claim() {},
+    releaseExpired() { return 0; },
+    isLeaseExpired() { return false; },
+    renewLease() {}
   };
 }

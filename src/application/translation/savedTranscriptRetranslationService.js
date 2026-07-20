@@ -52,7 +52,6 @@ export function createSavedTranscriptRetranslationService({
         translationCommandService.createTranslationExecution({
           id: executionId,
           translationRequestId: request.id,
-          status: 'pending',
           startedAt: clock()
         })
       );

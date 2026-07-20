@@ -75,11 +75,11 @@ test('translation command persists through production HTTP path and preserves le
 
     const createExecutionResponse = await postJson(`${baseUrl}/api/translation-executions`, executionPayload);
 
-    assert.equal(createExecutionResponse.status, 201);
+    assert.equal(createExecutionResponse.status, 202);
     assert.deepEqual(createExecutionResponse.body, {
       id: executionId,
       translationRequestId: 'request-1',
-      status: 'pending',
+      status: 'queued',
       startedAt: '2026-07-14T01:01:00.000Z',
       completedAt: null,
       failureInfo: null
@@ -450,7 +450,7 @@ function translationExecutionPayload(overrides = {}) {
   return {
     id: 'execution-1',
     translationRequestId: 'request-1',
-    status: 'pending',
+    status: 'created',
     startedAt: '2026-07-14T01:01:00.000Z',
     completedAt: null,
     failureInfo: null,

@@ -206,7 +206,7 @@ test('independent dependency graphs isolate event buses, handlers, and unsubscri
   await graphB.translationCommandService.createTranslationExecution(executionPayload({ id: 'execution-b-1' }));
 
   assert.deepEqual(callsA.names(), ['requestCreated']);
-  assert.deepEqual(callsB.names(), ['requestCreated', 'executionCreated']);
+  assert.deepEqual(callsB.names(), ['requestCreated', 'executionCreated', 'executionUpdated']);
 });
 
 test('one dependency graph publishes one event to one handler without duplicate delivery', async () => {
@@ -269,7 +269,11 @@ async function verifyRoutedCommandFlow({
   assert.deepEqual(Object.keys(event), ['type', 'occurredAt', 'payload']);
   assert.deepEqual(Object.keys(event.payload), [aggregateField]);
   assert.equal(aggregateReference.id, aggregateId);
-  assert.strictEqual(aggregateReference, persistedAggregate);
+  if (eventType === TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED) {
+    assert.equal(aggregateReference.status, 'created');
+  } else {
+    assert.strictEqual(aggregateReference, persistedAggregate);
+  }
   assert.deepEqual(payload, inputBefore);
 
   handlers.release();
@@ -277,7 +281,11 @@ async function verifyRoutedCommandFlow({
 
   assert.equal(commandResolved, true);
   assert.equal(handlers.completed, true);
-  assert.strictEqual(result, persistedAggregate);
+  if (eventType === TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED) {
+    assert.equal(result.status, 'queued');
+  } else {
+    assert.strictEqual(result, persistedAggregate);
+  }
   assert.strictEqual(event, handlers.events()[0]);
   assert.strictEqual(event.payload, payloadReference);
   assert.strictEqual(event.payload[aggregateField], aggregateReference);
@@ -287,7 +295,12 @@ async function verifyRoutedCommandFlow({
   assert.deepEqual(Object.keys(event.payload), [aggregateField]);
   assert.deepEqual(Object.fromEntries(Object.entries(aggregateReference)), aggregateFieldsBefore);
   assert.deepEqual(payload, inputBefore);
-  assert.deepEqual(handlers.names(), [handlerName]);
+  assert.deepEqual(
+    handlers.names(),
+    eventType === TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED
+      ? [handlerName, 'executionUpdated']
+      : [handlerName]
+  );
   afterAssertions({ result, event, repository });
 }
 

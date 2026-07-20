@@ -281,14 +281,18 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
       assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), {
         executionId: 'execution-1',
         requestId: 'request-1',
-        enqueuedAt: '2026-07-17T08:00:00.000Z'
+        enqueuedAt: '2026-07-17T08:00:00.000Z',
+        status: 'queued',
+        leasedUntil: null
       });
       assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
         items: [
           {
             executionId: 'execution-1',
             requestId: 'request-1',
-            enqueuedAt: '2026-07-17T08:00:00.000Z'
+            enqueuedAt: '2026-07-17T08:00:00.000Z',
+            status: 'queued',
+            leasedUntil: null
           }
         ]
       });
@@ -680,10 +684,8 @@ test('production worker runtime startup replays durable queue into active in-mem
     async (_baseUrl, dependencies) => {
       await dependencies.translationExecutionWorkerRuntime.start();
 
-      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 0);
-      assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
-        items: []
-      });
+      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 3);
+      assert.deepEqual((await dependencies.durableTranslationExecutionQueueRepository.peek()).status, 'queued');
       assert.equal(dependencies.translationExecutionQueue.size(), 3);
       assert.equal(dependencies.translationExecutionWorkerRuntime.isRunning(), true);
       assert.equal(scheduler.pendingCount(), 1);
@@ -705,6 +707,8 @@ test('production worker runtime startup replays durable queue into active in-mem
         geminiClientCalls.map((call) => call.sourceText),
         ['first replay text', 'second replay text', 'third replay text']
       );
+      assert.equal(await dependencies.durableTranslationExecutionQueueRepository.size(), 0);
+      assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), { items: [] });
       assert.equal(dependencies.translationExecutionQueue.size(), 0);
     },
     {

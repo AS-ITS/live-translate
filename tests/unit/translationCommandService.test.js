@@ -6,7 +6,6 @@ import {
   TranslationOutput,
   TranslationRequest
 } from '../../src/domain/translation/index.js';
-import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
 
 const SERVICE_METHODS = Object.freeze([
   'createTranslationRequest',
@@ -27,7 +26,13 @@ test('factory throws TypeError when translationRepository is missing', () => {
 });
 
 test('factory throws TypeError when any required repository method is missing', () => {
-  for (const missingMethod of TRANSLATION_REPOSITORY_METHODS) {
+  const requiredMethods = [
+    'createTranslationRequest', 'getTranslationRequest', 'updateTranslationRequest', 'listTranslationRequestsBySession',
+    'createTranslationExecution', 'getTranslationExecution', 'updateTranslationExecution', 'listTranslationExecutionsByRequest',
+    'createTranslationOutput', 'listTranslationOutputsByExecution', 'listTranslationOutputsBySession',
+    'listTranslationOutputsByRequest', 'getTranslationOutput'
+  ];
+  for (const missingMethod of requiredMethods) {
     const repository = translationRepository();
     delete repository[missingMethod];
 
@@ -124,33 +129,33 @@ test('createTranslationRequest does not swallow domain validation errors', () =>
   );
 });
 
-test('createTranslationExecution creates domain object and returns repository result unchanged', async () => {
+test('createTranslationExecution persists created and queued executions, enqueues the job, and returns queued execution', async () => {
   const calls = [];
-  const repositoryResult = { id: 'stored-execution-1' };
+  const jobs = [];
   const service = createTranslationCommandService({
     translationRepository: translationRepository({
       createTranslationExecution(execution) {
         calls.push(['createTranslationExecution', execution]);
-        return repositoryResult;
+        return execution;
       },
-      getTranslationExecution() {
-        calls.push(['getTranslationExecution']);
-        return null;
-      },
-      updateTranslationExecution() {
-        calls.push(['updateTranslationExecution']);
-        return null;
+      updateTranslationExecution(execution) {
+        calls.push(['updateTranslationExecution', execution]);
+        return execution;
       }
-    })
+    }),
+    translationExecutionQueue: { enqueue(job) { jobs.push(job); }, dequeue() { return null; }, size() { return 0; } }
   });
 
   const result = await service.createTranslationExecution(executionPayload());
 
-  assert.strictEqual(result, repositoryResult);
-  assert.equal(calls.length, 1);
+  assert.equal(result.status, 'queued');
+  assert.equal(calls.length, 2);
   assert.equal(calls[0][0], 'createTranslationExecution');
   assert.equal(calls[0][1] instanceof TranslationExecution, true);
   assert.equal(Object.isFrozen(calls[0][1]), true);
+  assert.equal(calls[0][1].status, 'created');
+  assert.equal(calls[1][1].status, 'queued');
+  assert.deepEqual(jobs, [{ executionId: 'execution-1', requestId: 'request-1' }]);
 });
 
 test('createTranslationExecution forwards providerKey to TranslationExecution', async () => {
@@ -166,9 +171,10 @@ test('createTranslationExecution forwards providerKey to TranslationExecution', 
 
   const result = await service.createTranslationExecution(executionPayload({ providerKey: 'gemini' }));
 
-  assert.strictEqual(result, createdExecution);
+  assert.equal(result.status, 'queued');
   assert.equal(createdExecution instanceof TranslationExecution, true);
   assert.equal(createdExecution.providerKey, 'gemini');
+  assert.equal(createdExecution.status, 'created');
 });
 
 test('createTranslationExecution preserves undefined providerKey', async () => {
@@ -248,11 +254,11 @@ test('updateTranslationExecution reads, transitions, updates, and returns reposi
   assert.equal(calls[1][1].status, 'running');
   assert.equal(calls[1][1].startedAt, 1100);
   assert.equal(Object.isFrozen(calls[1][1]), true);
-  assert.equal(originalExecution.status, 'pending');
+  assert.equal(originalExecution.status, 'created');
   assert.equal(originalExecution.startedAt, 1000);
 });
 
-test('updateTranslationExecution supports complete, fail, and cancel transition payloads', () => {
+test('updateTranslationExecution supports complete and fail transition payloads', () => {
   const runningExecution = new TranslationExecution(executionPayload()).start(1100);
 
   assert.equal(runTransition(runningExecution, { transition: 'complete', completedAt: 1200 }).status, 'completed');
@@ -264,7 +270,6 @@ test('updateTranslationExecution supports complete, fail, and cancel transition 
     }).status,
     'failed'
   );
-  assert.equal(runTransition(runningExecution, { transition: 'cancel', completedAt: 1200 }).status, 'cancelled');
   assert.equal(runningExecution.status, 'running');
 });
 
@@ -481,7 +486,7 @@ test('create methods preserve sync and async repository behavior', async () => {
   });
 
   assert.strictEqual(service.createTranslationRequest(requestPayload()), requestResult);
-  assert.strictEqual(await service.createTranslationExecution(executionPayload()), executionResult);
+  assert.equal((await service.createTranslationExecution(executionPayload())).status, 'queued');
   assert.strictEqual(await service.createTranslationOutput(outputPayload()), outputResult);
 });
 

@@ -1,4 +1,6 @@
 export const DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE = 'translation-execution-queue.json';
+export const DEFAULT_TRANSLATION_QUEUE_LEASE_MS = 300000;
+export const DEFAULT_TRANSLATION_QUEUE_LEASE_RENEWAL_MS = 100000;
 
 export function createTranslationQueueConfiguration(input) {
   assertFactoryInput(arguments.length, input);
@@ -8,8 +10,29 @@ export function createTranslationQueueConfiguration(input) {
 
   return Object.freeze({
     durableQueueEnabled: readDurableQueueEnabled(environment),
-    durableQueueFilePath: readDurableQueueFilePath(environment)
+    durableQueueFilePath: readDurableQueueFilePath(environment),
+    leaseMs: readLeaseMs(environment),
+    leaseRenewalMs: readLeaseRenewalMs(environment)
   });
+}
+
+function readLeaseRenewalMs(environment) {
+  const value = environment.TRANSLATION_QUEUE_LEASE_RENEWAL_MS;
+  const parsed = value === undefined || value === '' ? DEFAULT_TRANSLATION_QUEUE_LEASE_RENEWAL_MS : Number(value);
+  const leaseMs = readLeaseMs(environment);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed >= leaseMs) {
+    throw new TypeError('TRANSLATION_QUEUE_LEASE_RENEWAL_MS must be a positive integer lower than TRANSLATION_QUEUE_LEASE_MS.');
+  }
+  return parsed;
+}
+
+function readLeaseMs(environment) {
+  const value = environment.TRANSLATION_QUEUE_LEASE_MS;
+  if (value === undefined || value === '') return DEFAULT_TRANSLATION_QUEUE_LEASE_MS;
+  if (typeof value !== 'string' && typeof value !== 'number') throw new TypeError('TRANSLATION_QUEUE_LEASE_MS must be a positive integer.');
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) throw new TypeError('TRANSLATION_QUEUE_LEASE_MS must be a positive integer.');
+  return parsed;
 }
 
 function assertFactoryInput(argumentCount, input) {

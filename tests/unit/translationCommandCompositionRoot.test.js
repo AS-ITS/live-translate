@@ -398,8 +398,12 @@ test('production composition creates durable queue repository when feature flag 
     enqueue() {},
     dequeue() {},
     peek() {},
+    list() {},
     size() {},
-    clear() {}
+    clear() {},
+    updateStatus() {},
+    acknowledge() {},
+    contains() {}, claim() {}, releaseExpired() { return 0; }, isLeaseExpired() { return false; }, renewLease() {}
   };
   const fileSystem = Object.freeze({
     access() {},
@@ -493,8 +497,12 @@ test('production composition uses file-backed durable repository factory when en
     'enqueue',
     'dequeue',
     'peek',
+    'list',
     'size',
-    'clear'
+    'clear',
+    'updateStatus',
+    'acknowledge',
+    'contains', 'claim', 'releaseExpired', 'isLeaseExpired', 'renewLease'
   ]);
   assert.equal(Object.isFrozen(dependencies.durableTranslationExecutionQueueRepository), true);
 });
@@ -524,16 +532,26 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
     fileDurableTranslationExecutionQueueRepositoryFactory() {
       return {
         enqueue(item) {
-          durableItems.push(item);
+          durableItems.push({ ...item, leasedUntil: null });
         },
         dequeue() {
           throw new Error('durable repository dequeue should not be used by active queue');
         },
         peek() {},
+        list() {},
         size() {
           throw new Error('durable repository size should not be used by active queue');
         },
-        clear() {}
+        clear() {},
+        updateStatus() {
+          throw new Error('durable repository updateStatus should not be used by active queue');
+        },
+        acknowledge() {
+          throw new Error('durable repository acknowledge should not be used by active queue');
+        },
+        contains() {
+          return false;
+        }, claim() {}, releaseExpired() { return 0; }, isLeaseExpired() { return false; }, renewLease() {}
       };
     },
     translationQueueClock: {
@@ -557,7 +575,9 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
     {
       executionId: 'execution-1',
       requestId: 'request-1',
-      enqueuedAt: '2026-07-17T08:00:00.000Z'
+      enqueuedAt: '2026-07-17T08:00:00.000Z',
+      status: 'queued',
+      leasedUntil: null
     }
   ]);
   assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), job);
@@ -570,8 +590,12 @@ test('production composition injects active dual-write queue into service worker
     enqueue() {},
     dequeue() {},
     peek() {},
+    list() {},
     size() {},
-    clear() {}
+    clear() {},
+    updateStatus() {},
+    acknowledge() {},
+    contains() {}, claim() {}, releaseExpired() { return 0; }, isLeaseExpired() { return false; }, renewLease() {}
   };
   const activeQueue = queue();
   const observed = {};
@@ -579,7 +603,9 @@ test('production composition injects active dual-write queue into service worker
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
       GEMINI_MODEL: 'model-from-env',
-      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
+      TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
+      TRANSLATION_QUEUE_LEASE_MS: '1000',
+      TRANSLATION_QUEUE_LEASE_RENEWAL_MS: '500'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
@@ -608,6 +634,9 @@ test('production composition injects active dual-write queue into service worker
     },
     translationExecutionWorkerFactory(options) {
       observed.workerQueue = options.translationExecutionQueue;
+      observed.workerDurableRepository = options.durableTranslationExecutionQueueRepository;
+      observed.workerLeaseDurationMs = options.leaseDurationMs;
+      observed.workerLeaseRenewalMs = options.leaseRenewalMs;
       return { processNext() {} };
     },
     translationExecutionWorkerRuntimeFactory(options) {
@@ -625,6 +654,9 @@ test('production composition injects active dual-write queue into service worker
   assert.deepEqual(Object.keys(observed.dualWriteOptions.primaryQueue), ['enqueue', 'dequeue', 'size']);
   assert.strictEqual(observed.serviceQueue, activeQueue);
   assert.strictEqual(observed.workerQueue, activeQueue);
+  assert.strictEqual(observed.workerDurableRepository, durableRepository);
+  assert.equal(observed.workerLeaseDurationMs, 1000);
+  assert.equal(observed.workerLeaseRenewalMs, 500);
   assert.strictEqual(observed.runtimeQueue, activeQueue);
 });
 
@@ -633,8 +665,12 @@ test('production composition creates startup recovery when durable queue is enab
     enqueue() {},
     dequeue() {},
     peek() {},
+    list() {},
     size() {},
-    clear() {}
+    clear() {},
+    updateStatus() {},
+    acknowledge() {},
+    contains() {}, claim() {}, releaseExpired() { return 0; }, isLeaseExpired() { return false; }, renewLease() {}
   };
   const recovery = { recover() {} };
   let observedRecoveryOptions;
@@ -702,8 +738,12 @@ test('production runtime start awaits startup recovery before starting worker ru
         enqueue() {},
         dequeue() {},
         peek() {},
+        list() {},
         size() {},
-        clear() {}
+        clear() {},
+        updateStatus() {},
+        acknowledge() {},
+        contains() {}, claim() {}, releaseExpired() { return 0; }, isLeaseExpired() { return false; }, renewLease() {}
       };
     },
     startupTranslationExecutionQueueRecoveryFactory() {

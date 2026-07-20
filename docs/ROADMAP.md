@@ -285,10 +285,10 @@ Deferred:
   - WP5 Dual-write Enqueue
   - WP6 Startup Recovery
   - WP7 Documentation
-  - Current limitations: replay removes durable items immediately after active
-    enqueue, no acknowledgement, no replay deduplication, no lease, no
-    visibility timeout, no retry, no dead-letter queue, no multi-worker
-    support, and no locking
+  - Current limitations: startup recovery replays durable items without
+    removing them; Worker acknowledgement removes an item after terminal
+    execution. No lease, visibility timeout, retry, dead-letter queue,
+    multi-worker support, or locking.
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
@@ -423,7 +423,7 @@ phase.
 
 ### Phase 2B-2 - Foundation Implementation
 
-Status: Planned.
+Status: In Progress (WP4 durable queue deduplication implemented).
 
 Scope:
 
@@ -1437,8 +1437,6 @@ Status: Planned.
 
 Candidate scope:
 
-- Acknowledgement.
-- Completion-driven removal.
 - Replay reconciliation.
 - Duplicate prevention.
 - Lease.

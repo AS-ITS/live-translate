@@ -52,6 +52,27 @@ test('default file path uses translation execution queue filename', () => {
   assert.equal(configuration.durableQueueFilePath, 'translation-execution-queue.json');
 });
 
+test('lease timeout defaults to five minutes and accepts a positive integer override', () => {
+  const defaults = createTranslationQueueConfiguration({ environment: {} });
+  const custom = createTranslationQueueConfiguration({
+    environment: {
+      TRANSLATION_QUEUE_LEASE_MS: '1000',
+      TRANSLATION_QUEUE_LEASE_RENEWAL_MS: '500'
+    }
+  });
+
+  assert.equal(defaults.leaseMs, 300000);
+  assert.equal(defaults.leaseRenewalMs, 100000);
+  assert.equal(custom.leaseMs, 1000);
+  assert.equal(custom.leaseRenewalMs, 500);
+});
+
+test('invalid lease timeout is rejected', () => {
+  for (const value of ['0', '-1', '1.5', 'invalid']) {
+    assert.throws(() => createTranslationQueueConfiguration({ environment: { TRANSLATION_QUEUE_LEASE_MS: value } }), /LEASE_MS/);
+  }
+});
+
 test('returned configuration is frozen and exposes only durable queue fields', () => {
   const configuration = createTranslationQueueConfiguration({
     environment: {
@@ -61,7 +82,7 @@ test('returned configuration is frozen and exposes only durable queue fields', (
   });
 
   assert.equal(Object.isFrozen(configuration), true);
-  assert.deepEqual(Object.keys(configuration), ['durableQueueEnabled', 'durableQueueFilePath']);
+  assert.deepEqual(Object.keys(configuration), ['durableQueueEnabled', 'durableQueueFilePath', 'leaseMs', 'leaseRenewalMs']);
   assert.throws(() => {
     configuration.durableQueueEnabled = false;
   }, TypeError);

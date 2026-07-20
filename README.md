@@ -730,11 +730,8 @@ Feature flags:
 
 Current Durable Queue limitations:
 
-- Replay removes each item from the durable repository immediately after it is
-  enqueued into the active in-memory queue.
-- No acknowledgement.
-- No completion-driven removal.
-- No replay deduplication.
+- Startup recovery replays durable items without removing them. The Worker
+  acknowledges and removes an item only after terminal execution completion.
 - No lease.
 - No visibility timeout.
 - No retry.

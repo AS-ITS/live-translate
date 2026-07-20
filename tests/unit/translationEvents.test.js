@@ -227,7 +227,7 @@ test('translation index exports WP1 event API without breaking existing exports'
   assert.equal(typeof TranslationRequest, 'function');
   assert.equal(typeof TranslationExecution, 'function');
   assert.equal(typeof TranslationOutput, 'function');
-  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['pending', 'running', 'completed', 'failed', 'cancelled']);
+  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['created', 'queued', 'running', 'completed', 'failed']);
 });
 
 function createRequest(overrides = {}) {

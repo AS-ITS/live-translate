@@ -4,6 +4,58 @@
 
 ### Added
 
+- Phase 3D WP5 Lease & Visibility Timeout: durable queue items now persist an
+  optional `leasedUntil` timestamp, legacy items load with no lease, and the
+  repository supports claim, expiry inspection, and expired-lease release.
+  Workers acquire a five-minute configurable lease before processing; startup
+  recovery releases expired leases and replays only eligible queued or expired
+  processing items. No renewal, retry, distributed locking, or multi-worker
+  coordination was added.
+- Phase 3D WP4 Durable Queue Deduplication: added read-only
+  `contains(executionId)` to the durable queue repository contract and its fake
+  and file-backed adapters. Durable enqueue is now idempotent by execution ID;
+  duplicate writes preserve the original item, status, and FIFO order. The
+  dual-write queue checks durable existence before enqueueing the active queue,
+  and startup recovery replays each execution at most once across repeated
+  recovery calls without removing durable items. Acknowledgement still permits
+  a later enqueue of the same execution. No distributed locking, lease,
+  visibility timeout, retry, transactional enqueue, or multi-worker behavior
+  was added.
+- Phase 3D WP3 Completion Acknowledgement: extended the durable queue
+  repository contract and its fake and file-backed adapters with
+  `acknowledge(executionId)`, which removes an existing durable item while
+  preserving remaining FIFO order and fails deterministically for missing
+  items. The Translation Execution Worker now claims an item, runs the Runner,
+  and acknowledges only after the Runner completes or fails, so durable items
+  remain through startup replay and terminal execution persistence. An
+  acknowledgement error propagates unchanged without retrying the Runner or
+  provider; a runner failure is still rethrown after successful cleanup. No
+  retry, acknowledgement retry, lease, visibility timeout, deduplication,
+  multi-worker support, distributed locking, or transactional persistence was
+  added.
+- Phase 3D WP2 Worker Claim: wired the durable queue repository into the
+  Translation Execution Worker when the durable queue feature is enabled, so the
+  Worker now persists a durable queue item claim by updating `queued` to
+  `processing` before starting the runner. Claim failures propagate unchanged
+  and prevent runner/provider execution. Startup recovery now replays durable
+  items with `list -> active enqueue` and no longer removes them during replay,
+  leaving durable removal for future acknowledgement work. No HTTP API,
+  `TranslationExecution` lifecycle, provider behavior, retry, lease, visibility
+  timeout, recovery filtering, deduplication, dead-letter queue, locking, or
+  multi-worker coordination was added.
+- Phase 3D WP1 Durable Queue Item Lifecycle: added a centralized immutable
+  durable queue item status set with `queued`, `processing`, `completed`, and
+  `failed`, defaulted new durable queue items to `queued`, and extended the
+  durable queue repository contract with `updateStatus`. The fake and
+  file-backed durable queue repositories now persist status updates without
+  changing item identity, payload, ordering, or item count, reject invalid
+  statuses, and fail deterministically for missing items. File-backed storage
+  remains backward compatible for older items without `status` by loading them
+  as `queued`, while invalid persisted statuses remain storage errors. No
+  Worker claim, runtime transition, acknowledgement, completion-driven removal,
+  retry, lease, visibility timeout, dead-letter queue, startup recovery
+  filtering, HTTP API, provider execution, or `TranslationExecution` lifecycle
+  behavior changed.
 - Phase 3C WP7 Documentation Closeout: updated README, ROADMAP, architecture
   overview, and the main architecture document to reflect the current Durable
   Queue foundation, including feature-gated composition, dual-write enqueue

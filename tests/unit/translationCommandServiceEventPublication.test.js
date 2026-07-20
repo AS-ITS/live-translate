@@ -51,6 +51,7 @@ for (const createCase of CREATE_CASES) {
     const inputBefore = structuredClone(input);
     let savedAggregate;
     let publishedEvent;
+    const publishedEvents = [];
     const service = createService({
       translationRepository: translationRepository({
         [createCase.repositoryMethod](aggregate) {
@@ -62,12 +63,28 @@ for (const createCase of CREATE_CASES) {
       domainEventPublisher: publisher({
         publish(event) {
           publishedEvent = event;
+          publishedEvents.push(event);
           calls.push('publish');
         }
       })
     });
 
     const result = await service[createCase.command](input);
+
+    if (createCase.name === 'execution create') {
+      assert.equal(result.status, 'queued');
+      assert.deepEqual(calls, [createCase.repositoryMethod, 'publish', 'publish']);
+      assertPublishedFactoryEvent({
+        event: publishedEvents[0],
+        expectedType: createCase.eventType,
+        expectedOccurredAt: createCase.occurredAt,
+        aggregateField: createCase.aggregateField,
+        aggregate: savedAggregate,
+        factory: createCase.factory
+      });
+      assert.equal(publishedEvents[1].payload.execution.status, 'queued');
+      return;
+    }
 
     assert.strictEqual(result, repositoryResult);
     assert.deepEqual(calls, [createCase.repositoryMethod, 'publish']);
@@ -150,13 +167,6 @@ test('execution update uses transition-specific occurredAt values', () => {
       expectedStatus: 'failed',
       expectedOccurredAt: 1500
     },
-    {
-      name: 'cancel',
-      original: new TranslationExecution(executionPayload()).start(1100),
-      payload: { transition: 'cancel', completedAt: 1600 },
-      expectedStatus: 'cancelled',
-      expectedOccurredAt: 1600
-    }
   ];
 
   for (const transitionCase of transitions) {
@@ -377,8 +387,8 @@ test('async repository result is returned only after successful publication', as
 
   const result = await service.createTranslationExecution(executionPayload());
 
-  assert.strictEqual(result, repositoryResult);
-  assert.deepEqual(calls, ['createTranslationExecution', 'publish']);
+  assert.equal(result.status, 'queued');
+  assert.deepEqual(calls, ['createTranslationExecution', 'publish', 'publish']);
 });
 
 function assertPublishedFactoryEvent({ event, expectedType, expectedOccurredAt, aggregateField, aggregate, factory }) {

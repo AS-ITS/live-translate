@@ -209,7 +209,8 @@ test('success flow creates request, running execution before provider, final exe
     events.map((event) => [event.type, event.payload.request?.id || event.payload.execution?.status || event.payload.output?.id]),
     [
       [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'request-1'],
-      [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED, 'pending'],
+      [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_CREATED, 'created'],
+      [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'queued'],
       [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'running'],
       [TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'output-1'],
       [TRANSLATION_EVENT_TYPES.TRANSLATION_EXECUTION_UPDATED, 'completed']
@@ -255,7 +256,7 @@ test('provider input object is not mutated and deferred completion is awaited be
 
   assert.deepEqual(
     observed.events.map((event) => event.payload.execution?.status || event.type),
-    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'pending', 'running']
+    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'created', 'queued', 'running']
   );
   assert.deepEqual(dependencies.translationRepository.listTranslationOutputsBySession('session-1'), []);
 
@@ -266,7 +267,7 @@ test('provider input object is not mutated and deferred completion is awaited be
   assert.equal(result.execution.status, 'completed');
   assert.deepEqual(
     observed.events.map((event) => event.payload.execution?.status || event.type),
-    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'pending', 'running', TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'completed']
+    [TRANSLATION_EVENT_TYPES.TRANSLATION_REQUEST_CREATED, 'created', 'queued', 'running', TRANSLATION_EVENT_TYPES.TRANSLATION_OUTPUT_CREATED, 'completed']
   );
 });
 
@@ -508,6 +509,7 @@ test('execution completion repository failure preserves output and propagates ex
   );
 
   assert.deepEqual(calls, [
+    ['updateTranslationExecution', 'queued'],
     ['updateTranslationExecution', 'running'],
     ['updateTranslationExecution', 'completed']
   ]);
@@ -541,7 +543,7 @@ test('execution completion event publication failure preserves completed executi
     (actualError) => actualError === expectedError
   );
 
-  assert.deepEqual(updatedStatuses, ['running', 'completed']);
+  assert.deepEqual(updatedStatuses, ['queued', 'running', 'completed']);
   assert.deepEqual(
     dependencies.translationRepository.listTranslationExecutionsByRequest('request-1').map((execution) => execution.status),
     ['completed']

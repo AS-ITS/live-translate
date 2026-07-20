@@ -4,6 +4,43 @@
 
 ### Added
 
+- Phase 3G WP6 Failed Execution Reconciliation: startup recovery now marks and
+  acknowledges an expired processing durable item as failed only when the
+  execution is already failed and has no output. Failure state and metadata are
+  retained unchanged; failed durable acknowledgement errors retain state and
+  propagate unchanged for a safe later startup acknowledgement.
+- Phase 3G WP5 Output-bearing Running Execution Reconciliation: startup
+  recovery now completes an expired processing `running` execution only when
+  its output is already persisted, via the existing command-service domain
+  transition. It then marks and acknowledges the durable item without provider
+  replay or output mutation. Completed durable items retry acknowledgement only
+  when their execution is completed with output; acknowledgement errors retain
+  all state and propagate unchanged.
+- Phase 3G WP4 Running Execution Recovery Policy: startup recovery now checks
+  execution and output state before requeueing an expired processing lease.
+  Output-less `running` executions use the explicit domain recovery transition
+  back to `queued` and may safely replay; terminal, missing, and invalid output
+  state combinations remain durable without provider replay or output mutation.
+- Phase 3G WP3 Expired Processing Lease Recovery: startup recovery now keeps
+  queued FIFO replay and atomically requeues only expired processing items with
+  complete lease metadata. Requeue clears the lease before active enqueue;
+  valid leases, legacy processing items, and terminal items remain untouched.
+  Crash-after-claim/before-Runner integration coverage verifies both successful
+  and failed terminal acknowledgement paths.
+- Phase 3G WP2 Worker Lease Claim Integration: feature-enabled workers now
+  create an injected-clock, injected-ID lease and atomically claim the durable
+  queue item before Runner execution. Claim failures propagate without invoking
+  the Runner or provider and leave execution lifecycle/output work untouched;
+  terminal acknowledgement behavior remains unchanged. Lease expiry recovery,
+  renewal, retry, timeout, DLQ, and multi-worker locking remain deferred.
+- Phase 3G WP1 Lease-aware Durable Queue Contract: durable `processing` queue
+  items now carry a complete `leaseId`, `claimedAt`, and `leaseExpiresAt`
+  record. `claim()` atomically performs `queued → processing`; terminal status
+  updates clear all lease metadata. File-backed storage preserves complete
+  processing leases across reload while accepting legacy lease-less processing
+  items without replaying, repairing, deleting, or rewriting them. Worker,
+  recovery, retry, expiry recovery, timeout, DLQ, and multi-worker behavior
+  remain deferred.
 - Phase 3F Documentation Closeout: documented the durable acknowledgement
   contract and terminal cleanup: items are removed only after `completed` or
   `failed` execution persistence, while acknowledgement failures retain the

@@ -1,11 +1,11 @@
 import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
+  createDurableTranslationExecutionQueueItemNotClaimableError,
   createTranslationExecutionQueueItemNotFoundError,
   createDurableTranslationExecutionQueueItem,
   createDurableTranslationExecutionQueueRepository,
-  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
-  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY
 } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 
 export function createFakeDurableTranslationExecutionQueueRepository() {
@@ -55,10 +55,7 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
         throw new Error(`Durable translation execution queue item ${executionId} was not found`);
       }
 
-      items[itemIndex] = createDurableTranslationExecutionQueueItem({
-        ...items[itemIndex],
-        status
-      });
+      items[itemIndex] = createUpdatedItem(items[itemIndex], status);
       return undefined;
     },
 
@@ -76,50 +73,59 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
       return items.some((item) => item.executionId === executionId);
     },
 
-    claim(executionId, leasedUntil) {
-      updateLease(items, executionId, leasedUntil);
+    claim(executionId, lease) {
+      const itemIndex = items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throwNotFound(executionId);
+      if (items[itemIndex].status !== 'queued') {
+        throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      }
+
+      items[itemIndex] = createDurableTranslationExecutionQueueItem({
+        ...items[itemIndex],
+        status: 'processing',
+        ...lease
+      });
     },
 
-    releaseExpired(now) {
-      return releaseExpiredLeases(items, now);
-    },
+    requeueExpiredProcessing(executionId, now) {
+      const itemIndex = items.findIndex((item) => item.executionId === executionId);
+      const item = items[itemIndex];
+      if (!isExpiredProcessingItem(item, now)) return null;
 
-    isLeaseExpired(executionId, now) {
-      const item = findItem(items, executionId);
-      if (item === undefined) throwNotFound(executionId);
-      return item.leasedUntil !== null && item.leasedUntil <= now;
-    },
-
-    renewLease(executionId, leasedUntil) {
-      updateLease(items, executionId, leasedUntil);
+      const requeuedItem = createRequeuedItem(item);
+      items[itemIndex] = requeuedItem;
+      return requeuedItem;
     }
   });
 }
 
-function updateLease(items, executionId, leasedUntil) {
-  const itemIndex = items.findIndex((item) => item.executionId === executionId);
-  if (itemIndex === -1) throwNotFound(executionId);
-  items[itemIndex] = createDurableTranslationExecutionQueueItem({ ...items[itemIndex], leasedUntil });
+function isExpiredProcessingItem(item, now) {
+  return item !== undefined
+    && item.status === 'processing'
+    && item.leaseId !== undefined
+    && item.claimedAt !== undefined
+    && item.leaseExpiresAt !== undefined
+    && item.leaseExpiresAt <= now;
 }
 
-function releaseExpiredLeases(items, now) {
-  let released = 0;
-  for (let index = 0; index < items.length; index += 1) {
-    if (isRecoverableStatus(items[index].status)
-      && items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
-      items[index] = createDurableTranslationExecutionQueueItem({ ...items[index], leasedUntil: null });
-      released += 1;
-    }
+function createRequeuedItem(item) {
+  const requeuedItem = { ...item, status: 'queued' };
+  delete requeuedItem.leaseId;
+  delete requeuedItem.claimedAt;
+  delete requeuedItem.leaseExpiresAt;
+  return createDurableTranslationExecutionQueueItem(requeuedItem);
+}
+
+function createUpdatedItem(item, status) {
+  const nextItem = { ...item, status };
+  if (status === 'completed' || status === 'failed') {
+    delete nextItem.leaseId;
+    delete nextItem.claimedAt;
+    delete nextItem.leaseExpiresAt;
   }
-  return released;
+  return createDurableTranslationExecutionQueueItem(nextItem);
 }
 
-function isRecoverableStatus(status) {
-  return status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
-    || status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING;
-}
-
-function findItem(items, executionId) { return items.find((item) => item.executionId === executionId); }
 function throwNotFound(executionId) { throw new Error(`Durable translation execution queue item ${executionId} was not found`); }
 
 function cloneQueueItemOrNull(item) {

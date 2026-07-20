@@ -1,4 +1,5 @@
 import { promises as fileSystem } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
@@ -48,8 +49,8 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionWorkerRuntime,
     durableTranslationExecutionQueueRepository,
     translationQueueLeaseMs,
-    translationQueueLeaseRenewalMs,
     translationQueueClock,
+    translationQueueLeaseIdFactory,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -79,8 +80,8 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionWorkerRuntime,
     durableTranslationExecutionQueueRepository,
     translationQueueLeaseMs,
-    translationQueueLeaseRenewalMs,
     translationQueueClock,
+    translationQueueLeaseIdFactory,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -147,6 +148,7 @@ export function createProductionApplicationDependencies(options = {}) {
     startupTranslationExecutionQueueRecoveryFactory = createDefaultStartupTranslationExecutionQueueRecovery,
     durableQueueFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
+    translationQueueLeaseIdFactory = randomUUID,
     ...applicationOptions
   } = options;
 
@@ -261,8 +263,8 @@ export function createProductionApplicationDependencies(options = {}) {
       ? { durableTranslationExecutionQueueRepository }
       : {}),
     translationQueueLeaseMs: queueConfiguration.leaseMs,
-    translationQueueLeaseRenewalMs: queueConfiguration.leaseRenewalMs,
     translationQueueClock,
+    translationQueueLeaseIdFactory,
     translationExecutionProvider: resolvedTranslationExecutionProvider,
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     ...resolvedProviderDependencies
@@ -272,6 +274,8 @@ export function createProductionApplicationDependencies(options = {}) {
       ? startupTranslationExecutionQueueRecoveryFactory({
           durableRepository: durableTranslationExecutionQueueRepository,
           activeQueue: primaryTranslationExecutionQueue,
+          translationRepository: applicationDependencies.translationRepository,
+          translationCommandService: applicationDependencies.translationCommandService,
           clock: translationQueueClock.now.bind(translationQueueClock)
         })
       : undefined;
@@ -419,8 +423,8 @@ export function createTranslationCommandDependencies({
   translationExecutionWorkerRuntime,
   durableTranslationExecutionQueueRepository,
   translationQueueLeaseMs,
-  translationQueueLeaseRenewalMs,
   translationQueueClock,
+  translationQueueLeaseIdFactory,
   translationExecutionProvider,
   translationExecutionProviderResolver,
   translationDomainEventHandlers,
@@ -479,11 +483,15 @@ export function createTranslationCommandDependencies({
           ...(durableTranslationExecutionQueueRepository !== undefined
             ? { durableTranslationExecutionQueueRepository }
             : {}),
-          ...(translationQueueLeaseMs !== undefined ? { leaseDurationMs: translationQueueLeaseMs } : {}),
-          ...(translationQueueLeaseRenewalMs !== undefined
-            ? { leaseRenewalMs: translationQueueLeaseRenewalMs }
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseMs !== undefined
+            ? { leaseDurationMs: translationQueueLeaseMs }
             : {}),
-          ...(translationQueueClock !== undefined ? { clock: translationQueueClock.now.bind(translationQueueClock) } : {})
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueClock !== undefined
+            ? { clock: translationQueueClock.now.bind(translationQueueClock) }
+            : {}),
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseIdFactory !== undefined
+            ? { leaseIdFactory: translationQueueLeaseIdFactory }
+            : {})
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =

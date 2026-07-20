@@ -15,8 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3F Durable Queue Terminal Acknowledgement & Recovery
-Eligibility completed.
+Current milestone: Phase 3G WP6 Failed Execution Reconciliation completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,

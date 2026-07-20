@@ -12,9 +12,7 @@ const REQUIRED_METHODS = Object.freeze([
   'acknowledge',
   'contains',
   'claim',
-  'releaseExpired',
-  'isLeaseExpired',
-  'renewLease'
+  'requeueExpiredProcessing'
 ]);
 const INVALID_ITEM_MESSAGE = 'Durable translation execution queue item must be an object.';
 const INVALID_EXECUTION_ID_MESSAGE =
@@ -83,27 +81,16 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
       return implementation.contains(executionId);
     },
 
-    async claim(executionId, leasedUntil) {
+    async claim(executionId, lease) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
-      assertIsoUtcString(leasedUntil, 'Durable translation execution queue item leasedUntil must be an ISO-8601 UTC string.');
-      return implementation.claim(executionId, leasedUntil);
+      assertDurableTranslationExecutionQueueLease(lease);
+      return implementation.claim(executionId, lease);
     },
 
-    async releaseExpired(now) {
-      assertIsoUtcString(now, 'Durable translation execution queue lease time must be an ISO-8601 UTC string.');
-      return implementation.releaseExpired(now);
-    },
-
-    async isLeaseExpired(executionId, now) {
+    async requeueExpiredProcessing(executionId, now) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
-      assertIsoUtcString(now, 'Durable translation execution queue lease time must be an ISO-8601 UTC string.');
-      return implementation.isLeaseExpired(executionId, now);
-    },
-
-    async renewLease(executionId, leasedUntil) {
-      assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
-      assertIsoUtcString(leasedUntil, 'Durable translation execution queue item leasedUntil must be an ISO-8601 UTC string.');
-      return implementation.renewLease(executionId, leasedUntil);
+      assertIsoUtcString(now, 'Durable translation execution queue recovery time must be an ISO-8601 UTC string.');
+      return immutableQueueItemOrNull(await implementation.requeueExpiredProcessing(executionId, now));
     }
   });
 }
@@ -128,13 +115,7 @@ export function assertDurableTranslationExecutionQueueItem(item) {
   assertDurableTranslationExecutionQueueItemIdentity(item);
   assertIsoUtcString(item.enqueuedAt, INVALID_ENQUEUED_AT_MESSAGE);
 
-  if (Object.hasOwn(item, 'status')) {
-    assertDurableTranslationExecutionQueueItemStatus(item.status);
-  }
-
-  if (Object.hasOwn(item, 'leasedUntil') && item.leasedUntil !== null) {
-    assertIsoUtcString(item.leasedUntil, 'Durable translation execution queue item leasedUntil must be an ISO-8601 UTC string.');
-  }
+  assertDurableTranslationExecutionQueueItemState(item);
 }
 
 export function assertDurableTranslationExecutionQueueItemIdentity(item) {
@@ -171,18 +152,72 @@ export function createTranslationExecutionQueueItemNotFoundError(executionId) {
   return error;
 }
 
+export function createDurableTranslationExecutionQueueItemNotClaimableError() {
+  const error = new TypeError('Durable translation execution queue item must be queued before it can be claimed.');
+  error.code = INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE;
+  return error;
+}
+
 export function createDurableTranslationExecutionQueueItem(item) {
   assertDurableTranslationExecutionQueueItem(item);
 
-  return Object.freeze({
+  return createNormalizedDurableTranslationExecutionQueueItem(item);
+}
+
+export function normalizeDurableTranslationExecutionQueueItem(item) {
+  if (!isRecord(item)) {
+    throwInvalidQueueItem(INVALID_ITEM_MESSAGE);
+  }
+
+  assertDurableTranslationExecutionQueueItemIdentity(item);
+  assertIsoUtcString(item.enqueuedAt, INVALID_ENQUEUED_AT_MESSAGE);
+
+  const status = Object.hasOwn(item, 'status')
+    ? item.status
+    : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED;
+  assertDurableTranslationExecutionQueueItemStatus(status);
+
+  if (status !== DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING) {
+    assertNoLeaseMetadata(item);
+  } else if (hasAnyLeaseMetadata(item)) {
+    assertDurableTranslationExecutionQueueLease(item);
+  }
+
+  return createNormalizedDurableTranslationExecutionQueueItem({ ...item, status });
+}
+
+export function assertDurableTranslationExecutionQueueLease(lease) {
+  if (!isRecord(lease)) {
+    throwInvalidQueueItem('Durable translation execution queue lease must be an object.');
+  }
+
+  assertNonEmptyString(lease.leaseId, 'Durable translation execution queue item leaseId must be a non-empty string.');
+  assertIsoUtcString(lease.claimedAt, 'Durable translation execution queue item claimedAt must be an ISO-8601 UTC string.');
+  assertIsoUtcString(lease.leaseExpiresAt, 'Durable translation execution queue item leaseExpiresAt must be an ISO-8601 UTC string.');
+
+  if (lease.claimedAt >= lease.leaseExpiresAt) {
+    throwInvalidQueueItem('Durable translation execution queue item leaseExpiresAt must be after claimedAt.');
+  }
+}
+
+function createNormalizedDurableTranslationExecutionQueueItem(item) {
+  const normalized = {
     executionId: item.executionId,
     requestId: item.requestId,
     enqueuedAt: item.enqueuedAt,
     status: Object.hasOwn(item, 'status')
       ? item.status
-      : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED,
-    leasedUntil: Object.hasOwn(item, 'leasedUntil') ? item.leasedUntil : null
-  });
+      : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
+  };
+
+  if (item.status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING
+    && hasAnyLeaseMetadata(item)) {
+    normalized.leaseId = item.leaseId;
+    normalized.claimedAt = item.claimedAt;
+    normalized.leaseExpiresAt = item.leaseExpiresAt;
+  }
+
+  return Object.freeze(normalized);
 }
 
 export function assertDurableTranslationExecutionQueueItemStatus(status) {
@@ -196,7 +231,7 @@ function immutableQueueItemOrNull(item) {
     return null;
   }
 
-  return createDurableTranslationExecutionQueueItem(item);
+  return normalizeDurableTranslationExecutionQueueItem(item);
 }
 
 function immutableQueueItems(items) {
@@ -204,7 +239,33 @@ function immutableQueueItems(items) {
     throw new TypeError('durableTranslationExecutionQueueRepository.list must return an array.');
   }
 
-  return Object.freeze(items.map((item) => createDurableTranslationExecutionQueueItem(item)));
+  return Object.freeze(items.map((item) => normalizeDurableTranslationExecutionQueueItem(item)));
+}
+
+function assertDurableTranslationExecutionQueueItemState(item) {
+  const status = Object.hasOwn(item, 'status')
+    ? item.status
+    : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED;
+  assertDurableTranslationExecutionQueueItemStatus(status);
+
+  if (status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING) {
+    assertDurableTranslationExecutionQueueLease(item);
+    return;
+  }
+
+  assertNoLeaseMetadata(item);
+}
+
+function assertNoLeaseMetadata(item) {
+  if (hasAnyLeaseMetadata(item)) {
+    throwInvalidQueueItem('Durable translation execution queue item lease metadata is only valid while processing.');
+  }
+}
+
+function hasAnyLeaseMetadata(item) {
+  return Object.hasOwn(item, 'leaseId')
+    || Object.hasOwn(item, 'claimedAt')
+    || Object.hasOwn(item, 'leaseExpiresAt');
 }
 
 function assertNonEmptyString(value, message) {

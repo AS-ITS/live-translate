@@ -326,9 +326,9 @@ queue contract, FIFO semantics, and HTTP `202 Accepted` response:
 | Execution / durable state | Behavior |
 | --- | --- |
 | `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
-| `processing` | Recovery does not replay or remove it; it remains durable until explicit future recovery policy exists. |
+| `processing` | For an expired complete lease, recovery checks execution and output state. `queued` and output-less `running` executions may replay; output-bearing `running` executions reconcile to completed; failed/no-output executions reconcile only their durable item to failed. Missing, mismatched, valid, and legacy items remain durable. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
-| `failed` | Recovery does not replay it; the Worker skips a failed execution. |
+| `failed` | Recovery does not replay it; startup acknowledges only a failed execution with no output. The Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not invoke the provider. |
 
 Feature flags:
@@ -409,9 +409,20 @@ execution. The Worker removes an item only by acknowledging it after the Runner
 has persisted `completed` or `failed` execution state; acknowledgement errors
 propagate without rerunning the Runner or provider, and leave the item stored.
 
-Recovery replays only queued items in FIFO order. Processing, completed, and
-failed durable items remain in storage without replay or mutation. Conflicting
-persisted identities fail before replay.
+Recovery replays queued items in FIFO order. For an expired processing item
+with complete lease metadata, it loads the execution and output state before
+requeue. A queued execution follows the normal requeue path; an output-less
+running execution uses its explicit domain recovery transition to queued first.
+An output-bearing running execution instead uses the command-service completed
+transition, marks the durable item completed, and acknowledges it without
+provider replay. A completed execution with output and an expired processing
+item likewise finalizes its durable item. Terminal failed, missing, mismatched,
+valid-lease, and legacy items remain in storage. A durable completed item is
+acknowledged at startup only when its execution is completed and has output.
+An expired processing item with a failed execution and no output is marked and
+acknowledged as failed without changing execution state or failure metadata;
+the corresponding failed durable item can retry acknowledgement on startup.
+Conflicting persisted identities fail before replay.
 
 The Worker loads persisted execution and request records before durable claim or
 provider execution. Only queued executions proceed; created, running, completed,
@@ -424,8 +435,10 @@ overwriting output content or metadata.
 
 Current limitations:
 
-- No crash recovery for `processing` items; lease, heartbeat, and
-  visibility-timeout behavior do not make them replayable after a crash.
+- Completed reconciliation requires a persisted output; recovery does not infer
+  success for missing-output or mismatched execution/durable state.
+- Failed reconciliation requires no output and leaves output-bearing failed
+  executions durable.
 - No retry/backoff or dead-letter queue.
 - No multi-worker locking or cross-process deduplication policy.
 - These layers do not provide multi-process exactly-once delivery.

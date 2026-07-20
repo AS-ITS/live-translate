@@ -184,6 +184,7 @@ test('TranslationExecution supports every allowed transition', () => {
   assert.equal(queued.fail({ reason: 'provider_error' }, 1300).status, 'failed');
 
   const running = queued.start(1100);
+  assert.equal(running.resumeAfterExpiredLease().status, 'queued');
   assert.equal(running.complete(1300).status, 'completed');
   assert.equal(running.fail({ reason: 'provider_error' }, 1300).status, 'failed');
 });
@@ -199,7 +200,8 @@ test('TranslationExecution rejects representative illegal transitions', () => {
   assert.throws(() => queued.queue(), /transition/);
   assert.throws(() => queued.complete(1200), /transition/);
   assert.throws(() => running.start(1200), /transition/);
-  assert.throws(() => running.queue(), /transition/);
+  assert.throws(() => running.transitionTo('created'), /transition/);
+  assert.throws(() => completed.resumeAfterExpiredLease(), /transition/);
   assert.throws(() => completed.fail({ reason: 'later' }, 1300), /transition/);
   assert.throws(() => failed.start(1300), /transition/);
 });

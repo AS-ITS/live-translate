@@ -92,7 +92,10 @@ test('durable queue claim is persisted before runner starts', async () => {
   const worker = createTranslationExecutionWorker(
     workerDependencies({
       calls,
-      durableTranslationExecutionQueueRepository: durableRepository({ calls })
+      durableTranslationExecutionQueueRepository: durableRepository({ calls }),
+      clock: () => '2026-07-20T00:00:00.000Z',
+      leaseIdFactory: () => 'lease-1',
+      leaseDurationMs: 300000
     })
   );
 
@@ -102,11 +105,14 @@ test('durable queue claim is persisted before runner starts', async () => {
     'findExecutionById',
     'findRequestById',
     'durable.claim',
-    'durable.updateStatus',
     'runner.run',
     'findExecutionById'
   ]);
-  assert.deepEqual(calls[3], ['durable.updateStatus', 'execution-1', 'processing']);
+  assert.deepEqual(calls[2], ['durable.claim', 'execution-1', {
+    leaseId: 'lease-1',
+    claimedAt: '2026-07-20T00:00:00.000Z',
+    leaseExpiresAt: '2026-07-20T00:05:00.000Z'
+  }]);
 });
 
 test('acknowledges after a successful runner reaches completed state', async () => {
@@ -137,7 +143,6 @@ test('acknowledges after a successful runner reaches completed state', async () 
     'findExecutionById',
     'findRequestById',
     'durable.claim',
-    'durable.updateStatus',
     'runner.run',
     'findExecutionById',
     'durable.acknowledge'
@@ -159,9 +164,9 @@ test('durable queue claim failure propagates without running execution', async (
       calls,
       durableTranslationExecutionQueueRepository: durableRepository({
         calls,
-        updateStatus() {
+        claim() {
           assert.equal(durableItem.status, 'queued');
-          calls.push(['durable.updateStatus', 'execution-1', 'processing']);
+          calls.push(['durable.claim', 'execution-1']);
           throw claimError;
         }
       })
@@ -170,7 +175,7 @@ test('durable queue claim failure propagates without running execution', async (
 
   await assert.rejects(worker.processNext(), (error) => error === claimError);
 
-  assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById', 'durable.claim', 'durable.updateStatus']);
+  assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById', 'durable.claim']);
   assert.equal(durableItem.status, 'queued');
 });
 
@@ -334,12 +339,13 @@ test('acknowledgement failure propagates unchanged without rerunning the runner'
   assert.equal(calls.filter((call) => call[0] === 'durable.acknowledge').length, 1);
 });
 
-test('non-durable worker does not acknowledge', async () => {
+test('non-durable worker does not claim or acknowledge', async () => {
   const calls = [];
   const worker = createTranslationExecutionWorker(workerDependencies({ calls }));
 
   await worker.processNext();
 
+  assert.equal(calls.some((call) => call[0] === 'durable.claim'), false);
   assert.equal(calls.some((call) => call[0] === 'durable.acknowledge'), false);
 });
 
@@ -387,7 +393,10 @@ function workerDependencies(options = {}) {
       },
     ...(options.durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository: options.durableTranslationExecutionQueueRepository }
-      : {})
+      : {}),
+    ...(options.clock !== undefined ? { clock: options.clock } : {}),
+    ...(options.leaseIdFactory !== undefined ? { leaseIdFactory: options.leaseIdFactory } : {}),
+    ...(options.leaseDurationMs !== undefined ? { leaseDurationMs: options.leaseDurationMs } : {})
   };
 }
 
@@ -410,7 +419,7 @@ function queue(jobs = []) {
   };
 }
 
-function durableRepository({ calls = [], updateStatus, acknowledge } = {}) {
+function durableRepository({ calls = [], claim, acknowledge } = {}) {
   return {
     enqueue() {
       throw new Error('worker should not enqueue durable repository');
@@ -430,11 +439,9 @@ function durableRepository({ calls = [], updateStatus, acknowledge } = {}) {
     clear() {
       throw new Error('worker should not clear durable repository');
     },
-    updateStatus:
-      updateStatus ||
-      function updateStatusDefault(executionId, status) {
-        calls.push(['durable.updateStatus', executionId, status]);
-      },
+    updateStatus() {
+      throw new Error('worker must not update durable queue status after atomic claim');
+    },
     acknowledge:
       acknowledge ||
       function acknowledgeDefault(executionId) {
@@ -443,12 +450,12 @@ function durableRepository({ calls = [], updateStatus, acknowledge } = {}) {
     contains() {
       throw new Error('worker should not query durable item existence');
     },
-    claim(executionId, leasedUntil) {
-      calls.push(['durable.claim', executionId, leasedUntil]);
+    claim: claim || function claimDefault(executionId, lease) {
+      calls.push(['durable.claim', executionId, lease]);
     },
-    releaseExpired() { throw new Error('worker should not release leases'); },
-    isLeaseExpired() { throw new Error('worker should not inspect leases'); },
-    renewLease() { throw new Error('worker heartbeat should not run in synchronous tests'); }
+    requeueExpiredProcessing() {
+      throw new Error('worker should not requeue expired durable items');
+    }
   };
 }
 

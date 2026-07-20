@@ -1,8 +1,6 @@
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
-import {
-  assertDurableTranslationExecutionQueueRepository,
-  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
-} from './translation/durableTranslationExecutionQueueRepository.js';
+import { randomUUID } from 'node:crypto';
+import { assertDurableTranslationExecutionQueueRepository } from './translation/durableTranslationExecutionQueueRepository.js';
 import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
@@ -14,15 +12,14 @@ export function createTranslationExecutionWorker({
   translationExecutionRunner,
   durableTranslationExecutionQueueRepository,
   leaseDurationMs = 300000,
-  leaseRenewalMs = 100000,
   clock = () => new Date().toISOString(),
-  scheduler = defaultScheduler()
+  leaseIdFactory = randomUUID
 } = {}) {
   assertTranslationExecutionQueue(translationExecutionQueue);
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionRunner(translationExecutionRunner);
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
-  assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, scheduler);
+  assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory);
 
   return Object.freeze({
     async processNext() {
@@ -48,17 +45,11 @@ export function createTranslationExecutionWorker({
       }
 
       if (durableTranslationExecutionQueueRepository !== undefined) {
-        await durableTranslationExecutionQueueRepository.claim(job.executionId, addLease(clock(), leaseDurationMs));
-        await durableTranslationExecutionQueueRepository.updateStatus(
+        await durableTranslationExecutionQueueRepository.claim(
           job.executionId,
-          DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING
+          createLease({ clock, leaseIdFactory, leaseDurationMs })
         );
       }
-
-      const heartbeat = durableTranslationExecutionQueueRepository === undefined
-        ? undefined
-        : createLeaseHeartbeat({ durableRepository: durableTranslationExecutionQueueRepository, executionId: job.executionId, leaseDurationMs, leaseRenewalMs, clock, scheduler });
-      heartbeat?.start();
 
       let runnerError;
       let runnerFailed = false;
@@ -72,11 +63,7 @@ export function createTranslationExecutionWorker({
         runnerFailed = true;
       }
 
-      if (heartbeat !== undefined) {
-        await heartbeat.stop();
-      }
-
-      if (heartbeat?.error === undefined && durableTranslationExecutionQueueRepository !== undefined) {
+      if (durableTranslationExecutionQueueRepository !== undefined) {
         const persistedExecution = await translationRepository.findExecutionById(job.executionId);
         assertFoundExecution(persistedExecution, job.executionId);
 
@@ -88,8 +75,6 @@ export function createTranslationExecutionWorker({
       if (runnerFailed) {
         throw runnerError;
       }
-
-      if (heartbeat?.error !== undefined) throw heartbeat.error;
 
       return {
         status: 'processed',
@@ -103,48 +88,21 @@ function isTerminalExecution(execution) {
   return execution.status === 'completed' || execution.status === 'failed';
 }
 
-function assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, scheduler) {
+function assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory) {
   if (!Number.isInteger(leaseDurationMs) || leaseDurationMs <= 0) throw new TypeError('leaseDurationMs must be a positive integer.');
-  if (!Number.isInteger(leaseRenewalMs) || leaseRenewalMs <= 0 || leaseRenewalMs >= leaseDurationMs) throw new TypeError('leaseRenewalMs must be lower than leaseDurationMs.');
   if (typeof clock !== 'function') throw new TypeError('clock must be a function.');
-  if (!scheduler || typeof scheduler.schedule !== 'function' || typeof scheduler.cancel !== 'function') throw new TypeError('scheduler is required.');
+  if (typeof leaseIdFactory !== 'function') throw new TypeError('leaseIdFactory must be a function.');
 }
 
-function addLease(now, leaseDurationMs) {
-  const timestamp = new Date(now).getTime();
+function createLease({ clock, leaseIdFactory, leaseDurationMs }) {
+  const claimedAt = clock();
+  const timestamp = new Date(claimedAt).getTime();
   if (Number.isNaN(timestamp)) throw new TypeError('clock must return an ISO-8601 UTC string.');
-  return new Date(timestamp + leaseDurationMs).toISOString();
-}
-
-function createLeaseHeartbeat({ durableRepository, executionId, leaseDurationMs, leaseRenewalMs, clock, scheduler }) {
-  let handle;
-  let stopped = false;
-  let inFlight;
-  let error;
-  const heartbeat = {
-    get error() { return error; },
-    start() { scheduleNext(); },
-    async stop() {
-      stopped = true;
-      if (handle !== undefined) scheduler.cancel(handle);
-      if (inFlight !== undefined) await inFlight;
-    }
+  return {
+    leaseId: leaseIdFactory(),
+    claimedAt,
+    leaseExpiresAt: new Date(timestamp + leaseDurationMs).toISOString()
   };
-  function scheduleNext() {
-    if (!stopped && error === undefined) handle = scheduler.schedule(run, leaseRenewalMs);
-  }
-  function run() {
-    handle = undefined;
-    if (stopped || error !== undefined) return;
-    inFlight = durableRepository.renewLease(executionId, addLease(clock(), leaseDurationMs))
-      .then(() => { inFlight = undefined; scheduleNext(); })
-      .catch((renewalError) => { error = renewalError; inFlight = undefined; });
-  }
-  return heartbeat;
-}
-
-function defaultScheduler() {
-  return { schedule(callback, delayMs) { return setTimeout(callback, delayMs); }, cancel(handle) { clearTimeout(handle); } };
 }
 
 function assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository) {

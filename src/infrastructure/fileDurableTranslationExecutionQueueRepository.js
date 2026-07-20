@@ -2,11 +2,12 @@ import { dirname } from 'node:path';
 import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
+  createDurableTranslationExecutionQueueItemNotClaimableError,
   createTranslationExecutionQueueItemNotFoundError,
   createDurableTranslationExecutionQueueItem,
   createDurableTranslationExecutionQueueRepository,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
-  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES
+  normalizeDurableTranslationExecutionQueueItem
 } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 
 export const INVALID_TRANSLATION_EXECUTION_QUEUE_STORAGE_CODE = 'invalid_translation_execution_queue_storage';
@@ -71,10 +72,7 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
         throw new Error(`Durable translation execution queue item ${executionId} was not found`);
       }
 
-      storage.items[itemIndex] = createDurableTranslationExecutionQueueItem({
-        ...storage.items[itemIndex],
-        status
-      });
+      storage.items[itemIndex] = createUpdatedItem(storage.items[itemIndex], status);
       await writeStorage({ fileSystem, filePath, storage });
       return undefined;
     },
@@ -97,30 +95,32 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       return storage !== null && storage.items.some((item) => item.executionId === executionId);
     },
 
-    async claim(executionId, leasedUntil) {
+    async claim(executionId, lease) {
       const storage = await readStorage({ fileSystem, filePath });
-      updateLease(storage.items, executionId, leasedUntil);
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throwNotFound(executionId);
+      if (storage.items[itemIndex].status !== 'queued') {
+        throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      }
+
+      storage.items[itemIndex] = createDurableTranslationExecutionQueueItem({
+        ...storage.items[itemIndex],
+        status: 'processing',
+        ...lease
+      });
       await writeStorage({ fileSystem, filePath, storage });
     },
 
-    async releaseExpired(now) {
+    async requeueExpiredProcessing(executionId, now) {
       const storage = await readStorage({ fileSystem, filePath });
-      const released = releaseExpiredLeases(storage.items, now);
-      if (released > 0) await writeStorage({ fileSystem, filePath, storage });
-      return released;
-    },
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      const item = storage.items[itemIndex];
+      if (!isExpiredProcessingItem(item, now)) return null;
 
-    async isLeaseExpired(executionId, now) {
-      const storage = await readStorage({ fileSystem, filePath });
-      const item = storage.items.find((candidate) => candidate.executionId === executionId);
-      if (item === undefined) throwNotFound(executionId);
-      return item.leasedUntil !== null && item.leasedUntil <= now;
-    },
-
-    async renewLease(executionId, leasedUntil) {
-      const storage = await readStorage({ fileSystem, filePath });
-      updateLease(storage.items, executionId, leasedUntil);
+      const requeuedItem = createRequeuedItem(item);
+      storage.items[itemIndex] = requeuedItem;
       await writeStorage({ fileSystem, filePath, storage });
+      return requeuedItem;
     }
   });
 }
@@ -146,7 +146,7 @@ async function readExistingStorage({ fileSystem, filePath }) {
   assertStorage(parsed);
 
   return {
-    items: parsed.items.map((item) => createDurableTranslationExecutionQueueItem(item))
+    items: parsed.items.map((item) => normalizeDurableTranslationExecutionQueueItem(item))
   };
 }
 
@@ -176,7 +176,13 @@ function serializeStorage(storage) {
         requestId: item.requestId,
         enqueuedAt: item.enqueuedAt,
         status: item.status,
-        leasedUntil: item.leasedUntil
+        ...(item.status === 'processing' && item.leaseId !== undefined
+          ? {
+              leaseId: item.leaseId,
+              claimedAt: item.claimedAt,
+              leaseExpiresAt: item.leaseExpiresAt
+            }
+          : {})
       }))
     },
     null,
@@ -184,27 +190,31 @@ function serializeStorage(storage) {
   )}\n`;
 }
 
-function updateLease(items, executionId, leasedUntil) {
-  const itemIndex = items.findIndex((item) => item.executionId === executionId);
-  if (itemIndex === -1) throwNotFound(executionId);
-  items[itemIndex] = createDurableTranslationExecutionQueueItem({ ...items[itemIndex], leasedUntil });
-}
-
-function releaseExpiredLeases(items, now) {
-  let released = 0;
-  for (let index = 0; index < items.length; index += 1) {
-    if (isRecoverableStatus(items[index].status)
-      && items[index].leasedUntil !== null && items[index].leasedUntil <= now) {
-      items[index] = createDurableTranslationExecutionQueueItem({ ...items[index], leasedUntil: null });
-      released += 1;
-    }
+function createUpdatedItem(item, status) {
+  const nextItem = { ...item, status };
+  if (status === 'completed' || status === 'failed') {
+    delete nextItem.leaseId;
+    delete nextItem.claimedAt;
+    delete nextItem.leaseExpiresAt;
   }
-  return released;
+  return createDurableTranslationExecutionQueueItem(nextItem);
 }
 
-function isRecoverableStatus(status) {
-  return status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
-    || status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING;
+function isExpiredProcessingItem(item, now) {
+  return item !== undefined
+    && item.status === 'processing'
+    && item.leaseId !== undefined
+    && item.claimedAt !== undefined
+    && item.leaseExpiresAt !== undefined
+    && item.leaseExpiresAt <= now;
+}
+
+function createRequeuedItem(item) {
+  const requeuedItem = { ...item, status: 'queued' };
+  delete requeuedItem.leaseId;
+  delete requeuedItem.claimedAt;
+  delete requeuedItem.leaseExpiresAt;
+  return createDurableTranslationExecutionQueueItem(requeuedItem);
 }
 
 function throwNotFound(executionId) { throw new Error(`Durable translation execution queue item ${executionId} was not found`); }
@@ -216,7 +226,7 @@ function assertStorage(value) {
 
   try {
     for (const item of value.items) {
-      createDurableTranslationExecutionQueueItem(item);
+      normalizeDurableTranslationExecutionQueueItem(item);
     }
   } catch {
     throwInvalidStorage();

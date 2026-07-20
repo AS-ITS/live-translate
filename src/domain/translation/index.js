@@ -12,7 +12,7 @@ const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed']);
 const ALLOWED_EXECUTION_TRANSITIONS = Object.freeze({
   created: Object.freeze(['queued', 'running', 'failed']),
   queued: Object.freeze(['running', 'failed']),
-  running: Object.freeze(['completed', 'failed']),
+  running: Object.freeze(['queued', 'completed', 'failed']),
   completed: Object.freeze([]),
   failed: Object.freeze([])
 });
@@ -57,6 +57,10 @@ export class TranslationExecution {
 
   start(startedAt = this.startedAt) {
     return this.transitionTo('running', { startedAt: assertTimestamp(startedAt, 'startedAt') });
+  }
+
+  resumeAfterExpiredLease() {
+    return this.transitionTo('queued');
   }
 
   complete(completedAt) {

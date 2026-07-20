@@ -677,7 +677,7 @@ Future execution reliability enhancement candidates:
 - Production startup wiring for Worker Runtime.
 - Multi-worker coordination.
 
-Phase 3F
+Phase 3G WP6
 Status: Completed
 
 Phase 3F Durable Queue reliability status:
@@ -693,9 +693,16 @@ Phase 3F Durable Queue reliability status:
   Re-enqueueing the same `executionId` and `requestId` is idempotent; pairing an
   existing `executionId` with a different `requestId` fails deterministically
   with `translation_execution_queue_item_conflict`.
-- Startup recovery replays only durable `queued` items in FIFO order.
-  `processing`, `completed`, and `failed` items remain in durable storage and
-  are neither replayed nor removed by recovery.
+- Startup recovery replays durable `queued` items in FIFO order. For an expired
+  `processing` lease, it first checks execution and output state: `queued` and
+  output-less `running` executions may replay. A `running` execution with an
+  output is reconciled to `completed`, its durable item is marked completed and
+  acknowledged; terminal, missing, and invalid state combinations remain
+  durable and are not replayed.
+- An expired `processing` item paired with a failed execution and no output is
+  marked failed and acknowledged without changing the execution or failure.
+  Failed durable items retry acknowledgement only for the same failed/no-output
+  state.
 - Workers only process persisted `queued` executions. `created`, `running`,
   `completed`, and `failed` executions are skipped without provider invocation.
 - The Worker acknowledges and removes a durable item only after the execution
@@ -746,8 +753,9 @@ Feature flags:
 
 Current Durable Queue limitations:
 
-- No crash recovery for `processing` items; lease, heartbeat, and
-  visibility-timeout behavior do not make them replayable after a crash.
+- Completed reconciliation acknowledges only an output-bearing execution; it
+  does not infer results for missing-output or mismatched durable items. Failed
+  reconciliation requires no output and preserves the original failure.
 - No retry/backoff scheduling or dead-letter queue.
 - No multi-worker locking or cross-process deduplication policy.
 - Provider-level idempotency keys and event-publishing deduplication are out of

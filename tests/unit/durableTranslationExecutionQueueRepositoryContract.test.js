@@ -47,7 +47,7 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
   });
 
   test('durable queue item preserves explicit legal status', () => {
-    const item = createDurableTranslationExecutionQueueItem(createItemWithoutStatus({ status: 'processing' }));
+    const item = createDurableTranslationExecutionQueueItem(createProcessingItem());
 
     assert.equal(item.status, 'processing');
   });
@@ -191,7 +191,13 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: 'not-a-date' },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: '' },
       { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: 'unknown' },
-      { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: 1 }
+      { executionId: 'execution-1', requestId: 'request-1', enqueuedAt: enqueuedAt(), status: 1 },
+      createItem({ leaseId: 'lease-1' }),
+      createItem({ claimedAt: claimedAt() }),
+      createItem({ leaseExpiresAt: leaseExpiresAt() }),
+      createItem({ status: 'processing' }),
+      createItem({ status: 'processing', leaseId: 'lease-1', claimedAt: claimedAt() }),
+      createItem({ status: 'processing', ...lease({ claimedAt: leaseExpiresAt(), leaseExpiresAt: claimedAt() }) })
     ]) {
       await assert.rejects(
         () => repository.enqueue(invalidItem),
@@ -250,19 +256,28 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.peek(), createItem());
   });
 
-  test('status can be updated through processing completed and failed states', async () => {
+  test('claim atomically changes queued items to processing with lease metadata', async () => {
+    const repository = createRepository();
+    const itemLease = lease();
+
+    await repository.enqueue(createItem());
+    await repository.claim('execution-1', itemLease);
+    assert.deepEqual(await repository.peek(), createProcessingItem(itemLease));
+  });
+
+  test('terminal status transitions clear processing lease metadata', async () => {
     const repository = createRepository();
 
     await repository.enqueue(createItem());
-    await repository.updateStatus('execution-1', 'processing');
-    assert.equal((await repository.peek()).status, 'processing');
-
+    await repository.claim('execution-1', lease());
     await repository.updateStatus('execution-1', 'completed');
-    assert.equal((await repository.peek()).status, 'completed');
+    assert.deepEqual(await repository.peek(), createItem({ status: 'completed' }));
 
-    await repository.updateStatus('execution-1', 'processing');
+    await repository.clear();
+    await repository.enqueue(createItem());
+    await repository.claim('execution-1', lease());
     await repository.updateStatus('execution-1', 'failed');
-    assert.equal((await repository.peek()).status, 'failed');
+    assert.deepEqual(await repository.peek(), createItem({ status: 'failed' }));
   });
 
   test('status update preserves identity payload item count and queue ordering', async () => {
@@ -274,11 +289,17 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     await repository.enqueue(first);
     await repository.enqueue(second);
     await repository.enqueue(third);
-    await repository.updateStatus('execution-2', 'processing');
+    const secondLease = lease();
+    await repository.claim('execution-2', secondLease);
 
     assert.equal(await repository.size(), 3);
     assert.deepEqual(await repository.dequeue(), first);
-    assert.deepEqual(await repository.dequeue(), { ...second, status: 'processing' });
+    assert.deepEqual(await repository.dequeue(), createProcessingItem({
+      executionId: second.executionId,
+      requestId: second.requestId,
+      enqueuedAt: second.enqueuedAt,
+      ...secondLease
+    }));
     assert.deepEqual(await repository.dequeue(), third);
   });
 
@@ -369,22 +390,22 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
 
   test('same identity enqueue is idempotent and preserves item fields status and FIFO ordering', async () => {
     const repository = createRepository();
-    const items = Object.values(DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES).map((status, index) =>
-      createItem({
+    const items = Object.values(DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES).map((status, index) => {
+      const item = createItem({
         executionId: `execution-${index + 1}`,
         requestId: `request-${index + 1}`,
-        status,
-        leasedUntil: status === 'processing' ? '2026-07-17T08:05:00.000Z' : null
-      })
-    );
+        status
+      });
+      return status === 'processing' ? createProcessingItem({ ...item, ...lease() }) : item;
+    });
 
     for (const item of items) {
       await repository.enqueue(item);
       await repository.enqueue({
-        ...item,
+        executionId: item.executionId,
+        requestId: item.requestId,
         enqueuedAt: '2026-07-17T09:00:00.000Z',
-        status: 'queued',
-        leasedUntil: null
+        status: 'queued'
       });
     }
 
@@ -420,53 +441,74 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.list(), [item]);
   });
 
-  test('claim persists a lease and expired leases can be released without reordering', async () => {
+  test('claim rejects missing items, non-queued items, and invalid leases without changing state', async () => {
     const repository = createRepository();
-    const first = createItem({ executionId: 'execution-1', requestId: 'request-1' });
-    const second = createItem({ executionId: 'execution-2', requestId: 'request-2' });
-    const lease = '2026-07-17T08:05:00.000Z';
+    const item = createItem();
 
-    await repository.enqueue(first);
-    await repository.enqueue(second);
-    await repository.claim('execution-1', lease);
-    assert.equal(await repository.isLeaseExpired('execution-1', '2026-07-17T08:04:59.999Z'), false);
-    assert.equal(await repository.isLeaseExpired('execution-1', lease), true);
-    assert.equal(await repository.releaseExpired(lease), 1);
-    assert.deepEqual(await repository.list(), [first, second]);
+    await assert.rejects(
+      () => repository.claim('missing-execution', lease()),
+      /Durable translation execution queue item missing-execution was not found/
+    );
+    await repository.enqueue(item);
+
+    for (const invalidLease of [null, undefined, {}, { leaseId: '', claimedAt: claimedAt(), leaseExpiresAt: leaseExpiresAt() }, { leaseId: 'lease-1', claimedAt: claimedAt(), leaseExpiresAt: claimedAt() }]) {
+      await assert.rejects(
+        () => repository.claim(item.executionId, invalidLease),
+        (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+      );
+    }
+    assert.deepEqual(await repository.peek(), item);
+
+    await repository.claim(item.executionId, lease());
+    await assert.rejects(
+      () => repository.claim(item.executionId, lease()),
+      (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+    );
+    assert.deepEqual(await repository.peek(), createProcessingItem(lease()));
   });
 
-  test('releaseExpired preserves terminal item leases', async () => {
+  test('updateStatus cannot create a processing item without lease metadata', async () => {
     const repository = createRepository();
-    const lease = '2026-07-17T08:05:00.000Z';
-    const processing = createItem({
-      executionId: 'execution-processing',
-      requestId: 'request-processing',
-      status: 'processing',
-      leasedUntil: lease
-    });
-    const completed = createItem({
-      executionId: 'execution-completed',
-      requestId: 'request-completed',
-      status: 'completed',
-      leasedUntil: lease
-    });
-    const failed = createItem({
-      executionId: 'execution-failed',
-      requestId: 'request-failed',
-      status: 'failed',
-      leasedUntil: lease
-    });
+    const item = createItem();
 
-    await repository.enqueue(processing);
-    await repository.enqueue(completed);
-    await repository.enqueue(failed);
+    await repository.enqueue(item);
+    await assert.rejects(
+      () => repository.updateStatus(item.executionId, 'processing'),
+      (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+    );
+    assert.deepEqual(await repository.peek(), item);
+  });
 
-    assert.equal(await repository.releaseExpired(lease), 1);
-    assert.deepEqual(await repository.list(), [
-      { ...processing, leasedUntil: null },
-      completed,
-      failed
-    ]);
+  test('expired processing lease requeues atomically and clears lease metadata', async () => {
+    const repository = createRepository();
+    const item = createItem();
+
+    await repository.enqueue(item);
+    await repository.claim(item.executionId, lease());
+
+    assert.equal(await repository.requeueExpiredProcessing(item.executionId, '2026-07-17T08:04:59.999Z'), null);
+    assert.deepEqual(await repository.peek(), createProcessingItem());
+
+    assert.deepEqual(
+      await repository.requeueExpiredProcessing(item.executionId, leaseExpiresAt()),
+      item
+    );
+    assert.deepEqual(await repository.peek(), item);
+  });
+
+  test('expired processing recovery leaves non-processing items unchanged', async () => {
+    const repository = createRepository();
+    const queued = createItem();
+    const completed = createItem({ executionId: 'execution-completed', requestId: 'request-completed', status: 'completed' });
+    const failed = createItem({ executionId: 'execution-failed', requestId: 'request-failed', status: 'failed' });
+
+    for (const item of [queued, completed, failed]) await repository.enqueue(item);
+
+    for (const item of [queued, completed, failed]) {
+      assert.equal(await repository.requeueExpiredProcessing(item.executionId, leaseExpiresAt()), null);
+    }
+    assert.equal(await repository.requeueExpiredProcessing('missing-execution', leaseExpiresAt()), null);
+    assert.deepEqual(await repository.list(), [queued, completed, failed]);
   });
 }
 
@@ -480,7 +522,6 @@ function createItem(overrides = {}) {
     requestId: 'request-1',
     enqueuedAt: enqueuedAt(),
     status: 'queued',
-    leasedUntil: null,
     ...overrides
   };
 }
@@ -496,4 +537,30 @@ function createItemWithoutStatus(overrides = {}) {
 
 function enqueuedAt() {
   return '2026-07-17T08:00:00.000Z';
+}
+
+function claimedAt() {
+  return '2026-07-17T08:01:00.000Z';
+}
+
+function leaseExpiresAt() {
+  return '2026-07-17T08:05:00.000Z';
+}
+
+function lease(overrides = {}) {
+  return {
+    leaseId: 'lease-1',
+    claimedAt: claimedAt(),
+    leaseExpiresAt: leaseExpiresAt(),
+    ...overrides
+  };
+}
+
+function createProcessingItem(overrides = {}) {
+  return {
+    ...createItem(),
+    status: 'processing',
+    ...lease(),
+    ...overrides
+  };
 }

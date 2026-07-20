@@ -93,11 +93,11 @@ test('updated status survives repository reload', async () => {
   const firstRepository = createRepository({ filePath });
 
   await firstRepository.enqueue(createItem());
-  await firstRepository.updateStatus('execution-1', 'processing');
+  await firstRepository.claim('execution-1', lease());
 
   const secondRepository = createRepository({ filePath });
 
-  assert.deepEqual(await secondRepository.peek(), createItem({ status: 'processing' }));
+  assert.deepEqual(await secondRepository.peek(), createProcessingItem());
 });
 
 test('acknowledgement persists removal and preserves remaining FIFO order after reload', async () => {
@@ -121,10 +121,7 @@ test('acknowledgement persists removal and preserves remaining FIFO order after 
 test('same identity enqueue leaves persisted storage unchanged across repository reload', async () => {
   const filePath = temporaryFilePath();
   const firstRepository = createRepository({ filePath });
-  const item = createItem({
-    status: 'processing',
-    leasedUntil: '2026-07-17T08:05:00.000Z'
-  });
+  const item = createProcessingItem();
 
   await firstRepository.enqueue(item);
   const beforeDuplicate = await fileSystem.readFile(filePath, 'utf8');
@@ -187,6 +184,71 @@ test('persisted item without status loads as queued', async () => {
   );
 
   assert.deepEqual(await repository.peek(), createItem());
+});
+
+test('legacy processing storage without lease metadata loads unchanged', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const legacyProcessing = {
+    executionId: 'execution-legacy',
+    requestId: 'request-legacy',
+    enqueuedAt: '2026-07-17T08:00:00.000Z',
+    status: 'processing'
+  };
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyProcessing] }, null, 2)}\n`, 'utf8');
+
+  assert.deepEqual(await repository.peek(), legacyProcessing);
+  assert.deepEqual(JSON.parse(await fileSystem.readFile(filePath, 'utf8')), { items: [legacyProcessing] });
+});
+
+test('legacy processing storage is not requeued or rewritten', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const legacyProcessing = {
+    executionId: 'execution-legacy',
+    requestId: 'request-legacy',
+    enqueuedAt: '2026-07-17T08:00:00.000Z',
+    status: 'processing'
+  };
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyProcessing] }, null, 2)}\n`, 'utf8');
+
+  assert.equal(await repository.requeueExpiredProcessing('execution-legacy', '2026-07-17T08:05:00.000Z'), null);
+  assert.deepEqual(JSON.parse(await fileSystem.readFile(filePath, 'utf8')), { items: [legacyProcessing] });
+});
+
+test('expired processing requeue persists without lease metadata after reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+
+  await firstRepository.enqueue(createItem());
+  await firstRepository.claim('execution-1', lease());
+  assert.deepEqual(
+    await firstRepository.requeueExpiredProcessing('execution-1', '2026-07-17T08:05:00.000Z'),
+    createItem()
+  );
+
+  const secondRepository = createRepository({ filePath });
+  assert.deepEqual(await secondRepository.peek(), createItem());
+  assert.deepEqual(await readStorage(filePath), { items: [createItem()] });
+});
+
+test('legacy queued and terminal storage without lease metadata loads unchanged', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const items = [
+    createItem({ executionId: 'execution-queued', requestId: 'request-queued' }),
+    createItem({ executionId: 'execution-completed', requestId: 'request-completed', status: 'completed' }),
+    createItem({ executionId: 'execution-failed', requestId: 'request-failed', status: 'failed' })
+  ];
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items }, null, 2)}\n`, 'utf8');
+
+  assert.deepEqual(await repository.list(), items);
 });
 
 test('persisted item with invalid status throws deterministic storage error', async () => {
@@ -255,7 +317,25 @@ function createItem(overrides = {}) {
     requestId: 'request-1',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
     status: 'queued',
-    leasedUntil: null,
     ...overrides
+  };
+}
+
+function createProcessingItem(overrides = {}) {
+  return {
+    ...createItem(),
+    status: 'processing',
+    leaseId: 'lease-1',
+    claimedAt: '2026-07-17T08:01:00.000Z',
+    leaseExpiresAt: '2026-07-17T08:05:00.000Z',
+    ...overrides
+  };
+}
+
+function lease() {
+  return {
+    leaseId: 'lease-1',
+    claimedAt: '2026-07-17T08:01:00.000Z',
+    leaseExpiresAt: '2026-07-17T08:05:00.000Z'
   };
 }

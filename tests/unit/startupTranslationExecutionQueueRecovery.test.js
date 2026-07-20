@@ -188,7 +188,7 @@ test('completed and failed durable items are not replayed or changed', async () 
   assert.deepEqual(await repository.list(), [queued, completed, failed]);
 });
 
-test('expired processing item replays without resetting its status', async () => {
+test('processing item is not replayed and remains unchanged in durable storage', async () => {
   const repository = createFakeDurableTranslationExecutionQueueRepository();
   const item = durableItem({
     status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING,
@@ -203,8 +203,37 @@ test('expired processing item replays without resetting its status', async () =>
     clock: () => '2026-07-17T08:00:00.000Z'
   }).recover();
 
-  assert.deepEqual(queue.dequeue(), { executionId: item.executionId, requestId: item.requestId });
-  assert.deepEqual(await repository.list(), [{ ...item, leasedUntil: null }]);
+  assert.equal(queue.dequeue(), null);
+  assert.deepEqual(await repository.list(), [item]);
+});
+
+test('only non-queued durable items complete recovery with an empty active queue', async () => {
+  const repository = createFakeDurableTranslationExecutionQueueRepository();
+  const processing = durableItem({
+    executionId: 'execution-processing',
+    requestId: 'request-processing',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING
+  });
+  const completed = durableItem({
+    executionId: 'execution-completed',
+    requestId: 'request-completed',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.COMPLETED
+  });
+  const failed = durableItem({
+    executionId: 'execution-failed',
+    requestId: 'request-failed',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.FAILED
+  });
+  const queue = createInMemoryTranslationExecutionQueue();
+
+  await repository.enqueue(processing);
+  await repository.enqueue(completed);
+  await repository.enqueue(failed);
+
+  await createStartupTranslationExecutionQueueRecovery({ durableRepository: repository, activeQueue: queue }).recover();
+
+  assert.equal(queue.size(), 0);
+  assert.deepEqual(await repository.list(), [processing, completed, failed]);
 });
 
 test('conflicting persisted durable execution identity fails before active enqueue or lease release', async () => {
@@ -273,6 +302,8 @@ function durableItem(overrides = {}) {
     executionId: 'execution-1',
     requestId: 'request-1',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
+    status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED,
+    leasedUntil: null,
     ...overrides
   };
 }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { TranslationExecution } from '../../src/domain/translation/index.js';
+import { createFileDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fileDurableTranslationExecutionQueueRepository.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
 test('production composition keeps duplicate durable submissions to one active item, provider call, and output', async () => {
@@ -32,7 +33,7 @@ test('production composition keeps duplicate durable submissions to one active i
   });
 });
 
-test('production composition replays queued durable work idempotently in FIFO order', async () => {
+test('production composition recovers queued work, completes it, and acknowledges durable items', async () => {
   await withProductionFixture(async ({ dependencies, providerCalls }) => {
     await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-first' });
     await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-second' });
@@ -64,13 +65,18 @@ test('production composition replays queued durable work idempotently in FIFO or
     assert.deepEqual(providerCalls.map((call) => call.sourceText), ['source execution-first', 'source execution-second']);
     assert.equal((await dependencies.translationRepository.listTranslationOutputsByExecution('execution-first')).length, 1);
     assert.equal((await dependencies.translationRepository.listTranslationOutputsByExecution('execution-second')).length, 1);
+    assert.equal((await dependencies.translationRepository.getTranslationExecution('execution-first')).status, 'completed');
+    assert.equal((await dependencies.translationRepository.getTranslationExecution('execution-second')).status, 'completed');
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
   });
 });
 
-test('production composition recovery does not replay terminal durable items', async () => {
+test('production composition recovery replays only queued durable items and preserves non-queued items', async () => {
   await withProductionFixture(async ({ dependencies, providerCalls }) => {
     await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-completed' });
     await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-failed' });
+    await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-processing' });
+    dependencies.translationExecutionQueue.dequeue();
     dependencies.translationExecutionQueue.dequeue();
     dependencies.translationExecutionQueue.dequeue();
 
@@ -82,6 +88,7 @@ test('production composition recovery does not replay terminal durable items', a
     );
     await dependencies.durableTranslationExecutionQueueRepository.updateStatus('execution-completed', 'completed');
     await dependencies.durableTranslationExecutionQueueRepository.updateStatus('execution-failed', 'failed');
+    await dependencies.durableTranslationExecutionQueueRepository.updateStatus('execution-processing', 'processing');
     const durableItemsBeforeRecovery = await dependencies.durableTranslationExecutionQueueRepository.list();
 
     await dependencies.startupTranslationExecutionQueueRecovery.recover();
@@ -91,6 +98,74 @@ test('production composition recovery does not replay terminal durable items', a
     assert.deepEqual(providerCalls, []);
     assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution('execution-completed'), []);
     assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution('execution-failed'), []);
+  });
+});
+
+test('production composition recovers failed work, acknowledges it, and rethrows the provider error', async () => {
+  const providerError = new Error('fake provider failed');
+
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-failure' });
+    assert.deepEqual(dependencies.translationExecutionQueue.dequeue(), {
+      executionId: 'execution-failure',
+      requestId: 'request-failure'
+    });
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+
+    await assert.rejects(
+      dependencies.translationExecutionWorker.processNext(),
+      (error) => error === providerError
+    );
+
+    assert.equal(providerCalls.length, 1);
+    assert.equal((await dependencies.translationRepository.getTranslationExecution('execution-failure')).status, 'failed');
+    assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution('execution-failure'), []);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  }, { providerError });
+});
+
+test('production composition propagates acknowledgement failure after terminal persistence and retains the durable item', async () => {
+  const acknowledgementError = new Error('acknowledgement failed');
+
+  await withProductionFixture(async ({ dependencies }) => {
+    await createRequestAndQueuedExecution(dependencies, { executionId: 'execution-acknowledgement-failure' });
+
+    await assert.rejects(
+      dependencies.translationExecutionWorker.processNext(),
+      (error) => error === acknowledgementError
+    );
+
+    assert.equal(
+      (await dependencies.translationRepository.getTranslationExecution('execution-acknowledgement-failure')).status,
+      'completed'
+    );
+    assert.equal(
+      (await dependencies.translationRepository.listTranslationOutputsByExecution('execution-acknowledgement-failure')).length,
+      1
+    );
+    assert.deepEqual(
+      await dependencies.durableTranslationExecutionQueueRepository.list(),
+      [
+        {
+          executionId: 'execution-acknowledgement-failure',
+          requestId: 'request-acknowledgement-failure',
+          enqueuedAt: '2026-07-20T00:00:00.000Z',
+          status: 'processing',
+          leasedUntil: '2026-07-20T00:05:00.000Z'
+        }
+      ]
+    );
+  }, {
+    fileDurableTranslationExecutionQueueRepositoryFactory(options) {
+      const repository = createFileDurableTranslationExecutionQueueRepository(options);
+      return Object.freeze({
+        ...repository,
+        async acknowledge() {
+          throw acknowledgementError;
+        }
+      });
+    }
   });
 });
 
@@ -121,13 +196,16 @@ test('production composition worker skips non-processable execution lifecycle st
   });
 });
 
-async function withProductionFixture(run) {
+async function withProductionFixture(run, options = {}) {
   const directory = await fileSystem.mkdtemp(join(tmpdir(), 'live-translate-wp7-'));
   const sessionRepository = createMemorySessionRepository({ now: () => '2026-07-20T00:00:00.000Z' });
   const providerCalls = [];
   const translationExecutionProvider = Object.freeze({
     async execute(input) {
       providerCalls.push(input);
+      if (options.providerError !== undefined) {
+        throw options.providerError;
+      }
       return { translatedText: `[fake] ${input.sourceText}` };
     }
   });
@@ -148,7 +226,8 @@ async function withProductionFixture(run) {
     resolveSavedTranscriptTranslationProvider() {
       throw new Error('saved transcript provider must not be resolved by WP7 queue tests');
     },
-    translationQueueClock: { now: () => '2026-07-20T00:00:00.000Z' }
+    translationQueueClock: { now: () => '2026-07-20T00:00:00.000Z' },
+    ...options
   });
 
   try {

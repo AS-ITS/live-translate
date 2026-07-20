@@ -137,7 +137,7 @@ queue port, FIFO behavior, or the HTTP `202 Accepted` submission contract:
 | Execution / durable state | Behavior |
 | --- | --- |
 | `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
-| `processing` | Recovery follows the existing Phase 3D lease-expiry policy only and does not reset status in Phase 3E. |
+| `processing` | Recovery does not replay or remove it; it remains durable until explicit future recovery policy exists. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
 | `failed` | Recovery does not replay it; the Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not call the provider. |
@@ -169,6 +169,8 @@ in-memory queue without removing them. Before a Worker executes a recovered or
 newly enqueued job, it claims the durable queue item by updating its status from
 `queued` to `processing`. After the Runner persists a terminal `completed` or
 `failed` execution, the Worker acknowledges the durable item and removes it.
+If acknowledgement fails, the item remains stored and the acknowledgement error
+propagates unchanged.
 
 Configuration:
 
@@ -178,11 +180,9 @@ Configuration:
   file. When omitted, the default is `translation-execution-queue.json`.
 - `TRANSLATION_QUEUE_LEASE_MS` defaults to `300000` milliseconds.
 
-Recovery filters durable items by status: `queued` items replay in FIFO order,
-lease-expired `processing` items replay without changing status, and `completed`
-or `failed` items are not replayed. Conflicting persisted identities fail before
-replay. Expired leases are released only for recoverable `queued` or
-`processing` items.
+Recovery filters durable items by status: only `queued` items replay in FIFO
+order. `processing`, `completed`, and `failed` items remain in durable storage
+without replay or mutation. Conflicting persisted identities fail before replay.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,
@@ -196,15 +196,13 @@ persisted output without changing its content, metadata, or timestamps.
 
 Current limitations:
 
-- No visibility timeout renewal.
-- No retry.
-- No dead-letter queue.
-- No multi-worker support.
-- No locking or concurrency control.
-- These safeguards reduce duplicate processing risk; they are not
-  multi-process exactly-once delivery.
-- Provider external idempotency keys and event-publishing deduplication are out
-  of scope.
+- No crash recovery for `processing` items; lease, heartbeat, and
+  visibility-timeout behavior do not make them replayable after a crash.
+- No retry/backoff or dead-letter queue.
+- No multi-worker locking or cross-process deduplication policy.
+- These safeguards do not provide multi-process exactly-once delivery.
+- Provider external idempotency keys and event-publishing deduplication remain
+  out of scope.
 
 ## Gemini Live Session Flow
 

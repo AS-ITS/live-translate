@@ -326,7 +326,7 @@ queue contract, FIFO semantics, and HTTP `202 Accepted` response:
 | Execution / durable state | Behavior |
 | --- | --- |
 | `queued` | Recovery may replay it in FIFO order; the Worker may claim and execute it. |
-| `processing` | Only the existing Phase 3D lease-expiry policy applies; Phase 3E does not reset its status. |
+| `processing` | Recovery does not replay or remove it; it remains durable until explicit future recovery policy exists. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
 | `failed` | Recovery does not replay it; the Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not invoke the provider. |
@@ -406,13 +406,12 @@ succeeds.
 
 Durable queue items remain stored through startup recovery and runner
 execution. The Worker removes an item only by acknowledging it after the Runner
-has completed or failed; acknowledgement errors propagate without rerunning the
-Runner or provider.
+has persisted `completed` or `failed` execution state; acknowledgement errors
+propagate without rerunning the Runner or provider, and leave the item stored.
 
-Recovery replays queued items and lease-expired processing items in FIFO order;
-completed and failed durable items are not replayed. Conflicting persisted
-identities fail before replay, and expired leases are released only for
-recoverable items.
+Recovery replays only queued items in FIFO order. Processing, completed, and
+failed durable items remain in storage without replay or mutation. Conflicting
+persisted identities fail before replay.
 
 The Worker loads persisted execution and request records before durable claim or
 provider execution. Only queued executions proceed; created, running, completed,
@@ -425,13 +424,11 @@ overwriting output content or metadata.
 
 Current limitations:
 
-- No visibility timeout renewal.
-- No retry.
-- No dead-letter queue.
-- No multi-worker support.
-- No locking or concurrency control.
-- These layers lower duplicate-processing risk but do not provide
-  multi-process exactly-once delivery.
+- No crash recovery for `processing` items; lease, heartbeat, and
+  visibility-timeout behavior do not make them replayable after a crash.
+- No retry/backoff or dead-letter queue.
+- No multi-worker locking or cross-process deduplication policy.
+- These layers do not provide multi-process exactly-once delivery.
 - Provider-level external idempotency keys and event-publishing deduplication
   remain out of scope.
 

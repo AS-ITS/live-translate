@@ -104,27 +104,28 @@ test('durable queue claim is persisted before runner starts', async () => {
     'durable.claim',
     'durable.updateStatus',
     'runner.run',
-    'durable.acknowledge'
+    'findExecutionById'
   ]);
   assert.deepEqual(calls[3], ['durable.updateStatus', 'execution-1', 'processing']);
 });
 
 test('acknowledges after a successful runner reaches completed state', async () => {
   const calls = [];
-  let executionState = 'processing';
+  let persistedExecution = translationExecution();
   const worker = createTranslationExecutionWorker(
     workerDependencies({
       calls,
       translationExecutionRunner: {
         run() {
           calls.push(['runner.run']);
-          executionState = 'completed';
+          persistedExecution = executionWithStatus('completed');
         }
       },
+      translationRepository: repository({ calls, execution: () => persistedExecution }),
       durableTranslationExecutionQueueRepository: durableRepository({
         calls,
         acknowledge() {
-          calls.push(['durable.acknowledge', executionState]);
+          calls.push(['durable.acknowledge', persistedExecution.status]);
         }
       })
     })
@@ -138,6 +139,7 @@ test('acknowledges after a successful runner reaches completed state', async () 
     'durable.claim',
     'durable.updateStatus',
     'runner.run',
+    'findExecutionById',
     'durable.acknowledge'
   ]);
   assert.deepEqual(calls.at(-1), ['durable.acknowledge', 'completed']);
@@ -255,21 +257,22 @@ test('runner error propagates unchanged', async () => {
 test('runner failure is acknowledged after failed state persistence and rethrows the original error', async () => {
   const calls = [];
   const runnerError = new Error('runner failed');
-  let executionState = 'processing';
+  let persistedExecution = translationExecution();
   const worker = createTranslationExecutionWorker(
     workerDependencies({
       calls,
       translationExecutionRunner: {
         run() {
           calls.push(['runner.run']);
-          executionState = 'failed';
+          persistedExecution = executionWithStatus('failed');
           throw runnerError;
         }
       },
+      translationRepository: repository({ calls, execution: () => persistedExecution }),
       durableTranslationExecutionQueueRepository: durableRepository({
         calls,
         acknowledge() {
-          calls.push(['durable.acknowledge', executionState]);
+          calls.push(['durable.acknowledge', persistedExecution.status]);
         }
       })
     })
@@ -281,12 +284,41 @@ test('runner failure is acknowledged after failed state persistence and rethrows
   assert.equal(calls.filter((call) => call[0] === 'runner.run').length, 1);
 });
 
-test('acknowledgement failure propagates unchanged without rerunning the runner', async () => {
+test('runner failure without persisted terminal state does not acknowledge', async () => {
   const calls = [];
-  const acknowledgementError = new Error('acknowledgement failed');
+  const runnerError = new Error('runner failed before terminal persistence');
   const worker = createTranslationExecutionWorker(
     workerDependencies({
       calls,
+      translationExecutionRunner: {
+        run() {
+          calls.push(['runner.run']);
+          throw runnerError;
+        }
+      },
+      durableTranslationExecutionQueueRepository: durableRepository({ calls })
+    })
+  );
+
+  await assert.rejects(worker.processNext(), (error) => error === runnerError);
+
+  assert.equal(calls.some((call) => call[0] === 'durable.acknowledge'), false);
+});
+
+test('acknowledgement failure propagates unchanged without rerunning the runner', async () => {
+  const calls = [];
+  const acknowledgementError = new Error('acknowledgement failed');
+  let persistedExecution = translationExecution();
+  const worker = createTranslationExecutionWorker(
+    workerDependencies({
+      calls,
+      translationExecutionRunner: {
+        run() {
+          calls.push(['runner.run']);
+          persistedExecution = executionWithStatus('completed');
+        }
+      },
+      translationRepository: repository({ calls, execution: () => persistedExecution }),
       durableTranslationExecutionQueueRepository: durableRepository({
         calls,
         acknowledge() {
@@ -300,6 +332,15 @@ test('acknowledgement failure propagates unchanged without rerunning the runner'
   await assert.rejects(worker.processNext(), (error) => error === acknowledgementError);
   assert.equal(calls.filter((call) => call[0] === 'runner.run').length, 1);
   assert.equal(calls.filter((call) => call[0] === 'durable.acknowledge').length, 1);
+});
+
+test('non-durable worker does not acknowledge', async () => {
+  const calls = [];
+  const worker = createTranslationExecutionWorker(workerDependencies({ calls }));
+
+  await worker.processNext();
+
+  assert.equal(calls.some((call) => call[0] === 'durable.acknowledge'), false);
 });
 
 test('dequeue removes processed job from queue', async () => {
@@ -418,7 +459,7 @@ function repository({ calls = [], execution = translationExecution(), request = 
       function repositoryMethod(identifier) {
         if (methodName === 'findExecutionById') {
           calls.push([methodName, identifier]);
-          return execution;
+          return typeof execution === 'function' ? execution(identifier) : execution;
         }
 
         if (methodName === 'findRequestById') {

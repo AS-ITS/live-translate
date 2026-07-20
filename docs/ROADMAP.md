@@ -15,8 +15,8 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3E Durable Queue Deduplication & Idempotent Recovery
-completed.
+Current milestone: Phase 3F Durable Queue Terminal Acknowledgement & Recovery
+Eligibility completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -39,6 +39,9 @@ Phase 3E WP1 Durable Queue Identity Contract, WP2 Idempotent Durable Enqueue,
 WP3 Active In-Memory Queue Deduplication, WP4 Idempotent Startup Recovery, WP5
 Worker Lifecycle Guard, WP6 Output Uniqueness Protection, WP7 Vertical
 Integration Tests, and WP8 Documentation Closeout are completed.
+Phase 3F WP1 Durable Acknowledgement Contract, WP2 Worker Terminal
+Acknowledgement, WP3 Recovery Replay Eligibility, WP4 Durable Queue End-to-End
+Integration, and WP5 Documentation Closeout are completed.
 
 Completed Phase 1 capabilities include:
 
@@ -303,6 +306,20 @@ Deferred:
   - Remaining work: lease/visibility-timeout renewal, retry scheduling,
     dead-letter queue, multi-worker/distributed locking, provider-level
     idempotency, and event-publishing deduplication.
+- Phase 3F - Durable Queue Terminal Acknowledgement & Recovery Eligibility: Completed
+  - WP1 Durable Acknowledgement Contract
+  - WP2 Worker Terminal Acknowledgement
+  - WP3 Recovery Replay Eligibility
+  - WP4 Durable Queue End-to-End Integration
+  - WP5 Documentation Closeout
+  - Recovery replays only durable `queued` items. `processing`, `completed`,
+    and `failed` items remain stored without replay or removal.
+  - The Worker removes an item only after persistence of terminal `completed`
+    or `failed` execution state; acknowledgement errors propagate and retain
+    the durable item.
+  - Remaining work: processing-item crash recovery; lease, heartbeat, and
+    visibility-timeout recovery policy; retry/backoff; dead-letter queue;
+    multi-worker locking and cross-process deduplication policy.
 - Phase 2 overall: In Progress, Phase 2P Translation Execution Lifecycle completed
 
 ### Phase 2 Planning Rule
@@ -1493,6 +1510,36 @@ Deferred:
 - Multi-worker / distributed locking.
 - Provider-level idempotency.
 - Event-publishing deduplication.
+
+### Phase 3F - Durable Queue Terminal Acknowledgement & Recovery Eligibility
+
+Status: Completed.
+
+Completed:
+
+- WP1 Durable Acknowledgement Contract.
+- WP2 Worker Terminal Acknowledgement.
+- WP3 Recovery Replay Eligibility.
+- WP4 Durable Queue End-to-End Integration.
+- WP5 Documentation Closeout.
+
+Implemented behavior:
+
+- A durable item is acknowledged and removed only after its execution is
+  persisted as `completed` or `failed`; acknowledgement failures propagate and
+  leave the item stored.
+- Startup recovery replays only `queued` items in FIFO order. `processing`,
+  `completed`, and `failed` items remain stored without replay or removal.
+- Production-composition integration tests use a fake provider to cover
+  successful and terminal-failure acknowledgement, recovery eligibility, and
+  acknowledgement-failure retention.
+
+Deferred:
+
+- Processing-item crash recovery.
+- Lease, heartbeat, and visibility-timeout recovery policy.
+- Retry/backoff and dead-letter queue.
+- Multi-worker locking and cross-process deduplication policy.
 
 ### Phase 2 Deferred Scope
 

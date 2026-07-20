@@ -24,6 +24,7 @@ const INVALID_ENQUEUED_AT_MESSAGE = 'Durable translation execution queue item en
 const INVALID_STATUS_MESSAGE = 'Durable translation execution queue item status is not supported.';
 
 export const TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE = 'translation_execution_queue_item_conflict';
+export const TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE = 'translation_execution_queue_item_not_found';
 export const DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY = Object.freeze({
   SAME: 'same',
   CONFLICT: 'conflict',
@@ -74,7 +75,7 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
 
     async acknowledge(executionId) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
-      return implementation.acknowledge(executionId);
+      return createDurableTranslationExecutionQueueItem(await implementation.acknowledge(executionId));
     },
 
     async contains(executionId) {
@@ -161,6 +162,12 @@ export function compareDurableTranslationExecutionQueueItemIdentity(existingItem
 export function createTranslationExecutionQueueItemConflictError() {
   const error = new Error('Translation execution queue item conflict.');
   error.code = TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE;
+  return error;
+}
+
+export function createTranslationExecutionQueueItemNotFoundError(executionId) {
+  const error = new Error(`Durable translation execution queue item ${executionId} was not found`);
+  error.code = TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE;
   return error;
 }
 

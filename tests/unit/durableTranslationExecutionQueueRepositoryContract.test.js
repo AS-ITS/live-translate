@@ -6,7 +6,8 @@ import {
   createDurableTranslationExecutionQueueItem,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
-  TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
+  TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE,
+  TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE
 } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
 
@@ -317,8 +318,10 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     await repository.enqueue(first);
     await repository.enqueue(second);
     await repository.enqueue(third);
-    await repository.acknowledge('execution-2');
+    const acknowledged = await repository.acknowledge('execution-2');
 
+    assert.deepEqual(acknowledged, second);
+    assert.equal(Object.isFrozen(acknowledged), true);
     assert.deepEqual(await repository.list(), [first, third]);
     assert.equal(await repository.size(), 2);
   });
@@ -332,8 +335,25 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.list(), []);
     await assert.rejects(
       () => repository.acknowledge('execution-1'),
-      /Durable translation execution queue item execution-1 was not found/
+      (error) => error instanceof Error
+        && error.code === TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE
     );
+  });
+
+  test('acknowledge rejects invalid execution IDs without changing repository state', async () => {
+    const repository = createRepository();
+    const item = createItem();
+
+    await repository.enqueue(item);
+
+    for (const executionId of [null, undefined, '', '   ', 1, false, {}]) {
+      await assert.rejects(
+        () => repository.acknowledge(executionId),
+        (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+      );
+    }
+
+    assert.deepEqual(await repository.list(), [item]);
   });
 
   test('contains returns whether an execution exists without changing storage', async () => {

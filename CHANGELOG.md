@@ -4,6 +4,17 @@
 
 ### Added
 
+- Phase 3F Documentation Closeout: documented the durable acknowledgement
+  contract and terminal cleanup: items are removed only after `completed` or
+  `failed` execution persistence, while acknowledgement failures retain the
+  item and propagate unchanged. Startup recovery now replays only `queued`
+  items; `processing`, `completed`, and `failed` items remain stored without
+  replay or removal. Production-composition integration coverage verifies
+  successful and failed terminal cleanup, recovery eligibility, and
+  acknowledgement-failure retention with a fake provider. Processing-item
+  crash recovery; lease, heartbeat, and visibility-timeout recovery policy;
+  retry/backoff; dead-letter queues; and multi-worker locking or cross-process
+  deduplication policy remain deferred.
 - Phase 3E WP8 Documentation Closeout: documented durable and active queue
   identity, idempotent enqueue and recovery, lifecycle safeguards, output
   uniqueness, and production-composition vertical coverage. The README,

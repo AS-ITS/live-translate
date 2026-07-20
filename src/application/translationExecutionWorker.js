@@ -77,7 +77,12 @@ export function createTranslationExecutionWorker({
       }
 
       if (heartbeat?.error === undefined && durableTranslationExecutionQueueRepository !== undefined) {
-        await durableTranslationExecutionQueueRepository.acknowledge(job.executionId);
+        const persistedExecution = await translationRepository.findExecutionById(job.executionId);
+        assertFoundExecution(persistedExecution, job.executionId);
+
+        if (isTerminalExecution(persistedExecution)) {
+          await durableTranslationExecutionQueueRepository.acknowledge(job.executionId);
+        }
       }
 
       if (runnerFailed) {
@@ -92,6 +97,10 @@ export function createTranslationExecutionWorker({
       };
     }
   });
+}
+
+function isTerminalExecution(execution) {
+  return execution.status === 'completed' || execution.status === 'failed';
 }
 
 function assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, scheduler) {

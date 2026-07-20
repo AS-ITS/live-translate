@@ -3,6 +3,7 @@ import {
   assertDurableTranslationExecutionQueueRepository,
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
+  DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY
 } from './durableTranslationExecutionQueueRepository.js';
 
@@ -16,7 +17,6 @@ export function createStartupTranslationExecutionQueueRecovery({ durableReposito
   return Object.freeze({
     async recover() {
       const items = await durableRepository.list();
-      const now = clock();
       const eligibleItems = [];
       const itemsByExecutionId = new Map();
 
@@ -32,15 +32,10 @@ export function createStartupTranslationExecutionQueueRecovery({ durableReposito
         }
 
         itemsByExecutionId.set(item.executionId, item);
-        const noLease = item.leasedUntil === null || item.leasedUntil === undefined;
-        const expired = !noLease && item.leasedUntil <= now;
-        const status = item.status ?? 'queued';
-        if ((status === 'queued' && (noLease || expired)) || (status === 'processing' && expired)) {
+        if (item.status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED) {
           eligibleItems.push(item);
         }
       }
-
-      await durableRepository.releaseExpired(now);
 
       for (const item of eligibleItems) {
         if (replayedExecutionIds.has(item.executionId)) {

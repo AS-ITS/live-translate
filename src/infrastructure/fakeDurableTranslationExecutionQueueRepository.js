@@ -1,6 +1,7 @@
 import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
+  createTranslationExecutionQueueItemNotFoundError,
   createDurableTranslationExecutionQueueItem,
   createDurableTranslationExecutionQueueRepository,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY,
@@ -65,11 +66,10 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
       const itemIndex = items.findIndex((item) => item.executionId === executionId);
 
       if (itemIndex === -1) {
-        throw new Error(`Durable translation execution queue item ${executionId} was not found`);
+        throw createTranslationExecutionQueueItemNotFoundError(executionId);
       }
 
-      items.splice(itemIndex, 1);
-      return undefined;
+      return items.splice(itemIndex, 1)[0];
     },
 
     contains(executionId) {

@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3H Durable Queue Lease Lifecycle completed.
+Current milestone: Phase 3I Lease Renewal & Execution Fencing completed.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -41,6 +41,12 @@ Integration Tests, and WP8 Documentation Closeout are completed.
 Phase 3F WP1 Durable Acknowledgement Contract, WP2 Worker Terminal
 Acknowledgement, WP3 Recovery Replay Eligibility, WP4 Durable Queue End-to-End
 Integration, and WP5 Documentation Closeout are completed.
+Phase 3I Lease Renewal & Execution Fencing is completed: lease renewal,
+heartbeat orchestration, monotonic fence tokens, fenced execution persistence,
+token-aware acknowledgement, and production vertical integration are covered.
+Remaining reliability work: retry scheduling/backoff, dead-letter queues,
+provider-level idempotency, event publishing deduplication, multi-worker and
+distributed locking, cross-process atomicity, and metrics/observability.
 
 Completed Phase 1 capabilities include:
 

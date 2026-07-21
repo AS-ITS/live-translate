@@ -2,9 +2,14 @@ import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translatio
 import { randomUUID } from 'node:crypto';
 import { assertDurableTranslationExecutionQueueRepository } from './translation/durableTranslationExecutionQueueRepository.js';
 import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
+import { createTranslationExecutionLeaseHeartbeat } from './translation/translationExecutionLeaseHeartbeat.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
+const DEFAULT_LEASE_HEARTBEAT_SCHEDULER = Object.freeze({
+  set(callback, delayMs) { return setTimeout(callback, delayMs); },
+  clear(handle) { clearTimeout(handle); }
+});
 
 export function createTranslationExecutionWorker({
   translationExecutionQueue,
@@ -12,15 +17,17 @@ export function createTranslationExecutionWorker({
   translationExecutionRunner,
   durableTranslationExecutionQueueRepository,
   leaseDurationMs = 300000,
+  leaseRenewalMs = 100000,
   clock = () => new Date().toISOString(),
-  leaseIdFactory = randomUUID
+  leaseIdFactory = randomUUID,
+  leaseHeartbeatScheduler = DEFAULT_LEASE_HEARTBEAT_SCHEDULER
 } = {}) {
   assertTranslationExecutionQueue(translationExecutionQueue);
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionRunner(translationExecutionRunner);
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
   if (durableTranslationExecutionQueueRepository !== undefined) {
-    assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory);
+    assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler);
   }
 
   return Object.freeze({
@@ -54,26 +61,56 @@ export function createTranslationExecutionWorker({
         );
       }
 
+      const leaseHeartbeat = durableTranslationExecutionQueueRepository !== undefined
+        ? createTranslationExecutionLeaseHeartbeat({
+            durableTranslationExecutionQueueRepository,
+            leaseDurationMs,
+            leaseRenewalMs,
+            clock,
+            scheduler: leaseHeartbeatScheduler
+          }).start({
+            executionId: job.executionId,
+            claim: {
+              leaseId: claimedDurableItem.leaseId,
+              fenceToken: claimedDurableItem.fenceToken
+            }
+          })
+        : undefined;
+
       let runnerError;
       let runnerFailed = false;
       try {
         await runTranslationExecution(translationExecutionRunner, {
           execution,
-          request
+          request,
+          ...(claimedDurableItem === undefined
+            ? {}
+            : {
+                executionFence: {
+                  executionId: job.executionId,
+                  leaseId: claimedDurableItem.leaseId,
+                  fenceToken: claimedDurableItem.fenceToken
+                }
+              })
         });
       } catch (error) {
         runnerError = error;
         runnerFailed = true;
+      } finally {
+        if (leaseHeartbeat !== undefined) await leaseHeartbeat.stop();
       }
 
-      if (durableTranslationExecutionQueueRepository !== undefined) {
+      const renewalError = leaseHeartbeat?.getRenewalError();
+
+      if (durableTranslationExecutionQueueRepository !== undefined && renewalError === undefined) {
         const persistedExecution = await translationRepository.findExecutionById(job.executionId);
         assertFoundExecution(persistedExecution, job.executionId);
 
         if (isTerminalExecution(persistedExecution)) {
           try {
             await durableTranslationExecutionQueueRepository.acknowledgeClaim(job.executionId, {
-              leaseId: claimedDurableItem.leaseId
+              leaseId: claimedDurableItem.leaseId,
+              fenceToken: claimedDurableItem.fenceToken
             });
           } catch (error) {
             if (!runnerFailed) throw error;
@@ -84,6 +121,8 @@ export function createTranslationExecutionWorker({
       if (runnerFailed) {
         throw runnerError;
       }
+
+      if (renewalError !== undefined) throw renewalError;
 
       return {
         status: 'processed',
@@ -97,10 +136,20 @@ function isTerminalExecution(execution) {
   return execution.status === 'completed' || execution.status === 'failed';
 }
 
-function assertLeaseConfiguration(leaseDurationMs, clock, leaseIdFactory) {
+function assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler) {
   if (!Number.isInteger(leaseDurationMs) || leaseDurationMs <= 0) throw new TypeError('leaseDurationMs must be a positive integer.');
+  if (!Number.isInteger(leaseRenewalMs) || leaseRenewalMs <= 0) throw new TypeError('leaseRenewalMs must be a positive integer.');
+  if (leaseRenewalMs >= leaseDurationMs) throw new TypeError('leaseRenewalMs must be lower than leaseDurationMs.');
   if (typeof clock !== 'function') throw new TypeError('clock must be a function.');
   if (typeof leaseIdFactory !== 'function') throw new TypeError('leaseIdFactory must be a function.');
+  if (leaseHeartbeatScheduler === null || typeof leaseHeartbeatScheduler !== 'object') {
+    throw new TypeError('leaseHeartbeatScheduler must be an object.');
+  }
+  for (const methodName of ['set', 'clear']) {
+    if (typeof leaseHeartbeatScheduler[methodName] !== 'function') {
+      throw new TypeError(`leaseHeartbeatScheduler.${methodName} must be a function.`);
+    }
+  }
 }
 
 function createLease({ clock, leaseIdFactory, leaseDurationMs }) {

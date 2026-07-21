@@ -5,15 +5,17 @@ import { createRetryPolicy } from './translation/retryPolicy.js';
 export function createTranslationExecutionRunner({
   translationRepository,
   translationExecutionProvider,
-  retryPolicy = createRetryPolicy()
+  retryPolicy = createRetryPolicy(),
+  executionFenceGuard
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
   assertRetryPolicy(retryPolicy);
+  assertOptionalExecutionFenceGuard(executionFenceGuard);
 
   return Object.freeze({
     async execute(input = {}) {
-      const { execution, payload, repositoryResult, onTranslationOutputCreated, onTranslationExecutionUpdated } = input;
+      const { execution, payload, repositoryResult, onTranslationOutputCreated, onTranslationExecutionUpdated, executionFence } = input;
 
       assertExecutionInput(execution);
       assertPayloadInput(payload);
@@ -22,6 +24,7 @@ export function createTranslationExecutionRunner({
       try {
         providerResult = await executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload);
       } catch (error) {
+        await assertWritable(executionFenceGuard, execution, executionFence);
         await failExecutionAfterProviderError(translationRepository, execution, payload, onTranslationExecutionUpdated);
         throw error;
       }
@@ -34,6 +37,7 @@ export function createTranslationExecutionRunner({
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
       });
+      await assertWritable(executionFenceGuard, execution, executionFence);
       const outputRepositoryResult = await translationRepository.createTranslationOutput(output);
 
       await notifyOptional(onTranslationOutputCreated, {
@@ -49,6 +53,7 @@ export function createTranslationExecutionRunner({
         startedAt: execution.startedAt,
         completedAt: payload.completedAt ?? execution.startedAt
       });
+      await assertWritable(executionFenceGuard, execution, executionFence);
       const completedRepositoryResult = await translationRepository.updateTranslationExecution(completedExecution);
 
       await notifyOptional(onTranslationExecutionUpdated, {
@@ -57,6 +62,17 @@ export function createTranslationExecutionRunner({
       });
 
       return repositoryResult;
+    }
+  });
+}
+
+async function assertWritable(executionFenceGuard, execution, executionFence) {
+  if (executionFenceGuard === undefined || executionFence === undefined) return;
+  await executionFenceGuard.assertWritable({
+    executionId: execution.id,
+    claim: {
+      leaseId: executionFence.leaseId,
+      fenceToken: executionFence.fenceToken
     }
   });
 }
@@ -134,6 +150,13 @@ function assertRetryPolicy(retryPolicy) {
 
   if (typeof retryPolicy.nextDelay !== 'function') {
     throw new TypeError('retryPolicy.nextDelay must be a function.');
+  }
+}
+
+function assertOptionalExecutionFenceGuard(executionFenceGuard) {
+  if (executionFenceGuard === undefined) return;
+  if (!executionFenceGuard || typeof executionFenceGuard.assertWritable !== 'function') {
+    throw new TypeError('executionFenceGuard.assertWritable must be a function.');
   }
 }
 

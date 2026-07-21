@@ -111,6 +111,110 @@ test('claim persists the processing lease metadata and returns the claimed item'
   assert.deepEqual(await readStorage(filePath), { items: [expected] });
 });
 
+test('reclaim increments the persisted fenceToken after expired processing requeue', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+
+  await firstRepository.enqueue(createItem());
+  await firstRepository.claim('execution-1', lease());
+  await firstRepository.requeueExpiredProcessing('execution-1', '2026-07-17T08:05:00.000Z');
+
+  const secondRepository = createRepository({ filePath });
+  const reclaimed = await secondRepository.claim('execution-1', {
+    leaseId: 'lease-2',
+    leaseExpiresAt: '2026-07-17T08:10:00.000Z'
+  });
+
+  assert.deepEqual(reclaimed, createProcessingItem({
+    fenceToken: 2,
+    leaseId: 'lease-2',
+    leaseExpiresAt: '2026-07-17T08:10:00.000Z'
+  }));
+  assert.equal((await readStorage(filePath)).items[0].fenceToken, 2);
+});
+
+test('legacy storage without a fenceToken loads as zero and claims as one', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const legacyItem = createItem();
+  delete legacyItem.fenceToken;
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyItem] }, null, 2)}\n`, 'utf8');
+
+  assert.deepEqual(await repository.peek(), createItem());
+  assert.deepEqual(await repository.claim('execution-1', lease()), createProcessingItem());
+  assert.equal((await readStorage(filePath)).items[0].fenceToken, 1);
+});
+
+test('renewClaim preserves processing item field order and survives reload', async () => {
+  const filePath = temporaryFilePath();
+  const firstRepository = createRepository({ filePath });
+  const item = createItem();
+  const itemLease = {
+    leaseId: 'lease-1',
+    claimedAt: '2026-07-17T08:01:00.000Z',
+    leaseExpiresAt: '2026-07-17T08:05:00.000Z'
+  };
+  const expected = createProcessingItem({
+    ...itemLease,
+    leaseExpiresAt: '2026-07-17T08:10:00.000Z'
+  });
+
+  await firstRepository.enqueue(item);
+  await firstRepository.claim(item.executionId, itemLease);
+  await firstRepository.renewClaim(item.executionId, { leaseId: itemLease.leaseId }, {
+    leaseExpiresAt: expected.leaseExpiresAt,
+    now: '2026-07-17T08:04:00.000Z'
+  });
+
+  assert.equal(
+    await fileSystem.readFile(filePath, 'utf8'),
+    `${JSON.stringify({
+      items: [{
+        executionId: expected.executionId,
+        requestId: expected.requestId,
+        enqueuedAt: expected.enqueuedAt,
+        status: expected.status,
+        fenceToken: expected.fenceToken,
+        leaseId: expected.leaseId,
+        claimedAt: expected.claimedAt,
+        leaseExpiresAt: expected.leaseExpiresAt
+      }]
+    }, null, 2)}\n`
+  );
+  assert.deepEqual(await createRepository({ filePath }).peek(), expected);
+});
+
+test('old-format processing storage renews without adding lease fields', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const legacyProcessing = createProcessingItem();
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyProcessing] }, null, 2)}\n`, 'utf8');
+
+  await repository.renewClaim('execution-1', { leaseId: 'lease-1' }, {
+    leaseExpiresAt: '2026-07-17T08:10:00.000Z',
+    now: '2026-07-17T08:04:00.000Z'
+  });
+
+  assert.deepEqual(await readStorage(filePath), {
+    items: [createProcessingItem({ leaseExpiresAt: '2026-07-17T08:10:00.000Z' })]
+  });
+});
+
+test('renewal serialization omits lease metadata from non-processing items', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  await repository.enqueue(createItem());
+  await repository.claim('execution-1', lease());
+  await repository.updateStatus('execution-1', 'completed');
+
+  assert.deepEqual(await readStorage(filePath), {
+    items: [createItem({ status: 'completed', fenceToken: 1 })]
+  });
+});
+
 test('lease-aware acknowledgement preserves file storage on ownership mismatch', async () => {
   const filePath = temporaryFilePath();
   const repository = createRepository({ filePath });
@@ -120,14 +224,14 @@ test('lease-aware acknowledgement preserves file storage on ownership mismatch',
   const storageBeforeMismatch = await fileSystem.readFile(filePath, 'utf8');
 
   await assert.rejects(
-    () => repository.acknowledgeClaim('execution-1', { leaseId: 'other-lease' }),
+    () => repository.acknowledgeClaim('execution-1', { leaseId: 'other-lease', fenceToken: 1 }),
     (error) => error instanceof TypeError && error.code === 'translation_execution_queue_lease_ownership_error'
   );
 
   assert.equal(await fileSystem.readFile(filePath, 'utf8'), storageBeforeMismatch);
   assert.deepEqual(await createRepository({ filePath }).peek(), createProcessingItem());
 
-  assert.deepEqual(await repository.acknowledgeClaim('execution-1', { leaseId: 'lease-1' }), createProcessingItem());
+  assert.deepEqual(await repository.acknowledgeClaim('execution-1', { leaseId: 'lease-1', fenceToken: 1 }), createProcessingItem());
   assert.deepEqual(await readStorage(filePath), { items: [] });
 });
 
@@ -251,6 +355,19 @@ test('persisted processing storage with invalid lease metadata fails determinist
   await assert.rejects(() => repository.peek(), storageErrorMatcher);
 });
 
+test('persisted malformed fenceToken fails deterministic storage validation', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(
+    filePath,
+    `${JSON.stringify({ items: [createItem({ fenceToken: -1 })] }, null, 2)}\n`,
+    'utf8'
+  );
+
+  await assert.rejects(() => repository.peek(), storageErrorMatcher);
+});
+
 test('expired processing requeue persists without lease metadata after reload', async () => {
   const filePath = temporaryFilePath();
   const firstRepository = createRepository({ filePath });
@@ -259,12 +376,12 @@ test('expired processing requeue persists without lease metadata after reload', 
   await firstRepository.claim('execution-1', lease());
   assert.deepEqual(
     await firstRepository.requeueExpiredProcessing('execution-1', '2026-07-17T08:05:00.000Z'),
-    createItem()
+    createItem({ fenceToken: 1 })
   );
 
   const secondRepository = createRepository({ filePath });
-  assert.deepEqual(await secondRepository.peek(), createItem());
-  assert.deepEqual(await readStorage(filePath), { items: [createItem()] });
+  assert.deepEqual(await secondRepository.peek(), createItem({ fenceToken: 1 }));
+  assert.deepEqual(await readStorage(filePath), { items: [createItem({ fenceToken: 1 })] });
 });
 
 test('legacy queued and terminal storage without lease metadata loads unchanged', async () => {
@@ -348,6 +465,7 @@ function createItem(overrides = {}) {
     requestId: 'request-1',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
     status: 'queued',
+    fenceToken: 0,
     ...overrides
   };
 }
@@ -358,6 +476,7 @@ function createProcessingItem(overrides = {}) {
     status: 'processing',
     leaseId: 'lease-1',
     leaseExpiresAt: '2026-07-17T08:05:00.000Z',
+    fenceToken: 1,
     ...overrides
   };
 }

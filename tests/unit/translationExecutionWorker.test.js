@@ -116,6 +116,26 @@ test('durable queue claim is persisted before runner starts', async () => {
   }]);
 });
 
+test('durable worker propagates the claimed lease and fence token to runner', async () => {
+  let runnerInput;
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    durableTranslationExecutionQueueRepository: durableRepository({
+      claim() { return { leaseId: 'lease-1', fenceToken: 7 }; }
+    }),
+    translationExecutionRunner: { run(input) { runnerInput = input; } },
+    clock: () => '2026-07-20T00:00:00.000Z',
+    leaseIdFactory: () => 'lease-1'
+  }));
+
+  await worker.processNext();
+
+  assert.deepEqual(runnerInput.executionFence, {
+    executionId: 'execution-1',
+    leaseId: 'lease-1',
+    fenceToken: 7
+  });
+});
+
 test('acknowledges after a successful runner reaches completed state', async () => {
   const calls = [];
   let persistedExecution = translationExecution();
@@ -149,7 +169,7 @@ test('acknowledges after a successful runner reaches completed state', async () 
     'findExecutionById',
     'durable.acknowledgeClaim'
   ]);
-  assert.deepEqual(calls.at(-1), ['durable.acknowledgeClaim', 'completed', 'execution-1', { leaseId: 'lease-1' }]);
+  assert.deepEqual(calls.at(-1), ['durable.acknowledgeClaim', 'completed', 'execution-1', { leaseId: 'lease-1', fenceToken: 1 }]);
 });
 
 test('durable queue claim failure propagates without running execution', async () => {
@@ -179,6 +199,97 @@ test('durable queue claim failure propagates without running execution', async (
 
   assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById', 'durable.claim']);
   assert.equal(durableItem.status, 'queued');
+});
+
+test('durable worker renews a pending runner claim and acknowledges after heartbeat stops', async () => {
+  const calls = [];
+  const scheduler = fakeScheduler();
+  let releaseRunner;
+  let persistedExecution = translationExecution();
+  const runnerPending = new Promise((resolve) => { releaseRunner = resolve; });
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    leaseDurationMs: 1000,
+    leaseRenewalMs: 100,
+    leaseHeartbeatScheduler: scheduler,
+    clock: () => '2026-07-20T00:00:00.000Z',
+    leaseIdFactory: () => 'lease-1',
+    translationExecutionRunner: {
+      run() {
+        calls.push(['runner.run']);
+        return runnerPending;
+      }
+    },
+    translationRepository: repository({ calls, execution: () => persistedExecution }),
+    durableTranslationExecutionQueueRepository: durableRepository({
+      calls,
+      renewClaim(executionId, claim, lease) {
+        calls.push(['durable.renewClaim', executionId, claim, lease]);
+      },
+      acknowledgeClaim(executionId, claim) {
+        calls.push(['durable.acknowledgeClaim', executionId, claim]);
+      }
+    })
+  }));
+
+  const processing = worker.processNext();
+  await flushMicrotasks();
+  await scheduler.runNext();
+  assert.deepEqual(calls.find((call) => call[0] === 'durable.renewClaim'), [
+    'durable.renewClaim',
+    'execution-1',
+    { leaseId: 'lease-1' },
+    { now: '2026-07-20T00:00:00.000Z', leaseExpiresAt: '2026-07-20T00:00:01.000Z' }
+  ]);
+
+  persistedExecution = executionWithStatus('completed');
+  releaseRunner();
+  await processing;
+  assert.equal(calls.filter((call) => call[0] === 'durable.acknowledgeClaim').length, 1);
+  assert.equal(scheduler.activeCount(), 0);
+});
+
+test('renewal failure skips acknowledgement and preserves runner error precedence', async () => {
+  const scheduler = fakeScheduler();
+  const renewalError = new Error('renewal failed');
+  const runnerError = new Error('runner failed');
+  let releaseRunner;
+  const runnerPending = new Promise((resolve) => { releaseRunner = resolve; });
+  const calls = [];
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    leaseDurationMs: 1000,
+    leaseRenewalMs: 100,
+    leaseHeartbeatScheduler: scheduler,
+    translationExecutionRunner: { run() { return runnerPending; } },
+    durableTranslationExecutionQueueRepository: durableRepository({
+      calls,
+      renewClaim() { throw renewalError; }
+    })
+  }));
+
+  const processing = worker.processNext();
+  await flushMicrotasks();
+  await scheduler.runNext();
+  releaseRunner();
+  await assert.rejects(processing, (error) => error === renewalError);
+  assert.equal(calls.some((call) => call[0] === 'durable.acknowledgeClaim'), false);
+
+  const failureScheduler = fakeScheduler();
+  let rejectRunner;
+  const failingRunner = new Promise((resolve, reject) => { rejectRunner = reject; });
+  const failedWorker = createTranslationExecutionWorker(workerDependencies({
+    leaseDurationMs: 1000,
+    leaseRenewalMs: 100,
+    leaseHeartbeatScheduler: failureScheduler,
+    translationExecutionRunner: { run() { return failingRunner; } },
+    durableTranslationExecutionQueueRepository: durableRepository({ renewClaim() { throw renewalError; } })
+  }));
+  const failedProcessing = failedWorker.processNext();
+  await flushMicrotasks();
+  await failureScheduler.runNext();
+  rejectRunner(runnerError);
+  await assert.rejects(failedProcessing, (error) => error === runnerError);
 });
 
 test('a processing durable item cannot be claimed by another active queue job', async () => {
@@ -214,6 +325,7 @@ test('a processing durable item cannot be claimed by another active queue job', 
   assert.deepEqual(await durableRepository.peek(), {
     ...item,
     status: 'processing',
+    fenceToken: 1,
     leaseId: 'lease-1',
     claimedAt: '2026-07-20T00:00:00.000Z',
     leaseExpiresAt: '2026-07-20T00:05:00.000Z'
@@ -370,7 +482,7 @@ test('runner failure is acknowledged after failed state persistence and rethrows
 
   await assert.rejects(worker.processNext(), (error) => error === runnerError);
 
-  assert.deepEqual(calls.at(-1), ['durable.acknowledgeClaim', 'failed', 'execution-1', { leaseId: 'lease-1' }]);
+  assert.deepEqual(calls.at(-1), ['durable.acknowledgeClaim', 'failed', 'execution-1', { leaseId: 'lease-1', fenceToken: 1 }]);
   assert.equal(calls.filter((call) => call[0] === 'runner.run').length, 1);
 });
 
@@ -507,7 +619,9 @@ function workerDependencies(options = {}) {
       : {}),
     ...(options.clock !== undefined ? { clock: options.clock } : {}),
     ...(options.leaseIdFactory !== undefined ? { leaseIdFactory: options.leaseIdFactory } : {}),
-    ...(options.leaseDurationMs !== undefined ? { leaseDurationMs: options.leaseDurationMs } : {})
+    ...(options.leaseDurationMs !== undefined ? { leaseDurationMs: options.leaseDurationMs } : {}),
+    ...(options.leaseRenewalMs !== undefined ? { leaseRenewalMs: options.leaseRenewalMs } : {}),
+    ...(options.leaseHeartbeatScheduler !== undefined ? { leaseHeartbeatScheduler: options.leaseHeartbeatScheduler } : {})
   };
 }
 
@@ -530,7 +644,7 @@ function queue(jobs = []) {
   };
 }
 
-function durableRepository({ calls = [], claim, acknowledgeClaim } = {}) {
+function durableRepository({ calls = [], claim, acknowledgeClaim, renewClaim, assertClaimActive } = {}) {
   return {
     enqueue() {
       throw new Error('worker should not enqueue durable repository');
@@ -566,12 +680,45 @@ function durableRepository({ calls = [], claim, acknowledgeClaim } = {}) {
     },
     claim: claim || function claimDefault(executionId, lease) {
       calls.push(['durable.claim', executionId, lease]);
-      return { leaseId: lease.leaseId };
+      return { leaseId: lease.leaseId, fenceToken: 1 };
+    },
+    renewClaim: renewClaim || function renewClaimDefault() {
+      throw new Error('worker should not renew durable items');
+    },
+    assertClaimActive: assertClaimActive || function assertClaimActiveDefault() {
+      throw new Error('worker should not assert durable claim activity');
     },
     requeueExpiredProcessing() {
       throw new Error('worker should not requeue expired durable items');
     }
   };
+}
+
+function fakeScheduler() {
+  const active = new Set();
+  return {
+    set(callback) {
+      active.add(callback);
+      return callback;
+    },
+    clear(callback) {
+      active.delete(callback);
+    },
+    async runNext() {
+      const callback = active.values().next().value;
+      if (callback !== undefined) {
+        active.delete(callback);
+        await callback();
+      }
+    },
+    activeCount() {
+      return active.size;
+    }
+  };
+}
+
+async function flushMicrotasks() {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
 }
 
 function repository({ calls = [], execution = translationExecution(), request = translationRequest() } = {}) {

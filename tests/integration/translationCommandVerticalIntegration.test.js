@@ -283,7 +283,7 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
         requestId: 'request-1',
         enqueuedAt: '2026-07-17T08:00:00.000Z',
         status: 'queued',
-        leasedUntil: null
+        fenceToken: 0
       });
       assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
         items: [
@@ -292,7 +292,7 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
             requestId: 'request-1',
             enqueuedAt: '2026-07-17T08:00:00.000Z',
             status: 'queued',
-            leasedUntil: null
+            fenceToken: 0
           }
         ]
       });

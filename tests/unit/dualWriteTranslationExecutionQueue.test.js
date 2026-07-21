@@ -336,6 +336,7 @@ function durableRepository(overrides = {}) {
         return items.some((item) => item.executionId === executionId);
       },
     claim() {},
+    renewClaim() {},
     requeueExpiredProcessing() { return null; }
   };
 }

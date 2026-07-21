@@ -11,6 +11,25 @@ ephemeral tokens so the browser can connect directly to the Gemini Live API.
 Phase 2A Foundation
 Status: Completed
 
+## Durable Queue Reliability
+
+When `TRANSLATION_DURABLE_QUEUE_ENABLED=true`, execution work follows:
+
+```text
+Queue → claim → heartbeat renewal → fenced Runner persistence → token-aware acknowledgement
+```
+
+`TRANSLATION_QUEUE_LEASE_MS` controls the processing lease duration and
+`TRANSLATION_QUEUE_LEASE_RENEWAL_MS` controls the heartbeat interval. A
+successfully renewed item remains active and startup recovery does not replay
+it. Reclaiming an expired lease creates a higher `fenceToken`; stale workers are
+rejected before output, terminal-state, or acknowledgement persistence. The
+production integration suite uses fake providers, clocks, and schedulers only.
+
+Current limitations: no cross-storage transaction, provider idempotency,
+retry/backoff, dead-letter queue, distributed locking, or cross-process
+atomicity.
+
 Phase 2 Overall
 Status: In Progress
 

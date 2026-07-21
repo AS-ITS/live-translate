@@ -396,9 +396,9 @@ load TranslationExecution and TranslationRequest
 ↓
 DurableTranslationExecutionQueueRepository.claim(executionId, { leaseId, leaseExpiresAt })
 ↓
-TranslationExecutionRunner.run()
+heartbeat renewal + TranslationExecutionRunner.run() fenced by leaseId + fenceToken
 ↓
-DurableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId })
+DurableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId, fenceToken })
 ```
 
 The claim happens only when the durable queue feature is enabled and the Worker
@@ -406,9 +406,13 @@ has a durable queue repository. The runner starts only after claim succeeds.
 
 Durable queue items remain stored through startup recovery and runner
 execution. The Worker removes an item only after the Runner has persisted
-`completed` or `failed`, through `acknowledgeClaim(executionId, { leaseId })`.
+`completed` or `failed`, through `acknowledgeClaim(executionId, { leaseId, fenceToken })`.
 Startup terminal reconciliation uses system `acknowledge(executionId)` without
 a Worker lease; acknowledgement errors retain the item.
+
+Each claim increments `fenceToken`. If L1 expires, recovery requeues it and L2
+claims token `N + 1`; L1's late output, terminal persistence, and acknowledgement
+are rejected while L2 retains ownership.
 
 Recovery replays queued items in FIFO order. An active processing lease remains
 unchanged. An expired processing item has its old lease cleared and returns to

@@ -5,6 +5,7 @@ import { createSavedTranscriptRetranslationService as createDefaultSavedTranscri
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
+import { createTranslationExecutionFenceGuard as createDefaultTranslationExecutionFenceGuard } from '../src/application/translation/translationExecutionFenceGuard.js';
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
 import { assertTranslationExecutionQueue } from '../src/application/translation/translationExecutionQueue.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
@@ -45,12 +46,15 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionDispatcher,
     translationExecutionQueue,
     translationExecutionRunner,
+    translationExecutionFenceGuard,
     translationExecutionWorker,
     translationExecutionWorkerRuntime,
     durableTranslationExecutionQueueRepository,
     translationQueueLeaseMs,
+    translationQueueLeaseRenewalMs,
     translationQueueClock,
     translationQueueLeaseIdFactory,
+    translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -76,12 +80,15 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionDispatcher,
     translationExecutionQueue,
     translationExecutionRunner,
+    translationExecutionFenceGuard,
     translationExecutionWorker,
     translationExecutionWorkerRuntime,
     durableTranslationExecutionQueueRepository,
     translationQueueLeaseMs,
+    translationQueueLeaseRenewalMs,
     translationQueueClock,
     translationQueueLeaseIdFactory,
+    translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider,
     translationExecutionProviderResolver,
     translationDomainEventHandlers,
@@ -149,6 +156,8 @@ export function createProductionApplicationDependencies(options = {}) {
     durableQueueFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
+    translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
+    translationExecutionFenceGuardFactory = createDefaultTranslationExecutionFenceGuard,
     ...applicationOptions
   } = options;
 
@@ -254,6 +263,12 @@ export function createProductionApplicationDependencies(options = {}) {
           clock: translationQueueClock
         })
       : applicationOptions.translationExecutionQueue;
+  const translationExecutionFenceGuard = durableTranslationExecutionQueueRepository !== undefined
+    ? translationExecutionFenceGuardFactory({
+        durableTranslationExecutionQueueRepository,
+        clock: translationQueueClock.now.bind(translationQueueClock)
+      })
+    : undefined;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
     ...(activeTranslationExecutionQueue !== undefined
@@ -262,9 +277,12 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }
       : {}),
+    ...(translationExecutionFenceGuard !== undefined ? { translationExecutionFenceGuard } : {}),
     translationQueueLeaseMs: queueConfiguration.leaseMs,
+    translationQueueLeaseRenewalMs: queueConfiguration.leaseRenewalMs,
     translationQueueClock,
     translationQueueLeaseIdFactory,
+    translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider: resolvedTranslationExecutionProvider,
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     ...resolvedProviderDependencies
@@ -419,12 +437,15 @@ export function createTranslationCommandDependencies({
   translationExecutionDispatcher,
   translationExecutionQueue,
   translationExecutionRunner,
+  translationExecutionFenceGuard,
   translationExecutionWorker,
   translationExecutionWorkerRuntime,
   durableTranslationExecutionQueueRepository,
   translationQueueLeaseMs,
+  translationQueueLeaseRenewalMs,
   translationQueueClock,
   translationQueueLeaseIdFactory,
+  translationQueueLeaseHeartbeatScheduler,
   translationExecutionProvider,
   translationExecutionProviderResolver,
   translationDomainEventHandlers,
@@ -463,7 +484,8 @@ export function createTranslationCommandDependencies({
           translationExecutionProvider: createResolverBackedTranslationExecutionProvider(
             resolvedTranslationExecutionProviderResolver
           ),
-          retryPolicy: resolvedRetryPolicy
+          retryPolicy: resolvedRetryPolicy,
+          ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
   const resolvedWorkerTranslationExecutionRunner =
@@ -486,11 +508,17 @@ export function createTranslationCommandDependencies({
           ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseMs !== undefined
             ? { leaseDurationMs: translationQueueLeaseMs }
             : {}),
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseRenewalMs !== undefined
+            ? { leaseRenewalMs: translationQueueLeaseRenewalMs }
+            : {}),
           ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueClock !== undefined
             ? { clock: translationQueueClock.now.bind(translationQueueClock) }
             : {}),
           ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseIdFactory !== undefined
             ? { leaseIdFactory: translationQueueLeaseIdFactory }
+            : {}),
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseHeartbeatScheduler !== undefined
+            ? { leaseHeartbeatScheduler: translationQueueLeaseHeartbeatScheduler }
             : {})
         })
       : undefined);
@@ -539,6 +567,13 @@ export function createTranslationCommandDependencies({
     translationCommandController,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents
   };
+}
+
+function createDefaultLeaseHeartbeatScheduler() {
+  return Object.freeze({
+    set(callback, delayMs) { return setTimeout(callback, delayMs); },
+    clear(handle) { clearTimeout(handle); }
+  });
 }
 
 export function createSavedTranscriptRetranslationDependencies({
@@ -595,14 +630,15 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
       return translationExecutionRunner.execute(input);
     },
 
-    async run({ execution, request } = {}) {
+    async run({ execution, request, executionFence } = {}) {
       const runningExecution = execution.start(execution.startedAt);
       const repositoryResult = await translationRepository.updateTranslationExecution(runningExecution);
 
       return translationExecutionRunner.execute({
         execution: runningExecution,
         payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
-        repositoryResult
+        repositoryResult,
+        ...(executionFence !== undefined ? { executionFence } : {})
       });
     }
   });

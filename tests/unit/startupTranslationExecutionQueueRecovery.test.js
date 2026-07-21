@@ -437,6 +437,7 @@ function durableItem(overrides = {}) {
     requestId: 'request-1',
     enqueuedAt: '2026-07-17T08:00:00.000Z',
     status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED,
+    fenceToken: 0,
     ...overrides
   };
 }
@@ -496,6 +497,8 @@ function durableRepository(overrides = {}) {
       throw new Error('recovery should not query durable item existence');
     },
     async claim() { throw new Error('recovery should not claim'); },
+    async renewClaim() { throw new Error('recovery should not renew'); },
+    async assertClaimActive() { throw new Error('recovery should not assert a worker claim'); },
     async requeueExpiredProcessing(executionId, now) {
       calls?.push(['durable.requeueExpiredProcessing', executionId, now]);
       return overrides.requeueExpiredProcessing

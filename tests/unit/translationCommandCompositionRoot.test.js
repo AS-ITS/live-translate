@@ -403,7 +403,7 @@ test('production composition creates durable queue repository when feature flag 
     clear() {},
     updateStatus() {},
     acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
+    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const fileSystem = Object.freeze({
     access() {},
@@ -503,7 +503,7 @@ test('production composition uses file-backed durable repository factory when en
     'updateStatus',
     'acknowledge',
     'acknowledgeClaim',
-    'contains', 'claim', 'requeueExpiredProcessing'
+    'contains', 'claim', 'renewClaim', 'assertClaimActive', 'requeueExpiredProcessing'
   ]);
   assert.equal(Object.isFrozen(dependencies.durableTranslationExecutionQueueRepository), true);
 });
@@ -555,7 +555,7 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
         },
         contains() {
           return false;
-        }, claim() {}, requeueExpiredProcessing() { return null; }
+        }, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
       };
     },
     translationQueueClock: {
@@ -599,12 +599,13 @@ test('production composition injects active dual-write queue into service worker
     clear() {},
     updateStatus() {},
     acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
+    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const activeQueue = queue();
   const observed = {};
   const leaseIdFactory = () => 'lease-from-composition';
   const queueClock = { now: () => '2026-07-20T00:00:00.000Z' };
+  const heartbeatScheduler = { set() {}, clear() {} };
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
@@ -642,8 +643,10 @@ test('production composition injects active dual-write queue into service worker
       observed.workerQueue = options.translationExecutionQueue;
       observed.workerDurableRepository = options.durableTranslationExecutionQueueRepository;
       observed.workerLeaseDurationMs = options.leaseDurationMs;
+      observed.workerLeaseRenewalMs = options.leaseRenewalMs;
       observed.workerLeaseIdFactory = options.leaseIdFactory;
       observed.workerClock = options.clock;
+      observed.workerLeaseHeartbeatScheduler = options.leaseHeartbeatScheduler;
       return { processNext() {} };
     },
     translationExecutionWorkerRuntimeFactory(options) {
@@ -654,7 +657,8 @@ test('production composition injects active dual-write queue into service worker
       throw new Error('saved transcript provider resolution should not run');
     },
     translationQueueLeaseIdFactory: leaseIdFactory,
-    translationQueueClock: queueClock
+    translationQueueClock: queueClock,
+    translationQueueLeaseHeartbeatScheduler: heartbeatScheduler
   });
 
   assert.strictEqual(dependencies.translationExecutionQueue, activeQueue);
@@ -665,8 +669,10 @@ test('production composition injects active dual-write queue into service worker
   assert.strictEqual(observed.workerQueue, activeQueue);
   assert.strictEqual(observed.workerDurableRepository, durableRepository);
   assert.equal(observed.workerLeaseDurationMs, 1000);
+  assert.equal(observed.workerLeaseRenewalMs, 500);
   assert.strictEqual(observed.workerLeaseIdFactory, leaseIdFactory);
   assert.equal(observed.workerClock(), '2026-07-20T00:00:00.000Z');
+  assert.strictEqual(observed.workerLeaseHeartbeatScheduler, heartbeatScheduler);
   assert.strictEqual(observed.runtimeQueue, activeQueue);
 });
 
@@ -680,7 +686,7 @@ test('production composition creates startup recovery when durable queue is enab
     clear() {},
     updateStatus() {},
     acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
+    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const recovery = { recover() {} };
   let observedRecoveryOptions;
@@ -756,7 +762,7 @@ test('production runtime start awaits startup recovery before starting worker ru
         updateStatus() {},
         acknowledge() {},
         acknowledgeClaim() {},
-        contains() {}, claim() {}, requeueExpiredProcessing() { return null; }
+        contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
       };
     },
     startupTranslationExecutionQueueRecoveryFactory() {

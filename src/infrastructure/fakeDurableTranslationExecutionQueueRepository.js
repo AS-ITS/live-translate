@@ -75,7 +75,9 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
       if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
       const item = items[itemIndex];
       if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
-      if (item.leaseId !== claim.leaseId) throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      if (item.leaseId !== claim.leaseId || item.fenceToken !== claim.fenceToken) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
       return items.splice(itemIndex, 1)[0];
     },
 
@@ -93,10 +95,38 @@ export function createFakeDurableTranslationExecutionQueueRepository() {
       const claimedItem = createDurableTranslationExecutionQueueItem({
         ...items[itemIndex],
         status: 'processing',
+        fenceToken: items[itemIndex].fenceToken + 1,
         ...lease
       });
       items[itemIndex] = claimedItem;
       return claimedItem;
+    },
+
+    renewClaim(executionId, claim, lease) {
+      const itemIndex = items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = items[itemIndex];
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId || item.leaseExpiresAt <= lease.now) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
+
+      const renewedItem = createDurableTranslationExecutionQueueItem({
+        ...item,
+        leaseExpiresAt: lease.leaseExpiresAt
+      });
+      items[itemIndex] = renewedItem;
+      return renewedItem;
+    },
+
+    assertClaimActive(executionId, claim, now) {
+      const item = items.find((candidate) => candidate.executionId === executionId);
+      if (item === undefined) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId || item.fenceToken !== claim.fenceToken || item.leaseExpiresAt <= now) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
+      return item;
     },
 
     requeueExpiredProcessing(executionId, now) {

@@ -29,6 +29,11 @@
 
 ### Added
 
+- Phase 3I Lease Renewal & Execution Fencing: completed heartbeat renewal,
+  monotonic fence-token claims, fenced output/terminal persistence, and
+  token-aware acknowledgement with production-composition verification using
+  deterministic fake clocks, schedulers, and providers. Documentation records
+  remaining transaction, idempotency, retry, locking, and observability limits.
 - Phase 3G WP6 Failed Execution Reconciliation: startup recovery now marks and
   acknowledges an expired processing durable item as failed only when the
   execution is already failed and has no output. Failure state and metadata are

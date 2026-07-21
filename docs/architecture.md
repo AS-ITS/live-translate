@@ -144,14 +144,20 @@ queue port, FIFO behavior, or the HTTP `202 Accepted` submission contract:
 | `failed` | Recovery does not replay it; the Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not call the provider. |
 
+Durable execution ownership is `leaseId + fenceToken + leaseExpiresAt` on the
+durable item; durable identity remains `executionId + requestId`. `leaseId`
+identifies the claimant, `fenceToken` is the monotonically increasing claim
+generation, and `leaseExpiresAt` determines whether recovery may reclaim it.
+
 Durable lease lifecycle:
 
 ```text
 queued
-  → Worker claim(leaseId, leaseExpiresAt)
+  → Worker claim(leaseId, fenceToken, leaseExpiresAt)
   → processing
-  → Runner success / failure
-  → acknowledgeClaim(leaseId)
+  → heartbeat renewal
+  → Runner output / terminal persistence guarded by leaseId + fenceToken
+  → acknowledgeClaim(leaseId, fenceToken)
   → remove
 ```
 
@@ -185,7 +191,7 @@ The Worker also retains `claimedAt` as compatibility metadata; recovery expiry
 decisions use only `leaseExpiresAt`.
 After the Runner persists a terminal `completed` or `failed` execution, the
 Worker acknowledges the durable item and removes it only when its claim lease
-matches; startup reconciliation uses the system acknowledgement path.
+and fence token match; startup reconciliation uses the system acknowledgement path.
 If acknowledgement fails, the item remains stored and the acknowledgement error
 propagates unchanged.
 
@@ -196,6 +202,7 @@ Configuration:
 - `TRANSLATION_DURABLE_QUEUE_FILE` optionally selects the JSON durable queue
   file. When omitted, the default is `translation-execution-queue.json`.
 - `TRANSLATION_QUEUE_LEASE_MS` defaults to `300000` milliseconds.
+- `TRANSLATION_QUEUE_LEASE_RENEWAL_MS` configures the heartbeat renewal interval.
 
 Recovery replays `queued` items in FIFO order. For an expired `processing` item
 with complete lease metadata, it first loads the execution and its outputs. A
@@ -213,9 +220,10 @@ execution and its failure metadata are never rewritten. A failed durable item
 is acknowledged at startup only for that same failed/no-output state.
 Conflicting persisted identities fail before replay.
 
-Lease renewal, heartbeat, execution fencing after expiry, distributed locking,
-retry/backoff, dead-letter queues, and lease ownership checks outside Worker
-acknowledgement remain out of scope.
+Lease renewal and fenced persistence are cooperative checks at separate durable
+queue and translation-repository boundaries; no cross-storage transaction is
+provided. Distributed locking, retry/backoff, dead-letter queues, provider
+idempotency, and cross-process atomicity remain out of scope.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,

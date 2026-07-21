@@ -51,6 +51,7 @@ test('production composition persists and acknowledges the worker claim lease ar
       requestId: 'request-lease-success',
       enqueuedAt: '2026-07-20T00:00:00.000Z',
       status: 'processing',
+      fenceToken: 1,
       leaseId: 'lease-L1',
       claimedAt: '2026-07-20T00:00:00.000Z',
       leaseExpiresAt: '2026-07-20T00:05:00.000Z'
@@ -65,6 +66,44 @@ test('production composition persists and acknowledges the worker claim lease ar
     assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
   }, {
     translationQueueLeaseIdFactory: () => 'lease-L1',
+    providerExecute: async () => {
+      providerStarted();
+      return providerReleasePromise;
+    }
+  });
+});
+
+test('production worker renews a long-running claim and leaves it active for recovery', async () => {
+  let releaseProvider;
+  const providerReleasePromise = new Promise((resolve) => { releaseProvider = resolve; });
+  let providerStarted;
+  const providerStartedPromise = new Promise((resolve) => { providerStarted = resolve; });
+  const scheduler = fakeScheduler();
+  let now = '2026-07-20T00:00:00.000Z';
+
+  await withProductionFixture(async ({ dependencies }) => {
+    const executionId = 'execution-heartbeat';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+    const processing = dependencies.translationExecutionWorker.processNext();
+    await providerStartedPromise;
+
+    now = '2026-07-20T00:02:00.000Z';
+    await scheduler.runNext();
+    assert.equal(
+      (await dependencies.durableTranslationExecutionQueueRepository.peek()).leaseExpiresAt,
+      '2026-07-20T00:07:00.000Z'
+    );
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+    assert.equal(dependencies.translationExecutionQueue.size(), 0);
+
+    releaseProvider({ translatedText: 'done' });
+    await processing;
+    assert.equal(scheduler.activeCount(), 0);
+  }, {
+    translationQueueClock: { now: () => now },
+    translationQueueLeaseHeartbeatScheduler: scheduler,
+    translationQueueLeaseIdFactory: () => 'lease-heartbeat',
     providerExecute: async () => {
       providerStarted();
       return providerReleasePromise;
@@ -98,13 +137,15 @@ test('production recovery preserves an active lease while replaying other queued
         requestId: 'request-active-lease',
         enqueuedAt: '2026-07-20T00:00:00.000Z',
         status: 'processing',
+        fenceToken: 1,
         ...activeLease
       },
       {
         executionId: 'execution-replay-queued',
         requestId: 'request-replay-queued',
         enqueuedAt: '2026-07-20T00:00:00.000Z',
-        status: 'queued'
+        status: 'queued',
+        fenceToken: 0
       }
     ]);
     assert.deepEqual(providerCalls, []);
@@ -128,7 +169,8 @@ test('reclaimed lease receives a new worker lease and rejects stale acknowledgem
       executionId,
       requestId: 'request-reclaimed-lease',
       enqueuedAt: '2026-07-20T00:00:00.000Z',
-      status: 'queued'
+      status: 'queued',
+      fenceToken: 1
     });
 
     const processing = dependencies.translationExecutionWorker.processNext();
@@ -137,7 +179,7 @@ test('reclaimed lease receives a new worker lease and rejects stale acknowledgem
     assert.equal(claimedByWorkerB.leaseId, 'lease-L2');
     assert.equal(claimedByWorkerB.leaseExpiresAt, '2026-07-20T00:05:00.000Z');
     await assert.rejects(
-      () => dependencies.durableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId: 'lease-L1' }),
+      () => dependencies.durableTranslationExecutionQueueRepository.acknowledgeClaim(executionId, { leaseId: 'lease-L1', fenceToken: 1 }),
       (error) => error.code === 'translation_execution_queue_lease_ownership_error'
     );
     assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), claimedByWorkerB);
@@ -150,6 +192,63 @@ test('reclaimed lease receives a new worker lease and rejects stale acknowledgem
     providerExecute: async () => {
       providerStarted();
       return providerReleasePromise;
+    }
+  });
+});
+
+test('production composition fences late L1 persistence after L2 reclaims and completes', async () => {
+  let now = '2026-07-20T00:00:00.000Z';
+  let releaseL1;
+  let releaseL2;
+  let l1Started;
+  let l2Started;
+  const l1StartedPromise = new Promise((resolve) => { l1Started = resolve; });
+  const l2StartedPromise = new Promise((resolve) => { l2Started = resolve; });
+  const l1Result = new Promise((resolve) => { releaseL1 = resolve; });
+  const l2Result = new Promise((resolve) => { releaseL2 = resolve; });
+  let leaseNumber = 0;
+  let providerNumber = 0;
+
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    const executionId = 'execution-fenced-reclaim';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+
+    const l1 = dependencies.translationExecutionWorker.processNext();
+    await l1StartedPromise;
+    const l1Item = await dependencies.durableTranslationExecutionQueueRepository.peek();
+    assert.equal(l1Item.fenceToken, 1);
+
+    now = '2026-07-20T00:06:00.000Z';
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+    const l2 = dependencies.translationExecutionWorker.processNext();
+    await l2StartedPromise;
+    const l2Item = await dependencies.durableTranslationExecutionQueueRepository.peek();
+    assert.equal(l2Item.leaseId, 'lease-L2');
+    assert.equal(l2Item.fenceToken, 2);
+
+    releaseL1({ translatedText: 'late L1 output' });
+    await assert.rejects(l1, (error) => error.code === 'translation_execution_queue_lease_ownership_error');
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.peek(), l2Item);
+    assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution(executionId), []);
+
+    releaseL2({ translatedText: 'L2 output' });
+    await l2;
+    assert.equal(providerCalls.length, 2);
+    assert.equal((await dependencies.translationRepository.getTranslationExecution(executionId)).status, 'completed');
+    assert.equal((await dependencies.translationRepository.listTranslationOutputsByExecution(executionId)).length, 1);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  }, {
+    translationQueueClock: { now: () => now },
+    translationQueueLeaseIdFactory: () => `lease-L${++leaseNumber}`,
+    translationQueueLeaseHeartbeatScheduler: fakeScheduler(),
+    providerExecute: async () => {
+      providerNumber += 1;
+      if (providerNumber === 1) {
+        l1Started();
+        return l1Result;
+      }
+      l2Started();
+      return l2Result;
     }
   });
 });
@@ -373,7 +472,8 @@ test('recovery retains completed state after acknowledgement failure and retries
       executionId,
       requestId: executionId.replace('execution', 'request'),
       enqueuedAt: '2026-07-20T00:00:00.000Z',
-      status: 'completed'
+      status: 'completed',
+      fenceToken: 1
     }]);
 
     await dependencies.startupTranslationExecutionQueueRecovery.recover();
@@ -449,7 +549,8 @@ test('recovery retains failed state after acknowledgement failure and retries on
       executionId,
       requestId,
       enqueuedAt: '2026-07-20T00:00:00.000Z',
-      status: 'failed'
+      status: 'failed',
+      fenceToken: 1
     }]);
 
     await dependencies.startupTranslationExecutionQueueRecovery.recover();
@@ -607,6 +708,7 @@ test('production composition propagates acknowledgement failure after terminal p
           requestId: 'request-acknowledgement-failure',
           enqueuedAt: '2026-07-20T00:00:00.000Z',
           status: 'processing',
+          fenceToken: 1,
           leaseId: 'lease-wp2',
           claimedAt: '2026-07-20T00:00:00.000Z',
           leaseExpiresAt: '2026-07-20T00:05:00.000Z'
@@ -708,6 +810,29 @@ async function createRequestAndQueuedExecution(dependencies, { executionId }) {
     providerKey: 'fake',
     startedAt: '2026-07-20T00:01:00.000Z'
   });
+}
+
+function fakeScheduler() {
+  const active = new Set();
+  return {
+    set(callback) {
+      active.add(callback);
+      return callback;
+    },
+    clear(callback) {
+      active.delete(callback);
+    },
+    async runNext() {
+      const callback = active.values().next().value;
+      if (callback !== undefined) {
+        active.delete(callback);
+        await callback();
+      }
+    },
+    activeCount() {
+      return active.size;
+    }
+  };
 }
 
 async function createRequest(dependencies, { requestId, executionId = requestId.replace('request', 'execution') }) {

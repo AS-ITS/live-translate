@@ -480,3 +480,60 @@ function providerResult(overrides = {}) {
     ...overrides
   };
 }
+
+test('fenced runner checks before output and completed writes in existing order', async () => {
+  const calls = [];
+  const guard = { async assertWritable(input) { calls.push(['guard', input]); } };
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: provider(),
+    executionFenceGuard: guard
+  });
+
+  await runner.execute({ ...runnerInput(), executionFence: { executionId: 'execution-1', leaseId: 'lease-1', fenceToken: 1 } });
+
+  assert.deepEqual(calls.map(([name]) => name), ['guard', 'createTranslationOutput', 'guard', 'updateTranslationExecution']);
+  assert.deepEqual(calls[0][1], { executionId: 'execution-1', claim: { leaseId: 'lease-1', fenceToken: 1 } });
+});
+
+test('fence rejection prevents the corresponding success and failure persistence writes', async () => {
+  const outputError = new Error('output ownership lost');
+  const outputCalls = [];
+  const outputRunner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls: outputCalls }),
+    translationExecutionProvider: provider(),
+    executionFenceGuard: { async assertWritable() { throw outputError; } }
+  });
+  await assert.rejects(
+    () => outputRunner.execute({ ...runnerInput(), executionFence: { leaseId: 'lease-1', fenceToken: 1 } }),
+    (error) => error === outputError
+  );
+  assert.deepEqual(outputCalls, []);
+
+  const completedError = new Error('completed ownership lost');
+  const completedCalls = [];
+  let guardCalls = 0;
+  const completedRunner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls: completedCalls }),
+    translationExecutionProvider: provider(),
+    executionFenceGuard: { async assertWritable() { guardCalls += 1; if (guardCalls === 2) throw completedError; } }
+  });
+  await assert.rejects(
+    () => completedRunner.execute({ ...runnerInput(), executionFence: { leaseId: 'lease-1', fenceToken: 1 } }),
+    (error) => error === completedError
+  );
+  assert.deepEqual(completedCalls.map(([name]) => name), ['createTranslationOutput']);
+
+  const failedError = new Error('failed ownership lost');
+  const failedCalls = [];
+  const failedRunner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls: failedCalls }),
+    translationExecutionProvider: { async execute() { throw new Error('provider failed'); } },
+    executionFenceGuard: { async assertWritable() { throw failedError; } }
+  });
+  await assert.rejects(
+    () => failedRunner.execute({ ...runnerInput(), executionFence: { leaseId: 'lease-1', fenceToken: 1 } }),
+    (error) => error === failedError
+  );
+  assert.deepEqual(failedCalls, []);
+});

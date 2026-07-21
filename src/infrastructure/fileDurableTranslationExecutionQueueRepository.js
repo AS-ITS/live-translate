@@ -97,7 +97,9 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
       const item = storage.items[itemIndex];
       if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
-      if (item.leaseId !== claim.leaseId) throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      if (item.leaseId !== claim.leaseId || item.fenceToken !== claim.fenceToken) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
 
       storage.items.splice(itemIndex, 1);
       await writeStorage({ fileSystem, filePath, storage });
@@ -120,11 +122,42 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       const claimedItem = createDurableTranslationExecutionQueueItem({
         ...storage.items[itemIndex],
         status: 'processing',
+        fenceToken: storage.items[itemIndex].fenceToken + 1,
         ...lease
       });
       storage.items[itemIndex] = claimedItem;
       await writeStorage({ fileSystem, filePath, storage });
       return claimedItem;
+    },
+
+    async renewClaim(executionId, claim, lease) {
+      const storage = await readStorage({ fileSystem, filePath });
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = storage.items[itemIndex];
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId || item.leaseExpiresAt <= lease.now) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
+
+      const renewedItem = createDurableTranslationExecutionQueueItem({
+        ...item,
+        leaseExpiresAt: lease.leaseExpiresAt
+      });
+      storage.items[itemIndex] = renewedItem;
+      await writeStorage({ fileSystem, filePath, storage });
+      return renewedItem;
+    },
+
+    async assertClaimActive(executionId, claim, now) {
+      const storage = await readExistingStorage({ fileSystem, filePath });
+      const item = storage?.items.find((candidate) => candidate.executionId === executionId);
+      if (item === undefined) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== claim.leaseId || item.fenceToken !== claim.fenceToken || item.leaseExpiresAt <= now) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
+      return item;
     },
 
     async requeueExpiredProcessing(executionId, now) {
@@ -192,6 +225,7 @@ function serializeStorage(storage) {
         requestId: item.requestId,
         enqueuedAt: item.enqueuedAt,
         status: item.status,
+        fenceToken: item.fenceToken,
         ...(item.status === 'processing' && item.leaseId !== undefined
           ? {
               leaseId: item.leaseId,

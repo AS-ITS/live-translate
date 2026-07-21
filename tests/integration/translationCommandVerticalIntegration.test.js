@@ -1342,7 +1342,10 @@ test('POST /api/translation-outputs creates a TranslationOutput through producti
         nested: { preserved: true }
       },
       providerMetadataAvailable: true,
-      createdAt: '2026-07-14T01:06:00.000Z'
+      createdAt: '2026-07-14T01:06:00.000Z',
+      sourceLanguageMetadata: null,
+      sourceTranscriptMetadata: null,
+      completedAt: '2026-07-14T01:06:00.000Z'
     });
     assert.equal(calls.length, 1);
     assert.equal(calls[0][0] instanceof TranslationOutput, true);

@@ -161,7 +161,10 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
           detectedSourceLanguageCode: 'en'
         },
         providerMetadataAvailable: true,
-        createdAt: '2026-07-15T01:00:03.000Z'
+        createdAt: '2026-07-15T01:00:03.000Z',
+        sourceLanguageMetadata: null,
+        sourceTranscriptMetadata: null,
+        completedAt: '2026-07-15T01:00:03.000Z'
       }
     });
   });
@@ -263,7 +266,10 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
         providerMetadata: {
           detectedSourceLanguageCode: 'en'
         },
-        createdAt: '2026-07-15T01:00:03.000Z'
+        createdAt: '2026-07-15T01:00:03.000Z',
+        sourceLanguageMetadata: null,
+        sourceTranscriptMetadata: null,
+        completedAt: '2026-07-15T01:00:03.000Z'
       }
     ]
   });

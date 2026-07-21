@@ -184,7 +184,10 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
           const execution = state.executions.find((item) => item.id === translationOutput.executionId);
           const request = state.requests.find((item) => item.id === execution?.translationRequestId);
           if (!execution || !request) throw new Error(`TranslationExecution ${translationOutput.executionId} was not found`);
-          if (translationOutput.targetLanguageCode !== request.targetLanguageCode) {
+          if (
+            (translationOutput.sessionId !== undefined || translationOutput.requestId !== undefined) &&
+            translationOutput.targetLanguageCode !== request.targetLanguageCode
+          ) {
             throw new Error('TranslationOutput targetLanguageCode must match TranslationRequest');
           }
           const persistedOutput = enrichOutputForPersistence(translationOutput, request, state.outputs);

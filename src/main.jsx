@@ -853,7 +853,7 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         <p className="history-empty">No saved transcript.</p>
       )}
 
-      <TranslationHistoryPanel history={historyData || { translationHistory: detail.translationHistory }} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} />
+      <TranslationHistoryPanel history={historyData ?? (detail.translationHistory === undefined ? undefined : { translationHistory: detail.translationHistory })} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} />
       {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>Retry</button></p> : null}
 
       <section className="saved-export-panel" aria-label="Retranslation">

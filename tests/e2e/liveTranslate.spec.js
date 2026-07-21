@@ -261,6 +261,10 @@ test('stopped session can open and close inline detail with metadata and final t
 
 test('session detail renders filtered translation history with mixed-language detection', async ({ page }) => {
   await page.route('**/api/sessions/**', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/translations')) {
       await route.fulfill({
@@ -296,13 +300,13 @@ test('session detail renders filtered translation history with mixed-language de
 
   const detail = sessionDetail(page);
   const history = detail.getByLabel('Translation history');
-  await expect(history.getByText('こんにちは')).toBeVisible();
+  await expect(history.getByText('こんにちは', { exact: true })).toBeVisible();
   await expect(history.getByText('世界')).toBeVisible();
   await expect(history.getByText('Bonjour')).toBeVisible();
   await expect(history.getByText('Detected source languages: en, ja')).toHaveCount(3);
 
   await history.getByRole('combobox', { name: 'Filter output language' }).selectOption('ja');
-  await expect(history.getByText('こんにちは')).toBeVisible();
+  await expect(history.getByText('こんにちは', { exact: true })).toBeVisible();
   await expect(history.getByText('世界')).toBeVisible();
   await expect(history.getByText('Bonjour')).toBeHidden();
 });

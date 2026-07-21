@@ -146,7 +146,10 @@ test('translation command HTTP path persists command state through production co
         nested: { preserved: true }
       },
       providerMetadataAvailable: true,
-      createdAt: '2026-07-14T01:04:00.000Z'
+      createdAt: '2026-07-14T01:04:00.000Z',
+      sourceLanguageMetadata: null,
+      sourceTranscriptMetadata: null,
+      completedAt: '2026-07-14T01:04:00.000Z'
     });
 
     const duplicateOutputResponse = await postJson(
@@ -203,7 +206,10 @@ test('translation command HTTP path persists command state through production co
             provider: 'fixture-provider',
             nested: { preserved: true }
           },
-          createdAt: '2026-07-14T01:04:00.000Z'
+          createdAt: '2026-07-14T01:04:00.000Z',
+          sourceLanguageMetadata: null,
+          sourceTranscriptMetadata: null,
+          completedAt: '2026-07-14T01:04:00.000Z'
         }
       ]
     });

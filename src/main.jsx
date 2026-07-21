@@ -11,7 +11,9 @@ import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
+import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
+import { HISTORY_REFRESH_MS, hasPendingExecutions, selectedOutputFor } from './lib/sessionHistoryState.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -673,6 +675,14 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
   const [translationLanguageFilter, setTranslationLanguageFilter] = useState('');
+  const [selectedOutputId, setSelectedOutputId] = useState(null);
+  const [showRetranslation, setShowRetranslation] = useState(false);
+  const [retranslationLanguage, setRetranslationLanguage] = useState('en');
+  const [isSubmittingRetranslation, setIsSubmittingRetranslation] = useState(false);
+  const [retranslationError, setRetranslationError] = useState('');
+  const [localExecutions, setLocalExecutions] = useState([]);
+  const [historyData, setHistoryData] = useState(translationHistory);
+  const [refreshError, setRefreshError] = useState('');
   const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
@@ -680,7 +690,27 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
     setSavedExportStream('translation');
     setSavedExportError('');
     setTranslationLanguageFilter('');
+    setSelectedOutputId(null); setShowRetranslation(false); setRetranslationError(''); setLocalExecutions([]);
+    setHistoryData(translationHistory); setRefreshError('');
   }, [sessionRecordId]);
+
+  useEffect(() => { setHistoryData(translationHistory); }, [translationHistory]);
+  useEffect(() => {
+    if (!sessionRecordId || !hasPendingExecutions(historyData) && localExecutions.length === 0) return undefined;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const next = await createSessionReadApiClient().getSessionTranslations(sessionRecordId);
+        if (!active || !next) return;
+        setHistoryData(next);
+        const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
+        setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
+        setRefreshError('');
+      } catch { if (active) setRefreshError('Translation history could not be refreshed.'); }
+    };
+    refresh(); const timer = setInterval(refresh, HISTORY_REFRESH_MS);
+    return () => { active = false; clearInterval(timer); };
+  }, [sessionRecordId, historyData, localExecutions.length]);
 
   if (detail === undefined) {
     return (
@@ -715,7 +745,13 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
   const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
   const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
   const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
-  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
+  const selectedFormalOutput = selectedOutputFor(historyData, selectedOutputId);
+  const formalOutputItems = selectedFormalOutput?.source === 'formal' && selectedFormalOutput.translatedText
+    ? [{ id: selectedFormalOutput.id, stream: 'translation', status: 'final', text: selectedFormalOutput.translatedText, sequence: 0, startedAt: sessionRecord.startedAt }]
+    : null;
+  const canDownloadSavedTranscript = formalOutputItems
+    ? canExportTranscript(formalOutputItems, { format: savedExportFormat, stream: 'translation', timeOrigin: sessionRecord.startedAt })
+    : canExportSavedSession(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream
   });
@@ -728,11 +764,17 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
     setSavedExportError('');
 
     try {
-      const content = formatSavedSessionExport(exportDetail, {
+      const content = formalOutputItems ? formatTranscriptExport(formalOutputItems, {
+        format: savedExportFormat,
+        stream: 'translation',
+        timeOrigin: sessionRecord.startedAt
+      }) : formatSavedSessionExport(exportDetail, {
         format: savedExportFormat,
         stream: savedExportStream
       });
-      const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
+      const fileName = formalOutputItems
+        ? `session-${sessionRecord.id}-${selectedFormalOutput.targetLanguageCode}-v${selectedFormalOutput.version}.${savedExportFormat}`
+        : buildSavedSessionFileName(exportDetail.sessionRecord, {
         format: savedExportFormat,
         stream: savedExportStream
       });
@@ -811,7 +853,24 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         <p className="history-empty">No saved transcript.</p>
       )}
 
-      <TranslationHistoryPanel history={translationHistory} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} />
+      <TranslationHistoryPanel history={historyData || { translationHistory: detail.translationHistory }} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} />
+      {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>Retry</button></p> : null}
+
+      <section className="saved-export-panel" aria-label="Retranslation">
+        <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
+        {showRetranslation ? <div className="controls saved-export-controls">
+          <label className="field"><span>目標語言</span><select value={retranslationLanguage} onChange={(event) => setRetranslationLanguage(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <button className="button" type="button" disabled={isSubmittingRetranslation} onClick={async () => {
+            setIsSubmittingRetranslation(true); setRetranslationError('');
+            try {
+              const result = await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
+              setLocalExecutions((items) => [...items, { ...result.execution, targetLanguageCode: retranslationLanguage }]); setShowRetranslation(false);
+            } catch { setRetranslationError('Unable to queue re-translation. Please try again.'); }
+            finally { setIsSubmittingRetranslation(false); }
+          }}>{isSubmittingRetranslation ? 'Submitting…' : '開始翻譯'}</button>
+          {retranslationError ? <p className="error-message" role="alert">{retranslationError}</p> : null}
+        </div> : null}
+      </section>
 
       <section className="saved-export-panel" aria-label="Saved transcript export">
         <div className="controls saved-export-controls">
@@ -870,9 +929,20 @@ function TranscriptItemList({ title, items }) {
   );
 }
 
-function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange }) {
+function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange, selectedOutputId, onSelectOutput, localExecutions = [] }) {
   if (history === undefined) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Loading translation history...</p></section>;
   if (!history) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Translation history is unavailable.</p></section>;
+  const model = history.translationHistory;
+  if (model) {
+    const outputs = [...model.outputs].sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)) || String(a.id).localeCompare(String(b.id)));
+    const selected = outputs.find((output) => output.id === selectedOutputId) || outputs[0];
+    const executions = [...model.executions, ...localExecutions];
+    return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4>
+      {outputs.map((output) => <button className="button detail-button" type="button" key={output.id} onClick={() => onSelectOutput(output.id)} aria-pressed={selected?.id === output.id}>{output.targetLanguageCode} · {output.version ? `v${output.version}` : 'legacy'} · {formatRecordTime(output.completedAt)}</button>)}
+      {selected ? <div><p><strong>{selected.targetLanguageCode} {selected.version ? `v${selected.version}` : ''}</strong></p><p>{selected.translatedText}</p></div> : <p className="history-empty">No completed translations.</p>}
+      {executions.length ? <ul>{executions.map((execution) => <li key={execution.id}>{execution.targetLanguageCode || 'Translation'} · {execution.status}{execution.failureInfo?.message ? ` · ${execution.failureInfo.message}` : ''}</li>)}</ul> : null}
+    </section>;
+  }
   const languageCodes = [...new Set(history.translations.map((item) => item.request.targetLanguageCode))];
   const translations = targetLanguageCode ? history.translations.filter((item) => item.request.targetLanguageCode === targetLanguageCode) : history.translations;
   return (

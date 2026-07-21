@@ -193,7 +193,8 @@ function logProviderError(requestId, error) {
 const createDefaultApplicationDependencies =
   process.env.NODE_ENV === 'production' ? createProductionApplicationDependencies : createApplicationDependencies;
 const { requestHandler: defaultRequestHandler } = createDefaultApplicationDependencies({
-  requestHandlerFactory: createRequestHandler
+  requestHandlerFactory: createRequestHandler,
+  includeSessionRetranslationCommandController: true
 });
 
 export function createRequestHandler(options = {}) {
@@ -203,6 +204,7 @@ export function createRequestHandler(options = {}) {
     translationCommandController,
     translationHistoryController,
     savedTranscriptRetranslationController,
+    sessionRetranslationCommandController,
     liveTokenCreator = createLiveToken
   } = options;
 
@@ -217,6 +219,7 @@ export function createRequestHandler(options = {}) {
       translationCommandController,
       translationHistoryController,
       savedTranscriptRetranslationController,
+      sessionRetranslationCommandController,
       liveTokenCreator
     });
   };
@@ -229,7 +232,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, translationHistoryController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, translationHistoryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -320,11 +323,28 @@ async function handleRequestWithSessionReadController(
     try {
       const { sessionId, targetLanguageCode } = parseSessionTranslationHistoryPath(req.url || path);
       if (targetLanguageCode !== undefined && !isSupportedLanguage(targetLanguageCode)) throw createHttpError('unsupported_language');
-      const result = await translationHistoryController.listSessionTranslations({ sessionId, targetLanguageCode });
+      const result = await translationHistoryController.listSessionTranslations({ sessionId, targetLanguageCode, includeReadModel: true });
       if (!result) { statusCode = 404; sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId); return; }
       statusCode = 200; sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error); statusCode = ERROR_RESPONSES[code]?.status || error.status || 500; sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isSessionRetranslationPath(path)) {
+    try {
+      if (!sessionRetranslationCommandController) throw createHttpError('saved_transcript_retranslation_unavailable');
+      const body = await readJson(req);
+      const result = await sessionRetranslationCommandController.submitRetranslation(
+        validateSessionRetranslationRequest({ sessionId: extractSessionRetranslationSessionId(path), body })
+      );
+      statusCode = 202;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -338,6 +358,20 @@ async function handleRequestWithSessionReadController(
         statusCode = 404;
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
         return;
+      }
+
+      if (translationHistoryController) {
+        try {
+          const history = await translationHistoryController.listSessionTranslations({ sessionId, includeReadModel: true });
+          const formalHistory = history?.translationHistory;
+          const outputs = formalHistory?.outputs || [];
+          session.translationHistory = {
+            outputs: outputs.length > 0 ? outputs : legacyTranslationFallback(session.translationOutputs),
+            executions: formalHistory?.executions || []
+          };
+        } catch {
+          // Translation history is an isolated read enhancement; preserve detail.
+        }
       }
 
       statusCode = 200;
@@ -508,6 +542,37 @@ function isSavedTranscriptRetranslationRoute(method, path) {
 
 function isSessionTranslationHistoryPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/translations') && path.length > '/api/sessions//translations'.length;
+}
+
+function isSessionRetranslationPath(path) {
+  return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
+}
+
+function extractSessionRetranslationSessionId(path) {
+  try { return decodeURIComponent(path.slice('/api/sessions/'.length, -'/retranslations'.length)); }
+  catch { throw createHttpError('invalid_request'); }
+}
+
+function validateSessionRetranslationRequest({ sessionId, body }) {
+  if (!isPlainRequestObject(body) || ['sourceText', 'sourceLanguageCode', 'transcriptItems', 'sessionId'].some((key) => Object.hasOwn(body, key))) {
+    throw createHttpError('invalid_request');
+  }
+  return {
+    sessionId: validateRequiredString(sessionId),
+    targetLanguageCode: validateSupportedTargetLanguageCode(body.targetLanguageCode),
+    providerKey: body.providerKey
+  };
+}
+
+function legacyTranslationFallback(outputs) {
+  return (Array.isArray(outputs) ? outputs : []).map((output) => ({
+    id: output.id,
+    targetLanguageCode: output.targetLanguageCode,
+    version: null,
+    source: 'legacy',
+    translatedText: Array.isArray(output.items) ? output.items.map((item) => item?.text).filter(Boolean).join('\n') : null,
+    completedAt: output.completedAt ?? output.createdAt ?? null
+  }));
 }
 
 function parseSessionTranslationHistoryPath(url) {

@@ -56,6 +56,17 @@
 
 ### Added
 
+- Phase 4B WP2 Multi-output Persistence and Read Model: formal outputs now
+  retain canonical request/source metadata and a monotonic per-session,
+  per-target-language version. Translation history exposes completed outputs
+  separately from executions that do not yet have an output.
+
+- Phase 4B WP1 Re-translation Command Contract: added `POST
+  /api/sessions/:sessionId/retranslations`, which derives immutable source input
+  from canonical final Session transcript items and creates a new queued request
+  and execution through the existing durable queue path without provider calls
+  or output creation.
+
 - Phase 4A closeout: restored full-suite test fixtures and assertions to the
   Phase 3K durable queue/provider-attempt contract, added deterministic history
   UI E2E coverage, and documented production/manual Gemini smoke-test setup.

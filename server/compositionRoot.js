@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
+import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
@@ -40,6 +41,7 @@ import { createTranslationRepositoryAdapter } from '../src/infrastructure/transl
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
+import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
@@ -70,6 +72,9 @@ export function createApplicationDependencies(options = {}) {
     resolveSavedTranscriptTranslationProvider,
     savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService,
     savedTranscriptRetranslationControllerFactory = createDefaultSavedTranscriptRetranslationController,
+    sessionRetranslationCommandServiceFactory = createDefaultSessionRetranslationCommandService,
+    sessionRetranslationCommandControllerFactory = createDefaultSessionRetranslationCommandController,
+    includeSessionRetranslationCommandController = false,
     idGenerator = createDefaultIdGenerator(),
     clock = () => Date.now(),
     translationCommandServiceFactory = createDefaultTranslationCommandService,
@@ -127,6 +132,16 @@ export function createApplicationDependencies(options = {}) {
   const savedTranscriptRetranslationController = savedTranscriptRetranslationService
     ? savedTranscriptRetranslationControllerFactory({ savedTranscriptRetranslationService })
     : undefined;
+  const sessionRetranslationCommandService = sessionRetranslationCommandServiceFactory({
+    sessionRepository: sessionReadDependencies.sessionRepository,
+    translationCommandService: translationCommandDependencies.translationCommandService,
+    translationProviderResolver: translationExecutionProviderResolver ?? createFakeTranslationExecutionProviderResolver({
+      translationExecutionProvider: translationExecutionProvider ?? { async execute() {} }
+    }),
+    idGenerator,
+    clock
+  });
+  const sessionRetranslationCommandController = sessionRetranslationCommandControllerFactory({ sessionRetranslationCommandService });
   const translationHistoryQueryService = translationHistoryQueryServiceFactory({
     sessionRepository: sessionReadDependencies.sessionRepository,
     translationRepository: translationCommandDependencies.translationRepository
@@ -138,7 +153,8 @@ export function createApplicationDependencies(options = {}) {
       sessionRepository: sessionReadDependencies.sessionRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
       translationHistoryController,
-        ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {})
+      ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
+      ...(includeSessionRetranslationCommandController ? { sessionRetranslationCommandController } : {})
       })
     : undefined;
 
@@ -149,6 +165,8 @@ export function createApplicationDependencies(options = {}) {
     translationHistoryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
+    sessionRetranslationCommandService,
+    sessionRetranslationCommandController,
     ...(requestHandler ? { requestHandler } : {})
   };
 }
@@ -763,6 +781,11 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     executionId: execution.id,
     sourceText: sourceTextFromSnapshot(sourceTranscriptSnapshot),
     sourceLanguageCode: sourceTranscriptSnapshot.sourceLanguageCode,
+    sourceLanguageMetadata: sourceTranscriptSnapshot.sourceLanguageDetection,
+    sourceTranscriptMetadata: {
+      revisionId: request.sourceTranscriptRevisionId,
+      sourceTranscriptSnapshot
+    },
     targetLanguageCode: request.targetLanguageCode,
     providerKey: execution.providerKey,
     completedAt: execution.startedAt

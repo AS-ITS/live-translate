@@ -1,5 +1,25 @@
 # Live Translate API and Events
 
+## `POST /api/sessions/:sessionId/retranslations`
+
+Queues a new translation execution from the Session's canonical final source
+transcript. The request body may contain only `targetLanguageCode` and optional
+`providerKey`; source text, source language, transcript items, and source
+metadata are always derived by the server.
+
+```json
+{ "targetLanguageCode": "ja", "providerKey": "gemini" }
+```
+
+The endpoint returns `202 Accepted` with the newly created request and queued
+execution. Submission validates the provider selection but does not call the
+provider, runner, or worker and does not create a translation output.
+
+Translation history responses include `translationHistory.outputs` for formal
+completed outputs and `translationHistory.executions` for executions without an
+output. Formal output versions are scoped to `(sessionId, targetLanguageCode)`
+and are ordered by completion time, newest first.
+
 ## `POST /api/live-token`
 
 Creates a short-lived Gemini ephemeral token for one browser Live Translate
@@ -212,4 +232,3 @@ Handling requirements:
 - Move frontend state to `error` when the end is unexpected.
 
 TODO: Confirm exact SDK session close/end event names.
-

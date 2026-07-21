@@ -202,6 +202,15 @@ export class TranslationOutput {
     this.providerMetadata = deepClone(input.providerMetadata ?? null);
     this.providerMetadataAvailable = this.providerMetadata !== null;
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
+    this.sessionId = assertOptionalString(input.sessionId, 'sessionId');
+    this.requestId = assertOptionalString(input.requestId, 'requestId');
+    this.sourceText = input.sourceText === undefined ? undefined : assertRequiredString(input.sourceText, 'sourceText');
+    this.sourceLanguageCode = assertOptionalString(input.sourceLanguageCode, 'sourceLanguageCode');
+    this.sourceLanguageMetadata = deepClone(input.sourceLanguageMetadata ?? null);
+    this.sourceTranscriptMetadata = deepClone(input.sourceTranscriptMetadata ?? null);
+    this.detectedSourceLanguageCode = assertOptionalString(input.detectedSourceLanguageCode, 'detectedSourceLanguageCode');
+    this.version = input.version === undefined ? undefined : assertPositiveInteger(input.version, 'version');
+    this.completedAt = input.completedAt === undefined ? this.createdAt : assertTimestamp(input.completedAt, 'completedAt');
 
     deepFreeze(this);
   }
@@ -267,6 +276,11 @@ function normalizeProviderResult(value) {
     );
   }
   return deepClone(result);
+}
+
+function assertPositiveInteger(value, field) {
+  if (!Number.isInteger(value) || value < 1) throw new RangeError(`${field} must be a positive integer`);
+  return value;
 }
 
 function assertInputObject(value, field) {

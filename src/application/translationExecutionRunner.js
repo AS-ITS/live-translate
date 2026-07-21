@@ -54,13 +54,21 @@ export function createTranslationExecutionRunner({
         sequence: payload.outputSequence ?? 0,
         translatedText: providerAttemptExecution.providerResult.translatedText,
         targetLanguageCode: payload.targetLanguageCode,
-        createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
+        createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
+        sessionId: payload.sessionId,
+        requestId: payload.requestId,
+        sourceText: payload.sourceText,
+        sourceLanguageCode: payload.sourceLanguageCode,
+        sourceLanguageMetadata: payload.sourceLanguageMetadata,
+        sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
+        detectedSourceLanguageCode: providerAttemptExecution.providerResult.detectedSourceLanguageCode,
+        completedAt: payload.completedAt ?? execution.startedAt
       });
       await assertWritable(executionFenceGuard, execution, executionFence);
       const outputRepositoryResult = await translationRepository.createTranslationOutput(output);
 
       await notifyOptional(onTranslationOutputCreated, {
-        output,
+        output: outputRepositoryResult,
         repositoryResult: outputRepositoryResult
       });
 
@@ -100,7 +108,15 @@ export function createTranslationExecutionRunner({
         sequence: payload.outputSequence ?? 0,
         translatedText: execution.providerResult.translatedText,
         targetLanguageCode: payload.targetLanguageCode,
-        createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
+        createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
+        sessionId: payload.sessionId,
+        requestId: payload.requestId,
+        sourceText: payload.sourceText,
+        sourceLanguageCode: payload.sourceLanguageCode,
+        sourceLanguageMetadata: payload.sourceLanguageMetadata,
+        sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
+        detectedSourceLanguageCode: execution.providerResult.detectedSourceLanguageCode,
+        completedAt: payload.completedAt ?? execution.startedAt
       });
       await assertWritable(executionFenceGuard, execution, executionFence);
       await translationRepository.createTranslationOutput(output);

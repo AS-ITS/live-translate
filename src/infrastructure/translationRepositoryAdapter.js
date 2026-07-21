@@ -181,10 +181,18 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
             throw new Error(`TranslationOutput already exists: ${translationOutput.id}`);
           }
 
+          const execution = state.executions.find((item) => item.id === translationOutput.executionId);
+          const request = state.requests.find((item) => item.id === execution?.translationRequestId);
+          if (!execution || !request) throw new Error(`TranslationExecution ${translationOutput.executionId} was not found`);
+          if (translationOutput.targetLanguageCode !== request.targetLanguageCode) {
+            throw new Error('TranslationOutput targetLanguageCode must match TranslationRequest');
+          }
+          const persistedOutput = enrichOutputForPersistence(translationOutput, request, state.outputs);
+
           return saveTranslationState(sessionRepository, result.sessionRecord.id, {
             ...state,
-            outputs: [...state.outputs, serializeTranslationOutput(translationOutput)]
-          }).thenResult(() => toTranslationOutput(translationOutput));
+            outputs: [...state.outputs, serializeTranslationOutput(persistedOutput)]
+          }).thenResult(() => toTranslationOutput(persistedOutput));
         }
       );
     },
@@ -354,8 +362,54 @@ function serializeTranslationOutput(output) {
     translatedText: output.translatedText,
     targetLanguageCode: output.targetLanguageCode,
     providerMetadata: clonePlain(output.providerMetadata),
-    createdAt: output.createdAt
+    createdAt: output.createdAt,
+    ...(output.sessionId === undefined ? {} : { sessionId: output.sessionId }),
+    ...(output.requestId === undefined ? {} : { requestId: output.requestId }),
+    ...(output.sourceText === undefined ? {} : { sourceText: output.sourceText }),
+    ...(output.sourceLanguageCode === undefined ? {} : { sourceLanguageCode: output.sourceLanguageCode }),
+    sourceLanguageMetadata: clonePlain(output.sourceLanguageMetadata),
+    sourceTranscriptMetadata: clonePlain(output.sourceTranscriptMetadata),
+    ...(output.detectedSourceLanguageCode === undefined ? {} : { detectedSourceLanguageCode: output.detectedSourceLanguageCode }),
+    ...(output.version === undefined ? {} : { version: output.version }),
+    completedAt: output.completedAt
   };
+}
+
+function enrichOutputForPersistence(output, request, existingOutputs) {
+  // Preserve legacy direct command compatibility. Runner-backed formal outputs
+  // always provide canonical request/session context.
+  if (output.sessionId === undefined && output.requestId === undefined) return output;
+  const snapshot = request.sourceTranscriptSnapshot ?? {};
+  const version = output.version ?? nextOutputVersion(existingOutputs, request.sessionId, request.targetLanguageCode);
+  return new TranslationOutput({
+    id: output.id,
+    executionId: output.executionId,
+    sequence: output.sequence,
+    translatedText: output.translatedText,
+    targetLanguageCode: request.targetLanguageCode,
+    providerMetadata: output.providerMetadata,
+    createdAt: output.createdAt,
+    completedAt: output.completedAt,
+    sessionId: request.sessionId,
+    requestId: request.id,
+    sourceText: output.sourceText ?? sourceTextFromSnapshot(snapshot),
+    sourceLanguageCode: output.sourceLanguageCode ?? snapshot.sourceLanguageCode,
+    sourceLanguageMetadata: output.sourceLanguageMetadata ?? snapshot.sourceLanguageDetection,
+    sourceTranscriptMetadata: output.sourceTranscriptMetadata ?? { revisionId: request.sourceTranscriptRevisionId, snapshot },
+    detectedSourceLanguageCode: output.detectedSourceLanguageCode ?? output.providerMetadata?.detectedSourceLanguageCode,
+    version
+  });
+}
+
+function nextOutputVersion(outputs, sessionId, targetLanguageCode) {
+  return outputs.filter((output) => output.sessionId === sessionId && output.targetLanguageCode === targetLanguageCode)
+    .reduce((maximum, output) => Math.max(maximum, Number.isInteger(output.version) ? output.version : 0), 0) + 1;
+}
+
+function sourceTextFromSnapshot(snapshot) {
+  if (typeof snapshot.sourceText === 'string') return snapshot.sourceText;
+  if (typeof snapshot.text === 'string') return snapshot.text;
+  return Array.isArray(snapshot.items) ? snapshot.items.map((item) => item?.text).filter((text) => typeof text === 'string' && text.length > 0).join('\n') : undefined;
 }
 
 function toTranslationRequest(value) {

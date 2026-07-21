@@ -63,6 +63,26 @@ language detection, and filters the displayed records by target language.
 - History reads do not start providers, queues, workers, runners, or glossary
   loading and do not mutate records.
 
+## Phase 4B Closeout
+
+A completed Session can submit a new re-translation from its persisted canonical
+source transcript. The user selects an allowlisted target language; each accepted
+submission creates a distinct request and queued execution. Completed formal
+outputs are versioned independently for each `(sessionId, targetLanguageCode)`,
+so the same language can have, for example, English v1 and English v2 while a
+different language starts at v1.
+
+Session detail keeps completed formal outputs separate from pending or
+failed-only executions. Users can switch among formal output versions and
+languages. TXT, SRT, and VTT export uses the currently selected formal output;
+pending or failed-only history has no formal-output export. A legacy-only
+Session remains a read-only compatibility fallback and continues to use its
+existing saved-session exporter.
+
+History refreshes while an execution is pending. It is polling, not a
+real-time completion guarantee. The UI does not provide manual retry, cancel,
+DLQ management, or cross-Session history search.
+
 ### Production and Manual Gemini Smoke Test
 
 Configure secrets outside version control. `GEMINI_API_KEY` is required by the

@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 4A closeout completed; the capability is ready for
+Current milestone: Phase 4B closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
@@ -81,6 +81,19 @@ coverage plus build/static validation. Backlog: accounts and authorization,
 glossary CRUD/UI and private glossaries, cross-session history, translation
 retry/cancel/delete controls, and manual validation of Gemini quality and
 segment-level language detection in each deployment environment.
+
+Phase 4B is completed:
+
+1. WP1 Session re-translation command.
+2. WP2 Multi-output persistence and history read model.
+3. WP3 Durable queue vertical integration.
+4. WP4 History UI, polling, and selected-output export.
+5. WP5 Documentation and release closeout.
+
+Follow-up backlog, not Phase 4B delivery: manual retry/cancel, DLQ
+inspection/replay UI, cross-Session history search, output retention/deletion
+policy, provider-side idempotency guarantees, and push-based execution-status
+updates in place of polling.
 
 Completed Phase 1 capabilities include:
 

@@ -56,6 +56,15 @@
 
 ### Added
 
+- Phase 4B WP5 Documentation and Release Closeout: documented Session
+  re-translation and allowlisted target selection; multi-language,
+  multi-version formal outputs with deterministic version allocation and
+  execution-level output idempotency; history read-model precedence and legacy
+  fallback/error isolation; durable request reconstruction, reclaim/recovery,
+  lease/fence, and DLQ boundaries; and history polling, stale-response cleanup,
+  selected-output TXT/SRT/VTT export. Provider-side Gemini de-duplication,
+  manual retry/cancel, DLQ UI, and cross-Session search remain out of scope.
+
 - Phase 4B WP2 Multi-output Persistence and Read Model: formal outputs now
   retain canonical request/source metadata and a monotonic per-session,
   per-target-language version. Translation history exposes completed outputs

@@ -13,12 +13,55 @@ metadata are always derived by the server.
 
 The endpoint returns `202 Accepted` with the newly created request and queued
 execution. Submission validates the provider selection but does not call the
-provider, runner, or worker and does not create a translation output.
+provider, runner, or worker and does not create a translation output. Each valid
+submission creates a new request/execution pair.
+
+The client must not send `sourceText`, source language, transcript items, source
+metadata, or a version. The server derives canonical source text and provenance
+from the persisted Session and request state. On completion, it allocates the
+formal output version by `(sessionId, targetLanguageCode)`.
 
 Translation history responses include `translationHistory.outputs` for formal
 completed outputs and `translationHistory.executions` for executions without an
 output. Formal output versions are scoped to `(sessionId, targetLanguageCode)`
 and are ordered by completion time, newest first.
+
+`GET /api/sessions/:sessionId` includes this compact read model when the
+translation-history read succeeds:
+
+```js
+{
+  translationHistory: {
+    outputs: [
+      {
+        id,
+        executionId,
+        requestId,
+        translatedText,
+        targetLanguageCode,
+        version,
+        completedAt,
+        source: 'formal'
+      }
+    ],
+    executions: [
+      {
+        id,
+        requestId,
+        targetLanguageCode,
+        status // queued | processing | failed
+      }
+    ]
+  }
+}
+```
+
+The detailed session-scoped history is also available from `GET
+/api/sessions/:sessionId/translations`, optionally filtered by an allowlisted
+`targetLanguageCode`. Source-language detection is exposed there as canonical
+`sourceLanguageDetections`; it may contain multiple detected language codes.
+If this history read fails while loading Session detail, the main Session detail
+response remains available; history is an isolated read enhancement.
 
 ## `POST /api/live-token`
 

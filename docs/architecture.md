@@ -371,6 +371,31 @@ The optional file glossary is loaded only by production provider composition and
 is added to provider instructions for the selected target language. It must not
 rewrite canonical source text, request snapshots, or persisted output.
 
+## Phase 4B Formal Outputs and History
+
+`TranslationOutput` is the authoritative completed-translation record. Formal
+versions increase monotonically within `(sessionId, targetLanguageCode)`;
+different languages and different Sessions each begin at v1. Queued,
+processing, and failed executions create no output and consume no version. An
+execution is output-idempotent: retry, recovery, reclaim, or re-entry retains
+at most one output and its original version.
+
+The durable queue stores scheduling and claim state plus identifiers only. The
+persisted `TranslationRequest` remains authoritative for canonical source,
+target language, and source provenance; Workers and recovery reload it by
+`requestId`. Lease and fence ownership guard output persistence, completion,
+and acknowledgement. Local output idempotency prevents duplicate persisted
+outputs, but Gemini's provider-side idempotency for a reclaimed execution is
+`unknown` and no remote de-duplication is guaranteed. Terminal failure creates
+no output, and DLQ transfer does not invoke a provider.
+
+For Session detail, formal outputs take precedence over the legacy fallback.
+Completed outputs and pending/failed executions are shown separately. The UI
+polls only while work is pending; session changes, unmount, and newer refreshes
+discard stale responses, and a selected output remains selected unless it no
+longer exists. TXT/SRT/VTT export uses the selected formal output. Legacy-only
+Sessions retain the existing compatibility read model and exporter.
+
 ## Security Considerations
 
 - `GEMINI_API_KEY` must stay on the backend.

@@ -663,7 +663,29 @@ Compatibility Adapter in repository implementation or read-model mapper.
 See [Session Records & Translation History](../features/session-records-history.md)
 and [Session Records Architecture](session-records-architecture.md).
 
-## 11. Export Architecture
+## 11. Phase 4B Translation History Boundary
+
+Session re-translation derives immutable source input from the saved canonical
+transcript and submits a new request/execution asynchronously. Completed
+`TranslationOutput` records are formal, versioned results: versions are
+monotonic per `(sessionId, targetLanguageCode)`, while an output is idempotent
+per execution. The Session detail read model prefers these formal outputs and
+uses legacy output projection only when no formal output exists.
+
+Queue items remain identifier-and-claim records; request persistence owns source
+text, target language, and provenance. Worker/recovery reload request state by
+`requestId`; lease/fence checks guard output, terminal state, and acknowledgement
+writes. Reclaim safety is local persistence safety, not a Gemini remote
+deduplication guarantee. Failed terminal work produces no output and DLQ
+transfer never calls a provider.
+
+The detail UI separates completed outputs from pending/failed executions and
+polls only while pending work exists. It prevents stale responses from replacing
+newer session/refresh state, retains the selected output when possible, and
+exports the selected formal output as TXT/SRT/VTT. Legacy-only Sessions retain
+their existing read-only fallback and exporter.
+
+## 12. Export Architecture
 
 There are two export paths.
 

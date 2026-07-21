@@ -311,6 +311,15 @@ Deferred:
   - Remaining work: lease/visibility-timeout renewal, retry scheduling,
     dead-letter queue, multi-worker/distributed locking, provider-level
     idempotency, and event-publishing deduplication.
+- Phase 3K - Provider Execution Idempotency & Recovery: Completed
+  - WP1 Stable provider idempotency key
+  - WP2 Provider metadata propagation
+  - WP3 Provider attempt persistence
+  - WP4 Provider result snapshot and reconciliation
+  - WP5 Capability-aware reclaim and recovery
+  - WP6 Documentation and regression closeout
+  - Follow-up reliability backlog: cross-process atomicity, distributed locking,
+    event-publishing deduplication, and metrics/alerting.
 - Phase 3F - Durable Queue Terminal Acknowledgement & Recovery Eligibility: Completed
   - WP1 Durable Acknowledgement Contract
   - WP2 Worker Terminal Acknowledgement

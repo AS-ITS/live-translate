@@ -56,6 +56,10 @@
 
 ### Added
 
+- Phase 3K WP6 Documentation & Regression Closeout: documented stable provider
+  keys, attempt intent, result snapshots, reconciliation, and capability-aware
+  reclaim. Gemini remains `unknown`; cross-process atomicity, distributed
+  locking, event deduplication, and observability remain future reliability work.
 - Phase 3K WP4 Provider Result Persistence & Output Reconciliation: succeeded
   provider attempts now persist a validated result snapshot before output and
   completion writes; reclaimed succeeded attempts reconcile without provider replay.

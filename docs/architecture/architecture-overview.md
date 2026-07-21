@@ -332,6 +332,17 @@ queue contract, FIFO semantics, and HTTP `202 Accepted` response:
 | `failed` | Recovery does not replay it; startup acknowledges only a failed execution with no output. The Worker skips a failed execution. |
 | `created` / `running` execution | The Worker skips it and does not invoke the provider. |
 
+Provider attempt state is independent of the execution state:
+`not_started → in_flight → succeeded | failed`. A successful provider result is
+persisted before output and completion. Recovery reconciles `succeeded` with a
+valid result snapshot without calling the provider. Expired `in_flight` work is
+replayed only for a provider declaring `idempotency.mode: guaranteed`; `unknown`
+and `unsupported` retain the durable item. Gemini remains `unknown` even though
+it receives `metadata.idempotencyKey`.
+
+Lease ID and fence token protect attempt snapshot, output, completion, and
+acknowledgement writes from stale owners.
+
 Feature flags:
 
 - `TRANSLATION_DURABLE_QUEUE_ENABLED`: disabled by default. When set to `true`,

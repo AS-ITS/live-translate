@@ -26,10 +26,21 @@ it. Reclaiming an expired lease creates a higher `fenceToken`; stale workers are
 rejected before output, terminal-state, or acknowledgement persistence. The
 production integration suite uses fake providers, clocks, and schedulers only.
 
-Current limitations: no cross-storage transaction, provider idempotency,
-distributed locking, or cross-process atomicity. Retry/backoff and terminal
-dead-letter transfer are durable; DLQ replay and retention policies remain out
-of scope.
+Each execution has a stable `providerIdempotencyKey`. It is provider metadata
+only: it is never included in the translation prompt, output, or HTTP response.
+Provider attempts persist `not_started → in_flight → succeeded | failed`.
+Successful attempts persist a result snapshot before output and execution
+completion, so recovery can reconcile output without another provider call.
+
+Provider capability controls expired `in_flight` recovery: `guaranteed` may
+replay with the same key; `unknown` and `unsupported` keep the durable item for
+safe manual or future handling. Gemini currently declares `unknown`: accepting
+`metadata.idempotencyKey` is not a verified remote deduplication guarantee.
+
+Current limitations: no cross-storage transaction, distributed locking,
+cross-process atomicity, event-publishing deduplication, or metrics/alerting.
+Retry/backoff and terminal dead-letter transfer are durable; DLQ replay and
+retention policies remain out of scope.
 
 Phase 2 Overall
 Status: In Progress

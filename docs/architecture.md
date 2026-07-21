@@ -220,6 +220,26 @@ metadata is never rewritten. The DLQ write is idempotent by `executionId` and
 precedes removal from the durable queue.
 Conflicting persisted identities fail before replay.
 
+Provider attempt state is persisted independently as
+`not_started → in_flight → succeeded | failed`. Successful execution writes:
+
+```text
+persist in_flight
+→ provider call
+→ persist succeeded + providerResult snapshot
+→ persist output
+→ persist execution completed
+→ durable acknowledgement
+```
+
+Recovery reconciles `succeeded + providerResult` without resending the provider:
+it fills a missing output and completes the execution. Expired `in_flight` work
+may replay only when the resolved provider declares `idempotency.mode:
+guaranteed`; `unknown` and `unsupported` remain durable without replay. Gemini
+is `unknown` despite receiving `metadata.idempotencyKey`. Lease and fence token
+checks protect attempt snapshots, output, completion, and acknowledgement from
+stale owners.
+
 Lease renewal and fenced persistence are cooperative checks at separate durable
 queue and translation-repository boundaries; no cross-storage transaction is
 provided. Durable Workers may atomically requeue an owned transient provider
@@ -227,7 +247,7 @@ failure with retry metadata and return its running execution to `queued`; delay
 scheduling is driven by the Worker Runtime from `availableAt`. Terminal failures
 are persisted before a claim/fence-checked DLQ transfer; a failed transfer keeps
 the durable item for recovery. Distributed locking,
-provider idempotency, and cross-process atomicity remain out of scope.
+cross-process atomicity remain out of scope.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,

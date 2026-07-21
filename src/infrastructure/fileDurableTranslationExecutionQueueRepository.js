@@ -15,7 +15,7 @@ export const INVALID_TRANSLATION_EXECUTION_QUEUE_STORAGE_CODE = 'invalid_transla
 
 const INITIAL_STORAGE = Object.freeze({ items: [] });
 
-export function createFileDurableTranslationExecutionQueueRepository({ fileSystem, filePath } = {}) {
+export function createFileDurableTranslationExecutionQueueRepository({ fileSystem, filePath, deadLetterQueueRepository } = {}) {
   assertFileSystem(fileSystem);
   assertFilePath(filePath);
 
@@ -53,6 +53,19 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
     async list() {
       const storage = await readStorage({ fileSystem, filePath });
       return storage.items;
+    },
+
+    async listAvailable(now) {
+      const storage = await readStorage({ fileSystem, filePath });
+      return storage.items.filter((item) => item.status === 'queued' && (item.availableAt === null || item.availableAt <= now));
+    },
+
+    async nextAvailableAt(now) {
+      const storage = await readStorage({ fileSystem, filePath });
+      return storage.items
+        .filter((item) => item.status === 'queued' && item.availableAt !== null && item.availableAt > now)
+        .map((item) => item.availableAt)
+        .sort()[0] ?? null;
     },
 
     async size() {
@@ -106,6 +119,19 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       return item;
     },
 
+    async transferClaimToDeadLetter(executionId, transfer) {
+      const storage = await readStorage({ fileSystem, filePath });
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = storage.items[itemIndex];
+      assertOwnedProcessingItem(item, transfer);
+      if (deadLetterQueueRepository === undefined) throw new Error('deadLetterQueueRepository is required for dead-letter transfer.');
+      await deadLetterQueueRepository.enqueue(createDeadLetterItem(item, transfer));
+      storage.items.splice(itemIndex, 1);
+      await writeStorage({ fileSystem, filePath, storage });
+      return item;
+    },
+
     async contains(executionId) {
       const storage = await readExistingStorage({ fileSystem, filePath });
       return storage !== null && storage.items.some((item) => item.executionId === executionId);
@@ -128,6 +154,22 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       storage.items[itemIndex] = claimedItem;
       await writeStorage({ fileSystem, filePath, storage });
       return claimedItem;
+    },
+
+    async retryClaim(executionId, retry) {
+      const storage = await readStorage({ fileSystem, filePath });
+      const itemIndex = storage.items.findIndex((item) => item.executionId === executionId);
+      if (itemIndex === -1) throw createTranslationExecutionQueueItemNotFoundError(executionId);
+      const item = storage.items[itemIndex];
+      if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+      if (item.leaseId !== retry.leaseId || item.fenceToken !== retry.fenceToken) {
+        throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+      }
+
+      const requeuedItem = createRetryRequeuedItem(item, retry);
+      storage.items[itemIndex] = requeuedItem;
+      await writeStorage({ fileSystem, filePath, storage });
+      return requeuedItem;
     },
 
     async renewClaim(executionId, claim, lease) {
@@ -226,6 +268,9 @@ function serializeStorage(storage) {
         enqueuedAt: item.enqueuedAt,
         status: item.status,
         fenceToken: item.fenceToken,
+        attempt: item.attempt,
+        availableAt: item.availableAt,
+        lastFailure: item.lastFailure,
         ...(item.status === 'processing' && item.leaseId !== undefined
           ? {
               leaseId: item.leaseId,
@@ -264,6 +309,36 @@ function createRequeuedItem(item) {
   delete requeuedItem.claimedAt;
   delete requeuedItem.leaseExpiresAt;
   return createDurableTranslationExecutionQueueItem(requeuedItem);
+}
+
+function createRetryRequeuedItem(item, retry) {
+  const requeuedItem = {
+    ...item,
+    status: 'queued',
+    attempt: retry.attempt,
+    availableAt: retry.availableAt,
+    lastFailure: retry.lastFailure
+  };
+  delete requeuedItem.leaseId;
+  delete requeuedItem.claimedAt;
+  delete requeuedItem.leaseExpiresAt;
+  return createDurableTranslationExecutionQueueItem(requeuedItem);
+}
+
+function assertOwnedProcessingItem(item, claim) {
+  if (item.status !== 'processing') throw createDurableTranslationExecutionQueueItemNotClaimableError();
+  if (item.leaseId !== claim.leaseId || item.fenceToken !== claim.fenceToken) throw createDurableTranslationExecutionQueueLeaseOwnershipError();
+}
+
+function createDeadLetterItem(item, transfer) {
+  return {
+    executionId: item.executionId, requestId: item.requestId, attempt: item.attempt + 1,
+    availableAt: item.availableAt, lastFailure: item.lastFailure,
+    failedAt: transfer.failedAt, failure: transfer.failure,
+    ...(transfer.providerKey === undefined ? {} : { providerKey: transfer.providerKey }),
+    ...(transfer.providerMetadata === undefined ? {} : { providerMetadata: transfer.providerMetadata }),
+    ...(transfer.executionMetadata === undefined ? {} : { executionMetadata: transfer.executionMetadata })
+  };
 }
 
 function throwNotFound(executionId) { throw new Error(`Durable translation execution queue item ${executionId} was not found`); }

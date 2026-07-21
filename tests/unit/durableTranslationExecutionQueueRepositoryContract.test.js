@@ -11,6 +11,7 @@ import {
   TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE
 } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
+import { createFakeDeadLetterQueueRepository } from '../../src/infrastructure/fakeDeadLetterQueueRepository.js';
 
 export function runDurableQueueRepositoryContract({ createRepository }) {
   test('durable queue item identity compares same conflict and distinct items', () => {
@@ -54,6 +55,52 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(createDurableTranslationExecutionQueueItem(legacyItem), createItem());
     for (const fenceToken of [0, 1, 42]) {
       assert.equal(createDurableTranslationExecutionQueueItem(createItem({ fenceToken })).fenceToken, fenceToken);
+    }
+  });
+
+  test('durable queue item defaults missing retry metadata for legacy items', () => {
+    const legacyItem = createItem();
+    delete legacyItem.attempt;
+    delete legacyItem.availableAt;
+    delete legacyItem.lastFailure;
+
+    assert.deepEqual(createDurableTranslationExecutionQueueItem(legacyItem), createItem());
+  });
+
+  test('durable queue item preserves retry metadata', () => {
+    const lastFailure = { code: 'provider_unavailable', message: 'Provider unavailable' };
+    assert.deepEqual(
+      createDurableTranslationExecutionQueueItem(createItem({
+        attempt: 2,
+        availableAt: '2026-07-18T08:05:00.000Z',
+        lastFailure
+      })),
+      createItem({
+        attempt: 2,
+        availableAt: '2026-07-18T08:05:00.000Z',
+        lastFailure
+      })
+    );
+  });
+
+  test('durable queue item rejects invalid retry metadata', () => {
+    for (const attempt of [-1, 1.5, '1', null]) {
+      assert.throws(
+        () => createDurableTranslationExecutionQueueItem(createItem({ attempt })),
+        (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+      );
+    }
+    for (const availableAt of ['', 'not-a-date', 1, {}]) {
+      assert.throws(
+        () => createDurableTranslationExecutionQueueItem(createItem({ availableAt })),
+        (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+      );
+    }
+    for (const lastFailure of ['', 1, [], undefined]) {
+      assert.throws(
+        () => createDurableTranslationExecutionQueueItem(createItem({ lastFailure })),
+        (error) => error instanceof TypeError && error.code === INVALID_TRANSLATION_EXECUTION_QUEUE_ITEM_CODE
+      );
     }
   });
 
@@ -130,6 +177,24 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.equal(Object.isFrozen(items[0]), true);
     assert.equal(await repository.size(), 2);
     assert.deepEqual(await repository.dequeue(), first);
+  });
+
+  test('availability queries return only due queued items and the earliest delayed item', async () => {
+    const repository = createRepository();
+    const due = createItem({ executionId: 'execution-due', requestId: 'request-due' });
+    const delayedFirst = createItem({
+      executionId: 'execution-delayed-first', requestId: 'request-delayed-first',
+      availableAt: '2026-07-17T08:01:00.000Z'
+    });
+    const delayedSecond = createItem({
+      executionId: 'execution-delayed-second', requestId: 'request-delayed-second',
+      availableAt: '2026-07-17T08:02:00.000Z'
+    });
+    for (const item of [due, delayedFirst, delayedSecond]) await repository.enqueue(item);
+
+    assert.deepEqual(await repository.listAvailable('2026-07-17T08:00:00.000Z'), [due]);
+    assert.equal(await repository.nextAvailableAt('2026-07-17T08:00:00.000Z'), delayedFirst.availableAt);
+    assert.deepEqual(await repository.listAvailable(delayedFirst.availableAt), [due, delayedFirst]);
   });
 
   test('dequeue removes the returned item', async () => {
@@ -592,6 +657,44 @@ export function runDurableQueueRepositoryContract({ createRepository }) {
     assert.deepEqual(await repository.peek(), createProcessingItem(lease()));
   });
 
+  test('retryClaim atomically requeues the owned processing item with retry metadata', async () => {
+    const repository = createRepository();
+    await repository.enqueue(createItem());
+    await repository.claim('execution-1', lease());
+
+    const retry = {
+      leaseId: 'lease-1',
+      fenceToken: 1,
+      attempt: 1,
+      availableAt: '2026-07-17T08:01:00.000Z',
+      lastFailure: { reason: 'transient_error' }
+    };
+    const expected = createItem({
+      fenceToken: 1,
+      attempt: 1,
+      availableAt: retry.availableAt,
+      lastFailure: retry.lastFailure
+    });
+
+    assert.deepEqual(await repository.retryClaim('execution-1', retry), expected);
+    assert.deepEqual(await repository.peek(), expected);
+  });
+
+  test('retryClaim rejects stale ownership without changing the processing item', async () => {
+    const repository = createRepository();
+    await repository.enqueue(createItem());
+    await repository.claim('execution-1', lease());
+
+    await assert.rejects(
+      () => repository.retryClaim('execution-1', {
+        leaseId: 'stale-lease', fenceToken: 1, attempt: 1,
+        availableAt: '2026-07-17T08:01:00.000Z', lastFailure: { reason: 'transient_error' }
+      }),
+      (error) => error.code === TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE
+    );
+    assert.deepEqual(await repository.peek(), createProcessingItem());
+  });
+
   test('renewClaim updates only the expiry for the current active processing lease', async () => {
     const repository = createRepository();
     const item = createItem();
@@ -773,6 +876,26 @@ runDurableQueueRepositoryContract({
   createRepository: createFakeDurableTranslationExecutionQueueRepository
 });
 
+test('stale claim cannot transfer a reclaimed item to the dead-letter queue', async () => {
+  const deadLetterQueueRepository = createFakeDeadLetterQueueRepository();
+  const repository = createFakeDurableTranslationExecutionQueueRepository({ deadLetterQueueRepository });
+  await repository.enqueue(createItem());
+  await repository.claim('execution-1', { leaseId: 'lease-1', claimedAt: enqueuedAt(), leaseExpiresAt: leaseExpiresAt() });
+  await repository.requeueExpiredProcessing('execution-1', leaseExpiresAt());
+  const currentClaim = await repository.claim('execution-1', {
+    leaseId: 'lease-2', claimedAt: leaseExpiresAt(), leaseExpiresAt: renewalExpiresAt()
+  });
+
+  await assert.rejects(
+    () => repository.transferClaimToDeadLetter('execution-1', {
+      leaseId: 'lease-1', fenceToken: 1, failedAt: renewalNow(), failure: { reason: 'provider_error' }
+    }),
+    (error) => error.code === TRANSLATION_EXECUTION_QUEUE_LEASE_OWNERSHIP_CODE
+  );
+  assert.equal(await deadLetterQueueRepository.size(), 0);
+  assert.equal((await repository.peek()).fenceToken, currentClaim.fenceToken);
+});
+
 function createItem(overrides = {}) {
   return {
     executionId: 'execution-1',
@@ -780,6 +903,9 @@ function createItem(overrides = {}) {
     enqueuedAt: enqueuedAt(),
     status: 'queued',
     fenceToken: 0,
+    attempt: 0,
+    availableAt: null,
+    lastFailure: null,
     ...overrides
   };
 }

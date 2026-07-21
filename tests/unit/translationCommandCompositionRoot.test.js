@@ -9,6 +9,32 @@ import { TranslationExecution } from '../../src/domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
 import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
 
+test('production composition exposes and injects one queue retry policy and error classifier instance for durable workers', () => {
+  const retryPolicy = { canRetry() {}, getNextDelayMs() {} };
+  const retryErrorClassifier = { classify() {} };
+  let observedWorkerOptions;
+
+  const dependencies = createProductionApplicationDependencies({
+    env: { TRANSLATION_DURABLE_QUEUE_ENABLED: 'true' },
+    sessionReadRepository: readRepository(),
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    translationExecutionRetryPolicyFactory() { return retryPolicy; },
+    translationExecutionRetryErrorClassifierFactory() { return retryErrorClassifier; },
+    translationExecutionWorkerFactory(options) {
+      observedWorkerOptions = options;
+      return { processNext() {} };
+    }
+  });
+
+  assert.strictEqual(dependencies.translationExecutionRetryPolicy, retryPolicy);
+  assert.strictEqual(dependencies.translationExecutionRetryErrorClassifier, retryErrorClassifier);
+  assert.strictEqual(observedWorkerOptions.translationExecutionRetryPolicy, retryPolicy);
+  assert.strictEqual(observedWorkerOptions.translationExecutionRetryErrorClassifier, retryErrorClassifier);
+});
+
 test('application dependencies assemble translation command graph with injected repository', () => {
   const translationRepository = repository();
   const domainEventPublisher = publisher();
@@ -399,11 +425,12 @@ test('production composition creates durable queue repository when feature flag 
     dequeue() {},
     peek() {},
     list() {},
+    listAvailable() {}, nextAvailableAt() {},
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
+    acknowledge() {}, acknowledgeClaim() {}, transferClaimToDeadLetter() {},
+    contains() {}, claim() {}, retryClaim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const fileSystem = Object.freeze({
     access() {},
@@ -444,12 +471,10 @@ test('production composition creates durable queue repository when feature flag 
   });
 
   assert.strictEqual(dependencies.durableTranslationExecutionQueueRepository, durableRepository);
-  assert.deepEqual(calls, [
-    {
-      fileSystem,
-      filePath: '/tmp/translation-queue.json'
-    }
-  ]);
+  assert.equal(calls.length, 1);
+  assert.strictEqual(calls[0].fileSystem, fileSystem);
+  assert.equal(calls[0].filePath, '/tmp/translation-queue.json');
+  assert.equal(typeof calls[0].deadLetterQueueRepository.enqueue, 'function');
 });
 
 test('production composition uses file-backed durable repository factory when enabled', () => {
@@ -498,12 +523,15 @@ test('production composition uses file-backed durable repository factory when en
     'dequeue',
     'peek',
     'list',
+    'listAvailable',
+    'nextAvailableAt',
     'size',
     'clear',
     'updateStatus',
     'acknowledge',
     'acknowledgeClaim',
-    'contains', 'claim', 'renewClaim', 'assertClaimActive', 'requeueExpiredProcessing'
+    'transferClaimToDeadLetter',
+    'contains', 'claim', 'retryClaim', 'renewClaim', 'assertClaimActive', 'requeueExpiredProcessing'
   ]);
   assert.equal(Object.isFrozen(dependencies.durableTranslationExecutionQueueRepository), true);
 });
@@ -540,6 +568,7 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
         },
         peek() {},
         list() {},
+        listAvailable() {}, nextAvailableAt() {},
         size() {
           throw new Error('durable repository size should not be used by active queue');
         },
@@ -553,9 +582,10 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
         acknowledgeClaim() {
           throw new Error('durable repository worker acknowledgement should not be used by active queue');
         },
+        transferClaimToDeadLetter() {},
         contains() {
           return false;
-        }, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
+        }, claim() {}, retryClaim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
       };
     },
     translationQueueClock: {
@@ -595,11 +625,12 @@ test('production composition injects active dual-write queue into service worker
     dequeue() {},
     peek() {},
     list() {},
+    listAvailable() {}, nextAvailableAt() {},
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
+    acknowledge() {}, acknowledgeClaim() {}, transferClaimToDeadLetter() {},
+    contains() {}, claim() {}, retryClaim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const activeQueue = queue();
   const observed = {};
@@ -682,11 +713,12 @@ test('production composition creates startup recovery when durable queue is enab
     dequeue() {},
     peek() {},
     list() {},
+    listAvailable() {}, nextAvailableAt() {},
     size() {},
     clear() {},
     updateStatus() {},
-    acknowledge() {}, acknowledgeClaim() {},
-    contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
+    acknowledge() {}, acknowledgeClaim() {}, transferClaimToDeadLetter() {},
+    contains() {}, claim() {}, retryClaim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
   };
   const recovery = { recover() {} };
   let observedRecoveryOptions;
@@ -757,12 +789,14 @@ test('production runtime start awaits startup recovery before starting worker ru
         dequeue() {},
         peek() {},
         list() {},
+        listAvailable() {}, nextAvailableAt() {},
         size() {},
         clear() {},
         updateStatus() {},
         acknowledge() {},
         acknowledgeClaim() {},
-        contains() {}, claim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
+        transferClaimToDeadLetter() {},
+        contains() {}, claim() {}, retryClaim() {}, renewClaim() {}, assertClaimActive() {}, requeueExpiredProcessing() { return null; }
       };
     },
     startupTranslationExecutionQueueRecoveryFactory() {

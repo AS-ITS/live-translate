@@ -15,7 +15,7 @@ export function createTranslationExecutionRunner({
 
   return Object.freeze({
     async execute(input = {}) {
-      const { execution, payload, repositoryResult, onTranslationOutputCreated, onTranslationExecutionUpdated, executionFence } = input;
+      const { execution, payload, repositoryResult, onTranslationOutputCreated, onTranslationExecutionUpdated, executionFence, deferProviderFailure = false } = input;
 
       assertExecutionInput(execution);
       assertPayloadInput(payload);
@@ -24,6 +24,7 @@ export function createTranslationExecutionRunner({
       try {
         providerResult = await executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload);
       } catch (error) {
+        if (deferProviderFailure) throw error;
         await assertWritable(executionFenceGuard, execution, executionFence);
         await failExecutionAfterProviderError(translationRepository, execution, payload, onTranslationExecutionUpdated);
         throw error;

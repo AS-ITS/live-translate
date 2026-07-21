@@ -425,15 +425,22 @@ provider replay. A completed execution with output and an expired processing
 item likewise finalizes its durable item. Terminal failed, missing, mismatched,
 and active-lease items remain in storage. A durable completed item is
 acknowledged at startup only when its execution is completed and has output.
-An expired processing item with a failed execution and no output is marked and
-acknowledged as failed without changing execution state or failure metadata;
-the corresponding failed durable item can retry acknowledgement on startup.
+An expired processing item with a failed execution and no output retries its
+claim-guarded DLQ transfer without provider replay or rewriting execution
+failure metadata. DLQ persistence is idempotent by `executionId` and precedes
+durable-item removal.
 Conflicting persisted identities fail before replay.
 
 The Worker loads persisted execution and request records before durable claim or
 provider execution. Only queued executions proceed; created, running, completed,
 and failed executions return an `execution_not_processable` skip result without
 changing durable queue state or execution lifecycle.
+
+For an owned transient provider failure that remains below the queue retry
+limit, the Worker stores retry metadata, releases the durable item back to
+`queued`, and transitions the execution from `running` to `queued`. Terminal
+failures are persisted before a claim/fence-checked DLQ transfer. Runtime delay
+scheduling uses the earliest durable `availableAt`.
 
 Translation output persistence is idempotent by execution ID. The first stored
 output remains authoritative; subsequent create attempts return it without
@@ -445,7 +452,6 @@ Current limitations:
   success for missing-output or mismatched execution/durable state.
 - Failed reconciliation requires no output and leaves output-bearing failed
   executions durable.
-- No retry/backoff or dead-letter queue.
 - No lease renewal/heartbeat or execution fencing after lease expiry.
 - No multi-worker locking or cross-process deduplication policy.
 - These layers do not provide multi-process exactly-once delivery.

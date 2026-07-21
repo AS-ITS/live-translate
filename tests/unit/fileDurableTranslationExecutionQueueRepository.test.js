@@ -111,6 +111,30 @@ test('claim persists the processing lease metadata and returns the claimed item'
   assert.deepEqual(await readStorage(filePath), { items: [expected] });
 });
 
+test('retryClaim persists queued retry metadata and clears the processing lease', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  await repository.enqueue(createItem());
+  await repository.claim('execution-1', lease());
+
+  const retry = {
+    leaseId: 'lease-1',
+    fenceToken: 1,
+    attempt: 1,
+    availableAt: '2026-07-17T08:01:00.000Z',
+    lastFailure: { reason: 'transient_error' }
+  };
+  const expected = createItem({
+    fenceToken: 1,
+    attempt: 1,
+    availableAt: retry.availableAt,
+    lastFailure: retry.lastFailure
+  });
+
+  assert.deepEqual(await repository.retryClaim('execution-1', retry), expected);
+  assert.deepEqual(await createRepository({ filePath }).peek(), expected);
+});
+
 test('reclaim increments the persisted fenceToken after expired processing requeue', async () => {
   const filePath = temporaryFilePath();
   const firstRepository = createRepository({ filePath });
@@ -176,6 +200,9 @@ test('renewClaim preserves processing item field order and survives reload', asy
         enqueuedAt: expected.enqueuedAt,
         status: expected.status,
         fenceToken: expected.fenceToken,
+        attempt: expected.attempt,
+        availableAt: expected.availableAt,
+        lastFailure: expected.lastFailure,
         leaseId: expected.leaseId,
         claimedAt: expected.claimedAt,
         leaseExpiresAt: expected.leaseExpiresAt
@@ -319,6 +346,34 @@ test('persisted item without status loads as queued', async () => {
   );
 
   assert.deepEqual(await repository.peek(), createItem());
+});
+
+test('legacy storage without retry metadata loads with retry defaults', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  const legacyItem = createItem();
+  delete legacyItem.attempt;
+  delete legacyItem.availableAt;
+  delete legacyItem.lastFailure;
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: [legacyItem] }, null, 2)}\n`, 'utf8');
+
+  assert.deepEqual(await repository.peek(), createItem());
+});
+
+test('invalid persisted retry metadata throws deterministic storage error', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+
+  await fileSystem.mkdir(dirname(filePath), { recursive: true });
+  await fileSystem.writeFile(
+    filePath,
+    `${JSON.stringify({ items: [createItem({ attempt: -1 })] }, null, 2)}\n`,
+    'utf8'
+  );
+
+  await assert.rejects(() => repository.peek(), storageErrorMatcher);
 });
 
 test('persisted processing storage without lease metadata fails deterministic validation', async () => {
@@ -466,6 +521,9 @@ function createItem(overrides = {}) {
     enqueuedAt: '2026-07-17T08:00:00.000Z',
     status: 'queued',
     fenceToken: 0,
+    attempt: 0,
+    availableAt: null,
+    lastFailure: null,
     ...overrides
   };
 }

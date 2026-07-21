@@ -27,8 +27,9 @@ rejected before output, terminal-state, or acknowledgement persistence. The
 production integration suite uses fake providers, clocks, and schedulers only.
 
 Current limitations: no cross-storage transaction, provider idempotency,
-retry/backoff, dead-letter queue, distributed locking, or cross-process
-atomicity.
+distributed locking, or cross-process atomicity. Retry/backoff and terminal
+dead-letter transfer are durable; DLQ replay and retention policies remain out
+of scope.
 
 Phase 2 Overall
 Status: In Progress
@@ -779,7 +780,7 @@ Current Durable Queue limitations:
 - Completed reconciliation acknowledges only an output-bearing execution; it
   does not infer results for missing-output or mismatched durable items. Failed
   reconciliation requires no output and preserves the original failure.
-- No retry/backoff scheduling or dead-letter queue.
+- No retry delay scheduling, wake-up, or dead-letter transfer.
 - No lease renewal or heartbeat, and no execution fencing after a lease expires.
 - No multi-worker locking or cross-process deduplication policy.
 - Provider-level idempotency keys and event-publishing deduplication are out of

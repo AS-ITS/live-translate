@@ -214,16 +214,20 @@ service `complete` transition, then marks and acknowledges the durable item as
 and an expired processing item follows the same durable finalization path.
 Missing executions, failed executions with output, active leases, and mismatched
 output state remain unchanged and are not replayed.
-An expired processing item with a failed execution and no output is separately
-reconciled by marking and acknowledging only the durable item as `failed`; the
-execution and its failure metadata are never rewritten. A failed durable item
-is acknowledged at startup only for that same failed/no-output state.
+An expired processing item with a failed execution and no output retries its
+claim-guarded DLQ transfer without provider replay; its execution failure
+metadata is never rewritten. The DLQ write is idempotent by `executionId` and
+precedes removal from the durable queue.
 Conflicting persisted identities fail before replay.
 
 Lease renewal and fenced persistence are cooperative checks at separate durable
 queue and translation-repository boundaries; no cross-storage transaction is
-provided. Distributed locking, retry/backoff, dead-letter queues, provider
-idempotency, and cross-process atomicity remain out of scope.
+provided. Durable Workers may atomically requeue an owned transient provider
+failure with retry metadata and return its running execution to `queued`; delay
+scheduling is driven by the Worker Runtime from `availableAt`. Terminal failures
+are persisted before a claim/fence-checked DLQ transfer; a failed transfer keeps
+the durable item for recovery. Distributed locking,
+provider idempotency, and cross-process atomicity remain out of scope.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,
@@ -241,7 +245,6 @@ Current limitations:
   output; missing-output or mismatched execution/durable state remains durable.
 - Failed reconciliation is limited to failed executions with no output; a
   failed execution that has output remains durable for manual investigation.
-- No retry/backoff or dead-letter queue.
 - No multi-worker locking or cross-process deduplication policy.
 - These safeguards do not provide multi-process exactly-once delivery.
 - Provider external idempotency keys and event-publishing deduplication remain

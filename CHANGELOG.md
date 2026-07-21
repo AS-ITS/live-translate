@@ -1,5 +1,32 @@
 # Changelog
 
+- Phase 3J WP5 Dead-letter Queue Transfer: terminal durable failures now persist
+  their execution failure before an ownership-checked DLQ transfer. The DLQ is
+  written idempotently by `executionId` before the durable item is removed;
+  failed transfers retain the main item and startup recovery retries transfer
+  only, without provider replay.
+
+- Phase 3J WP4 Backoff-aware Runtime Scheduling: durable availability queries,
+  recovery filtering, and single-timer runtime wake-ups now honor `availableAt`.
+  Delayed retries remain durable until due.
+
+- Phase 3J WP3 Worker Retry Requeue: durable Workers now classify deferred
+  provider failures, atomically release their owned queue claim into a retry
+  item, and resume the execution as queued when attempts remain. Terminal
+  failures retain acknowledgement behavior; runtime scheduling and DLQ transfer
+  remain deferred.
+
+- Phase 3J WP2 Retry Policy & Error Classification: added queue-level retry
+  policy and deterministic provider-error classification to production
+  composition, separate from the Phase 2L Runner retry policy. Worker, Runtime,
+  scheduling, execution lifecycle, and DLQ transfer behavior remain unchanged.
+
+- Phase 3J WP1 Retry / Dead-letter Data Contracts: durable queue items now
+  persist validated retry metadata (`attempt`, `availableAt`, and `lastFailure`)
+  with legacy defaults. Added fake and file-backed dead-letter queue repositories
+  for FIFO, deterministic JSON storage, and reload persistence; no Worker,
+  Runtime, HTTP, retry scheduling, or dead-letter transfer behavior changed.
+
 - Phase 3H WP5 Lease Lifecycle Vertical Integration & Documentation Closeout:
   completed production-composition coverage for normal claims, active leases,
   expired reclaim/new ownership, stale acknowledgement rejection, and reclaimed

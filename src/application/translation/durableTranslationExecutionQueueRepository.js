@@ -6,6 +6,8 @@ const REQUIRED_METHODS = Object.freeze([
   'dequeue',
   'peek',
   'list',
+  'listAvailable',
+  'nextAvailableAt',
   'size',
   'clear',
   'updateStatus',
@@ -13,6 +15,7 @@ const REQUIRED_METHODS = Object.freeze([
   'acknowledgeClaim',
   'contains',
   'claim',
+  'retryClaim',
   'renewClaim',
   'assertClaimActive',
   'requeueExpiredProcessing'
@@ -24,6 +27,9 @@ const INVALID_REQUEST_ID_MESSAGE = 'Durable translation execution queue item req
 const INVALID_ENQUEUED_AT_MESSAGE = 'Durable translation execution queue item enqueuedAt must be an ISO-8601 UTC string.';
 const INVALID_STATUS_MESSAGE = 'Durable translation execution queue item status is not supported.';
 const INVALID_FENCE_TOKEN_MESSAGE = 'Durable translation execution queue item fenceToken must be a non-negative integer.';
+const INVALID_ATTEMPT_MESSAGE = 'Durable translation execution queue item attempt must be a non-negative integer.';
+const INVALID_AVAILABLE_AT_MESSAGE = 'Durable translation execution queue item availableAt must be null or an ISO-8601 UTC string.';
+const INVALID_LAST_FAILURE_MESSAGE = 'Durable translation execution queue item lastFailure must be null or an object.';
 
 export const TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE = 'translation_execution_queue_item_conflict';
 export const TRANSLATION_EXECUTION_QUEUE_ITEM_NOT_FOUND_CODE = 'translation_execution_queue_item_not_found';
@@ -62,6 +68,20 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
       return immutableQueueItems(await implementation.list());
     },
 
+    async listAvailable(now) {
+      assertIsoUtcString(now, 'Durable translation execution queue availability time must be an ISO-8601 UTC string.');
+      return immutableQueueItems(await implementation.listAvailable(now));
+    },
+
+    async nextAvailableAt(now) {
+      assertIsoUtcString(now, 'Durable translation execution queue availability time must be an ISO-8601 UTC string.');
+      const availableAt = await implementation.nextAvailableAt(now);
+      if (availableAt !== null && availableAt !== undefined) {
+        assertIsoUtcString(availableAt, 'durableTranslationExecutionQueueRepository.nextAvailableAt must return an ISO-8601 UTC string or null.');
+      }
+      return availableAt ?? null;
+    },
+
     async size() {
       return implementation.size();
     },
@@ -87,6 +107,15 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
       return createDurableTranslationExecutionQueueItem(await implementation.acknowledgeClaim(executionId, claim));
     },
 
+    async transferClaimToDeadLetter(executionId, transfer) {
+      assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
+      assertDurableTranslationExecutionQueueDeadLetterTransfer(transfer);
+      if (typeof implementation.transferClaimToDeadLetter !== 'function') {
+        throw new TypeError('durableTranslationExecutionQueueRepository.transferClaimToDeadLetter must be a function.');
+      }
+      return createDurableTranslationExecutionQueueItem(await implementation.transferClaimToDeadLetter(executionId, transfer));
+    },
+
     async contains(executionId) {
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
       return implementation.contains(executionId);
@@ -96,6 +125,12 @@ export function createDurableTranslationExecutionQueueRepository(implementation 
       assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
       assertDurableTranslationExecutionQueueLease(lease);
       return createDurableTranslationExecutionQueueItem(await implementation.claim(executionId, lease));
+    },
+
+    async retryClaim(executionId, retry) {
+      assertNonEmptyString(executionId, INVALID_EXECUTION_ID_MESSAGE);
+      assertDurableTranslationExecutionQueueRetryClaim(retry);
+      return createDurableTranslationExecutionQueueItem(await implementation.retryClaim(executionId, retry));
     },
 
     async renewClaim(executionId, claim, lease) {
@@ -142,6 +177,7 @@ export function assertDurableTranslationExecutionQueueItem(item) {
   assertDurableTranslationExecutionQueueFenceToken(
     Object.hasOwn(item, 'fenceToken') ? item.fenceToken : 0
   );
+  assertDurableTranslationExecutionQueueRetryMetadata(item);
 
   assertDurableTranslationExecutionQueueItemState(item);
 }
@@ -193,9 +229,7 @@ export function createDurableTranslationExecutionQueueLeaseOwnershipError() {
 }
 
 export function createDurableTranslationExecutionQueueItem(item) {
-  assertDurableTranslationExecutionQueueItem(item);
-
-  return createNormalizedDurableTranslationExecutionQueueItem(item);
+  return normalizeDurableTranslationExecutionQueueItem(item);
 }
 
 export function normalizeDurableTranslationExecutionQueueItem(item) {
@@ -213,6 +247,7 @@ export function normalizeDurableTranslationExecutionQueueItem(item) {
 
   const fenceToken = Object.hasOwn(item, 'fenceToken') ? item.fenceToken : 0;
   assertDurableTranslationExecutionQueueFenceToken(fenceToken);
+  assertDurableTranslationExecutionQueueRetryMetadata(item);
 
   if (status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING) {
     assertDurableTranslationExecutionQueueLease(item);
@@ -220,7 +255,54 @@ export function normalizeDurableTranslationExecutionQueueItem(item) {
     assertNoLeaseMetadata(item);
   }
 
-  return createNormalizedDurableTranslationExecutionQueueItem({ ...item, status, fenceToken });
+  return createNormalizedDurableTranslationExecutionQueueItem({
+    ...item,
+    status,
+    fenceToken,
+    attempt: Object.hasOwn(item, 'attempt') ? item.attempt : 0,
+    availableAt: Object.hasOwn(item, 'availableAt') ? item.availableAt : null,
+    lastFailure: Object.hasOwn(item, 'lastFailure') ? item.lastFailure : null
+  });
+}
+
+export function assertDurableTranslationExecutionQueueRetryMetadata(item) {
+  const attempt = Object.hasOwn(item, 'attempt') ? item.attempt : 0;
+  if (!Number.isInteger(attempt) || attempt < 0) {
+    throwInvalidQueueItem(INVALID_ATTEMPT_MESSAGE);
+  }
+
+  const availableAt = Object.hasOwn(item, 'availableAt') ? item.availableAt : null;
+  if (availableAt !== null && (typeof availableAt !== 'string' || !isIsoUtcString(availableAt))) {
+    throwInvalidQueueItem(INVALID_AVAILABLE_AT_MESSAGE);
+  }
+
+  const lastFailure = Object.hasOwn(item, 'lastFailure') ? item.lastFailure : null;
+  if (lastFailure !== null && !isRecord(lastFailure)) {
+    throwInvalidQueueItem(INVALID_LAST_FAILURE_MESSAGE);
+  }
+}
+
+export function assertDurableTranslationExecutionQueueRetryClaim(retry) {
+  if (!isRecord(retry)) throwInvalidQueueItem('Durable translation execution queue retry claim must be an object.');
+  assertDurableTranslationExecutionQueueFenceClaim(retry);
+  if (!Number.isInteger(retry.attempt) || retry.attempt < 1) {
+    throwInvalidQueueItem('Durable translation execution queue retry attempt must be a positive integer.');
+  }
+  assertIsoUtcString(retry.availableAt, 'Durable translation execution queue retry availableAt must be an ISO-8601 UTC string.');
+  if (!isRecord(retry.lastFailure)) {
+    throwInvalidQueueItem('Durable translation execution queue retry lastFailure must be an object.');
+  }
+}
+
+export function assertDurableTranslationExecutionQueueDeadLetterTransfer(transfer) {
+  if (!isRecord(transfer)) throwInvalidQueueItem('Durable translation execution queue dead-letter transfer must be an object.');
+  assertDurableTranslationExecutionQueueFenceClaim(transfer);
+  assertIsoUtcString(transfer.failedAt, 'Durable translation execution queue dead-letter failedAt must be an ISO-8601 UTC string.');
+  if (!isRecord(transfer.failure)) throwInvalidQueueItem('Durable translation execution queue dead-letter failure must be an object.');
+  for (const field of ['providerMetadata', 'executionMetadata']) {
+    if (Object.hasOwn(transfer, field) && !isRecord(transfer[field])) throwInvalidQueueItem(`Durable translation execution queue dead-letter ${field} must be an object when provided.`);
+  }
+  if (Object.hasOwn(transfer, 'providerKey')) assertNonEmptyString(transfer.providerKey, 'Durable translation execution queue dead-letter providerKey must be a non-empty string.');
 }
 
 export function assertDurableTranslationExecutionQueueLease(lease) {
@@ -280,7 +362,10 @@ function createNormalizedDurableTranslationExecutionQueueItem(item) {
     status: Object.hasOwn(item, 'status')
       ? item.status
       : DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED,
-    fenceToken: Object.hasOwn(item, 'fenceToken') ? item.fenceToken : 0
+    fenceToken: Object.hasOwn(item, 'fenceToken') ? item.fenceToken : 0,
+    attempt: Object.hasOwn(item, 'attempt') ? item.attempt : 0,
+    availableAt: Object.hasOwn(item, 'availableAt') ? item.availableAt : null,
+    lastFailure: item.lastFailure === null ? null : Object.freeze({ ...item.lastFailure })
   };
 
   if (item.status === DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.PROCESSING

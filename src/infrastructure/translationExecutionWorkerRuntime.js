@@ -1,6 +1,7 @@
 import { assertTranslationExecutionQueue } from '../application/translation/translationExecutionQueue.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
+const PENDING_SCHEDULE = Symbol('pending_schedule');
 
 const DEFAULT_SCHEDULER = Object.freeze({
   set(callback, delayMs) {
@@ -15,12 +16,16 @@ const DEFAULT_SCHEDULER = Object.freeze({
 export function createTranslationExecutionWorkerRuntime({
   translationExecutionWorker,
   translationExecutionQueue,
+  durableRepository,
+  clock = () => new Date().toISOString(),
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   scheduler = DEFAULT_SCHEDULER,
   logger
 } = {}) {
   assertTranslationExecutionWorker(translationExecutionWorker);
   assertTranslationExecutionQueue(translationExecutionQueue);
+  assertOptionalDurableRepository(durableRepository);
+  if (typeof clock !== 'function') throw new TypeError('clock must be a function.');
   assertPollIntervalMs(pollIntervalMs);
   assertScheduler(scheduler);
   assertLogger(logger);
@@ -35,7 +40,7 @@ export function createTranslationExecutionWorkerRuntime({
     }
 
     isStarted = true;
-    scheduleNextPoll();
+    scheduleNextPoll(false);
   }
 
   function stop() {
@@ -47,12 +52,28 @@ export function createTranslationExecutionWorkerRuntime({
     return isStarted || isProcessing;
   }
 
-  function scheduleNextPoll() {
+  function scheduleNextPoll(resolveAvailableAt) {
     if (!isStarted || timerHandle !== undefined) {
       return;
     }
 
-    timerHandle = scheduler.set(processNextPoll, pollIntervalMs);
+    if (!resolveAvailableAt || durableRepository === undefined) {
+      timerHandle = scheduler.set(processNextPoll, pollIntervalMs);
+      return;
+    }
+
+    const scheduleToken = PENDING_SCHEDULE;
+    timerHandle = scheduleToken;
+    Promise.resolve(durableRepository.nextAvailableAt(clock())).then((availableAt) => {
+      if (!isStarted || timerHandle !== scheduleToken) return;
+      const delayMs = availableAt === null
+        ? pollIntervalMs
+        : Math.min(pollIntervalMs, Math.max(0, new Date(availableAt).getTime() - new Date(clock()).getTime()));
+      timerHandle = scheduler.set(processNextPoll, delayMs);
+    }).catch((error) => {
+      logRuntimeError(error);
+      if (isStarted && timerHandle === scheduleToken) timerHandle = scheduler.set(processNextPoll, pollIntervalMs);
+    });
   }
 
   function clearScheduledPoll() {
@@ -60,7 +81,7 @@ export function createTranslationExecutionWorkerRuntime({
       return;
     }
 
-    scheduler.clear(timerHandle);
+    if (timerHandle !== PENDING_SCHEDULE) scheduler.clear(timerHandle);
     timerHandle = undefined;
   }
 
@@ -68,13 +89,19 @@ export function createTranslationExecutionWorkerRuntime({
     timerHandle = undefined;
 
     if (!isStarted || isProcessing) {
-      scheduleNextPoll();
+      scheduleNextPoll(true);
       return;
     }
 
     isProcessing = true;
 
     try {
+      if (translationExecutionQueue.size() === 0 && durableRepository !== undefined) {
+        const items = await durableRepository.listAvailable(clock());
+        for (const item of items) {
+          await translationExecutionQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
+        }
+      }
       if (translationExecutionQueue.size() > 0) {
         await translationExecutionWorker.processNext();
       }
@@ -82,7 +109,7 @@ export function createTranslationExecutionWorkerRuntime({
       logRuntimeError(error);
     } finally {
       isProcessing = false;
-      scheduleNextPoll();
+      scheduleNextPoll(true);
     }
   }
 
@@ -138,5 +165,12 @@ function assertScheduler(scheduler) {
 function assertLogger(logger) {
   if (logger !== undefined && typeof logger !== 'function') {
     throw new TypeError('logger must be a function.');
+  }
+}
+
+function assertOptionalDurableRepository(repository) {
+  if (repository === undefined) return;
+  if (!repository || typeof repository.listAvailable !== 'function' || typeof repository.nextAvailableAt !== 'function') {
+    throw new TypeError('durableRepository must provide listAvailable and nextAvailableAt.');
   }
 }

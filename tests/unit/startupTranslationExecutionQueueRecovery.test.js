@@ -6,7 +6,9 @@ import {
   TRANSLATION_EXECUTION_QUEUE_ITEM_CONFLICT_CODE
 } from '../../src/application/translation/durableTranslationExecutionQueueRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
+import { createFakeDeadLetterQueueRepository } from '../../src/infrastructure/fakeDeadLetterQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
+import { TranslationExecution } from '../../src/domain/translation/index.js';
 
 test('empty repository completes without enqueue or dequeue', async () => {
   const calls = [];
@@ -18,6 +20,32 @@ test('empty repository completes without enqueue or dequeue', async () => {
   await recovery.recover();
 
   assert.deepEqual(calls, [['durable.list']]);
+});
+
+test('recovery retries a previously failed DLQ transfer without replaying the provider', async () => {
+  const deadLetterQueueRepository = createFakeDeadLetterQueueRepository();
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository({ deadLetterQueueRepository });
+  await durableRepository.enqueue(durableItem());
+  await durableRepository.claim('execution-1', {
+    leaseId: 'lease-1', claimedAt: '2026-07-17T06:00:00.000Z', leaseExpiresAt: '2026-07-17T07:00:00.000Z'
+  });
+  const execution = new TranslationExecution({
+    id: 'execution-1', translationRequestId: 'request-1', status: 'failed', providerKey: 'fake',
+    startedAt: '2026-07-17T06:00:00.000Z', completedAt: '2026-07-17T06:30:00.000Z', failureInfo: { reason: 'provider_error' }
+  });
+  const activeQueue = createInMemoryTranslationExecutionQueue();
+  const recovery = createStartupTranslationExecutionQueueRecovery({
+    durableRepository,
+    activeQueue,
+    translationRepository: recoveryTranslationRepository({ executions: new Map([['execution-1', execution]]) }),
+    clock: () => '2026-07-17T08:00:00.000Z',
+    leaseIdFactory: () => 'lease-recovery'
+  });
+
+  await recovery.recover();
+  assert.equal(await durableRepository.size(), 0);
+  assert.equal(await deadLetterQueueRepository.size(), 1);
+  assert.equal(activeQueue.size(), 0);
 });
 
 test('replays a single item into active queue and keeps durable item for worker claim', async () => {
@@ -34,6 +62,19 @@ test('replays a single item into active queue and keeps durable item for worker 
 
   assert.deepEqual(queue.items, [{ executionId: 'execution-1', requestId: 'request-1' }]);
   assert.equal(await repository.size(), 1);
+});
+
+test('does not replay a queued retry item before availableAt', async () => {
+  const item = durableItem({ availableAt: '2026-07-17T08:01:00.000Z' });
+  const queue = activeQueue();
+  const recovery = createStartupTranslationExecutionQueueRecovery({
+    durableRepository: durableRepository({ items: [item] }),
+    activeQueue: queue,
+    clock: () => '2026-07-17T08:00:00.000Z'
+  });
+
+  await recovery.recover();
+  assert.deepEqual(queue.items, []);
 });
 
 test('replays multiple items in FIFO order', async () => {
@@ -438,6 +479,9 @@ function durableItem(overrides = {}) {
     enqueuedAt: '2026-07-17T08:00:00.000Z',
     status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED,
     fenceToken: 0,
+    attempt: 0,
+    availableAt: null,
+    lastFailure: null,
     ...overrides
   };
 }
@@ -469,6 +513,13 @@ function durableRepository(overrides = {}) {
       calls?.push(['durable.list']);
       return overrides.list ? overrides.list() : [...items];
     },
+    async listAvailable(now) {
+      return items.filter((item) => item.status === 'queued' && (item.availableAt === null || item.availableAt <= now));
+    },
+    async nextAvailableAt(now) {
+      return items.filter((item) => item.status === 'queued' && item.availableAt !== null && item.availableAt > now)
+        .map((item) => item.availableAt).sort()[0] ?? null;
+    },
     async dequeue() {
       if (overrides.dequeue) {
         return overrides.dequeue();
@@ -497,6 +548,7 @@ function durableRepository(overrides = {}) {
       throw new Error('recovery should not query durable item existence');
     },
     async claim() { throw new Error('recovery should not claim'); },
+    async retryClaim() { throw new Error('recovery should not retry'); },
     async renewClaim() { throw new Error('recovery should not renew'); },
     async assertClaimActive() { throw new Error('recovery should not assert a worker claim'); },
     async requeueExpiredProcessing(executionId, now) {

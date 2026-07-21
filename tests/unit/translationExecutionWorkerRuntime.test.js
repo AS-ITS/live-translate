@@ -44,6 +44,33 @@ test('polling calls processNext', async () => {
   assert.deepEqual(calls, ['processNext']);
 });
 
+test('replays a due durable item and schedules the earlier availableAt wake-up', async () => {
+  let now = '2026-07-17T08:00:00.000Z';
+  const calls = [];
+  const scheduler = createFakeScheduler();
+  const activeQueue = queue([]);
+  const delayed = { executionId: 'execution-1', requestId: 'request-1' };
+  const runtime = createTranslationExecutionWorkerRuntime({
+    translationExecutionWorker: worker({ calls }),
+    translationExecutionQueue: activeQueue,
+    durableRepository: {
+      async listAvailable(at) { return at >= '2026-07-17T08:00:00.500Z' ? [delayed] : []; },
+      async nextAvailableAt() { return '2026-07-17T08:00:00.500Z'; }
+    },
+    clock: () => now,
+    scheduler,
+    pollIntervalMs: 1000
+  });
+
+  runtime.start();
+  await scheduler.runNext();
+  await Promise.resolve();
+  assert.equal(scheduler.setCalls.at(-1), 500);
+  now = '2026-07-17T08:00:00.500Z';
+  await scheduler.runNext();
+  assert.deepEqual(calls, ['processNext']);
+});
+
 test('non-processable worker result is not logged as an error and polling continues', async () => {
   const scheduler = createFakeScheduler();
   const loggedErrors = [];

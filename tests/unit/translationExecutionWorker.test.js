@@ -4,6 +4,7 @@ import { createTranslationExecutionWorker } from '../../src/application/translat
 import { TranslationExecution, TranslationRequest } from '../../src/domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
+import { createFakeDeadLetterQueueRepository } from '../../src/infrastructure/fakeDeadLetterQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 
 test('empty queue returns idle', async () => {
@@ -326,6 +327,9 @@ test('a processing durable item cannot be claimed by another active queue job', 
     ...item,
     status: 'processing',
     fenceToken: 1,
+    attempt: 0,
+    availableAt: null,
+    lastFailure: null,
     leaseId: 'lease-1',
     claimedAt: '2026-07-20T00:00:00.000Z',
     leaseExpiresAt: '2026-07-20T00:05:00.000Z'
@@ -507,6 +511,131 @@ test('runner failure without persisted terminal state does not acknowledge', asy
   assert.equal(calls.some((call) => call[0] === 'durable.acknowledgeClaim'), false);
 });
 
+test('retryable provider failure requeues the owned durable item and resumes the running execution', async () => {
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository();
+  await durableRepository.enqueue({
+    executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-20T00:00:00.000Z', status: 'queued'
+  });
+  let persistedExecution = translationExecution();
+  const updates = [];
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    durableTranslationExecutionQueueRepository: durableRepository,
+    translationRepository: repository({
+      execution: () => persistedExecution,
+      updateTranslationExecution(next) {
+        updates.push(next);
+        persistedExecution = next;
+        return next;
+      }
+    }),
+    translationExecutionRunner: {
+      run() {
+        persistedExecution = persistedExecution.start();
+        throw Object.assign(new Error('temporary provider failure'), { transient: true });
+      }
+    },
+    translationExecutionRetryPolicy: {
+      canRetry(attempt) { return attempt < 3; },
+      getNextDelayMs() { return 1000; }
+    },
+    translationExecutionRetryErrorClassifier: {
+      classify() { return { retryable: true, reason: 'transient_error' }; }
+    },
+    clock: () => '2026-07-20T00:00:00.000Z',
+    leaseIdFactory: () => 'lease-1'
+  }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'retried', executionId: 'execution-1' });
+  assert.equal(persistedExecution.status, 'queued');
+  assert.equal(updates.length, 1);
+  assert.deepEqual(await durableRepository.peek(), {
+    executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-20T00:00:00.000Z',
+    status: 'queued', fenceToken: 1, attempt: 1, availableAt: '2026-07-20T00:00:01.000Z',
+    lastFailure: { reason: 'transient_error', message: 'temporary provider failure' }
+  });
+});
+
+test('non-retryable provider failure keeps terminal acknowledgement behavior', async () => {
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository();
+  await durableRepository.enqueue({
+    executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-20T00:00:00.000Z', status: 'queued'
+  });
+  const providerError = new Error('invalid provider request');
+  let persistedExecution = translationExecution();
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    durableTranslationExecutionQueueRepository: durableRepository,
+    translationRepository: repository({
+      execution: () => persistedExecution,
+      updateTranslationExecution(next) { persistedExecution = next; return next; }
+    }),
+    translationExecutionRunner: { run() { persistedExecution = persistedExecution.start(); throw providerError; } },
+    translationExecutionRetryPolicy: { canRetry() { return true; }, getNextDelayMs() { return 1000; } },
+    translationExecutionRetryErrorClassifier: { classify() { return { retryable: false, reason: 'gemini_client_error' }; } },
+    clock: () => '2026-07-20T00:00:00.000Z', leaseIdFactory: () => 'lease-1'
+  }));
+
+  await assert.rejects(worker.processNext(), (error) => error === providerError);
+  assert.equal(persistedExecution.status, 'failed');
+  assert.equal(await durableRepository.size(), 0);
+});
+
+test('non-retryable provider failure transfers the owned durable item to the DLQ with terminal metadata', async () => {
+  const deadLetterQueueRepository = createFakeDeadLetterQueueRepository();
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository({ deadLetterQueueRepository });
+  await durableRepository.enqueue({
+    executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-20T00:00:00.000Z', status: 'queued',
+    attempt: 2, availableAt: '2026-07-20T00:00:00.000Z', lastFailure: { reason: 'transient_error' }
+  });
+  const providerError = Object.assign(new Error('invalid provider request'), { code: 'INVALID_ARGUMENT' });
+  let persistedExecution = translationExecution();
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    durableTranslationExecutionQueueRepository: durableRepository,
+    translationRepository: repository({
+      execution: () => persistedExecution,
+      updateTranslationExecution(next) { persistedExecution = next; return next; }
+    }),
+    translationExecutionRunner: { run() { persistedExecution = persistedExecution.start(); throw providerError; } },
+    translationExecutionRetryPolicy: { canRetry() { return false; }, getNextDelayMs() { return 1000; } },
+    translationExecutionRetryErrorClassifier: { classify() { return { retryable: false, reason: 'gemini_client_error' }; } },
+    clock: () => '2026-07-20T00:00:02.000Z', leaseIdFactory: () => 'lease-1'
+  }));
+
+  await assert.rejects(worker.processNext(), (error) => error === providerError);
+  assert.equal(await durableRepository.size(), 0);
+  assert.deepEqual(await deadLetterQueueRepository.list(), [{
+    executionId: 'execution-1', requestId: 'request-1', attempt: 3,
+    availableAt: '2026-07-20T00:00:00.000Z', lastFailure: { reason: 'transient_error' },
+    failedAt: '2026-07-20T00:00:02.000Z',
+    failure: { reason: 'gemini_client_error', message: 'invalid provider request', code: 'INVALID_ARGUMENT' },
+    providerMetadata: { providerKey: null },
+    executionMetadata: { translationRequestId: 'request-1', startedAt: 1000, targetLanguageCode: 'fr' }
+  }]);
+});
+
+test('DLQ write failure retains the terminal durable item without a second provider attempt', async () => {
+  const deadLetterError = new Error('dlq unavailable');
+  const durableRepository = createFakeDurableTranslationExecutionQueueRepository({
+    deadLetterQueueRepository: { enqueue() { throw deadLetterError; }, list() {}, size() {}, clear() {} }
+  });
+  await durableRepository.enqueue({ executionId: 'execution-1', requestId: 'request-1', enqueuedAt: '2026-07-20T00:00:00.000Z', status: 'queued' });
+  const providerError = new Error('invalid provider request');
+  let persistedExecution = translationExecution();
+  let providerCalls = 0;
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    durableTranslationExecutionQueueRepository: durableRepository,
+    translationRepository: repository({ execution: () => persistedExecution, updateTranslationExecution(next) { persistedExecution = next; return next; } }),
+    translationExecutionRunner: { run() { providerCalls += 1; persistedExecution = persistedExecution.start(); throw providerError; } },
+    translationExecutionRetryPolicy: { canRetry() { return false; }, getNextDelayMs() { return 1000; } },
+    translationExecutionRetryErrorClassifier: { classify() { return { retryable: false, reason: 'gemini_client_error' }; } },
+    clock: () => '2026-07-20T00:00:02.000Z', leaseIdFactory: () => 'lease-1'
+  }));
+
+  await assert.rejects(worker.processNext(), (error) => error === providerError);
+  assert.equal(providerCalls, 1);
+  assert.equal(persistedExecution.status, 'failed');
+  assert.equal((await durableRepository.peek()).status, 'processing');
+});
+
 test('acknowledgement failure propagates unchanged without rerunning the runner', async () => {
   const calls = [];
   const acknowledgementError = new Error('acknowledgement failed');
@@ -621,7 +750,10 @@ function workerDependencies(options = {}) {
     ...(options.leaseIdFactory !== undefined ? { leaseIdFactory: options.leaseIdFactory } : {}),
     ...(options.leaseDurationMs !== undefined ? { leaseDurationMs: options.leaseDurationMs } : {}),
     ...(options.leaseRenewalMs !== undefined ? { leaseRenewalMs: options.leaseRenewalMs } : {}),
-    ...(options.leaseHeartbeatScheduler !== undefined ? { leaseHeartbeatScheduler: options.leaseHeartbeatScheduler } : {})
+    ...(options.leaseHeartbeatScheduler !== undefined ? { leaseHeartbeatScheduler: options.leaseHeartbeatScheduler } : {}),
+    ...(options.translationExecutionRetryPolicy !== undefined ? { translationExecutionRetryPolicy: options.translationExecutionRetryPolicy } : {}),
+    ...(options.translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier: options.translationExecutionRetryErrorClassifier } : {}),
+    ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {})
   };
 }
 
@@ -644,7 +776,7 @@ function queue(jobs = []) {
   };
 }
 
-function durableRepository({ calls = [], claim, acknowledgeClaim, renewClaim, assertClaimActive } = {}) {
+function durableRepository({ calls = [], claim, acknowledgeClaim, retryClaim, renewClaim, assertClaimActive } = {}) {
   return {
     enqueue() {
       throw new Error('worker should not enqueue durable repository');
@@ -657,6 +789,12 @@ function durableRepository({ calls = [], claim, acknowledgeClaim, renewClaim, as
     },
     list() {
       throw new Error('worker should not list durable repository');
+    },
+    listAvailable() {
+      throw new Error('worker should not list available durable items');
+    },
+    nextAvailableAt() {
+      throw new Error('worker should not inspect durable availability');
     },
     size() {
       throw new Error('worker should not read durable repository size');
@@ -681,6 +819,9 @@ function durableRepository({ calls = [], claim, acknowledgeClaim, renewClaim, as
     claim: claim || function claimDefault(executionId, lease) {
       calls.push(['durable.claim', executionId, lease]);
       return { leaseId: lease.leaseId, fenceToken: 1 };
+    },
+    retryClaim: retryClaim || function retryClaimDefault() {
+      throw new Error('worker should not retry durable items');
     },
     renewClaim: renewClaim || function renewClaimDefault() {
       throw new Error('worker should not renew durable items');
@@ -721,7 +862,7 @@ async function flushMicrotasks() {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();
 }
 
-function repository({ calls = [], execution = translationExecution(), request = translationRequest() } = {}) {
+function repository({ calls = [], execution = translationExecution(), request = translationRequest(), updateTranslationExecution } = {}) {
   return Object.fromEntries(
     TRANSLATION_REPOSITORY_METHODS.map((methodName) => [
       methodName,
@@ -734,6 +875,10 @@ function repository({ calls = [], execution = translationExecution(), request = 
         if (methodName === 'findRequestById') {
           calls.push([methodName, identifier]);
           return request;
+        }
+
+        if (methodName === 'updateTranslationExecution' && updateTranslationExecution !== undefined) {
+          return updateTranslationExecution(identifier);
         }
 
         throw new Error(`${methodName} should not be called by TranslationExecutionWorker.`);

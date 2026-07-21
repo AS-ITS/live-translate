@@ -9,6 +9,8 @@ import { createTranslationExecutionFenceGuard as createDefaultTranslationExecuti
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
 import { assertTranslationExecutionQueue } from '../src/application/translation/translationExecutionQueue.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
+import { createTranslationExecutionRetryPolicy } from '../src/application/translation/translationExecutionRetryPolicy.js';
+import { createTranslationExecutionRetryErrorClassifier } from '../src/application/translation/translationExecutionRetryErrorClassifier.js';
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
@@ -19,6 +21,7 @@ import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/
 import { createFakeTranslationExecutionProviderResolver } from '../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 import { createDualWriteTranslationExecutionQueue } from '../src/infrastructure/dualWriteTranslationExecutionQueue.js';
 import { createFileDurableTranslationExecutionQueueRepository } from '../src/infrastructure/fileDurableTranslationExecutionQueueRepository.js';
+import { createFileDeadLetterQueueRepository } from '../src/infrastructure/fileDeadLetterQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../src/infrastructure/inMemoryTranslationExecutionQueue.js';
 import { createSystemClock } from '../src/infrastructure/systemClock.js';
 import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../src/infrastructure/translationExecutionWorkerRuntime.js';
@@ -57,6 +60,8 @@ export function createApplicationDependencies(options = {}) {
     translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider,
     translationExecutionProviderResolver,
+    translationExecutionRetryPolicy,
+    translationExecutionRetryErrorClassifier,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
@@ -91,6 +96,8 @@ export function createApplicationDependencies(options = {}) {
     translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider,
     translationExecutionProviderResolver,
+    translationExecutionRetryPolicy,
+    translationExecutionRetryErrorClassifier,
     translationDomainEventHandlers,
     translationCommandServiceFactory,
     translationCommandControllerFactory,
@@ -151,6 +158,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     translationQueueConfigurationFactory = createTranslationQueueConfiguration,
     fileDurableTranslationExecutionQueueRepositoryFactory = createFileDurableTranslationExecutionQueueRepository,
+    fileDeadLetterQueueRepositoryFactory = createFileDeadLetterQueueRepository,
     dualWriteTranslationExecutionQueueFactory = createDualWriteTranslationExecutionQueue,
     startupTranslationExecutionQueueRecoveryFactory = createDefaultStartupTranslationExecutionQueueRecovery,
     durableQueueFileSystem = fileSystem,
@@ -158,6 +166,8 @@ export function createProductionApplicationDependencies(options = {}) {
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
     translationExecutionFenceGuardFactory = createDefaultTranslationExecutionFenceGuard,
+    translationExecutionRetryPolicyFactory = createTranslationExecutionRetryPolicy,
+    translationExecutionRetryErrorClassifierFactory = createTranslationExecutionRetryErrorClassifier,
     ...applicationOptions
   } = options;
 
@@ -243,10 +253,16 @@ export function createProductionApplicationDependencies(options = {}) {
   const queueConfiguration = translationQueueConfigurationFactory({
     environment: env
   });
+  const translationExecutionRetryPolicy = translationExecutionRetryPolicyFactory();
+  const translationExecutionRetryErrorClassifier = translationExecutionRetryErrorClassifierFactory();
   const durableTranslationExecutionQueueRepository = queueConfiguration.durableQueueEnabled
     ? fileDurableTranslationExecutionQueueRepositoryFactory({
         fileSystem: durableQueueFileSystem,
-        filePath: queueConfiguration.durableQueueFilePath
+        filePath: queueConfiguration.durableQueueFilePath,
+        deadLetterQueueRepository: fileDeadLetterQueueRepositoryFactory({
+          fileSystem: durableQueueFileSystem,
+          filePath: queueConfiguration.deadLetterQueueFilePath
+        })
       })
     : undefined;
   const primaryTranslationExecutionQueue =
@@ -285,6 +301,8 @@ export function createProductionApplicationDependencies(options = {}) {
     translationQueueLeaseHeartbeatScheduler,
     translationExecutionProvider: resolvedTranslationExecutionProvider,
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
+    translationExecutionRetryPolicy,
+    translationExecutionRetryErrorClassifier,
     ...resolvedProviderDependencies
   });
   const startupTranslationExecutionQueueRecovery =
@@ -294,7 +312,9 @@ export function createProductionApplicationDependencies(options = {}) {
           activeQueue: primaryTranslationExecutionQueue,
           translationRepository: applicationDependencies.translationRepository,
           translationCommandService: applicationDependencies.translationCommandService,
-          clock: translationQueueClock.now.bind(translationQueueClock)
+          clock: translationQueueClock.now.bind(translationQueueClock),
+          leaseDurationMs: queueConfiguration.leaseMs,
+          leaseIdFactory: translationQueueLeaseIdFactory
         })
       : undefined;
   const translationExecutionWorkerRuntime =
@@ -314,7 +334,9 @@ export function createProductionApplicationDependencies(options = {}) {
       : {}),
     ...(startupTranslationExecutionQueueRecovery !== undefined
       ? { startupTranslationExecutionQueueRecovery }
-      : {})
+      : {}),
+    translationExecutionRetryPolicy,
+    translationExecutionRetryErrorClassifier
   };
 }
 
@@ -448,6 +470,8 @@ export function createTranslationCommandDependencies({
   translationQueueLeaseHeartbeatScheduler,
   translationExecutionProvider,
   translationExecutionProviderResolver,
+  translationExecutionRetryPolicy,
+  translationExecutionRetryErrorClassifier,
   translationDomainEventHandlers,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController,
@@ -519,6 +543,12 @@ export function createTranslationCommandDependencies({
             : {}),
           ...(durableTranslationExecutionQueueRepository !== undefined && translationQueueLeaseHeartbeatScheduler !== undefined
             ? { leaseHeartbeatScheduler: translationQueueLeaseHeartbeatScheduler }
+            : {}),
+          ...(durableTranslationExecutionQueueRepository !== undefined && translationExecutionRetryPolicy !== undefined
+            ? {
+                translationExecutionRetryPolicy,
+                translationExecutionRetryErrorClassifier
+              }
             : {})
         })
       : undefined);
@@ -527,7 +557,13 @@ export function createTranslationCommandDependencies({
     (resolvedTranslationExecutionWorker !== undefined
       ? translationExecutionWorkerRuntimeFactory({
           translationExecutionWorker: resolvedTranslationExecutionWorker,
-          translationExecutionQueue: resolvedTranslationExecutionQueue
+          translationExecutionQueue: resolvedTranslationExecutionQueue,
+          ...(durableTranslationExecutionQueueRepository !== undefined
+            ? {
+                durableRepository: durableTranslationExecutionQueueRepository,
+                ...(translationQueueClock !== undefined ? { clock: translationQueueClock.now.bind(translationQueueClock) } : {})
+              }
+            : {})
         })
       : undefined);
   const translationCommandService = translationCommandServiceFactory({
@@ -554,6 +590,8 @@ export function createTranslationCommandDependencies({
       ? { translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver }
       : {}),
     ...(resolvedRetryPolicy !== undefined ? { retryPolicy: resolvedRetryPolicy } : {}),
+    ...(translationExecutionRetryPolicy !== undefined ? { translationExecutionRetryPolicy } : {}),
+    ...(translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier } : {}),
     ...(resolvedTranslationExecutionRunner !== undefined
       ? { translationExecutionRunner: resolvedTranslationExecutionRunner }
       : {}),
@@ -630,7 +668,7 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
       return translationExecutionRunner.execute(input);
     },
 
-    async run({ execution, request, executionFence } = {}) {
+    async run({ execution, request, executionFence, deferProviderFailure } = {}) {
       const runningExecution = execution.start(execution.startedAt);
       const repositoryResult = await translationRepository.updateTranslationExecution(runningExecution);
 
@@ -638,7 +676,8 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
         execution: runningExecution,
         payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
         repositoryResult,
-        ...(executionFence !== undefined ? { executionFence } : {})
+        ...(executionFence !== undefined ? { executionFence } : {}),
+        ...(deferProviderFailure === true ? { deferProviderFailure: true } : {})
       });
     }
   });

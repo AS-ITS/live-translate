@@ -1,4 +1,5 @@
 export const DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE = 'translation-execution-queue.json';
+export const DEFAULT_DEAD_LETTER_QUEUE_FILE = 'translation-execution-dead-letter-queue.json';
 export const DEFAULT_TRANSLATION_QUEUE_LEASE_MS = 300000;
 export const DEFAULT_TRANSLATION_QUEUE_LEASE_RENEWAL_MS = 100000;
 
@@ -11,6 +12,7 @@ export function createTranslationQueueConfiguration(input) {
   return Object.freeze({
     durableQueueEnabled: readDurableQueueEnabled(environment),
     durableQueueFilePath: readDurableQueueFilePath(environment),
+    deadLetterQueueFilePath: readDeadLetterQueueFilePath(environment),
     leaseMs: readLeaseMs(environment),
     leaseRenewalMs: readLeaseRenewalMs(environment)
   });
@@ -93,5 +95,14 @@ function readDurableQueueFilePath(environment) {
     throw new TypeError('TRANSLATION_DURABLE_QUEUE_FILE must be a non-empty string.');
   }
 
+  return value;
+}
+
+function readDeadLetterQueueFilePath(environment) {
+  const value = environment.TRANSLATION_DEAD_LETTER_QUEUE_FILE;
+  if (value === undefined) return DEFAULT_DEAD_LETTER_QUEUE_FILE;
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new TypeError('TRANSLATION_DEAD_LETTER_QUEUE_FILE must be a non-empty string.');
+  }
   return value;
 }

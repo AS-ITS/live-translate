@@ -1,4 +1,5 @@
 import { assertTranslationExecutionQueue } from './translationExecutionQueue.js';
+import { randomUUID } from 'node:crypto';
 import {
   assertDurableTranslationExecutionQueueRepository,
   compareDurableTranslationExecutionQueueItemIdentity,
@@ -12,13 +13,17 @@ export function createStartupTranslationExecutionQueueRecovery({
   activeQueue,
   translationRepository,
   translationCommandService,
-  clock = () => new Date().toISOString()
+  clock = () => new Date().toISOString(),
+  leaseDurationMs = 300000,
+  leaseIdFactory = randomUUID
 } = {}) {
   assertDurableTranslationExecutionQueueRepository(durableRepository);
   assertTranslationExecutionQueue(activeQueue);
   assertOptionalRecoveryTranslationRepository(translationRepository);
   assertOptionalTranslationCommandService(translationCommandService);
   if (typeof clock !== 'function') throw new TypeError('clock must be a function.');
+  if (!Number.isInteger(leaseDurationMs) || leaseDurationMs <= 0) throw new TypeError('leaseDurationMs must be a positive integer.');
+  if (typeof leaseIdFactory !== 'function') throw new TypeError('leaseIdFactory must be a function.');
 
   const replayedExecutionIds = new Set();
 
@@ -54,11 +59,12 @@ export function createStartupTranslationExecutionQueueRecovery({
         }
       }
 
+      const now = clock();
       for (const item of queuedItems) {
+        if (item.availableAt !== null && item.availableAt > now) continue;
         await enqueueOnce(item);
       }
 
-      const now = clock();
       for (const item of processingItems) {
         if (!hasExpiredCompleteLease(item, now)) {
           continue;
@@ -83,6 +89,28 @@ export function createStartupTranslationExecutionQueueRecovery({
         }
 
         if (isFailedExecutionWithoutOutput(execution, outputs)) {
+          if (typeof durableRepository.transferClaimToDeadLetter === 'function') {
+            const requeuedItem = await durableRepository.requeueExpiredProcessing(item.executionId, now);
+            if (requeuedItem === null) continue;
+            const claim = await durableRepository.claim(item.executionId, createRecoveryLease(now));
+            const request = typeof translationRepository.findRequestById === 'function'
+              ? await translationRepository.findRequestById(item.requestId)
+              : undefined;
+            await durableRepository.transferClaimToDeadLetter(item.executionId, {
+              leaseId: claim.leaseId,
+              fenceToken: claim.fenceToken,
+              failedAt: toIsoUtcTimestamp(execution.completedAt),
+              failure: execution.failureInfo,
+              ...(execution.providerKey === undefined ? {} : { providerKey: execution.providerKey }),
+              providerMetadata: { providerKey: execution.providerKey ?? null },
+              executionMetadata: {
+                translationRequestId: execution.translationRequestId,
+                startedAt: execution.startedAt,
+                ...(request?.targetLanguageCode === undefined ? {} : { targetLanguageCode: request.targetLanguageCode })
+              }
+            });
+            continue;
+          }
           await durableRepository.updateStatus(item.executionId, DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.FAILED);
           await durableRepository.acknowledge(item.executionId);
           continue;
@@ -112,6 +140,16 @@ export function createStartupTranslationExecutionQueueRecovery({
         if (replayedExecutionIds.has(item.executionId)) return;
         await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
         replayedExecutionIds.add(item.executionId);
+      }
+
+      function createRecoveryLease(recoveredAt) {
+        const leaseId = leaseIdFactory();
+        if (typeof leaseId !== 'string' || leaseId.trim().length === 0) throw new TypeError('leaseIdFactory must return a non-empty string.');
+        return {
+          leaseId,
+          claimedAt: recoveredAt,
+          leaseExpiresAt: new Date(new Date(recoveredAt).getTime() + leaseDurationMs).toISOString()
+        };
       }
 
       async function acknowledgeTerminalItem(item, status) {
@@ -159,6 +197,12 @@ async function completeExecution(translationCommandService, execution) {
 
 function hasExpiredCompleteLease(item, now) {
   return new Date(item.leaseExpiresAt).getTime() <= new Date(now).getTime();
+}
+
+function toIsoUtcTimestamp(value) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return new Date(value).toISOString();
+  throw new TypeError('failed execution completedAt must be an ISO-8601 UTC string or timestamp number.');
 }
 
 function assertOptionalRecoveryTranslationRepository(translationRepository) {

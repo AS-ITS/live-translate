@@ -52,6 +52,9 @@ test('production composition persists and acknowledges the worker claim lease ar
       enqueuedAt: '2026-07-20T00:00:00.000Z',
       status: 'processing',
       fenceToken: 1,
+      attempt: 0,
+      availableAt: null,
+      lastFailure: null,
       leaseId: 'lease-L1',
       claimedAt: '2026-07-20T00:00:00.000Z',
       leaseExpiresAt: '2026-07-20T00:05:00.000Z'
@@ -138,6 +141,9 @@ test('production recovery preserves an active lease while replaying other queued
         enqueuedAt: '2026-07-20T00:00:00.000Z',
         status: 'processing',
         fenceToken: 1,
+        attempt: 0,
+        availableAt: null,
+        lastFailure: null,
         ...activeLease
       },
       {
@@ -145,7 +151,10 @@ test('production recovery preserves an active lease while replaying other queued
         requestId: 'request-replay-queued',
         enqueuedAt: '2026-07-20T00:00:00.000Z',
         status: 'queued',
-        fenceToken: 0
+        fenceToken: 0,
+        attempt: 0,
+        availableAt: null,
+        lastFailure: null
       }
     ]);
     assert.deepEqual(providerCalls, []);
@@ -170,7 +179,10 @@ test('reclaimed lease receives a new worker lease and rejects stale acknowledgem
       requestId: 'request-reclaimed-lease',
       enqueuedAt: '2026-07-20T00:00:00.000Z',
       status: 'queued',
-      fenceToken: 1
+      fenceToken: 1,
+      attempt: 0,
+      availableAt: null,
+      lastFailure: null
     });
 
     const processing = dependencies.translationExecutionWorker.processNext();
@@ -473,7 +485,10 @@ test('recovery retains completed state after acknowledgement failure and retries
       requestId: executionId.replace('execution', 'request'),
       enqueuedAt: '2026-07-20T00:00:00.000Z',
       status: 'completed',
-      fenceToken: 1
+      fenceToken: 1,
+      attempt: 0,
+      availableAt: null,
+      lastFailure: null
     }]);
 
     await dependencies.startupTranslationExecutionQueueRecovery.recover();
@@ -520,9 +535,10 @@ test('expired processing failed execution without output finalizes durable state
   });
 });
 
-test('recovery retains failed state after acknowledgement failure and retries only failed acknowledgement on next startup', async () => {
-  const acknowledgementError = new Error('failed reconciliation acknowledgement failed');
-  let acknowledgementAttempts = 0;
+test('recovery retains failed state after DLQ transfer failure and retries only transfer on next startup', async () => {
+  const transferError = new Error('failed DLQ transfer');
+  let transferAttempts = 0;
+  let now = '2026-07-20T00:00:00.000Z';
 
   await withProductionFixture(async ({ dependencies, providerCalls }) => {
     const executionId = 'execution-failed-ack-failure';
@@ -536,7 +552,7 @@ test('recovery retains failed state after acknowledgement failure and retries on
 
     await assert.rejects(
       dependencies.startupTranslationExecutionQueueRecovery.recover(),
-      (error) => error === acknowledgementError
+      (error) => error === transferError
     );
 
     assert.deepEqual(providerCalls, []);
@@ -549,25 +565,33 @@ test('recovery retains failed state after acknowledgement failure and retries on
       executionId,
       requestId,
       enqueuedAt: '2026-07-20T00:00:00.000Z',
-      status: 'failed',
-      fenceToken: 1
+      status: 'processing',
+      fenceToken: 2,
+      attempt: 0,
+      availableAt: null,
+      lastFailure: null,
+      leaseId: 'lease-wp2',
+      claimedAt: '2026-07-20T00:00:00.000Z',
+      leaseExpiresAt: '2026-07-20T00:05:00.000Z'
     }]);
 
+    now = '2026-07-20T00:05:00.000Z';
     await dependencies.startupTranslationExecutionQueueRecovery.recover();
 
-    assert.equal(acknowledgementAttempts, 2);
+    assert.equal(transferAttempts, 2);
     assert.equal(dependencies.translationExecutionQueue.size(), 0);
     assert.deepEqual(providerCalls, []);
     assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
   }, {
+    translationQueueClock: { now: () => now },
     fileDurableTranslationExecutionQueueRepositoryFactory(options) {
       const repository = createFileDurableTranslationExecutionQueueRepository(options);
       return Object.freeze({
         ...repository,
-        async acknowledge(executionId) {
-          acknowledgementAttempts += 1;
-          if (acknowledgementAttempts === 1) throw acknowledgementError;
-          return repository.acknowledge(executionId);
+        async transferClaimToDeadLetter(executionId, transfer) {
+          transferAttempts += 1;
+          if (transferAttempts === 1) throw transferError;
+          return repository.transferClaimToDeadLetter(executionId, transfer);
         }
       });
     }
@@ -709,6 +733,9 @@ test('production composition propagates acknowledgement failure after terminal p
           enqueuedAt: '2026-07-20T00:00:00.000Z',
           status: 'processing',
           fenceToken: 1,
+          attempt: 0,
+          availableAt: null,
+          lastFailure: null,
           leaseId: 'lease-wp2',
           claimedAt: '2026-07-20T00:00:00.000Z',
           leaseExpiresAt: '2026-07-20T00:05:00.000Z'

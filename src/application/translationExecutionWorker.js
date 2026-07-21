@@ -16,6 +16,9 @@ export function createTranslationExecutionWorker({
   translationRepository,
   translationExecutionRunner,
   durableTranslationExecutionQueueRepository,
+  translationExecutionRetryPolicy,
+  translationExecutionRetryErrorClassifier,
+  retryRandom = Math.random,
   leaseDurationMs = 300000,
   leaseRenewalMs = 100000,
   clock = () => new Date().toISOString(),
@@ -28,6 +31,7 @@ export function createTranslationExecutionWorker({
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
   if (durableTranslationExecutionQueueRepository !== undefined) {
     assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler);
+    assertOptionalRetryDependencies(translationExecutionRetryPolicy, translationExecutionRetryErrorClassifier, retryRandom);
   }
 
   return Object.freeze({
@@ -79,6 +83,8 @@ export function createTranslationExecutionWorker({
 
       let runnerError;
       let runnerFailed = false;
+      const coordinateQueueRetry = durableTranslationExecutionQueueRepository !== undefined
+        && translationExecutionRetryPolicy !== undefined;
       try {
         await runTranslationExecution(translationExecutionRunner, {
           execution,
@@ -91,7 +97,8 @@ export function createTranslationExecutionWorker({
                   leaseId: claimedDurableItem.leaseId,
                   fenceToken: claimedDurableItem.fenceToken
                 }
-              })
+              }),
+          ...(coordinateQueueRetry ? { deferProviderFailure: true } : {})
         });
       } catch (error) {
         runnerError = error;
@@ -101,12 +108,61 @@ export function createTranslationExecutionWorker({
       }
 
       const renewalError = leaseHeartbeat?.getRenewalError();
+      let retryQueued = false;
 
-      if (durableTranslationExecutionQueueRepository !== undefined && renewalError === undefined) {
+      if (coordinateQueueRetry && runnerFailed && renewalError === undefined) {
         const persistedExecution = await translationRepository.findExecutionById(job.executionId);
         assertFoundExecution(persistedExecution, job.executionId);
 
-        if (isTerminalExecution(persistedExecution)) {
+        if (!isTerminalExecution(persistedExecution)) {
+          const classification = translationExecutionRetryErrorClassifier.classify(runnerError);
+          const attempt = claimedDurableItem.attempt + 1;
+          if (classification.retryable && translationExecutionRetryPolicy.canRetry(attempt)) {
+            const delayMs = translationExecutionRetryPolicy.getNextDelayMs(attempt, { random: retryRandom });
+            await durableTranslationExecutionQueueRepository.retryClaim(job.executionId, {
+              leaseId: claimedDurableItem.leaseId,
+              fenceToken: claimedDurableItem.fenceToken,
+              attempt,
+              availableAt: createAvailableAt(clock, delayMs),
+              lastFailure: createLastFailure(runnerError, classification.reason)
+            });
+            if (persistedExecution.status === 'running') {
+              await translationRepository.updateTranslationExecution(persistedExecution.resumeAfterExpiredLease());
+            }
+            retryQueued = true;
+          } else if (persistedExecution.status === 'running') {
+            const failedAt = clock();
+            await translationRepository.updateTranslationExecution(
+              persistedExecution.fail(createLastFailure(runnerError, classification.reason), failedAt)
+            );
+          }
+        }
+      }
+
+      if (durableTranslationExecutionQueueRepository !== undefined && renewalError === undefined && !retryQueued) {
+        const persistedExecution = await translationRepository.findExecutionById(job.executionId);
+        assertFoundExecution(persistedExecution, job.executionId);
+
+        if (persistedExecution.status === 'failed' && runnerFailed
+          && typeof durableTranslationExecutionQueueRepository.transferClaimToDeadLetter === 'function') {
+          try {
+            await durableTranslationExecutionQueueRepository.transferClaimToDeadLetter(job.executionId, {
+              leaseId: claimedDurableItem.leaseId,
+              fenceToken: claimedDurableItem.fenceToken,
+              failedAt: persistedExecution.completedAt,
+              failure: persistedExecution.failureInfo,
+              ...(persistedExecution.providerKey === undefined ? {} : { providerKey: persistedExecution.providerKey }),
+              providerMetadata: { providerKey: persistedExecution.providerKey ?? null },
+              executionMetadata: {
+                translationRequestId: persistedExecution.translationRequestId,
+                startedAt: persistedExecution.startedAt,
+                targetLanguageCode: request.targetLanguageCode
+              }
+            });
+          } catch (error) {
+            // The provider error remains authoritative; recovery retries only this transfer.
+          }
+        } else if (isTerminalExecution(persistedExecution)) {
           try {
             await durableTranslationExecutionQueueRepository.acknowledgeClaim(job.executionId, {
               leaseId: claimedDurableItem.leaseId,
@@ -119,6 +175,9 @@ export function createTranslationExecutionWorker({
       }
 
       if (runnerFailed) {
+        if (retryQueued) {
+          return { status: 'retried', executionId: job.executionId };
+        }
         throw runnerError;
       }
 
@@ -150,6 +209,30 @@ function assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseI
       throw new TypeError(`leaseHeartbeatScheduler.${methodName} must be a function.`);
     }
   }
+}
+
+function assertOptionalRetryDependencies(policy, classifier, retryRandom) {
+  if (policy === undefined && classifier === undefined) return;
+  if (!policy || typeof policy.canRetry !== 'function' || typeof policy.getNextDelayMs !== 'function') {
+    throw new TypeError('translationExecutionRetryPolicy must provide canRetry and getNextDelayMs.');
+  }
+  if (!classifier || typeof classifier.classify !== 'function') {
+    throw new TypeError('translationExecutionRetryErrorClassifier.classify must be a function.');
+  }
+  if (typeof retryRandom !== 'function') throw new TypeError('retryRandom must be a function.');
+}
+
+function createAvailableAt(clock, delayMs) {
+  const now = clock();
+  assertIsoUtcTimestamp(now, 'clock must return an ISO-8601 UTC string.');
+  return new Date(new Date(now).getTime() + delayMs).toISOString();
+}
+
+function createLastFailure(error, reason) {
+  const failure = { reason };
+  if (typeof error?.message === 'string') failure.message = error.message;
+  if (typeof error?.code === 'string') failure.code = error.code;
+  return failure;
 }
 
 function createLease({ clock, leaseIdFactory, leaseDurationMs }) {

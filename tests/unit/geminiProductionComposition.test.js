@@ -128,7 +128,8 @@ test('production composition assembles Gemini provider and injects saved transcr
     sessionRepository: dependencies.sessionRepository,
     translationCommandController: dependencies.translationCommandController,
     translationHistoryController: dependencies.translationHistoryController,
-    savedTranscriptRetranslationController
+    savedTranscriptRetranslationController,
+    executionControlController: dependencies.executionControlController
   });
   assert.ok(!Object.hasOwn(calls[8][1], 'configuration'));
   assert.ok(!Object.hasOwn(calls[8][1], 'defaultProviderKey'));

@@ -1,5 +1,28 @@
 # Live Translate API and Events
 
+## Execution Control
+
+### `POST /api/translation-executions/:executionId/cancel`
+
+Cancels the identified execution only when its current status is `queued`.
+Success returns `200 OK` and the same execution with status `cancelled`.
+`cancelled` is terminal and produces no TranslationOutput. This endpoint does
+not accept a request body or client-controlled request, provider, status,
+attempt, or idempotency metadata.
+
+### `POST /api/translation-executions/:executionId/retry`
+
+Manually retries the identified execution only when it is `failed`. Success
+returns `202 Accepted` and a newly created `queued` execution. The source
+execution remains failed; the new execution has a different ID, keeps the same
+request identity and provider key, and receives a new provider idempotency
+identity. This endpoint accepts no request body or client-controlled execution
+metadata.
+
+For both endpoints, an invalid execution ID returns `400`; a missing execution
+or source request returns `404`; an ineligible status returns `409`; enqueue or
+unexpected failures return a safe `500` error without internal details.
+
 ## `POST /api/sessions/:sessionId/retranslations`
 
 Queues a new translation execution from the Session's canonical final source

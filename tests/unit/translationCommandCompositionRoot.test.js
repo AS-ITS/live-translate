@@ -42,6 +42,9 @@ test('application dependencies assemble translation command graph with injected 
   const translationExecutionQueue = queue();
   const translationCommandService = service();
   const translationCommandController = controller();
+  const cancelQueuedTranslationExecutionService = { cancelQueuedExecution() {} };
+  const manualRetryFailedTranslationExecutionService = { retryFailedExecution() {} };
+  const executionControlController = { cancelExecution() {}, retryExecution() {} };
   const requestHandlerResult = function requestHandler() {};
   const calls = [];
 
@@ -51,6 +54,18 @@ test('application dependencies assemble translation command graph with injected 
     domainEventPublisher,
     translationExecutionDispatcher,
     translationExecutionQueue,
+    cancelQueuedTranslationExecutionServiceFactory(options) {
+      calls.push(['cancelServiceFactory', options]);
+      return cancelQueuedTranslationExecutionService;
+    },
+    manualRetryFailedTranslationExecutionServiceFactory(options) {
+      calls.push(['retryServiceFactory', options]);
+      return manualRetryFailedTranslationExecutionService;
+    },
+    executionControlControllerFactory(options) {
+      calls.push(['executionControlControllerFactory', options]);
+      return executionControlController;
+    },
     translationCommandServiceFactory(options) {
       calls.push(['serviceFactory', options]);
       return translationCommandService;
@@ -71,6 +86,9 @@ test('application dependencies assemble translation command graph with injected 
   assert.strictEqual(dependencies.translationExecutionQueue, translationExecutionQueue);
   assert.strictEqual(dependencies.translationCommandService, translationCommandService);
   assert.strictEqual(dependencies.translationCommandController, translationCommandController);
+  assert.strictEqual(dependencies.cancelQueuedTranslationExecutionService, cancelQueuedTranslationExecutionService);
+  assert.strictEqual(dependencies.manualRetryFailedTranslationExecutionService, manualRetryFailedTranslationExecutionService);
+  assert.strictEqual(dependencies.executionControlController, executionControlController);
   assert.strictEqual(dependencies.requestHandler, requestHandlerResult);
   assert.strictEqual(calls[0][1].translationRepository, translationRepository);
   assert.strictEqual(calls[0][1].domainEventPublisher, domainEventPublisher);
@@ -84,9 +102,18 @@ test('application dependencies assemble translation command graph with injected 
   ]);
   assert.strictEqual(calls[1][1].translationCommandService, translationCommandService);
   assert.deepEqual(Object.keys(calls[1][1]), ['translationCommandService']);
-  assert.strictEqual(calls[2][1].translationCommandController, translationCommandController);
-  assert.strictEqual(calls[2][1].sessionReadController, dependencies.sessionReadController);
-  assert.deepEqual(Object.keys(calls[2][1]).sort(), ['sessionReadController', 'sessionRepository', 'translationCommandController', 'translationHistoryController']);
+  assert.strictEqual(calls[2][1].translationRepository, translationRepository);
+  assert.strictEqual(calls[2][1].clock instanceof Function, true);
+  assert.strictEqual(calls[3][1].translationRepository, translationRepository);
+  assert.strictEqual(calls[3][1].translationExecutionQueue, translationExecutionQueue);
+  assert.strictEqual(calls[3][1].idGenerator instanceof Function, true);
+  assert.strictEqual(calls[3][1].clock instanceof Function, true);
+  assert.strictEqual(calls[4][1].cancelQueuedTranslationExecutionService, cancelQueuedTranslationExecutionService);
+  assert.strictEqual(calls[4][1].manualRetryFailedTranslationExecutionService, manualRetryFailedTranslationExecutionService);
+  assert.strictEqual(calls[5][1].translationCommandController, translationCommandController);
+  assert.strictEqual(calls[5][1].executionControlController, executionControlController);
+  assert.strictEqual(calls[5][1].sessionReadController, dependencies.sessionReadController);
+  assert.deepEqual(Object.keys(calls[5][1]).sort(), ['executionControlController', 'sessionReadController', 'sessionRepository', 'translationCommandController', 'translationHistoryController']);
 });
 
 test('translation command dependencies use the service factory result to build the controller', () => {

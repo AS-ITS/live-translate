@@ -101,7 +101,9 @@ test('application composition wires saved transcript re-translation once through
   assert.strictEqual(calls[2][1].sessionReadController, dependencies.sessionReadController);
   assert.strictEqual(calls[2][1].translationCommandController, dependencies.translationCommandController);
   assert.strictEqual(calls[2][1].savedTranscriptRetranslationController, savedTranscriptRetranslationController);
+  assert.strictEqual(calls[2][1].executionControlController, dependencies.executionControlController);
   assert.deepEqual(Object.keys(calls[2][1]).sort(), [
+    'executionControlController',
     'savedTranscriptRetranslationController',
     'sessionReadController',
     'sessionRepository',

@@ -28,6 +28,9 @@ const ERROR_RESPONSES = {
     message: 'Saved transcript re-translation is not configured.'
   },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
+  translation_execution_not_found: { status: 404, message: 'Translation execution not found.' },
+  translation_request_not_found: { status: 404, message: 'Translation request not found.' },
+  execution_invalid_state: { status: 409, message: 'Translation execution is not in a valid state for this operation.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 
@@ -202,6 +205,7 @@ export function createRequestHandler(options = {}) {
     sessionReadController,
     sessionRepository,
     translationCommandController,
+    executionControlController,
     translationHistoryController,
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
@@ -211,12 +215,16 @@ export function createRequestHandler(options = {}) {
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
     assertTranslationCommandController(translationCommandController);
   }
+  if (Object.prototype.hasOwnProperty.call(options, 'executionControlController')) {
+    assertExecutionControlController(executionControlController);
+  }
 
   return async function handleRequestWithDependencies(req, res) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
       sessionRepository,
       translationCommandController,
+      executionControlController,
       translationHistoryController,
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
@@ -232,7 +240,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, translationHistoryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -425,6 +433,22 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (isExecutionControlRoute(req.method, path)) {
+    try {
+      assertExecutionControlController(executionControlController);
+      const { status, result } = handleExecutionControlCommand(req.method, path, executionControlController);
+      statusCode = status;
+      sendJson(res, statusCode, serializeExecutionControlResponse(await result), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (isSavedTranscriptRetranslationRoute(req.method, path)) {
     try {
       if (!savedTranscriptRetranslationController) {
@@ -519,6 +543,17 @@ function assertTranslationCommandController(translationCommandController) {
   assertMethod(translationCommandController, 'createTranslationOutput');
 }
 
+function assertExecutionControlController(executionControlController) {
+  if (!executionControlController) {
+    throw new TypeError('executionControlController is required.');
+  }
+  for (const methodName of ['cancelExecution', 'retryExecution']) {
+    if (typeof executionControlController[methodName] !== 'function') {
+      throw new TypeError(`executionControlController.${methodName} must be a function.`);
+    }
+  }
+}
+
 function assertMethod(target, methodName) {
   if (typeof target[methodName] !== 'function') {
     throw new TypeError(`translationCommandController.${methodName} must be a function.`);
@@ -534,6 +569,12 @@ function isTranslationCommandRoute(method, path) {
       path.length > '/api/translation-executions/'.length) ||
     (method === 'POST' && path === '/api/translation-outputs')
   );
+}
+
+function isExecutionControlRoute(method, path) {
+  return method === 'POST'
+    && path.startsWith('/api/translation-executions/')
+    && (path.endsWith('/cancel') || path.endsWith('/retry'));
 }
 
 function isSavedTranscriptRetranslationRoute(method, path) {
@@ -691,6 +732,39 @@ function handleTranslationCommand(method, path, body, translationCommandControll
   }
 
   throw createHttpError('not_found');
+}
+
+function handleExecutionControlCommand(method, path, executionControlController) {
+  const operation = path.endsWith('/cancel') ? 'cancel' : 'retry';
+  const executionId = extractExecutionControlExecutionId(path, operation);
+  return operation === 'cancel'
+    ? { status: 200, result: executionControlController.cancelExecution({ executionId }) }
+    : { status: 202, result: executionControlController.retryExecution({ executionId }) };
+}
+
+function extractExecutionControlExecutionId(path, operation) {
+  const prefix = '/api/translation-executions/';
+  const suffix = `/${operation}`;
+  const encodedExecutionId = path.slice(prefix.length, -suffix.length);
+  try {
+    return validateRequiredString(decodeURIComponent(encodedExecutionId));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function serializeExecutionControlResponse(execution) {
+  return {
+    id: execution.id,
+    translationRequestId: execution.translationRequestId,
+    requestId: execution.translationRequestId,
+    status: execution.status,
+    ...(execution.providerKey === undefined ? {} : { providerKey: execution.providerKey }),
+    startedAt: execution.startedAt,
+    completedAt: execution.completedAt,
+    failureInfo: execution.failureInfo
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

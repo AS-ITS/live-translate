@@ -6,17 +6,18 @@ export {
   createTranslationRequestCreatedEvent
 } from './events.js';
 
-export const TRANSLATION_EXECUTION_STATUSES = Object.freeze(['created', 'queued', 'running', 'completed', 'failed']);
+export const TRANSLATION_EXECUTION_STATUSES = Object.freeze(['created', 'queued', 'running', 'completed', 'failed', 'cancelled']);
 export const PROVIDER_ATTEMPT_STATUSES = Object.freeze(['not_started', 'in_flight', 'succeeded', 'failed']);
 const PROVIDER_IDEMPOTENCY_KEY_PREFIX = 'translation-execution:';
 
-const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed']);
+const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed', 'cancelled']);
 const ALLOWED_EXECUTION_TRANSITIONS = Object.freeze({
   created: Object.freeze(['queued', 'running', 'failed']),
-  queued: Object.freeze(['running', 'failed']),
+  queued: Object.freeze(['running', 'failed', 'cancelled']),
   running: Object.freeze(['queued', 'completed', 'failed']),
   completed: Object.freeze([]),
-  failed: Object.freeze([])
+  failed: Object.freeze([]),
+  cancelled: Object.freeze([])
 });
 const ALLOWED_PROVIDER_ATTEMPT_TRANSITIONS = Object.freeze({
   not_started: Object.freeze(['in_flight']),
@@ -113,6 +114,18 @@ export class TranslationExecution {
       completedAt: assertTimestamp(completedAt, 'completedAt'),
       failureInfo: deepClone(assertRequiredValue(failureInfo, 'failureInfo'))
     });
+  }
+
+  cancel(completedAt) {
+    return this.transitionTo('cancelled', {
+      completedAt: assertTimestamp(completedAt, 'completedAt'),
+      failureInfo: null
+    });
+  }
+
+  // A manual retry must create a new execution; this source execution is never rewritten.
+  isManualRetryEligible() {
+    return this.status === 'failed';
   }
 
   markProviderAttemptInFlight(providerAttemptedAt) {

@@ -1315,6 +1315,167 @@ test('PATCH /api/translation-executions/:executionId completes a running executi
   });
 });
 
+test('POST cancel returns the persisted cancelled execution without output or provider execution', async () => {
+  const queued = new TranslationExecution(translationExecutionPayload({ providerKey: 'fake' })).queue();
+  const translationRepository = createTranslationRepositoryFixture({ executions: [queued] });
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl, dependencies) => {
+    const response = await postEmpty(`${baseUrl}/api/translation-executions/${queued.id}/cancel`);
+    const stored = translationRepository.translationExecutions.get(queued.id);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body, {
+      id: queued.id,
+      translationRequestId: 'request-1',
+      requestId: 'request-1',
+      status: 'cancelled',
+      providerKey: 'fake',
+      startedAt: '2026-07-14T01:01:00.000Z',
+      completedAt: '2026-07-14T01:02:00.000Z',
+      failureInfo: null
+    });
+    assert.equal(stored.status, 'cancelled');
+    assert.equal(stored.providerIdempotencyKey, queued.providerIdempotencyKey);
+    assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+    assert.equal(dependencies.translationExecutionQueue.size(), 0);
+  }, { clock: () => '2026-07-14T01:02:00.000Z' });
+});
+
+test('POST cancel maps missing and non-queued executions to deterministic client errors without rewriting them', async () => {
+  const statuses = ['created', 'running', 'completed', 'failed', 'cancelled'];
+  const executions = statuses.map((status) => executionForControlStatus(status));
+  const translationRepository = createTranslationRepositoryFixture({ executions });
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
+    const missing = await postEmpty(`${baseUrl}/api/translation-executions/missing-execution/cancel`);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'translation_execution_not_found');
+
+    for (const execution of executions) {
+      const response = await postEmpty(`${baseUrl}/api/translation-executions/${execution.id}/cancel`);
+      assert.equal(response.status, 409);
+      assert.equal(response.body.error.code, 'execution_invalid_state');
+      assert.strictEqual(translationRepository.translationExecutions.get(execution.id), execution);
+    }
+    assert.equal(translationRepository.callsFor('updateTranslationExecution').length, 0);
+  });
+});
+
+test('POST cancel validates a blank execution ID before calling the application service', async () => {
+  const translationRepository = createTranslationRepositoryFixture();
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl) => {
+    const response = await postEmpty(`${baseUrl}/api/translation-executions/%20/cancel`);
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'invalid_request');
+    assert.deepEqual(translationRepository.calls, []);
+  });
+});
+
+test('POST retry returns a distinct queued execution and leaves the failed source unchanged until the worker runs it', async () => {
+  const source = failedExecutionForControl({ providerKey: 'fake' });
+  const request = new TranslationRequest(translationRequestPayload({
+    sourceTranscriptSnapshot: { sourceText: 'hello', sourceLanguageCode: 'en' }
+  }));
+  const translationRepository = createTranslationRepositoryFixture({ requests: [request], executions: [source] });
+  const providerCalls = [];
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postEmpty(`${baseUrl}/api/translation-executions/${source.id}/retry`);
+      const retry = translationRepository.translationExecutions.get('execution-retry-1');
+
+      assert.equal(response.status, 202);
+      assert.deepEqual(response.body, {
+        id: 'execution-retry-1',
+        translationRequestId: source.translationRequestId,
+        requestId: source.translationRequestId,
+        status: 'queued',
+        providerKey: 'fake',
+        startedAt: '2026-07-14T01:03:00.000Z',
+        completedAt: null,
+        failureInfo: null
+      });
+      assert.notEqual(retry.id, source.id);
+      assert.equal(retry.providerIdempotencyKey, 'translation-execution:execution-retry-1');
+      assert.equal(source.status, 'failed');
+      assert.deepEqual(source.failureInfo, { reason: 'provider_error' });
+      assert.equal(source.providerAttemptStatus, 'failed');
+      assert.deepEqual(providerCalls, []);
+      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 0);
+      assertQueuedJob(dependencies, { executionId: retry.id, requestId: retry.translationRequestId });
+      await dependencies.translationExecutionQueue.enqueue({ executionId: retry.id, requestId: retry.translationRequestId });
+
+      assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), { status: 'processed', executionId: retry.id });
+      assert.equal(providerCalls.length, 1);
+      assert.equal(translationRepository.callsFor('createTranslationOutput').length, 1);
+    },
+    {
+      idGenerator: () => 'execution-retry-1',
+      clock: () => '2026-07-14T01:03:00.000Z',
+      translationExecutionProvider: {
+        async execute(input) {
+          providerCalls.push(input);
+          return { translatedText: 'Bonjour' };
+        }
+      }
+    }
+  );
+});
+
+test('POST retry maps ineligible, missing execution, and missing request sources without creating or queueing work', async () => {
+  const ineligible = ['created', 'queued', 'running', 'completed', 'cancelled'].map(executionForControlStatus);
+  const missingRequestSource = failedExecutionForControl({ id: 'execution-missing-request', translationRequestId: 'missing-request' });
+  const translationRepository = createTranslationRepositoryFixture({ executions: [...ineligible, missingRequestSource] });
+
+  await withTranslationCommandServer(translationRepository, async (baseUrl, dependencies) => {
+    const missing = await postEmpty(`${baseUrl}/api/translation-executions/missing-execution/retry`);
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.error.code, 'translation_execution_not_found');
+
+    for (const execution of ineligible) {
+      const response = await postEmpty(`${baseUrl}/api/translation-executions/${execution.id}/retry`);
+      assert.equal(response.status, 409);
+      assert.equal(response.body.error.code, 'execution_invalid_state');
+      assert.strictEqual(translationRepository.translationExecutions.get(execution.id), execution);
+    }
+
+    const missingRequest = await postEmpty(`${baseUrl}/api/translation-executions/${missingRequestSource.id}/retry`);
+    assert.equal(missingRequest.status, 404);
+    assert.equal(missingRequest.body.error.code, 'translation_request_not_found');
+    assert.equal(translationRepository.callsFor('createTranslationExecution').length, 0);
+    assert.equal(dependencies.translationExecutionQueue.size(), 0);
+  });
+});
+
+test('POST retry preserves queued persistence but returns the existing safe enqueue failure response', async () => {
+  const source = failedExecutionForControl();
+  const request = new TranslationRequest(translationRequestPayload());
+  const translationRepository = createTranslationRepositoryFixture({ requests: [request], executions: [source] });
+  const enqueueError = new Error('queue stack detail');
+  const queue = {
+    enqueue() { throw enqueueError; },
+    dequeue() { return null; },
+    size() { return 0; }
+  };
+
+  await withTranslationCommandServer(
+    translationRepository,
+    async (baseUrl) => {
+      const response = await postEmpty(`${baseUrl}/api/translation-executions/${source.id}/retry`);
+
+      assert.equal(response.status, 500);
+      assert.equal(response.body.error.code, 'internal_error');
+      assert.doesNotMatch(JSON.stringify(response.body), /queue stack detail/);
+      assert.equal(translationRepository.translationExecutions.has('execution-retry-1'), true);
+      assert.equal(translationRepository.translationExecutions.get('execution-retry-1').status, 'queued');
+    },
+    { translationExecutionQueue: queue, idGenerator: () => 'execution-retry-1' }
+  );
+});
+
 test('POST /api/translation-outputs creates a TranslationOutput through production composition wiring', async () => {
   const translationRepository = createTranslationRepositoryFixture();
   const input = translationOutputPayload({
@@ -1395,10 +1556,11 @@ test('unexpected repository failure uses existing internal error response withou
   });
 });
 
-async function withTranslationCommandServer(translationRepository, run) {
+async function withTranslationCommandServer(translationRepository, run, options = {}) {
   const dependencies = createApplicationDependencies({
     sessionReadRepository: readRepository(),
     translationRepository,
+    ...options,
     requestHandlerFactory: createRequestHandler
   });
   const server = http.createServer(dependencies.requestHandler);
@@ -1457,6 +1619,14 @@ async function withProductionTranslationCommandServer(translationRepository, run
 
 function postJson(url, body) {
   return sendJson(url, 'POST', body);
+}
+
+async function postEmpty(url) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'x-request-id': 'test-request-id' }
+  });
+  return { status: response.status, headers: response.headers, body: await response.json() };
 }
 
 function patchJson(url, body) {
@@ -1665,6 +1835,27 @@ function translationExecutionPayload(overrides = {}) {
     startedAt: '2026-07-14T01:01:00.000Z',
     ...overrides
   };
+}
+
+function executionForControlStatus(status) {
+  const base = translationExecutionPayload({ id: `execution-${status}`, status });
+  if (status === 'completed' || status === 'cancelled') return new TranslationExecution({ ...base, completedAt: '2026-07-14T01:02:00.000Z' });
+  if (status === 'failed') return new TranslationExecution({ ...base, completedAt: '2026-07-14T01:02:00.000Z', failureInfo: { reason: 'provider_error' } });
+  if (status === 'running') return new TranslationExecution(base);
+  return new TranslationExecution(base);
+}
+
+function failedExecutionForControl(overrides = {}) {
+  return new TranslationExecution(translationExecutionPayload({
+    id: 'execution-failed-source',
+    providerKey: 'fake',
+    ...overrides
+  }))
+    .queue()
+    .start('2026-07-14T01:01:30.000Z')
+    .markProviderAttemptInFlight('2026-07-14T01:01:31.000Z')
+    .markProviderAttemptFailed('2026-07-14T01:01:32.000Z')
+    .fail({ reason: 'provider_error' }, '2026-07-14T01:02:00.000Z');
 }
 
 function translationOutputPayload(overrides = {}) {

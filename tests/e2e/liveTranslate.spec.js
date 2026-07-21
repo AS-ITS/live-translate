@@ -311,6 +311,70 @@ test('session detail renders filtered translation history with mixed-language de
   await expect(history.getByText('Bonjour')).toBeHidden();
 });
 
+test('translation execution controls cancel queued work and retry failed work without replacing the source', async ({ page }) => {
+  const executions = [
+    { id: 'execution-queued', requestId: 'request-queued', targetLanguageCode: 'ja', status: 'queued' },
+    { id: 'execution-failed', requestId: 'request-failed', targetLanguageCode: 'fr', status: 'failed' },
+    { id: 'execution-running', requestId: 'request-running', targetLanguageCode: 'en', status: 'running' },
+    { id: 'execution-completed', requestId: 'request-completed', targetLanguageCode: 'de', status: 'completed' },
+    { id: 'execution-cancelled', requestId: 'request-cancelled', targetLanguageCode: 'ko', status: 'cancelled' }
+  ];
+  await page.route('**/api/sessions/**', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/translations')) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+        sessionId: 'controlled-session',
+        translations: [],
+        translationHistory: { outputs: [], executions }
+      }) });
+      return;
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
+      session: { id: 'controlled-session', status: 'completed', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 0, sourceFinalCount: 0, translationFinalCount: 0, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: false } },
+      sourceTranscript: { id: 'source:controlled-session', sessionId: 'controlled-session', revisionId: 'source:final', status: 'finalized', items: [], createdAt: 1, finalizedAt: 2 },
+      translationOutputs: [], selectedTranslationOutput: null, legacy: false
+    }) });
+  });
+  await page.route('**/api/translation-executions/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() !== 'POST') return route.continue();
+    if (url.pathname.endsWith('/execution-queued/cancel')) {
+      executions[0] = { ...executions[0], status: 'cancelled', completedAt: '2026-07-21T00:00:00.000Z' };
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(executions[0]) });
+      return;
+    }
+    if (url.pathname.endsWith('/execution-failed/retry')) {
+      executions.push({ id: 'execution-retry', requestId: 'request-failed', targetLanguageCode: 'fr', status: 'queued' });
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(executions.at(-1)) });
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  const history = sessionDetail(page).getByLabel('Translation history');
+  await expect(history.getByRole('button', { name: '取消' })).toHaveCount(1);
+  await expect(history.getByRole('button', { name: '重新嘗試' })).toHaveCount(1);
+  await expect(history.getByText('en · 執行中')).toBeVisible();
+  await expect(history.getByText('de · 已完成')).toBeVisible();
+  await expect(history.getByText('ko · 已取消')).toBeVisible();
+
+  await history.getByRole('button', { name: '取消' }).click();
+  await expect(history.getByText('ja · 已取消')).toBeVisible();
+  await expect(history.getByRole('button', { name: '取消' })).toHaveCount(0);
+
+  await history.getByRole('button', { name: '重新嘗試' }).click();
+  await expect(history.getByText('fr · 失敗')).toBeVisible();
+  await expect(history.getByText('fr · 已排隊')).toBeVisible();
+  await expect(history.getByRole('button', { name: '重新嘗試' })).toHaveCount(1);
+});
+
 function historyTranslation({ id, targetLanguageCode, translatedText }) {
   return {
     request: { id, sourceText: 'Hello こんにちは', targetLanguageCode, createdAt: '2026-07-21T00:00:00.000Z' },

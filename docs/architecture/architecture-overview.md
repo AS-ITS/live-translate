@@ -246,6 +246,25 @@ created
 → failed
 ```
 
+### Execution Control
+
+`cancelled` is a terminal TranslationExecution status. The cancellation
+transition is only `queued → cancelled`; it is unavailable for `running`,
+`completed`, `failed`, and already `cancelled` executions. It is not a
+provider-side abort, and a cancelled execution never enters running, completed,
+or failed or creates a TranslationOutput.
+
+Manual retry is available only for a failed execution. It does not mutate the
+source: a new queued execution is created with a new execution ID and provider
+idempotency identity, while retaining the source request identity and
+providerKey. Its actual work remains owned by the existing Worker/Runtime.
+
+Cancellation does not directly remove active or durable queue items. Any
+remaining identifier-only item is a safe Worker/recovery no-op: it does not
+resolve or call a provider, run the Runner, create output, schedule retry, or
+transfer to the DLQ. Durable claim, lease, fence, and acknowledgement ownership
+rules remain in force.
+
 Runtime boundaries:
 
 - `TranslationExecutionQueue` is an infrastructure-independent application
@@ -330,6 +349,7 @@ queue contract, FIFO semantics, and HTTP `202 Accepted` response:
 | `processing` | An active `leaseExpiresAt` remains durable and is not replayed. An expired lease is cleared and reclaimed through `queued`; recovery then checks execution and output state before replay or terminal reconciliation. |
 | `completed` | Recovery does not replay it; the Worker skips a completed execution. |
 | `failed` | Recovery does not replay it; startup acknowledges only a failed execution with no output. The Worker skips a failed execution. |
+| `cancelled` | Recovery and the Worker treat it as a terminal no-op and acknowledge it without provider or output work. |
 | `created` / `running` execution | The Worker skips it and does not invoke the provider. |
 
 Provider attempt state is independent of the execution state:
@@ -444,7 +464,7 @@ Conflicting persisted identities fail before replay.
 
 The Worker loads persisted execution and request records before durable claim or
 provider execution. Only queued executions proceed; created, running, completed,
-and failed executions return an `execution_not_processable` skip result without
+failed, and cancelled executions return an `execution_not_processable` skip result without
 changing durable queue state or execution lifecycle.
 
 For an owned transient provider failure that remains below the queue retry

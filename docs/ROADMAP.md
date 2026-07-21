@@ -15,7 +15,7 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 4B closeout completed; the capability is ready for
+Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
@@ -94,6 +94,22 @@ Follow-up backlog, not Phase 4B delivery: manual retry/cancel, DLQ
 inspection/replay UI, cross-Session history search, output retention/deletion
 policy, provider-side idempotency guarantees, and push-based execution-status
 updates in place of polling.
+
+Phase 4C is completed:
+
+1. WP1 cancelled terminal execution status and queued-only cancellation.
+2. WP2 queued cancellation and failed-only manual retry application services.
+3. WP3 Worker/recovery safe no-op handling for cancelled queue items.
+4. WP4 cancel and retry HTTP endpoints with safe error mapping.
+5. WP5 history controls, polling reconciliation, and stale-response protection.
+6. WP6 documentation closeout and full regression verification.
+
+Users can cancel queued history executions or manually retry failed ones. Retry
+creates a separate queued execution; it never rewrites the failed source.
+Remaining non-commitment backlog: running provider abort, cancellation
+reason/actor, batch or scheduled cancellation, cancelled-execution retry,
+retry-lineage UI, DLQ inspection/replay UI, and push status updates. Existing
+retry scheduling, lease/fence, reclaim, and DLQ behavior are unchanged.
 
 Completed Phase 1 capabilities include:
 

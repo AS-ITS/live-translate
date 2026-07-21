@@ -784,6 +784,53 @@ test('production composition worker skips non-processable execution lifecycle st
   });
 });
 
+test('startup recovery replays cancelled durable work for lease-aware no-op acknowledgement without provider execution', async () => {
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    const cancelledExecutionId = 'execution-cancelled-recovery';
+    const queuedExecutionId = 'execution-after-cancelled-recovery';
+    await createRequestAndQueuedExecution(dependencies, { executionId: cancelledExecutionId });
+    await createRequestAndQueuedExecution(dependencies, { executionId: queuedExecutionId });
+    const cancelled = await dependencies.translationRepository.getTranslationExecution(cancelledExecutionId);
+    await dependencies.translationRepository.updateTranslationExecution(cancelled.cancel('2026-07-20T00:02:00.000Z'));
+    dependencies.translationExecutionQueue.dequeue();
+    dependencies.translationExecutionQueue.dequeue();
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+
+    assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+      status: 'cancelled',
+      executionId: cancelledExecutionId
+    });
+    assert.equal((await dependencies.translationRepository.getTranslationExecution(cancelledExecutionId)).status, 'cancelled');
+    assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution(cancelledExecutionId), []);
+    assert.deepEqual(providerCalls, []);
+    assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+      status: 'processed',
+      executionId: queuedExecutionId
+    });
+    assert.equal(providerCalls.length, 1);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  });
+});
+
+test('startup recovery acknowledges expired processing cancelled work without retry or DLQ transfer', async () => {
+  await withProductionFixture(async ({ dependencies, providerCalls }) => {
+    const executionId = 'execution-cancelled-expired-processing';
+    await createRequestAndQueuedExecution(dependencies, { executionId });
+    dependencies.translationExecutionQueue.dequeue();
+    await dependencies.durableTranslationExecutionQueueRepository.claim(executionId, expiredLease());
+    const execution = await dependencies.translationRepository.getTranslationExecution(executionId);
+    await dependencies.translationRepository.updateTranslationExecution(execution.cancel('2026-07-20T00:02:00.000Z'));
+
+    await dependencies.startupTranslationExecutionQueueRecovery.recover();
+
+    assert.equal((await dependencies.translationRepository.getTranslationExecution(executionId)).status, 'cancelled');
+    assert.deepEqual(await dependencies.translationRepository.listTranslationOutputsByExecution(executionId), []);
+    assert.deepEqual(providerCalls, []);
+    assert.deepEqual(await dependencies.durableTranslationExecutionQueueRepository.list(), []);
+  });
+});
+
 async function withProductionFixture(run, options = {}) {
   const directory = await fileSystem.mkdtemp(join(tmpdir(), 'live-translate-wp7-'));
   const sessionRepository = createMemorySessionRepository({ now: () => '2026-07-20T00:00:00.000Z' });
@@ -914,6 +961,10 @@ function executionFor({ executionId, requestId, status }) {
       completedAt: '2026-07-20T00:02:00.000Z',
       failureInfo: { reason: 'test_failure' }
     });
+  }
+
+  if (status === 'cancelled') {
+    return new TranslationExecution({ ...base, completedAt: '2026-07-20T00:02:00.000Z' });
   }
 
   return new TranslationExecution(base);

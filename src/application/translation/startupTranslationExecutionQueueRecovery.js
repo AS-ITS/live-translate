@@ -76,6 +76,11 @@ export function createStartupTranslationExecutionQueueRecovery({
         assertFoundExecution(execution, item.executionId);
         const outputs = await translationRepository.listTranslationOutputsByExecution(item.executionId);
 
+        if (isCancelledExecution(execution)) {
+          await durableRepository.acknowledge(item.executionId);
+          continue;
+        }
+
         if (isOutputBearingRunningExecution(execution, outputs)) {
           await completeExecution(translationCommandService, execution);
           await durableRepository.updateStatus(item.executionId, DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.COMPLETED);
@@ -186,6 +191,10 @@ function isCompletedExecutionWithOutput(execution, outputs) {
 
 function isFailedExecutionWithoutOutput(execution, outputs) {
   return execution.status === 'failed' && outputs.length === 0;
+}
+
+function isCancelledExecution(execution) {
+  return execution.status === 'cancelled';
 }
 
 async function completeExecution(translationCommandService, execution) {

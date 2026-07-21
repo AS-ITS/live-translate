@@ -13,7 +13,7 @@ import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.j
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
-import { HISTORY_REFRESH_MS, hasPendingExecutions, selectedOutputFor } from './lib/sessionHistoryState.js';
+import { HISTORY_REFRESH_MS, hasPendingExecutions, replaceHistoryExecution, selectedOutputFor } from './lib/sessionHistoryState.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -683,7 +683,14 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
   const [localExecutions, setLocalExecutions] = useState([]);
   const [historyData, setHistoryData] = useState(translationHistory);
   const [refreshError, setRefreshError] = useState('');
+  const [executionOperations, setExecutionOperations] = useState({});
+  const [executionControlError, setExecutionControlError] = useState('');
   const sessionRecordId = detail?.session?.id;
+  const mountedRef = useRef(true);
+  const sessionRecordIdRef = useRef(sessionRecordId);
+  const historyRefreshGenerationRef = useRef(0);
+  const historyDataRef = useRef(historyData);
+  sessionRecordIdRef.current = sessionRecordId;
 
   useEffect(() => {
     setSavedExportFormat('txt');
@@ -691,26 +698,84 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
     setSavedExportError('');
     setTranslationLanguageFilter('');
     setSelectedOutputId(null); setShowRetranslation(false); setRetranslationError(''); setLocalExecutions([]);
-    setHistoryData(translationHistory); setRefreshError('');
+    setHistoryData(translationHistory); setRefreshError(''); setExecutionOperations({}); setExecutionControlError('');
+    historyRefreshGenerationRef.current += 1;
   }, [sessionRecordId]);
 
-  useEffect(() => { setHistoryData(translationHistory); }, [translationHistory]);
+  useEffect(() => { historyDataRef.current = historyData; }, [historyData]);
   useEffect(() => {
-    if (!sessionRecordId || !hasPendingExecutions(historyData) && localExecutions.length === 0) return undefined;
+    if (translationHistory !== undefined && historyDataRef.current === undefined) {
+      setHistoryData(translationHistory);
+    }
+  }, [sessionRecordId, translationHistory]);
+  useEffect(() => {
     let active = true;
+    mountedRef.current = true;
     const refresh = async () => {
+      if (!hasPendingExecutions(historyDataRef.current) && localExecutions.length === 0) return;
+      const generation = historyRefreshGenerationRef.current;
       try {
         const next = await createSessionReadApiClient().getSessionTranslations(sessionRecordId);
-        if (!active || !next) return;
+        if (!active || !next || generation !== historyRefreshGenerationRef.current || sessionRecordIdRef.current !== sessionRecordId) return;
         setHistoryData(next);
         const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
         setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
         setRefreshError('');
       } catch { if (active) setRefreshError('Translation history could not be refreshed.'); }
     };
-    refresh(); const timer = setInterval(refresh, HISTORY_REFRESH_MS);
-    return () => { active = false; clearInterval(timer); };
-  }, [sessionRecordId, historyData, localExecutions.length]);
+    void refresh(); const timer = setInterval(() => { void refresh(); }, HISTORY_REFRESH_MS);
+    return () => { active = false; mountedRef.current = false; historyRefreshGenerationRef.current += 1; clearInterval(timer); };
+  }, [sessionRecordId, localExecutions.length]);
+
+  async function refreshTranslationHistoryAfterControl(expectedSessionId) {
+    const generation = historyRefreshGenerationRef.current;
+    try {
+      const next = await createSessionReadApiClient().getSessionTranslations(expectedSessionId);
+      if (!mountedRef.current || sessionRecordIdRef.current !== expectedSessionId || generation !== historyRefreshGenerationRef.current || !next) return;
+      setHistoryData(next);
+      const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
+      setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
+      setRefreshError('');
+    } catch {
+      // The local control result remains visible; polling will reconcile later.
+    }
+  }
+
+  async function controlExecution(execution, operation) {
+    if (executionOperations[execution.id]) return;
+    const expectedSessionId = sessionRecordId;
+    setExecutionOperations((current) => ({ ...current, [execution.id]: operation }));
+    setExecutionControlError('');
+    try {
+      const client = createTranslationCommandApiClient();
+      const result = operation === 'cancel'
+        ? await client.cancelTranslationExecution(execution.id)
+        : await client.retryFailedTranslationExecution(execution.id);
+      if (!mountedRef.current || sessionRecordIdRef.current !== expectedSessionId) return;
+      historyRefreshGenerationRef.current += 1;
+      if (operation === 'cancel') {
+        setHistoryData((current) => replaceHistoryExecution(current, { ...result, targetLanguageCode: execution.targetLanguageCode }));
+      } else {
+        setLocalExecutions((current) => [...current.filter((item) => item.id !== result.id), {
+          ...result,
+          requestId: result.requestId || result.translationRequestId,
+          targetLanguageCode: execution.targetLanguageCode
+        }]);
+      }
+      void refreshTranslationHistoryAfterControl(expectedSessionId);
+    } catch (nextError) {
+      if (mountedRef.current && sessionRecordIdRef.current === expectedSessionId) {
+        setExecutionControlError(`${operation === 'cancel' ? '取消' : '重新嘗試'}失敗（${execution.id}）：${nextError.safeMessage || '請稍後再試。'}`);
+      }
+    } finally {
+      if (mountedRef.current && sessionRecordIdRef.current === expectedSessionId) {
+        setExecutionOperations((current) => {
+          const { [execution.id]: ignored, ...remaining } = current;
+          return remaining;
+        });
+      }
+    }
+  }
 
   if (detail === undefined) {
     return (
@@ -853,7 +918,7 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         <p className="history-empty">No saved transcript.</p>
       )}
 
-      <TranslationHistoryPanel history={historyData ?? (detail.translationHistory === undefined ? undefined : { translationHistory: detail.translationHistory })} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} />
+      <TranslationHistoryPanel history={historyData ?? (detail.translationHistory === undefined ? undefined : { translationHistory: detail.translationHistory })} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} executionOperations={executionOperations} onControlExecution={controlExecution} executionControlError={executionControlError} />
       {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>Retry</button></p> : null}
 
       <section className="saved-export-panel" aria-label="Retranslation">
@@ -929,18 +994,25 @@ function TranscriptItemList({ title, items }) {
   );
 }
 
-function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange, selectedOutputId, onSelectOutput, localExecutions = [] }) {
+function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange, selectedOutputId, onSelectOutput, localExecutions = [], executionOperations = {}, onControlExecution, executionControlError }) {
   if (history === undefined) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Loading translation history...</p></section>;
   if (!history) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Translation history is unavailable.</p></section>;
   const model = history.translationHistory;
   if (model) {
     const outputs = [...model.outputs].sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)) || String(a.id).localeCompare(String(b.id)));
     const selected = outputs.find((output) => output.id === selectedOutputId) || outputs[0];
-    const executions = [...model.executions, ...localExecutions];
+    const serverExecutionIds = new Set(model.executions.map((execution) => execution.id));
+    const executions = [...model.executions, ...localExecutions.filter((execution) => !serverExecutionIds.has(execution.id))];
     return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4>
       {outputs.map((output) => <button className="button detail-button" type="button" key={output.id} onClick={() => onSelectOutput(output.id)} aria-pressed={selected?.id === output.id}>{output.targetLanguageCode} · {output.version ? `v${output.version}` : 'legacy'} · {formatRecordTime(output.completedAt)}</button>)}
       {selected ? <div><p><strong>{selected.targetLanguageCode} {selected.version ? `v${selected.version}` : ''}</strong></p><p>{selected.translatedText}</p></div> : <p className="history-empty">No completed translations.</p>}
-      {executions.length ? <ul>{executions.map((execution) => <li key={execution.id}>{execution.targetLanguageCode || 'Translation'} · {execution.status}{execution.failureInfo?.message ? ` · ${execution.failureInfo.message}` : ''}</li>)}</ul> : null}
+      {executions.length ? <ul>{executions.map((execution) => <li key={execution.id}>
+        <span className={`history-status history-status-${execution.status}`}>{execution.targetLanguageCode || 'Translation'} · {executionStatusLabel(execution.status)}</span>
+        {execution.failureInfo?.message ? ` · ${execution.failureInfo.message}` : ''}
+        {execution.status === 'queued' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'cancel')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'cancel'}>{executionOperations[execution.id] === 'cancel' ? '取消中…' : '取消'}</button> : null}
+        {execution.status === 'failed' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'retry')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'retry'}>{executionOperations[execution.id] === 'retry' ? '重新嘗試中…' : '重新嘗試'}</button> : null}
+      </li>)}</ul> : null}
+      {executionControlError ? <p className="error-message" role="alert">{executionControlError}</p> : null}
     </section>;
   }
   const languageCodes = [...new Set(history.translations.map((item) => item.request.targetLanguageCode))];
@@ -972,6 +1044,19 @@ function historyStatusLabel(status) {
     failed: 'Failed',
     expired: 'Expired',
     completed: 'Completed'
+  };
+
+  return labels[status] || status;
+}
+
+function executionStatusLabel(status) {
+  const labels = {
+    queued: '已排隊',
+    running: '執行中',
+    processing: '執行中',
+    completed: '已完成',
+    failed: '失敗',
+    cancelled: '已取消'
   };
 
   return labels[status] || status;

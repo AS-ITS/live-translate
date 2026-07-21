@@ -49,6 +49,16 @@ export function createTranslationExecutionWorker({
       const request = await translationRepository.findRequestById(job.requestId);
       assertFoundRequest(request, job.requestId);
 
+      if (execution.status === 'cancelled') {
+        return acknowledgeCancelledExecution({
+          durableTranslationExecutionQueueRepository,
+          job,
+          clock,
+          leaseIdFactory,
+          leaseDurationMs
+        });
+      }
+
       if (execution.status !== 'queued') {
         return {
           processed: false,
@@ -207,7 +217,31 @@ export function createTranslationExecutionWorker({
 }
 
 function isTerminalExecution(execution) {
-  return execution.status === 'completed' || execution.status === 'failed';
+  return execution.status === 'completed' || execution.status === 'failed' || execution.status === 'cancelled';
+}
+
+async function acknowledgeCancelledExecution({
+  durableTranslationExecutionQueueRepository,
+  job,
+  clock,
+  leaseIdFactory,
+  leaseDurationMs
+}) {
+  if (durableTranslationExecutionQueueRepository !== undefined) {
+    const claimedItem = await durableTranslationExecutionQueueRepository.claim(
+      job.executionId,
+      createLease({ clock, leaseIdFactory, leaseDurationMs })
+    );
+    await durableTranslationExecutionQueueRepository.acknowledgeClaim(job.executionId, {
+      leaseId: claimedItem.leaseId,
+      fenceToken: claimedItem.fenceToken
+    });
+  }
+
+  return {
+    status: 'cancelled',
+    executionId: job.executionId
+  };
 }
 
 function assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler) {

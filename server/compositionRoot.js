@@ -4,6 +4,8 @@ import { createSessionQueryService } from '../src/application/sessionQueryServic
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
+import { createCancelQueuedTranslationExecutionService as createDefaultCancelQueuedTranslationExecutionService } from '../src/application/translation/cancelQueuedTranslationExecutionService.js';
+import { createManualRetryFailedTranslationExecutionService as createDefaultManualRetryFailedTranslationExecutionService } from '../src/application/translation/manualRetryFailedTranslationExecutionService.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
@@ -44,6 +46,7 @@ import { createSavedTranscriptRetranslationController as createDefaultSavedTrans
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
+import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
 import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
 
 export function createApplicationDependencies(options = {}) {
@@ -77,6 +80,9 @@ export function createApplicationDependencies(options = {}) {
     includeSessionRetranslationCommandController = false,
     idGenerator = createDefaultIdGenerator(),
     clock = () => Date.now(),
+    cancelQueuedTranslationExecutionServiceFactory = createDefaultCancelQueuedTranslationExecutionService,
+    manualRetryFailedTranslationExecutionServiceFactory = createDefaultManualRetryFailedTranslationExecutionService,
+    executionControlControllerFactory = createDefaultExecutionControlController,
     translationCommandServiceFactory = createDefaultTranslationCommandService,
     translationCommandControllerFactory = createDefaultTranslationCommandController,
     translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
@@ -109,6 +115,10 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
     translationDomainEventHandlers,
+    idGenerator,
+    clock,
+    cancelQueuedTranslationExecutionServiceFactory,
+    manualRetryFailedTranslationExecutionServiceFactory,
     translationCommandServiceFactory,
     translationCommandControllerFactory,
     translationExecutionRunnerFactory,
@@ -147,11 +157,16 @@ export function createApplicationDependencies(options = {}) {
     translationRepository: translationCommandDependencies.translationRepository
   });
   const translationHistoryController = translationHistoryControllerFactory({ translationHistoryQueryService });
+  const executionControlController = executionControlControllerFactory({
+    cancelQueuedTranslationExecutionService: translationCommandDependencies.cancelQueuedTranslationExecutionService,
+    manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
+  });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
       sessionRepository: sessionReadDependencies.sessionRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
+      executionControlController,
       translationHistoryController,
       ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
       ...(includeSessionRetranslationCommandController ? { sessionRetranslationCommandController } : {})
@@ -163,6 +178,7 @@ export function createApplicationDependencies(options = {}) {
     ...translationCommandDependencies,
     translationHistoryQueryService,
     translationHistoryController,
+    executionControlController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
     sessionRetranslationCommandService,
@@ -531,6 +547,10 @@ export function createTranslationCommandDependencies({
   translationExecutionRetryPolicy,
   translationExecutionRetryErrorClassifier,
   translationDomainEventHandlers,
+  idGenerator = createDefaultIdGenerator(),
+  clock = () => Date.now(),
+  cancelQueuedTranslationExecutionServiceFactory = createDefaultCancelQueuedTranslationExecutionService,
+  manualRetryFailedTranslationExecutionServiceFactory = createDefaultManualRetryFailedTranslationExecutionService,
   translationCommandServiceFactory = createDefaultTranslationCommandService,
   translationCommandControllerFactory = createDefaultTranslationCommandController,
   translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
@@ -542,6 +562,8 @@ export function createTranslationCommandDependencies({
   assertFactory(translationExecutionRunnerFactory, 'translationExecutionRunnerFactory');
   assertFactory(translationExecutionWorkerFactory, 'translationExecutionWorkerFactory');
   assertFactory(translationExecutionWorkerRuntimeFactory, 'translationExecutionWorkerRuntimeFactory');
+  assertFactory(cancelQueuedTranslationExecutionServiceFactory, 'cancelQueuedTranslationExecutionServiceFactory');
+  assertFactory(manualRetryFailedTranslationExecutionServiceFactory, 'manualRetryFailedTranslationExecutionServiceFactory');
 
   const translationDomainEventInfrastructure = createTranslationDomainEventInfrastructure({
     domainEventPublisher,
@@ -638,6 +660,16 @@ export function createTranslationCommandDependencies({
   const translationCommandController = translationCommandControllerFactory({
     translationCommandService
   });
+  const cancelQueuedTranslationExecutionService = cancelQueuedTranslationExecutionServiceFactory({
+    translationRepository,
+    clock
+  });
+  const manualRetryFailedTranslationExecutionService = manualRetryFailedTranslationExecutionServiceFactory({
+    translationRepository,
+    translationExecutionQueue: resolvedTranslationExecutionQueue,
+    idGenerator,
+    clock
+  });
 
   return {
     translationRepository,
@@ -662,6 +694,8 @@ export function createTranslationCommandDependencies({
       : {}),
     translationCommandService,
     translationCommandController,
+    cancelQueuedTranslationExecutionService,
+    manualRetryFailedTranslationExecutionService,
     unsubscribeTranslationDomainEvents: translationDomainEventInfrastructure.unsubscribeTranslationDomainEvents
   };
 }

@@ -391,6 +391,30 @@ test('running execution with persisted output reconciles through the command ser
   ]);
 });
 
+test('expired processing cancelled execution is acknowledged without replay, retry, or state mutation', async () => {
+  const item = processingItem();
+  const calls = [];
+  const execution = { id: item.executionId, status: 'cancelled', completedAt: 1000 };
+  const recovery = createStartupTranslationExecutionQueueRecovery({
+    durableRepository: durableRepository({ calls, items: [item] }),
+    activeQueue: activeQueue({ calls }),
+    translationRepository: recoveryTranslationRepository({
+      calls,
+      executions: new Map([[item.executionId, execution]])
+    }),
+    clock: () => '2026-07-17T08:00:00.000Z'
+  });
+
+  await recovery.recover();
+
+  assert.deepEqual(calls, [
+    ['durable.list'],
+    ['translation.findExecutionById', item.executionId],
+    ['translation.listTranslationOutputsByExecution', item.executionId],
+    ['durable.acknowledge', item.executionId]
+  ]);
+});
+
 test('missing execution leaves expired processing durable item unchanged and rethrows the recovery error', async () => {
   const item = processingItem();
   const repository = createFakeDurableTranslationExecutionQueueRepository();

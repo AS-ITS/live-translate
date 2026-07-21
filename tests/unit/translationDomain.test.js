@@ -153,7 +153,7 @@ test('TranslationExecution constructs a valid initial execution', () => {
   assert.equal(execution.startedAt, 1000);
   assert.equal(execution.completedAt, null);
   assert.equal(execution.failureInfo, null);
-  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['created', 'queued', 'running', 'completed', 'failed']);
+  assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['created', 'queued', 'running', 'completed', 'failed', 'cancelled']);
   assert.equal(Object.isFrozen(execution), true);
 });
 
@@ -234,6 +234,7 @@ test('TranslationExecution supports every allowed transition', () => {
   const queued = created.queue();
   assert.equal(queued.start(1200).status, 'running');
   assert.equal(queued.fail({ reason: 'provider_error' }, 1300).status, 'failed');
+  assert.equal(queued.cancel(1300).status, 'cancelled');
 
   const running = queued.start(1100);
   assert.equal(running.resumeAfterExpiredLease().status, 'queued');
@@ -247,6 +248,7 @@ test('TranslationExecution rejects representative illegal transitions', () => {
   const running = queued.start(1100);
   const completed = running.complete(1200);
   const failed = running.fail({ reason: 'provider_error' }, 1200);
+  const cancelled = queued.cancel(1200);
 
   assert.throws(() => created.complete(1200), /transition/);
   assert.throws(() => queued.queue(), /transition/);
@@ -256,11 +258,12 @@ test('TranslationExecution rejects representative illegal transitions', () => {
   assert.throws(() => completed.resumeAfterExpiredLease(), /transition/);
   assert.throws(() => completed.fail({ reason: 'later' }, 1300), /transition/);
   assert.throws(() => failed.start(1300), /transition/);
+  assert.throws(() => cancelled.cancel(1300), /status transition from cancelled to cancelled is not allowed/);
+  assert.throws(() => cancelled.start(1300), /status transition from cancelled to running is not allowed/);
 });
 
 test('TranslationExecution rejects unsupported legacy statuses', () => {
   assert.throws(() => createCreatedExecution({ status: 'pending' }), /status is not supported: pending/);
-  assert.throws(() => createCreatedExecution({ status: 'cancelled', completedAt: 1200 }), /status is not supported: cancelled/);
 });
 
 test('TranslationExecution completed state requires completion timestamp', () => {

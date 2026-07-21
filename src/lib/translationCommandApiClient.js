@@ -27,10 +27,23 @@ export function createTranslationCommandApiClient({ fetchImpl = globalThis.fetch
       );
     },
 
+    async cancelTranslationExecution(executionId) {
+      return requestEmptyJson(fetchImpl, executionControlUrl(executionId, 'cancel'));
+    },
+
+    async retryFailedTranslationExecution(executionId) {
+      return requestEmptyJson(fetchImpl, executionControlUrl(executionId, 'retry'));
+    },
+
     createTranslationOutput(command) {
       return requestJson(fetchImpl, '/api/translation-outputs', 'POST', command);
     }
   });
+}
+
+function executionControlUrl(executionId, operation) {
+  const normalizedExecutionId = validateExecutionId(executionId);
+  return `/api/translation-executions/${encodeURIComponent(normalizedExecutionId)}/${operation}`;
 }
 
 async function requestJson(fetchImpl, url, method, command) {
@@ -39,6 +52,16 @@ async function requestJson(fetchImpl, url, method, command) {
     headers: JSON_HEADERS,
     body: JSON.stringify(command)
   });
+
+  if (!isSuccessResponse(response)) {
+    await rejectHttpError(response);
+  }
+
+  return response.json();
+}
+
+async function requestEmptyJson(fetchImpl, url) {
+  const response = await fetchImpl(url, { method: 'POST' });
 
   if (!isSuccessResponse(response)) {
     await rejectHttpError(response);
@@ -62,6 +85,14 @@ async function rejectHttpError(response) {
     } catch {
       // Preserve the HTTP failure even when the error body is not valid JSON.
     }
+  }
+
+  if (typeof error.body?.error?.code === 'string') {
+    error.code = error.body.error.code;
+  }
+
+  if (typeof error.body?.error?.message === 'string') {
+    error.safeMessage = error.body.error.message;
   }
 
   throw error;

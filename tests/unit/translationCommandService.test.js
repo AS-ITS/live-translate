@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTranslationCommandService as createRawTranslationCommandService } from '../../src/application/translationCommandService.js';
+import { createCancelQueuedTranslationExecutionService } from '../../src/application/translation/cancelQueuedTranslationExecutionService.js';
+import { createManualRetryFailedTranslationExecutionService } from '../../src/application/translation/manualRetryFailedTranslationExecutionService.js';
 import {
   TranslationExecution,
   TranslationOutput,
@@ -467,6 +469,148 @@ test('createTranslationOutput does not swallow domain validation errors', () => 
   );
 });
 
+test('cancel queued execution persists the immutable cancelled transition without operating the queue', async () => {
+  const queued = new TranslationExecution(executionPayload({ providerKey: 'gemini' })).queue();
+  let updatedExecution;
+  const queue = queueSpy();
+  const service = createCancelQueuedTranslationExecutionService({
+    translationRepository: {
+      findExecutionById(id) {
+        assert.equal(id, queued.id);
+        return queued;
+      },
+      updateTranslationExecution(execution) {
+        updatedExecution = execution;
+        return execution;
+      }
+    },
+    clock: () => 1200
+  });
+
+  const result = await service.cancelQueuedExecution({ executionId: queued.id });
+
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.completedAt, 1200);
+  assert.equal(result.providerKey, 'gemini');
+  assert.equal(result.providerIdempotencyKey, queued.providerIdempotencyKey);
+  assert.equal(updatedExecution, result);
+  assert.equal(queued.status, 'queued');
+  assert.deepEqual(queue.calls, []); // Durable/active queue removal is intentionally deferred.
+});
+
+test('cancel queued execution preserves deterministic failures and does not rewrite non-queued or missing executions', async () => {
+  for (const execution of [
+    new TranslationExecution(executionPayload()),
+    new TranslationExecution(executionPayload()).queue().start(1100),
+    new TranslationExecution(executionPayload()).queue().start(1100).complete(1200),
+    new TranslationExecution(executionPayload()).queue().start(1100).fail({ reason: 'provider_error' }, 1200),
+    new TranslationExecution(executionPayload()).queue().cancel(1200)
+  ]) {
+    let updates = 0;
+    const service = createCancelQueuedTranslationExecutionService({
+      translationRepository: {
+        findExecutionById() { return execution; },
+        updateTranslationExecution() { updates += 1; }
+      },
+      clock: () => 1300
+    });
+    await assert.rejects(
+      service.cancelQueuedExecution({ executionId: execution.id }),
+      /status transition from .* to cancelled is not allowed/
+    );
+    assert.equal(updates, 0);
+  }
+
+  const service = createCancelQueuedTranslationExecutionService({
+    translationRepository: { findExecutionById() { return null; }, updateTranslationExecution() { assert.fail('must not update'); } },
+    clock: () => 1300
+  });
+  await assert.rejects(service.cancelQueuedExecution({ executionId: 'missing-execution' }), /TranslationExecution missing-execution was not found/);
+});
+
+test('manual retry persists a distinct queued execution, then enqueues only its identifiers without rewriting the failed source', async () => {
+  const failed = new TranslationExecution(executionPayload({ providerKey: 'gemini' }))
+    .queue()
+    .start(1100)
+    .markProviderAttemptInFlight(1110)
+    .markProviderAttemptFailed(1150)
+    .fail({ reason: 'provider_error', attempt: 1 }, 1200);
+  const request = new TranslationRequest(requestPayload());
+  const created = [];
+  const jobs = [];
+  const service = createManualRetryFailedTranslationExecutionService({
+    translationRepository: {
+      findExecutionById() { return failed; },
+      findRequestById() { return request; },
+      createTranslationExecution(execution) { created.push(execution); return execution; }
+    },
+    translationExecutionQueue: queueSpy({ enqueue(job) { jobs.push(job); } }),
+    idGenerator: () => 'execution-retry-1',
+    clock: () => 1300
+  });
+
+  const retry = await service.retryFailedExecution({ executionId: failed.id });
+
+  assert.equal(retry.status, 'queued');
+  assert.equal(retry.id, 'execution-retry-1');
+  assert.notEqual(retry.id, failed.id);
+  assert.equal(retry.translationRequestId, failed.translationRequestId);
+  assert.equal(retry.providerKey, failed.providerKey);
+  assert.equal(retry.providerIdempotencyKey, 'translation-execution:execution-retry-1');
+  assert.deepEqual(created, [retry]);
+  assert.deepEqual(jobs, [{ executionId: retry.id, requestId: failed.translationRequestId }]);
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.failureInfo, { reason: 'provider_error', attempt: 1 });
+  assert.equal(failed.providerAttemptStatus, 'failed');
+  assert.equal(failed.providerAttemptedAt, 1110);
+  assert.equal(failed.providerCompletedAt, 1150);
+});
+
+test('manual retry rejects ineligible, missing execution, and missing request sources without persistence or queue activity', async () => {
+  for (const execution of [
+    new TranslationExecution(executionPayload()),
+    new TranslationExecution(executionPayload()).queue(),
+    new TranslationExecution(executionPayload()).queue().start(1100),
+    new TranslationExecution(executionPayload()).queue().start(1100).complete(1200),
+    new TranslationExecution(executionPayload()).queue().cancel(1200)
+  ]) {
+    const calls = [];
+    const service = retryService({ execution, calls });
+    await assert.rejects(service.retryFailedExecution({ executionId: execution.id }), /is not eligible for manual retry/);
+    assert.deepEqual(calls, [['findExecutionById', execution.id]]);
+  }
+
+  const missingExecutionCalls = [];
+  await assert.rejects(retryService({ execution: null, calls: missingExecutionCalls }).retryFailedExecution({ executionId: 'missing-execution' }), /TranslationExecution missing-execution was not found/);
+  assert.deepEqual(missingExecutionCalls, [['findExecutionById', 'missing-execution']]);
+
+  const missingRequestCalls = [];
+  const failed = new TranslationExecution(executionPayload()).queue().start(1100).fail({ reason: 'provider_error' }, 1200);
+  await assert.rejects(retryService({ execution: failed, request: null, calls: missingRequestCalls }).retryFailedExecution({ executionId: failed.id }), /TranslationRequest request-1 was not found/);
+  assert.deepEqual(missingRequestCalls, [['findExecutionById', failed.id], ['findRequestById', 'request-1']]);
+});
+
+test('manual retry retains the queued execution and propagates queue enqueue failure, matching submission persistence ordering', async () => {
+  const failed = new TranslationExecution(executionPayload()).queue().start(1100).fail({ reason: 'provider_error' }, 1200);
+  const created = [];
+  const enqueueError = new Error('queue unavailable');
+  const service = createManualRetryFailedTranslationExecutionService({
+    translationRepository: {
+      findExecutionById() { return failed; },
+      findRequestById() { return new TranslationRequest(requestPayload()); },
+      createTranslationExecution(execution) { created.push(execution); return execution; }
+    },
+    translationExecutionQueue: queueSpy({ enqueue() { throw enqueueError; } }),
+    idGenerator: () => 'execution-retry-1',
+    clock: () => 1300
+  });
+
+  await assert.rejects(service.retryFailedExecution({ executionId: failed.id }), enqueueError);
+  assert.deepEqual(created.map((execution) => ({ id: execution.id, status: execution.status })), [
+    { id: 'execution-retry-1', status: 'queued' }
+  ]);
+});
+
 test('create methods preserve sync and async repository behavior', async () => {
   const requestResult = { id: 'sync-request-result' };
   const executionResult = { id: 'async-execution-result' };
@@ -590,6 +734,32 @@ function domainEventPublisher(overrides = {}) {
         return undefined;
       }
   };
+}
+
+function queueSpy(overrides = {}) {
+  const calls = [];
+  return {
+    calls,
+    enqueue(job) {
+      calls.push(['enqueue', job]);
+      return overrides.enqueue?.(job);
+    },
+    dequeue() { calls.push(['dequeue']); return null; },
+    size() { calls.push(['size']); return 0; }
+  };
+}
+
+function retryService({ execution, request = new TranslationRequest(requestPayload()), calls }) {
+  return createManualRetryFailedTranslationExecutionService({
+    translationRepository: {
+      findExecutionById(executionId) { calls.push(['findExecutionById', executionId]); return execution; },
+      findRequestById(requestId) { calls.push(['findRequestById', requestId]); return request; },
+      createTranslationExecution() { calls.push(['createTranslationExecution']); }
+    },
+    translationExecutionQueue: queueSpy({ enqueue() { calls.push(['enqueue']); } }),
+    idGenerator: () => 'execution-retry-1',
+    clock: () => 1300
+  });
 }
 
 function requestPayload(overrides = {}) {

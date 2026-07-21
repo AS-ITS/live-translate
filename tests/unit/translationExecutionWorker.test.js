@@ -89,6 +89,51 @@ for (const status of ['created', 'running', 'completed', 'failed']) {
   });
 }
 
+test('cancelled execution is consumed without runner execution and durable acknowledgement preserves claim ownership', async () => {
+  const calls = [];
+  const cancelled = executionWithStatus('cancelled');
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    translationRepository: repository({ calls, execution: cancelled }),
+    durableTranslationExecutionQueueRepository: durableRepository({ calls }),
+    clock: () => '2026-07-20T00:00:00.000Z',
+    leaseIdFactory: () => 'lease-cancelled'
+  }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'cancelled', executionId: cancelled.id });
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal(cancelled.completedAt, 1100);
+  assert.deepEqual(calls.map((call) => call[0]), [
+    'findExecutionById',
+    'findRequestById',
+    'durable.claim',
+    'durable.acknowledgeClaim'
+  ]);
+});
+
+test('cancelled in-memory job does not block the following queued execution', async () => {
+  const calls = [];
+  const executionQueue = createInMemoryTranslationExecutionQueue();
+  const cancelled = executionWithStatus('cancelled');
+  const queued = translationExecution({ id: 'execution-2', translationRequestId: 'request-2' });
+  executionQueue.enqueue({ executionId: cancelled.id, requestId: 'request-1' });
+  executionQueue.enqueue({ executionId: queued.id, requestId: 'request-2' });
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    translationExecutionQueue: executionQueue,
+    translationRepository: repository({
+      calls,
+      execution(executionId) { return executionId === cancelled.id ? cancelled : queued; },
+      request: translationRequest({ id: 'request-2' })
+    })
+  }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'cancelled', executionId: cancelled.id });
+  assert.deepEqual(await worker.processNext(), { status: 'processed', executionId: queued.id });
+  assert.equal(calls.filter((call) => call[0] === 'runner.run').length, 1);
+  assert.equal(executionQueue.size(), 0);
+});
+
 test('queued execution with an in_flight provider attempt is skipped without reclaim replay', async () => {
   const calls = [];
   const worker = createTranslationExecutionWorker(
@@ -926,7 +971,8 @@ function executionWithStatus(status) {
   return translationExecution({
     status,
     ...(status === 'completed' ? { completedAt: 1100 } : {}),
-    ...(status === 'failed' ? { completedAt: 1100, failureInfo: { code: 'failed' } } : {})
+    ...(status === 'failed' ? { completedAt: 1100, failureInfo: { code: 'failed' } } : {}),
+    ...(status === 'cancelled' ? { completedAt: 1100 } : {})
   });
 }
 

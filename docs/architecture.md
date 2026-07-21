@@ -71,6 +71,27 @@ the MVP.
 
 ## Translation Execution Durable Queue
 
+### Phase 4C Execution Control
+
+`TranslationExecution` has terminal states `completed`, `failed`, and
+`cancelled`. Only a persisted `queued` execution can transition to
+`cancelled`; `running`, `completed`, `failed`, and `cancelled` executions are
+not cancellable. Cancellation does not remove queue storage directly and is not
+a remote abort of a running provider request.
+
+A failed execution may be manually retried only by creating a new execution.
+The source remains failed with its failure, attempt, and provider-attempt
+metadata unchanged. The new execution has a new execution ID and provider
+idempotency identity, retains the source `translationRequestId` / `requestId`
+and `providerKey`, starts `queued`, and then follows the normal Worker/Runtime
+lifecycle.
+
+If a cancelled execution's identifier-only item remains in an active or durable
+queue, Worker and recovery processing safely complete it as a no-op: no
+resolver, Runner, provider, output, retry scheduling, or DLQ transfer occurs.
+The durable path still observes the existing claim, lease, fence, and
+acknowledgement ownership boundaries.
+
 `POST /api/translation-executions` uses an asynchronous Translation Execution
 path. The HTTP request persists a created execution, marks it queued, enqueues an
 identifier-only job, and returns `202 Accepted` without waiting for provider

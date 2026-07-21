@@ -56,6 +56,16 @@
 
 ### Added
 
+- Phase 4C WP1–WP6 Execution Control closeout: added terminal `cancelled`
+  execution state with queued-only cancellation; failed-only manual retry that
+  creates a distinct queued execution while preserving the failed source;
+  cancel/retry HTTP controls; history UI controls with polling reconciliation;
+  and Worker/recovery no-op safety for cancelled active or durable queue items.
+  Cancellation does not abort running provider work. No cancellation
+  reason/actor, batch or scheduled cancellation, cancelled-execution retry, or
+  retry-lineage UI was added; existing retry scheduling, lease/fence, reclaim,
+  and DLQ behavior remains unchanged.
+
 - Phase 4B WP5 Documentation and Release Closeout: documented Session
   re-translation and allowlisted target selection; multi-language,
   multi-version formal outputs with deterministic version allocation and

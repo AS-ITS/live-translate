@@ -99,6 +99,33 @@ test('non-processable worker result is not logged as an error and polling contin
   assert.equal(scheduler.pendingCount(), 1);
 });
 
+test('cancelled worker result is not logged as an error and runtime continues to the next job', async () => {
+  const calls = [];
+  const loggedErrors = [];
+  const scheduler = createFakeScheduler();
+  const runtime = createTranslationExecutionWorkerRuntime({
+    translationExecutionWorker: worker({
+      processNext() {
+        calls.push('processNext');
+        return calls.length === 1
+          ? { status: 'cancelled', executionId: 'execution-cancelled' }
+          : { status: 'processed', executionId: 'execution-next' };
+      }
+    }),
+    translationExecutionQueue: queue(['cancelled-job', 'queued-job']),
+    scheduler,
+    logger(error) { loggedErrors.push(error); }
+  });
+
+  runtime.start();
+  await scheduler.runNext();
+  await scheduler.runNext();
+
+  assert.deepEqual(calls, ['processNext', 'processNext']);
+  assert.deepEqual(loggedErrors, []);
+  assert.equal(runtime.isRunning(), true);
+});
+
 test('stop clears scheduled polling', () => {
   const scheduler = createFakeScheduler();
   const runtime = createTranslationExecutionWorkerRuntime({

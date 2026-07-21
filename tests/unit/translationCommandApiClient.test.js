@@ -6,6 +6,8 @@ const CLIENT_METHODS = Object.freeze([
   'createTranslationRequest',
   'createTranslationExecution',
   'updateTranslationExecution',
+  'cancelTranslationExecution',
+  'retryFailedTranslationExecution',
   'createTranslationOutput'
 ]);
 
@@ -156,6 +158,42 @@ test('updateTranslationExecution rejects invalid execution IDs before fetch', as
   assert.equal(calls, 0);
 });
 
+for (const [methodName, operation, status] of [
+  ['cancelTranslationExecution', 'cancel', 200],
+  ['retryFailedTranslationExecution', 'retry', 202]
+]) {
+  test(`${methodName} posts to the encoded execution control endpoint without a request body`, async () => {
+    const calls = [];
+    const responseBody = { id: 'execution/日本語', status: operation === 'cancel' ? 'cancelled' : 'queued' };
+    const client = createTranslationCommandApiClient({
+      fetchImpl(url, options) {
+        calls.push({ url, options });
+        return jsonResponse(responseBody, { status });
+      }
+    });
+
+    const result = await client[methodName]('execution/日本語');
+
+    assert.strictEqual(result, responseBody);
+    assert.deepEqual(calls, [{
+      url: `/api/translation-executions/execution%2F%E6%97%A5%E6%9C%AC%E8%AA%9E/${operation}`,
+      options: { method: 'POST' }
+    }]);
+  });
+}
+
+test('execution controls preserve safe normalized API errors', async () => {
+  const client = createTranslationCommandApiClient({
+    fetchImpl() {
+      return jsonResponse({ error: { code: 'execution_invalid_state', message: 'Execution cannot be changed.' } }, { status: 409 });
+    }
+  });
+
+  await assert.rejects(client.cancelTranslationExecution('execution-1'), (error) =>
+    error.status === 409 && error.code === 'execution_invalid_state' && error.safeMessage === 'Execution cannot be changed.'
+  );
+});
+
 test('createTranslationOutput posts JSON to the output endpoint and returns response JSON', async () => {
   const calls = [];
   const responseBody = { id: 'output-1', created: true };
@@ -201,6 +239,8 @@ test('404 and 500 responses reject', async () => {
 
   await assert.rejects(notFoundClient.updateTranslationExecution('execution-1', { status: 'running' }), /HTTP 404/);
   await assert.rejects(serverErrorClient.createTranslationOutput({ id: 'output-1' }), /HTTP 500/);
+  await assert.rejects(notFoundClient.retryFailedTranslationExecution('execution-1'), /HTTP 404/);
+  await assert.rejects(serverErrorClient.cancelTranslationExecution('execution-1'), /HTTP 500/);
 });
 
 test('non-2xx invalid JSON responses still reject with status', async () => {

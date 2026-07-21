@@ -63,7 +63,7 @@ language detection, and filters the displayed records by target language.
 - History reads do not start providers, queues, workers, runners, or glossary
   loading and do not mutate records.
 
-## Phase 4B Closeout
+## Phase 4B–4C Closeout
 
 A completed Session can submit a new re-translation from its persisted canonical
 source transcript. The user selects an allowlisted target language; each accepted
@@ -80,7 +80,25 @@ Session remains a read-only compatibility fallback and continues to use its
 existing saved-session exporter.
 
 History refreshes while an execution is pending. It is polling, not a
-real-time completion guarantee. The UI does not provide manual retry, cancel,
+real-time completion guarantee. Phase 4C adds execution controls in that same
+history: a `queued` execution can be cancelled, while a `failed` execution can
+be manually retried. Cancellation is terminal and returns the same execution as
+`cancelled`; it never produces an output. A manual retry leaves its failed
+source untouched and creates a distinct `queued` execution for the same request
+and provider, with a new provider idempotency identity.
+Running, completed, and cancelled history executions expose no execution-control
+action.
+
+Cancellation applies only before execution starts; it is not a provider-side
+abort for running work. A cancelled identifier-only item may remain in the
+active or durable queue, where the Worker safely acknowledges it as a no-op
+without resolving a provider, running the Runner, creating output, scheduling a
+retry, or writing the DLQ. The UI preserves history, selected output, and export
+on control errors, and uses session-bound generation protection so stale polls
+cannot restore a cancelled item or hide a new retry.
+
+Current limitations: no running-provider abort, cancellation reason/actor,
+batch or scheduled cancellation, cancelled-execution retry, retry-lineage UI,
 DLQ management, or cross-Session history search.
 
 ### Production and Manual Gemini Smoke Test

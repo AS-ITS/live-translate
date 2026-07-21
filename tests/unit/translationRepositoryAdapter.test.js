@@ -121,7 +121,9 @@ test('request missing session, missing entity, duplicate, and conflicting identi
 });
 
 test('creates, gets, and updates TranslationExecution while preserving lifecycle fields', () => {
-  const repository = seededRepository();
+  const sessionRepository = legacySessionRepository();
+  const repository = createTranslationRepositoryAdapter({ sessionRepository });
+  repository.createTranslationRequest(requestPayload());
   const executionInput = executionPayload();
   const before = structuredClone(executionInput);
 
@@ -144,6 +146,13 @@ test('creates, gets, and updates TranslationExecution while preserving lifecycle
   assert.equal(found.id, 'execution-1');
   assert.equal(found.status, 'created');
   assert.equal(updated.status, 'failed');
+  assert.equal(created.providerIdempotencyKey, 'translation-execution:execution-1');
+  assert.equal(fetched.providerIdempotencyKey, created.providerIdempotencyKey);
+  assert.equal(updated.providerIdempotencyKey, created.providerIdempotencyKey);
+  assert.equal(
+    sessionRepository.getSessionRecord('session-1').sessionRecord.translationCommandState.executions[0].providerIdempotencyKey,
+    created.providerIdempotencyKey
+  );
   assert.equal(updated.startedAt, '2026-07-14T01:01:00.000Z');
   assert.equal(updated.completedAt, '2026-07-14T01:03:00.000Z');
   assert.deepEqual(updated.failureInfo, { reason: 'provider_error', nested: { code: 'x' } });
@@ -153,6 +162,35 @@ test('creates, gets, and updates TranslationExecution while preserving lifecycle
     updated.failureInfo.nested.code = 'mutated';
   }, TypeError);
   assert.equal(repository.getTranslationExecution('execution-1').failureInfo.nested.code, 'x');
+});
+
+test('reconstitutes legacy persisted executions without an idempotency key deterministically', () => {
+  const legacyExecution = executionPayload();
+  const sessionRepository = legacySessionRepository({
+    sessions: [
+      sessionRecord({
+        translationCommandState: {
+          requests: [requestPayload()],
+          executions: [legacyExecution],
+          outputs: []
+        }
+      })
+    ]
+  });
+  const repository = createTranslationRepositoryAdapter({
+    sessionRepository
+  });
+
+  const execution = repository.getTranslationExecution('execution-1');
+
+  assert.equal(execution.providerIdempotencyKey, 'translation-execution:execution-1');
+  assert.equal(execution.providerAttemptStatus, 'not_started');
+  assert.equal(execution.providerAttemptedAt, null);
+  assert.equal(execution.providerCompletedAt, null);
+  assert.deepEqual(
+    sessionRepository.getSessionRecord('session-1').sessionRecord.translationCommandState.executions,
+    [legacyExecution]
+  );
 });
 
 test('lists only TranslationExecutions for a request and keeps unrelated executions unchanged on update', () => {

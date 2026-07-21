@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  PROVIDER_ATTEMPT_STATUSES,
   TRANSLATION_EXECUTION_STATUSES,
   TranslationExecution,
   TranslationOutput,
@@ -145,11 +146,62 @@ test('TranslationExecution constructs a valid initial execution', () => {
   assert.equal(execution.translationRequestId, 'request-1');
   assert.equal(execution.status, 'created');
   assert.equal(execution.providerKey, undefined);
+  assert.equal(execution.providerIdempotencyKey, 'translation-execution:execution-1');
+  assert.equal(execution.providerAttemptStatus, 'not_started');
+  assert.equal(execution.providerAttemptedAt, null);
+  assert.equal(execution.providerCompletedAt, null);
   assert.equal(execution.startedAt, 1000);
   assert.equal(execution.completedAt, null);
   assert.equal(execution.failureInfo, null);
   assert.deepEqual(TRANSLATION_EXECUTION_STATUSES, ['created', 'queued', 'running', 'completed', 'failed']);
   assert.equal(Object.isFrozen(execution), true);
+});
+
+test('TranslationExecution records validated immutable provider attempt transitions', () => {
+  const inFlight = createCreatedExecution().markProviderAttemptInFlight(1100);
+  const succeeded = inFlight.markProviderAttemptSucceeded(1200, { translatedText: 'Bonjour' });
+  const failed = createCreatedExecution().markProviderAttemptInFlight(1100).markProviderAttemptFailed(1200);
+
+  assert.deepEqual(PROVIDER_ATTEMPT_STATUSES, ['not_started', 'in_flight', 'succeeded', 'failed']);
+  assert.equal(inFlight.providerAttemptStatus, 'in_flight');
+  assert.equal(inFlight.providerAttemptedAt, 1100);
+  assert.equal(inFlight.providerCompletedAt, null);
+  assert.equal(succeeded.providerAttemptStatus, 'succeeded');
+  assert.equal(succeeded.providerCompletedAt, 1200);
+  assert.equal(failed.providerAttemptStatus, 'failed');
+  assert.equal(failed.providerIdempotencyKey, 'translation-execution:execution-1');
+  assert.throws(
+    () => createCreatedExecution().markProviderAttemptSucceeded(1200, { translatedText: 'Bonjour' }),
+    /provider attempt transition/
+  );
+  assert.throws(
+    () => createCreatedExecution({ providerAttemptStatus: 'in_flight', providerAttemptedAt: 1100, providerCompletedAt: 1200 }),
+    /providerCompletedAt is not allowed/
+  );
+});
+
+test('TranslationExecution generates a deterministic immutable provider idempotency key', () => {
+  const first = createCreatedExecution({ id: 'execution-1' });
+  const sameId = createCreatedExecution({ id: 'execution-1' });
+  const otherId = createCreatedExecution({ id: 'execution-2' });
+
+  assert.equal(first.providerIdempotencyKey, 'translation-execution:execution-1');
+  assert.equal(sameId.providerIdempotencyKey, first.providerIdempotencyKey);
+  assert.notEqual(otherId.providerIdempotencyKey, first.providerIdempotencyKey);
+  assert.equal(first.queue().providerIdempotencyKey, first.providerIdempotencyKey);
+  assert.equal(first.start(1100).providerIdempotencyKey, first.providerIdempotencyKey);
+  assert.equal(first.queue().start(1100).complete(1200).providerIdempotencyKey, first.providerIdempotencyKey);
+  assert.equal(first.queue().fail({ reason: 'provider_error' }, 1200).providerIdempotencyKey, first.providerIdempotencyKey);
+});
+
+test('TranslationExecution validates execution and provider idempotency keys deterministically', () => {
+  assert.throws(() => createCreatedExecution({ id: '' }), /id/);
+  assert.throws(() => createCreatedExecution({ providerIdempotencyKey: '' }), /providerIdempotencyKey/);
+  assert.throws(() => createCreatedExecution({ providerIdempotencyKey: 1 }), /providerIdempotencyKey must be a string/);
+  assert.throws(
+    () => createCreatedExecution({ providerIdempotencyKey: 'translation-execution:other-execution' }),
+    /providerIdempotencyKey must match execution id: execution-1/
+  );
 });
 
 test('TranslationExecution accepts and preserves provider key attribution', () => {

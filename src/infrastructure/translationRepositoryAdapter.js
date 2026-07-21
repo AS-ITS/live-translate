@@ -334,6 +334,12 @@ function serializeTranslationExecution(execution) {
     id: execution.id,
     translationRequestId: execution.translationRequestId,
     status: execution.status,
+    ...(execution.providerKey === undefined ? {} : { providerKey: execution.providerKey }),
+    providerIdempotencyKey: execution.providerIdempotencyKey,
+    providerAttemptStatus: execution.providerAttemptStatus,
+    providerAttemptedAt: execution.providerAttemptedAt,
+    providerCompletedAt: execution.providerCompletedAt,
+    providerResult: clonePlain(execution.providerResult),
     startedAt: execution.startedAt,
     completedAt: execution.completedAt,
     failureInfo: clonePlain(execution.failureInfo)

@@ -7,6 +7,8 @@ export {
 } from './events.js';
 
 export const TRANSLATION_EXECUTION_STATUSES = Object.freeze(['created', 'queued', 'running', 'completed', 'failed']);
+export const PROVIDER_ATTEMPT_STATUSES = Object.freeze(['not_started', 'in_flight', 'succeeded', 'failed']);
+const PROVIDER_IDEMPOTENCY_KEY_PREFIX = 'translation-execution:';
 
 const TERMINAL_EXECUTION_STATUSES = new Set(['completed', 'failed']);
 const ALLOWED_EXECUTION_TRANSITIONS = Object.freeze({
@@ -15,6 +17,12 @@ const ALLOWED_EXECUTION_TRANSITIONS = Object.freeze({
   running: Object.freeze(['queued', 'completed', 'failed']),
   completed: Object.freeze([]),
   failed: Object.freeze([])
+});
+const ALLOWED_PROVIDER_ATTEMPT_TRANSITIONS = Object.freeze({
+  not_started: Object.freeze(['in_flight']),
+  in_flight: Object.freeze(['in_flight', 'succeeded', 'failed']),
+  succeeded: Object.freeze([]),
+  failed: Object.freeze(['in_flight'])
 });
 
 export class TranslationRequest {
@@ -43,6 +51,36 @@ export class TranslationExecution {
     this.translationRequestId = assertRequiredString(input.translationRequestId, 'translationRequestId');
     this.status = assertExecutionStatus(input.status ?? 'created');
     this.providerKey = assertOptionalString(input.providerKey, 'providerKey');
+    Object.defineProperty(this, 'providerIdempotencyKey', {
+      value: assertProviderIdempotencyKey(input.providerIdempotencyKey ?? createProviderIdempotencyKey(this.id), this.id),
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    Object.defineProperty(this, 'providerAttemptStatus', {
+      value: assertProviderAttemptStatus(input.providerAttemptStatus ?? 'not_started'),
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    Object.defineProperty(this, 'providerAttemptedAt', {
+      value: input.providerAttemptedAt ?? null,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    Object.defineProperty(this, 'providerCompletedAt', {
+      value: input.providerCompletedAt ?? null,
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
+    Object.defineProperty(this, 'providerResult', {
+      value: deepClone(input.providerResult ?? null),
+      enumerable: false,
+      writable: false,
+      configurable: false
+    });
     this.startedAt = assertTimestamp(input.startedAt, 'startedAt');
     this.completedAt = input.completedAt ?? null;
     this.failureInfo = deepClone(input.failureInfo ?? null);
@@ -77,6 +115,26 @@ export class TranslationExecution {
     });
   }
 
+  markProviderAttemptInFlight(providerAttemptedAt) {
+    return this.transitionProviderAttempt('in_flight', {
+      providerAttemptedAt: assertTimestamp(providerAttemptedAt, 'providerAttemptedAt'),
+      providerCompletedAt: null
+    });
+  }
+
+  markProviderAttemptSucceeded(providerCompletedAt, providerResult) {
+    return this.transitionProviderAttempt('succeeded', {
+      providerCompletedAt: assertTimestamp(providerCompletedAt, 'providerCompletedAt'),
+      providerResult: normalizeProviderResult(providerResult)
+    });
+  }
+
+  markProviderAttemptFailed(providerCompletedAt) {
+    return this.transitionProviderAttempt('failed', {
+      providerCompletedAt: assertTimestamp(providerCompletedAt, 'providerCompletedAt')
+    });
+  }
+
   transitionTo(status, patch = {}) {
     const nextStatus = assertExecutionStatus(status);
 
@@ -89,11 +147,47 @@ export class TranslationExecution {
       translationRequestId: this.translationRequestId,
       status: nextStatus,
       providerKey: this.providerKey,
+      providerIdempotencyKey: this.providerIdempotencyKey,
+      providerAttemptStatus: this.providerAttemptStatus,
+      providerAttemptedAt: this.providerAttemptedAt,
+      providerCompletedAt: this.providerCompletedAt,
+      providerResult: this.providerResult,
       startedAt: patch.startedAt ?? this.startedAt,
       completedAt: patch.completedAt ?? null,
       failureInfo: patch.failureInfo ?? null
     });
   }
+
+  transitionProviderAttempt(nextStatus, patch = {}) {
+    const providerAttemptStatus = assertProviderAttemptStatus(nextStatus);
+
+    if (!ALLOWED_PROVIDER_ATTEMPT_TRANSITIONS[this.providerAttemptStatus].includes(providerAttemptStatus)) {
+      throw new RangeError(`provider attempt transition from ${this.providerAttemptStatus} to ${providerAttemptStatus} is not allowed`);
+    }
+
+    return new TranslationExecution({
+      id: this.id,
+      translationRequestId: this.translationRequestId,
+      status: this.status,
+      providerKey: this.providerKey,
+      providerIdempotencyKey: this.providerIdempotencyKey,
+      providerAttemptStatus,
+      providerAttemptedAt: Object.hasOwn(patch, 'providerAttemptedAt')
+        ? patch.providerAttemptedAt
+        : this.providerAttemptedAt,
+      providerCompletedAt: Object.hasOwn(patch, 'providerCompletedAt')
+        ? patch.providerCompletedAt
+        : this.providerCompletedAt,
+      providerResult: Object.hasOwn(patch, 'providerResult') ? patch.providerResult : this.providerResult,
+      startedAt: this.startedAt,
+      completedAt: this.completedAt,
+      failureInfo: this.failureInfo
+    });
+  }
+}
+
+export function createProviderIdempotencyKey(executionId) {
+  return `${PROVIDER_IDEMPOTENCY_KEY_PREFIX}${assertRequiredString(executionId, 'id')}`;
 }
 
 export class TranslationOutput {
@@ -129,6 +223,50 @@ function validateExecutionState(execution) {
   if (execution.status !== 'failed' && execution.failureInfo !== null) {
     throw new RangeError(`failureInfo is not allowed for ${execution.status} execution`);
   }
+
+  validateProviderAttemptState(execution);
+}
+
+function validateProviderAttemptState(execution) {
+  if (execution.providerAttemptStatus === 'not_started') {
+    if (execution.providerAttemptedAt !== null || execution.providerCompletedAt !== null || execution.providerResult !== null) {
+      throw new RangeError('provider attempt timestamps are not allowed before provider execution');
+    }
+    return;
+  }
+
+  assertTimestamp(execution.providerAttemptedAt, 'providerAttemptedAt');
+
+  if (execution.providerAttemptStatus === 'in_flight') {
+    if (execution.providerCompletedAt !== null || execution.providerResult !== null) {
+      throw new RangeError('providerCompletedAt is not allowed for in_flight provider attempt');
+    }
+    return;
+  }
+
+  assertTimestamp(execution.providerCompletedAt, 'providerCompletedAt');
+
+  if (execution.providerAttemptStatus === 'succeeded') {
+    normalizeProviderResult(execution.providerResult);
+  } else if (execution.providerResult !== null) {
+    throw new RangeError('providerResult is not allowed for failed provider attempt');
+  }
+}
+
+function normalizeProviderResult(value) {
+  if (!isRecord(value)) {
+    throw new TypeError('providerResult must be an object');
+  }
+
+  const translatedText = assertRequiredString(value.translatedText, 'providerResult.translatedText');
+  const result = { translatedText };
+  if (value.detectedSourceLanguageCode !== undefined) {
+    result.detectedSourceLanguageCode = assertRequiredString(
+      value.detectedSourceLanguageCode,
+      'providerResult.detectedSourceLanguageCode'
+    );
+  }
+  return deepClone(result);
 }
 
 function assertInputObject(value, field) {
@@ -144,6 +282,18 @@ function assertExecutionStatus(value) {
 
   if (!TRANSLATION_EXECUTION_STATUSES.includes(value)) {
     throw new RangeError(`status is not supported: ${value}`);
+  }
+
+  return value;
+}
+
+function assertProviderAttemptStatus(value) {
+  if (typeof value !== 'string') {
+    throw new TypeError('providerAttemptStatus must be a string');
+  }
+
+  if (!PROVIDER_ATTEMPT_STATUSES.includes(value)) {
+    throw new RangeError(`providerAttemptStatus is not supported: ${value}`);
   }
 
   return value;
@@ -167,6 +317,17 @@ function assertOptionalString(value, field) {
   }
 
   return assertRequiredString(value, field);
+}
+
+function assertProviderIdempotencyKey(value, executionId) {
+  const providerIdempotencyKey = assertRequiredString(value, 'providerIdempotencyKey');
+  const expectedKey = createProviderIdempotencyKey(executionId);
+
+  if (providerIdempotencyKey !== expectedKey) {
+    throw new RangeError(`providerIdempotencyKey must match execution id: ${executionId}`);
+  }
+
+  return providerIdempotencyKey;
 }
 
 function assertRequiredValue(value, field) {

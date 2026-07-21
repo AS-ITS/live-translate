@@ -7,7 +7,8 @@ test('exposes an execute function', () => {
   const provider = createFakeTranslationExecutionProvider();
 
   assert.equal(Object.isFrozen(provider), true);
-  assert.deepEqual(Object.keys(provider), ['execute']);
+  assert.deepEqual(Object.keys(provider), ['idempotency', 'execute']);
+  assert.deepEqual(provider.idempotency, { mode: 'guaranteed' });
   assert.equal(typeof provider.execute, 'function');
   assert.equal(provider.execute.length, 1);
 });
@@ -64,12 +65,14 @@ test('remains deterministic for equivalent inputs', async () => {
 });
 
 test('does not mutate input', async () => {
-  const provider = createFakeTranslationExecutionProvider();
+  const calls = [];
+  const provider = createFakeTranslationExecutionProvider({ calls });
   const input = Object.freeze(
     translationInput({
       requestId: 'request-1',
       sessionId: 'session-1',
-      executionId: 'execution-1'
+      executionId: 'execution-1',
+      providerIdempotencyKey: 'translation-execution:execution-1'
     })
   );
   const before = structuredClone(input);
@@ -77,6 +80,7 @@ test('does not mutate input', async () => {
   await provider.execute(input);
 
   assert.deepEqual(input, before);
+  assert.deepEqual(calls, [input]);
 });
 
 test('works through TranslationExecutionProvider without changing the result', async () => {

@@ -89,6 +89,31 @@ for (const status of ['created', 'running', 'completed', 'failed']) {
   });
 }
 
+test('queued execution with an in_flight provider attempt is skipped without reclaim replay', async () => {
+  const calls = [];
+  const worker = createTranslationExecutionWorker(
+    workerDependencies({
+      calls,
+      translationRepository: repository({
+        calls,
+        execution: translationExecution({
+          providerAttemptStatus: 'in_flight',
+          providerAttemptedAt: '2026-07-20T00:00:00.000Z'
+        })
+      }),
+      durableTranslationExecutionQueueRepository: durableRepository({ calls })
+    })
+  );
+
+  assert.deepEqual(await worker.processNext(), {
+    processed: false,
+    reason: 'provider_attempt_in_flight',
+    executionId: 'execution-1',
+    status: 'queued'
+  });
+  assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById']);
+});
+
 test('durable queue claim is persisted before runner starts', async () => {
   const calls = [];
   const worker = createTranslationExecutionWorker(

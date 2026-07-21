@@ -239,6 +239,10 @@ function buildMetadata(input) {
     }
   }
 
+  if (input.providerIdempotencyKey !== undefined) {
+    metadata.idempotencyKey = input.providerIdempotencyKey;
+  }
+
   return Object.freeze(metadata);
 }
 

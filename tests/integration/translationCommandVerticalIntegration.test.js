@@ -283,7 +283,10 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
         requestId: 'request-1',
         enqueuedAt: '2026-07-17T08:00:00.000Z',
         status: 'queued',
-        fenceToken: 0
+        fenceToken: 0,
+        attempt: 0,
+        availableAt: null,
+        lastFailure: null
       });
       assert.deepEqual(JSON.parse(await fileSystem.readFile(durableQueueFilePath, 'utf8')), {
         items: [
@@ -292,7 +295,10 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
             requestId: 'request-1',
             enqueuedAt: '2026-07-17T08:00:00.000Z',
             status: 'queued',
-            fenceToken: 0
+            fenceToken: 0,
+            attempt: 0,
+            availableAt: null,
+            lastFailure: null
           }
         ]
       });
@@ -390,7 +396,8 @@ test('POST queued execution is processed successfully by worker through producti
       assert.deepEqual(geminiClientCalls[0], {
         sourceText: 'hello from persisted request',
         sourceLanguageCode: 'en',
-        targetLanguageCode: 'fr'
+        targetLanguageCode: 'fr',
+        providerIdempotencyKey: 'translation-execution:execution-1'
       });
       assert.equal(Object.hasOwn(geminiClientCalls[0], 'providerKey'), false);
       assertCompletedRuntimePersistence(translationRepository, {
@@ -478,7 +485,8 @@ test('production worker runtime completes queued execution after start', async (
         {
           sourceText: 'hello from runtime start',
           sourceLanguageCode: 'en',
-          targetLanguageCode: 'fr'
+          targetLanguageCode: 'fr',
+          providerIdempotencyKey: 'translation-execution:execution-1'
         }
       ]);
       assertExecutionLifecycleFor(translationRepository, 'execution-1', ['created', 'queued', 'running', 'completed']);
@@ -854,7 +862,8 @@ test('worker processing rethrows provider error and persists failed lifecycle', 
       assert.deepEqual(geminiClientCalls[0], {
         sourceText: 'hello failure path',
         sourceLanguageCode: 'en',
-        targetLanguageCode: 'fr'
+        targetLanguageCode: 'fr',
+        providerIdempotencyKey: 'translation-execution:execution-1'
       });
       assert.equal(Object.hasOwn(geminiClientCalls[0], 'providerKey'), false);
       assert.deepEqual(
@@ -1884,7 +1893,8 @@ function assertExecutionLifecycleFor(translationRepository, executionId, expecte
   const statuses = [...createExecutionCalls, ...updateExecutionCalls]
     .map(([execution]) => execution)
     .filter((execution) => execution.id === executionId)
-    .map((execution) => execution.status);
+    .map((execution) => execution.status)
+    .filter((status, index, allStatuses) => index === 0 || status !== allStatuses[index - 1]);
 
   assert.deepEqual(statuses, expectedStatuses);
 }
@@ -1952,7 +1962,9 @@ function assertNoFailedExecutionPersistence(translationRepository) {
 }
 
 function executionStatusesFromCreateAndUpdateCalls(createExecutionCalls, updateExecutionCalls) {
-  return [...createExecutionCalls, ...updateExecutionCalls].map(([execution]) => execution.status);
+  return [...createExecutionCalls, ...updateExecutionCalls]
+    .map(([execution]) => execution.status)
+    .filter((status, index, allStatuses) => index === 0 || status !== allStatuses[index - 1]);
 }
 
 function executionStatusesFromUpdateCalls(updateExecutionCalls) {

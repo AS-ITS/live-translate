@@ -23,8 +23,31 @@ test('runner invokes provider exactly once with unchanged input', async () => {
     sourceText: 'hello',
     sourceLanguageCode: 'en',
     targetLanguageCode: 'fr',
-    providerKey: 'fake'
+    providerKey: 'fake',
+    providerIdempotencyKey: 'translation-execution:execution-1'
   });
+});
+
+test('runner reuses an execution idempotency key for every retry', async () => {
+  const providerInputs = [];
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository(),
+    translationExecutionProvider: {
+      async execute(input) {
+        providerInputs.push(input);
+        if (providerInputs.length === 1) throw new Error('retry once');
+        return providerResult();
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 1 })
+  });
+
+  await runner.execute(runnerInput({ payload: executionPayload({ id: 'execution-retry' }) }));
+
+  assert.deepEqual(
+    providerInputs.map((input) => input.providerIdempotencyKey),
+    ['translation-execution:execution-retry', 'translation-execution:execution-retry']
+  );
 });
 
 test('successful execution creates one TranslationOutput', async () => {
@@ -83,10 +106,10 @@ test('successful execution marks execution completed', async () => {
   await runner.execute(runnerInput({ payload }));
 
   const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1] instanceof TranslationExecution, true);
-  assert.equal(updateCalls[0][1].status, 'completed');
-  assert.equal(updateCalls[0][1].completedAt, 2000);
+  assert.deepEqual(updateCalls.map(([, execution]) => execution.providerAttemptStatus), ['in_flight', 'succeeded', 'succeeded']);
+  assert.equal(updateCalls.at(-1)[1] instanceof TranslationExecution, true);
+  assert.equal(updateCalls.at(-1)[1].status, 'completed');
+  assert.equal(updateCalls.at(-1)[1].completedAt, 2000);
 });
 
 test('provider failure marks execution failed and skips output creation', async () => {
@@ -108,9 +131,30 @@ test('provider failure marks execution failed and skips output creation', async 
   assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
 
   const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1].status, 'failed');
-  assert.deepEqual(updateCalls[0][1].failureInfo, { reason: 'provider_execution_failed' });
+  assert.deepEqual(updateCalls.map(([, execution]) => execution.providerAttemptStatus), ['in_flight', 'failed', 'failed']);
+  assert.equal(updateCalls.at(-1)[1].status, 'failed');
+  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, { reason: 'provider_execution_failed' });
+});
+
+test('provider is not called when persisting in_flight intent fails', async () => {
+  const persistenceError = new Error('intent persistence failed');
+  let providerCalls = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({
+      updateTranslationExecution() {
+        throw persistenceError;
+      }
+    }),
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+        return providerResult();
+      }
+    }
+  });
+
+  await assert.rejects(runner.execute(runnerInput()), (error) => error === persistenceError);
+  assert.equal(providerCalls, 0);
 });
 
 test('provider failure rethrows the original provider error', async () => {
@@ -174,8 +218,11 @@ test('successful retry persists one output, completes once, and never marks fail
   assert.deepEqual(providerCalls, [1, 2, 3]);
   assert.equal(outputCalls.length, 1);
   assert.equal(outputCalls[0][1].translatedText, 'successful attempt 3');
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1].status, 'completed');
+  assert.deepEqual(
+    updateCalls.map(([, execution]) => execution.providerAttemptStatus),
+    ['in_flight', 'failed', 'in_flight', 'failed', 'in_flight', 'succeeded', 'succeeded']
+  );
+  assert.equal(updateCalls.at(-1)[1].status, 'completed');
   assert.equal(updateCalls.some((call) => call[1].status === 'failed'), false);
 });
 
@@ -199,8 +246,8 @@ test('default production retry policy executes once, fails execution, and rethro
   const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
   assert.equal(providerCalls, 1);
   assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1].status, 'failed');
+  assert.equal(updateCalls.length, 3);
+  assert.equal(updateCalls.at(-1)[1].status, 'failed');
   assert.equal(updateCalls.some((call) => call[1].status === 'completed'), false);
 });
 
@@ -215,7 +262,6 @@ test('exhausted retry marks failed once, creates no output, and rethrows final p
         const attempt = providerCalls.length + 1;
         providerCalls.push(attempt);
 
-        assert.equal(calls.some((call) => call[0] === 'updateTranslationExecution'), false);
         assert.equal(calls.some((call) => call[0] === 'createTranslationOutput'), false);
 
         throw errors[attempt - 1];
@@ -231,9 +277,9 @@ test('exhausted retry marks failed once, creates no output, and rethrows final p
 
   assert.deepEqual(providerCalls, [1, 2, 3]);
   assert.equal(outputCalls.length, 0);
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1].status, 'failed');
-  assert.deepEqual(updateCalls[0][1].failureInfo, { reason: 'provider_execution_failed' });
+  assert.equal(updateCalls.length, 7);
+  assert.equal(updateCalls.at(-1)[1].status, 'failed');
+  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, { reason: 'provider_execution_failed' });
   assert.equal(updateCalls.some((call) => call[1].status === 'completed'), false);
 });
 
@@ -252,8 +298,10 @@ test('retryable intermediate failures do not persist failed, completed, or outpu
           throw new Error(`retryable failure ${providerCalls}`);
         }
 
-        assert.deepEqual(observedCallsDuringRetries, [[], []]);
-        assert.equal(calls.length, 0);
+        assert.deepEqual(observedCallsDuringRetries.map((snapshot) => snapshot.map(([, execution]) => execution.providerAttemptStatus)), [
+          ['in_flight'],
+          ['in_flight', 'failed', 'in_flight']
+        ]);
 
         return providerResult({ translatedText: 'third attempt succeeded' });
       }
@@ -268,8 +316,8 @@ test('retryable intermediate failures do not persist failed, completed, or outpu
 
   assert.equal(providerCalls, 3);
   assert.equal(outputCalls.length, 1);
-  assert.equal(updateCalls.length, 1);
-  assert.equal(updateCalls[0][1].status, 'completed');
+  assert.equal(updateCalls.length, 7);
+  assert.equal(updateCalls.at(-1)[1].status, 'completed');
 });
 
 test('retry attempt boundary is exactly one provider execution plus maxRetries', async () => {
@@ -492,7 +540,10 @@ test('fenced runner checks before output and completed writes in existing order'
 
   await runner.execute({ ...runnerInput(), executionFence: { executionId: 'execution-1', leaseId: 'lease-1', fenceToken: 1 } });
 
-  assert.deepEqual(calls.map(([name]) => name), ['guard', 'createTranslationOutput', 'guard', 'updateTranslationExecution']);
+  assert.deepEqual(calls.map(([name]) => name), [
+    'guard', 'updateTranslationExecution', 'guard', 'updateTranslationExecution',
+    'guard', 'createTranslationOutput', 'guard', 'updateTranslationExecution'
+  ]);
   assert.deepEqual(calls[0][1], { executionId: 'execution-1', claim: { leaseId: 'lease-1', fenceToken: 1 } });
 });
 
@@ -522,7 +573,7 @@ test('fence rejection prevents the corresponding success and failure persistence
     () => completedRunner.execute({ ...runnerInput(), executionFence: { leaseId: 'lease-1', fenceToken: 1 } }),
     (error) => error === completedError
   );
-  assert.deepEqual(completedCalls.map(([name]) => name), ['createTranslationOutput']);
+  assert.deepEqual(completedCalls.map(([name]) => name), ['updateTranslationExecution']);
 
   const failedError = new Error('failed ownership lost');
   const failedCalls = [];

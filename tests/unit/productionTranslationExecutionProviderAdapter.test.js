@@ -67,7 +67,8 @@ test('executes resolved provider once with provider input only', async () => {
       targetLanguageCode: 'fr',
       requestId: 'request-1',
       sessionId: 'session-1',
-      executionId: 'execution-1'
+      executionId: 'execution-1',
+      providerIdempotencyKey: 'translation-execution:execution-1'
     }
   ]);
   assert.equal(Object.hasOwn(translateCalls[0], 'providerKey'), false);
@@ -89,7 +90,8 @@ test('optional metadata remains undefined when omitted', async () => {
   await adapter.execute(executionInput({
     requestId: undefined,
     sessionId: undefined,
-    executionId: undefined
+    executionId: undefined,
+    providerIdempotencyKey: undefined
   }));
 
   assert.equal(Object.hasOwn(receivedInput, 'requestId'), true);
@@ -98,6 +100,7 @@ test('optional metadata remains undefined when omitted', async () => {
   assert.equal(receivedInput.requestId, undefined);
   assert.equal(receivedInput.sessionId, undefined);
   assert.equal(receivedInput.executionId, undefined);
+  assert.equal(Object.hasOwn(receivedInput, 'providerIdempotencyKey'), false);
 });
 
 test('returns provider result unchanged', async () => {
@@ -206,6 +209,7 @@ function executionInput(overrides = {}) {
     requestId: 'request-1',
     sessionId: 'session-1',
     executionId: 'execution-1',
+    providerIdempotencyKey: 'translation-execution:execution-1',
     ...overrides
   };
 }

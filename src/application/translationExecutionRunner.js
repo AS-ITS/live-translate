@@ -6,12 +6,14 @@ export function createTranslationExecutionRunner({
   translationRepository,
   translationExecutionProvider,
   retryPolicy = createRetryPolicy(),
-  executionFenceGuard
+  executionFenceGuard,
+  clock = () => new Date().toISOString()
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
   assertRetryPolicy(retryPolicy);
   assertOptionalExecutionFenceGuard(executionFenceGuard);
+  assertClock(clock);
 
   return Object.freeze({
     async execute(input = {}) {
@@ -20,13 +22,29 @@ export function createTranslationExecutionRunner({
       assertExecutionInput(execution);
       assertPayloadInput(payload);
 
+      let providerAttemptExecution;
       let providerResult;
       try {
-        providerResult = await executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload);
+        ({ providerAttemptExecution, providerResult } = await executeProviderWithRetry({
+          translationExecutionProvider,
+          retryPolicy,
+          translationRepository,
+          execution,
+          payload,
+          executionFenceGuard,
+          executionFence,
+          clock
+        }));
       } catch (error) {
+        if (error.providerExecutionError !== true) throw error;
         if (deferProviderFailure) throw error;
         await assertWritable(executionFenceGuard, execution, executionFence);
-        await failExecutionAfterProviderError(translationRepository, execution, payload, onTranslationExecutionUpdated);
+        await failExecutionAfterProviderError(
+          translationRepository,
+          error.providerAttemptExecution ?? providerAttemptExecution ?? execution,
+          payload,
+          onTranslationExecutionUpdated
+        );
         throw error;
       }
 
@@ -34,7 +52,7 @@ export function createTranslationExecutionRunner({
         id: payload.outputId ?? `${execution.id}-output-0`,
         executionId: execution.id,
         sequence: payload.outputSequence ?? 0,
-        translatedText: providerResult.translatedText,
+        translatedText: providerAttemptExecution.providerResult.translatedText,
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
       });
@@ -51,6 +69,11 @@ export function createTranslationExecutionRunner({
         translationRequestId: execution.translationRequestId,
         status: 'completed',
         providerKey: execution.providerKey,
+        providerIdempotencyKey: execution.providerIdempotencyKey,
+        providerAttemptStatus: providerAttemptExecution.providerAttemptStatus,
+        providerAttemptedAt: providerAttemptExecution.providerAttemptedAt,
+        providerCompletedAt: providerAttemptExecution.providerCompletedAt,
+        providerResult: providerAttemptExecution.providerResult,
         startedAt: execution.startedAt,
         completedAt: payload.completedAt ?? execution.startedAt
       });
@@ -63,6 +86,39 @@ export function createTranslationExecutionRunner({
       });
 
       return repositoryResult;
+    },
+
+    async reconcileSucceeded({ execution, payload, executionFence } = {}) {
+      assertExecutionInput(execution);
+      assertPayloadInput(payload);
+      if (execution.providerAttemptStatus !== 'succeeded' || execution.providerResult === null) {
+        throw new Error('translation_execution_provider_result_integrity_error');
+      }
+      const output = new TranslationOutput({
+        id: payload.outputId ?? `${execution.id}-output-0`,
+        executionId: execution.id,
+        sequence: payload.outputSequence ?? 0,
+        translatedText: execution.providerResult.translatedText,
+        targetLanguageCode: payload.targetLanguageCode,
+        createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt
+      });
+      await assertWritable(executionFenceGuard, execution, executionFence);
+      await translationRepository.createTranslationOutput(output);
+      const completed = new TranslationExecution({
+        id: execution.id,
+        translationRequestId: execution.translationRequestId,
+        status: 'completed',
+        providerKey: execution.providerKey,
+        providerIdempotencyKey: execution.providerIdempotencyKey,
+        providerAttemptStatus: execution.providerAttemptStatus,
+        providerAttemptedAt: execution.providerAttemptedAt,
+        providerCompletedAt: execution.providerCompletedAt,
+        providerResult: execution.providerResult,
+        startedAt: execution.startedAt,
+        completedAt: payload.completedAt ?? execution.startedAt
+      });
+      await assertWritable(executionFenceGuard, execution, executionFence);
+      return translationRepository.updateTranslationExecution(completed);
     }
   });
 }
@@ -78,25 +134,54 @@ async function assertWritable(executionFenceGuard, execution, executionFence) {
   });
 }
 
-async function executeProviderWithRetry(translationExecutionProvider, retryPolicy, payload) {
+async function executeProviderWithRetry({
+  translationExecutionProvider,
+  retryPolicy,
+  translationRepository,
+  execution,
+  payload,
+  executionFenceGuard,
+  executionFence,
+  clock
+}) {
+  let providerAttemptExecution = execution;
   let attempt = 1;
 
   while (true) {
+    const inFlightExecution = providerAttemptExecution.markProviderAttemptInFlight(clock());
+    await assertWritable(executionFenceGuard, execution, executionFence);
+    await translationRepository.updateTranslationExecution(inFlightExecution);
+
+    let providerResult;
     try {
-      return await translationExecutionProvider.execute({
+      providerResult = await translationExecutionProvider.execute({
         sourceText: payload.sourceText,
         sourceLanguageCode: payload.sourceLanguageCode,
         targetLanguageCode: payload.targetLanguageCode,
-        providerKey: payload.providerKey
+        providerKey: payload.providerKey,
+        ...(execution.providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey: execution.providerIdempotencyKey })
       });
+
     } catch (error) {
+      providerAttemptExecution = inFlightExecution.markProviderAttemptFailed(clock());
+      await assertWritable(executionFenceGuard, execution, executionFence);
+      await translationRepository.updateTranslationExecution(providerAttemptExecution);
+
       if (!retryPolicy.canRetry(attempt)) {
+        error.providerAttemptExecution = providerAttemptExecution;
+        error.providerExecutionError = true;
         throw error;
       }
 
       retryPolicy.nextDelay(attempt);
       attempt += 1;
+      continue;
     }
+
+    providerAttemptExecution = inFlightExecution.markProviderAttemptSucceeded(clock(), providerResult);
+    await assertWritable(executionFenceGuard, execution, executionFence);
+    await translationRepository.updateTranslationExecution(providerAttemptExecution);
+    return { providerAttemptExecution, providerResult };
   }
 }
 
@@ -158,6 +243,12 @@ function assertOptionalExecutionFenceGuard(executionFenceGuard) {
   if (executionFenceGuard === undefined) return;
   if (!executionFenceGuard || typeof executionFenceGuard.assertWritable !== 'function') {
     throw new TypeError('executionFenceGuard.assertWritable must be a function.');
+  }
+}
+
+function assertClock(clock) {
+  if (typeof clock !== 'function') {
+    throw new TypeError('translationExecutionRunner clock must be a function.');
   }
 }
 

@@ -26,6 +26,7 @@ test('production composition keeps duplicate durable submissions to one active i
       executionId: 'execution-duplicate'
     });
     assert.equal(providerCalls.length, 1);
+    assert.equal(providerCalls[0].providerIdempotencyKey, 'translation-execution:execution-duplicate');
     assert.equal(
       (await dependencies.translationRepository.listTranslationOutputsByExecution('execution-duplicate')).length,
       1
@@ -253,6 +254,7 @@ test('production composition fences late L1 persistence after L2 reclaims and co
     translationQueueClock: { now: () => now },
     translationQueueLeaseIdFactory: () => `lease-L${++leaseNumber}`,
     translationQueueLeaseHeartbeatScheduler: fakeScheduler(),
+    idempotency: { mode: 'guaranteed' },
     providerExecute: async () => {
       providerNumber += 1;
       if (providerNumber === 1) {
@@ -787,6 +789,7 @@ async function withProductionFixture(run, options = {}) {
   const sessionRepository = createMemorySessionRepository({ now: () => '2026-07-20T00:00:00.000Z' });
   const providerCalls = [];
   const translationExecutionProvider = Object.freeze({
+    idempotency: options.idempotency ?? Object.freeze({ mode: 'unknown' }),
     async execute(input) {
       providerCalls.push(input);
       if (options.providerExecute !== undefined) {

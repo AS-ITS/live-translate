@@ -12,7 +12,8 @@ export function createProductionTranslationExecutionProvider({ resolver } = {}) 
         targetLanguageCode: input?.targetLanguageCode,
         requestId: input?.requestId,
         sessionId: input?.sessionId,
-        executionId: input?.executionId
+        executionId: input?.executionId,
+        ...(input?.providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey: input.providerIdempotencyKey })
       });
     }
   });

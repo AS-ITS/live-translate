@@ -7,7 +7,8 @@ test('creates a frozen provider with the TranslationExecutionProvider contract',
   const provider = createGeminiTranslationExecutionProvider({ client: client() });
 
   assert.equal(Object.isFrozen(provider), true);
-  assert.deepEqual(Object.keys(provider), ['execute']);
+  assert.deepEqual(Object.keys(provider), ['idempotency', 'execute']);
+  assert.deepEqual(provider.idempotency, { mode: 'unknown' });
   assert.equal(typeof provider.execute, 'function');
   assert.equal(provider.execute.length, 1);
   assert.throws(() => {
@@ -50,6 +51,7 @@ test('execute calls GeminiClient.translate once and maps request and response', 
       requestId: 'request-1',
       sessionId: 'session-1',
       executionId: 'execution-1',
+      providerIdempotencyKey: 'translation-execution:execution-1',
       ignoredField: 'ignored'
     })
   );
@@ -67,7 +69,8 @@ test('execute calls GeminiClient.translate once and maps request and response', 
     targetLanguageCode: 'fr',
     requestId: 'request-1',
     sessionId: 'session-1',
-    executionId: 'execution-1'
+    executionId: 'execution-1',
+    providerIdempotencyKey: 'translation-execution:execution-1'
   });
   assert.equal(Object.hasOwn(calls[0], 'providerKey'), false);
   assert.equal(Object.hasOwn(calls[0], 'ignoredField'), false);
@@ -89,7 +92,8 @@ test('execute omits undefined optional request fields', async () => {
       sourceLanguageCode: undefined,
       requestId: undefined,
       sessionId: undefined,
-      executionId: undefined
+      executionId: undefined,
+      providerIdempotencyKey: undefined
     })
   );
 
@@ -169,7 +173,8 @@ test('uses legacy client.execute when translate is unavailable with the same map
     translationInput({
       requestId: 'request-legacy',
       sessionId: 'session-legacy',
-      executionId: 'execution-legacy'
+      executionId: 'execution-legacy',
+      providerIdempotencyKey: 'translation-execution:execution-legacy'
     })
   );
 
@@ -184,7 +189,8 @@ test('uses legacy client.execute when translate is unavailable with the same map
     targetLanguageCode: 'fr',
     requestId: 'request-legacy',
     sessionId: 'session-legacy',
-    executionId: 'execution-legacy'
+    executionId: 'execution-legacy',
+    providerIdempotencyKey: 'translation-execution:execution-legacy'
   });
 });
 

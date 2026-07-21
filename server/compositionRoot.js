@@ -312,6 +312,10 @@ export function createProductionApplicationDependencies(options = {}) {
           activeQueue: primaryTranslationExecutionQueue,
           translationRepository: applicationDependencies.translationRepository,
           translationCommandService: applicationDependencies.translationCommandService,
+          canReplayInFlight: async (execution) => {
+            const provider = await resolvedTranslationExecutionProviderResolver.resolve(execution.providerKey);
+            return provider?.idempotency?.mode === 'guaranteed';
+          },
           clock: translationQueueClock.now.bind(translationQueueClock),
           leaseDurationMs: queueConfiguration.leaseMs,
           leaseIdFactory: translationQueueLeaseIdFactory
@@ -517,7 +521,8 @@ export function createTranslationCommandDependencies({
       ? undefined
       : createWorkerTranslationExecutionRunner({
           translationExecutionRunner: resolvedTranslationExecutionRunner,
-          translationRepository
+          translationRepository,
+          translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver
         });
   const resolvedTranslationExecutionWorker =
     translationExecutionWorker ??
@@ -662,13 +667,26 @@ function createResolverBackedTranslationExecutionProvider(translationExecutionPr
   });
 }
 
-function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository }) {
+function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver }) {
   return Object.freeze({
     execute(input) {
       return translationExecutionRunner.execute(input);
     },
 
+    async canReplayInFlight(execution) {
+      const provider = await translationExecutionProviderResolver.resolve(execution.providerKey);
+      return provider?.idempotency?.mode === 'guaranteed';
+    },
+
     async run({ execution, request, executionFence, deferProviderFailure } = {}) {
+      if (execution.providerAttemptStatus === 'succeeded') {
+        return translationExecutionRunner.reconcileSucceeded({
+          execution,
+          payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
+          ...(executionFence !== undefined ? { executionFence } : {})
+        });
+      }
+
       const runningExecution = execution.start(execution.startedAt);
       const repositoryResult = await translationRepository.updateTranslationExecution(runningExecution);
 

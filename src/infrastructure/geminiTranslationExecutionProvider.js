@@ -3,6 +3,7 @@ export function createGeminiTranslationExecutionProvider({ client } = {}) {
   const translate = resolveTranslate(client);
 
   return Object.freeze({
+    idempotency: Object.freeze({ mode: 'unknown' }),
     async execute(input) {
       const result = await translate.call(client, mapProviderInputToGeminiRequest(input));
 
@@ -35,6 +36,7 @@ function mapProviderInputToGeminiRequest(input) {
     targetLanguageCode: input?.targetLanguageCode,
     ...(input?.requestId === undefined ? {} : { requestId: input.requestId }),
     ...(input?.sessionId === undefined ? {} : { sessionId: input.sessionId }),
-    ...(input?.executionId === undefined ? {} : { executionId: input.executionId })
+    ...(input?.executionId === undefined ? {} : { executionId: input.executionId }),
+    ...(input?.providerIdempotencyKey === undefined ? {} : { providerIdempotencyKey: input.providerIdempotencyKey })
   });
 }

@@ -56,6 +56,22 @@
 
 ### Added
 
+- Phase 3K WP4 Provider Result Persistence & Output Reconciliation: succeeded
+  provider attempts now persist a validated result snapshot before output and
+  completion writes; reclaimed succeeded attempts reconcile without provider replay.
+- Phase 3K WP3 Provider Attempt Persistence & Recovery Boundary: executions
+  now persist provider attempt intent and terminal attempt metadata around each
+  provider call. Reclaimed `in_flight` attempts remain a conservative no-replay
+  boundary; remote result recovery remains deferred.
+- Phase 3K WP2 Provider Input Propagation: persisted execution idempotency keys
+  now flow through the Runner and provider adapters into Gemini request metadata
+  as `idempotencyKey`; prompts, responses, retries, and HTTP contracts remain
+  unchanged.
+- Phase 3K WP1 Provider Execution Idempotency Contract: `TranslationExecution`
+  now deterministically derives and persists an immutable provider idempotency
+  key from its execution ID. Legacy persisted executions without the key
+  reconstitute compatibly without a read-time rewrite; provider invocation and
+  HTTP contracts remain unchanged.
 - Phase 3I Lease Renewal & Execution Fencing: completed heartbeat renewal,
   monotonic fence-token claims, fenced output/terminal persistence, and
   token-aware acknowledgement with production-composition verification using

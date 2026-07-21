@@ -13,6 +13,7 @@ export function createStartupTranslationExecutionQueueRecovery({
   activeQueue,
   translationRepository,
   translationCommandService,
+  canReplayInFlight = () => false,
   clock = () => new Date().toISOString(),
   leaseDurationMs = 300000,
   leaseIdFactory = randomUUID
@@ -116,7 +117,7 @@ export function createStartupTranslationExecutionQueueRecovery({
           continue;
         }
 
-        if (!isReplayEligible(execution, outputs)) {
+        if (!(await isReplayEligible(execution, outputs, canReplayInFlight))) {
           continue;
         }
 
@@ -169,7 +170,8 @@ export function createStartupTranslationExecutionQueueRecovery({
   });
 }
 
-function isReplayEligible(execution, outputs) {
+async function isReplayEligible(execution, outputs, canReplayInFlight) {
+  if (execution.providerAttemptStatus === 'in_flight') return (await canReplayInFlight(execution)) === true;
   if (execution.status === 'queued') return true;
   return execution.status === 'running' && outputs.length === 0;
 }

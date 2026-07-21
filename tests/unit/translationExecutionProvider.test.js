@@ -11,7 +11,8 @@ test('accepts a valid implementation', () => {
 
   assert.equal(typeof provider, 'object');
   assert.notEqual(provider, null);
-  assert.deepEqual(Object.keys(provider), ['execute']);
+  assert.deepEqual(Object.keys(provider), ['execute', 'idempotency']);
+  assert.deepEqual(provider.idempotency, { mode: 'unknown' });
   assert.equal(typeof provider.execute, 'function');
   assert.equal(provider.execute.length, 1);
   assert.equal(Object.isFrozen(provider), true);

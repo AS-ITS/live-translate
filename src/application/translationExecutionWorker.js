@@ -6,6 +6,7 @@ import { createTranslationExecutionLeaseHeartbeat } from './translation/translat
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
+const PROVIDER_ATTEMPT_IN_FLIGHT_REASON = 'provider_attempt_in_flight';
 const DEFAULT_LEASE_HEARTBEAT_SCHEDULER = Object.freeze({
   set(callback, delayMs) { return setTimeout(callback, delayMs); },
   clear(handle) { clearTimeout(handle); }
@@ -55,6 +56,20 @@ export function createTranslationExecutionWorker({
           executionId: job.executionId,
           status: execution.status
         };
+      }
+
+      if (execution.providerAttemptStatus === 'in_flight') {
+        if (typeof translationExecutionRunner.canReplayInFlight === 'function'
+          && await translationExecutionRunner.canReplayInFlight(execution)) {
+          // A guaranteed provider may safely replay the same idempotency key.
+        } else {
+        return {
+          processed: false,
+          reason: PROVIDER_ATTEMPT_IN_FLIGHT_REASON,
+          executionId: job.executionId,
+          status: execution.status
+        };
+        }
       }
 
       let claimedDurableItem;

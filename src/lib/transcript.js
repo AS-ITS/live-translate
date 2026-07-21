@@ -64,7 +64,8 @@ function applyPartialEvent(state, event) {
       currentPartial: {
         ...currentPartial,
         text: event.text,
-        ...(event.languageCode ? { languageCode: event.languageCode } : {})
+        ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+        ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
       }
     });
   }
@@ -120,7 +121,8 @@ function createTranscriptItem(state, event, status, now) {
     sequence: state.nextSequence,
     startedAt: now,
     finalizedAt: status === 'final' ? now : undefined,
-    ...(event.languageCode ? { languageCode: event.languageCode } : {})
+    ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
   };
 }
 
@@ -130,7 +132,8 @@ function finalizeTranscriptItem(item, event, now) {
     status: 'final',
     text: event.text,
     finalizedAt: now,
-    ...(event.languageCode ? { languageCode: event.languageCode } : {})
+    ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
   };
 }
 

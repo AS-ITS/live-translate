@@ -1946,6 +1946,13 @@ function assertCompletedRuntimePersistence(
     providerKey
   });
   assert.equal(Object.hasOwn(storedExecution, 'providerKey'), true);
+  assert.equal(storedExecution.providerAttemptStatus, 'succeeded');
+  assert.match(storedExecution.providerAttemptedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  assert.match(storedExecution.providerCompletedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
+  assert.deepEqual(storedExecution.providerResult, {
+    translatedText,
+    detectedSourceLanguageCode: 'en'
+  });
   assert.equal(storedExecution.completedAt, '2026-07-14T01:01:00.000Z');
   assert.equal(storedOutput instanceof TranslationOutput, true);
   assert.equal(storedOutput.executionId, executionId);

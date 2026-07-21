@@ -184,7 +184,12 @@ test('translation command HTTP path persists command state through production co
           status: 'completed',
           startedAt: '2026-07-14T01:02:00.000Z',
           completedAt: '2026-07-14T01:03:00.000Z',
-          failureInfo: null
+          failureInfo: null,
+          providerIdempotencyKey: 'translation-execution:execution unicode 1',
+          providerAttemptStatus: 'not_started',
+          providerAttemptedAt: null,
+          providerCompletedAt: null,
+          providerResult: null
         }
       ],
       outputs: [

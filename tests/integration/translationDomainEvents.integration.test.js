@@ -440,6 +440,11 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
       return requests.get(requestId) ?? null;
     },
 
+    findRequestById(requestId) {
+      record('findRequestById', [requestId]);
+      return requests.get(requestId) ?? null;
+    },
+
     updateTranslationRequest(request) {
       record('updateTranslationRequest', [request]);
       requests.set(request.id, request);
@@ -459,6 +464,11 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
 
     getTranslationExecution(executionId) {
       record('getTranslationExecution', [executionId]);
+      return executionMap.get(executionId) ?? null;
+    },
+
+    findExecutionById(executionId) {
+      record('findExecutionById', [executionId]);
       return executionMap.get(executionId) ?? null;
     },
 

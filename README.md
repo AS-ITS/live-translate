@@ -45,6 +45,61 @@ retention policies remain out of scope.
 Phase 2 Overall
 Status: In Progress
 
+## Phase 4A Closeout
+
+Phase 4A is complete and ready for controlled manual testing. A saved session
+can submit multiple asynchronous translations, then read its session-scoped,
+read-only Translation history at `GET /api/sessions/:sessionId/translations`.
+The detail UI shows each request, execution status, output, and available source
+language detection, and filters the displayed records by target language.
+
+- Supported target languages: `en`, `ja`, `ko`, `zh-Hant`, `zh-Hans`, `es`,
+  `fr`, and `de` (`zh-Hant` is the live-token default).
+- `sourceLanguageDetection` is canonical optional transcript metadata. It can
+  represent mixed languages, but Gemini does not currently guarantee reliable
+  segment-level detection.
+- A glossary is provider instruction only. It never rewrites stored source
+  transcript text or a `TranslationOutput`.
+- History reads do not start providers, queues, workers, runners, or glossary
+  loading and do not mutate records.
+
+### Production and Manual Gemini Smoke Test
+
+Configure secrets outside version control. `GEMINI_API_KEY` is required by the
+backend and must never be supplied to the browser. Production translation also
+requires `GEMINI_MODEL`; `TRANSLATION_PROVIDER=gemini` is the supported provider
+selection (and is the default when omitted).
+
+For durable asynchronous work, set `TRANSLATION_DURABLE_QUEUE_ENABLED=true` and
+provide writable `TRANSLATION_DURABLE_QUEUE_FILE` and
+`TRANSLATION_DEAD_LETTER_QUEUE_FILE` paths. Keep these files outside the source
+tree and back them up according to the deployment's retention policy.
+
+`TRANSLATION_GLOSSARY_FILE` is optional. It points to a JSON file such as:
+
+```json
+{
+  "entries": [
+    { "source": "OpenAI", "targets": { "ja": "OpenAI" } }
+  ]
+}
+```
+
+If it is unset or its configured file does not exist, no glossary instruction
+is added. Invalid JSON or entries fail clearly rather than silently altering
+text.
+
+Start the backend with `npm run start:production` and the frontend with
+`npm run dev`. For a manual smoke test: configure the server-only environment,
+start a session, choose a supported language, speak mixed-language audio, stop
+the session, submit translations, wait for worker completion, then open the
+same session detail and filter Translation history. Real Gemini testing is
+manual and opt-in only; automated tests use fakes and mocks.
+
+Current limitations: no account or authorization model, no glossary management
+UI/API, no cross-session history, and Gemini translation/detection quality must
+be confirmed in the target environment.
+
 Completed:
 
 - Phase 1 Demo

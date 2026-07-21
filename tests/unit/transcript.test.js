@@ -30,6 +30,36 @@ test('append final transcript', () => {
   ]);
 });
 
+test('preserves explicit multi-language source detection metadata without changing source text', () => {
+  const text = 'Hello，こんにちは，您好';
+  const state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text,
+    isFinal: true,
+    sourceLanguageDetection: {
+      detectedLanguageCodes: ['en', 'ja', 'zh-Hant'],
+      coverage: 'complete'
+    },
+    now: 100
+  });
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source'), [
+    {
+      id: 'source-1',
+      stream: 'source',
+      status: 'final',
+      text,
+      sequence: 1,
+      startedAt: 100,
+      finalizedAt: 100,
+      sourceLanguageDetection: {
+        detectedLanguageCodes: ['en', 'ja', 'zh-Hant'],
+        coverage: 'complete'
+      }
+    }
+  ]);
+});
+
 test('update partial transcript', () => {
   const first = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source',

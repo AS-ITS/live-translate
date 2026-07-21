@@ -105,7 +105,8 @@ test('application composition wires saved transcript re-translation once through
     'savedTranscriptRetranslationController',
     'sessionReadController',
     'sessionRepository',
-    'translationCommandController'
+    'translationCommandController',
+    'translationHistoryController'
   ]);
 });
 

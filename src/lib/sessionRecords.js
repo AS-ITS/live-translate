@@ -82,7 +82,16 @@ export function createTranscriptItemForSession(sessionId, transcriptItem = {}) {
     finalizedAt: transcriptItem.finalizedAt
   };
 
-  return transcriptItem.languageCode ? { ...mapped, languageCode: transcriptItem.languageCode } : mapped;
+  const withLanguageCode = transcriptItem.languageCode ? { ...mapped, languageCode: transcriptItem.languageCode } : mapped;
+
+  if (transcriptItem.stream !== 'source' || transcriptItem.sourceLanguageDetection === undefined) {
+    return withLanguageCode;
+  }
+
+  return {
+    ...withLanguageCode,
+    sourceLanguageDetection: cloneSourceLanguageDetection(transcriptItem.sourceLanguageDetection)
+  };
 }
 
 export function summarizeTranscriptItems(items = []) {
@@ -156,4 +165,17 @@ function durationBetween(startedAt, endedAt) {
 
 function hasTranscriptText(item) {
   return typeof item.text === 'string' && item.text.length > 0;
+}
+
+function cloneSourceLanguageDetection(detection) {
+  if (!detection || typeof detection !== 'object' || Array.isArray(detection)) {
+    return detection;
+  }
+
+  return {
+    ...detection,
+    ...(Array.isArray(detection.detectedLanguageCodes)
+      ? { detectedLanguageCodes: [...detection.detectedLanguageCodes] }
+      : {})
+  };
 }

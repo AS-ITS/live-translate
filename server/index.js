@@ -1,5 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
@@ -200,6 +201,7 @@ export function createRequestHandler(options = {}) {
     sessionReadController,
     sessionRepository,
     translationCommandController,
+    translationHistoryController,
     savedTranscriptRetranslationController,
     liveTokenCreator = createLiveToken
   } = options;
@@ -213,6 +215,7 @@ export function createRequestHandler(options = {}) {
       sessionReadController,
       sessionRepository,
       translationCommandController,
+      translationHistoryController,
       savedTranscriptRetranslationController,
       liveTokenCreator
     });
@@ -226,7 +229,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, translationHistoryController, savedTranscriptRetranslationController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -309,6 +312,19 @@ async function handleRequestWithSessionReadController(
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isSessionTranslationHistoryPath(path)) {
+    try {
+      const { sessionId, targetLanguageCode } = parseSessionTranslationHistoryPath(req.url || path);
+      if (targetLanguageCode !== undefined && !isSupportedLanguage(targetLanguageCode)) throw createHttpError('unsupported_language');
+      const result = await translationHistoryController.listSessionTranslations({ sessionId, targetLanguageCode });
+      if (!result) { statusCode = 404; sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId); return; }
+      statusCode = 200; sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error); statusCode = ERROR_RESPONSES[code]?.status || error.status || 500; sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -490,6 +506,24 @@ function isSavedTranscriptRetranslationRoute(method, path) {
   return method === 'POST' && path.startsWith('/api/saved-transcripts/') && path.endsWith('/translations');
 }
 
+function isSessionTranslationHistoryPath(path) {
+  return path.startsWith('/api/sessions/') && path.endsWith('/translations') && path.length > '/api/sessions//translations'.length;
+}
+
+function parseSessionTranslationHistoryPath(url) {
+  const parsed = new URL(url, 'http://localhost');
+  const prefix = '/api/sessions/';
+  const suffix = '/translations';
+  const encodedSessionId = parsed.pathname.slice(prefix.length, -suffix.length);
+  if (!encodedSessionId) throw createHttpError('invalid_request');
+  let sessionId;
+  try { sessionId = decodeURIComponent(encodedSessionId); } catch { throw createHttpError('invalid_request'); }
+  const targetLanguageCode = parsed.searchParams.get('targetLanguageCode');
+  if (targetLanguageCode === null) return { sessionId, targetLanguageCode: undefined };
+  if (targetLanguageCode.trim().length === 0) throw createHttpError('invalid_request');
+  return { sessionId, targetLanguageCode };
+}
+
 function savedTranscriptRetranslationErrorCodeFor(error) {
   if (typeof error.message === 'string' && error.message.startsWith('Session record not found:')) {
     return 'session_not_found';
@@ -520,9 +554,19 @@ function validateSavedTranscriptRetranslationRequest({ sessionId, body }) {
   return {
     sessionId: validatedSessionId,
     sourceLanguageCode: validateRequiredString(body.sourceLanguageCode),
-    targetLanguageCode: validateRequiredString(body.targetLanguageCode),
+    targetLanguageCode: validateSupportedTargetLanguageCode(body.targetLanguageCode),
     providerKey: body.providerKey
   };
+}
+
+function validateSupportedTargetLanguageCode(value) {
+  validateRequiredString(value);
+
+  if (!isSupportedLanguage(value)) {
+    throw createHttpError('unsupported_language');
+  }
+
+  return value;
 }
 
 function validateRequiredString(value) {
@@ -541,7 +585,10 @@ function handleTranslationCommand(method, path, body, translationCommandControll
   if (method === 'POST' && path === '/api/translation-requests') {
     return {
       status: 201,
-      result: translationCommandController.createTranslationRequest(body)
+      result: translationCommandController.createTranslationRequest({
+        ...body,
+        targetLanguageCode: validateSupportedTargetLanguageCode(body.targetLanguageCode)
+      })
     };
   }
 
@@ -571,7 +618,10 @@ function handleTranslationCommand(method, path, body, translationCommandControll
   if (method === 'POST' && path === '/api/translation-outputs') {
     return {
       status: 201,
-      result: translationCommandController.createTranslationOutput(body)
+      result: translationCommandController.createTranslationOutput({
+        ...body,
+        targetLanguageCode: validateSupportedTargetLanguageCode(body.targetLanguageCode)
+      })
     };
   }
 

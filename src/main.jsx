@@ -54,6 +54,7 @@ function App() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
+  const [selectedTranslationHistory, setSelectedTranslationHistory] = useState(null);
   const sessionRef = useRef(null);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
@@ -387,6 +388,7 @@ function App() {
     selectedHistoryRecordIdRef.current = id;
     setSelectedHistoryRecordId(id);
     setSelectedHistoryDetail(undefined);
+    setSelectedTranslationHistory(undefined);
 
     try {
       const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
@@ -396,12 +398,21 @@ function App() {
       }
 
       setSelectedHistoryDetail(detail);
+
+      const translationHistory = await sessionReadApiClientRef.current.getSessionTranslations(id).catch(() => null);
+
+      if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
+        return;
+      }
+
+      setSelectedTranslationHistory(translationHistory);
     } catch {
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return;
       }
 
       setSelectedHistoryDetail(null);
+      setSelectedTranslationHistory(null);
       setError('Session details are unavailable.');
     }
   }
@@ -411,6 +422,7 @@ function App() {
     selectedHistoryRecordIdRef.current = null;
     setSelectedHistoryRecordId(null);
     setSelectedHistoryDetail(null);
+    setSelectedTranslationHistory(null);
   }
 
   function selectedInputDeviceSnapshot() {
@@ -577,6 +589,7 @@ function App() {
         records={historyRecords}
         selectedRecordId={selectedHistoryRecordId}
         selectedDetail={selectedHistoryDetail}
+        selectedTranslationHistory={selectedTranslationHistory}
         selectedRecord={selectedHistoryRecord}
         onViewDetails={openHistoryRecordDetail}
         onCloseDetails={closeHistoryRecordDetail}
@@ -602,7 +615,7 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
-function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails }) {
+function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedTranslationHistory, selectedRecord, onViewDetails, onCloseDetails }) {
   return (
     <section className="history-panel" aria-labelledby="history-title">
       <div className="history-header">
@@ -645,7 +658,7 @@ function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedRecor
                 {shouldShowFailureReason(record) ? <p className="history-reason">Reason: {record.failureReason}</p> : null}
               </article>
               {selectedRecordId === record.id ? (
-                <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onClose={onCloseDetails} />
+                <SessionDetail detail={selectedDetail} translationHistory={selectedTranslationHistory} historyRecord={selectedRecord} onClose={onCloseDetails} />
               ) : null}
             </li>
           ))}
@@ -655,16 +668,18 @@ function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedRecor
   );
 }
 
-function SessionDetail({ detail, historyRecord, onClose }) {
+function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
+  const [translationLanguageFilter, setTranslationLanguageFilter] = useState('');
   const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
     setSavedExportFormat('txt');
     setSavedExportStream('translation');
     setSavedExportError('');
+    setTranslationLanguageFilter('');
   }, [sessionRecordId]);
 
   if (detail === undefined) {
@@ -796,6 +811,8 @@ function SessionDetail({ detail, historyRecord, onClose }) {
         <p className="history-empty">No saved transcript.</p>
       )}
 
+      <TranslationHistoryPanel history={translationHistory} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} />
+
       <section className="saved-export-panel" aria-label="Saved transcript export">
         <div className="controls saved-export-controls">
           <label className="field">
@@ -849,6 +866,28 @@ function TranscriptItemList({ title, items }) {
           ))}
         </ol>
       )}
+    </section>
+  );
+}
+
+function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange }) {
+  if (history === undefined) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Loading translation history...</p></section>;
+  if (!history) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Translation history is unavailable.</p></section>;
+  const languageCodes = [...new Set(history.translations.map((item) => item.request.targetLanguageCode))];
+  const translations = targetLanguageCode ? history.translations.filter((item) => item.request.targetLanguageCode === targetLanguageCode) : history.translations;
+  return (
+    <section className="session-transcript-section" aria-label="Translation history">
+      <h4>Translation history</h4>
+      <label className="field"><span>Filter output language</span><select value={targetLanguageCode} onChange={(event) => onTargetLanguageCodeChange(event.target.value)}><option value="">All languages</option>{languageCodes.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
+      {translations.length === 0 ? <p className="history-empty">No historical translations match this language.</p> : <ol className="session-transcript-list">{translations.map((item) => (
+        <li key={`${item.request.id}:${item.execution?.id || 'pending'}`}>
+          <p><strong>{item.request.targetLanguageCode}</strong> · {item.execution?.status || 'queued'}</p>
+          <p>{item.request.sourceText || 'Source text unavailable.'}</p>
+          {item.output ? <p>{item.output.translatedText}</p> : null}
+          {item.execution?.failureInfo?.reason ? <p className="history-reason">Reason: {item.execution.failureInfo.reason}</p> : null}
+          {item.sourceLanguageDetections?.length ? <p>Detected source languages: {item.sourceLanguageDetections.flatMap((detection) => detection.detectedLanguageCodes || []).join(', ')}</p> : null}
+        </li>
+      ))}</ol>}
     </section>
   );
 }

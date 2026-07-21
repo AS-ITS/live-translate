@@ -56,6 +56,40 @@
 
 ### Added
 
+- Phase 4A closeout: restored full-suite test fixtures and assertions to the
+  Phase 3K durable queue/provider-attempt contract, added deterministic history
+  UI E2E coverage, and documented production/manual Gemini smoke-test setup.
+  Automated tests remain fake-provider only.
+
+- Phase 4A WP4 Translation History Read API and UI: `GET
+  /api/sessions/:sessionId/translations` reads canonical session translation
+  records with optional allowlisted target-language filtering. Session detail
+  now displays request, execution, output, and source-item detection metadata
+  read-only, without provider or queue activity.
+
+- Phase 4A WP3 Configurable Translation Glossary: optional JSON glossary
+  entries are validated against the target-language allowlist and selectively
+  supplied as Gemini translation instructions. Missing configuration is a
+  compatible no-op; malformed entries fail explicitly. Source text, provider
+  request count, retry/idempotency behavior, and persisted outputs remain
+  unchanged.
+
+- Phase 4A WP2 Mixed-Language Source Detection Metadata: canonical source
+  `TranscriptItem` records now optionally retain multiple detected source
+  language codes plus explicit detection coverage. Metadata survives session
+  snapshot rehydration, while legacy items without it remain valid. The
+  production Gemini translation adapter currently exposes only a single
+  translation-result language signal, not reliable item-level mixed-language
+  detection; WP2 adds no provider call, text rewriting, or output/session-level
+  detection metadata.
+
+- Phase 4A WP1 Target Language Selection: existing allowlisted target-language
+  choices now pass through live session command persistence and saved-transcript
+  retranslation consistently. Translation request and output command boundaries,
+  saved-transcript retranslation, and live-token issuance reject blank,
+  malformed, and unsupported supplied language codes without fallback; omitted
+  live-token target language retains the existing `zh-Hant` default.
+
 - Phase 3K WP6 Documentation & Regression Closeout: documented stable provider
   keys, attempt intent, result snapshots, reconciliation, and capability-aware
   reclaim. Gemini remains `unknown`; cross-process atomicity, distributed

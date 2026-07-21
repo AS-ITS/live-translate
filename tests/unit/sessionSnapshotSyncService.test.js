@@ -32,3 +32,29 @@ test('session snapshot sync rejects invalid input deterministically', () => {
   const service = createSessionSnapshotSyncService({ sessionRepository: createMemorySessionRepository() });
   assert.throws(() => service.sync({ session: { id: '' }, transcriptItems: [] }), (error) => error.code === 'invalid_request');
 });
+
+test('session snapshot sync accepts legacy items without detection metadata and rehydrates mixed-language metadata', () => {
+  const sourceRepository = createMemorySessionRepository({ now: () => 1000 });
+  const sourceService = createSessionSnapshotSyncService({ sessionRepository: sourceRepository });
+  const snapshot = {
+    session: { id: 'session-1', startedAt: 100, targetLanguageCode: 'ja', status: 'active' },
+    transcriptItems: [
+      {
+        id: 'source-1', stream: 'source', status: 'final', text: 'Hello こんにちは', sequence: 1,
+        sourceLanguageDetection: { detectedLanguageCodes: ['en', 'ja'], coverage: 'complete' }
+      },
+      { id: 'source-legacy', stream: 'source', status: 'final', text: 'legacy', sequence: 2 }
+    ]
+  };
+
+  sourceService.sync(snapshot);
+  const reloadedRepository = createMemorySessionRepository({ now: () => 1000 });
+  createSessionSnapshotSyncService({ sessionRepository: reloadedRepository }).sync({
+    session: sourceRepository.getSessionRecord('session-1').sessionRecord,
+    transcriptItems: sourceRepository.getSessionRecord('session-1').transcriptItems
+  });
+
+  const items = reloadedRepository.getSessionRecord('session-1').transcriptItems;
+  assert.deepEqual(items[0].sourceLanguageDetection, { detectedLanguageCodes: ['en', 'ja'], coverage: 'complete' });
+  assert.equal(items[1].sourceLanguageDetection, undefined);
+});

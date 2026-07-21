@@ -155,7 +155,13 @@ export class LiveTranslateSession {
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
 
     if (content?.inputTranscription?.text) {
-      this.onInputTranscript?.({ text: content.inputTranscription.text, isFinal });
+      this.onInputTranscript?.({
+        text: content.inputTranscription.text,
+        isFinal,
+        ...(content.inputTranscription.sourceLanguageDetection === undefined
+          ? {}
+          : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
+      });
     }
 
     if (content?.outputTranscription?.text) {

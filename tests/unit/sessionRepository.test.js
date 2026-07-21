@@ -133,6 +133,29 @@ test('appendTranscriptItem preserves transcript item fields', () => {
   });
 });
 
+test('appendTranscriptItem persists source-only multi-language detection metadata as an isolated copy', () => {
+  const repository = createMemorySessionRepository({ now: 1000 });
+  const sourceLanguageDetection = {
+    detectedLanguageCodes: ['en', 'ja'],
+    coverage: 'complete'
+  };
+
+  repository.createSessionRecord({ id: 'session-1', startedAt: 900, targetLanguageCode: 'fr' });
+  const item = repository.appendTranscriptItem('session-1', {
+    id: 'source-1', stream: 'source', status: 'final', text: 'Hello こんにちは', sequence: 1,
+    startedAt: 300, finalizedAt: 400, sourceLanguageDetection
+  });
+  sourceLanguageDetection.detectedLanguageCodes.push('zh-Hant');
+  item.sourceLanguageDetection.detectedLanguageCodes[0] = 'mutated';
+
+  const stored = repository.getSessionRecord('session-1').transcriptItems[0];
+  assert.deepEqual(stored.sourceLanguageDetection, {
+    detectedLanguageCodes: ['en', 'ja'],
+    coverage: 'complete'
+  });
+  assert.equal(repository.getSessionRecord('session-1').sessionRecord.sourceLanguageDetection, undefined);
+});
+
 test('finalizeSessionRecord finalizes with computed transcript summary', () => {
   const repository = createMemorySessionRepository({ now: () => 2500 });
 

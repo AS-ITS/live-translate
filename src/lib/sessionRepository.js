@@ -118,5 +118,17 @@ function cloneRecord(record) {
 }
 
 function cloneTranscriptItem(item) {
-  return { ...item };
+  return {
+    ...item,
+    ...(item.sourceLanguageDetection && typeof item.sourceLanguageDetection === 'object'
+      ? {
+          sourceLanguageDetection: {
+            ...item.sourceLanguageDetection,
+            ...(Array.isArray(item.sourceLanguageDetection.detectedLanguageCodes)
+              ? { detectedLanguageCodes: [...item.sourceLanguageDetection.detectedLanguageCodes] }
+              : {})
+          }
+        }
+      : {})
+  };
 }

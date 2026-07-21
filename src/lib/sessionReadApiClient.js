@@ -45,6 +45,19 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
       }
 
       return detail;
+    },
+
+    async getSessionTranslations(sessionId, { targetLanguageCode } = {}) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const query = targetLanguageCode === undefined ? '' : `?targetLanguageCode=${encodeURIComponent(targetLanguageCode)}`;
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}/translations${query}`), { method: 'GET' });
+      if (response?.status === 404) return null;
+      await assertOkResponse(response);
+      const history = await parseJsonResponse(response);
+      if (!history || typeof history !== 'object' || Array.isArray(history) || !Array.isArray(history.translations)) {
+        throw new Error('Session translation history response must be an object.');
+      }
+      return history;
     }
   };
 }

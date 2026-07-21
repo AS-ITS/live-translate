@@ -105,8 +105,8 @@ function createHeartbeat({
 
 function durableRepository({ renewClaim }) {
   return {
-    enqueue() {}, dequeue() {}, peek() {}, list() {}, size() {}, clear() {}, updateStatus() {},
-    acknowledge() {}, acknowledgeClaim() {}, contains() {}, claim() {}, renewClaim() { return renewClaim(...arguments); },
+    enqueue() {}, dequeue() {}, peek() {}, list() {}, listAvailable() {}, nextAvailableAt() {}, size() {}, clear() {}, updateStatus() {},
+    acknowledge() {}, acknowledgeClaim() {}, contains() {}, claim() {}, retryClaim() {}, renewClaim() { return renewClaim(...arguments); },
     assertClaimActive() {},
     requeueExpiredProcessing() {}
   };

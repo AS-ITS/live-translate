@@ -6,17 +6,19 @@ const REQUIRED_TRANSLATION_FIELDS = Object.freeze([
 
 const METADATA_FIELDS = Object.freeze(['requestId', 'sessionId', 'executionId']);
 
-export function createGeminiSavedTranscriptTranslationProvider({ client, model, promptBuilder = buildDefaultGeminiSavedTranscriptTranslationPrompt } = {}) {
+export function createGeminiSavedTranscriptTranslationProvider({ client, model, promptBuilder = buildDefaultGeminiSavedTranscriptTranslationPrompt, glossary } = {}) {
   assertClient(client);
   assertModel(model);
   assertPromptBuilder(promptBuilder);
+  assertOptionalGlossary(glossary);
 
   return Object.freeze({
     async translate(input) {
       assertTranslationInput(input);
 
+      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode);
       const request = buildGeminiSavedTranscriptTranslationRequest({
-        input,
+        input: glossaryEntries === undefined ? input : { ...input, glossaryEntries },
         model,
         promptBuilder
       });
@@ -69,6 +71,9 @@ export function buildDefaultGeminiSavedTranscriptTranslationPrompt(input) {
       `Source language hint: ${input.sourceLanguageCode}`,
       `Target language: ${input.targetLanguageCode}`,
       'Transcript data to translate follows. Translate this data only.',
+      ...(Array.isArray(input.glossaryEntries) && input.glossaryEntries.length > 0
+        ? glossaryPromptParts(input.glossaryEntries)
+        : []),
       input.sourceText
     ])
   });
@@ -119,6 +124,12 @@ function assertPromptBuilder(promptBuilder) {
   }
 }
 
+function assertOptionalGlossary(glossary) {
+  if (glossary !== undefined && (!glossary || typeof glossary.entriesFor !== 'function')) {
+    throw new TypeError('glossary.entriesFor must be a function.');
+  }
+}
+
 function assertTranslationInput(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('input must be an object.');
@@ -165,6 +176,13 @@ function buildMetadata(input) {
   }
 
   return Object.freeze(metadata);
+}
+
+function glossaryPromptParts(entries) {
+  return [
+    'Glossary instructions: when a source term occurs, use its specified target translation.',
+    ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
+  ];
 }
 
 function extractTranslatedText(response) {

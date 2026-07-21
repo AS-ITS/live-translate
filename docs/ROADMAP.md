@@ -15,7 +15,8 @@ Each phase should build on the previous phase without expanding scope unless exp
 
 ## 2. Current Status
 
-Current milestone: Phase 3I Lease Renewal & Execution Fencing completed.
+Current milestone: Phase 4A closeout completed; the capability is ready for
+controlled manual Gemini validation.
 
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
@@ -47,6 +48,39 @@ token-aware acknowledgement, and production vertical integration are covered.
 Remaining reliability work: retry scheduling/backoff, dead-letter queues,
 provider-level idempotency, event publishing deduplication, multi-worker and
 distributed locking, cross-process atomicity, and metrics/observability.
+
+Phase 4A WP1 Target Language Selection is completed. The existing target-language
+allowlist and `zh-Hant` default now apply at live-token, translation-command,
+and saved-transcript retranslation HTTP boundaries. Selected values persist on
+`TranslationRequest` and `TranslationOutput`.
+
+Phase 4A WP2 Mixed-Language Source Detection Metadata is completed.
+Canonical source `TranscriptItem` records can optionally retain
+`sourceLanguageDetection` with multiple `detectedLanguageCodes` and explicit
+`coverage`, while legacy items without metadata remain valid. The current
+production Gemini translation adapter exposes only a single detected language
+in its translation result and does not provide reliable item-level mixed-language
+detection; no additional provider call or text rewriting is performed. History
+translation read APIs and UI remain deferred to WP3.
+
+Phase 4A WP3 Configurable Translation Glossary is completed. An optional
+`TRANSLATION_GLOSSARY_FILE` JSON file supplies validated source-term to
+target-language translation instructions to Gemini prompts. Missing or empty
+configuration preserves existing behavior; unsupported language codes and
+invalid entries are rejected. Glossary entries never rewrite source transcript
+text or `TranslationOutput`, and history read API/UI remain deferred to WP4.
+
+Phase 4A WP4 Translation History Read API and UI is completed. Existing session
+details can read persisted translation requests, executions, outputs, and source
+transcript language-detection metadata through a read-only endpoint and
+target-language filter. The read path does not invoke providers, queues,
+workers, or glossary loading, and does not modify translation records.
+
+Phase 4A closeout completed full deterministic unit, integration, and E2E
+coverage plus build/static validation. Backlog: accounts and authorization,
+glossary CRUD/UI and private glossaries, cross-session history, translation
+retry/cancel/delete controls, and manual validation of Gemini quality and
+segment-level language detection in each deployment environment.
 
 Completed Phase 1 capabilities include:
 

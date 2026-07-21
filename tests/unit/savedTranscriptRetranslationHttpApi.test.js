@@ -19,7 +19,7 @@ test('POST /api/saved-transcripts/:sessionId/translations delegates once and ret
     url: '/api/saved-transcripts/session-1/translations',
     body: JSON.stringify({
       sourceLanguageCode: 'en',
-      targetLanguageCode: 'zh-TW'
+      targetLanguageCode: 'ja'
     })
   });
 
@@ -31,7 +31,7 @@ test('POST /api/saved-transcripts/:sessionId/translations delegates once and ret
       input: {
         sessionId: 'session-1',
         sourceLanguageCode: 'en',
-        targetLanguageCode: 'zh-TW',
+        targetLanguageCode: 'ja',
         providerKey: undefined
       },
       argumentCount: 1
@@ -131,6 +131,31 @@ test('saved transcript re-translation route rejects invalid transport input with
     assert.equal(response.status, 400, name);
     assert.equal(response.json().error.code, 'invalid_request', name);
     assert.deepEqual(calls, [], name);
+  }
+});
+
+test('saved transcript re-translation route rejects unsupported target languages without calling service', async () => {
+  for (const [targetLanguageCode, errorCode] of [
+    ['xx', 'unsupported_language'],
+    ['zh-TW', 'unsupported_language'],
+    [['ja'], 'invalid_request']
+  ]) {
+    const calls = [];
+    const handler = createHandler({
+      translateSavedTranscript(input) {
+        calls.push(input);
+        return translationResult();
+      }
+    });
+    const response = await request(handler, {
+      method: 'POST',
+      url: '/api/saved-transcripts/session-1/translations',
+      body: JSON.stringify({ sourceLanguageCode: 'en', targetLanguageCode })
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.json().error.code, errorCode);
+    assert.deepEqual(calls, []);
   }
 });
 
@@ -250,7 +275,7 @@ test('saved transcript re-translation input preserves caller body and forwards o
   const calls = [];
   const originalBody = {
     sourceLanguageCode: 'EN-us',
-    targetLanguageCode: 'zh-TW',
+    targetLanguageCode: 'zh-Hant',
     extra: 'not forwarded'
   };
   const before = structuredClone(originalBody);
@@ -273,7 +298,7 @@ test('saved transcript re-translation input preserves caller body and forwards o
     {
       sessionId: 'session-1',
       sourceLanguageCode: 'EN-us',
-      targetLanguageCode: 'zh-TW',
+      targetLanguageCode: 'zh-Hant',
       providerKey: undefined
     }
   ]);

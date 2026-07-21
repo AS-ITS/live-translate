@@ -82,7 +82,7 @@ test('returned configuration is frozen and exposes only durable queue fields', (
   });
 
   assert.equal(Object.isFrozen(configuration), true);
-  assert.deepEqual(Object.keys(configuration), ['durableQueueEnabled', 'durableQueueFilePath', 'leaseMs', 'leaseRenewalMs']);
+  assert.deepEqual(Object.keys(configuration), ['durableQueueEnabled', 'durableQueueFilePath', 'deadLetterQueueFilePath', 'leaseMs', 'leaseRenewalMs']);
   assert.throws(() => {
     configuration.durableQueueEnabled = false;
   }, TypeError);

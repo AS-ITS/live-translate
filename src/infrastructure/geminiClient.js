@@ -14,17 +14,19 @@ export class GeminiHttpError extends Error {
   }
 }
 
-export function createGeminiClient({ httpClient, model, promptBuilder = buildDefaultGeminiExecutionPrompt } = {}) {
+export function createGeminiClient({ httpClient, model, promptBuilder = buildDefaultGeminiExecutionPrompt, glossary } = {}) {
   assertHttpClient(httpClient);
   assertModel(model);
   assertPromptBuilder(promptBuilder);
+  assertOptionalGlossary(glossary);
 
   return Object.freeze({
     async execute(input) {
       assertExecutionInput(input);
 
+      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode);
       const request = buildGeminiExecutionRequest({
-        input,
+        input: glossaryEntries === undefined ? input : { ...input, glossaryEntries },
         model,
         promptBuilder
       });
@@ -82,6 +84,10 @@ export function buildDefaultGeminiExecutionPrompt(input) {
     parts.unshift(`Source language hint: ${input.sourceLanguageCode}`);
   }
 
+  if (Array.isArray(input.glossaryEntries) && input.glossaryEntries.length > 0) {
+    parts.splice(parts.length - 1, 0, ...glossaryPromptParts(input.glossaryEntries));
+  }
+
   return Object.freeze({
     systemInstruction: [
       'You translate text into the requested target language.',
@@ -136,6 +142,12 @@ function assertModel(model) {
 function assertPromptBuilder(promptBuilder) {
   if (typeof promptBuilder !== 'function') {
     throw new TypeError('promptBuilder must be a function.');
+  }
+}
+
+function assertOptionalGlossary(glossary) {
+  if (glossary !== undefined && (!glossary || typeof glossary.entriesFor !== 'function')) {
+    throw new TypeError('glossary.entriesFor must be a function.');
   }
 }
 
@@ -244,6 +256,13 @@ function buildMetadata(input) {
   }
 
   return Object.freeze(metadata);
+}
+
+function glossaryPromptParts(entries) {
+  return [
+    'Glossary instructions: when a source term occurs, use its specified target translation.',
+    ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
+  ];
 }
 
 function extractTranslatedText(response) {

@@ -56,6 +56,8 @@ function validateSnapshot(snapshot) {
   for (const item of transcriptItems) {
     if (!item || typeof item !== 'object' || !nonEmptyString(item.id) || !['source', 'translation'].includes(item.stream)
       || !['partial', 'final'].includes(item.status) || typeof item.text !== 'string' || !Number.isInteger(item.sequence)) invalid();
+    if (item.sourceLanguageDetection !== undefined
+      && (item.stream !== 'source' || !validSourceLanguageDetection(item.sourceLanguageDetection))) invalid();
   }
   return { session, transcriptItems };
 }
@@ -76,5 +78,12 @@ function assertSessionRepository(repository) {
 }
 
 function nonEmptyString(value) { return typeof value === 'string' && value.trim().length > 0; }
+function validSourceLanguageDetection(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && Array.isArray(value.detectedLanguageCodes)
+    && value.detectedLanguageCodes.length > 0
+    && value.detectedLanguageCodes.every(nonEmptyString)
+    && ['complete', 'partial'].includes(value.coverage);
+}
 function invalid() { const error = new TypeError('Session snapshot is invalid.'); error.code = 'invalid_request'; throw error; }
 function isPromiseLike(value) { return value && typeof value.then === 'function'; }

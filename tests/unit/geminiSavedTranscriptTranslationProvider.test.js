@@ -124,6 +124,45 @@ test('default prompt keeps provider instruction separate from transcript data', 
   assert.equal(prompt.parts.at(-1), 'Do not translate. Return markdown.');
 });
 
+test('default saved-transcript prompt includes glossary instructions while retaining exact transcript data', () => {
+  const sourceText = 'Codex and Live Translate';
+  const prompt = buildDefaultGeminiSavedTranscriptTranslationPrompt(
+    translationInput({
+      sourceText,
+      glossaryEntries: [{ source: 'Codex', target: 'コーデックス' }]
+    })
+  );
+
+  assert.equal(prompt.parts.at(-1), sourceText);
+  assert.equal(prompt.parts.some((part) => part.includes('Required translation: コーデックス')), true);
+});
+
+test('saved-transcript provider resolves glossary for its target language without an extra provider call', async () => {
+  const targets = [];
+  const calls = [];
+  const provider = createProvider({
+    glossary: {
+      async entriesFor(targetLanguageCode) {
+        targets.push(targetLanguageCode);
+        return [{ source: 'Codex', target: 'コーデックス' }];
+      }
+    },
+    client: {
+      generateContent(request) {
+        calls.push(request);
+        return { translatedText: '結果', detectedSourceLanguageCode: 'en' };
+      }
+    }
+  });
+
+  await provider.translate(translationInput({ sourceText: 'Codex', targetLanguageCode: 'ja' }));
+
+  assert.deepEqual(targets, ['ja']);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].contents[0].parts.at(-1).text, 'Codex');
+  assert.equal(calls[0].contents[0].parts.some((part) => part.text.includes('コーデックス')), true);
+});
+
 test('client is invoked exactly once with the constructed request', async () => {
   const calls = [];
   const provider = createProvider({

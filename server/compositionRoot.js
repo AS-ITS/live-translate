@@ -1,6 +1,7 @@
 import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
@@ -26,6 +27,7 @@ import { createInMemoryTranslationExecutionQueue } from '../src/infrastructure/i
 import { createSystemClock } from '../src/infrastructure/systemClock.js';
 import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../src/infrastructure/translationExecutionWorkerRuntime.js';
 import { createTranslationQueueConfiguration } from '../src/infrastructure/translationQueueConfiguration.js';
+import { createTranslationGlossary } from '../src/infrastructure/translationGlossary.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -40,6 +42,7 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionReadController } from './sessionReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
+import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -74,6 +77,8 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
     translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
     translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+    translationHistoryQueryServiceFactory = createTranslationHistoryQueryService,
+    translationHistoryControllerFactory = createDefaultTranslationHistoryController,
     ...sessionReadOptions
   } = options;
   const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
@@ -122,11 +127,17 @@ export function createApplicationDependencies(options = {}) {
   const savedTranscriptRetranslationController = savedTranscriptRetranslationService
     ? savedTranscriptRetranslationControllerFactory({ savedTranscriptRetranslationService })
     : undefined;
+  const translationHistoryQueryService = translationHistoryQueryServiceFactory({
+    sessionRepository: sessionReadDependencies.sessionRepository,
+    translationRepository: translationCommandDependencies.translationRepository
+  });
+  const translationHistoryController = translationHistoryControllerFactory({ translationHistoryQueryService });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
       sessionRepository: sessionReadDependencies.sessionRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
+      translationHistoryController,
         ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {})
       })
     : undefined;
@@ -134,6 +145,8 @@ export function createApplicationDependencies(options = {}) {
   return {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
+    translationHistoryQueryService,
+    translationHistoryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
     ...(requestHandler ? { requestHandler } : {})
@@ -157,11 +170,13 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderConfigurationFactory = createTranslationProviderConfiguration,
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     translationQueueConfigurationFactory = createTranslationQueueConfiguration,
+    translationGlossaryFactory = createTranslationGlossary,
     fileDurableTranslationExecutionQueueRepositoryFactory = createFileDurableTranslationExecutionQueueRepository,
     fileDeadLetterQueueRepositoryFactory = createFileDeadLetterQueueRepository,
     dualWriteTranslationExecutionQueueFactory = createDualWriteTranslationExecutionQueue,
     startupTranslationExecutionQueueRecoveryFactory = createDefaultStartupTranslationExecutionQueueRecovery,
     durableQueueFileSystem = fileSystem,
+    translationGlossaryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
@@ -187,6 +202,12 @@ export function createProductionApplicationDependencies(options = {}) {
   const needsProductionProviderComposition =
     !(hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider) ||
     !(hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver);
+  const translationGlossary = env.TRANSLATION_GLOSSARY_FILE === undefined
+    ? undefined
+    : translationGlossaryFactory({
+        filePath: env.TRANSLATION_GLOSSARY_FILE,
+        fileSystem: translationGlossaryFileSystem
+      });
   const productionEnvironment = needsProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
     : undefined;
@@ -205,7 +226,8 @@ export function createProductionApplicationDependencies(options = {}) {
           geminiClientAdapterFactory,
           geminiSavedTranscriptTranslationCompositionFactory,
           translationProviderConfigurationFactory,
-          translationProviderResolutionCompositionFactory
+          translationProviderResolutionCompositionFactory,
+          glossary: translationGlossary
         });
   const productionTranslationExecutionProviderResolutionComposition =
     hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
@@ -218,7 +240,8 @@ export function createProductionApplicationDependencies(options = {}) {
           geminiHttpClientFactory,
           geminiClientFactory,
           geminiTranslationExecutionProviderFactory,
-          translationProviderConfigurationFactory
+          translationProviderConfigurationFactory,
+          glossary: translationGlossary
         });
   const resolvedTranslationExecutionProvider = hasTranslationExecutionProvider
     ? translationExecutionProvider
@@ -246,7 +269,8 @@ export function createProductionApplicationDependencies(options = {}) {
       geminiClientAdapterFactory,
       geminiSavedTranscriptTranslationCompositionFactory,
       translationProviderConfigurationFactory,
-      translationProviderResolutionCompositionFactory
+      translationProviderResolutionCompositionFactory,
+      glossary: translationGlossary
     },
     providerResolutionComposition: productionProviderResolutionComposition
   });
@@ -352,7 +376,9 @@ export function createProductionSavedTranscriptTranslationProvider({
   geminiClientAdapterFactory = createGeminiClientAdapter,
   geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
   translationProviderConfigurationFactory = createTranslationProviderConfiguration,
-  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
+  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
+  translationGlossaryFactory = createTranslationGlossary,
+  translationGlossaryFileSystem = fileSystem
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
   assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
@@ -367,6 +393,9 @@ export function createProductionSavedTranscriptTranslationProvider({
   const configuration = translationProviderConfigurationFactory({
     environment: env
   });
+  const glossary = env.TRANSLATION_GLOSSARY_FILE === undefined
+    ? undefined
+    : translationGlossaryFactory({ filePath: env.TRANSLATION_GLOSSARY_FILE, fileSystem: translationGlossaryFileSystem });
   const googleClient = googleGenAIClientFactory({
     apiKey: environment.apiKey
   });
@@ -375,7 +404,8 @@ export function createProductionSavedTranscriptTranslationProvider({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: environment.model
+    model: environment.model,
+    ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
     providers: {
@@ -398,7 +428,9 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   geminiClientAdapterFactory = createGeminiClientAdapter,
   geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
   translationProviderConfigurationFactory = createTranslationProviderConfiguration,
-  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
+  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
+  translationGlossaryFactory = createTranslationGlossary,
+  translationGlossaryFileSystem = fileSystem
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
   assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
@@ -413,6 +445,9 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   const configuration = translationProviderConfigurationFactory({
     environment: env
   });
+  const glossary = env.TRANSLATION_GLOSSARY_FILE === undefined
+    ? undefined
+    : translationGlossaryFactory({ filePath: env.TRANSLATION_GLOSSARY_FILE, fileSystem: translationGlossaryFileSystem });
   const googleClient = googleGenAIClientFactory({
     apiKey: environment.apiKey
   });
@@ -421,7 +456,8 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: environment.model
+    model: environment.model,
+    ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
     providers: {
@@ -789,7 +825,8 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   geminiHttpClientFactory = createGeminiHttpClient,
   geminiClientFactory = createGeminiClient,
   geminiTranslationExecutionProviderFactory = createGeminiTranslationExecutionProvider,
-  translationProviderConfigurationFactory = createTranslationProviderConfiguration
+  translationProviderConfigurationFactory = createTranslationProviderConfiguration,
+  glossary
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
   assertFactory(geminiHttpClientFactory, 'geminiHttpClientFactory');
@@ -804,7 +841,8 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   });
   const geminiClient = geminiClientFactory({
     httpClient,
-    model: resolvedEnvironment.model
+    model: resolvedEnvironment.model,
+    ...(glossary === undefined ? {} : { glossary })
   });
   const geminiProvider = geminiTranslationExecutionProviderFactory({
     client: geminiClient
@@ -833,7 +871,8 @@ function createProductionProviderResolutionComposition({
   geminiClientAdapterFactory = createGeminiClientAdapter,
   geminiSavedTranscriptTranslationCompositionFactory = createGeminiSavedTranscriptTranslationComposition,
   translationProviderConfigurationFactory = createTranslationProviderConfiguration,
-  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition
+  translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
+  glossary
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
   assertFactory(googleGenAIClientFactory, 'googleGenAIClientFactory');
@@ -852,7 +891,8 @@ function createProductionProviderResolutionComposition({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: resolvedEnvironment.model
+    model: resolvedEnvironment.model,
+    ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
     providers: {

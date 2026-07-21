@@ -3,7 +3,7 @@ import { isSupportedLanguage } from './languages.js';
 export const LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 
 export function normalizeTokenRequest(body = {}) {
-  const targetLanguageCode = body.targetLanguageCode || 'zh-Hant';
+  const targetLanguageCode = Object.hasOwn(body, 'targetLanguageCode') ? body.targetLanguageCode : 'zh-Hant';
   const echoTargetLanguage =
     typeof body.echoTargetLanguage === 'boolean' ? body.echoTargetLanguage : true;
 

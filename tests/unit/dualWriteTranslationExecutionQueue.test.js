@@ -307,6 +307,16 @@ function durableRepository(overrides = {}) {
       function list() {
         return [...items];
       },
+    listAvailable:
+      overrides.listAvailable ||
+      function listAvailable() {
+        return [];
+      },
+    nextAvailableAt:
+      overrides.nextAvailableAt ||
+      function nextAvailableAt() {
+        return null;
+      },
     size:
       overrides.size ||
       function size() {
@@ -336,7 +346,9 @@ function durableRepository(overrides = {}) {
         return items.some((item) => item.executionId === executionId);
       },
     claim() {},
+    retryClaim() {},
     renewClaim() {},
+    assertClaimActive() {},
     requeueExpiredProcessing() { return null; }
   };
 }

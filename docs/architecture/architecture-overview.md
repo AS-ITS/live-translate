@@ -929,7 +929,19 @@ Canonical Phase 2B target terms:
 proposal history, legacy naming, or transitional compatibility alias and must be
 labelled as non-target terminology.
 
-## 21. Related Documentation
+## 21. Phase 4A Closeout
+
+Phase 4A adds allowlisted persisted target languages, optional canonical
+mixed-language source detection metadata, provider-instruction-only file
+glossaries, and session-scoped translation history reads. The history UI is a
+read model: it displays requests, execution state, outputs, and available
+detection metadata without starting translation work.
+
+Gemini's actual translation and language-detection quality remains a manual
+environment validation concern. There is no account/authorization layer,
+glossary management UI/API, or cross-session history.
+
+## 22. Related Documentation
 
 - [README.md](../../README.md)
 - [AGENTS.md](../../AGENTS.md)

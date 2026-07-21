@@ -16,6 +16,15 @@ test('normalizeTokenRequest rejects unsupported language', () => {
   });
 });
 
+test('normalizeTokenRequest rejects supplied blank or malformed language instead of defaulting', () => {
+  for (const targetLanguageCode of ['', ' ', 'zh-TW', ['ja']]) {
+    assert.throws(() => normalizeTokenRequest({ targetLanguageCode }), {
+      message: 'Unsupported targetLanguageCode',
+      status: 400
+    });
+  }
+});
+
 test('buildTokenConfig locks live translate model and audio settings', () => {
   const config = buildTokenConfig(
     { targetLanguageCode: 'zh-Hant', echoTargetLanguage: false },

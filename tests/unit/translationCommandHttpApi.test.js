@@ -70,6 +70,38 @@ test('POST /api/translation-requests delegates body once and returns HTTP 201 wi
   assert.deepEqual(calls, [['createTranslationRequest', body]]);
 });
 
+test('translation request and output routes reject unsupported target languages without calling the controller', async () => {
+  for (const [url, method] of [
+    ['/api/translation-requests', 'createTranslationRequest'],
+    ['/api/translation-outputs', 'createTranslationOutput']
+  ]) {
+    for (const [targetLanguageCode, errorCode] of [
+      ['xx', 'unsupported_language'],
+      ['zh-TW', 'unsupported_language'],
+      [['ja'], 'invalid_request'],
+      ['', 'invalid_request'],
+      [' ', 'invalid_request']
+    ]) {
+      const calls = [];
+      const handler = createHandler({
+        [method](input) {
+          calls.push(input);
+          return { id: 'should-not-be-returned' };
+        }
+      });
+      const response = await request(handler, {
+        method: 'POST',
+        url,
+        body: JSON.stringify({ id: 'record-1', targetLanguageCode })
+      });
+
+      assert.equal(response.status, 400, `${url}: ${String(targetLanguageCode)}`);
+      assert.equal(response.json().error.code, errorCode);
+      assert.deepEqual(calls, []);
+    }
+  }
+});
+
 test('POST /api/translation-executions delegates once and returns HTTP 202 with queued controller result', async () => {
   const calls = [];
   const result = { id: 'execution-1', status: 'queued' };
@@ -210,7 +242,7 @@ test('PATCH /api/translation-executions/:executionId URL-decodes and overrides b
 test('POST /api/translation-outputs delegates once and returns HTTP 201 with controller result', async () => {
   const calls = [];
   const result = { id: 'output-1', created: true };
-  const body = { id: 'output-1', executionId: 'execution-1', translatedText: 'Bonjour' };
+  const body = { id: 'output-1', executionId: 'execution-1', translatedText: 'Bonjour', targetLanguageCode: 'fr' };
   const handler = createHandler({
     createTranslationOutput(input) {
       calls.push(['createTranslationOutput', input]);
@@ -243,12 +275,12 @@ test('translation command routes preserve synchronous and Promise-based controll
   const syncResponse = await request(handler, {
     method: 'POST',
     url: '/api/translation-requests',
-    body: JSON.stringify({ id: 'request-1' })
+    body: JSON.stringify({ id: 'request-1', targetLanguageCode: 'ja' })
   });
   const asyncResponse = await request(handler, {
     method: 'POST',
     url: '/api/translation-outputs',
-    body: JSON.stringify({ id: 'output-1' })
+    body: JSON.stringify({ id: 'output-1', targetLanguageCode: 'ja' })
   });
 
   assert.equal(syncResponse.status, 201);
@@ -307,7 +339,7 @@ test('Promise controller rejections follow existing internal error handling', as
   const response = await request(handler, {
     method: 'POST',
     url: '/api/translation-outputs',
-    body: JSON.stringify({ id: 'output-1' })
+    body: JSON.stringify({ id: 'output-1', targetLanguageCode: 'fr' })
   });
   const body = response.json();
 

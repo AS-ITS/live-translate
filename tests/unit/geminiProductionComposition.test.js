@@ -127,6 +127,7 @@ test('production composition assembles Gemini provider and injects saved transcr
     sessionReadController: dependencies.sessionReadController,
     sessionRepository: dependencies.sessionRepository,
     translationCommandController: dependencies.translationCommandController,
+    translationHistoryController: dependencies.translationHistoryController,
     savedTranscriptRetranslationController
   });
   assert.ok(!Object.hasOwn(calls[8][1], 'configuration'));
@@ -138,6 +139,42 @@ test('production composition assembles Gemini provider and injects saved transcr
     providerKey: 'fake',
     configuration
   });
+});
+
+test('configured glossary is shared by execution and saved-transcript Gemini providers', () => {
+  const glossary = { async entriesFor() { return []; } };
+  let glossaryOptions;
+  let executionClientOptions;
+  let savedProviderOptions;
+
+  createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock',
+      TRANSLATION_GLOSSARY_FILE: '/tmp/glossary.json'
+    },
+    sessionRepository: repository(),
+    translationGlossaryFactory(options) {
+      glossaryOptions = options;
+      return glossary;
+    },
+    geminiHttpClientFactory() { return { post() {} }; },
+    geminiClientFactory(options) {
+      executionClientOptions = options;
+      return { execute() {} };
+    },
+    geminiTranslationExecutionProviderFactory() { return { execute() {} }; },
+    googleGenAIClientFactory() { return { models: { generateContent() {} } }; },
+    geminiClientAdapterFactory() { return { generateContent() {} }; },
+    geminiSavedTranscriptTranslationCompositionFactory(options) {
+      savedProviderOptions = options;
+      return { savedTranscriptTranslationProvider: { translate() {} } };
+    }
+  });
+
+  assert.deepEqual(glossaryOptions.filePath, '/tmp/glossary.json');
+  assert.strictEqual(executionClientOptions.glossary, glossary);
+  assert.strictEqual(savedProviderOptions.glossary, glossary);
 });
 
 test('production Gemini provider factory returns resolver output exactly once', () => {

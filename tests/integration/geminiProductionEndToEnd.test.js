@@ -245,7 +245,12 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
         status: 'completed',
         startedAt: '2026-07-15T01:00:02.000Z',
         completedAt: '2026-07-15T01:00:04.000Z',
-        failureInfo: null
+        failureInfo: null,
+        providerIdempotencyKey: 'translation-execution:translation-execution-1',
+        providerAttemptStatus: 'not_started',
+        providerAttemptedAt: null,
+        providerCompletedAt: null,
+        providerResult: null
       }
     ],
     outputs: [

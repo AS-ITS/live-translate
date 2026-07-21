@@ -247,7 +247,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(detail.getByRole('heading', { name: 'Source transcript' })).toBeVisible();
   await expect(detail.getByText('saved source detail')).toBeVisible();
   await expect(detail.getByRole('heading', { name: 'Translation transcript' })).toBeVisible();
-  await expect(detail.getByText('saved translation detail')).toBeVisible();
+  await expect(detail.getByLabel('Translation transcript').getByText('saved translation detail')).toBeVisible();
   await expect(detail.getByText('partial should not save')).toBeHidden();
   await expect(detail.getByText('partial translation should not save')).toBeHidden();
   await expect(savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' })).toHaveValue('txt');
@@ -258,6 +258,63 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(sessionDetail(page)).toBeHidden();
   await expect(historyItems(page)).toHaveCount(1);
 });
+
+test('session detail renders filtered translation history with mixed-language detection', async ({ page }) => {
+  await page.route('**/api/sessions/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/translations')) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          sessionId: 'session-history',
+          translations: [
+            historyTranslation({ id: 'request-ja-1', targetLanguageCode: 'ja', translatedText: 'こんにちは' }),
+            historyTranslation({ id: 'request-ja-2', targetLanguageCode: 'ja', translatedText: '世界' }),
+            historyTranslation({ id: 'request-fr-1', targetLanguageCode: 'fr', translatedText: 'Bonjour' })
+          ]
+        })
+      });
+      return;
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        session: { id: 'session-history', status: 'completed', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 1, sourceFinalCount: 1, translationFinalCount: 0, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true } },
+        sourceTranscript: { id: 'source:session-history', sessionId: 'session-history', revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: 'Hello こんにちは' }], createdAt: 1, finalizedAt: 2 },
+        translationOutputs: [], selectedTranslationOutput: null, legacy: false
+      })
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('combobox', { name: 'Target language' }).selectOption('ja');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'Hello こんにちは', 'live output');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  const detail = sessionDetail(page);
+  const history = detail.getByLabel('Translation history');
+  await expect(history.getByText('こんにちは')).toBeVisible();
+  await expect(history.getByText('世界')).toBeVisible();
+  await expect(history.getByText('Bonjour')).toBeVisible();
+  await expect(history.getByText('Detected source languages: en, ja')).toHaveCount(3);
+
+  await history.getByRole('combobox', { name: 'Filter output language' }).selectOption('ja');
+  await expect(history.getByText('こんにちは')).toBeVisible();
+  await expect(history.getByText('世界')).toBeVisible();
+  await expect(history.getByText('Bonjour')).toBeHidden();
+});
+
+function historyTranslation({ id, targetLanguageCode, translatedText }) {
+  return {
+    request: { id, sourceText: 'Hello こんにちは', targetLanguageCode, createdAt: '2026-07-21T00:00:00.000Z' },
+    execution: { id: `execution-${id}`, translationRequestId: id, status: 'completed', startedAt: '2026-07-21T00:00:01.000Z', completedAt: '2026-07-21T00:00:02.000Z', failureInfo: null },
+    output: { id: `output-${id}`, executionId: `execution-${id}`, translatedText, targetLanguageCode, createdAt: '2026-07-21T00:00:02.000Z' },
+    sourceLanguageDetections: [{ transcriptItemId: 'source-1', detectedLanguageCodes: ['en', 'ja'], coverage: 'partial' }]
+  };
+}
 
 test('saved SRT and VTT export are enabled when timing exists', async ({ page }) => {
   await page.goto('/');

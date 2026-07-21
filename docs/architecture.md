@@ -347,6 +347,30 @@ Expected transitions:
 - Session ended by Gemini: stop microphone tracks and move to `stopped` or
   `error` depending on whether the end was expected.
 
+## Phase 4A Translation Closeout
+
+Translation history is a session-scoped, read-only query path:
+
+```text
+GET /api/sessions/:sessionId/translations?targetLanguageCode=<supported code>
+  → TranslationHistoryQueryService
+  → session repository + translation repository reads
+  → request / execution / output / sourceLanguageDetection view model
+```
+
+It does not invoke a provider, queue, worker, runner, or glossary loader and
+performs no writes. A session may retain multiple requests for the same target
+language. Empty history, queued/failed execution, missing output, and legacy
+source items without detection metadata are all valid read states.
+
+`TranscriptItem.sourceLanguageDetection` is the canonical optional metadata
+flow for mixed-language observations. It may contain multiple language codes;
+Gemini does not yet provide guaranteed reliable segment-level detection.
+
+The optional file glossary is loaded only by production provider composition and
+is added to provider instructions for the selected target language. It must not
+rewrite canonical source text, request snapshots, or persisted output.
+
 ## Security Considerations
 
 - `GEMINI_API_KEY` must stay on the backend.

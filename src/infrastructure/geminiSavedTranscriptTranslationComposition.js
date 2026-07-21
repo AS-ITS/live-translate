@@ -12,6 +12,7 @@ export function createGeminiSavedTranscriptTranslationComposition({
   env = process.env,
   GoogleGenAI,
   promptBuilder,
+  glossary,
   geminiEnvironmentFactory = createGeminiEnvironment,
   googleGenAIClientFactory,
   geminiClientAdapterFactory = createGeminiClientAdapter,
@@ -24,7 +25,8 @@ export function createGeminiSavedTranscriptTranslationComposition({
       savedTranscriptTranslationProvider: geminiSavedTranscriptTranslationProviderFactory({
         client,
         model,
-        ...(promptBuilder ? { promptBuilder } : {})
+        ...(promptBuilder ? { promptBuilder } : {}),
+        ...(glossary ? { glossary } : {})
       })
     });
   }
@@ -46,7 +48,8 @@ export function createGeminiSavedTranscriptTranslationComposition({
   const savedTranscriptTranslationProvider = geminiSavedTranscriptTranslationProviderFactory({
     client: adaptedClient,
     model: geminiEnvironment.model,
-    ...(promptBuilder ? { promptBuilder } : {})
+    ...(promptBuilder ? { promptBuilder } : {}),
+    ...(glossary ? { glossary } : {})
   });
 
   return Object.freeze({

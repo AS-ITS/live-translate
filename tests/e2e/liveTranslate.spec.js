@@ -118,6 +118,16 @@ function activeExportPanel(page) {
   return page.locator('.export-panel');
 }
 
+async function openHistoryPage(page) {
+  await page.getByRole('link', { name: 'Translation history' }).click();
+  await expect(page).toHaveURL(/#history$/);
+}
+
+async function openLivePage(page) {
+  await page.getByRole('link', { name: 'Live translation' }).click();
+  await expect(page).toHaveURL(/#live$/);
+}
+
 async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation') {
   await page.evaluate(
     ({ sourceText, translationText }) => {
@@ -149,8 +159,9 @@ async function emitPartialTranscript(page, sourceText = 'partial source', transl
 
 test('initial history shows empty state', async ({ page }) => {
   await page.goto('/');
+  await openHistoryPage(page);
 
-  await expect(historyPanel(page).getByRole('heading', { name: 'Session history' })).toBeVisible();
+  await expect(historyPanel(page).getByRole('heading', { name: 'Translation history' })).toBeVisible();
   await expect(historyPanel(page).getByText('No session history yet.')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
 });
@@ -160,6 +171,7 @@ test('active session is not shown while listening', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(page.getByText('Listening')).toBeVisible();
+  await openHistoryPage(page);
 
   await expect(historyPanel(page).getByText('No session history yet.')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
@@ -205,6 +217,50 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
 });
 
+test('navigation keeps an active translation session and its transcript state', async ({ page }) => {
+  await page.goto('/');
+  await expect(historyPanel(page)).toBeHidden();
+
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'keep this source', 'keep this translation');
+
+  await openHistoryPage(page);
+  await expect(historyPanel(page).getByText('No session history yet.')).toBeVisible();
+
+  await openLivePage(page);
+  await expect(page.getByText('Listening')).toBeVisible();
+  await expect(page.getByText('keep this source')).toBeVisible();
+  await expect(page.getByText('keep this translation')).toBeVisible();
+  await expect(page.getByLabel('Live transcripts').locator('.transcript-panel')).toHaveCount(2);
+});
+
+test('downloads the active transcript through a browser download', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'download source', 'download translation');
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^live-translate-transcript-.*\.txt$/);
+});
+
+test('Stop finalizes visible partial transcripts for export and history', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitPartialTranscript(page, 'partial source on stop', 'partial translation on stop');
+
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await expect(page.getByRole('button', { name: 'Download' })).toBeEnabled();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+  await expect(sessionDetail(page).getByText('partial source on stop')).toBeVisible();
+  await expect(sessionDetail(page).getByLabel('Translation transcript').getByText('partial translation on stop')).toBeVisible();
+});
+
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
   await page.goto('/');
 
@@ -214,6 +270,7 @@ test('stopped session appears in history with language, status, and transcript s
   await emitFinalTranscript(page, 'hello history', '履歴');
 
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
 
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
@@ -232,6 +289,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await emitFinalTranscript(page, 'saved source detail', 'saved translation detail');
 
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const detail = sessionDetail(page);
@@ -296,6 +354,7 @@ test('session detail renders filtered translation history with mixed-language de
   await expect(page.getByText('Listening')).toBeVisible();
   await emitFinalTranscript(page, 'Hello こんにちは', 'live output');
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const detail = sessionDetail(page);
@@ -356,6 +415,7 @@ test('translation execution controls cancel queued work and retry failed work wi
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(page.getByText('Listening')).toBeVisible();
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const history = sessionDetail(page).getByLabel('Translation history');
@@ -391,6 +451,7 @@ test('saved SRT and VTT export are enabled when timing exists', async ({ page })
   await expect(page.getByText('Listening')).toBeVisible();
   await emitFinalTranscript(page, 'timed source', 'timed translation');
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const panel = savedExportPanel(page);
@@ -403,6 +464,21 @@ test('saved SRT and VTT export are enabled when timing exists', async ({ page })
   await expect(panel.getByText('Saved subtitle timing uses the original session observation timestamps.')).toBeVisible();
 });
 
+test('downloads a saved transcript through a browser download', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(page.getByText('Listening')).toBeVisible();
+  await emitFinalTranscript(page, 'saved download source', 'saved download translation');
+  await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
+
+  const downloadPromise = page.waitForEvent('download');
+  await savedExportPanel(page).getByRole('button', { name: 'Download saved' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^live-translate-session-.*\.txt$/);
+});
+
 test('both stream is unavailable for saved SRT and VTT export', async ({ page }) => {
   await page.goto('/');
 
@@ -410,6 +486,7 @@ test('both stream is unavailable for saved SRT and VTT export', async ({ page })
   await expect(page.getByText('Listening')).toBeVisible();
   await emitFinalTranscript(page, 'source subtitle', 'translation subtitle');
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const panel = savedExportPanel(page);
@@ -429,6 +506,7 @@ test('no transcript detail shows empty state', async ({ page }) => {
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(page.getByText('Listening')).toBeVisible();
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
 
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
@@ -448,6 +526,7 @@ test('switching saved session resets saved export controls', async ({ page }) =>
   await expect(page.getByText('Listening')).toBeVisible();
   await emitFinalTranscript(page, 'second source', 'second translation');
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(2);
 
   await historyItems(page).nth(1).getByRole('button', { name: 'View details' }).click();
@@ -469,11 +548,13 @@ test('saved export controls do not alter active export controls', async ({ page 
   await expect(page.getByText('Listening')).toBeVisible();
   await emitFinalTranscript(page, 'source export separation', 'translation export separation');
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   await savedExportPanel(page).getByRole('combobox', { name: 'Saved export format' }).selectOption('srt');
   await savedExportPanel(page).getByRole('combobox', { name: 'Saved export stream' }).selectOption('translation');
 
+  await openLivePage(page);
   await expect(activeExportPanel(page).getByRole('combobox', { name: 'Export format' })).toHaveValue('vtt');
   await expect(activeExportPanel(page).getByRole('combobox', { name: 'Export stream' })).toHaveValue('source');
 });
@@ -490,6 +571,7 @@ test('failed session appears in history with normalized failure reason', async (
   });
 
   await expect(page.getByText('Unable to reconnect live translation. You can start a new session when ready.')).toBeVisible();
+  await openHistoryPage(page);
 
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
@@ -509,6 +591,7 @@ test('failed session detail shows normalized failure reason', async ({ page }) =
   });
 
   await expect(page.getByText('Unable to reconnect live translation. You can start a new session when ready.')).toBeVisible();
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const detail = sessionDetail(page);
@@ -528,6 +611,7 @@ test('expired session appears in history with expired status', async ({ page }) 
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
   });
 
+  await openHistoryPage(page);
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
   await expect(item.getByText('Expired', { exact: true })).toBeVisible();
@@ -544,6 +628,7 @@ test('expired session detail shows normalized failure reason', async ({ page }) 
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
   });
 
+  await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: 'View details' }).click();
 
   const detail = sessionDetail(page);
@@ -559,11 +644,14 @@ test('manual Start after a finalized session does not clear previous history', a
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(page.getByText('Listening')).toBeVisible();
   await page.getByRole('button', { name: 'Stop' }).click();
+  await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
 
+  await openLivePage(page);
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(page.getByText('Listening')).toBeVisible();
 
+  await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
   await expect(historyItems(page).first().getByText('Stopped', { exact: true })).toBeVisible();
 });
@@ -581,10 +669,13 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
 
   await expect(page.getByText('Reconnecting', { exact: true })).toBeVisible();
   await expect(page.getByText('Listening')).toBeVisible();
+  await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(0);
 
+  await openLivePage(page);
   await page.getByRole('button', { name: 'Stop' }).click();
 
+  await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
   await expect(historyItems(page).first().getByText('Stopped', { exact: true })).toBeVisible();
 });

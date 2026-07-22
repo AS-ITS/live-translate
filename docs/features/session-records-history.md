@@ -6,8 +6,10 @@ Session Records & Translation History is a Phase 2 capability for defining the
 session record model, translation history foundation, session-to-transcript
 relationship, and repository abstraction.
 
-Status: Slice 5 implemented with a read-only finalized history list, inline
-session detail, and saved-session export backed by the in-memory repository.
+Status: Slice 5 implemented with a read-only finalized history list, session
+detail, and saved-session export backed by the in-memory repository. The UI
+exposes history through a separate `#history` feature page; live translation
+remains on `#live`.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,
@@ -31,6 +33,9 @@ Domain direction note:
 - Define `SessionRepository` interface.
 - Support the conceptual boundary for list, detail, and delete behavior.
 - Support finalizing the current session into history.
+- Keep history review separate from the live translation workspace while
+  preserving in-memory detail, export, and pending-execution state when moving
+  between the two feature pages.
 - Do not decide the storage engine.
 - Do not add backend APIs.
 - Do not add access control.
@@ -236,6 +241,11 @@ manual-recovery state:
 Finalization should set `endedAt`, compute `durationMs`, update `status`, set
 `failureReason` when relevant, refresh `transcriptSummary`, and prevent further
 mutation except delete or future explicit repair/migration actions.
+
+When the user explicitly stops a Session, any visible pending transcript item is
+committed as final before Session finalization. This preserves the last spoken
+or translated text for saved history and TXT/SRT/VTT export when the Live API
+has not emitted a final event yet.
 
 ### When Record Is Deleted
 

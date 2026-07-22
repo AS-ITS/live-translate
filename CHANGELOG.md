@@ -56,6 +56,15 @@
 
 ### Added
 
+- Translation history UI is now a dedicated `#history` page alongside the
+  `#live` workspace. Navigation preserves the active session, selected history
+  detail, pending execution polling, and formal-output export state; backend
+  contracts and legacy export compatibility are unchanged.
+
+- User-initiated Stop now finalizes visible pending transcript items before
+  Session finalization, so current and saved TXT/SRT/VTT exports retain the
+  last displayed source and translation text.
+
 - Phase 4C WP1–WP6 Execution Control closeout: added terminal `cancelled`
   execution state with queued-only cancellation; failed-only manual retry that
   creates a distinct queued execution while preserving the failed source;

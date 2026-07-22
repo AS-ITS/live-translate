@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   applyTranscriptEvent,
   createTranscriptState,
+  finalizePendingTranscriptItems,
   resetTranscriptState,
   transcriptItemsForStream,
   transcriptTextForStream
@@ -117,6 +118,31 @@ test('partial followed by final', () => {
     }
   ]);
   assert.equal(final.nextSequence, 2);
+});
+
+test('finalizes pending transcript items when a session stops', () => {
+  const sourcePartial = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text: 'source awaiting final',
+    isFinal: false,
+    now: 100
+  });
+  const bothPartials = applyTranscriptEvent(sourcePartial, {
+    stream: 'translation',
+    text: 'translation awaiting final',
+    isFinal: false,
+    now: 150
+  });
+  const finalized = finalizePendingTranscriptItems(bothPartials, { now: 200 });
+
+  assert.equal(finalized.source.currentPartial, null);
+  assert.equal(finalized.translation.currentPartial, null);
+  assert.deepEqual(transcriptItemsForStream(finalized, 'source').map((item) => [item.text, item.status, item.finalizedAt]), [
+    ['source awaiting final', 'final', 200]
+  ]);
+  assert.deepEqual(transcriptItemsForStream(finalized, 'translation').map((item) => [item.text, item.status, item.finalizedAt]), [
+    ['translation awaiting final', 'final', 200]
+  ]);
 });
 
 test('ignore empty transcript', () => {

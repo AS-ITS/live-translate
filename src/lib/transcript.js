@@ -43,6 +43,33 @@ export function transcriptItemsForStream(state, stream) {
     : [...streamState.finalItems];
 }
 
+export function finalizePendingTranscriptItems(state, options = {}) {
+  const finalizedAt = Number.isFinite(options.now) ? options.now : Date.now();
+  let hasPendingItems = false;
+  const nextState = { ...state };
+
+  for (const stream of STREAMS) {
+    const streamState = state[stream];
+
+    if (!streamState.currentPartial) {
+      continue;
+    }
+
+    hasPendingItems = true;
+    nextState[stream] = {
+      ...streamState,
+      finalItems: [...streamState.finalItems, {
+        ...streamState.currentPartial,
+        status: 'final',
+        finalizedAt
+      }],
+      currentPartial: null
+    };
+  }
+
+  return hasPendingItems ? nextState : state;
+}
+
 function createStreamState() {
   return {
     finalItems: [],

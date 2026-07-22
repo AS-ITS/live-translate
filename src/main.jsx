@@ -30,6 +30,7 @@ import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } 
 import {
   applyTranscriptEvent,
   createTranscriptState,
+  finalizePendingTranscriptItems,
   resetTranscriptState,
   transcriptItemsForStream,
   transcriptTextForStream
@@ -39,8 +40,15 @@ import './styles.css';
 const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
 const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
+const FEATURE_PAGES = new Set(['live', 'history']);
+
+function pageFromLocation() {
+  const page = window.location.hash.replace('#', '');
+  return FEATURE_PAGES.has(page) ? page : 'live';
+}
 
 function App() {
+  const [page, setPage] = useState(pageFromLocation);
   const [status, setStatus] = useState('idle');
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('zh-Hant');
@@ -85,6 +93,12 @@ function App() {
 
     navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
     return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  useEffect(() => {
+    const handleHashChange = () => setPage(pageFromLocation());
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   async function refreshInputDevices() {
@@ -136,6 +150,7 @@ function App() {
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
+    await finalizePendingTranscriptItemsForStop();
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
@@ -343,6 +358,33 @@ function App() {
     }
   }
 
+  async function finalizePendingTranscriptItemsForStop() {
+    const nextTranscript = finalizePendingTranscriptItems(transcript);
+
+    if (nextTranscript === transcript) {
+      return;
+    }
+
+    const activeSessionRecordId = activeSessionRecordIdRef.current;
+    const appended = appendNewFinalTranscriptItems(
+      sessionRepositoryRef.current,
+      activeSessionRecordId,
+      transcript,
+      nextTranscript
+    );
+    setTranscript(nextTranscript);
+
+    if (appended.length === 0) {
+      return;
+    }
+
+    const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
+    if (activeSessionRecord) {
+      await syncSessionSnapshot(activeSessionRecordId);
+      void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
+    }
+  }
+
   async function syncSessionSnapshot(sessionId) {
     const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
     if (!detail) return null;
@@ -436,6 +478,14 @@ function App() {
     };
   }
 
+  function navigateTo(nextPage) {
+    if (nextPage === page) {
+      return;
+    }
+
+    window.location.hash = nextPage;
+  }
+
   function downloadTranscript() {
     setError('');
 
@@ -446,13 +496,7 @@ function App() {
         timeOrigin: transcriptTimeOrigin
       });
       const fileName = buildTranscriptFileName({ format: exportFormat });
-      const blob = new Blob([content], { type: contentTypeForFormat(exportFormat) });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
       setError('Transcript export is unavailable for the selected options.');
     }
@@ -476,15 +520,28 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="control-panel" aria-labelledby="app-title">
-        <div className="title-block">
-          <div className="status-pill">
-            <Radio size={16} aria-hidden="true" />
-            {statusLabel(status, statusLabelOverride)}
-          </div>
-          <h1 id="app-title">Live Translate</h1>
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>Live Translate</h1>
           <p>Real-time speech translation powered by Gemini Live API.</p>
         </div>
+        <nav className="feature-navigation" aria-label="Primary navigation">
+          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={() => navigateTo('live')}>Live translation</a>
+          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}>Translation history</a>
+        </nav>
+      </header>
+
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+
+      <section className="feature-page live-page" aria-label="Live translation workspace" hidden={page !== 'live'}>
+        <section className="control-panel">
+          <div className="title-block">
+            <div className="status-pill">
+              <Radio size={16} aria-hidden="true" />
+              {statusLabel(status, statusLabelOverride)}
+            </div>
+            <p>Choose a target language, enable your microphone, and follow the live transcript.</p>
+          </div>
 
         <div className="controls" aria-label="Translation controls">
           <label className="field">
@@ -549,13 +606,12 @@ function App() {
           )}
         </div>
 
-        {error ? <p className="error-message">{error}</p> : null}
-        {status === 'reconnecting' ? <p className="device-note">Reconnecting live translation...</p> : null}
-        {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-      </section>
+          {status === 'reconnecting' ? <p className="device-note">Reconnecting live translation...</p> : null}
+          {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
+        </section>
 
-      <section className="export-panel" aria-label="Transcript export">
-        <div className="controls export-controls">
+        <section className="export-panel" aria-label="Transcript export">
+          <div className="controls export-controls">
           <label className="field">
             <span>Export format</span>
             <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
@@ -578,24 +634,28 @@ function App() {
             <Download size={18} aria-hidden="true" />
             Download
           </button>
-        </div>
-        {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
+          </div>
+          {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
+        </section>
+
+        <section className="transcript-grid" aria-label="Live transcripts">
+          <TranscriptPanel title="Source speech" text={inputTranscriptText} emptyText="Waiting for source speech..." />
+          <TranscriptPanel title="Translated speech" text={outputTranscriptText} emptyText="Waiting for translated speech..." />
+        </section>
       </section>
 
-      <section className="transcript-grid" aria-label="Live transcripts">
-        <TranscriptPanel title="Source speech" text={inputTranscriptText} emptyText="Waiting for source speech..." />
-        <TranscriptPanel title="Translated speech" text={outputTranscriptText} emptyText="Waiting for translated speech..." />
+      <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
+        <HistoryPanel
+          titleId="history-page-title"
+          records={historyRecords}
+          selectedRecordId={selectedHistoryRecordId}
+          selectedDetail={selectedHistoryDetail}
+          selectedTranslationHistory={selectedTranslationHistory}
+          selectedRecord={selectedHistoryRecord}
+          onViewDetails={openHistoryRecordDetail}
+          onCloseDetails={closeHistoryRecordDetail}
+        />
       </section>
-
-      <HistoryPanel
-        records={historyRecords}
-        selectedRecordId={selectedHistoryRecordId}
-        selectedDetail={selectedHistoryDetail}
-        selectedTranslationHistory={selectedTranslationHistory}
-        selectedRecord={selectedHistoryRecord}
-        onViewDetails={openHistoryRecordDetail}
-        onCloseDetails={closeHistoryRecordDetail}
-      />
     </main>
   );
 }
@@ -617,11 +677,14 @@ function TranscriptPanel({ title, text, emptyText }) {
   );
 }
 
-function HistoryPanel({ records, selectedRecordId, selectedDetail, selectedTranslationHistory, selectedRecord, onViewDetails, onCloseDetails }) {
+function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedTranslationHistory, selectedRecord, onViewDetails, onCloseDetails }) {
   return (
-    <section className="history-panel" aria-labelledby="history-title">
+    <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
-        <h2 id="history-title">Session history</h2>
+        <div>
+          <h2 id={titleId}>Translation history</h2>
+          <p className="history-description">Review saved sessions, formal outputs, and queued translation work.</p>
+        </div>
       </div>
 
       {records.length === 0 ? (
@@ -843,13 +906,7 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         format: savedExportFormat,
         stream: savedExportStream
       });
-      const blob = new Blob([content], { type: contentTypeForFormat(savedExportFormat) });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = fileName;
-      link.click();
-      URL.revokeObjectURL(url);
+      downloadTextFile(content, fileName, contentTypeForFormat(savedExportFormat));
     } catch {
       setSavedExportError('Saved transcript export is unavailable for the selected options.');
     }
@@ -1209,6 +1266,19 @@ function contentTypeForFormat(format) {
   };
 
   return types[format] || 'text/plain;charset=utf-8';
+}
+
+function downloadTextFile(content, fileName, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.style.display = 'none';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 createRoot(document.getElementById('root')).render(<App />);

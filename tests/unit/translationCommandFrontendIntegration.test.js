@@ -85,6 +85,27 @@ test('records translation output and completes execution after dependent command
   ]);
 });
 
+test('completes a stopped session without translated output', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+
+  await lifecycle.recordSessionStarted(record);
+  await lifecycle.recordSessionFinalized({ ...record, status: 'stopped', endedAt: 1200 });
+
+  assert.deepEqual(calls.at(-1), [
+    'updateTranslationExecution',
+    'legacy-execution:session-1:ja',
+    {
+      transition: 'complete',
+      completedAt: 1200
+    }
+  ]);
+});
+
 test('records failed terminal session as execution failure without output', async () => {
   const calls = [];
   const lifecycle = createTranslationCommandLifecycle({

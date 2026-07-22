@@ -112,7 +112,7 @@ export function createTranslationCommandLifecycle({
         if (SUCCESS_SESSION_STATUSES.has(sessionRecord?.status)) {
           return runCommand(onError, 'completeTranslationExecution', () =>
             translationCommandApiClient.updateTranslationExecution(ids.executionId, {
-              transition: state.hasSuccessfulOutput ? 'complete' : 'cancel',
+              transition: 'complete',
               completedAt
             })
           );

@@ -37,8 +37,8 @@ import {
 } from './lib/transcript.js';
 import './styles.css';
 
-const RECONNECT_FAILED_MESSAGE = 'Unable to reconnect live translation. You can start a new session when ready.';
-const RECONNECT_EXHAUSTED_MESSAGE = 'Live translation could not reconnect after repeated attempts. You can start a new session when ready.';
+const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
+const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
 const FEATURE_PAGES = new Set(['live', 'history']);
 
@@ -114,11 +114,11 @@ function App() {
           return current;
         }
 
-        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
+        setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
         return '';
       });
     } catch {
-      setDeviceMessage('Microphone list is unavailable. Using browser default microphone.');
+      setDeviceMessage('無法取得麥克風清單，已改用瀏覽器預設麥克風。');
     }
   }
 
@@ -136,7 +136,7 @@ function App() {
       setStatus('listening');
     } catch (nextError) {
       await session.stop().catch(() => {});
-      setError(nextError.message || 'Unable to start live translation');
+      setError(nextError.message || '無法開始即時翻譯。');
       setStatus('error');
     }
   }
@@ -178,7 +178,7 @@ function App() {
       inputDeviceId: inputDeviceIdForSession,
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
-        setDeviceMessage('Selected microphone is unavailable. Using browser default microphone.');
+        setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
       },
       onMicrophoneReady: () => {
         void refreshInputDevices();
@@ -400,7 +400,7 @@ function App() {
 
       setHistoryRecords(finalizedRecords);
     } catch {
-      setError('Session history is unavailable.');
+      setError('工作階段紀錄無法使用。');
     }
   }
 
@@ -417,7 +417,7 @@ function App() {
 
   function reportTranslationCommandError(error) {
     console.error('Translation command persistence failed.', error);
-    setError('Translation persistence is unavailable. Live translation can continue.');
+    setError('無法儲存翻譯紀錄，但即時翻譯仍可繼續。');
   }
 
   async function openHistoryRecordDetail(id) {
@@ -457,7 +457,7 @@ function App() {
 
       setSelectedHistoryDetail(null);
       setSelectedTranslationHistory(null);
-      setError('Session details are unavailable.');
+      setError('工作階段詳細資料無法使用。');
     }
   }
 
@@ -498,7 +498,7 @@ function App() {
       const fileName = buildTranscriptFileName({ format: exportFormat });
       downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
-      setError('Transcript export is unavailable for the selected options.');
+      setError('所選選項無法匯出逐字稿。');
     }
   }
 
@@ -513,7 +513,7 @@ function App() {
     timeOrigin: transcriptTimeOrigin
   });
   const exportUnavailableReason =
-    exportFormat !== 'txt' && exportStream === 'both' ? 'SRT and VTT export one stream at a time.' : '';
+    exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
   const selectedHistoryRecord = selectedHistoryRecordId
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
@@ -522,30 +522,30 @@ function App() {
     <main className="app-shell">
       <header className="app-header">
         <div className="brand-block">
-          <h1>Live Translate</h1>
-          <p>Real-time speech translation powered by Gemini Live API.</p>
+          <h1>即時翻譯</h1>
+          <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
         </div>
-        <nav className="feature-navigation" aria-label="Primary navigation">
-          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={() => navigateTo('live')}>Live translation</a>
-          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}>Translation history</a>
+        <nav className="feature-navigation" aria-label="主要導覽">
+          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={() => navigateTo('live')}>即時翻譯</a>
+          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}>翻譯紀錄</a>
         </nav>
       </header>
 
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
-      <section className="feature-page live-page" aria-label="Live translation workspace" hidden={page !== 'live'}>
+      <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
         <section className="control-panel">
           <div className="title-block">
             <div className="status-pill">
               <Radio size={16} aria-hidden="true" />
               {statusLabel(status, statusLabelOverride)}
             </div>
-            <p>Choose a target language, enable your microphone, and follow the live transcript.</p>
+            <p>選擇目標語言、啟用麥克風，並查看即時逐字稿。</p>
           </div>
 
-        <div className="controls" aria-label="Translation controls">
+        <div className="controls" aria-label="翻譯控制項">
           <label className="field">
-            <span>Target language</span>
+            <span>目標語言</span>
             <select
               value={targetLanguageCode}
               onChange={(event) => setTargetLanguageCode(event.target.value)}
@@ -566,11 +566,11 @@ function App() {
               onChange={(event) => setEchoTargetLanguage(event.target.checked)}
               disabled={isActive}
             />
-            <span>Echo target language</span>
+            <span>朗讀翻譯語言</span>
           </label>
 
           <label className="field">
-            <span>Microphone</span>
+            <span>麥克風</span>
             <select
               value={selectedInputDeviceId}
               onChange={(event) => {
@@ -579,7 +579,7 @@ function App() {
               }}
               disabled={isActive}
             >
-              <option value="">Browser default microphone</option>
+              <option value="">瀏覽器預設麥克風</option>
               {inputDevices.map((device) => (
                 <option key={device.deviceId || device.label} value={device.deviceId}>
                   {device.label}
@@ -591,29 +591,29 @@ function App() {
           {status === 'listening' ? (
             <button className="button secondary" type="button" onClick={stopSession}>
               <Square size={18} aria-hidden="true" />
-              Stop
+              停止
             </button>
           ) : status === 'reconnecting' ? (
             <button className="button secondary" type="button" onClick={stopSession}>
               <Square size={18} aria-hidden="true" />
-              Stop
+              停止
             </button>
           ) : (
             <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
               {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-              {isActive ? 'Starting' : 'Start'}
+              {isActive ? '正在開始' : '開始'}
             </button>
           )}
         </div>
 
-          {status === 'reconnecting' ? <p className="device-note">Reconnecting live translation...</p> : null}
+          {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
           {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
         </section>
 
-        <section className="export-panel" aria-label="Transcript export">
+        <section className="export-panel" aria-label="逐字稿匯出">
           <div className="controls export-controls">
           <label className="field">
-            <span>Export format</span>
+            <span>匯出格式</span>
             <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
               <option value="txt">TXT</option>
               <option value="srt">SRT</option>
@@ -622,25 +622,25 @@ function App() {
           </label>
 
           <label className="field">
-            <span>Export stream</span>
+            <span>匯出內容</span>
             <select value={exportStream} onChange={(event) => setExportStream(event.target.value)}>
-              <option value="translation">Translation</option>
-              <option value="source">Source</option>
-              <option value="both">Both</option>
+              <option value="translation">翻譯</option>
+              <option value="source">原文</option>
+              <option value="both">兩者</option>
             </select>
           </label>
 
           <button className="button secondary" type="button" onClick={downloadTranscript} disabled={!canDownloadTranscript}>
             <Download size={18} aria-hidden="true" />
-            Download
+            下載
           </button>
           </div>
           {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         </section>
 
-        <section className="transcript-grid" aria-label="Live transcripts">
-          <TranscriptPanel title="Source speech" text={inputTranscriptText} emptyText="Waiting for source speech..." />
-          <TranscriptPanel title="Translated speech" text={outputTranscriptText} emptyText="Waiting for translated speech..." />
+        <section className="transcript-grid" aria-label="即時逐字稿">
+          <TranscriptPanel title="原文語音" text={inputTranscriptText} emptyText="等待原文語音…" />
+          <TranscriptPanel title="翻譯語音" text={outputTranscriptText} emptyText="等待翻譯語音…" />
         </section>
       </section>
 
@@ -682,13 +682,13 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
     <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
         <div>
-          <h2 id={titleId}>Translation history</h2>
-          <p className="history-description">Review saved sessions, formal outputs, and queued translation work.</p>
+          <h2 id={titleId}>翻譯紀錄</h2>
+          <p className="history-description">查看已儲存的工作階段、正式輸出與排隊中的翻譯工作。</p>
         </div>
       </div>
 
       {records.length === 0 ? (
-        <p className="history-empty">No session history yet.</p>
+        <p className="history-empty">尚無工作階段紀錄。</p>
       ) : (
         <ol className="history-list">
           {records.map((record) => (
@@ -700,27 +700,27 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                     <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
                   </div>
                   <button className="button detail-button" type="button" onClick={() => onViewDetails(record.id)}>
-                    View details
+                    查看詳細資料
                   </button>
                 </div>
 
                 <dl className="history-metadata">
                   <div>
-                    <dt>Started</dt>
+                    <dt>開始時間</dt>
                     <dd>{formatRecordTime(record.startedAt)}</dd>
                   </div>
                   <div>
-                    <dt>Ended</dt>
+                    <dt>結束時間</dt>
                     <dd>{formatRecordTime(record.endedAt)}</dd>
                   </div>
                   <div>
-                    <dt>Duration</dt>
+                    <dt>持續時間</dt>
                     <dd>{formatDuration(record.durationMs)}</dd>
                   </div>
                 </dl>
 
                 <p className="history-summary">{transcriptSummaryLabel(record.transcriptSummary)}</p>
-                {shouldShowFailureReason(record) ? <p className="history-reason">Reason: {record.failureReason}</p> : null}
+                {shouldShowFailureReason(record) ? <p className="history-reason">原因：{record.failureReason}</p> : null}
               </article>
               {selectedRecordId === record.id ? (
                 <SessionDetail detail={selectedDetail} translationHistory={selectedTranslationHistory} historyRecord={selectedRecord} onClose={onCloseDetails} />
@@ -784,7 +784,7 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
         setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
         setRefreshError('');
-      } catch { if (active) setRefreshError('Translation history could not be refreshed.'); }
+      } catch { if (active) setRefreshError('無法重新整理翻譯紀錄。'); }
     };
     void refresh(); const timer = setInterval(() => { void refresh(); }, HISTORY_REFRESH_MS);
     return () => { active = false; mountedRef.current = false; historyRefreshGenerationRef.current += 1; clearInterval(timer); };
@@ -842,28 +842,28 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
 
   if (detail === undefined) {
     return (
-      <section className="session-detail" aria-label="Session details">
+      <section className="session-detail" aria-label="工作階段詳細資料">
         <div className="session-detail-header">
-          <h3>Loading session details</h3>
+          <h3>正在載入工作階段詳細資料</h3>
           <button className="button detail-button" type="button" onClick={onClose}>
-            Close details
+            關閉詳細資料
           </button>
         </div>
-        <p className="history-empty">Loading saved session...</p>
+        <p className="history-empty">正在載入已儲存的工作階段…</p>
       </section>
     );
   }
 
   if (!detail) {
     return (
-      <section className="session-detail" aria-label="Session details">
+      <section className="session-detail" aria-label="工作階段詳細資料">
         <div className="session-detail-header">
-          <h3>Session details unavailable</h3>
+          <h3>無法取得工作階段詳細資料</h3>
           <button className="button detail-button" type="button" onClick={onClose}>
-            Close details
+            關閉詳細資料
           </button>
         </div>
-        <p className="history-empty">This session record is unavailable.</p>
+        <p className="history-empty">此工作階段紀錄無法使用。</p>
       </section>
     );
   }
@@ -908,59 +908,59 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
       });
       downloadTextFile(content, fileName, contentTypeForFormat(savedExportFormat));
     } catch {
-      setSavedExportError('Saved transcript export is unavailable for the selected options.');
+      setSavedExportError('所選選項無法匯出已儲存的逐字稿。');
     }
   }
 
   return (
-    <section className="session-detail" aria-label="Session details">
+    <section className="session-detail" aria-label="工作階段詳細資料">
       <div className="session-detail-header">
-        <h3>{historyLanguageLabel(sessionRecord)} details</h3>
+        <h3>{historyLanguageLabel(sessionRecord)}詳細資料</h3>
         <button className="button detail-button" type="button" onClick={onClose}>
-          Close details
+          關閉詳細資料
         </button>
       </div>
 
       <dl className="session-detail-metadata">
         <div>
-          <dt>Target language</dt>
+          <dt>目標語言</dt>
           <dd>{historyLanguageLabel(sessionRecord)}</dd>
         </div>
         <div>
-          <dt>Status</dt>
+          <dt>狀態</dt>
           <dd>{historyStatusLabel(sessionRecord.status)}</dd>
         </div>
         <div>
-          <dt>Started</dt>
+          <dt>開始時間</dt>
           <dd>{formatRecordTime(sessionRecord.startedAt)}</dd>
         </div>
         <div>
-          <dt>Ended</dt>
+          <dt>結束時間</dt>
           <dd>{formatRecordTime(sessionRecord.endedAt)}</dd>
         </div>
         <div>
-          <dt>Duration</dt>
+          <dt>持續時間</dt>
           <dd>{formatDuration(sessionRecord.durationMs)}</dd>
         </div>
         <div>
-          <dt>Transcript</dt>
+          <dt>逐字稿</dt>
           <dd>{transcriptSummaryLabel(sessionRecord.transcriptSummary)}</dd>
         </div>
         {shouldShowFailureReason(sessionRecord) ? (
           <div>
-            <dt>Failure reason</dt>
+            <dt>失敗原因</dt>
             <dd>{sessionRecord.failureReason}</dd>
           </div>
         ) : null}
         {sessionRecord.failureCategory ? (
           <div>
-            <dt>Failure category</dt>
+            <dt>失敗類別</dt>
             <dd>{sessionRecord.failureCategory}</dd>
           </div>
         ) : null}
         {sessionRecord.inputDeviceLabelSnapshot ? (
           <div>
-            <dt>Microphone</dt>
+            <dt>麥克風</dt>
             <dd>{sessionRecord.inputDeviceLabelSnapshot}</dd>
           </div>
         ) : null}
@@ -968,17 +968,17 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
 
       {hasTranscript ? (
         <div className="session-detail-transcripts">
-          <TranscriptItemList title="Source transcript" items={sourceItems} />
-          <TranscriptItemList title="Translation transcript" items={translationItems} />
+          <TranscriptItemList title="原文逐字稿" items={sourceItems} />
+          <TranscriptItemList title="翻譯逐字稿" items={translationItems} />
         </div>
       ) : (
-        <p className="history-empty">No saved transcript.</p>
+        <p className="history-empty">沒有已儲存的逐字稿。</p>
       )}
 
       <TranslationHistoryPanel history={historyData ?? (detail.translationHistory === undefined ? undefined : { translationHistory: detail.translationHistory })} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} executionOperations={executionOperations} onControlExecution={controlExecution} executionControlError={executionControlError} />
-      {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>Retry</button></p> : null}
+      {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>重試</button></p> : null}
 
-      <section className="saved-export-panel" aria-label="Retranslation">
+      <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
         {showRetranslation ? <div className="controls saved-export-controls">
           <label className="field"><span>目標語言</span><select value={retranslationLanguage} onChange={(event) => setRetranslationLanguage(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
@@ -987,17 +987,17 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
             try {
               const result = await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
               setLocalExecutions((items) => [...items, { ...result.execution, targetLanguageCode: retranslationLanguage }]); setShowRetranslation(false);
-            } catch { setRetranslationError('Unable to queue re-translation. Please try again.'); }
+            } catch { setRetranslationError('無法將重新翻譯加入佇列。請再試一次。'); }
             finally { setIsSubmittingRetranslation(false); }
-          }}>{isSubmittingRetranslation ? 'Submitting…' : '開始翻譯'}</button>
+          }}>{isSubmittingRetranslation ? '正在送出…' : '開始翻譯'}</button>
           {retranslationError ? <p className="error-message" role="alert">{retranslationError}</p> : null}
         </div> : null}
       </section>
 
-      <section className="saved-export-panel" aria-label="Saved transcript export">
+      <section className="saved-export-panel" aria-label="已儲存逐字稿匯出">
         <div className="controls saved-export-controls">
           <label className="field">
-            <span>Saved export format</span>
+            <span>已儲存逐字稿匯出格式</span>
             <select value={savedExportFormat} onChange={(event) => setSavedExportFormat(event.target.value)}>
               <option value="txt">TXT</option>
               <option value="srt">SRT</option>
@@ -1006,11 +1006,11 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
           </label>
 
           <label className="field">
-            <span>Saved export stream</span>
+            <span>已儲存逐字稿匯出內容</span>
             <select value={savedExportStream} onChange={(event) => setSavedExportStream(event.target.value)}>
-              <option value="translation">Translation</option>
-              <option value="source">Source</option>
-              <option value="both">Both</option>
+              <option value="translation">翻譯</option>
+              <option value="source">原文</option>
+              <option value="both">兩者</option>
             </select>
           </label>
 
@@ -1021,10 +1021,10 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
             disabled={!canDownloadSavedTranscript}
           >
             <Download size={16} aria-hidden="true" />
-            Download saved
+            下載已儲存的逐字稿
           </button>
         </div>
-        <p className="export-note">Saved subtitle timing uses the original session observation timestamps.</p>
+        <p className="export-note">已儲存字幕的時間碼採用原始工作階段觀察時間。</p>
         {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
         {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
       </section>
@@ -1037,7 +1037,7 @@ function TranscriptItemList({ title, items }) {
     <section className="session-transcript-section" aria-label={title}>
       <h4>{title}</h4>
       {items.length === 0 ? (
-        <p className="history-empty">No saved transcript.</p>
+        <p className="history-empty">沒有已儲存的逐字稿。</p>
       ) : (
         <ol className="session-transcript-list">
           {items.map((item) => (
@@ -1052,19 +1052,19 @@ function TranscriptItemList({ title, items }) {
 }
 
 function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange, selectedOutputId, onSelectOutput, localExecutions = [], executionOperations = {}, onControlExecution, executionControlError }) {
-  if (history === undefined) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Loading translation history...</p></section>;
-  if (!history) return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4><p className="history-empty">Translation history is unavailable.</p></section>;
+  if (history === undefined) return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4><p className="history-empty">正在載入翻譯紀錄…</p></section>;
+  if (!history) return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4><p className="history-empty">翻譯紀錄無法使用。</p></section>;
   const model = history.translationHistory;
   if (model) {
     const outputs = [...model.outputs].sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)) || String(a.id).localeCompare(String(b.id)));
     const selected = outputs.find((output) => output.id === selectedOutputId) || outputs[0];
     const serverExecutionIds = new Set(model.executions.map((execution) => execution.id));
     const executions = [...model.executions, ...localExecutions.filter((execution) => !serverExecutionIds.has(execution.id))];
-    return <section className="session-transcript-section" aria-label="Translation history"><h4>Translation history</h4>
-      {outputs.map((output) => <button className="button detail-button" type="button" key={output.id} onClick={() => onSelectOutput(output.id)} aria-pressed={selected?.id === output.id}>{output.targetLanguageCode} · {output.version ? `v${output.version}` : 'legacy'} · {formatRecordTime(output.completedAt)}</button>)}
-      {selected ? <div><p><strong>{selected.targetLanguageCode} {selected.version ? `v${selected.version}` : ''}</strong></p><p>{selected.translatedText}</p></div> : <p className="history-empty">No completed translations.</p>}
+    return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4>
+      {outputs.map((output) => <button className="button detail-button" type="button" key={output.id} onClick={() => onSelectOutput(output.id)} aria-pressed={selected?.id === output.id}>{output.targetLanguageCode} · {output.version ? `v${output.version}` : '舊版'} · {formatRecordTime(output.completedAt)}</button>)}
+      {selected ? <div><p><strong>{selected.targetLanguageCode} {selected.version ? `v${selected.version}` : ''}</strong></p><p>{selected.translatedText}</p></div> : <p className="history-empty">沒有已完成的翻譯。</p>}
       {executions.length ? <ul>{executions.map((execution) => <li key={execution.id}>
-        <span className={`history-status history-status-${execution.status}`}>{execution.targetLanguageCode || 'Translation'} · {executionStatusLabel(execution.status)}</span>
+        <span className={`history-status history-status-${execution.status}`}>{execution.targetLanguageCode || '翻譯'} · {executionStatusLabel(execution.status)}</span>
         {execution.failureInfo?.message ? ` · ${execution.failureInfo.message}` : ''}
         {execution.status === 'queued' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'cancel')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'cancel'}>{executionOperations[execution.id] === 'cancel' ? '取消中…' : '取消'}</button> : null}
         {execution.status === 'failed' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'retry')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'retry'}>{executionOperations[execution.id] === 'retry' ? '重新嘗試中…' : '重新嘗試'}</button> : null}
@@ -1075,16 +1075,16 @@ function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguage
   const languageCodes = [...new Set(history.translations.map((item) => item.request.targetLanguageCode))];
   const translations = targetLanguageCode ? history.translations.filter((item) => item.request.targetLanguageCode === targetLanguageCode) : history.translations;
   return (
-    <section className="session-transcript-section" aria-label="Translation history">
-      <h4>Translation history</h4>
-      <label className="field"><span>Filter output language</span><select value={targetLanguageCode} onChange={(event) => onTargetLanguageCodeChange(event.target.value)}><option value="">All languages</option>{languageCodes.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
-      {translations.length === 0 ? <p className="history-empty">No historical translations match this language.</p> : <ol className="session-transcript-list">{translations.map((item) => (
+    <section className="session-transcript-section" aria-label="翻譯紀錄">
+      <h4>翻譯紀錄</h4>
+      <label className="field"><span>篩選輸出語言</span><select value={targetLanguageCode} onChange={(event) => onTargetLanguageCodeChange(event.target.value)}><option value="">所有語言</option>{languageCodes.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
+      {translations.length === 0 ? <p className="history-empty">沒有符合此語言的歷史翻譯。</p> : <ol className="session-transcript-list">{translations.map((item) => (
         <li key={`${item.request.id}:${item.execution?.id || 'pending'}`}>
           <p><strong>{item.request.targetLanguageCode}</strong> · {item.execution?.status || 'queued'}</p>
-          <p>{item.request.sourceText || 'Source text unavailable.'}</p>
+          <p>{item.request.sourceText || '無法取得原文。'}</p>
           {item.output ? <p>{item.output.translatedText}</p> : null}
-          {item.execution?.failureInfo?.reason ? <p className="history-reason">Reason: {item.execution.failureInfo.reason}</p> : null}
-          {item.sourceLanguageDetections?.length ? <p>Detected source languages: {item.sourceLanguageDetections.flatMap((detection) => detection.detectedLanguageCodes || []).join(', ')}</p> : null}
+          {item.execution?.failureInfo?.reason ? <p className="history-reason">原因：{item.execution.failureInfo.reason}</p> : null}
+          {item.sourceLanguageDetections?.length ? <p>偵測到的原文語言：{item.sourceLanguageDetections.flatMap((detection) => detection.detectedLanguageCodes || []).join(', ')}</p> : null}
         </li>
       ))}</ol>}
     </section>
@@ -1092,15 +1092,15 @@ function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguage
 }
 
 function historyLanguageLabel(record) {
-  return record.targetLanguageLabel || record.targetLanguageCode || 'Unknown language';
+  return targetLanguageLabelFor(record.targetLanguageCode) || record.targetLanguageLabel || record.targetLanguageCode || '未知語言';
 }
 
 function historyStatusLabel(status) {
   const labels = {
-    stopped: 'Stopped',
-    failed: 'Failed',
-    expired: 'Expired',
-    completed: 'Completed'
+    stopped: '已停止',
+    failed: '失敗',
+    expired: '已過期',
+    completed: '已完成'
   };
 
   return labels[status] || status;
@@ -1124,10 +1124,10 @@ function transcriptSummaryLabel(summary = {}) {
   const translationFinalCount = summary.translationFinalCount || 0;
 
   if (!summary.hasTranscript && sourceFinalCount === 0 && translationFinalCount === 0) {
-    return 'No transcript';
+    return '沒有逐字稿';
   }
 
-  return `Source final: ${sourceFinalCount} · Translation final: ${translationFinalCount}`;
+  return `原文完成：${sourceFinalCount} · 翻譯完成：${translationFinalCount}`;
 }
 
 function shouldShowFailureReason(record) {
@@ -1160,11 +1160,11 @@ function exportDetailForSessionDetailDTO(detail, historyRecord) {
 
 function savedSessionExportUnavailableReason(detail, options) {
   if ((options.format === 'srt' || options.format === 'vtt') && options.stream === 'both') {
-    return 'SRT and VTT export one stream at a time.';
+    return 'SRT 與 VTT 一次只能匯出一個內容。';
   }
 
   if (!canExportSavedSession(detail, options)) {
-    return 'Saved transcript export is unavailable for the selected options.';
+    return '所選選項無法匯出已儲存的逐字稿。';
   }
 
   return '';
@@ -1172,7 +1172,7 @@ function savedSessionExportUnavailableReason(detail, options) {
 
 function formatRecordTime(value) {
   if (!value) {
-    return 'Not available';
+    return '無資料';
   }
 
   const date = new Date(value);
@@ -1181,12 +1181,12 @@ function formatRecordTime(value) {
     return String(value);
   }
 
-  return date.toLocaleString();
+  return date.toLocaleString('zh-Hant');
 }
 
 function formatDuration(durationMs) {
   if (!Number.isFinite(durationMs)) {
-    return 'Not available';
+    return '無資料';
   }
 
   const totalSeconds = Math.round(durationMs / 1000);
@@ -1194,10 +1194,10 @@ function formatDuration(durationMs) {
   const seconds = totalSeconds % 60;
 
   if (minutes === 0) {
-    return `${seconds}s`;
+    return `${seconds} 秒`;
   }
 
-  return `${minutes}m ${seconds}s`;
+  return `${minutes} 分 ${seconds} 秒`;
 }
 
 function historyRecordSortTime(record) {
@@ -1218,14 +1218,14 @@ function statusLabel(status, override = '') {
   }
 
   const labels = {
-    idle: 'Ready',
-    'requesting-permission': 'Requesting mic',
-    connecting: 'Connecting',
-    listening: 'Listening',
-    reconnecting: 'Reconnecting',
-    stopped: 'Stopped',
-    expired: 'Session expired',
-    error: 'Needs attention'
+    idle: '準備就緒',
+    'requesting-permission': '正在請求麥克風權限',
+    connecting: '正在連線',
+    listening: '聆聽中',
+    reconnecting: '正在重新連線',
+    stopped: '已停止',
+    expired: '工作階段已過期',
+    error: '需要處理'
   };
 
   return labels[status] || status;

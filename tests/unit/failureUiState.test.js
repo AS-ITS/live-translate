@@ -7,7 +7,7 @@ test('maps token_expired to expired manual recovery state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('token_expired'));
 
   assert.equal(uiState.status, 'expired');
-  assert.equal(uiState.message, 'Session expired. Please start a new session.');
+  assert.equal(uiState.message, '工作階段已過期。請開始新的工作階段。');
   assert.equal(uiState.shouldReconnect, false);
   assert.equal(uiState.startEnabled, true);
   assert.equal(uiState.stopVisible, false);
@@ -17,8 +17,8 @@ test('maps auth_failed to error manual recovery state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('auth_failed'));
 
   assert.equal(uiState.status, 'error');
-  assert.equal(uiState.statusLabel, 'Access failed');
-  assert.equal(uiState.message, 'Access failed. Please check your access token or configuration.');
+  assert.equal(uiState.statusLabel, '存取失敗');
+  assert.equal(uiState.message, '存取失敗。請檢查存取權杖或設定。');
   assert.equal(uiState.shouldReconnect, false);
   assert.equal(uiState.startEnabled, true);
   assert.equal(uiState.stopVisible, false);
@@ -28,8 +28,8 @@ test('maps rate_limited to error manual recovery state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('rate_limited'));
 
   assert.equal(uiState.status, 'error');
-  assert.equal(uiState.statusLabel, 'Rate limited');
-  assert.equal(uiState.message, 'Too many requests. Please wait and try again.');
+  assert.equal(uiState.statusLabel, '請求受限');
+  assert.equal(uiState.message, '請求過於頻繁。請稍候再試。');
   assert.equal(uiState.shouldReconnect, false);
   assert.equal(uiState.startEnabled, true);
   assert.equal(uiState.stopVisible, false);
@@ -49,7 +49,7 @@ test('maps provider_error to error state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('provider_error'));
 
   assert.equal(uiState.status, 'error');
-  assert.equal(uiState.message, 'The live translation provider returned an error. Please try again.');
+  assert.equal(uiState.message, '即時翻譯服務發生錯誤。請再試一次。');
   assert.equal(uiState.shouldReconnect, false);
   assert.equal(uiState.startEnabled, true);
   assert.equal(uiState.stopVisible, false);
@@ -59,7 +59,7 @@ test('maps unknown_error to error state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('unknown_error'));
 
   assert.equal(uiState.status, 'error');
-  assert.equal(uiState.message, 'Live translation failed. Please try again.');
+  assert.equal(uiState.message, '即時翻譯失敗。請再試一次。');
   assert.equal(uiState.shouldReconnect, false);
   assert.equal(uiState.startEnabled, true);
   assert.equal(uiState.stopVisible, false);

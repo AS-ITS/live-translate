@@ -15,11 +15,11 @@ export function normalizeMediaDevices(devices = []) {
 
   for (const device of devices) {
     if (device.kind === 'audioinput') {
-      inputs.push(normalizeDevice(device, `Microphone ${inputs.length + 1}`));
+      inputs.push(normalizeDevice(device, `麥克風 ${inputs.length + 1}`));
     }
 
     if (device.kind === 'audiooutput') {
-      outputs.push(normalizeDevice(device, `Speaker ${outputs.length + 1}`));
+      outputs.push(normalizeDevice(device, `揚聲器 ${outputs.length + 1}`));
     }
   }
 

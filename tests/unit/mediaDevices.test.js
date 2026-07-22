@@ -57,8 +57,8 @@ test('empty device labels use fallback labels', () => {
   ]);
 
   assert.equal(labelForDevice({ label: '' }, 'Fallback'), 'Fallback');
-  assert.equal(normalized.inputs[0].label, 'Microphone 1');
-  assert.equal(normalized.outputs[0].label, 'Speaker 1');
+  assert.equal(normalized.inputs[0].label, '麥克風 1');
+  assert.equal(normalized.outputs[0].label, '揚聲器 1');
 });
 
 test('isMissingSelectedInputError handles NotFoundError', () => {

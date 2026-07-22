@@ -108,7 +108,7 @@ export class LiveTranslateSession {
         }
       }),
       LIVE_CONNECT_TIMEOUT_MS,
-      'Live translation took too long to connect. Please try again.'
+      '即時翻譯連線逾時。請再試一次。'
     );
 
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
@@ -322,9 +322,9 @@ async function fetchWithTimeout(url, options, timeoutMs) {
     return await fetch(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error('Live translation service took too long to respond. Please try again.');
+      throw new Error('即時翻譯服務回應逾時。請再試一次。');
     }
-    throw new Error('Unable to reach the live translation service. Please try again.');
+    throw new Error('無法連線至即時翻譯服務。請再試一次。');
   } finally {
     clearTimeout(timeoutId);
   }
@@ -341,17 +341,17 @@ function withTimeout(promise, timeoutMs, message) {
 
 function userMessageForErrorCode(code) {
   const messages = {
-    auth_required: 'Access is not configured for this demo. Please contact the operator.',
-    auth_invalid: 'Access is not configured for this demo. Please contact the operator.',
-    auth_not_configured: 'Live translation is not configured for production yet.',
-    invalid_origin: 'This site is not allowed to request live translation.',
-    provider_unavailable: 'Live translation provider is temporarily unavailable. Please try again.',
-    rate_limited: 'Too many live translation starts. Please wait and try again.',
-    server_misconfigured: 'Live translation is not configured on the server.',
-    unsupported_language: 'The selected target language is not supported.',
-    invalid_json: 'Live translation request could not be prepared.',
-    request_too_large: 'Live translation request is too large.'
+    auth_required: '此示範尚未設定存取權限。請聯絡管理員。',
+    auth_invalid: '此示範尚未設定存取權限。請聯絡管理員。',
+    auth_not_configured: '正式環境尚未設定即時翻譯。',
+    invalid_origin: '此網站不允許請求即時翻譯。',
+    provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
+    rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',
+    server_misconfigured: '伺服器尚未設定即時翻譯。',
+    unsupported_language: '不支援所選的目標語言。',
+    invalid_json: '無法準備即時翻譯請求。',
+    request_too_large: '即時翻譯請求過大。'
   };
 
-  return messages[code] || 'Unable to start live translation. Please try again.';
+  return messages[code] || '無法開始即時翻譯。請再試一次。';
 }

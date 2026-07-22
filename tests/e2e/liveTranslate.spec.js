@@ -1,6 +1,99 @@
 import { expect, test } from '@playwright/test';
 
+const LOCALIZED_UI_TEXT = {
+  'Access failed': '存取失敗',
+  'Access failed. Please check your access token or configuration.': '存取失敗。請檢查存取權杖或設定。',
+  'Close details': '關閉詳細資料',
+  'Detected source languages: en, ja': '偵測到的原文語言：en, ja',
+  'Download': '下載',
+  'Download saved': '下載已儲存的逐字稿',
+  'Duration': '持續時間',
+  'Ended': '結束時間',
+  'Expired': '已過期',
+  'Export format': '匯出格式',
+  'Export stream': '匯出內容',
+  'Failed': '失敗',
+  'Failure category': '失敗類別',
+  'Failure reason': '失敗原因',
+  'Filter output language': '篩選輸出語言',
+  'Japanese': '日文',
+  'Japanese details': '日文詳細資料',
+  'Listening': '聆聽中',
+  'Live Translate': '即時翻譯',
+  'Live transcripts': '即時逐字稿',
+  'Live translation': '即時翻譯',
+  'Live translation could not reconnect after repeated attempts. You can start a new session when ready.': '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。',
+  'No saved transcript.': '沒有已儲存的逐字稿。',
+  'No session history yet.': '尚無工作階段紀錄。',
+  'Rate limited': '請求受限',
+  'Ready': '準備就緒',
+  'Reason: token_expired': '原因：token_expired',
+  'Reason: unexpected_close': '原因：unexpected_close',
+  'Reconnecting': '正在重新連線',
+  'SRT and VTT export one stream at a time.': 'SRT 與 VTT 一次只能匯出一個內容。',
+  'Saved export format': '已儲存逐字稿匯出格式',
+  'Saved export stream': '已儲存逐字稿匯出內容',
+  'Saved subtitle timing uses the original session observation timestamps.': '已儲存字幕的時間碼採用原始工作階段觀察時間。',
+  'Saved transcript export': '已儲存逐字稿匯出',
+  'Session expired': '工作階段已過期',
+  'Session expired. Please start a new session.': '工作階段已過期。請開始新的工作階段。',
+  'Source final: 1 · Translation final: 1': '原文完成：1 · 翻譯完成：1',
+  'Source transcript': '原文逐字稿',
+  'Start': '開始',
+  'Started': '開始時間',
+  'Status': '狀態',
+  'Stop': '停止',
+  'Stopped': '已停止',
+  'Target language': '目標語言',
+  'Too many requests. Please wait and try again.': '請求過於頻繁。請稍候再試。',
+  'Translation history': '翻譯紀錄',
+  'Translation transcript': '翻譯逐字稿',
+  'Unable to reconnect live translation. You can start a new session when ready.': '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。',
+  'View details': '查看詳細資料'
+};
+
+function localizeUiSelector(value) {
+  return typeof value === 'string' ? (LOCALIZED_UI_TEXT[value] || value) : value;
+}
+
+function localizeSelectorMethods(target) {
+  for (const method of ['getByText', 'getByLabel']) {
+    const original = target[method].bind(target);
+    target[method] = (text, options) => original(localizeUiSelector(text), options);
+  }
+
+  const getByRole = target.getByRole.bind(target);
+  target.getByRole = (role, options = {}) => getByRole(role, {
+    ...options,
+    ...(Object.hasOwn(options, 'name') ? { name: localizeUiSelector(options.name) } : {})
+  });
+}
+
+function localizeLocatorPrototype(locatorPrototype) {
+  for (const method of ['getByText', 'getByLabel']) {
+    const original = locatorPrototype[method];
+    locatorPrototype[method] = function localizedSelector(text, options) {
+      return original.call(this, localizeUiSelector(text), options);
+    };
+  }
+
+  const getByRole = locatorPrototype.getByRole;
+  locatorPrototype.getByRole = function localizedRoleSelector(role, options = {}) {
+    return getByRole.call(this, role, {
+      ...options,
+      ...(Object.hasOwn(options, 'name') ? { name: localizeUiSelector(options.name) } : {})
+    });
+  };
+}
+
 test.beforeEach(async ({ page }) => {
+  localizeSelectorMethods(page);
+  const locatorPrototype = Object.getPrototypeOf(page.locator('body'));
+  if (!locatorPrototype.__localizedUiSelectors) {
+    localizeLocatorPrototype(locatorPrototype);
+    Object.defineProperty(locatorPrototype, '__localizedUiSelectors', { value: true });
+  }
+
   const resetResponse = await page.request.delete('/api/test/sessions');
   expect(resetResponse.status()).toBe(204);
   page.liveTokenRequests = [];

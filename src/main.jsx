@@ -1737,8 +1737,33 @@ function sessionRecordForDetailDTO(detail, historyRecord) {
 function exportDetailForSessionDetailDTO(detail, historyRecord) {
   return {
     sessionRecord: sessionRecordForDetailDTO(detail, historyRecord),
-    transcriptItems: [...(detail?.sourceTranscript?.items || []), ...(detail?.selectedTranslationOutput?.items || [])]
+    transcriptItems: [
+      ...(detail?.sourceTranscript?.items || []),
+      ...translationExportItemsForDetail(detail)
+    ]
   };
+}
+
+function translationExportItemsForDetail(detail) {
+  const selectedItems = detail?.selectedTranslationOutput?.items || [];
+  if (selectedItems.length > 0) {
+    return selectedItems;
+  }
+
+  const article = detail?.readingContent?.translationArticle;
+  if (!article || article.status !== 'available' || typeof article.text !== 'string' || article.text.trim().length === 0) {
+    return [];
+  }
+
+  return [{
+    id: `${detail?.selectedTranslationOutput?.id || 'formal-output'}:article`,
+    stream: 'translation',
+    status: 'final',
+    text: article.text,
+    sequence: Number.MAX_SAFE_INTEGER,
+    startedAt: detail?.session?.startedAt ?? null,
+    finalizedAt: article.completedAt ?? detail?.session?.endedAt ?? null
+  }];
 }
 
 function savedSessionExportUnavailableReason(detail, options) {

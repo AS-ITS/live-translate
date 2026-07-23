@@ -153,10 +153,20 @@ translation-history read succeeds:
 }
 ```
 
+When a Live session finalizes successfully with status `stopped` or
+`completed`, the command lifecycle materializes one article-level
+`TranslationOutput` for the session and target language. The output uses the
+stable id `live-output:${sessionId}:${targetLanguageCode}`, stores the complete
+article text in `translatedText`, stores the merged final source transcript in
+`sourceText` when available, and retains the final source transcript revision
+and snapshot in `sourceTranscriptMetadata`.
+
 `GET /api/sessions/:sessionId` also includes `readingContent` for history
-detail reading. It is derived server-side from persisted final transcript items
-and legacy/formal translation output data so the UI does not need to assemble
-official reading text from partial chunks:
+detail reading. `translationArticle` is formal-output first: when a formal
+`TranslationOutput` exists, its `translatedText` is the official article text
+and exposes the formal output `version`. Legacy sessions without a formal
+output still fall back to server-side projection from persisted final transcript
+items so older history remains readable:
 
 ```js
 {

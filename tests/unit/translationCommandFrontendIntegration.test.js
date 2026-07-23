@@ -43,7 +43,7 @@ test('records session start through translation request, execution creation, and
   ]);
 });
 
-test('records translation output and completes execution after dependent commands finish', async () => {
+test('records article-level translation output and completes execution after dependent commands finish', async () => {
   const calls = [];
   const lifecycle = createTranslationCommandLifecycle({
     translationCommandApiClient: fakeClient(calls),
@@ -53,7 +53,11 @@ test('records translation output and completes execution after dependent command
   const item = translationItem();
 
   await lifecycle.recordSessionStarted(record);
-  await lifecycle.recordFinalTranscriptItems(record, [item]);
+  await lifecycle.recordFinalTranscriptItems(record, [
+    sourceItem({ text: 'Hello.' }),
+    item,
+    translationItem({ id: 'translation-2', text: '世界。', sequence: 2, finalizedAt: 1150 })
+  ]);
   await lifecycle.recordSessionFinalized({ ...record, status: 'stopped', endedAt: 1200 });
 
   assert.deepEqual(calls.map((call) => call[0]), [
@@ -66,13 +70,25 @@ test('records translation output and completes execution after dependent command
   assert.deepEqual(calls[3], [
     'createTranslationOutput',
     {
-      id: 'legacy-output:session-1:ja:translation-1',
+      id: 'live-output:session-1:ja',
       executionId: 'legacy-execution:session-1:ja',
-      sequence: 1,
-      translatedText: 'こんにちは',
+      sessionId: 'session-1',
+      requestId: 'legacy-request:session-1:ja',
+      sequence: 0,
+      translatedText: 'こんにちは 世界。',
       targetLanguageCode: 'ja',
       providerMetadata: null,
-      createdAt: 1100
+      createdAt: 1200,
+      completedAt: 1200,
+      sourceText: 'Hello.',
+      sourceTranscriptMetadata: {
+        revisionId: 'source-revision:session-1:final',
+        snapshot: {
+          revisionId: 'source-revision:session-1:final',
+          items: [sourceItem({ text: 'Hello.' })],
+          sourceText: 'Hello.'
+        }
+      }
     }
   ]);
   assert.deepEqual(calls[4], [
@@ -85,7 +101,7 @@ test('records translation output and completes execution after dependent command
   ]);
 });
 
-test('completes a stopped session without translated output', async () => {
+test('completes a stopped session without formal output when there are no final translations', async () => {
   const calls = [];
   const lifecycle = createTranslationCommandLifecycle({
     translationCommandApiClient: fakeClient(calls),
@@ -104,6 +120,7 @@ test('completes a stopped session without translated output', async () => {
       completedAt: 1200
     }
   ]);
+  assert.equal(calls.filter((call) => call[0] === 'createTranslationOutput').length, 0);
 });
 
 test('records failed terminal session as execution failure without output', async () => {
@@ -228,6 +245,27 @@ test('does not duplicate lifecycle operations', async () => {
   );
 });
 
+test('does not create a formal output for partial-only transcript items', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls),
+    now: () => 1000
+  });
+  const record = sessionRecord();
+
+  await lifecycle.recordFinalTranscriptItems(record, [
+    { ...translationItem(), status: 'partial' },
+    { ...sourceItem(), status: 'partial' }
+  ]);
+  await lifecycle.recordSessionFinalized({ ...record, status: 'completed', endedAt: 1200 });
+
+  assert.equal(calls.filter((call) => call[0] === 'createTranslationOutput').length, 0);
+  assert.equal(
+    calls.filter((call) => call[0] === 'updateTranslationExecution' && call[2].transition === 'complete').length,
+    1
+  );
+});
+
 function fakeClient(calls, overrides = {}) {
   return {
     createTranslationRequest:
@@ -277,6 +315,19 @@ function translationItem(overrides = {}) {
     sequence: 1,
     startedAt: 1000,
     finalizedAt: 1100,
+    ...overrides
+  };
+}
+
+function sourceItem(overrides = {}) {
+  return {
+    id: 'source-1',
+    stream: 'source',
+    status: 'final',
+    text: 'Hello.',
+    sequence: 0,
+    startedAt: 900,
+    finalizedAt: 1000,
     ...overrides
   };
 }

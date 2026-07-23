@@ -298,6 +298,91 @@ test('GET /api/sessions/:sessionId returns no translation output without final t
   });
 });
 
+test('GET /api/sessions/:sessionId prefers formal output for selected article read model', async () => {
+  const record = sessionRecord({
+    id: 'session-formal',
+    targetLanguageCode: 'ja',
+    targetLanguageLabel: 'Japanese',
+    translationCommandState: {
+      requests: [{
+        id: 'legacy-request:session-formal:ja',
+        sessionId: 'session-formal',
+        sourceTranscriptRevisionId: 'source-revision:session-formal:final',
+        sourceTranscriptSnapshot: null,
+        targetLanguageCode: 'ja',
+        createdAt: 1000
+      }],
+      executions: [{
+        id: 'legacy-execution:session-formal:ja',
+        translationRequestId: 'legacy-request:session-formal:ja',
+        status: 'completed',
+        startedAt: 1000,
+        completedAt: 5000,
+        failureInfo: null
+      }],
+      outputs: [{
+        id: 'live-output:session-formal:ja',
+        executionId: 'legacy-execution:session-formal:ja',
+        sequence: 0,
+        translatedText: 'Formal paragraph one.\n\nFormal paragraph two.',
+        targetLanguageCode: 'ja',
+        providerMetadata: null,
+        createdAt: 5000,
+        completedAt: 5000,
+        sessionId: 'session-formal',
+        requestId: 'legacy-request:session-formal:ja',
+        sourceText: 'Hello source.',
+        sourceLanguageMetadata: null,
+        sourceTranscriptMetadata: {
+          revisionId: 'source-revision:session-formal:final',
+          snapshot: { sourceText: 'Hello source.' }
+        },
+        version: 1
+      }]
+    }
+  });
+  const detail = {
+    sessionRecord: record,
+    transcriptItems: [
+      transcriptItem({
+        id: 'source-final-1',
+        sessionId: 'session-formal',
+        stream: 'source',
+        status: 'final',
+        text: 'Hello source.',
+        sequence: 1
+      }),
+      transcriptItem({
+        id: 'translation-final-2',
+        sessionId: 'session-formal',
+        stream: 'translation',
+        status: 'final',
+        text: 'Legacy chunk.',
+        sequence: 2
+      })
+    ]
+  };
+  const sessionRepository = legacyRepository({
+    records: [record],
+    details: { 'session-formal': detail }
+  });
+
+  await withSessionReadServer(sessionRepository, async (baseUrl) => {
+    const response = await getJson(`${baseUrl}/api/sessions/session-formal`);
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.selectedTranslationOutput.id, 'live-output:session-formal:ja');
+    assert.equal(response.body.selectedTranslationOutput.version, 1);
+    assert.equal(response.body.readingContent.translationArticle.text, 'Formal paragraph one.\n\nFormal paragraph two.');
+    assert.deepEqual(response.body.readingContent.translationArticle.paragraphs, [
+      'Formal paragraph one.',
+      'Formal paragraph two.'
+    ]);
+    assert.equal(response.body.readingContent.translationArticle.version, 1);
+    assert.equal(response.body.readingContent.sourceTranscript.text, 'Hello source.');
+  });
+});
+
 test('GET /api/sessions/:sessionId maps missing legacy session to structured 404', async () => {
   const sessionRepository = legacyRepository();
 
@@ -406,7 +491,8 @@ test('GET /api/sessions/:sessionId does not mutate legacy input data', async () 
 async function withSessionReadServer(sessionRepository, run) {
   const dependencies = createApplicationDependencies({ sessionRepository });
   const handler = createRequestHandler({
-    sessionReadController: dependencies.sessionReadController
+    sessionReadController: dependencies.sessionReadController,
+    translationHistoryController: dependencies.translationHistoryController
   });
   const server = http.createServer(handler);
 
@@ -475,7 +561,8 @@ function sessionRecord(overrides = {}) {
     failureCategory: overrides.failureCategory ?? null,
     selectedInputDeviceId: overrides.selectedInputDeviceId ?? 'device-1',
     inputDeviceLabelSnapshot: overrides.inputDeviceLabelSnapshot ?? 'Studio Mic',
-    transcriptSummary: overrides.transcriptSummary ?? populatedSummary
+    transcriptSummary: overrides.transcriptSummary ?? populatedSummary,
+    ...(overrides.translationCommandState ? { translationCommandState: overrides.translationCommandState } : {})
   };
 
   if (Object.hasOwn(overrides, 'endedAt') && overrides.endedAt === undefined) {

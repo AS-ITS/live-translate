@@ -1,3 +1,5 @@
+import { formatTranscriptArticleText } from './transcript.js';
+
 const SUCCESS_SESSION_STATUSES = new Set(['completed', 'stopped']);
 const FAILURE_SESSION_STATUSES = new Set(['failed', 'expired']);
 
@@ -46,48 +48,7 @@ export function createTranslationCommandLifecycle({
 
     recordFinalTranscriptItems(sessionRecord, transcriptItems = []) {
       const state = stateForSession(sessions, sessionRecord);
-      const translationItems = transcriptItems.filter(isPersistableTranslationItem);
-
-      if (translationItems.length === 0) {
-        return state.outputChain;
-      }
-
-      state.outputChain = state.outputChain.then(async () => {
-        const startResult = await this.recordSessionStarted(sessionRecord);
-
-        if (!startResult.ok) {
-          return startResult;
-        }
-
-        for (const item of translationItems) {
-          const outputId = outputIdForItem(sessionRecord, item);
-
-          if (state.outputIds.has(outputId)) {
-            continue;
-          }
-
-          state.outputIds.add(outputId);
-          const result = await runCommand(onError, 'createTranslationOutput', () =>
-            translationCommandApiClient.createTranslationOutput({
-              id: outputId,
-              executionId: state.executionId,
-              sequence: item.sequence,
-              translatedText: item.text,
-              targetLanguageCode: targetLanguageCodeFor(sessionRecord),
-              providerMetadata: null,
-              createdAt: timestampOrNow(item.finalizedAt, now)
-            })
-          );
-
-          if (result.ok) {
-            state.hasSuccessfulOutput = true;
-          } else {
-            state.outputFailed = true;
-          }
-        }
-
-        return { ok: !state.outputFailed };
-      });
+      rememberFinalTranscriptItems(state, transcriptItems);
 
       return state.outputChain;
     },
@@ -110,6 +71,20 @@ export function createTranslationCommandLifecycle({
         const completedAt = timestampOrNow(sessionRecord?.endedAt ?? sessionRecord?.updatedAt, now);
 
         if (SUCCESS_SESSION_STATUSES.has(sessionRecord?.status)) {
+          const outputResult = await createFinalTranslationOutput({
+            state,
+            sessionRecord,
+            ids,
+            completedAt,
+            translationCommandApiClient,
+            onError,
+            now
+          });
+
+          if (!outputResult.ok) {
+            return outputResult;
+          }
+
           return runCommand(onError, 'completeTranslationExecution', () =>
             translationCommandApiClient.updateTranslationExecution(ids.executionId, {
               transition: 'complete',
@@ -148,7 +123,7 @@ function stateForSession(sessions, sessionRecord) {
       executionId: null,
       startPromise: null,
       outputChain: Promise.resolve({ ok: true }),
-      outputIds: new Set(),
+      finalItemsById: new Map(),
       hasSuccessfulOutput: false,
       outputFailed: false,
       finalizePromise: null
@@ -179,12 +154,88 @@ function commandIdsForSession(sessionRecord) {
   };
 }
 
-function outputIdForItem(sessionRecord, item) {
-  return `legacy-output:${sessionRecord.id}:${targetLanguageCodeFor(sessionRecord)}:${item.id}`;
+async function createFinalTranslationOutput({
+  state,
+  sessionRecord,
+  ids,
+  completedAt,
+  translationCommandApiClient,
+  onError,
+  now
+}) {
+  const translationItems = finalItemsForStream(state, 'translation');
+  const translatedText = formatTranscriptArticleText(translationItems);
+
+  if (!translatedText) {
+    return { ok: true };
+  }
+
+  const sourceItems = finalItemsForStream(state, 'source');
+  const sourceText = formatTranscriptArticleText(sourceItems);
+  const snapshot = {
+    revisionId: ids.sourceTranscriptRevisionId,
+    items: sourceItems.map(copyTranscriptItem),
+    ...(sourceText ? { sourceText } : {})
+  };
+
+  const result = await runCommand(onError, 'createTranslationOutput', () =>
+    translationCommandApiClient.createTranslationOutput({
+      id: `live-output:${sessionRecord.id}:${targetLanguageCodeFor(sessionRecord)}`,
+      executionId: ids.executionId,
+      sessionId: sessionRecord.id,
+      requestId: ids.requestId,
+      sequence: 0,
+      translatedText,
+      targetLanguageCode: targetLanguageCodeFor(sessionRecord),
+      providerMetadata: null,
+      createdAt: timestampOrNow(sessionRecord?.endedAt ?? sessionRecord?.updatedAt, now),
+      completedAt,
+      ...(sourceText ? { sourceText } : {}),
+      sourceTranscriptMetadata: {
+        revisionId: ids.sourceTranscriptRevisionId,
+        snapshot
+      }
+    })
+  );
+
+  if (result.ok) {
+    state.hasSuccessfulOutput = true;
+  } else {
+    state.outputFailed = true;
+  }
+
+  return result;
 }
 
-function isPersistableTranslationItem(item) {
-  return item?.stream === 'translation' && item.status === 'final' && typeof item.text === 'string' && item.text.length > 0;
+function rememberFinalTranscriptItems(state, transcriptItems = []) {
+  for (const item of transcriptItems) {
+    if (!isFinalTranscriptItem(item)) {
+      continue;
+    }
+
+    state.finalItemsById.set(item.id, copyTranscriptItem(item));
+  }
+}
+
+function finalItemsForStream(state, stream) {
+  return [...state.finalItemsById.values()]
+    .filter((item) => item.stream === stream)
+    .sort((first, second) => sequenceValue(first) - sequenceValue(second));
+}
+
+function isFinalTranscriptItem(item) {
+  return ['source', 'translation'].includes(item?.stream) &&
+    item.status === 'final' &&
+    typeof item.text === 'string' &&
+    item.text.trim().length > 0;
+}
+
+function copyTranscriptItem(item) {
+  return { ...item };
+}
+
+function sequenceValue(item) {
+  return Number.isFinite(item?.sequence) ? item.sequence : 0;
 }
 
 function targetLanguageCodeFor(sessionRecord) {

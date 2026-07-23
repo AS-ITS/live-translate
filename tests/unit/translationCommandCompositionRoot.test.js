@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  DEFAULT_SESSION_RECORDS_FILE,
   createApplicationDependencies,
   createProductionApplicationDependencies,
   createTranslationCommandDependencies
@@ -33,6 +34,47 @@ test('production composition exposes and injects one queue retry policy and erro
   assert.strictEqual(dependencies.translationExecutionRetryErrorClassifier, retryErrorClassifier);
   assert.strictEqual(observedWorkerOptions.translationExecutionRetryPolicy, retryPolicy);
   assert.strictEqual(observedWorkerOptions.translationExecutionRetryErrorClassifier, retryErrorClassifier);
+});
+
+test('production composition uses default file-backed session records path when env is unset', () => {
+  const calls = [];
+  const sessionRepository = sessionRepositoryDouble();
+
+  const dependencies = createProductionApplicationDependencies({
+    env: {},
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepository;
+    }
+  });
+
+  assert.strictEqual(dependencies.sessionRepository, sessionRepository);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, DEFAULT_SESSION_RECORDS_FILE);
+});
+
+test('production composition uses SESSION_RECORDS_FILE when env provides it', () => {
+  const calls = [];
+  const sessionRepository = sessionRepositoryDouble();
+
+  createProductionApplicationDependencies({
+    env: { SESSION_RECORDS_FILE: 'custom/sessions.json' },
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepository;
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, 'custom/sessions.json');
 });
 
 test('application dependencies assemble translation command graph with injected repository', () => {
@@ -1764,5 +1806,17 @@ function readRepository(overrides = {}) {
       function getSessionDetail() {
         return overrides.detail || null;
       }
+  };
+}
+
+function sessionRepositoryDouble() {
+  return {
+    createSessionRecord() {},
+    updateSessionRecord() {},
+    appendTranscriptItem() {},
+    finalizeSessionRecord() {},
+    listSessionRecords() { return []; },
+    getSessionRecord() { return null; },
+    deleteSessionRecord() { return false; }
   };
 }

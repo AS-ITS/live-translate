@@ -1,6 +1,6 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { isSupportedLanguage } from './languages.js';
+import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
@@ -397,6 +397,7 @@ async function handleRequestWithSessionReadController(
             outputs: outputs.length > 0 ? outputs : legacyTranslationFallback(session.translationOutputs),
             executions: formalHistory?.executions || []
           };
+          applyFormalOutputReadModel(session, outputs);
         } catch {
           // Translation history is an isolated read enhancement; preserve detail.
         }
@@ -702,6 +703,66 @@ function legacyTranslationFallback(outputs) {
     translatedText: Array.isArray(output.items) ? output.items.map((item) => item?.text).filter(Boolean).join('\n') : null,
     completedAt: output.completedAt ?? output.createdAt ?? null
   }));
+}
+
+function applyFormalOutputReadModel(session, outputs) {
+  const formalOutput = (Array.isArray(outputs) ? outputs : []).find((output) => output?.source === 'formal' || Number.isInteger(output?.version));
+  if (!formalOutput || typeof formalOutput.translatedText !== 'string' || formalOutput.translatedText.trim().length === 0) {
+    return;
+  }
+
+  const selectedTranslationOutput = {
+    id: formalOutput.id,
+    executionId: formalOutput.executionId,
+    translationRequestId: formalOutput.requestId,
+    requestId: formalOutput.requestId,
+    sessionId: session?.session?.id ?? null,
+    targetLanguageCode: formalOutput.targetLanguageCode ?? null,
+    targetLanguageLabel: targetLanguageLabelFor(formalOutput.targetLanguageCode),
+    status: 'completed',
+    translatedText: formalOutput.translatedText,
+    version: formalOutput.version ?? null,
+    source: 'formal',
+    items: [],
+    provider: null,
+    model: null,
+    providerMetadataAvailable: false,
+    createdAt: formalOutput.createdAt ?? formalOutput.completedAt ?? null,
+    completedAt: formalOutput.completedAt ?? formalOutput.createdAt ?? null,
+    legacy: false
+  };
+
+  session.translationOutputs = [
+    selectedTranslationOutput,
+    ...(Array.isArray(session.translationOutputs) ? session.translationOutputs : [])
+  ];
+  session.selectedTranslationOutput = selectedTranslationOutput;
+  session.readingContent = {
+    ...(session.readingContent || {}),
+    translationArticle: {
+      kind: 'translationArticle',
+      status: 'available',
+      targetLanguageCode: selectedTranslationOutput.targetLanguageCode,
+      targetLanguageLabel: selectedTranslationOutput.targetLanguageLabel,
+      version: selectedTranslationOutput.version,
+      text: formalOutput.translatedText,
+      paragraphs: paragraphsForArticleText(formalOutput.translatedText),
+      createdAt: selectedTranslationOutput.createdAt,
+      completedAt: selectedTranslationOutput.completedAt,
+      emptyReason: null
+    }
+  };
+}
+
+function paragraphsForArticleText(text) {
+  return String(text)
+    .split(/\n\s*\n/g)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+function targetLanguageLabelFor(code) {
+  return SUPPORTED_LANGUAGES.find((language) => language.code === code)?.label || null;
 }
 
 function parseSessionTranslationHistoryPath(url) {

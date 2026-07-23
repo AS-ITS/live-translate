@@ -847,8 +847,10 @@ contracts.
 
 Current state:
 
-- `MemorySessionRepository` remains the default runtime adapter.
-- `SESSION_RECORDS_FILE` enables a backend JSON file-backed SessionRepository.
+- Production runtime uses a backend JSON file-backed SessionRepository by
+  default at `data/session-records.json`, relative to the server process current
+  working directory.
+- `SESSION_RECORDS_FILE` overrides the default file path when configured.
 - File-backed session storage preserves saved sessions, transcript items, and
   translation command state across page refresh and server restart.
 - No `localStorage`.

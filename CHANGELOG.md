@@ -56,6 +56,10 @@
 
 ### Changed
 
+- Production session records now default to file-backed storage at
+  `data/session-records.json` when `SESSION_RECORDS_FILE` is unset. Explicit
+  `SESSION_RECORDS_FILE` configuration continues to override the path.
+
 - Translation glossary UI now models entries as deterministic subtitle
   replacement rules: `詞條` is the translated subtitle text to find and
   `替換成` is the displayed text. Legacy `replacementAliases` JSON remains

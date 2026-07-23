@@ -53,6 +53,7 @@ import { createGlossaryController as createDefaultGlossaryController } from './g
 import { createLiveToken } from './tokenService.js';
 
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
+export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -275,12 +276,10 @@ export function createProductionApplicationDependencies(options = {}) {
   });
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
     ? applicationOptions.sessionRepository
-    : env.SESSION_RECORDS_FILE === undefined
-      ? undefined
-      : fileSessionRepositoryFactory({
-          filePath: env.SESSION_RECORDS_FILE,
-          fileSystem: sessionRepositoryFileSystem
-        });
+    : fileSessionRepositoryFactory({
+        filePath: sessionRecordsFilePathFor(env),
+        fileSystem: sessionRepositoryFileSystem
+      });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -1043,6 +1042,10 @@ function assertFactory(factory, name) {
 
 function translationGlossaryFilePathFor(env = {}) {
   return env.TRANSLATION_GLOSSARY_FILE ?? DEFAULT_TRANSLATION_GLOSSARY_FILE;
+}
+
+function sessionRecordsFilePathFor(env = {}) {
+  return env.SESSION_RECORDS_FILE ?? DEFAULT_SESSION_RECORDS_FILE;
 }
 
 function assertExecutionProviderMap(providers) {

@@ -11,6 +11,7 @@ import { buildAudioInputConstraints, isMissingSelectedInputError } from './media
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
 const DEMO_ACCESS_TOKEN = import.meta.env?.VITE_DEMO_ACCESS_TOKEN;
+const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 
 export class LiveTranslateSession {
   constructor({
@@ -45,6 +46,10 @@ export class LiveTranslateSession {
     this.chunker = null;
     this.nextPlaybackTime = 0;
     this.playbackSources = new Set();
+    this.pendingInputTranscript = null;
+    this.pendingOutputTranscript = null;
+    this.awaitingInputTranscriptAfterTurnComplete = false;
+    this.awaitingOutputTranscriptAfterTurnComplete = false;
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
@@ -153,19 +158,50 @@ export class LiveTranslateSession {
   handleMessage(message) {
     const content = message.serverContent;
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
+    this.logLiveEvent('message.received', {
+      event: summarizeLiveEvent(message),
+      stateBefore: this.transcriptBoundaryState()
+    });
 
     if (content?.inputTranscription?.text) {
-      this.onInputTranscript?.({
+      const transcript = {
         text: content.inputTranscription.text,
-        isFinal,
+        isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
-      });
+      };
+      this.logLiveEvent('inputTranscription.callback', { transcript });
+      this.onInputTranscript?.(transcript);
+      this.pendingInputTranscript = transcript.isFinal ? null : transcript;
+      this.awaitingInputTranscriptAfterTurnComplete = false;
+    } else if (isFinal && this.pendingInputTranscript) {
+      const transcript = { ...this.pendingInputTranscript, isFinal: true };
+      this.logLiveEvent('inputTranscription.flushOnTurnComplete', { transcript });
+      this.onInputTranscript?.(transcript);
+      this.pendingInputTranscript = null;
+    } else if (isFinal) {
+      this.logLiveEvent('inputTranscription.awaitingLateText');
+      this.awaitingInputTranscriptAfterTurnComplete = true;
     }
 
     if (content?.outputTranscription?.text) {
-      this.onOutputTranscript?.({ text: content.outputTranscription.text, isFinal });
+      const transcript = {
+        text: content.outputTranscription.text,
+        isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete
+      };
+      this.logLiveEvent('outputTranscription.callback', { transcript });
+      this.onOutputTranscript?.(transcript);
+      this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
+      this.awaitingOutputTranscriptAfterTurnComplete = false;
+    } else if (isFinal && this.pendingOutputTranscript) {
+      const transcript = { ...this.pendingOutputTranscript, isFinal: true };
+      this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
+      this.onOutputTranscript?.(transcript);
+      this.pendingOutputTranscript = null;
+    } else if (isFinal) {
+      this.logLiveEvent('outputTranscription.awaitingLateText');
+      this.awaitingOutputTranscriptAfterTurnComplete = true;
     }
 
     if (content?.interrupted) {
@@ -178,6 +214,10 @@ export class LiveTranslateSession {
         this.playPcmAudio(part.inlineData.data);
       }
     }
+
+    this.logLiveEvent('message.processed', {
+      stateAfter: this.transcriptBoundaryState()
+    });
   }
 
   playPcmAudio(base64Audio) {
@@ -206,6 +246,7 @@ export class LiveTranslateSession {
 
   async stop() {
     this.closeExpected = true;
+    this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true, signalAudioEnd: true });
     this.onClose?.({ reason: 'user-stopped' });
   }
@@ -213,6 +254,7 @@ export class LiveTranslateSession {
   async handleSessionError(event) {
     const message = event?.message || event?.error?.message || 'Live API error';
     const error = event instanceof Error ? event : new Error(message);
+    this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true });
     this.onConnectionFailure?.({
       source: 'live_error',
@@ -232,6 +274,7 @@ export class LiveTranslateSession {
     const reason = event?.reason ? `: ${event.reason}` : '';
     const code = event?.code ? ` (code ${event.code})` : '';
     const error = new Error(`Live API session closed unexpectedly${reason}${code}`);
+    this.flushPendingTranscripts();
     await this.cleanup({ closeSession: false });
     this.onConnectionFailure?.({
       source: 'unexpected_close',
@@ -241,6 +284,50 @@ export class LiveTranslateSession {
       afterCleanup: true
     });
     this.onError?.(error);
+  }
+
+  flushPendingTranscripts() {
+    this.flushPendingTranscript('input');
+    this.flushPendingTranscript('output');
+  }
+
+  flushPendingTranscript(kind) {
+    const isInput = kind === 'input';
+    const pendingKey = isInput ? 'pendingInputTranscript' : 'pendingOutputTranscript';
+    const awaitingKey = isInput
+      ? 'awaitingInputTranscriptAfterTurnComplete'
+      : 'awaitingOutputTranscriptAfterTurnComplete';
+    const callback = isInput ? this.onInputTranscript : this.onOutputTranscript;
+    const pending = this[pendingKey];
+
+    if (pending) {
+      const transcript = { ...pending, isFinal: true };
+      this.logLiveEvent(`${kind}Transcription.flushPending`, { transcript });
+      callback?.(transcript);
+      this[pendingKey] = null;
+    }
+
+    this[awaitingKey] = false;
+  }
+
+  transcriptBoundaryState() {
+    return {
+      pendingInputText: this.pendingInputTranscript?.text || '',
+      pendingOutputText: this.pendingOutputTranscript?.text || '',
+      awaitingInputTranscriptAfterTurnComplete: this.awaitingInputTranscriptAfterTurnComplete,
+      awaitingOutputTranscriptAfterTurnComplete: this.awaitingOutputTranscriptAfterTurnComplete
+    };
+  }
+
+  logLiveEvent(stage, details = {}) {
+    if (!LIVE_EVENT_LOG_ENABLED) {
+      return;
+    }
+
+    console.debug('[Gemini Live event]', {
+      stage,
+      ...details
+    });
   }
 
   async cleanup({ closeSession = true, signalAudioEnd = false } = {}) {
@@ -337,6 +424,29 @@ function withTimeout(promise, timeoutMs, message) {
   });
 
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
+function summarizeLiveEvent(message) {
+  const content = message?.serverContent;
+  const parts = content?.modelTurn?.parts || [];
+
+  return {
+    topLevelKeys: objectKeys(message),
+    serverContentKeys: objectKeys(content),
+    turnComplete: Boolean(content?.turnComplete),
+    generationComplete: Boolean(content?.generationComplete),
+    interrupted: Boolean(content?.interrupted),
+    inputTranscriptionText: content?.inputTranscription?.text || '',
+    outputTranscriptionText: content?.outputTranscription?.text || '',
+    inputTranscriptionKeys: objectKeys(content?.inputTranscription),
+    outputTranscriptionKeys: objectKeys(content?.outputTranscription),
+    modelTurnPartCount: parts.length,
+    inlineAudioPartCount: parts.filter((part) => part.inlineData?.data).length
+  };
+}
+
+function objectKeys(value) {
+  return value && typeof value === 'object' ? Object.keys(value) : [];
 }
 
 function userMessageForErrorCode(code) {

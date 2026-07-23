@@ -111,10 +111,10 @@ function requireRecord(records, id) {
 }
 
 function cloneRecord(record) {
-  return {
+  return clonePlain({
     ...record,
     transcriptSummary: record.transcriptSummary ? { ...record.transcriptSummary } : record.transcriptSummary
-  };
+  });
 }
 
 function cloneTranscriptItem(item) {
@@ -131,4 +131,8 @@ function cloneTranscriptItem(item) {
         }
       : {})
   };
+}
+
+function clonePlain(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }

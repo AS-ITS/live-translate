@@ -50,7 +50,7 @@ provider-level idempotency, event publishing deduplication, multi-worker and
 distributed locking, cross-process atomicity, and metrics/observability.
 
 Phase 4A WP1 Target Language Selection is completed. The existing target-language
-allowlist and `zh-Hant` default now apply at live-token, translation-command,
+allowlist and `en` default now apply at live-token, translation-command,
 and saved-transcript retranslation HTTP boundaries. Selected values persist on
 `TranslationRequest` and `TranslationOutput`.
 

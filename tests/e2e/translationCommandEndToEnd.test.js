@@ -126,7 +126,10 @@ test('translation command persists through production HTTP path and preserves le
         nested: { preserved: true }
       },
       providerMetadataAvailable: true,
-      createdAt: '2026-07-14T01:04:00.000Z'
+      createdAt: '2026-07-14T01:04:00.000Z',
+      sourceLanguageMetadata: null,
+      sourceTranscriptMetadata: null,
+      completedAt: '2026-07-14T01:04:00.000Z'
     });
 
     assert.deepEqual(requestPayload, requestPayloadBefore);
@@ -167,6 +170,11 @@ test('translation command persists through production HTTP path and preserves le
       id: executionId,
       translationRequestId: 'request-1',
       status: 'completed',
+      providerIdempotencyKey: `translation-execution:${executionId}`,
+      providerAttemptStatus: 'not_started',
+      providerAttemptedAt: null,
+      providerCompletedAt: null,
+      providerResult: null,
       startedAt: '2026-07-14T01:02:00.000Z',
       completedAt: '2026-07-14T01:03:00.000Z',
       failureInfo: null
@@ -188,7 +196,10 @@ test('translation command persists through production HTTP path and preserves le
         provider: 'fixture-provider',
         nested: { preserved: true }
       },
-      createdAt: '2026-07-14T01:04:00.000Z'
+      createdAt: '2026-07-14T01:04:00.000Z',
+      sourceLanguageMetadata: null,
+      sourceTranscriptMetadata: null,
+      completedAt: '2026-07-14T01:04:00.000Z'
     });
     assert.equal(commandState.outputs[0].id, 'output-1');
     assert.equal(commandState.outputs[0].executionId, executionId);
@@ -262,7 +273,23 @@ test('translation command persists through production HTTP path and preserves le
         completedAt: 5000,
         legacy: true
       },
-      legacy: true
+      legacy: true,
+      translationHistory: {
+        outputs: [
+          {
+            id: 'output-1',
+            executionId,
+            targetLanguageCode: 'fr',
+            version: null,
+            completedAt: '2026-07-14T01:04:00.000Z',
+            source: 'legacy',
+            translatedText: 'Bonjour',
+            sourceLanguageCode: null,
+            createdAt: '2026-07-14T01:04:00.000Z'
+          }
+        ],
+        executions: []
+      }
     });
     assert.equal(Object.hasOwn(sessionReadResponse.body, 'translationCommandState'), false);
     assert.equal(Object.hasOwn(sessionReadResponse.body.session, 'translationCommandState'), false);

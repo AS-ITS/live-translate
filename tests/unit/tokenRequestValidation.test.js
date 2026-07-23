@@ -4,7 +4,7 @@ import { buildTokenConfig, normalizeTokenRequest } from '../../server/tokenServi
 
 test('token request validation defaults target language and echo option', () => {
   assert.deepEqual(normalizeTokenRequest({}), {
-    targetLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
     echoTargetLanguage: true
   });
 });

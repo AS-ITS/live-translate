@@ -497,7 +497,7 @@ async function handleRequestWithSessionReadController(
     enforceRateLimit(clientIp);
 
     const body = await readJson(req);
-    targetLanguageCode = body.targetLanguageCode || 'zh-Hant';
+    targetLanguageCode = body.targetLanguageCode || 'en';
     const token = await liveTokenCreator(body);
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);

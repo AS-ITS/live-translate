@@ -202,7 +202,7 @@ npm run test:live-smoke
 
 Optional environment variables:
 
-- `LIVE_SMOKE_TARGET_LANGUAGE`: target language code, defaults to `zh-Hant`
+- `LIVE_SMOKE_TARGET_LANGUAGE`: target language code, defaults to `en`
 - `LIVE_SMOKE_TIMEOUT_MS`: connection timeout in milliseconds, defaults to `15000`
 
 CI must not set `ENABLE_REAL_GEMINI_TEST=true` unless the job is explicitly

@@ -98,14 +98,14 @@ must not expose `GEMINI_API_KEY`.
 
 ```json
 {
-  "targetLanguageCode": "zh-Hant",
+  "targetLanguageCode": "en",
   "echoTargetLanguage": true
 }
 ```
 
 Fields:
 
-- `targetLanguageCode`: Optional string. Defaults to `zh-Hant`.
+- `targetLanguageCode`: Optional string. Defaults to `en`.
 - `echoTargetLanguage`: Optional boolean. Defaults to `true`.
 
 ## Response Body

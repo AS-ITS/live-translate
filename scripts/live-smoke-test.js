@@ -3,7 +3,7 @@ import { isSupportedLanguage } from '../server/languages.js';
 import { createLiveToken, LIVE_TRANSLATE_MODEL } from '../server/tokenService.js';
 
 const ENABLED = process.env.ENABLE_REAL_GEMINI_TEST === 'true';
-const TARGET_LANGUAGE = process.env.LIVE_SMOKE_TARGET_LANGUAGE || 'zh-Hant';
+const TARGET_LANGUAGE = process.env.LIVE_SMOKE_TARGET_LANGUAGE || 'en';
 const TIMEOUT_MS = Number.parseInt(process.env.LIVE_SMOKE_TIMEOUT_MS || '15000', 10);
 
 if (!ENABLED) {

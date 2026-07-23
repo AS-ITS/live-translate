@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Download, Mic, MicOff, Radio, Square } from 'lucide-react';
+import { Copy, Download, Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -27,13 +27,16 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import { toTraditionalChineseText } from './lib/chineseText.js';
 import {
   applyTranscriptEvent,
+  buildTranscriptArticleParagraphs,
   createTranscriptState,
+  describeTranscriptSegmentDecision,
+  formatTranscriptArticleText,
   finalizePendingTranscriptItems,
   resetTranscriptState,
-  transcriptItemsForStream,
-  transcriptTextForStream
+  transcriptItemsForStream
 } from './lib/transcript.js';
 import './styles.css';
 
@@ -41,6 +44,8 @@ const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒�
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
 const FEATURE_PAGES = new Set(['live', 'history']);
+const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
+const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 
 function pageFromLocation() {
   const page = window.location.hash.replace('#', '');
@@ -51,10 +56,11 @@ function App() {
   const [page, setPage] = useState(pageFromLocation);
   const [status, setStatus] = useState('idle');
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
-  const [targetLanguageCode, setTargetLanguageCode] = useState('zh-Hant');
+  const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [transcript, setTranscript] = useState(createTranscriptState);
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
+  const [copiedArticleStream, setCopiedArticleStream] = useState('');
   const [exportFormat, setExportFormat] = useState('txt');
   const [exportStream, setExportStream] = useState('translation');
   const [inputDevices, setInputDevices] = useState([]);
@@ -66,6 +72,7 @@ function App() {
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
   const [selectedTranslationHistory, setSelectedTranslationHistory] = useState(null);
   const sessionRef = useRef(null);
+  const transcriptRef = useRef(transcript);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
@@ -100,6 +107,26 @@ function App() {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
+
+  useEffect(() => () => {
+    reconnectControllerRef.current?.cancel();
+    const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
+    sessionRef.current = null;
+    reconnectSessionRef.current = null;
+    for (const session of sessions) {
+      void session?.stop().catch(() => {});
+    }
+  }, []);
+
+  useEffect(() => schedulePendingTranscriptIdleFinalize('source', transcript.source.currentPartial), [
+    transcript.source.currentPartial?.id,
+    transcript.source.currentPartial?.text
+  ]);
+
+  useEffect(() => schedulePendingTranscriptIdleFinalize('translation', transcript.translation.currentPartial), [
+    transcript.translation.currentPartial?.id,
+    transcript.translation.currentPartial?.text
+  ]);
 
   async function refreshInputDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
@@ -164,7 +191,10 @@ function App() {
       setError('');
       setDeviceMessage('');
       setTranscriptTimeOrigin(Date.now());
-      setTranscript(resetTranscriptState());
+      const resetTranscript = resetTranscriptState();
+      transcriptRef.current = resetTranscript;
+      setTranscript(() => resetTranscript);
+      setCopiedArticleStream('');
       setStatus('requesting-permission');
     }
 
@@ -322,21 +352,26 @@ function App() {
   }
 
   function applyTranscriptUpdate(update) {
-    setTranscript((current) => {
-      const next = applyTranscriptEvent(current, update);
-      const activeSessionRecordId = activeSessionRecordIdRef.current;
-      const appended = appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordId, current, next);
+    const current = transcriptRef.current;
+    const segmentDecision = describeTranscriptSegmentDecision(current, update);
+    const next = applyTranscriptEvent(current, update);
+    logTranscriptSegmentDecision(update, segmentDecision, current, next);
+    if (next === current) return;
 
-      if (appended.length > 0) {
-        const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
-        if (activeSessionRecord) {
-          void syncSessionSnapshot(activeSessionRecordId);
-          void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
-        }
+    transcriptRef.current = next;
+    const activeSessionRecordId = activeSessionRecordIdRef.current;
+    const appended = appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordId, current, next);
+    setTranscript((previous) => (
+      previous === current ? next : applyTranscriptEvent(previous, update)
+    ));
+
+    if (appended.length > 0) {
+      const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
+      if (activeSessionRecord) {
+        void syncSessionSnapshot(activeSessionRecordId);
+        void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
-
-      return next;
-    });
+    }
   }
 
   async function finalizeCurrentSessionRecord(options) {
@@ -359,9 +394,35 @@ function App() {
   }
 
   async function finalizePendingTranscriptItemsForStop() {
-    const nextTranscript = finalizePendingTranscriptItems(transcript);
+    await finalizePendingTranscriptItemsForStreams();
+  }
 
-    if (nextTranscript === transcript) {
+  function schedulePendingTranscriptIdleFinalize(stream, partial) {
+    if (!partial) {
+      return undefined;
+    }
+
+    const expectedPartial = { id: partial.id, text: partial.text };
+    const timer = window.setTimeout(() => {
+      void finalizePendingTranscriptItemsForStreams({
+        streams: [stream],
+        expectedPartialByStream: { [stream]: expectedPartial }
+      });
+    }, PENDING_TRANSCRIPT_IDLE_FINALIZE_MS);
+
+    return () => window.clearTimeout(timer);
+  }
+
+  async function finalizePendingTranscriptItemsForStreams(options = {}) {
+    const currentTranscript = transcriptRef.current;
+
+    if (!expectedPendingPartialsStillCurrent(currentTranscript, options.expectedPartialByStream)) {
+      return;
+    }
+
+    const nextTranscript = finalizePendingTranscriptItems(currentTranscript, { streams: options.streams });
+
+    if (nextTranscript === currentTranscript) {
       return;
     }
 
@@ -369,10 +430,21 @@ function App() {
     const appended = appendNewFinalTranscriptItems(
       sessionRepositoryRef.current,
       activeSessionRecordId,
-      transcript,
+      currentTranscript,
       nextTranscript
     );
-    setTranscript(nextTranscript);
+    transcriptRef.current = nextTranscript;
+    setTranscript((previous) => {
+      if (previous === currentTranscript) {
+        return nextTranscript;
+      }
+
+      if (!expectedPendingPartialsStillCurrent(previous, options.expectedPartialByStream)) {
+        return previous;
+      }
+
+      return finalizePendingTranscriptItems(previous, { streams: options.streams });
+    });
 
     if (appended.length === 0) {
       return;
@@ -383,6 +455,17 @@ function App() {
       await syncSessionSnapshot(activeSessionRecordId);
       void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
     }
+  }
+
+  function expectedPendingPartialsStillCurrent(transcriptState, expectedPartialByStream) {
+    if (!expectedPartialByStream) {
+      return true;
+    }
+
+    return Object.entries(expectedPartialByStream).every(([stream, expected]) => {
+      const currentPartial = transcriptState?.[stream]?.currentPartial;
+      return currentPartial?.id === expected.id && currentPartial.text === expected.text;
+    });
   }
 
   async function syncSessionSnapshot(sessionId) {
@@ -502,11 +585,31 @@ function App() {
     }
   }
 
+  async function copyArticle(stream) {
+    const articleText = articleTextForStream(transcript, stream);
+    if (!articleText) return;
+    try {
+      await navigator.clipboard.writeText(articleText);
+      setCopiedArticleStream(stream);
+      window.setTimeout(() => setCopiedArticleStream((current) => current === stream ? '' : current), 1500);
+    } catch {
+      setError('無法複製文章內容。');
+    }
+  }
+
+  function downloadArticle(stream) {
+    const articleText = articleTextForStream(transcript, stream);
+    if (!articleText) return;
+    downloadTextFile(articleText, buildArticleFileName(stream), 'text/plain;charset=utf-8');
+  }
+
   const sourceTranscriptItems = transcriptItemsForStream(transcript, 'source');
   const translationTranscriptItems = transcriptItemsForStream(transcript, 'translation');
   const transcriptItems = [...sourceTranscriptItems, ...translationTranscriptItems];
-  const inputTranscriptText = transcriptTextForStream(transcript, 'source');
-  const outputTranscriptText = transcriptTextForStream(transcript, 'translation');
+  const completedSourceSegments = transcript.source.finalItems;
+  const completedTranslationSegments = transcript.translation.finalItems;
+  const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
+  const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
   const canDownloadTranscript = canExportTranscript(transcriptItems, {
     format: exportFormat,
     stream: exportStream,
@@ -638,9 +741,29 @@ function App() {
           {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         </section>
 
-        <section className="transcript-grid" aria-label="即時逐字稿">
-          <TranscriptPanel title="原文語音" text={inputTranscriptText} emptyText="等待原文語音…" />
-          <TranscriptPanel title="翻譯語音" text={outputTranscriptText} emptyText="等待翻譯語音…" />
+        <section className="transcript-grid" aria-label="文章版閱讀區">
+          <ArticlePanel
+            title="原文文章"
+            stream="source"
+            paragraphs={sourceArticleParagraphs}
+            currentPartial={traditionalChineseTranscriptItem(transcript.source.currentPartial)}
+            currentLabel="辨識中…"
+            emptyText="尚無原文內容。"
+            copied={copiedArticleStream === 'source'}
+            onCopy={() => copyArticle('source')}
+            onExport={() => downloadArticle('source')}
+          />
+          <ArticlePanel
+            title="翻譯文章"
+            stream="translation"
+            paragraphs={translationArticleParagraphs}
+            currentPartial={transcript.translation.currentPartial}
+            currentLabel="翻譯中…"
+            emptyText="尚無翻譯內容。"
+            copied={copiedArticleStream === 'translation'}
+            onCopy={() => copyArticle('translation')}
+            onExport={() => downloadArticle('translation')}
+          />
         </section>
       </section>
 
@@ -660,6 +783,23 @@ function App() {
   );
 }
 
+function logTranscriptSegmentDecision(update, decision, previous, next) {
+  if (!TRANSCRIPT_SEGMENT_LOG_ENABLED) {
+    return;
+  }
+
+  const streamState = next?.[update.stream] || previous?.[update.stream];
+  console.debug('[Transcript segmenter]', {
+    stream: update.stream,
+    inputText: update.stream === 'source' ? update.text : '',
+    outputText: update.stream === 'translation' ? update.text : '',
+    turnFinal: Boolean(update.isFinal),
+    decision,
+    completedSegments: streamState?.finalItems?.map((item) => item.text) || [],
+    pendingText: streamState?.currentPartial?.text || ''
+  });
+}
+
 function reconnectErrorMessage(result) {
   if (result?.decision?.stopReason === 'max_attempts_exceeded') {
     return RECONNECT_EXHAUSTED_MESSAGE;
@@ -668,11 +808,68 @@ function reconnectErrorMessage(result) {
   return RECONNECT_FAILED_MESSAGE;
 }
 
-function TranscriptPanel({ title, text, emptyText }) {
+function articleTextForStream(transcript, stream) {
+  const articleText = formatTranscriptArticleText(transcript?.[stream]?.finalItems || []);
+  return stream === 'source' ? toTraditionalChineseText(articleText) : articleText;
+}
+
+function traditionalChineseTranscriptItem(item) {
+  if (!item) {
+    return item;
+  }
+
+  return {
+    ...item,
+    text: toTraditionalChineseText(item.text)
+  };
+}
+
+function buildArticleFileName(stream) {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  return `live-translate-article-${stream}-${stamp}.txt`;
+}
+
+function ArticlePanel({
+  title,
+  stream,
+  paragraphs,
+  currentPartial,
+  currentLabel,
+  emptyText,
+  copied,
+  onCopy,
+  onExport
+}) {
+  const hasArticle = paragraphs.length > 0;
+
   return (
     <article className="transcript-panel">
-      <h2>{title}</h2>
-      <p className={text ? 'transcript-text' : 'transcript-text empty'}>{text || emptyText}</p>
+      <div className="article-panel-header">
+        <h2>{title}</h2>
+        <div className="article-actions">
+          <button className="button detail-button" type="button" onClick={onCopy} disabled={!hasArticle}>
+            <Copy size={16} aria-hidden="true" />
+            {copied ? '已複製' : '複製'}
+          </button>
+          <button className="button detail-button" type="button" onClick={onExport} disabled={!hasArticle}>
+            <Download size={16} aria-hidden="true" />
+            匯出 TXT
+          </button>
+        </div>
+      </div>
+      {hasArticle ? (
+        <div className="article-content" aria-label={`${title}內容`}>
+          {paragraphs.map((paragraph, index) => (
+            <p key={`${stream}-article-${index}`}>{paragraph}</p>
+          ))}
+        </div>
+      ) : null}
+      {currentPartial ? (
+        <p className="transcript-current"><span>{currentLabel}</span>{currentPartial.text}</p>
+      ) : null}
+      {!hasArticle && !currentPartial ? (
+        <p className="transcript-text empty">{`${emptyText} 等待完成片段。`}</p>
+      ) : null}
     </article>
   );
 }
@@ -693,7 +890,7 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
         <ol className="history-list">
           {records.map((record) => (
             <li className="history-item" key={record.id}>
-              <article aria-label={`${historyLanguageLabel(record)} ${historyStatusLabel(record.status)} session`}>
+              <article aria-label={`${historyLanguageLabel(record)} ${historyStatusLabel(record.status)}工作階段`}>
                 <div className="history-item-header">
                   <div>
                     <h3>{historyLanguageLabel(record)}</h3>
@@ -1080,7 +1277,7 @@ function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguage
       <label className="field"><span>篩選輸出語言</span><select value={targetLanguageCode} onChange={(event) => onTargetLanguageCodeChange(event.target.value)}><option value="">所有語言</option>{languageCodes.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
       {translations.length === 0 ? <p className="history-empty">沒有符合此語言的歷史翻譯。</p> : <ol className="session-transcript-list">{translations.map((item) => (
         <li key={`${item.request.id}:${item.execution?.id || 'pending'}`}>
-          <p><strong>{item.request.targetLanguageCode}</strong> · {item.execution?.status || 'queued'}</p>
+          <p><strong>{item.request.targetLanguageCode}</strong> · {executionStatusLabel(item.execution?.status || 'queued')}</p>
           <p>{item.request.sourceText || '無法取得原文。'}</p>
           {item.output ? <p>{item.output.translatedText}</p> : null}
           {item.execution?.failureInfo?.reason ? <p className="history-reason">原因：{item.execution.failureInfo.reason}</p> : null}
@@ -1108,9 +1305,9 @@ function historyStatusLabel(status) {
 
 function executionStatusLabel(status) {
   const labels = {
-    queued: '已排隊',
-    running: '執行中',
-    processing: '執行中',
+    queued: '已排入佇列',
+    running: '處理中',
+    processing: '處理中',
     completed: '已完成',
     failed: '失敗',
     cancelled: '已取消'

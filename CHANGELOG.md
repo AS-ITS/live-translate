@@ -54,7 +54,19 @@
 
 ## Unreleased
 
+### Changed
+
+- Live translation now defaults the target language to English (`en`) in the UI
+  and live-token fallback. Source article reading, copy, and TXT export now
+  normalize Chinese text to Taiwan Traditional Chinese while preserving the
+  canonical transcript items.
+
 ### Added
+
+- Live transcript panels now default to local article-style reading: final source
+  and translation segments render as deterministic paragraphs, pending text
+  remains a separate recognition/translation status, and raw transcript export
+  remains unchanged.
 
 - Translation history UI is now a dedicated `#history` page alongside the
   `#live` workspace. Navigation preserves the active session, selected history

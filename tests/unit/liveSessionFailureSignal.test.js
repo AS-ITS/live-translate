@@ -111,6 +111,122 @@ test('duplicate failure signals do not create duplicate pending schedules', asyn
   assert.equal(timer.pendingCount(), 1);
 });
 
+test('turn completion finalizes preceding input and output transcript partials', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'first source sentence' },
+      outputTranscription: { text: 'first translated sentence' }
+    }
+  });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+
+  assert.deepEqual(inputEvents, [
+    { text: 'first source sentence', isFinal: false },
+    { text: 'first source sentence', isFinal: true }
+  ]);
+  assert.deepEqual(outputEvents, [
+    { text: 'first translated sentence', isFinal: false },
+    { text: 'first translated sentence', isFinal: true }
+  ]);
+});
+
+test('rapid consecutive live transcript turns emit every completed source and translation segment', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  for (const [sourceText, translationText] of [
+    ['第一句', '第一句翻譯'],
+    ['第二句', '第二句翻譯'],
+    ['第三句', '第三句翻譯']
+  ]) {
+    session.handleMessage({
+      serverContent: {
+        inputTranscription: { text: sourceText },
+        outputTranscription: { text: translationText }
+      }
+    });
+    session.handleMessage({ serverContent: { turnComplete: true } });
+  }
+
+  assert.deepEqual(inputEvents.filter((event) => event.isFinal).map((event) => event.text), [
+    '第一句',
+    '第二句',
+    '第三句'
+  ]);
+  assert.deepEqual(outputEvents.filter((event) => event.isFinal).map((event) => event.text), [
+    '第一句翻譯',
+    '第二句翻譯',
+    '第三句翻譯'
+  ]);
+});
+
+test('turn completion received before transcripts finalizes the next source and translation segments', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({ serverContent: { turnComplete: true } });
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'late source sentence' },
+      outputTranscription: { text: 'late translated sentence' }
+    }
+  });
+
+  assert.deepEqual(inputEvents, [{ text: 'late source sentence', isFinal: true }]);
+  assert.deepEqual(outputEvents, [{ text: 'late translated sentence', isFinal: true }]);
+});
+
+test('session stop flushes pending source and translation transcripts once', async () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+  session.cleanup = async () => {};
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'last source' },
+      outputTranscription: { text: 'last translation' }
+    }
+  });
+  await session.stop();
+  await session.stop();
+
+  assert.deepEqual(inputEvents, [
+    { text: 'last source', isFinal: false },
+    { text: 'last source', isFinal: true }
+  ]);
+  assert.deepEqual(outputEvents, [
+    { text: 'last translation', isFinal: false },
+    { text: 'last translation', isFinal: true }
+  ]);
+});
+
 function createTestSession({ events = [], onConnectionFailure, onError, onClose } = {}) {
   const session = new LiveTranslateSession({
     targetLanguageCode: 'ja',

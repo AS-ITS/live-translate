@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyTranscriptEvent,
+  buildTranscriptArticleParagraphs,
   createTranscriptState,
+  describeTranscriptSegmentDecision,
+  formatTranscriptArticleText,
   finalizePendingTranscriptItems,
   resetTranscriptState,
   transcriptItemsForStream,
@@ -145,6 +148,66 @@ test('finalizes pending transcript items when a session stops', () => {
   ]);
 });
 
+test('finalizes only pending source transcript items when requested', () => {
+  const sourcePartial = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text: 'source awaiting idle final',
+    isFinal: false,
+    now: 100
+  });
+  const bothPartials = applyTranscriptEvent(sourcePartial, {
+    stream: 'translation',
+    text: 'translation still pending',
+    isFinal: false,
+    now: 150
+  });
+  const finalized = finalizePendingTranscriptItems(bothPartials, { streams: ['source'], now: 300 });
+
+  assert.equal(finalized.source.currentPartial, null);
+  assert.equal(finalized.translation.currentPartial.text, 'translation still pending');
+  assert.deepEqual(finalized.source.finalItems, [{
+    id: 'source-1',
+    stream: 'source',
+    status: 'final',
+    text: 'source awaiting idle final',
+    sequence: 1,
+    startedAt: 100,
+    finalizedAt: 300
+  }]);
+  assert.deepEqual(finalized.translation.finalItems, []);
+});
+
+test('finalizes only pending translation transcript items when requested', () => {
+  const sourcePartial = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text: 'source still pending',
+    isFinal: false,
+    now: 100
+  });
+  const bothPartials = applyTranscriptEvent(sourcePartial, {
+    stream: 'translation',
+    text: 'translation awaiting idle final',
+    isFinal: false,
+    languageCode: 'ja',
+    now: 150
+  });
+  const finalized = finalizePendingTranscriptItems(bothPartials, { streams: ['translation'], now: 350 });
+
+  assert.equal(finalized.source.currentPartial.text, 'source still pending');
+  assert.equal(finalized.translation.currentPartial, null);
+  assert.deepEqual(finalized.source.finalItems, []);
+  assert.deepEqual(finalized.translation.finalItems, [{
+    id: 'translation-2',
+    stream: 'translation',
+    status: 'final',
+    text: 'translation awaiting idle final',
+    sequence: 2,
+    startedAt: 150,
+    finalizedAt: 350,
+    languageCode: 'ja'
+  }]);
+});
+
 test('ignore empty transcript', () => {
   const state = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source',
@@ -223,6 +286,33 @@ test('avoid duplicate final append', () => {
   assert.equal(duplicate.nextSequence, 2);
 });
 
+test('a repeated final does not discard the next pending segment', () => {
+  const first = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source', text: 'first segment', isFinal: true, now: 100
+  });
+  const pending = applyTranscriptEvent(first, {
+    stream: 'source', text: 'second segment', isFinal: false, now: 200
+  });
+  const duplicate = applyTranscriptEvent(pending, {
+    stream: 'source', text: 'first segment', isFinal: true, now: 300
+  });
+
+  assert.deepEqual(duplicate.source.finalItems.map((item) => item.text), ['first segment']);
+  assert.equal(duplicate.source.currentPartial.text, 'second segment');
+});
+
+test('a repeated partial after final does not create a new pending segment', () => {
+  const final = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'translation', text: 'completed translation', isFinal: true, now: 100
+  });
+  const duplicate = applyTranscriptEvent(final, {
+    stream: 'translation', text: 'completed translation', isFinal: false, now: 200
+  });
+
+  assert.equal(duplicate, final);
+  assert.equal(duplicate.translation.currentPartial, null);
+});
+
 test('final does not overwrite previous final', () => {
   const first = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source',
@@ -247,6 +337,162 @@ test('final does not overwrite previous final', () => {
   assert.deepEqual(final.source.finalItems.map((item) => item.text), ['hello', 'new part']);
 });
 
+test('accumulates completed source and translation segments while keeping each current partial separate', () => {
+  let state = createTranscriptState();
+  for (const event of [
+    { stream: 'source', text: '第一句', isFinal: true, now: 100 },
+    { stream: 'translation', text: '第一句翻譯', isFinal: true, now: 110 },
+    { stream: 'source', text: '第二句', isFinal: true, now: 200 },
+    { stream: 'translation', text: '第二句翻譯', isFinal: true, now: 210 },
+    { stream: 'source', text: '第三句', isFinal: true, now: 300 },
+    { stream: 'translation', text: '第三句翻譯', isFinal: true, now: 310 },
+    { stream: 'source', text: '第四句辨識中', isFinal: false, now: 400 },
+    { stream: 'translation', text: '第四句翻譯中', isFinal: false, now: 410 }
+  ]) {
+    state = applyTranscriptEvent(state, event);
+  }
+
+  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句', '第二句', '第三句']);
+  assert.equal(state.source.currentPartial.text, '第四句辨識中');
+  assert.deepEqual(state.translation.finalItems.map((item) => item.text), ['第一句翻譯', '第二句翻譯', '第三句翻譯']);
+  assert.equal(state.translation.currentPartial.text, '第四句翻譯中');
+});
+
+test('segments real-style partial-only turns without relying on turn completion', () => {
+  let state = createTranscriptState();
+  for (const event of [
+    { stream: 'source', text: '第一句', isFinal: false, now: 100 },
+    { stream: 'translation', text: '第一句翻譯', isFinal: false, now: 110 },
+    { stream: 'source', text: '第二句', isFinal: false, now: 900 },
+    { stream: 'translation', text: '第二句翻譯', isFinal: false, now: 910 },
+    { stream: 'source', text: '第三句', isFinal: false, now: 1700 },
+    { stream: 'translation', text: '第三句翻譯', isFinal: false, now: 1710 }
+  ]) {
+    state = applyTranscriptEvent(state, event);
+  }
+
+  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句', '第二句']);
+  assert.equal(state.source.currentPartial.text, '第三句');
+  assert.deepEqual(state.translation.finalItems.map((item) => item.text), ['第一句翻譯', '第二句翻譯']);
+  assert.equal(state.translation.currentPartial.text, '第三句翻譯');
+
+  const stopped = finalizePendingTranscriptItems(state, { now: 2500 });
+  assert.deepEqual(stopped.source.finalItems.map((item) => item.text), ['第一句', '第二句', '第三句']);
+  assert.deepEqual(stopped.translation.finalItems.map((item) => item.text), ['第一句翻譯', '第二句翻譯', '第三句翻譯']);
+});
+
+test('uses only the delta when live transcription sends cumulative full text', () => {
+  let state = createTranscriptState();
+  state = applyTranscriptEvent(state, { stream: 'source', text: '第一句', isFinal: false, now: 100 });
+
+  const secondDecision = describeTranscriptSegmentDecision(state, {
+    stream: 'source',
+    text: '第一句第二句',
+    isFinal: false,
+    now: 1000
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'source',
+    text: '第一句第二句',
+    isFinal: false,
+    now: 1000
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'source',
+    text: '第一句第二句第三句',
+    isFinal: false,
+    now: 1900
+  });
+
+  assert.equal(secondDecision.action, 'delta');
+  assert.equal(secondDecision.segmentText, '第二句');
+  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句', '第二句']);
+  assert.equal(state.source.currentPartial.text, '第三句');
+
+  const duplicate = applyTranscriptEvent(state, {
+    stream: 'source',
+    text: '第一句第二句第三句',
+    isFinal: false,
+    now: 2000
+  });
+  assert.equal(duplicate, state);
+});
+
+test('article paragraphs use only final items and preserve sequence order', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'pending item', status: 'partial', sequence: 2 }),
+    articleItem({ text: 'third', sequence: 3 }),
+    articleItem({ text: 'first', sequence: 1 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['first third']);
+});
+
+test('article paragraphs split on explicit blank lines', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'first paragraph\n\nsecond paragraph', sequence: 1 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['first paragraph', 'second paragraph']);
+});
+
+test('article paragraphs keep short speech gaps in the same paragraph', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'before short pause', sequence: 1, startedAt: 0, finalizedAt: 100 }),
+    articleItem({ text: 'after short pause', sequence: 2, startedAt: 3100, finalizedAt: 3200 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['before short pause after short pause']);
+});
+
+test('article paragraphs apply the same short-gap grouping to translated items', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ stream: 'translation', text: 'translated before short pause', sequence: 1, startedAt: 0, finalizedAt: 100 }),
+    articleItem({ stream: 'translation', text: 'translated after short pause', sequence: 2, startedAt: 3100, finalizedAt: 3200 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['translated before short pause translated after short pause']);
+});
+
+test('article paragraphs split after paragraph-length pauses', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'before paragraph pause', sequence: 1, startedAt: 0, finalizedAt: 100 }),
+    articleItem({ text: 'after paragraph pause', sequence: 2, startedAt: 8100, finalizedAt: 8200 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['before paragraph pause', 'after paragraph pause']);
+});
+
+test('article paragraphs keep short finalized segments in one readable paragraph', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'one', sequence: 1 }),
+    articleItem({ text: 'two', sequence: 2 }),
+    articleItem({ text: 'three', sequence: 3 }),
+    articleItem({ text: 'four', sequence: 4 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['one two three four']);
+});
+
+test('article paragraphs split before exceeding max character count', () => {
+  const longText = 'x'.repeat(900);
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: longText, sequence: 1 }),
+    articleItem({ text: 'next', sequence: 2 })
+  ]);
+
+  assert.deepEqual(paragraphs, [longText, 'next']);
+});
+
+test('article text joins paragraphs with blank lines for copy and export', () => {
+  const text = formatTranscriptArticleText([
+    articleItem({ text: 'first\n\nsecond', sequence: 1 }),
+    articleItem({ text: 'third', sequence: 2, startedAt: 9000, finalizedAt: 9100 })
+  ]);
+
+  assert.equal(text, 'first\n\nsecond\n\nthird');
+});
+
 test('reset clears transcript state', () => {
   const populated = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source',
@@ -258,3 +504,16 @@ test('reset clears transcript state', () => {
 
   assert.deepEqual(reset, createTranscriptState());
 });
+
+function articleItem(overrides = {}) {
+  return {
+    id: `item-${overrides.sequence ?? 1}`,
+    stream: 'source',
+    status: 'final',
+    text: 'text',
+    sequence: 1,
+    startedAt: 0,
+    finalizedAt: 100,
+    ...overrides
+  };
+}

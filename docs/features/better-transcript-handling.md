@@ -185,6 +185,10 @@ If the SDK event does not expose a reliable partial/final flag:
 - Final transcript text must not be replaced by later partial transcript events.
 - Partial transcript text may be replaced in place as newer partial events
   arrive.
+- Render completed items as an ordered, accumulating history. Render the one
+  current partial separately at the bottom with an in-progress label.
+- Source and translation histories and current partials are rendered from their
+  own stream state; completing one stream must not clear the other's history.
 - Empty transcript events should cause no visible change.
 - Stopping a session should keep the current transcript visible on the screen,
   matching the current demo expectation unless implementation review shows the

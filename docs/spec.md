@@ -73,7 +73,7 @@ The MVP includes:
 ## Functional Requirements
 
 - The user can select one supported target language before starting a session.
-- The default target language is Traditional Chinese (`zh-Hant`).
+- The default target language is English (`en`).
 - The user can start a live translation session.
 - The browser requests microphone permission before streaming audio.
 - The browser streams microphone audio to Gemini Live API while the session is
@@ -102,7 +102,7 @@ The MVP includes:
 ## User Flow
 
 1. The user opens the web app.
-2. The user selects a target language or keeps the default `zh-Hant`.
+2. The user selects a target language or keeps the default `en`.
 3. The user clicks start.
 4. The browser requests microphone permission.
 5. The frontend requests an ephemeral token from `POST /api/live-token`.
@@ -124,7 +124,7 @@ The MVP includes:
 - French: `fr`
 - German: `de`
 
-Default target language: `zh-Hant`.
+Default target language: `en`.
 
 ## Future Enhancements
 

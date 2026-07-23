@@ -1,5 +1,4 @@
 const STREAMS = ['source', 'translation'];
-const CUMULATIVE_EXTENSION_COMMIT_MS = 750;
 const ARTICLE_PARAGRAPH_PAUSE_GAP_MS = 8000;
 const ARTICLE_MAX_CHARS_PER_PARAGRAPH = 900;
 
@@ -300,7 +299,7 @@ function decideTranscriptEvent(state, event) {
 
     if (currentPartial && cumulativeDelta.text.startsWith(currentPartial.text)) {
       const currentDelta = cumulativeDelta.text.slice(currentPartial.text.length).trim();
-      if (currentDelta && shouldCommitCumulativeExtension(currentPartial, event, currentDelta)) {
+      if (currentDelta && shouldCommitCumulativeExtension(currentPartial, currentDelta)) {
         return {
           action: 'delta',
           reason: 'cumulative-delta-extends-current-pending',
@@ -320,7 +319,7 @@ function decideTranscriptEvent(state, event) {
 
   if (currentPartial) {
     const currentExtensionDelta = currentPartialExtensionDelta(currentPartial.text, event.text);
-    if (currentExtensionDelta && shouldCommitCumulativeExtension(currentPartial, event, currentExtensionDelta)) {
+    if (currentExtensionDelta && shouldCommitCumulativeExtension(currentPartial, currentExtensionDelta)) {
       return {
         action: 'delta',
         reason: 'incoming-text-extends-current-pending-as-cumulative-transcript',
@@ -390,17 +389,12 @@ function currentPartialExtensionDelta(currentText, incomingText) {
   return incomingText.slice(currentText.length).trim();
 }
 
-function shouldCommitCumulativeExtension(currentPartial, event, deltaText) {
+function shouldCommitCumulativeExtension(currentPartial, deltaText) {
   if (!deltaText) {
     return false;
   }
 
-  if (endsWithSegmentBoundary(currentPartial.text)) {
-    return true;
-  }
-
-  const now = eventTime(event);
-  return now - currentPartial.startedAt >= CUMULATIVE_EXTENSION_COMMIT_MS && deltaText.length >= 2;
+  return endsWithSegmentBoundary(currentPartial.text);
 }
 
 function endsWithSegmentBoundary(text) {

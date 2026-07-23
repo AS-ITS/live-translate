@@ -283,6 +283,35 @@ test('live article panels show completed paragraphs and keep pending text as sta
   await expect(translationPanel.locator('.transcript-current')).toHaveText('翻譯中…第四句翻譯中');
 });
 
+test('cumulative sentence translation keeps the ending in the current panel and article', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: {
+        outputTranscription: { text: '這是' }
+      }
+    });
+    session.emitMessage({
+      serverContent: {
+        outputTranscription: { text: '這是一個完整句末' }
+      }
+    });
+  });
+
+  const translationPanel = page.locator('.transcript-panel').nth(1);
+  await expect(translationPanel.locator('.transcript-current')).toHaveText('翻譯中…這是一個完整句末');
+  await expect(translationPanel.locator('.article-content')).toHaveCount(0);
+
+  await emitTurnComplete(page);
+
+  await expect(translationPanel.locator('.transcript-current')).toHaveCount(0);
+  await expect(translationPanel.locator('.article-content')).toContainText('這是一個完整句末');
+});
+
 test('idle pending transcripts are promoted into article paragraphs', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();

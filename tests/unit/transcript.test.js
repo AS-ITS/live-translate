@@ -381,41 +381,86 @@ test('segments real-style partial-only turns without relying on turn completion'
   assert.deepEqual(stopped.translation.finalItems.map((item) => item.text), ['第一句翻譯', '第二句翻譯', '第三句翻譯']);
 });
 
-test('uses only the delta when live transcription sends cumulative full text', () => {
+test('keeps cumulative partial extensions in one pending segment until a sentence boundary', () => {
   let state = createTranscriptState();
-  state = applyTranscriptEvent(state, { stream: 'source', text: '第一句', isFinal: false, now: 100 });
+  state = applyTranscriptEvent(state, { stream: 'translation', text: '這是', isFinal: false, now: 100 });
+
+  const extensionDecision = describeTranscriptSegmentDecision(state, {
+    stream: 'translation',
+    text: '這是一個完整句末',
+    isFinal: false,
+    now: 1000
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'translation',
+    text: '這是一個完整句末',
+    isFinal: false,
+    now: 1000
+  });
+
+  assert.equal(extensionDecision.action, 'partial');
+  assert.equal(extensionDecision.segmentText, '這是一個完整句末');
+  assert.deepEqual(state.translation.finalItems, []);
+  assert.equal(state.translation.currentPartial.text, '這是一個完整句末');
+  assert.equal(state.nextSequence, 2);
+});
+
+test('uses only the delta after a sentence boundary when live transcription sends cumulative full text', () => {
+  let state = createTranscriptState();
+  state = applyTranscriptEvent(state, { stream: 'source', text: '第一句。', isFinal: false, now: 100 });
 
   const secondDecision = describeTranscriptSegmentDecision(state, {
     stream: 'source',
-    text: '第一句第二句',
+    text: '第一句。第二句。',
     isFinal: false,
-    now: 1000
+    now: 200
   });
   state = applyTranscriptEvent(state, {
     stream: 'source',
-    text: '第一句第二句',
+    text: '第一句。第二句。',
     isFinal: false,
-    now: 1000
+    now: 200
   });
   state = applyTranscriptEvent(state, {
     stream: 'source',
-    text: '第一句第二句第三句',
+    text: '第一句。第二句。第三句',
     isFinal: false,
-    now: 1900
+    now: 300
   });
 
   assert.equal(secondDecision.action, 'delta');
-  assert.equal(secondDecision.segmentText, '第二句');
-  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句', '第二句']);
+  assert.equal(secondDecision.segmentText, '第二句。');
+  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句。', '第二句。']);
   assert.equal(state.source.currentPartial.text, '第三句');
 
   const duplicate = applyTranscriptEvent(state, {
     stream: 'source',
-    text: '第一句第二句第三句',
+    text: '第一句。第二句。第三句',
     isFinal: false,
-    now: 2000
+    now: 400
   });
   assert.equal(duplicate, state);
+});
+
+test('finalizing cumulative pending text preserves the full sentence ending in article text', () => {
+  let state = createTranscriptState();
+  state = applyTranscriptEvent(state, {
+    stream: 'translation',
+    text: '這是',
+    isFinal: false,
+    now: 100
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'translation',
+    text: '這是一個完整句末',
+    isFinal: false,
+    now: 1000
+  });
+
+  const finalized = finalizePendingTranscriptItems(state, { streams: ['translation'], now: 1500 });
+
+  assert.deepEqual(finalized.translation.finalItems.map((item) => item.text), ['這是一個完整句末']);
+  assert.equal(formatTranscriptArticleText(finalized.translation.finalItems), '這是一個完整句末');
 });
 
 test('article paragraphs use only final items and preserve sequence order', () => {

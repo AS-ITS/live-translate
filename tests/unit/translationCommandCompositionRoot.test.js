@@ -77,6 +77,46 @@ test('production composition uses SESSION_RECORDS_FILE when env provides it', ()
   assert.equal(calls[0].filePath, 'custom/sessions.json');
 });
 
+test('application server composition uses default file-backed session records path', () => {
+  const calls = [];
+  const sessionRepository = sessionRepositoryDouble();
+
+  const dependencies = createApplicationDependencies({
+    env: {},
+    translationRepository: repository(),
+    requestHandlerFactory() {
+      return function requestHandler() {};
+    },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepository;
+    }
+  });
+
+  assert.strictEqual(dependencies.sessionRepository, sessionRepository);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, DEFAULT_SESSION_RECORDS_FILE);
+});
+
+test('application server composition uses SESSION_RECORDS_FILE when env provides it', () => {
+  const calls = [];
+
+  createApplicationDependencies({
+    env: { SESSION_RECORDS_FILE: 'custom/dev-sessions.json' },
+    translationRepository: repository(),
+    requestHandlerFactory() {
+      return function requestHandler() {};
+    },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepositoryDouble();
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, 'custom/dev-sessions.json');
+});
+
 test('application dependencies assemble translation command graph with injected repository', () => {
   const translationRepository = repository();
   const domainEventPublisher = publisher();

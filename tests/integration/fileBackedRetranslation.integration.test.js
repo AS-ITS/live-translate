@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -7,6 +7,58 @@ import { createApplicationDependencies } from '../../server/compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../../src/application/sessionSnapshotSyncService.js';
 import { createFakeTranslationExecutionProviderResolver } from '../../src/infrastructure/fakeTranslationExecutionProviderResolver.js';
 import { createFileSessionRepository } from '../../src/infrastructure/fileSessionRepository.js';
+
+test('application server composition reads existing file-backed sessions into history', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-file-history-'));
+  const filePath = join(directory, 'data', 'session-records.json');
+  await mkdir(join(directory, 'data'), { recursive: true });
+  await writeFile(filePath, JSON.stringify({
+    schemaVersion: 1,
+    records: [{
+      id: 'session-persisted',
+      startedAt: 1000,
+      endedAt: 2000,
+      durationMs: 1000,
+      targetLanguageCode: 'ja',
+      targetLanguageLabel: 'Japanese',
+      status: 'stopped',
+      failureReason: null,
+      failureCategory: null,
+      transcriptSummary: {
+        totalItems: 1,
+        sourceFinalCount: 1,
+        translationFinalCount: 0,
+        sourcePartialCount: 0,
+        translationPartialCount: 0,
+        hasTranscript: true
+      }
+    }],
+    transcriptItems: {
+      'session-persisted': [{
+        id: 'source-1',
+        sessionId: 'session-persisted',
+        stream: 'source',
+        status: 'final',
+        text: 'Hello persisted history',
+        sequence: 1,
+        startedAt: 1000,
+        finalizedAt: 2000
+      }]
+    }
+  }), 'utf8');
+
+  const dependencies = createApplicationDependencies({
+    env: { SESSION_RECORDS_FILE: filePath },
+    requestHandlerFactory() {
+      return function requestHandler() {};
+    }
+  });
+
+  const history = await dependencies.sessionReadController.listSessions();
+  assert.deepEqual(history.map((record) => record.id), ['session-persisted']);
+  assert.equal(history[0].status, 'stopped');
+  assert.equal(history[0].transcriptSummary.hasTranscript, true);
+});
 
 test('file-backed session snapshot survives dependency restart and supports canonical retranslation', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-file-retranslation-'));

@@ -14,3 +14,4 @@ pnpm-debug.log*
 translation-execution-queue.json
 translation-execution-dead-letter-queue.json
 translation-glossary.json
+data/

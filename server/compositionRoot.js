@@ -101,6 +101,8 @@ export function createApplicationDependencies(options = {}) {
     glossaryControllerFactory = createDefaultGlossaryController,
     translationGlossaryFactory = createTranslationGlossary,
     translationGlossaryFileSystem = fileSystem,
+    fileSessionRepositoryFactory = createFileSessionRepository,
+    sessionRepositoryFileSystem = fileSystem,
     liveTokenCreator,
     ...sessionReadOptions
   } = options;
@@ -118,7 +120,17 @@ export function createApplicationDependencies(options = {}) {
   const resolvedLiveTokenCreator = liveTokenCreator === undefined
     ? (body) => createLiveToken(body, { glossary: translationGlossary })
     : liveTokenCreator;
-  const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
+  const sessionReadDependencies = createSessionReadDependencies({
+    ...sessionReadOptions,
+    ...(shouldUseDefaultFileSessionRepository({ requestHandlerFactory, sessionReadOptions })
+      ? {
+          sessionRepository: fileSessionRepositoryFactory({
+            filePath: sessionRecordsFilePathFor(env),
+            fileSystem: sessionRepositoryFileSystem
+          })
+        }
+      : {})
+  });
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
       ? translationRepository
@@ -1046,6 +1058,12 @@ function translationGlossaryFilePathFor(env = {}) {
 
 function sessionRecordsFilePathFor(env = {}) {
   return env.SESSION_RECORDS_FILE ?? DEFAULT_SESSION_RECORDS_FILE;
+}
+
+function shouldUseDefaultFileSessionRepository({ requestHandlerFactory, sessionReadOptions }) {
+  return Boolean(requestHandlerFactory) &&
+    !Object.prototype.hasOwnProperty.call(sessionReadOptions, 'sessionRepository') &&
+    !Object.prototype.hasOwnProperty.call(sessionReadOptions, 'sessionReadRepository');
 }
 
 function assertExecutionProviderMap(providers) {

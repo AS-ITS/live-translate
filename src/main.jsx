@@ -109,6 +109,12 @@ function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  useEffect(() => {
+    if (page === 'history') {
+      void refreshHistoryRecords();
+    }
+  }, [page]);
+
   useEffect(() => () => {
     reconnectControllerRef.current?.cancel();
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);

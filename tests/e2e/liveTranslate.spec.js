@@ -431,6 +431,10 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(detail.getByText('saved source detail')).toBeVisible();
   await expect(detail.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
   await expect(detail.getByLabel('翻譯逐字稿').getByText('saved translation detail')).toBeVisible();
+  await expect(detail.getByLabel('原文逐字稿').locator('.session-transcript-article')).toContainText('saved source detail');
+  await expect(detail.getByLabel('翻譯逐字稿').locator('.session-transcript-article')).toContainText('saved translation detail');
+  await expect(detail.getByLabel('原文逐字稿').locator('.session-transcript-list')).toHaveCount(0);
+  await expect(detail.getByLabel('翻譯逐字稿').locator('.session-transcript-list')).toHaveCount(0);
   await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' })).toHaveValue('txt');
   await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' })).toHaveValue('translation');
   await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
@@ -440,7 +444,9 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(historyItems(page)).toHaveCount(1);
 });
 
-test('session detail renders filtered translation history with mixed-language detection', async ({ page }) => {
+test('session detail omits the extra translation history section', async ({ page }) => {
+  let translationHistoryRequests = 0;
+
   await page.route('**/api/sessions/**', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue();
@@ -448,6 +454,7 @@ test('session detail renders filtered translation history with mixed-language de
     }
     const url = new URL(route.request().url());
     if (url.pathname.endsWith('/translations')) {
+      translationHistoryRequests += 1;
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify({
@@ -481,81 +488,11 @@ test('session detail renders filtered translation history with mixed-language de
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = sessionDetail(page);
-  const history = detail.getByLabel('翻譯紀錄');
-  await expect(history.getByText('こんにちは', { exact: true })).toBeVisible();
-  await expect(history.getByText('世界')).toBeVisible();
-  await expect(history.getByText('Bonjour')).toBeVisible();
-  await expect(history.getByText('偵測到的原文語言：en, ja')).toHaveCount(3);
-
-  await history.getByRole('combobox', { name: '篩選輸出語言' }).selectOption('ja');
-  await expect(history.getByText('こんにちは', { exact: true })).toBeVisible();
-  await expect(history.getByText('世界')).toBeVisible();
-  await expect(history.getByText('Bonjour')).toBeHidden();
-});
-
-test('translation execution controls cancel queued work and retry failed work without replacing the source', async ({ page }) => {
-  const executions = [
-    { id: 'execution-queued', requestId: 'request-queued', targetLanguageCode: 'ja', status: 'queued' },
-    { id: 'execution-failed', requestId: 'request-failed', targetLanguageCode: 'fr', status: 'failed' },
-    { id: 'execution-running', requestId: 'request-running', targetLanguageCode: 'en', status: 'running' },
-    { id: 'execution-completed', requestId: 'request-completed', targetLanguageCode: 'de', status: 'completed' },
-    { id: 'execution-cancelled', requestId: 'request-cancelled', targetLanguageCode: 'ko', status: 'cancelled' }
-  ];
-  await page.route('**/api/sessions/**', async (route) => {
-    if (route.request().method() !== 'GET') return route.continue();
-    const url = new URL(route.request().url());
-    if (url.pathname.endsWith('/translations')) {
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
-        sessionId: 'controlled-session',
-        translations: [],
-        translationHistory: { outputs: [], executions }
-      }) });
-      return;
-    }
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
-      session: { id: 'controlled-session', status: 'completed', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 0, sourceFinalCount: 0, translationFinalCount: 0, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: false } },
-      sourceTranscript: { id: 'source:controlled-session', sessionId: 'controlled-session', revisionId: 'source:final', status: 'finalized', items: [], createdAt: 1, finalizedAt: 2 },
-      translationOutputs: [], selectedTranslationOutput: null, legacy: false
-    }) });
-  });
-  await page.route('**/api/translation-executions/**', async (route) => {
-    const url = new URL(route.request().url());
-    if (route.request().method() !== 'POST') return route.continue();
-    if (url.pathname.endsWith('/execution-queued/cancel')) {
-      executions[0] = { ...executions[0], status: 'cancelled', completedAt: '2026-07-21T00:00:00.000Z' };
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(executions[0]) });
-      return;
-    }
-    if (url.pathname.endsWith('/execution-failed/retry')) {
-      executions.push({ id: 'execution-retry', requestId: 'request-failed', targetLanguageCode: 'fr', status: 'queued' });
-      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(executions.at(-1)) });
-      return;
-    }
-    await route.continue();
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('button', { name: '停止' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const history = sessionDetail(page).getByLabel('翻譯紀錄');
-  await expect(history.getByRole('button', { name: '取消' })).toHaveCount(1);
-  await expect(history.getByRole('button', { name: '重新嘗試' })).toHaveCount(1);
-  await expect(history.getByText('en · 處理中')).toBeVisible();
-  await expect(history.getByText('de · 已完成')).toBeVisible();
-  await expect(history.getByText('ko · 已取消')).toBeVisible();
-
-  await history.getByRole('button', { name: '取消' }).click();
-  await expect(history.getByText('ja · 已取消')).toBeVisible();
-  await expect(history.getByRole('button', { name: '取消' })).toHaveCount(0);
-
-  await history.getByRole('button', { name: '重新嘗試' }).click();
-  await expect(history.getByText('fr · 失敗')).toBeVisible();
-  await expect(history.getByText('fr · 已排入佇列')).toBeVisible();
-  await expect(history.getByRole('button', { name: '重新嘗試' })).toHaveCount(1);
+  await expect(detail.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
+  await expect(detail.getByLabel('翻譯紀錄')).toHaveCount(0);
+  await expect(detail.getByText('Bonjour')).toHaveCount(0);
+  expect(translationHistoryRequests).toBe(0);
 });
 
 function historyTranslation({ id, targetLanguageCode, translatedText }) {

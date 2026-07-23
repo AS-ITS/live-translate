@@ -13,7 +13,6 @@ import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.j
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
-import { HISTORY_REFRESH_MS, hasPendingExecutions, replaceHistoryExecution, selectedOutputFor } from './lib/sessionHistoryState.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -70,7 +69,6 @@ function App() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
-  const [selectedTranslationHistory, setSelectedTranslationHistory] = useState(null);
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const reconnectControllerRef = useRef(null);
@@ -515,7 +513,6 @@ function App() {
     selectedHistoryRecordIdRef.current = id;
     setSelectedHistoryRecordId(id);
     setSelectedHistoryDetail(undefined);
-    setSelectedTranslationHistory(undefined);
 
     try {
       const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
@@ -525,21 +522,12 @@ function App() {
       }
 
       setSelectedHistoryDetail(detail);
-
-      const translationHistory = await sessionReadApiClientRef.current.getSessionTranslations(id).catch(() => null);
-
-      if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
-        return;
-      }
-
-      setSelectedTranslationHistory(translationHistory);
     } catch {
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return;
       }
 
       setSelectedHistoryDetail(null);
-      setSelectedTranslationHistory(null);
       setError('工作階段詳細資料無法使用。');
     }
   }
@@ -549,7 +537,6 @@ function App() {
     selectedHistoryRecordIdRef.current = null;
     setSelectedHistoryRecordId(null);
     setSelectedHistoryDetail(null);
-    setSelectedTranslationHistory(null);
   }
 
   function selectedInputDeviceSnapshot() {
@@ -773,7 +760,6 @@ function App() {
           records={historyRecords}
           selectedRecordId={selectedHistoryRecordId}
           selectedDetail={selectedHistoryDetail}
-          selectedTranslationHistory={selectedTranslationHistory}
           selectedRecord={selectedHistoryRecord}
           onViewDetails={openHistoryRecordDetail}
           onCloseDetails={closeHistoryRecordDetail}
@@ -874,7 +860,7 @@ function ArticlePanel({
   );
 }
 
-function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedTranslationHistory, selectedRecord, onViewDetails, onCloseDetails }) {
+function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails }) {
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
@@ -920,7 +906,7 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                 {shouldShowFailureReason(record) ? <p className="history-reason">原因：{record.failureReason}</p> : null}
               </article>
               {selectedRecordId === record.id ? (
-                <SessionDetail detail={selectedDetail} translationHistory={selectedTranslationHistory} historyRecord={selectedRecord} onClose={onCloseDetails} />
+                <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onClose={onCloseDetails} />
               ) : null}
             </li>
           ))}
@@ -930,112 +916,23 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
   );
 }
 
-function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
+function SessionDetail({ detail, historyRecord, onClose }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
-  const [translationLanguageFilter, setTranslationLanguageFilter] = useState('');
-  const [selectedOutputId, setSelectedOutputId] = useState(null);
   const [showRetranslation, setShowRetranslation] = useState(false);
   const [retranslationLanguage, setRetranslationLanguage] = useState('en');
   const [isSubmittingRetranslation, setIsSubmittingRetranslation] = useState(false);
   const [retranslationError, setRetranslationError] = useState('');
-  const [localExecutions, setLocalExecutions] = useState([]);
-  const [historyData, setHistoryData] = useState(translationHistory);
-  const [refreshError, setRefreshError] = useState('');
-  const [executionOperations, setExecutionOperations] = useState({});
-  const [executionControlError, setExecutionControlError] = useState('');
   const sessionRecordId = detail?.session?.id;
-  const mountedRef = useRef(true);
-  const sessionRecordIdRef = useRef(sessionRecordId);
-  const historyRefreshGenerationRef = useRef(0);
-  const historyDataRef = useRef(historyData);
-  sessionRecordIdRef.current = sessionRecordId;
 
   useEffect(() => {
     setSavedExportFormat('txt');
     setSavedExportStream('translation');
     setSavedExportError('');
-    setTranslationLanguageFilter('');
-    setSelectedOutputId(null); setShowRetranslation(false); setRetranslationError(''); setLocalExecutions([]);
-    setHistoryData(translationHistory); setRefreshError(''); setExecutionOperations({}); setExecutionControlError('');
-    historyRefreshGenerationRef.current += 1;
+    setShowRetranslation(false);
+    setRetranslationError('');
   }, [sessionRecordId]);
-
-  useEffect(() => { historyDataRef.current = historyData; }, [historyData]);
-  useEffect(() => {
-    if (translationHistory !== undefined && historyDataRef.current === undefined) {
-      setHistoryData(translationHistory);
-    }
-  }, [sessionRecordId, translationHistory]);
-  useEffect(() => {
-    let active = true;
-    mountedRef.current = true;
-    const refresh = async () => {
-      if (!hasPendingExecutions(historyDataRef.current) && localExecutions.length === 0) return;
-      const generation = historyRefreshGenerationRef.current;
-      try {
-        const next = await createSessionReadApiClient().getSessionTranslations(sessionRecordId);
-        if (!active || !next || generation !== historyRefreshGenerationRef.current || sessionRecordIdRef.current !== sessionRecordId) return;
-        setHistoryData(next);
-        const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
-        setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
-        setRefreshError('');
-      } catch { if (active) setRefreshError('無法重新整理翻譯紀錄。'); }
-    };
-    void refresh(); const timer = setInterval(() => { void refresh(); }, HISTORY_REFRESH_MS);
-    return () => { active = false; mountedRef.current = false; historyRefreshGenerationRef.current += 1; clearInterval(timer); };
-  }, [sessionRecordId, localExecutions.length]);
-
-  async function refreshTranslationHistoryAfterControl(expectedSessionId) {
-    const generation = historyRefreshGenerationRef.current;
-    try {
-      const next = await createSessionReadApiClient().getSessionTranslations(expectedSessionId);
-      if (!mountedRef.current || sessionRecordIdRef.current !== expectedSessionId || generation !== historyRefreshGenerationRef.current || !next) return;
-      setHistoryData(next);
-      const serverIds = new Set(next.translationHistory?.executions?.map((item) => item.id) || []);
-      setLocalExecutions((items) => items.filter((item) => !serverIds.has(item.id)));
-      setRefreshError('');
-    } catch {
-      // The local control result remains visible; polling will reconcile later.
-    }
-  }
-
-  async function controlExecution(execution, operation) {
-    if (executionOperations[execution.id]) return;
-    const expectedSessionId = sessionRecordId;
-    setExecutionOperations((current) => ({ ...current, [execution.id]: operation }));
-    setExecutionControlError('');
-    try {
-      const client = createTranslationCommandApiClient();
-      const result = operation === 'cancel'
-        ? await client.cancelTranslationExecution(execution.id)
-        : await client.retryFailedTranslationExecution(execution.id);
-      if (!mountedRef.current || sessionRecordIdRef.current !== expectedSessionId) return;
-      historyRefreshGenerationRef.current += 1;
-      if (operation === 'cancel') {
-        setHistoryData((current) => replaceHistoryExecution(current, { ...result, targetLanguageCode: execution.targetLanguageCode }));
-      } else {
-        setLocalExecutions((current) => [...current.filter((item) => item.id !== result.id), {
-          ...result,
-          requestId: result.requestId || result.translationRequestId,
-          targetLanguageCode: execution.targetLanguageCode
-        }]);
-      }
-      void refreshTranslationHistoryAfterControl(expectedSessionId);
-    } catch (nextError) {
-      if (mountedRef.current && sessionRecordIdRef.current === expectedSessionId) {
-        setExecutionControlError(`${operation === 'cancel' ? '取消' : '重新嘗試'}失敗（${execution.id}）：${nextError.safeMessage || '請稍後再試。'}`);
-      }
-    } finally {
-      if (mountedRef.current && sessionRecordIdRef.current === expectedSessionId) {
-        setExecutionOperations((current) => {
-          const { [execution.id]: ignored, ...remaining } = current;
-          return remaining;
-        });
-      }
-    }
-  }
 
   if (detail === undefined) {
     return (
@@ -1070,13 +967,7 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
   const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
   const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
   const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
-  const selectedFormalOutput = selectedOutputFor(historyData, selectedOutputId);
-  const formalOutputItems = selectedFormalOutput?.source === 'formal' && selectedFormalOutput.translatedText
-    ? [{ id: selectedFormalOutput.id, stream: 'translation', status: 'final', text: selectedFormalOutput.translatedText, sequence: 0, startedAt: sessionRecord.startedAt }]
-    : null;
-  const canDownloadSavedTranscript = formalOutputItems
-    ? canExportTranscript(formalOutputItems, { format: savedExportFormat, stream: 'translation', timeOrigin: sessionRecord.startedAt })
-    : canExportSavedSession(exportDetail, {
+  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream
   });
@@ -1089,17 +980,11 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
     setSavedExportError('');
 
     try {
-      const content = formalOutputItems ? formatTranscriptExport(formalOutputItems, {
-        format: savedExportFormat,
-        stream: 'translation',
-        timeOrigin: sessionRecord.startedAt
-      }) : formatSavedSessionExport(exportDetail, {
+      const content = formatSavedSessionExport(exportDetail, {
         format: savedExportFormat,
         stream: savedExportStream
       });
-      const fileName = formalOutputItems
-        ? `session-${sessionRecord.id}-${selectedFormalOutput.targetLanguageCode}-v${selectedFormalOutput.version}.${savedExportFormat}`
-        : buildSavedSessionFileName(exportDetail.sessionRecord, {
+      const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
         format: savedExportFormat,
         stream: savedExportStream
       });
@@ -1172,9 +1057,6 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
         <p className="history-empty">沒有已儲存的逐字稿。</p>
       )}
 
-      <TranslationHistoryPanel history={historyData ?? (detail.translationHistory === undefined ? undefined : { translationHistory: detail.translationHistory })} targetLanguageCode={translationLanguageFilter} onTargetLanguageCodeChange={setTranslationLanguageFilter} selectedOutputId={selectedOutputId} onSelectOutput={setSelectedOutputId} localExecutions={localExecutions} executionOperations={executionOperations} onControlExecution={controlExecution} executionControlError={executionControlError} />
-      {refreshError ? <p className="error-message" role="alert">{refreshError} <button className="detail-button" type="button" onClick={() => setHistoryData(null)}>重試</button></p> : null}
-
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
         {showRetranslation ? <div className="controls saved-export-controls">
@@ -1182,8 +1064,8 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
           <button className="button" type="button" disabled={isSubmittingRetranslation} onClick={async () => {
             setIsSubmittingRetranslation(true); setRetranslationError('');
             try {
-              const result = await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
-              setLocalExecutions((items) => [...items, { ...result.execution, targetLanguageCode: retranslationLanguage }]); setShowRetranslation(false);
+              await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
+              setShowRetranslation(false);
             } catch { setRetranslationError('無法將重新翻譯加入佇列。請再試一次。'); }
             finally { setIsSubmittingRetranslation(false); }
           }}>{isSubmittingRetranslation ? '正在送出…' : '開始翻譯'}</button>
@@ -1230,60 +1112,22 @@ function SessionDetail({ detail, translationHistory, historyRecord, onClose }) {
 }
 
 function TranscriptItemList({ title, items }) {
+  const paragraphs = buildTranscriptArticleParagraphs(
+    title === '原文逐字稿' ? items.map(traditionalChineseTranscriptItem) : items
+  );
+
   return (
     <section className="session-transcript-section" aria-label={title}>
       <h4>{title}</h4>
-      {items.length === 0 ? (
+      {paragraphs.length === 0 ? (
         <p className="history-empty">沒有已儲存的逐字稿。</p>
       ) : (
-        <ol className="session-transcript-list">
-          {items.map((item) => (
-            <li key={item.id}>
-              <p>{item.text}</p>
-            </li>
+        <div className="session-transcript-article article-content">
+          {paragraphs.map((paragraph, index) => (
+            <p key={`${title}-article-${index}`}>{paragraph}</p>
           ))}
-        </ol>
+        </div>
       )}
-    </section>
-  );
-}
-
-function TranslationHistoryPanel({ history, targetLanguageCode, onTargetLanguageCodeChange, selectedOutputId, onSelectOutput, localExecutions = [], executionOperations = {}, onControlExecution, executionControlError }) {
-  if (history === undefined) return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4><p className="history-empty">正在載入翻譯紀錄…</p></section>;
-  if (!history) return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4><p className="history-empty">翻譯紀錄無法使用。</p></section>;
-  const model = history.translationHistory;
-  if (model) {
-    const outputs = [...model.outputs].sort((a, b) => String(b.completedAt).localeCompare(String(a.completedAt)) || String(a.id).localeCompare(String(b.id)));
-    const selected = outputs.find((output) => output.id === selectedOutputId) || outputs[0];
-    const serverExecutionIds = new Set(model.executions.map((execution) => execution.id));
-    const executions = [...model.executions, ...localExecutions.filter((execution) => !serverExecutionIds.has(execution.id))];
-    return <section className="session-transcript-section" aria-label="翻譯紀錄"><h4>翻譯紀錄</h4>
-      {outputs.map((output) => <button className="button detail-button" type="button" key={output.id} onClick={() => onSelectOutput(output.id)} aria-pressed={selected?.id === output.id}>{output.targetLanguageCode} · {output.version ? `v${output.version}` : '舊版'} · {formatRecordTime(output.completedAt)}</button>)}
-      {selected ? <div><p><strong>{selected.targetLanguageCode} {selected.version ? `v${selected.version}` : ''}</strong></p><p>{selected.translatedText}</p></div> : <p className="history-empty">沒有已完成的翻譯。</p>}
-      {executions.length ? <ul>{executions.map((execution) => <li key={execution.id}>
-        <span className={`history-status history-status-${execution.status}`}>{execution.targetLanguageCode || '翻譯'} · {executionStatusLabel(execution.status)}</span>
-        {execution.failureInfo?.message ? ` · ${execution.failureInfo.message}` : ''}
-        {execution.status === 'queued' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'cancel')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'cancel'}>{executionOperations[execution.id] === 'cancel' ? '取消中…' : '取消'}</button> : null}
-        {execution.status === 'failed' ? <button className="button detail-button" type="button" onClick={() => onControlExecution(execution, 'retry')} disabled={Boolean(executionOperations[execution.id])} aria-busy={executionOperations[execution.id] === 'retry'}>{executionOperations[execution.id] === 'retry' ? '重新嘗試中…' : '重新嘗試'}</button> : null}
-      </li>)}</ul> : null}
-      {executionControlError ? <p className="error-message" role="alert">{executionControlError}</p> : null}
-    </section>;
-  }
-  const languageCodes = [...new Set(history.translations.map((item) => item.request.targetLanguageCode))];
-  const translations = targetLanguageCode ? history.translations.filter((item) => item.request.targetLanguageCode === targetLanguageCode) : history.translations;
-  return (
-    <section className="session-transcript-section" aria-label="翻譯紀錄">
-      <h4>翻譯紀錄</h4>
-      <label className="field"><span>篩選輸出語言</span><select value={targetLanguageCode} onChange={(event) => onTargetLanguageCodeChange(event.target.value)}><option value="">所有語言</option>{languageCodes.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
-      {translations.length === 0 ? <p className="history-empty">沒有符合此語言的歷史翻譯。</p> : <ol className="session-transcript-list">{translations.map((item) => (
-        <li key={`${item.request.id}:${item.execution?.id || 'pending'}`}>
-          <p><strong>{item.request.targetLanguageCode}</strong> · {executionStatusLabel(item.execution?.status || 'queued')}</p>
-          <p>{item.request.sourceText || '無法取得原文。'}</p>
-          {item.output ? <p>{item.output.translatedText}</p> : null}
-          {item.execution?.failureInfo?.reason ? <p className="history-reason">原因：{item.execution.failureInfo.reason}</p> : null}
-          {item.sourceLanguageDetections?.length ? <p>偵測到的原文語言：{item.sourceLanguageDetections.flatMap((detection) => detection.detectedLanguageCodes || []).join(', ')}</p> : null}
-        </li>
-      ))}</ol>}
     </section>
   );
 }
@@ -1298,19 +1142,6 @@ function historyStatusLabel(status) {
     failed: '失敗',
     expired: '已過期',
     completed: '已完成'
-  };
-
-  return labels[status] || status;
-}
-
-function executionStatusLabel(status) {
-  const labels = {
-    queued: '已排入佇列',
-    running: '處理中',
-    processing: '處理中',
-    completed: '已完成',
-    failed: '失敗',
-    cancelled: '已取消'
   };
 
   return labels[status] || status;

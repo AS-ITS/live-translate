@@ -473,37 +473,34 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(historyItems(page)).toHaveCount(1);
 });
 
-test('session detail omits the extra translation history section', async ({ page }) => {
-  let translationHistoryRequests = 0;
-
+test('session detail queues retranslation and displays pending status', async ({ page }) => {
   await page.route('**/api/sessions/**', async (route) => {
-    if (route.request().method() !== 'GET') {
+    const request = route.request();
+    const url = new URL(request.url());
+    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
+
+    if (!isSessionDetail) {
       await route.continue();
       return;
     }
-    const url = new URL(route.request().url());
-    if (url.pathname.endsWith('/translations')) {
-      translationHistoryRequests += 1;
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          sessionId: 'session-history',
-          translations: [
-            historyTranslation({ id: 'request-ja-1', targetLanguageCode: 'ja', translatedText: 'こんにちは' }),
-            historyTranslation({ id: 'request-ja-2', targetLanguageCode: 'ja', translatedText: '世界' }),
-            historyTranslation({ id: 'request-fr-1', targetLanguageCode: 'fr', translatedText: 'Bonjour' })
-          ]
-        })
-      });
-      return;
-    }
+
+    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({
-        session: { id: 'session-history', status: 'completed', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 1, sourceFinalCount: 1, translationFinalCount: 0, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true } },
-        sourceTranscript: { id: 'source:session-history', sessionId: 'session-history', revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: 'Hello こんにちは' }], createdAt: 1, finalizedAt: 2 },
-        translationOutputs: [], selectedTranslationOutput: null, legacy: false
-      })
+      body: JSON.stringify(sessionDetailResponse({
+        sessionId,
+        sourceText: 'Hello retranslation',
+        translationHistory: {
+          outputs: [{
+            id: 'legacy-output-fr-1',
+            targetLanguageCode: 'fr',
+            version: 1,
+            source: 'legacy',
+            translatedText: 'live output'
+          }],
+          executions: []
+        }
+      }))
     });
   });
 
@@ -511,7 +508,7 @@ test('session detail omits the extra translation history section', async ({ page
   await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'Hello こんにちは', 'live output');
+  await emitFinalTranscript(page, 'Hello retranslation', 'live output');
   await page.getByRole('button', { name: '停止' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -519,17 +516,101 @@ test('session detail omits the extra translation history section', async ({ page
   const detail = sessionDetail(page);
   await expect(detail.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
   await expect(detail.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
-  await expect(detail.getByLabel('翻譯紀錄')).toHaveCount(0);
-  await expect(detail.getByText('Bonjour')).toHaveCount(0);
-  expect(translationHistoryRequests).toBe(0);
+  await expect(detail.getByLabel('重新翻譯進度')).toHaveCount(0);
+  const retranslation = detail.getByLabel('重新翻譯');
+
+  await retranslation.getByRole('button', { name: '以此內容重新翻譯' }).click();
+  await retranslation.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
+  await retranslation.getByRole('button', { name: '開始翻譯' }).click();
+
+  await expect(retranslation.getByRole('status')).toHaveText('已將法文重新翻譯加入佇列。');
+  await expect(detail.getByLabel('重新翻譯進度').getByText('法文')).toBeVisible();
+  await expect(detail.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
+  await expect(detail.getByLabel('重新翻譯進度').getByText('live output')).toHaveCount(0);
 });
 
-function historyTranslation({ id, targetLanguageCode, translatedText }) {
+test('session detail updates tracked retranslation when output completes', async ({ page }) => {
+  let submitted = false;
+  let postSubmitDetailReads = 0;
+
+  await page.route('**/api/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
+    const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
+    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+
+    if (isRetranslationSubmit) {
+      submitted = true;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          request: { id: 'request-fr-1', sessionId, targetLanguageCode: 'fr' },
+          execution: { id: 'execution-fr-1', requestId: 'request-fr-1', status: 'queued' }
+        })
+      });
+      return;
+    }
+
+    if (isSessionDetail) {
+      if (submitted) {
+        postSubmitDetailReads += 1;
+      }
+
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(sessionDetailResponse({
+          sessionId,
+          translationHistory: !submitted
+            ? { outputs: [], executions: [] }
+            : postSubmitDetailReads === 1
+              ? { outputs: [], executions: [{ id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'queued' }] }
+              : { outputs: [{ id: 'output-fr-1', executionId: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', version: 1, source: 'formal', translatedText: 'Bonjour terminé', completedAt: '2026-07-21T00:00:02.000Z' }], executions: [] }
+        }))
+      });
+      return;
+    }
+
+    await route.continue();
+  });
+
+  await page.goto('/');
+  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'Hello complete retranslation', 'live output');
+  await page.getByRole('button', { name: '停止' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+
+  const detail = sessionDetail(page);
+  const retranslation = detail.getByLabel('重新翻譯');
+  await retranslation.getByRole('button', { name: '以此內容重新翻譯' }).click();
+  await retranslation.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
+  await retranslation.getByRole('button', { name: '開始翻譯' }).click();
+
+  await expect(detail.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
+  await expect(detail.getByLabel('重新翻譯進度').getByText('已完成')).toBeVisible();
+  await expect(detail.getByLabel('重新翻譯進度').getByText('Bonjour terminé')).toBeVisible();
+
+  await detail.getByRole('button', { name: '關閉詳細資料' }).click();
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+
+  const reopenedDetail = sessionDetail(page);
+  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('法文 v1')).toBeVisible();
+  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('已完成')).toBeVisible();
+  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('Bonjour terminé')).toBeVisible();
+});
+
+function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory }) {
   return {
-    request: { id, sourceText: 'Hello こんにちは', targetLanguageCode, createdAt: '2026-07-21T00:00:00.000Z' },
-    execution: { id: `execution-${id}`, translationRequestId: id, status: 'completed', startedAt: '2026-07-21T00:00:01.000Z', completedAt: '2026-07-21T00:00:02.000Z', failureInfo: null },
-    output: { id: `output-${id}`, executionId: `execution-${id}`, translatedText, targetLanguageCode, createdAt: '2026-07-21T00:00:02.000Z' },
-    sourceLanguageDetections: [{ transcriptItemId: 'source-1', detectedLanguageCodes: ['en', 'ja'], coverage: 'partial' }]
+    session: { id: sessionId, status: 'stopped', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true } },
+    sourceTranscript: { id: `source:${sessionId}`, sessionId, revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: sourceText }], createdAt: 1, finalizedAt: 2 },
+    translationOutputs: [],
+    selectedTranslationOutput: { id: `legacy-output:${sessionId}:ja`, targetLanguageCode: 'ja', items: [{ id: 'translation-1', stream: 'translation', status: 'final', text: 'live output' }] },
+    translationHistory,
+    legacy: false
   };
 }
 

@@ -1,5 +1,15 @@
 node_modules/
 dist/
 test-results/
+playwright-report/
+coverage/
 .env
+.env.local
+.env.*.local
 .DS_Store
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+translation-execution-queue.json
+translation-execution-dead-letter-queue.json

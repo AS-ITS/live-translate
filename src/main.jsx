@@ -37,6 +37,7 @@ import {
   resetTranscriptState,
   transcriptItemsForStream
 } from './lib/transcript.js';
+import { HISTORY_REFRESH_MS } from './lib/sessionHistoryState.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
@@ -532,6 +533,32 @@ function App() {
     }
   }
 
+  async function refreshSelectedHistoryRecordDetail(id) {
+    if (!id || selectedHistoryRecordIdRef.current !== id) {
+      return false;
+    }
+
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+
+    try {
+      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+
+      if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
+        return false;
+      }
+
+      setSelectedHistoryDetail(detail);
+      return true;
+    } catch {
+      if (detailRequestIdRef.current === requestId && selectedHistoryRecordIdRef.current === id) {
+        setError('工作階段詳細資料無法更新。');
+      }
+
+      return false;
+    }
+  }
+
   function closeHistoryRecordDetail() {
     detailRequestIdRef.current += 1;
     selectedHistoryRecordIdRef.current = null;
@@ -763,6 +790,7 @@ function App() {
           selectedRecord={selectedHistoryRecord}
           onViewDetails={openHistoryRecordDetail}
           onCloseDetails={closeHistoryRecordDetail}
+          onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
         />
       </section>
     </main>
@@ -860,7 +888,7 @@ function ArticlePanel({
   );
 }
 
-function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails }) {
+function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails, onRetranslationSubmitted }) {
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
@@ -906,7 +934,12 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                 {shouldShowFailureReason(record) ? <p className="history-reason">原因：{record.failureReason}</p> : null}
               </article>
               {selectedRecordId === record.id ? (
-                <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onClose={onCloseDetails} />
+                <SessionDetail
+                  detail={selectedDetail}
+                  historyRecord={selectedRecord}
+                  onClose={onCloseDetails}
+                  onRetranslationSubmitted={onRetranslationSubmitted}
+                />
               ) : null}
             </li>
           ))}
@@ -916,7 +949,7 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
   );
 }
 
-function SessionDetail({ detail, historyRecord, onClose }) {
+function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitted }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
@@ -924,6 +957,8 @@ function SessionDetail({ detail, historyRecord, onClose }) {
   const [retranslationLanguage, setRetranslationLanguage] = useState('en');
   const [isSubmittingRetranslation, setIsSubmittingRetranslation] = useState(false);
   const [retranslationError, setRetranslationError] = useState('');
+  const [retranslationStatus, setRetranslationStatus] = useState('');
+  const [trackedRetranslations, setTrackedRetranslations] = useState([]);
   const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
@@ -932,7 +967,25 @@ function SessionDetail({ detail, historyRecord, onClose }) {
     setSavedExportError('');
     setShowRetranslation(false);
     setRetranslationError('');
+    setRetranslationStatus('');
+    setTrackedRetranslations([]);
   }, [sessionRecordId]);
+
+  const translationHistory = compactTranslationHistoryForDetail(detail);
+  const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
+  const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
+
+  useEffect(() => {
+    if (!sessionRecordId || !hasPendingRetranslationProgress) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      void onRetranslationSubmitted?.(sessionRecordId);
+    }, HISTORY_REFRESH_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [sessionRecordId, hasPendingRetranslationProgress, onRetranslationSubmitted]);
 
   if (detail === undefined) {
     return (
@@ -1060,17 +1113,22 @@ function SessionDetail({ detail, historyRecord, onClose }) {
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
         {showRetranslation ? <div className="controls saved-export-controls">
-          <label className="field"><span>目標語言</span><select value={retranslationLanguage} onChange={(event) => setRetranslationLanguage(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <label className="field"><span>目標語言</span><select value={retranslationLanguage} onChange={(event) => { setRetranslationLanguage(event.target.value); setRetranslationStatus(''); }}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
           <button className="button" type="button" disabled={isSubmittingRetranslation} onClick={async () => {
-            setIsSubmittingRetranslation(true); setRetranslationError('');
+            setIsSubmittingRetranslation(true); setRetranslationError(''); setRetranslationStatus('');
             try {
-              await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
+              const result = await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
+              setTrackedRetranslations((current) => upsertTrackedRetranslation(current, trackedRetranslationForSubmitResult(result, retranslationLanguage)));
+              setRetranslationStatus(`已將${targetLanguageLabelFor(retranslationLanguage)}重新翻譯加入佇列。`);
               setShowRetranslation(false);
+              await onRetranslationSubmitted?.(sessionRecordId);
             } catch { setRetranslationError('無法將重新翻譯加入佇列。請再試一次。'); }
             finally { setIsSubmittingRetranslation(false); }
           }}>{isSubmittingRetranslation ? '正在送出…' : '開始翻譯'}</button>
           {retranslationError ? <p className="error-message" role="alert">{retranslationError}</p> : null}
         </div> : null}
+        {retranslationStatus ? <p className="success-message" role="status">{retranslationStatus}</p> : null}
+        <RetranslationProgress progress={retranslationProgress} />
       </section>
 
       <section className="saved-export-panel" aria-label="已儲存逐字稿匯出">
@@ -1111,6 +1169,39 @@ function SessionDetail({ detail, historyRecord, onClose }) {
   );
 }
 
+function RetranslationProgress({ progress }) {
+  if (progress.outputs.length === 0 && progress.executions.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="translation-history-summary" aria-label="重新翻譯進度">
+      <h4>重新翻譯進度</h4>
+      {progress.executions.length > 0 ? (
+        <ol className="translation-history-list">
+          {progress.executions.map((execution) => (
+            <li key={execution.id}>
+              <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
+              <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution.status)}</span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {progress.outputs.length > 0 ? (
+        <ol className="translation-history-list">
+          {progress.outputs.map((output) => (
+            <li key={output.id}>
+              <span>{translationOutputTitle(output)}</span>
+              <span className="history-status history-status-completed">已完成</span>
+              {output.translatedText ? <p>{output.translatedText}</p> : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
 function TranscriptItemList({ title, items }) {
   const paragraphs = buildTranscriptArticleParagraphs(
     title === '原文逐字稿' ? items.map(traditionalChineseTranscriptItem) : items
@@ -1145,6 +1236,121 @@ function historyStatusLabel(status) {
   };
 
   return labels[status] || status;
+}
+
+function translationExecutionStatusLabel(status) {
+  const labels = {
+    queued: '已排隊',
+    processing: '處理中',
+    running: '處理中',
+    failed: '失敗',
+    cancelled: '已取消'
+  };
+
+  return labels[status] || status || '未知狀態';
+}
+
+function translationOutputTitle(output) {
+  const languageLabel = targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言';
+  const versionLabel = Number.isFinite(output.version) ? ` v${output.version}` : '';
+  return `${languageLabel}${versionLabel}`;
+}
+
+function compactTranslationHistoryForDetail(detail) {
+  const history = detail?.translationHistory || {};
+  return {
+    outputs: Array.isArray(history.outputs) ? history.outputs : [],
+    executions: Array.isArray(history.executions) ? history.executions : []
+  };
+}
+
+function trackedRetranslationForSubmitResult(result, fallbackTargetLanguageCode) {
+  return {
+    requestId: result?.request?.id || result?.execution?.requestId || null,
+    executionId: result?.execution?.id || null,
+    targetLanguageCode: result?.request?.targetLanguageCode || fallbackTargetLanguageCode
+  };
+}
+
+function upsertTrackedRetranslation(current, next) {
+  if (!next.requestId && !next.executionId) {
+    return current;
+  }
+
+  const matches = (item) => (
+    (next.requestId && item.requestId === next.requestId) ||
+    (next.executionId && item.executionId === next.executionId)
+  );
+
+  return current.some(matches)
+    ? current.map((item) => matches(item) ? { ...item, ...next } : item)
+    : [...current, next];
+}
+
+function retranslationProgressFor(history, trackedRetranslations) {
+  const outputs = history.outputs.filter(isFormalRetranslationOutput);
+  const executions = history.executions.filter(isRetranslationExecution);
+  const knownKeys = new Set();
+
+  for (const output of outputs) {
+    addProgressKeys(knownKeys, output);
+  }
+
+  for (const execution of executions) {
+    addProgressKeys(knownKeys, execution);
+  }
+
+  for (const tracked of trackedRetranslations) {
+    if (hasProgressKey(knownKeys, tracked)) {
+      continue;
+    }
+
+    const optimisticExecution = {
+      id: tracked.executionId || tracked.requestId,
+      requestId: tracked.requestId,
+      targetLanguageCode: tracked.targetLanguageCode,
+      status: 'queued'
+    };
+
+    executions.push(optimisticExecution);
+    addProgressKeys(knownKeys, optimisticExecution);
+  }
+
+  return { outputs, executions };
+}
+
+function isFormalRetranslationOutput(output) {
+  return output?.source !== 'legacy' && (
+    output?.source === 'formal' ||
+    Boolean(output?.requestId) ||
+    Boolean(output?.executionId)
+  );
+}
+
+function isRetranslationExecution(execution) {
+  return Boolean(execution?.id || execution?.requestId);
+}
+
+function addProgressKeys(keys, item) {
+  if (item?.requestId) {
+    keys.add(`request:${item.requestId}`);
+  }
+
+  const executionId = item?.executionId || item?.id;
+  if (executionId) {
+    keys.add(`execution:${executionId}`);
+  }
+}
+
+function hasProgressKey(keys, item) {
+  return Boolean(
+    (item?.requestId && keys.has(`request:${item.requestId}`)) ||
+    (item?.executionId && keys.has(`execution:${item.executionId}`))
+  );
+}
+
+function hasPendingRetranslationItems(progress) {
+  return progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
 }
 
 function transcriptSummaryLabel(summary = {}) {

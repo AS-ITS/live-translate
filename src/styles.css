@@ -572,6 +572,53 @@ input:disabled {
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
 }
 
+.detail-button + .saved-export-controls {
+  margin-top: 12px;
+}
+
+.success-message {
+  margin: 12px 0 0;
+  color: #156b59;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.translation-history-summary {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.translation-history-summary h4 {
+  margin: 0;
+  color: #314152;
+  font-size: 0.9375rem;
+  letter-spacing: 0;
+}
+
+.translation-history-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.translation-history-list li {
+  display: grid;
+  gap: 6px;
+  border-left: 3px solid #d8dee6;
+  padding-left: 10px;
+  color: #314152;
+  line-height: 1.5;
+}
+
+.translation-history-list p {
+  margin: 0;
+  color: #17202a;
+  white-space: pre-wrap;
+}
+
 @media (max-width: 760px) {
   .app-shell {
     width: min(100% - 20px, 640px);

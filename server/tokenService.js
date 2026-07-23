@@ -16,12 +16,23 @@ export function normalizeTokenRequest(body = {}) {
   return { targetLanguageCode, echoTargetLanguage };
 }
 
-export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage }, now = new Date()) {
+export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage, glossaryEntries }, now = new Date()) {
   const expireTime = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now.getTime() + 60 * 1000).toISOString();
   const translationConfig = {
     targetLanguageCode,
     echoTargetLanguage
+  };
+  const liveConnectConfig = {
+    responseModalities: ['AUDIO'],
+    inputAudioTranscription: {},
+    outputAudioTranscription: {},
+    generationConfig: {
+      translationConfig
+    },
+    ...(Array.isArray(glossaryEntries) && glossaryEntries.length > 0
+      ? { systemInstruction: glossaryInstruction(glossaryEntries) }
+      : {})
   };
 
   return {
@@ -30,14 +41,7 @@ export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage }, now
     newSessionExpireTime,
     liveConnectConstraints: {
       model: LIVE_TRANSLATE_MODEL,
-      config: {
-        responseModalities: ['AUDIO'],
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-        generationConfig: {
-          translationConfig
-        }
-      }
+      config: liveConnectConfig
     },
     httpOptions: {
       apiVersion: 'v1alpha'
@@ -53,14 +57,20 @@ export async function createLiveToken(body, options = {}) {
   }
 
   const request = normalizeTokenRequest(body);
-  const config = buildTokenConfig(request, options.now || new Date());
+  const now = options.now || new Date();
+  const glossaryEntries = options.glossary === undefined
+    ? undefined
+    : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
+  const configWithGlossary = buildTokenConfig({ ...request, ...(glossaryEntries === undefined ? {} : { glossaryEntries }) }, now);
   const client = options.client || (await createGenAiClient(process.env.GEMINI_API_KEY));
 
   try {
-    const token = await client.authTokens.create({ config });
+    const token = await client.authTokens.create({ config: configWithGlossary });
     return {
       token: token.name,
-      expiresAt: config.expireTime
+      expiresAt: configWithGlossary.expireTime,
+      liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
+      liveGlossaryEntries: glossaryEntries || []
     };
   } catch (cause) {
     const error = new Error('Failed to create Gemini ephemeral token');
@@ -68,6 +78,19 @@ export async function createLiveToken(body, options = {}) {
     error.cause = cause;
     throw error;
   }
+}
+
+function glossaryInstruction(entries) {
+  return {
+    parts: [
+      {
+        text: [
+          'Glossary instructions: when a source term occurs, use its specified target translation.',
+          ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
+        ].join('\n')
+      }
+    ]
+  };
 }
 
 async function createGenAiClient(apiKey) {

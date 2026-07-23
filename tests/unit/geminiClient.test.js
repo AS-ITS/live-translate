@@ -156,12 +156,12 @@ test('default prompt includes only target-language glossary instructions without
 });
 
 test('client resolves glossary once for the target language and still performs one provider request', async () => {
-  const targets = [];
+  const requests = [];
   const calls = [];
   const client = createClient({
     glossary: {
-      async entriesFor(targetLanguageCode) {
-        targets.push(targetLanguageCode);
+      async entriesFor(targetLanguageCode, options) {
+        requests.push({ targetLanguageCode, options });
         return [{ source: 'Codex', target: 'コーデックス' }];
       }
     },
@@ -176,7 +176,7 @@ test('client resolves glossary once for the target language and still performs o
 
   await client.execute(input);
 
-  assert.deepEqual(targets, ['ja']);
+  assert.deepEqual(requests, [{ targetLanguageCode: 'ja', options: { scope: 'history' } }]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body.contents[0].parts.at(-1).text, 'Codex');
   assert.equal(calls[0].body.contents[0].parts.some((part) => part.text.includes('コーデックス')), true);

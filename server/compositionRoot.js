@@ -31,6 +31,7 @@ import { createSystemClock } from '../src/infrastructure/systemClock.js';
 import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExecutionWorkerRuntime } from '../src/infrastructure/translationExecutionWorkerRuntime.js';
 import { createTranslationQueueConfiguration } from '../src/infrastructure/translationQueueConfiguration.js';
 import { createTranslationGlossary } from '../src/infrastructure/translationGlossary.js';
+import { createFileSessionRepository } from '../src/infrastructure/fileSessionRepository.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -48,9 +49,14 @@ import { createSessionReadController } from './sessionReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
 import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
+import { createGlossaryController as createDefaultGlossaryController } from './glossaryController.js';
+import { createLiveToken } from './tokenService.js';
+
+export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
+    env = process.env,
     requestHandlerFactory,
     translationRepository,
     domainEventPublisher,
@@ -90,8 +96,27 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
     translationHistoryQueryServiceFactory = createTranslationHistoryQueryService,
     translationHistoryControllerFactory = createDefaultTranslationHistoryController,
+    glossaryController,
+    glossaryControllerFactory = createDefaultGlossaryController,
+    translationGlossaryFactory = createTranslationGlossary,
+    translationGlossaryFileSystem = fileSystem,
+    liveTokenCreator,
     ...sessionReadOptions
   } = options;
+  const translationGlossary = glossaryController === undefined
+    ? translationGlossaryFactory({
+        filePath: translationGlossaryFilePathFor(env),
+        fileSystem: translationGlossaryFileSystem,
+        idFactory: () => idGenerator('glossary'),
+        clock
+      })
+    : undefined;
+  const resolvedGlossaryController = glossaryController === undefined
+    ? glossaryControllerFactory({ glossary: translationGlossary })
+    : glossaryController;
+  const resolvedLiveTokenCreator = liveTokenCreator === undefined
+    ? (body) => createLiveToken(body, { glossary: translationGlossary })
+    : liveTokenCreator;
   const sessionReadDependencies = createSessionReadDependencies(sessionReadOptions);
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
@@ -168,6 +193,8 @@ export function createApplicationDependencies(options = {}) {
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,
       translationHistoryController,
+      glossaryController: resolvedGlossaryController,
+      liveTokenCreator: resolvedLiveTokenCreator,
       ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
       ...(includeSessionRetranslationCommandController ? { sessionRetranslationCommandController } : {})
       })
@@ -179,6 +206,7 @@ export function createApplicationDependencies(options = {}) {
     translationHistoryQueryService,
     translationHistoryController,
     executionControlController,
+    glossaryController: resolvedGlossaryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
     sessionRetranslationCommandService,
@@ -205,12 +233,15 @@ export function createProductionApplicationDependencies(options = {}) {
     translationProviderResolutionCompositionFactory = createTranslationProviderResolutionComposition,
     translationQueueConfigurationFactory = createTranslationQueueConfiguration,
     translationGlossaryFactory = createTranslationGlossary,
+    glossaryControllerFactory = createDefaultGlossaryController,
+    fileSessionRepositoryFactory = createFileSessionRepository,
     fileDurableTranslationExecutionQueueRepositoryFactory = createFileDurableTranslationExecutionQueueRepository,
     fileDeadLetterQueueRepositoryFactory = createFileDeadLetterQueueRepository,
     dualWriteTranslationExecutionQueueFactory = createDualWriteTranslationExecutionQueue,
     startupTranslationExecutionQueueRecoveryFactory = createDefaultStartupTranslationExecutionQueueRecovery,
     durableQueueFileSystem = fileSystem,
     translationGlossaryFileSystem = fileSystem,
+    sessionRepositoryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
@@ -236,12 +267,21 @@ export function createProductionApplicationDependencies(options = {}) {
   const needsProductionProviderComposition =
     !(hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider) ||
     !(hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver);
-  const translationGlossary = env.TRANSLATION_GLOSSARY_FILE === undefined
-    ? undefined
-    : translationGlossaryFactory({
-        filePath: env.TRANSLATION_GLOSSARY_FILE,
-        fileSystem: translationGlossaryFileSystem
-      });
+  const translationGlossary = translationGlossaryFactory({
+    filePath: translationGlossaryFilePathFor(env),
+    fileSystem: translationGlossaryFileSystem,
+    idFactory: () => randomUUID(),
+    clock: () => Date.now()
+  });
+  const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
+    ? applicationOptions.sessionRepository
+    : env.SESSION_RECORDS_FILE === undefined
+      ? undefined
+      : fileSessionRepositoryFactory({
+          filePath: env.SESSION_RECORDS_FILE,
+          fileSystem: sessionRepositoryFileSystem
+        });
+  const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
     : undefined;
@@ -345,6 +385,7 @@ export function createProductionApplicationDependencies(options = {}) {
     : undefined;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
+    ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -361,6 +402,8 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
+    glossaryController,
+    liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary }),
     ...resolvedProviderDependencies
   });
   const startupTranslationExecutionQueueRecovery =
@@ -427,9 +470,10 @@ export function createProductionSavedTranscriptTranslationProvider({
   const configuration = translationProviderConfigurationFactory({
     environment: env
   });
-  const glossary = env.TRANSLATION_GLOSSARY_FILE === undefined
-    ? undefined
-    : translationGlossaryFactory({ filePath: env.TRANSLATION_GLOSSARY_FILE, fileSystem: translationGlossaryFileSystem });
+  const glossary = translationGlossaryFactory({
+    filePath: translationGlossaryFilePathFor(env),
+    fileSystem: translationGlossaryFileSystem
+  });
   const googleClient = googleGenAIClientFactory({
     apiKey: environment.apiKey
   });
@@ -479,9 +523,10 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   const configuration = translationProviderConfigurationFactory({
     environment: env
   });
-  const glossary = env.TRANSLATION_GLOSSARY_FILE === undefined
-    ? undefined
-    : translationGlossaryFactory({ filePath: env.TRANSLATION_GLOSSARY_FILE, fileSystem: translationGlossaryFileSystem });
+  const glossary = translationGlossaryFactory({
+    filePath: translationGlossaryFilePathFor(env),
+    fileSystem: translationGlossaryFileSystem
+  });
   const googleClient = googleGenAIClientFactory({
     apiKey: environment.apiKey
   });
@@ -994,6 +1039,10 @@ function assertFactory(factory, name) {
   if (typeof factory !== 'function') {
     throw new TypeError(`${name} must be a function.`);
   }
+}
+
+function translationGlossaryFilePathFor(env = {}) {
+  return env.TRANSLATION_GLOSSARY_FILE ?? DEFAULT_TRANSLATION_GLOSSARY_FILE;
 }
 
 function assertExecutionProviderMap(providers) {

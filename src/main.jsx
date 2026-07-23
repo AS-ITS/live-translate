@@ -12,6 +12,7 @@ import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
+import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import {
   appendNewFinalTranscriptItems,
@@ -43,7 +44,7 @@ import './styles.css';
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history']);
+const FEATURE_PAGES = new Set(['live', 'history', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 
@@ -70,6 +71,7 @@ function App() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
+  const [glossaryEntries, setGlossaryEntries] = useState([]);
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const reconnectControllerRef = useRef(null);
@@ -116,6 +118,10 @@ function App() {
       void session?.stop().catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    updateActiveSessionGlossaryEntries(glossaryEntries);
+  }, [glossaryEntries, targetLanguageCode]);
 
   useEffect(() => schedulePendingTranscriptIdleFinalize('source', transcript.source.currentPartial), [
     transcript.source.currentPartial?.id,
@@ -204,6 +210,7 @@ function App() {
     return new LiveTranslateSession({
       targetLanguageCode,
       echoTargetLanguage,
+      liveGlossaryEntries: liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode),
       inputDeviceId: inputDeviceIdForSession,
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
@@ -277,6 +284,17 @@ function App() {
           });
       }
     });
+  }
+
+  function updateActiveSessionGlossaryEntries(entries) {
+    const liveGlossaryEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
+    const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
+
+    for (const session of sessions) {
+      if (session) {
+        session.liveGlossaryEntries = liveGlossaryEntries;
+      }
+    }
   }
 
   async function startReconnectSession({ generationId, classification }) {
@@ -645,6 +663,7 @@ function App() {
         <nav className="feature-navigation" aria-label="主要導覽">
           <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={() => navigateTo('live')}>即時翻譯</a>
           <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}>翻譯紀錄</a>
+          <a href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} onClick={() => navigateTo('glossary')}>翻譯字典</a>
         </nav>
       </header>
 
@@ -792,6 +811,10 @@ function App() {
           onCloseDetails={closeHistoryRecordDetail}
           onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
         />
+      </section>
+
+      <section className="feature-page glossary-page" aria-labelledby="glossary-page-title" hidden={page !== 'glossary'}>
+        <GlossaryPanel titleId="glossary-page-title" onEntriesChange={setGlossaryEntries} />
       </section>
     </main>
   );
@@ -949,10 +972,181 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
   );
 }
 
+function GlossaryPanel({ titleId, onEntriesChange }) {
+  const [entries, setEntries] = useState([]);
+  const [source, setSource] = useState('');
+  const [targetLanguageCode, setTargetLanguageCode] = useState('en');
+  const [translation, setTranslation] = useState('');
+  const [scope, setScope] = useState('history');
+  const [editingEntry, setEditingEntry] = useState(null);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const entriesRef = useRef([]);
+  const glossaryApiClientRef = useRef(createGlossaryApiClient());
+
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    glossaryApiClientRef.current.listEntries()
+      .then((loadedEntries) => {
+        if (!cancelled) {
+          publishEntries(loadedEntries);
+          setError('');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setError('無法載入字典。請確認伺服器正在執行且字典儲存檔可寫入。');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  function resetForm() {
+    setSource('');
+    setTargetLanguageCode('en');
+    setTranslation('');
+    setScope('history');
+    setEditingEntry(null);
+  }
+
+  async function saveEntry() {
+    setIsSaving(true);
+    setStatus('');
+    setError('');
+    try {
+      const translations = {
+        ...(editingEntry?.translations || {}),
+        [targetLanguageCode]: translation
+      };
+      const payload = { source, translations, scope };
+      if (editingEntry && hasReplacementAliases(editingEntry.replacementAliases)) {
+        payload.replacementAliases = editingEntry.replacementAliases;
+      }
+      const entry = editingEntry
+        ? await glossaryApiClientRef.current.updateEntry(editingEntry.id, payload)
+        : await glossaryApiClientRef.current.createEntry(payload);
+      publishEntries(editingEntry
+        ? entriesRef.current.map((item) => item.id === entry.id ? entry : item)
+        : [...entriesRef.current, entry]);
+      setStatus(editingEntry ? '字典詞條已更新。' : '字典詞條已新增。');
+      resetForm();
+    } catch {
+      setError('無法儲存字典詞條。請確認原文與翻譯皆已填寫。');
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function deleteEntry(entry) {
+    if (!window.confirm('確定要刪除此字典詞條？')) {
+      return;
+    }
+
+    setStatus('');
+    setError('');
+    try {
+      await glossaryApiClientRef.current.deleteEntry(entry.id);
+      publishEntries(entriesRef.current.filter((item) => item.id !== entry.id));
+      if (editingEntry?.id === entry.id) resetForm();
+      setStatus('字典詞條已刪除。');
+    } catch {
+      setError('無法刪除字典詞條。');
+    }
+  }
+
+  function startEditing(entry) {
+    const firstLanguageCode = Object.keys(entry.translations || {})[0] || 'en';
+    setEditingEntry(entry);
+    setSource(entry.source || '');
+    setTargetLanguageCode(firstLanguageCode);
+    setTranslation(entry.translations?.[firstLanguageCode] || '');
+    setScope(entry.scope || 'history');
+    setStatus('');
+    setError('');
+  }
+
+  function publishEntries(next) {
+    entriesRef.current = next;
+    setEntries(next);
+    onEntriesChange?.(next);
+  }
+
+  const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving;
+
+  return (
+    <section className="glossary-panel" aria-labelledby={titleId || undefined} aria-label={titleId ? undefined : '翻譯字典'}>
+      <div className="glossary-header">
+        <div>
+          <h2 id={titleId}>翻譯字典</h2>
+          <p className="history-description">管理即時翻譯與歷史重新翻譯字幕使用的全域替換規則。</p>
+        </div>
+      </div>
+      <div className="controls glossary-controls">
+        <label className="field">
+          <span>詞條</span>
+          <input value={source} onChange={(event) => setSource(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>目標語言</span>
+          <select value={targetLanguageCode} onChange={(event) => {
+            const nextLanguageCode = event.target.value;
+            setTargetLanguageCode(nextLanguageCode);
+            setTranslation(editingEntry?.translations?.[nextLanguageCode] || '');
+          }}>
+            {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+          </select>
+        </label>
+        <label className="field">
+          <span>替換成</span>
+          <input value={translation} onChange={(event) => setTranslation(event.target.value)} />
+        </label>
+        <label className="field">
+          <span>套用範圍</span>
+          <select value={scope} onChange={(event) => setScope(event.target.value)}>
+            <option value="live">即時翻譯</option>
+            <option value="history">歷史重新翻譯</option>
+            <option value="both">兩者</option>
+          </select>
+        </label>
+        <button className="button detail-button" type="button" disabled={!canSave} onClick={saveEntry}>
+          {isSaving ? '儲存中…' : editingEntry ? '更新詞條' : '新增詞條'}
+        </button>
+        {editingEntry ? <button className="button detail-button" type="button" onClick={resetForm}>取消編輯</button> : null}
+      </div>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {status ? <p className="success-message" role="status">{status}</p> : null}
+      {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
+      {!isLoading && entries.length === 0 ? <p className="history-empty">尚無字典詞條。</p> : null}
+      {entries.length > 0 ? (
+        <ol className="glossary-list">
+          {entries.map((entry) => (
+            <li key={entry.id || entry.source}>
+              <div>
+                <strong>{glossaryReplacementLabel(entry)}</strong>
+                <p>{glossaryLanguagesLabel(entry.translations)}</p>
+                <p>{glossaryScopeLabel(entry.scope)}</p>
+              </div>
+              <div className="glossary-actions">
+                <button className="button detail-button" type="button" onClick={() => startEditing(entry)}>編輯</button>
+                <button className="button detail-button" type="button" onClick={() => deleteEntry(entry)}>刪除</button>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </section>
+  );
+}
+
 function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitted }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
+  const [readingTab, setReadingTab] = useState('translationArticle');
   const [showRetranslation, setShowRetranslation] = useState(false);
   const [retranslationLanguage, setRetranslationLanguage] = useState('en');
   const [isSubmittingRetranslation, setIsSubmittingRetranslation] = useState(false);
@@ -965,6 +1159,7 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
     setSavedExportFormat('txt');
     setSavedExportStream('translation');
     setSavedExportError('');
+    setReadingTab('translationArticle');
     setShowRetranslation(false);
     setRetranslationError('');
     setRetranslationStatus('');
@@ -1018,7 +1213,7 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
   const sessionRecord = sessionRecordForDetailDTO(detail, historyRecord);
   const sourceItems = finalTranscriptItemsForStream(detail.sourceTranscript?.items, 'source');
   const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
-  const hasTranscript = sourceItems.length > 0 || translationItems.length > 0;
+  const readingContent = readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord });
   const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
   const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
     format: savedExportFormat,
@@ -1101,14 +1296,11 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
         ) : null}
       </dl>
 
-      {hasTranscript ? (
-        <div className="session-detail-transcripts">
-          <TranscriptItemList title="原文逐字稿" items={sourceItems} />
-          <TranscriptItemList title="翻譯逐字稿" items={translationItems} />
-        </div>
-      ) : (
-        <p className="history-empty">沒有已儲存的逐字稿。</p>
-      )}
+      <ReadingContentTabs
+        content={readingContent}
+        selectedTab={readingTab}
+        onSelectTab={setReadingTab}
+      />
 
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
@@ -1202,25 +1394,132 @@ function RetranslationProgress({ progress }) {
   );
 }
 
-function TranscriptItemList({ title, items }) {
-  const paragraphs = buildTranscriptArticleParagraphs(
-    title === '原文逐字稿' ? items.map(traditionalChineseTranscriptItem) : items
-  );
+function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
+  const selectedContent = selectedTab === 'sourceTranscript'
+    ? content.sourceTranscript
+    : content.translationArticle;
+  const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '文章版翻譯';
 
   return (
-    <section className="session-transcript-section" aria-label={title}>
-      <h4>{title}</h4>
-      {paragraphs.length === 0 ? (
-        <p className="history-empty">沒有已儲存的逐字稿。</p>
-      ) : (
-        <div className="session-transcript-article article-content">
-          {paragraphs.map((paragraph, index) => (
-            <p key={`${title}-article-${index}`}>{paragraph}</p>
-          ))}
+    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容">
+      <div className="reading-tabs" role="tablist" aria-label="歷史紀錄內容切換">
+        <button
+          className={`reading-tab${selectedTab === 'translationArticle' ? ' active' : ''}`}
+          type="button"
+          role="tab"
+          aria-selected={selectedTab === 'translationArticle'}
+          onClick={() => onSelectTab('translationArticle')}
+        >
+          文章版翻譯
+        </button>
+        <button
+          className={`reading-tab${selectedTab === 'sourceTranscript' ? ' active' : ''}`}
+          type="button"
+          role="tab"
+          aria-selected={selectedTab === 'sourceTranscript'}
+          onClick={() => onSelectTab('sourceTranscript')}
+        >
+          原始逐字稿
+        </button>
+      </div>
+
+      <section className="session-transcript-section" aria-label={selectedTitle}>
+        <div className="reading-content-header">
+          <h4>{selectedTitle}</h4>
+          <ReadingContentMetadata content={selectedContent} />
         </div>
-      )}
+        {selectedContent.paragraphs.length === 0 ? (
+          <p className="history-empty">{readingContentEmptyText(selectedContent)}</p>
+        ) : (
+          <div className="session-transcript-article article-content">
+            {selectedContent.paragraphs.map((paragraph, index) => (
+              <p key={`${selectedTab}-article-${index}`}>{paragraph}</p>
+            ))}
+          </div>
+        )}
+      </section>
     </section>
   );
+}
+
+function ReadingContentMetadata({ content }) {
+  const metadata = [];
+
+  if (content.kind === 'translationArticle') {
+    metadata.push(`目標語言：${targetLanguageLabelFor(content.targetLanguageCode) || content.targetLanguageLabel || content.targetLanguageCode || '未知語言'}`);
+    if (Number.isFinite(content.version)) {
+      metadata.push(`版本：v${content.version}`);
+    }
+    metadata.push(`建立時間：${formatRecordTime(content.createdAt)}`);
+    metadata.push(`完成時間：${formatRecordTime(content.completedAt)}`);
+  } else {
+    metadata.push(`建立時間：${formatRecordTime(content.createdAt)}`);
+    metadata.push(`完成時間：${formatRecordTime(content.finalizedAt)}`);
+  }
+
+  return <p className="reading-metadata">{metadata.join('　')}</p>;
+}
+
+function readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }) {
+  if (detail?.readingContent?.translationArticle && detail?.readingContent?.sourceTranscript) {
+    return detail.readingContent;
+  }
+
+  const translationParagraphs = buildTranscriptArticleParagraphs(translationItems);
+  const sourceParagraphs = buildTranscriptArticleParagraphs(sourceItems);
+  const fallbackStatus = terminalContentStatus(sessionRecord);
+
+  return {
+    translationArticle: {
+      kind: 'translationArticle',
+      status: translationParagraphs.length > 0 ? 'available' : fallbackStatus,
+      targetLanguageCode: detail?.selectedTranslationOutput?.targetLanguageCode || sessionRecord.targetLanguageCode || null,
+      targetLanguageLabel: detail?.selectedTranslationOutput?.targetLanguageLabel || sessionRecord.targetLanguageLabel || null,
+      version: detail?.selectedTranslationOutput?.version ?? null,
+      paragraphs: translationParagraphs,
+      text: translationParagraphs.join('\n\n'),
+      createdAt: detail?.selectedTranslationOutput?.createdAt ?? sessionRecord.startedAt ?? null,
+      completedAt: detail?.selectedTranslationOutput?.completedAt ?? sessionRecord.endedAt ?? null,
+      emptyReason: translationParagraphs.length > 0 ? null : emptyReasonForContentStatus(fallbackStatus)
+    },
+    sourceTranscript: {
+      kind: 'sourceTranscript',
+      status: sourceParagraphs.length > 0 ? 'available' : fallbackStatus,
+      paragraphs: sourceParagraphs,
+      text: sourceParagraphs.join('\n\n'),
+      createdAt: detail?.sourceTranscript?.createdAt ?? sessionRecord.startedAt ?? null,
+      finalizedAt: detail?.sourceTranscript?.finalizedAt ?? sessionRecord.endedAt ?? null,
+      emptyReason: sourceParagraphs.length > 0 ? null : emptyReasonForContentStatus(fallbackStatus)
+    }
+  };
+}
+
+function terminalContentStatus(sessionRecord) {
+  if (!['completed', 'stopped', 'failed', 'expired'].includes(sessionRecord?.status)) {
+    return 'processing';
+  }
+
+  return sessionRecord.status === 'failed' ? 'failed' : 'empty';
+}
+
+function emptyReasonForContentStatus(status) {
+  if (status === 'processing') return 'processing';
+  if (status === 'failed') return 'finalize_failed';
+  return 'no_content';
+}
+
+function readingContentEmptyText(content) {
+  if (content.emptyReason === 'processing') {
+    return '此工作階段尚未結束，正式內容仍在處理中。';
+  }
+
+  if (content.emptyReason === 'finalize_failed') {
+    return '工作階段結束時未能產生新的正式內容；已保留既有歷史資料。';
+  }
+
+  return content.kind === 'translationArticle'
+    ? '尚無文章版翻譯。'
+    : '尚無原始逐字稿。';
 }
 
 function historyLanguageLabel(record) {
@@ -1254,6 +1553,56 @@ function translationOutputTitle(output) {
   const languageLabel = targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言';
   const versionLabel = Number.isFinite(output.version) ? ` v${output.version}` : '';
   return `${languageLabel}${versionLabel}`;
+}
+
+function glossaryReplacementLabel(entry = {}) {
+  const replacements = Object.entries(entry.translations || {})
+    .map(([, text]) => `${entry.source} → ${text}`);
+  return replacements.join('、') || entry.source || '未命名字典詞條';
+}
+
+function glossaryLanguagesLabel(translations = {}) {
+  const label = Object.entries(translations)
+    .map(([languageCode]) => targetLanguageLabelFor(languageCode) || languageCode)
+    .join('、');
+  return label ? `目標語言：${label}` : '目標語言：未設定';
+}
+
+function hasReplacementAliases(replacementAliases = {}) {
+  return Object.values(replacementAliases)
+    .some((aliases) => Array.isArray(aliases) && aliases.length > 0);
+}
+
+function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  return entries
+    .filter((entry) => entry?.scope === 'live' || entry?.scope === 'both')
+    .map((entry) => ({
+      source: entry.source,
+      target: entry.translations?.[targetLanguageCode],
+      replacementAliases: Array.isArray(entry.replacementAliases?.[targetLanguageCode])
+        ? entry.replacementAliases[targetLanguageCode]
+        : []
+    }))
+    .filter((entry) => (
+      typeof entry.source === 'string' &&
+      entry.source.length > 0 &&
+      typeof entry.target === 'string' &&
+      entry.target.length > 0
+    ));
+}
+
+function glossaryScopeLabel(scope) {
+  const labels = {
+    live: '套用範圍：即時翻譯',
+    history: '套用範圍：歷史重新翻譯',
+    both: '套用範圍：兩者'
+  };
+
+  return labels[scope] || labels.history;
 }
 
 function compactTranslationHistoryForDetail(detail) {

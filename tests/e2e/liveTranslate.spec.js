@@ -5,6 +5,7 @@ test.beforeEach(async ({ page }) => {
   expect(resetResponse.status()).toBe(204);
   page.liveTokenRequests = [];
   page.failLiveTokenRequestAt = null;
+  page.liveGlossaryEntries = [];
 
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
@@ -92,7 +93,8 @@ test.beforeEach(async ({ page }) => {
       contentType: 'application/json',
       body: JSON.stringify({
         token: `mock-token-for-${body.targetLanguageCode}`,
-        expiresAt: '2026-07-07T00:30:00.000Z'
+        expiresAt: '2026-07-07T00:30:00.000Z',
+        liveGlossaryEntries: page.liveGlossaryEntries
       })
     });
   });
@@ -118,9 +120,18 @@ function activeExportPanel(page) {
   return page.locator('.export-panel');
 }
 
+function glossaryPanel(page) {
+  return page.locator('.glossary-panel');
+}
+
 async function openHistoryPage(page) {
   await page.getByRole('link', { name: '翻譯紀錄' }).click();
   await expect(page).toHaveURL(/#history$/);
+}
+
+async function openGlossaryPage(page) {
+  await page.getByRole('link', { name: '翻譯字典' }).click();
+  await expect(page).toHaveURL(/#glossary$/);
 }
 
 async function openLivePage(page) {
@@ -172,6 +183,78 @@ test('initial history shows empty state', async ({ page }) => {
   await expect(historyItems(page)).toHaveCount(0);
 });
 
+test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
+  const requests = [];
+  let entries = [];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+
+    if (method === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/glossary/entries') {
+      const body = JSON.parse(request.postData() || '{}');
+      requests.push({ method, body });
+      const entry = { id: 'entry-1', ...body, createdAt: 1000, updatedAt: 1000 };
+      entries = [entry];
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/glossary/entries/entry-1') {
+      const body = JSON.parse(request.postData() || '{}');
+      requests.push({ method, body });
+      const entry = { id: 'entry-1', ...body, createdAt: 1000, updatedAt: 2000 };
+      entries = [entry];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+
+    if (method === 'DELETE' && url.pathname === '/api/glossary/entries/entry-1') {
+      requests.push({ method });
+      const [entry] = entries;
+      entries = [];
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await openGlossaryPage(page);
+
+  await expect(glossaryPanel(page).getByRole('heading', { name: '翻譯字典' })).toBeVisible();
+  await glossaryPanel(page).getByLabel('詞條').fill('microphone');
+  await glossaryPanel(page).getByLabel('目標語言').selectOption('ja');
+  await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
+  await expect(glossaryPanel(page).getByLabel('字幕替換詞')).toHaveCount(0);
+  await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
+  await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
+
+  await expect(glossaryPanel(page).getByText('microphone → Alan speak')).toBeVisible();
+  await expect(glossaryPanel(page).getByText('套用範圍：即時翻譯')).toBeVisible();
+
+  await glossaryPanel(page).getByRole('button', { name: '編輯' }).click();
+  await glossaryPanel(page).getByLabel('套用範圍').selectOption('both');
+  await glossaryPanel(page).getByRole('button', { name: '更新詞條' }).click();
+  await expect(glossaryPanel(page).getByText('套用範圍：兩者')).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await glossaryPanel(page).getByRole('button', { name: '刪除' }).click();
+  await expect(glossaryPanel(page).getByText('尚無字典詞條。')).toBeVisible();
+
+  expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'DELETE']);
+  expect(requests[0].body.scope).toBe('live');
+  expect(requests[0].body).toEqual({ source: 'microphone', translations: { ja: 'Alan speak' }, scope: 'live' });
+  expect(requests[1].body.scope).toBe('both');
+});
+
 test('active session is not shown while listening', async ({ page }) => {
   await page.goto('/');
 
@@ -185,6 +268,9 @@ test('active session is not shown while listening', async ({ page }) => {
 });
 
 test('starts and stops a mocked Gemini Live translation session', async ({ page }) => {
+  page.liveGlossaryEntries = [
+    { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
+  ];
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
@@ -215,6 +301,10 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
     targetLanguageCode: 'ja',
     responseModalities: ['AUDIO']
   });
+  await emitPartialTranscript(page, '麥克風', 'microphone and mic');
+  await expect(page.locator('.transcript-panel').nth(0).locator('.transcript-current')).toContainText('麥克風');
+  await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).toContainText('Alan speak and Alan speak');
+  await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).not.toContainText('microphone and mic');
 
   await page.getByRole('button', { name: '停止' }).click();
 
@@ -222,6 +312,68 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
+});
+
+test('live glossary replacement is applied to final translation article text only', async ({ page }) => {
+  page.liveGlossaryEntries = [
+    { source: 'microphone', target: 'Alan speak', replacementAliases: [] }
+  ];
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'microphone', 'microphone');
+
+  const sourcePanel = page.locator('.transcript-panel').nth(0);
+  const translationPanel = page.locator('.transcript-panel').nth(1);
+  await expect(sourcePanel.locator('.article-content')).toContainText('microphone');
+  await expect(translationPanel.locator('.article-content')).toContainText('Alan speak');
+  await expect(translationPanel.locator('.article-content')).not.toContainText('microphone');
+});
+
+test('glossary edits during an active session update later live translation article text', async ({ page }) => {
+  let entries = [];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+
+    if (method === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/glossary/entries') {
+      const body = JSON.parse(request.postData() || '{}');
+      const entry = { id: 'entry-active', ...body, createdAt: 1000, updatedAt: 1000 };
+      entries = [entry];
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await openGlossaryPage(page);
+  await glossaryPanel(page).getByLabel('詞條').fill('microphone');
+  await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
+  await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
+  await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
+  await expect(glossaryPanel(page).getByText('字典詞條已新增。')).toBeVisible();
+
+  await openLivePage(page);
+  await emitFinalTranscript(page, 'microphone', 'microphone');
+
+  const sourcePanel = page.locator('.transcript-panel').nth(0);
+  const translationPanel = page.locator('.transcript-panel').nth(1);
+  await expect(sourcePanel.locator('.article-content')).toContainText('microphone');
+  await expect(translationPanel.locator('.article-content')).toContainText('Alan speak');
+  await expect(translationPanel.locator('.article-content')).not.toContainText('microphone');
 });
 
 test('navigation keeps an active translation session and its article reading state', async ({ page }) => {
@@ -411,8 +563,9 @@ test('Stop finalizes visible partial transcripts for export and history', async 
   await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await expect(sessionDetail(page).getByText('partial source on stop')).toBeVisible();
-  await expect(sessionDetail(page).getByLabel('翻譯逐字稿').getByText('partial translation on stop')).toBeVisible();
+  await expect(sessionDetail(page).getByLabel('文章版翻譯').getByText('partial translation on stop')).toBeVisible();
+  await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(sessionDetail(page).getByLabel('原始逐字稿').getByText('partial source on stop')).toBeVisible();
 });
 
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
@@ -448,7 +601,7 @@ test('stopped session can open and close inline detail with metadata and final t
 
   const detail = sessionDetail(page);
   await expect(detail.getByRole('heading', { name: '日文詳細資料' })).toBeVisible();
-  await expect(detail.getByText('目標語言')).toBeVisible();
+  await expect(detail.getByText('目標語言', { exact: true })).toBeVisible();
   await expect(detail.getByText('日文', { exact: true })).toBeVisible();
   await expect(detail.getByText('狀態')).toBeVisible();
   await expect(detail.getByText('已停止', { exact: true })).toBeVisible();
@@ -456,14 +609,16 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(detail.getByText('結束時間')).toBeVisible();
   await expect(detail.getByText('持續時間')).toBeVisible();
   await expect(detail.getByText(/原文完成：\d+ · 翻譯完成：\d+/)).toBeVisible();
-  await expect(detail.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
-  await expect(detail.getByText('saved source detail')).toBeVisible();
-  await expect(detail.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
-  await expect(detail.getByLabel('翻譯逐字稿').getByText('saved translation detail')).toBeVisible();
-  await expect(detail.getByLabel('原文逐字稿').locator('.session-transcript-article')).toContainText('saved source detail');
-  await expect(detail.getByLabel('翻譯逐字稿').locator('.session-transcript-article')).toContainText('saved translation detail');
-  await expect(detail.getByLabel('原文逐字稿').locator('.session-transcript-list')).toHaveCount(0);
-  await expect(detail.getByLabel('翻譯逐字稿').locator('.session-transcript-list')).toHaveCount(0);
+  await expect(detail.getByRole('tab', { name: '文章版翻譯' })).toHaveAttribute('aria-selected', 'true');
+  await expect(detail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await expect(detail.getByLabel('文章版翻譯').locator('.session-transcript-article')).toContainText('saved translation detail');
+  await expect(detail.getByText('saved source detail')).toHaveCount(0);
+  await expect(detail.locator('.session-transcript-list')).toHaveCount(0);
+  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(detail.getByRole('tab', { name: '原始逐字稿' })).toHaveAttribute('aria-selected', 'true');
+  await expect(detail.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
+  await expect(detail.getByLabel('原始逐字稿').locator('.session-transcript-article')).toContainText('saved source detail');
+  await expect(detail.getByText('saved translation detail')).toHaveCount(0);
   await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' })).toHaveValue('txt');
   await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' })).toHaveValue('translation');
   await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
@@ -514,8 +669,9 @@ test('session detail queues retranslation and displays pending status', async ({
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = sessionDetail(page);
-  await expect(detail.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
-  await expect(detail.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(detail.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
   await expect(detail.getByLabel('重新翻譯進度')).toHaveCount(0);
   const retranslation = detail.getByLabel('重新翻譯');
 
@@ -680,7 +836,10 @@ test('no transcript detail shows empty state', async ({ page }) => {
 
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
-  await expect(sessionDetail(page).getByText('沒有已儲存的逐字稿。')).toBeVisible();
+  await expect(sessionDetail(page).getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await expect(sessionDetail(page).getByText('尚無文章版翻譯。')).toBeVisible();
+  await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(sessionDetail(page).getByText('尚無原始逐字稿。')).toBeVisible();
   await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeDisabled();
 });
 

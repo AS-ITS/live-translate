@@ -24,7 +24,7 @@ export function createGeminiClient({ httpClient, model, promptBuilder = buildDef
     async execute(input) {
       assertExecutionInput(input);
 
-      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode);
+      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode, { scope: 'history' });
       const request = buildGeminiExecutionRequest({
         input: glossaryEntries === undefined ? input : { ...input, glossaryEntries },
         model,

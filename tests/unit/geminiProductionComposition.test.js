@@ -98,10 +98,9 @@ test('production composition assembles Gemini provider and injects saved transcr
   assert.deepEqual(calls[1][1], { environment: { ...env, TRANSLATION_PROVIDER: configuredProviderKey } });
   assert.deepEqual(calls[2][1], { apiKey: 'exact-api-key' });
   assert.deepEqual(calls[3][1], { client: googleClient });
-  assert.deepEqual(calls[4][1], {
-    client: geminiClient,
-    model: 'exact-model'
-  });
+  assert.equal(calls[4][1].client, geminiClient);
+  assert.equal(calls[4][1].model, 'exact-model');
+  assert.equal(typeof calls[4][1].glossary.entriesFor, 'function');
   assert.equal(configurationCallCount, 1);
   assert.equal(geminiProviderCallCount, 1);
   assert.deepEqual(calls[5][1], {
@@ -123,14 +122,14 @@ test('production composition assembles Gemini provider and injects saved transcr
   assert.equal(typeof calls[6][1].idGenerator, 'function');
   assert.equal(typeof calls[6][1].clock, 'function');
   assert.deepEqual(calls[7][1], { savedTranscriptRetranslationService: service });
-  assert.deepEqual(calls[8][1], {
-    sessionReadController: dependencies.sessionReadController,
-    sessionRepository: dependencies.sessionRepository,
-    translationCommandController: dependencies.translationCommandController,
-    translationHistoryController: dependencies.translationHistoryController,
-    savedTranscriptRetranslationController,
-    executionControlController: dependencies.executionControlController
-  });
+  assert.equal(calls[8][1].sessionReadController, dependencies.sessionReadController);
+  assert.equal(calls[8][1].sessionRepository, dependencies.sessionRepository);
+  assert.equal(calls[8][1].translationCommandController, dependencies.translationCommandController);
+  assert.equal(calls[8][1].translationHistoryController, dependencies.translationHistoryController);
+  assert.equal(calls[8][1].savedTranscriptRetranslationController, savedTranscriptRetranslationController);
+  assert.equal(calls[8][1].executionControlController, dependencies.executionControlController);
+  assert.equal(typeof calls[8][1].glossaryController.listEntries, 'function');
+  assert.equal(typeof calls[8][1].liveTokenCreator, 'function');
   assert.ok(!Object.hasOwn(calls[8][1], 'configuration'));
   assert.ok(!Object.hasOwn(calls[8][1], 'defaultProviderKey'));
 
@@ -143,7 +142,7 @@ test('production composition assembles Gemini provider and injects saved transcr
 });
 
 test('configured glossary is shared by execution and saved-transcript Gemini providers', () => {
-  const glossary = { async entriesFor() { return []; } };
+  const glossary = glossaryDouble();
   let glossaryOptions;
   let executionClientOptions;
   let savedProviderOptions;
@@ -173,10 +172,48 @@ test('configured glossary is shared by execution and saved-transcript Gemini pro
     }
   });
 
-  assert.deepEqual(glossaryOptions.filePath, '/tmp/glossary.json');
+  assert.equal(glossaryOptions.filePath, '/tmp/glossary.json');
+  assert.equal(typeof glossaryOptions.idFactory, 'function');
+  assert.equal(typeof glossaryOptions.clock, 'function');
   assert.strictEqual(executionClientOptions.glossary, glossary);
   assert.strictEqual(savedProviderOptions.glossary, glossary);
 });
+
+test('production composition uses a default glossary file when the environment omits one', () => {
+  let glossaryOptions;
+
+  createProductionApplicationDependencies({
+    env: {
+      GEMINI_API_KEY: 'unused-by-mock',
+      GEMINI_MODEL: 'unused-by-mock'
+    },
+    sessionRepository: repository(),
+    translationGlossaryFactory(options) {
+      glossaryOptions = options;
+      return glossaryDouble();
+    },
+    geminiHttpClientFactory() { return { post() {} }; },
+    geminiClientFactory() { return { execute() {} }; },
+    geminiTranslationExecutionProviderFactory() { return { execute() {} }; },
+    googleGenAIClientFactory() { return { models: { generateContent() {} } }; },
+    geminiClientAdapterFactory() { return { generateContent() {} }; },
+    geminiSavedTranscriptTranslationCompositionFactory() {
+      return { savedTranscriptTranslationProvider: { translate() {} } };
+    }
+  });
+
+  assert.equal(glossaryOptions.filePath, 'translation-glossary.json');
+});
+
+function glossaryDouble() {
+  return {
+    async entriesFor() { return []; },
+    async listEntries() { return []; },
+    async createEntry(input) { return input; },
+    async updateEntry(id, input) { return { id, ...input }; },
+    async deleteEntry(id) { return { id }; }
+  };
+}
 
 test('production Gemini provider factory returns resolver output exactly once', () => {
   const calls = [];

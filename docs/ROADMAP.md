@@ -65,10 +65,11 @@ translation read APIs and UI remain deferred to WP3.
 
 Phase 4A WP3 Configurable Translation Glossary is completed. An optional
 `TRANSLATION_GLOSSARY_FILE` JSON file supplies validated source-term to
-target-language translation instructions to Gemini prompts. Missing or empty
-configuration preserves existing behavior; unsupported language codes and
+target-language translation instructions to Gemini prompts and deterministic
+translated subtitle replacement for configured live/history scopes. Missing or
+empty configuration preserves existing behavior; unsupported language codes and
 invalid entries are rejected. Glossary entries never rewrite source transcript
-text or `TranslationOutput`, and history read API/UI remain deferred to WP4.
+text or translated audio, and history read API/UI remain deferred to WP4.
 
 Phase 4A WP4 Translation History Read API and UI is completed. Existing session
 details can read persisted translation requests, executions, outputs, and source

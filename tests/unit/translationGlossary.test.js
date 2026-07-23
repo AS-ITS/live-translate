@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import { createTranslationGlossary } from '../../src/infrastructure/translationGlossary.js';
 
@@ -21,11 +24,69 @@ test('glossary selects only translations for the requested supported target lang
     ]
   });
 
-  assert.deepEqual(await glossary.entriesFor('ja'), [{ source: 'Codex', target: 'コーデックス' }]);
+  assert.deepEqual(await glossary.entriesFor('ja'), [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);
   assert.deepEqual(await glossary.entriesFor('zh-Hant'), [
-    { source: 'Codex', target: 'Codex' },
-    { source: 'Live Translate', target: '即時翻譯系統' }
+    { source: 'Codex', target: 'Codex', replacementAliases: [] },
+    { source: 'Live Translate', target: '即時翻譯系統', replacementAliases: [] }
   ]);
+});
+
+test('glossary returns source as the primary replacement term and keeps legacy aliases for the requested target language only', async () => {
+  const glossary = createGlossary({
+    entries: [
+      {
+        source: 'microphone',
+        translations: { en: 'Alan speak', ja: 'アランスピーク' },
+        replacementAliases: { en: ['mic'], ja: ['マイク'] },
+        scope: 'both'
+      }
+    ]
+  });
+
+  assert.deepEqual(await glossary.entriesFor('en', { scope: 'live' }), [
+    { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
+  ]);
+  assert.deepEqual(await glossary.entriesFor('ja', { scope: 'history' }), [
+    { source: 'microphone', target: 'アランスピーク', replacementAliases: ['マイク'] }
+  ]);
+});
+
+test('glossary defaults legacy entries to history and filters requested scope', async () => {
+  const glossary = createGlossary({
+    entries: [
+      { source: 'Legacy', translations: { ja: 'レガシー' } },
+      { source: 'Live', scope: 'live', translations: { ja: 'ライブ' } },
+      { source: 'History', scope: 'history', translations: { ja: '履歴' } },
+      { source: 'Both', scope: 'both', translations: { ja: '両方' } }
+    ]
+  });
+
+  assert.deepEqual(await glossary.entriesFor('ja'), [
+    { source: 'Legacy', target: 'レガシー', replacementAliases: [] },
+    { source: 'Live', target: 'ライブ', replacementAliases: [] },
+    { source: 'History', target: '履歴', replacementAliases: [] },
+    { source: 'Both', target: '両方', replacementAliases: [] }
+  ]);
+  assert.deepEqual(await glossary.entriesFor('ja', { scope: 'live' }), [
+    { source: 'Live', target: 'ライブ', replacementAliases: [] },
+    { source: 'Both', target: '両方', replacementAliases: [] }
+  ]);
+  assert.deepEqual(await glossary.entriesFor('ja', { scope: 'history' }), [
+    { source: 'Legacy', target: 'レガシー', replacementAliases: [] },
+    { source: 'History', target: '履歴', replacementAliases: [] },
+    { source: 'Both', target: '両方', replacementAliases: [] }
+  ]);
+});
+
+test('glossary rejects invalid scope values', async () => {
+  await assert.rejects(
+    createGlossary({ entries: [{ source: 'Codex', scope: 'archive', translations: { ja: '用語' } }] }).entriesFor('ja'),
+    /scope/
+  );
+  await assert.rejects(
+    createGlossary({ entries: [] }).entriesFor('ja', { scope: 'archive' }),
+    /scope/
+  );
 });
 
 test('glossary rejects invalid JSON and invalid entry shapes deterministically', async () => {
@@ -40,7 +101,11 @@ test('glossary rejects invalid JSON and invalid entry shapes deterministically',
     { entries: [{ source: 'Codex', translations: { ja: 1 } }] },
     { entries: [{ source: 'Codex', translations: { ja: ' ' } }] },
     { entries: [{ source: 'Codex', translations: { 'xx': 'term' } }] },
-    { entries: [{ source: 'Codex', translations: [] }] }
+    { entries: [{ source: 'Codex', translations: [] }] },
+    { entries: [{ source: 'Codex', translations: { ja: '用語' }, replacementAliases: [] }] },
+    { entries: [{ source: 'Codex', translations: { ja: '用語' }, replacementAliases: { xx: ['term'] } }] },
+    { entries: [{ source: 'Codex', translations: { ja: '用語' }, replacementAliases: { ja: 'term' } }] },
+    { entries: [{ source: 'Codex', translations: { ja: '用語' }, replacementAliases: { ja: [' '] } }] }
   ]) {
     await assert.rejects(createGlossary(glossary).entriesFor('ja'));
   }
@@ -65,6 +130,47 @@ test('glossary loads its file once and returns immutable selected entries', asyn
   assert.equal(reads, 1);
   assert.equal(Object.isFrozen(entries), true);
   assert.equal(Object.isFrozen(entries[0]), true);
+});
+
+test('glossary CRUD persists entries and updates cached provider entries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-glossary-'));
+  const filePath = join(directory, 'glossary.json');
+  const fs = await import('node:fs/promises');
+  const glossary = createTranslationGlossary({
+    filePath,
+    fileSystem: fs,
+    idFactory: () => 'entry-1',
+    clock: () => 1000
+  });
+
+  assert.deepEqual(await glossary.entriesFor('ja'), []);
+
+  const created = await glossary.createEntry({ source: 'Codex', translations: { ja: 'コーデックス' }, scope: 'both' });
+  assert.equal(created.id, 'entry-1');
+  assert.equal(created.scope, 'both');
+  assert.deepEqual(await glossary.entriesFor('ja'), [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);
+
+  await glossary.updateEntry('entry-1', {
+    source: 'Codex',
+    translations: { ja: 'コードエックス', fr: 'Codex' },
+    replacementAliases: { ja: ['コード X'] },
+    scope: 'history'
+  });
+  assert.deepEqual(await glossary.entriesFor('ja'), [{ source: 'Codex', target: 'コードエックス', replacementAliases: ['コード X'] }]);
+  assert.deepEqual(await glossary.listEntries(), [
+    {
+      id: 'entry-1',
+      source: 'Codex',
+      translations: { ja: 'コードエックス', fr: 'Codex' },
+      replacementAliases: { ja: ['コード X'] },
+      scope: 'history',
+      createdAt: 1000,
+      updatedAt: 1000
+    }
+  ]);
+
+  await glossary.deleteEntry('entry-1');
+  assert.deepEqual(await glossary.entriesFor('ja'), []);
 });
 
 function createGlossary(value) {

@@ -16,17 +16,29 @@ export function createSessionSnapshotSyncService({ sessionRepository } = {}) {
 
 function syncSnapshot(repository, existing, session, transcriptItems) {
   if (!existing) {
-    repository.createSessionRecord(session);
-    existing = repository.getSessionRecord(session.id);
+    const created = repository.createSessionRecord(session);
+    return isPromiseLike(created)
+      ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems))
+      : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems);
   }
 
   const apply = (detail) => {
     const knownItemIds = new Set((detail?.transcriptItems ?? []).map((item) => item.id));
-    for (const item of transcriptItems) {
-      if (!knownItemIds.has(item.id)) repository.appendTranscriptItem(session.id, item);
-    }
+    const appendResult = transcriptItems.reduce((previous, item) => {
+      if (knownItemIds.has(item.id)) return previous;
+      return mapMaybePromise(previous, () => repository.appendTranscriptItem(session.id, item));
+    }, undefined);
 
-    const current = repository.getSessionRecord(session.id)?.sessionRecord;
+    return mapMaybePromise(appendResult, () => applySessionPatch(repository, session));
+  };
+
+  return isPromiseLike(existing) ? existing.then(apply) : apply(existing);
+}
+
+function applySessionPatch(repository, session) {
+  const detail = repository.getSessionRecord(session.id);
+  return mapMaybePromise(detail, (currentDetail) => {
+    const current = currentDetail?.sessionRecord;
     if (isTerminalSessionStatus(session.status) && current?.status === 'active') {
       return repository.finalizeSessionRecord(session.id, {
         status: session.status,
@@ -42,9 +54,7 @@ function syncSnapshot(repository, existing, session, transcriptItems) {
     }
 
     return current;
-  };
-
-  return isPromiseLike(existing) ? existing.then(apply) : apply(existing);
+  });
 }
 
 function validateSnapshot(snapshot) {
@@ -86,4 +96,5 @@ function validSourceLanguageDetection(value) {
     && ['complete', 'partial'].includes(value.coverage);
 }
 function invalid() { const error = new TypeError('Session snapshot is invalid.'); error.code = 'invalid_request'; throw error; }
+function mapMaybePromise(value, mapper) { return isPromiseLike(value) ? value.then(mapper) : mapper(value); }
 function isPromiseLike(value) { return value && typeof value.then === 'function'; }

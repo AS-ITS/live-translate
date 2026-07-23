@@ -93,6 +93,57 @@ test('translation output includes only final translation items', () => {
   assert.deepEqual(dto.translationOutputs[0].items.map((translationItem) => translationItem.id), ['translation-final']);
 });
 
+test('detail DTO exposes formal reading content for translation article and raw source transcript', () => {
+  const dto = mapSessionRecordDetailToDTO(
+    detail({
+      transcriptItems: [
+        item({ id: 'source-1', stream: 'source', status: 'final', text: '原始內容。', sequence: 1, startedAt: 1000, finalizedAt: 1200 }),
+        item({ id: 'translation-2', stream: 'translation', status: 'final', text: 'Translated paragraph.', sequence: 2, startedAt: 1300, finalizedAt: 1500 }),
+        item({ id: 'translation-partial', stream: 'translation', status: 'partial', text: 'draft', sequence: 3 })
+      ]
+    })
+  );
+
+  assert.deepEqual(dto.readingContent.translationArticle, {
+    kind: 'translationArticle',
+    status: 'available',
+    targetLanguageCode: 'fr',
+    targetLanguageLabel: 'French',
+    version: null,
+    text: 'Translated paragraph.',
+    paragraphs: ['Translated paragraph.'],
+    createdAt: 1000,
+    completedAt: 5000,
+    emptyReason: null
+  });
+  assert.deepEqual(dto.readingContent.sourceTranscript, {
+    kind: 'sourceTranscript',
+    status: 'available',
+    text: '原始內容。',
+    paragraphs: ['原始內容。'],
+    createdAt: 1000,
+    finalizedAt: 5000,
+    emptyReason: null
+  });
+});
+
+test('detail DTO reading content has stable empty states for active and failed legacy sessions', () => {
+  const active = mapSessionRecordDetailToDTO(detail({
+    sessionRecord: { ...baseSessionRecord, status: 'active', endedAt: null },
+    transcriptItems: []
+  }));
+  const failed = mapSessionRecordDetailToDTO(detail({
+    sessionRecord: { ...baseSessionRecord, status: 'failed', failureReason: 'unexpected_close' },
+    transcriptItems: []
+  }));
+
+  assert.equal(active.readingContent.translationArticle.status, 'processing');
+  assert.equal(active.readingContent.translationArticle.emptyReason, 'processing');
+  assert.equal(active.readingContent.sourceTranscript.status, 'processing');
+  assert.equal(failed.readingContent.translationArticle.status, 'failed');
+  assert.equal(failed.readingContent.translationArticle.emptyReason, 'finalize_failed');
+});
+
 test('legacy translation output uses stable deterministic IDs', () => {
   const dto = mapSessionRecordDetailToDTO(detail({ transcriptItems: [item({ stream: 'translation', status: 'final' })] }));
   const missingLanguageDto = mapSessionRecordDetailToDTO(

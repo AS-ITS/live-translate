@@ -6,6 +6,7 @@ import {
   OUTPUT_SAMPLE_RATE,
   pcm16ToFloat
 } from './audio.js';
+import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -25,7 +26,8 @@ export class LiveTranslateSession {
     onOutputTranscript,
     onError,
     onClose,
-    onConnectionFailure
+    onConnectionFailure,
+    liveGlossaryEntries = []
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
@@ -38,6 +40,7 @@ export class LiveTranslateSession {
     this.onError = onError;
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
+    this.liveGlossaryEntries = liveGlossaryEntries;
     this.audioContext = null;
     this.mediaStream = null;
     this.source = null;
@@ -80,7 +83,8 @@ export class LiveTranslateSession {
       throw new Error(userMessageForErrorCode(error.error?.code));
     }
 
-    const { token } = await tokenResponse.json();
+    const { token, liveConnectConfig, liveGlossaryEntries } = await tokenResponse.json();
+    this.liveGlossaryEntries = Array.isArray(liveGlossaryEntries) ? liveGlossaryEntries : [];
     const ai = new GoogleGenAI({
       apiKey: token,
       httpOptions: {
@@ -91,7 +95,7 @@ export class LiveTranslateSession {
     this.session = await withTimeout(
       ai.live.connect({
         model: 'gemini-3.5-live-translate-preview',
-        config: {
+        config: liveConnectConfig || {
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {},
           outputAudioTranscription: {},
@@ -187,7 +191,7 @@ export class LiveTranslateSession {
 
     if (content?.outputTranscription?.text) {
       const transcript = {
-        text: content.outputTranscription.text,
+        text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete
       };
       this.logLiveEvent('outputTranscription.callback', { transcript });

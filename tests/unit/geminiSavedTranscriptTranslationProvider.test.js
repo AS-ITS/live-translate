@@ -138,12 +138,12 @@ test('default saved-transcript prompt includes glossary instructions while retai
 });
 
 test('saved-transcript provider resolves glossary for its target language without an extra provider call', async () => {
-  const targets = [];
+  const requests = [];
   const calls = [];
   const provider = createProvider({
     glossary: {
-      async entriesFor(targetLanguageCode) {
-        targets.push(targetLanguageCode);
+      async entriesFor(targetLanguageCode, options) {
+        requests.push({ targetLanguageCode, options });
         return [{ source: 'Codex', target: 'コーデックス' }];
       }
     },
@@ -157,10 +157,30 @@ test('saved-transcript provider resolves glossary for its target language withou
 
   await provider.translate(translationInput({ sourceText: 'Codex', targetLanguageCode: 'ja' }));
 
-  assert.deepEqual(targets, ['ja']);
+  assert.deepEqual(requests, [{ targetLanguageCode: 'ja', options: { scope: 'history' } }]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].contents[0].parts.at(-1).text, 'Codex');
   assert.equal(calls[0].contents[0].parts.some((part) => part.text.includes('コーデックス')), true);
+});
+
+test('saved-transcript provider applies glossary replacements before returning translated text', async () => {
+  const provider = createProvider({
+    glossary: {
+      async entriesFor() {
+        return [{ source: '麥克風', target: 'Alan speak', replacementAliases: ['microphone', 'mic'] }];
+      }
+    },
+    client: {
+      generateContent() {
+        return { translatedText: 'microphone and mic', detectedSourceLanguageCode: 'zh-Hant' };
+      }
+    }
+  });
+
+  assert.deepEqual(await provider.translate(translationInput({ targetLanguageCode: 'en' })), {
+    translatedText: 'Alan speak and Alan speak',
+    detectedSourceLanguageCode: 'zh-Hant'
+  });
 });
 
 test('client is invoked exactly once with the constructed request', async () => {

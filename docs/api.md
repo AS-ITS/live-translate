@@ -1,5 +1,79 @@
 # Live Translate API and Events
 
+## Glossary
+
+## `GET /api/glossary`
+
+Returns the global translation glossary.
+
+When `TRANSLATION_GLOSSARY_FILE` is unset, the backend uses
+`translation-glossary.json`. If the file does not exist, the glossary is empty;
+the first successful create request writes the file.
+
+```json
+{
+  "entries": [
+    {
+      "id": "entry-1",
+      "source": "Codex",
+      "translations": {
+        "ja": "コーデックス"
+      },
+      "replacementAliases": {
+        "ja": ["code x"]
+      },
+      "scope": "history",
+      "createdAt": 1000,
+      "updatedAt": 1000
+    }
+  ]
+}
+```
+
+## `POST /api/glossary/entries`
+
+Creates one manually maintained global glossary entry.
+
+```json
+{
+  "source": "microphone",
+  "translations": {
+    "en": "Alan speak"
+  },
+  "scope": "both"
+}
+```
+
+Returns `201 Created` with `{ "entry": ... }`.
+
+## `PUT /api/glossary/entries/:entryId`
+
+Replaces the source term and translations for an existing glossary entry.
+
+Returns `200 OK` with `{ "entry": ... }`. Missing entries return `404`.
+
+## `DELETE /api/glossary/entries/:entryId`
+
+Deletes an existing glossary entry.
+
+Returns `200 OK` with the deleted `{ "entry": ... }`. Missing entries return
+`404`.
+
+Glossary validation uses the supported target-language allowlist. Blank source
+terms, blank translations, empty translation maps, unsupported language codes,
+unsupported scopes, and blank replacement aliases are rejected. `scope` may be
+`live`, `history`, or `both`; omitted scope defaults to `history` for legacy
+compatibility. The primary product behavior is deterministic subtitle text
+replacement: `source` is the text to find in translated subtitles, and
+`translations[targetLanguageCode]` is the text to display instead. Legacy
+`replacementAliases` is still accepted for stored JSON/API compatibility and
+adds extra find-text values for the same replacement target.
+
+Glossary replacement is applied only to translated subtitle text for live output
+and saved retranslation output. It does not rewrite source transcripts and does
+not post-process translated audio. Gemini glossary instructions may still help
+provider output, but subtitle replacement is the deterministic behavior.
+
 ## Execution Control
 
 ### `POST /api/translation-executions/:executionId/cancel`
@@ -79,6 +153,42 @@ translation-history read succeeds:
 }
 ```
 
+`GET /api/sessions/:sessionId` also includes `readingContent` for history
+detail reading. It is derived server-side from persisted final transcript items
+and legacy/formal translation output data so the UI does not need to assemble
+official reading text from partial chunks:
+
+```js
+{
+  readingContent: {
+    translationArticle: {
+      status, // available | processing | failed | empty
+      targetLanguageCode,
+      targetLanguageLabel,
+      version,
+      text,
+      paragraphs,
+      createdAt,
+      completedAt,
+      emptyReason
+    },
+    sourceTranscript: {
+      status, // available | processing | failed | empty
+      text,
+      paragraphs,
+      createdAt,
+      finalizedAt,
+      emptyReason
+    }
+  }
+}
+```
+
+`translationArticle` is the default history detail reading view. `sourceTranscript`
+preserves the recognized source-language text without translation or local
+rewriting. Partial live transcript chunks are excluded unless they were
+finalized during turn completion, Stop, or session finalization.
+
 The detailed session-scoped history is also available from `GET
 /api/sessions/:sessionId/translations`, optionally filtered by an allowlisted
 `targetLanguageCode`. Source-language detection is exposed there as canonical
@@ -113,7 +223,25 @@ Fields:
 ```json
 {
   "token": "ephemeral-token-name",
-  "expiresAt": "2026-07-06T08:30:00.000Z"
+  "expiresAt": "2026-07-06T08:30:00.000Z",
+  "liveConnectConfig": {
+    "responseModalities": ["AUDIO"],
+    "inputAudioTranscription": {},
+    "outputAudioTranscription": {},
+    "generationConfig": {
+      "translationConfig": {
+        "targetLanguageCode": "en",
+        "echoTargetLanguage": true
+      }
+    }
+  },
+  "liveGlossaryEntries": [
+    {
+      "source": "microphone",
+      "target": "Alan speak",
+      "replacementAliases": ["mic"]
+    }
+  ]
 }
 ```
 
@@ -121,6 +249,12 @@ Fields:
 
 - `token`: Gemini ephemeral token name returned by the provider.
 - `expiresAt`: ISO timestamp matching the configured token expiration.
+- `liveConnectConfig`: Browser Live API connect config matching the server-side
+  token constraints. When live-scoped glossary entries exist, it also includes
+  glossary instructions.
+- `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
+  requested target language. The browser uses these for deterministic translated
+  subtitle replacement; source transcripts and translated audio are unchanged.
 
 ## Validation Rules
 

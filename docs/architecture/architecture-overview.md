@@ -847,13 +847,16 @@ contracts.
 
 Current state:
 
-- Memory-only repository.
-- Page refresh clears history.
+- `MemorySessionRepository` remains the default runtime adapter.
+- `SESSION_RECORDS_FILE` enables a backend JSON file-backed SessionRepository.
+- File-backed session storage preserves saved sessions, transcript items, and
+  translation command state across page refresh and server restart.
 - No `localStorage`.
 - No `IndexedDB`.
-- No backend persistence.
+- No database-backed persistence.
 
-This is an intentional Phase 2A decision, not a missing implementation detail.
+The file-backed adapter is intended for the current single-node internal-tool
+scope. It is not a multi-process locking or production database substitute.
 
 If browser-local durable storage is introduced later:
 

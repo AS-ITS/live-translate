@@ -41,10 +41,29 @@ test('buildTokenConfig locks live translate model and audio settings', () => {
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
 });
 
+test('buildTokenConfig includes live glossary instruction only when entries are provided', () => {
+  const config = buildTokenConfig(
+    {
+      targetLanguageCode: 'ja',
+      echoTargetLanguage: true,
+      glossaryEntries: [{ source: 'Codex', target: 'コーデックス' }]
+    },
+    new Date('2026-07-06T00:00:00.000Z')
+  );
+
+  const text = config.liveConnectConstraints.config.systemInstruction.parts[0].text;
+  assert.match(text, /Glossary instructions/);
+  assert.match(text, /Source term: Codex/);
+  assert.match(text, /Required translation: コーデックス/);
+  assert.equal(buildTokenConfig({ targetLanguageCode: 'ja', echoTargetLanguage: true }).liveConnectConstraints.config.systemInstruction, undefined);
+});
+
 test('createLiveToken maps Gemini token response', async () => {
+  let tokenConfig;
   const client = {
     authTokens: {
-      async create() {
+      async create({ config }) {
+        tokenConfig = config;
         return { name: 'test-token' };
       }
     }
@@ -55,10 +74,40 @@ test('createLiveToken maps Gemini token response', async () => {
     { client, now: new Date('2026-07-06T00:00:00.000Z') }
   );
 
-  assert.deepEqual(result, {
-    token: 'test-token',
-    expiresAt: '2026-07-06T00:30:00.000Z'
-  });
+  assert.equal(result.token, 'test-token');
+  assert.equal(result.expiresAt, '2026-07-06T00:30:00.000Z');
+  assert.deepEqual(result.liveConnectConfig, tokenConfig.liveConnectConstraints.config);
+  assert.deepEqual(result.liveGlossaryEntries, []);
+});
+
+test('createLiveToken resolves live-scoped glossary entries for token and browser config', async () => {
+  let requestedScope;
+  let tokenConfig;
+  const client = {
+    authTokens: {
+      async create({ config }) {
+        tokenConfig = config;
+        return { name: 'test-token' };
+      }
+    }
+  };
+  const glossary = {
+    async entriesFor(targetLanguageCode, options) {
+      assert.equal(targetLanguageCode, 'ja');
+      requestedScope = options.scope;
+      return [{ source: 'Codex', target: 'コーデックス', replacementAliases: ['code x'] }];
+    }
+  };
+
+  const result = await createLiveToken(
+    { targetLanguageCode: 'ja' },
+    { client, glossary, now: new Date('2026-07-06T00:00:00.000Z') }
+  );
+
+  assert.equal(requestedScope, 'live');
+  assert.deepEqual(result.liveConnectConfig, tokenConfig.liveConnectConstraints.config);
+  assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: ['code x'] }]);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
 });
 
 test('createLiveToken maps provider failures to 502', async () => {

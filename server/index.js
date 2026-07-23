@@ -18,6 +18,8 @@ const ERROR_RESPONSES = {
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
   not_found: { status: 404, message: 'Route not found.' },
+  glossary_entry_not_found: { status: 404, message: 'Glossary entry not found.' },
+  glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
@@ -40,7 +42,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-    'Access-Control-Allow-Methods': 'GET, POST, PATCH, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
@@ -207,6 +209,7 @@ export function createRequestHandler(options = {}) {
     translationCommandController,
     executionControlController,
     translationHistoryController,
+    glossaryController,
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
     liveTokenCreator = createLiveToken
@@ -226,6 +229,7 @@ export function createRequestHandler(options = {}) {
       translationCommandController,
       executionControlController,
       translationHistoryController,
+      glossaryController,
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
       liveTokenCreator
@@ -240,7 +244,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -305,6 +309,22 @@ async function handleRequestWithSessionReadController(
         clientIp,
         origin
       });
+    }
+    return;
+  }
+
+  if (isGlossaryRoute(req.method, path)) {
+    try {
+      if (!glossaryController) throw createHttpError('glossary_not_configured');
+      const { status, result } = await handleGlossaryCommand(req.method, path, req, glossaryController);
+      statusCode = status;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }
@@ -587,6 +607,74 @@ function isSessionTranslationHistoryPath(path) {
 
 function isSessionRetranslationPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
+}
+
+function isGlossaryRoute(method, path) {
+  return (
+    (method === 'GET' && path === '/api/glossary') ||
+    (method === 'POST' && path === '/api/glossary/entries') ||
+    ((method === 'PUT' || method === 'DELETE') &&
+      path.startsWith('/api/glossary/entries/') &&
+      path.length > '/api/glossary/entries/'.length)
+  );
+}
+
+async function handleGlossaryCommand(method, path, req, glossaryController) {
+  if (method === 'GET' && path === '/api/glossary') {
+    return { status: 200, result: { entries: await glossaryController.listEntries() } };
+  }
+
+  if (method === 'POST' && path === '/api/glossary/entries') {
+    return { status: 201, result: { entry: await glossaryController.createEntry(validateGlossaryEntryBody(await readJson(req))) } };
+  }
+
+  if (method === 'PUT' && path.startsWith('/api/glossary/entries/')) {
+    const id = extractGlossaryEntryId(path);
+    return { status: 200, result: { entry: await glossaryController.updateEntry({ id, ...validateGlossaryEntryBody(await readJson(req)) }) } };
+  }
+
+  if (method === 'DELETE' && path.startsWith('/api/glossary/entries/')) {
+    const id = extractGlossaryEntryId(path);
+    return { status: 200, result: { entry: await glossaryController.deleteEntry({ id }) } };
+  }
+
+  throw createHttpError('not_found');
+}
+
+function extractGlossaryEntryId(path) {
+  try {
+    return validateRequiredString(decodeURIComponent(path.slice('/api/glossary/entries/'.length)));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function validateGlossaryEntryBody(body) {
+  if (!isPlainRequestObject(body) || !isPlainRequestObject(body.translations)) throw createHttpError('invalid_request');
+  validateRequiredString(body.source);
+  const scope = body.scope === undefined ? 'history' : body.scope;
+  if (!['live', 'history', 'both'].includes(scope)) throw createHttpError('invalid_request');
+  for (const [languageCode, translation] of Object.entries(body.translations)) {
+    if (!isSupportedLanguage(languageCode)) throw createHttpError('unsupported_language');
+    validateRequiredString(translation);
+  }
+  if (Object.keys(body.translations).length === 0) throw createHttpError('invalid_request');
+  const replacementAliases = validateGlossaryReplacementAliases(body.replacementAliases);
+  return { source: body.source, translations: body.translations, replacementAliases, scope };
+}
+
+function validateGlossaryReplacementAliases(value) {
+  if (value === undefined) return {};
+  if (!isPlainRequestObject(value)) throw createHttpError('invalid_request');
+
+  const replacementAliases = {};
+  for (const [languageCode, aliases] of Object.entries(value)) {
+    if (!isSupportedLanguage(languageCode)) throw createHttpError('unsupported_language');
+    if (!Array.isArray(aliases)) throw createHttpError('invalid_request');
+    replacementAliases[languageCode] = aliases.map((alias) => validateRequiredString(alias));
+  }
+  return replacementAliases;
 }
 
 function extractSessionRetranslationSessionId(path) {

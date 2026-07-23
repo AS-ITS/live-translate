@@ -56,12 +56,28 @@
 
 ### Changed
 
+- Translation glossary UI now models entries as deterministic subtitle
+  replacement rules: `詞條` is the translated subtitle text to find and
+  `替換成` is the displayed text. Legacy `replacementAliases` JSON remains
+  readable for compatibility, but the UI no longer creates alias fields.
+
 - Live translation now defaults the target language to English (`en`) in the UI
   and live-token fallback. Source article reading, copy, and TXT export now
   normalize Chinese text to Taiwan Traditional Chinese while preserving the
   canonical transcript items.
 
 ### Added
+
+- Translation glossary entries now support `live`, `history`, and `both` scopes.
+  The glossary UI is available as its own `#glossary` page; live sessions use
+  only live/both entries through the server-issued Live connect config, while
+  saved retranslation uses only history/both entries.
+
+- Optional backend file-backed SessionRepository persistence via
+  `SESSION_RECORDS_FILE`, plus global manual glossary CRUD through
+  `TRANSLATION_GLOSSARY_FILE` and history-page UI. Saved sessions, canonical
+  transcript items, translation requests/executions/outputs, and glossary terms
+  can now survive reload/restart in the single-node internal-tool scope.
 
 - Live transcript panels now default to local article-style reading: final source
   and translation segments render as deterministic paragraphs, pending text

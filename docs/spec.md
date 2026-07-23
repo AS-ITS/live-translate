@@ -27,12 +27,10 @@ Current scope:
 - Each user translation run creates one Session.
 - The current session produces one selected target-language translation output.
 - The Session preserves source transcript items for review and export.
-
-Future scope:
-
-- The same saved SourceTranscript may later produce additional
-  TranslationOutput records.
-- Re-translation should not require new audio input or re-recording.
+- Saved Sessions may be persisted through backend file storage when
+  `SESSION_RECORDS_FILE` is configured.
+- The same saved SourceTranscript can produce additional TranslationOutput
+  records through re-translation without new audio input or re-recording.
 
 ## Goals
 
@@ -47,7 +45,8 @@ Future scope:
 ## Non-Goals
 
 - User accounts.
-- Persistent transcript history.
+- Database-backed transcript history.
+- Multi-user transcript history.
 - Room sharing or multi-user calls.
 - Text input translation.
 - Full benchmark or real API validation in automated tests.
@@ -69,6 +68,8 @@ The MVP includes:
 - A backend endpoint for ephemeral token issuance.
 - Validation of supported target languages and token options.
 - Session-local source transcript preservation for later export or review.
+- Optional backend file-backed session history for saved transcript
+  re-translation.
 
 ## Functional Requirements
 

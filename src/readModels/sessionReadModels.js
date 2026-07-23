@@ -1,3 +1,5 @@
+import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
+
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -43,12 +45,20 @@ export function mapSessionRecordDetailToDTO(detail = {}) {
     legacy: true
   };
   const translationOutputs = buildLegacyTranslationOutputs(sessionRecord, sourceRevisionId, translationItems);
+  const selectedTranslationOutput = translationOutputs[0] || null;
 
   return {
     session: mapSessionRecordToDetailSession(sessionRecord),
     sourceTranscript,
     translationOutputs,
-    selectedTranslationOutput: translationOutputs[0] || null,
+    selectedTranslationOutput,
+    readingContent: buildReadingContent({
+      sessionRecord,
+      sourceTranscript,
+      selectedTranslationOutput,
+      sourceItems,
+      translationItems
+    }),
     legacy: true
   };
 }
@@ -94,6 +104,75 @@ function buildLegacyTranslationOutputs(sessionRecord, sourceRevisionId, translat
       legacy: true
     }
   ];
+}
+
+function buildReadingContent({
+  sessionRecord,
+  sourceTranscript,
+  selectedTranslationOutput,
+  sourceItems,
+  translationItems
+}) {
+  return {
+    translationArticle: buildTranslationArticleContent(sessionRecord, selectedTranslationOutput, translationItems),
+    sourceTranscript: buildSourceTranscriptContent(sessionRecord, sourceTranscript, sourceItems)
+  };
+}
+
+function buildTranslationArticleContent(sessionRecord, selectedTranslationOutput, translationItems) {
+  const paragraphs = buildTranscriptArticleParagraphs(translationItems);
+  const completedAt = selectedTranslationOutput?.completedAt ?? sessionRecord.endedAt ?? null;
+
+  return {
+    kind: 'translationArticle',
+    status: paragraphs.length > 0 ? 'available' : contentStatusForSession(sessionRecord),
+    targetLanguageCode: selectedTranslationOutput?.targetLanguageCode ?? sessionRecord.targetLanguageCode ?? null,
+    targetLanguageLabel: selectedTranslationOutput?.targetLanguageLabel ?? sessionRecord.targetLanguageLabel ?? null,
+    version: selectedTranslationOutput?.version ?? null,
+    text: paragraphs.join('\n\n'),
+    paragraphs,
+    createdAt: selectedTranslationOutput?.createdAt ?? sessionRecord.startedAt ?? null,
+    completedAt,
+    emptyReason: paragraphs.length > 0 ? null : emptyReasonForSession(sessionRecord)
+  };
+}
+
+function buildSourceTranscriptContent(sessionRecord, sourceTranscript, sourceItems) {
+  const paragraphs = buildTranscriptArticleParagraphs(sourceItems);
+
+  return {
+    kind: 'sourceTranscript',
+    status: paragraphs.length > 0 ? 'available' : contentStatusForSession(sessionRecord),
+    text: formatTranscriptArticleText(sourceItems),
+    paragraphs,
+    createdAt: sourceTranscript.createdAt ?? sessionRecord.startedAt ?? null,
+    finalizedAt: sourceTranscript.finalizedAt ?? sessionRecord.endedAt ?? null,
+    emptyReason: paragraphs.length > 0 ? null : emptyReasonForSession(sessionRecord)
+  };
+}
+
+function contentStatusForSession(sessionRecord) {
+  if (!TERMINAL_SESSION_STATUSES.has(sessionRecord?.status)) {
+    return 'processing';
+  }
+
+  if (sessionRecord?.status === 'failed') {
+    return 'failed';
+  }
+
+  return 'empty';
+}
+
+function emptyReasonForSession(sessionRecord) {
+  if (!TERMINAL_SESSION_STATUSES.has(sessionRecord?.status)) {
+    return 'processing';
+  }
+
+  if (sessionRecord?.status === 'failed') {
+    return 'finalize_failed';
+  }
+
+  return 'no_content';
 }
 
 function finalItemsForStream(items, stream) {

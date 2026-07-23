@@ -200,6 +200,27 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       body.translationOutputs.map((output) => output.id),
       ['legacy-output:session-detail:ja']
     );
+    assert.deepEqual(body.readingContent.translationArticle, {
+      kind: 'translationArticle',
+      status: 'available',
+      targetLanguageCode: 'ja',
+      targetLanguageLabel: 'Japanese',
+      version: null,
+      text: 'こんにちは 世界。',
+      paragraphs: ['こんにちは 世界。'],
+      createdAt: 1000,
+      completedAt: 5000,
+      emptyReason: null
+    });
+    assert.deepEqual(body.readingContent.sourceTranscript, {
+      kind: 'sourceTranscript',
+      status: 'available',
+      text: 'Hello. World.',
+      paragraphs: ['Hello. World.'],
+      createdAt: 1000,
+      finalizedAt: 5000,
+      emptyReason: null
+    });
     assert.deepEqual(body.translationOutputs[0], {
       id: 'legacy-output:session-detail:ja',
       translationRequestId: 'legacy-request:session-detail:ja',

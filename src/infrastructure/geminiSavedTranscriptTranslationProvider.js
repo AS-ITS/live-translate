@@ -1,3 +1,5 @@
+import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
+
 const REQUIRED_TRANSLATION_FIELDS = Object.freeze([
   'sourceText',
   'sourceLanguageCode',
@@ -16,7 +18,7 @@ export function createGeminiSavedTranscriptTranslationProvider({ client, model, 
     async translate(input) {
       assertTranslationInput(input);
 
-      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode);
+      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode, { scope: 'history' });
       const request = buildGeminiSavedTranscriptTranslationRequest({
         input: glossaryEntries === undefined ? input : { ...input, glossaryEntries },
         model,
@@ -25,8 +27,12 @@ export function createGeminiSavedTranscriptTranslationProvider({ client, model, 
 
       const response = await client.generateContent(request);
 
-      return normalizeGeminiSavedTranscriptTranslationResponse(response, {
+      const result = normalizeGeminiSavedTranscriptTranslationResponse(response, {
         fallbackSourceLanguageCode: input.sourceLanguageCode
+      });
+      return Object.freeze({
+        ...result,
+        translatedText: applyGlossaryReplacements(result.translatedText, glossaryEntries)
       });
     }
   });

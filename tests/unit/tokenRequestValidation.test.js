@@ -36,3 +36,17 @@ test('token config uses v1alpha and single-use Gemini Live constraints', () => {
   assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['AUDIO']);
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
 });
+
+test('token config can carry live glossary instruction in connect constraints', () => {
+  const config = buildTokenConfig(
+    {
+      targetLanguageCode: 'en',
+      echoTargetLanguage: true,
+      glossaryEntries: [{ source: 'Gemini', target: 'Gemini' }]
+    },
+    new Date('2026-07-07T00:00:00.000Z')
+  );
+
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Glossary instructions/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Source term: Gemini/);
+});

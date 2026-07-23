@@ -98,14 +98,39 @@ test('POST /api/live-token returns an ephemeral token without calling real Gemin
   assert.equal(response.headers['X-Frame-Options'], 'DENY');
   assert.ok(response.headers['Content-Security-Policy']);
   assert.ok(response.headers['X-Request-Id']);
-  assert.deepEqual(body, {
-    token: 'mock-token-name',
-    expiresAt: body.expiresAt
-  });
+  assert.equal(body.token, 'mock-token-name');
   assert.match(body.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
 
   assert.deepEqual(globalThis.__mockGoogleGenAI.clients[0].httpOptions, { apiVersion: 'v1alpha' });
   assert.equal(globalThis.__mockGoogleGenAI.tokenCreates[0].config.liveConnectConstraints.config.generationConfig.translationConfig.targetLanguageCode, 'ja');
+});
+
+test('POST /api/live-token can return the server-constrained live connect config', async () => {
+  requestHandler = createRequestHandler({
+    async liveTokenCreator(body) {
+      const config = buildTokenConfig({
+        ...normalizeTokenRequest(body),
+        glossaryEntries: [{ source: 'Codex', target: 'コーデックス' }]
+      });
+      return {
+        token: 'mock-token-name',
+        expiresAt: config.expireTime,
+        liveConnectConfig: config.liveConnectConstraints.config,
+        liveGlossaryEntries: [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]
+      };
+    }
+  });
+
+  const response = await postJson({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: false
+  });
+  const body = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.liveConnectConfig.generationConfig.translationConfig.targetLanguageCode, 'ja');
+  assert.match(body.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
+  assert.deepEqual(body.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);
 });
 
 test('POST /api/live-token rejects invalid language', async () => {

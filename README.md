@@ -58,8 +58,9 @@ language detection, and filters the displayed records by target language.
 - `sourceLanguageDetection` is canonical optional transcript metadata. It can
   represent mixed languages, but Gemini does not currently guarantee reliable
   segment-level detection.
-- A glossary is provider instruction only. It never rewrites stored source
-  transcript text or a `TranslationOutput`.
+- A glossary provides provider instructions and deterministic translated
+  subtitle replacement. It never rewrites stored source transcript text or
+  translated audio.
 - History reads do not start providers, queues, workers, runners, or glossary
   loading and do not mutate records.
 
@@ -113,19 +114,29 @@ provide writable `TRANSLATION_DURABLE_QUEUE_FILE` and
 `TRANSLATION_DEAD_LETTER_QUEUE_FILE` paths. Keep these files outside the source
 tree and back them up according to the deployment's retention policy.
 
-`TRANSLATION_GLOSSARY_FILE` is optional. It points to a JSON file such as:
+`TRANSLATION_GLOSSARY_FILE` is optional. It defaults to
+`translation-glossary.json` when unset. The file is created automatically when
+the first glossary entry is saved. It stores JSON such as:
 
 ```json
 {
   "entries": [
-    { "source": "OpenAI", "targets": { "ja": "OpenAI" } }
+    {
+      "source": "microphone",
+      "translations": { "en": "Alan speak" },
+      "replacementAliases": { "en": ["mic"] },
+      "scope": "both"
+    }
   ]
 }
 ```
 
-If it is unset or its configured file does not exist, no glossary instruction
-is added. Invalid JSON or entries fail clearly rather than silently altering
-text.
+If the configured file does not exist, the glossary is empty until entries are
+created. Invalid JSON or entries fail clearly. Glossary entries are sent as
+Gemini translation instructions. For live and saved retranslation scopes,
+`source` is also applied deterministically as translated subtitle find-text and
+`translations[targetLanguageCode]` is the replacement text. Legacy
+`replacementAliases` remain supported as additional find-text values.
 
 Start the backend with `npm run start:production` and the frontend with
 `npm run dev`. For a manual smoke test: configure the server-only environment,
@@ -134,8 +145,8 @@ the session, submit translations, wait for worker completion, then open the
 same session detail and filter Translation history. Real Gemini testing is
 manual and opt-in only; automated tests use fakes and mocks.
 
-Current limitations: no account or authorization model, no glossary management
-UI/API, no cross-session history, and Gemini translation/detection quality must
+Current limitations: no account or authorization model, no cross-session
+history, and Gemini translation/detection quality must
 be confirmed in the target environment.
 
 Completed:

@@ -38,6 +38,61 @@ test('application dependencies compose the HTTP request handler from the assembl
   assert.equal(typeof dependencies.requestHandler, 'function');
 });
 
+test('application dependencies enable glossary routes with the default writable file', async () => {
+  const writes = [];
+  const dependencies = createApplicationDependencies({
+    requestHandlerFactory: createRequestHandler,
+    sessionReadRepository: readRepository(),
+    translationGlossaryFileSystem: {
+      async readFile() {
+        const error = new Error('missing');
+        error.code = 'ENOENT';
+        throw error;
+      },
+      async mkdir(path) {
+        writes.push(['mkdir', path]);
+      },
+      async writeFile(path, content) {
+        writes.push(['writeFile', path, JSON.parse(content)]);
+      },
+      async rename(from, to) {
+        writes.push(['rename', from, to]);
+      }
+    },
+    idGenerator: createStaticIdGenerator(),
+    clock: () => 1000
+  });
+
+  const listResponse = await request(dependencies.requestHandler, { method: 'GET', url: '/api/glossary' });
+  const createResponse = await request(dependencies.requestHandler, {
+    method: 'POST',
+    url: '/api/glossary/entries',
+    body: JSON.stringify({ source: 'Codex', translations: { ja: 'コーデックス' }, scope: 'live' })
+  });
+
+  assert.equal(listResponse.status, 200);
+  assert.deepEqual(listResponse.json(), { entries: [] });
+  assert.equal(createResponse.status, 201);
+  assert.equal(createResponse.json().entry.scope, 'live');
+  assert.deepEqual(writes, [
+    ['mkdir', '.'],
+    ['writeFile', 'translation-glossary.json.tmp', {
+      entries: [
+        {
+          id: 'glossary-entry-1',
+          source: 'Codex',
+          translations: { ja: 'コーデックス' },
+          replacementAliases: {},
+          scope: 'live',
+          createdAt: 1000,
+          updatedAt: 1000
+        }
+      ]
+    }],
+    ['rename', 'translation-glossary.json.tmp', 'translation-glossary.json']
+  ]);
+});
+
 test('assembled controller can list sessions and get session detail', () => {
   const history = [historyItem({ id: 'session-1' })];
   const detail = detailDTO({ id: 'session-1' });
@@ -173,6 +228,12 @@ function readRepository(overrides = {}) {
       function getSessionDetail() {
         return detail;
       }
+  };
+}
+
+function createStaticIdGenerator() {
+  return function idGenerator(prefix) {
+    return `${prefix}-entry-1`;
   };
 }
 

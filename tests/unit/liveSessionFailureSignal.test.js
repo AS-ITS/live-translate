@@ -139,6 +139,76 @@ test('turn completion finalizes preceding input and output transcript partials',
   ]);
 });
 
+test('live session applies glossary replacements only to output transcript events', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    liveGlossaryEntries: [
+      { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
+    ],
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: '麥克風' },
+      outputTranscription: { text: 'microphone and mic' },
+      turnComplete: true
+    }
+  });
+
+  assert.deepEqual(inputEvents, [{ text: '麥克風', isFinal: true }]);
+  assert.deepEqual(outputEvents, [{ text: 'Alan speak and Alan speak', isFinal: true }]);
+});
+
+test('live session emits final output transcript events after glossary replacement', () => {
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    liveGlossaryEntries: [
+      { source: 'microphone', target: 'Alan speak', replacementAliases: [] }
+    ],
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      outputTranscription: { text: 'microphone' },
+      turnComplete: true
+    }
+  });
+
+  assert.deepEqual(outputEvents, [{ text: 'Alan speak', isFinal: true }]);
+});
+
+test('turn completion flush keeps replacement text when finalizing output partials', () => {
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    liveGlossaryEntries: [
+      { source: 'microphone', target: 'Alan speak', replacementAliases: [] }
+    ],
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      outputTranscription: { text: 'microphone' }
+    }
+  });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+
+  assert.deepEqual(outputEvents, [
+    { text: 'Alan speak', isFinal: false },
+    { text: 'Alan speak', isFinal: true }
+  ]);
+});
+
 test('rapid consecutive live transcript turns emit every completed source and translation segment', () => {
   const inputEvents = [];
   const outputEvents = [];
@@ -224,6 +294,38 @@ test('session stop flushes pending source and translation transcripts once', asy
   assert.deepEqual(outputEvents, [
     { text: 'last translation', isFinal: false },
     { text: 'last translation', isFinal: true }
+  ]);
+});
+
+test('session stop flush applies glossary replacement to pending output without changing input', async () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    liveGlossaryEntries: [
+      { source: 'microphone', target: 'Alan speak', replacementAliases: [] }
+    ],
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+  session.cleanup = async () => {};
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'microphone source' },
+      outputTranscription: { text: 'microphone' }
+    }
+  });
+  await session.stop();
+
+  assert.deepEqual(inputEvents, [
+    { text: 'microphone source', isFinal: false },
+    { text: 'microphone source', isFinal: true }
+  ]);
+  assert.deepEqual(outputEvents, [
+    { text: 'Alan speak', isFinal: false },
+    { text: 'Alan speak', isFinal: true }
   ]);
 });
 

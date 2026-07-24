@@ -116,12 +116,29 @@ submission creates a new request/execution pair.
 The client must not send `sourceText`, source language, transcript items, source
 metadata, or a version. The server derives canonical source text and provenance
 from the persisted Session and request state. On completion, it allocates the
-formal output version by `(sessionId, targetLanguageCode)`.
+formal output version by `(sessionId, targetLanguageCode)` and materializes a
+separate completed retranslation Session record for the history list.
 
 Translation history responses include `translationHistory.outputs` for formal
 completed outputs and `translationHistory.executions` for executions without an
 output. Formal output versions are scoped to `(sessionId, targetLanguageCode)`
 and are ordered by completion time, newest first.
+
+Completed retranslation history list records expose provenance so the UI can
+show which original speech record produced the translated article:
+
+```js
+{
+  recordKind: 'retranslation',
+  retranslatedFrom: {
+    sessionId,
+    startedAt,
+    requestId,
+    executionId,
+    outputId
+  }
+}
+```
 
 `GET /api/sessions/:sessionId` includes this compact read model when the
 translation-history read succeeds:

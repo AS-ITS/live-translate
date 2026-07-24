@@ -23,6 +23,8 @@ export function mapSessionRecordToHistoryListItem(sessionRecord = {}) {
     failureReason: sessionRecord.failureReason ?? null,
     failureCategory: sessionRecord.failureCategory ?? null,
     transcriptSummary: copyTranscriptSummary(sessionRecord.transcriptSummary),
+    recordKind: sessionRecord.recordKind ?? 'session',
+    retranslatedFrom: copyRetranslationProvenance(sessionRecord.retranslatedFrom),
     legacy: true
   };
 }
@@ -74,7 +76,9 @@ function mapSessionRecordToDetailSession(sessionRecord) {
     failureCategory: sessionRecord.failureCategory ?? null,
     selectedInputDeviceId: sessionRecord.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: sessionRecord.inputDeviceLabelSnapshot ?? null,
-    transcriptSummary: copyTranscriptSummary(sessionRecord.transcriptSummary)
+    transcriptSummary: copyTranscriptSummary(sessionRecord.transcriptSummary),
+    recordKind: sessionRecord.recordKind ?? 'session',
+    retranslatedFrom: copyRetranslationProvenance(sessionRecord.retranslatedFrom)
   };
 }
 
@@ -200,4 +204,18 @@ function mapSourceTranscriptStatus(sessionStatus) {
 
 function copyTranscriptSummary(summary) {
   return summary ? { ...summary } : { ...EMPTY_TRANSCRIPT_SUMMARY };
+}
+
+function copyRetranslationProvenance(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+
+  return {
+    sessionId: value.sessionId ?? null,
+    startedAt: value.startedAt ?? null,
+    requestId: value.requestId ?? null,
+    executionId: value.executionId ?? null,
+    outputId: value.outputId ?? null
+  };
 }

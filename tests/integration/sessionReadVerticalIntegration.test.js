@@ -69,6 +69,8 @@ test('GET /api/sessions returns mapped legacy session history through production
       failureReason: 'unexpected_close',
       failureCategory: 'provider',
       transcriptSummary: emptySummary,
+      recordKind: 'session',
+      retranslatedFrom: null,
       legacy: true
     });
     assert.deepEqual(response.body[1], {
@@ -82,6 +84,8 @@ test('GET /api/sessions returns mapped legacy session history through production
       failureReason: null,
       failureCategory: null,
       transcriptSummary: populatedSummary,
+      recordKind: 'session',
+      retranslatedFrom: null,
       legacy: true
     });
   });
@@ -167,7 +171,9 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       failureCategory: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic',
-      transcriptSummary: populatedSummary
+      transcriptSummary: populatedSummary,
+      recordKind: 'session',
+      retranslatedFrom: null
     });
     assert.deepEqual(body.sourceTranscript, {
       id: 'source:session-detail',

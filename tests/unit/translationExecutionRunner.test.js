@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createTranslationExecutionRunner } from '../../src/application/translationExecutionRunner.js';
 import { createRetryPolicy } from '../../src/application/translation/retryPolicy.js';
 import { TranslationExecution, TranslationOutput } from '../../src/domain/translation/index.js';
+import { GeminiHttpError } from '../../src/infrastructure/geminiClient.js';
 
 test('runner invokes provider exactly once with unchanged input', async () => {
   const providerInputs = [];
@@ -133,7 +134,70 @@ test('provider failure marks execution failed and skips output creation', async 
   const updateCalls = calls.filter((call) => call[0] === 'updateTranslationExecution');
   assert.deepEqual(updateCalls.map(([, execution]) => execution.providerAttemptStatus), ['in_flight', 'failed', 'failed']);
   assert.equal(updateCalls.at(-1)[1].status, 'failed');
-  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, { reason: 'provider_execution_failed' });
+  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, {
+    reason: 'provider_execution_failed',
+    errorName: 'Error',
+    message: 'provider failed'
+  });
+});
+
+test('Gemini provider failure persists safe quota diagnostics', async () => {
+  const calls = [];
+  const error = new GeminiHttpError({
+    status: 429,
+    code: 'rate_limited',
+    message: 'Gemini HTTP request failed: rate_limited (429).',
+    providerStatus: 'RESOURCE_EXHAUSTED',
+    providerMessage: 'Quota exceeded for API key AIza12345678901234567890.',
+    providerDetails: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+        reason: 'RATE_LIMIT_EXCEEDED',
+        domain: 'googleapis.com',
+        metadata: {
+          service: 'generativelanguage.googleapis.com',
+          quota_limit: 'GenerateRequestsPerMinutePerProject',
+          quota_location: 'global'
+        }
+      }
+    ]
+  });
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    translationExecutionProvider: {
+      async execute() {
+        throw error;
+      }
+    }
+  });
+
+  await assert.rejects(runner.execute(runnerInput()), error);
+
+  const failedExecution = calls
+    .filter((call) => call[0] === 'updateTranslationExecution')
+    .at(-1)[1];
+
+  assert.deepEqual(failedExecution.failureInfo, {
+    reason: 'provider_execution_failed',
+    errorName: 'GeminiHttpError',
+    code: 'rate_limited',
+    status: 429,
+    providerStatus: 'RESOURCE_EXHAUSTED',
+    providerMessage: 'Quota exceeded for API key [redacted-api-key].',
+    providerDetails: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+        reason: 'RATE_LIMIT_EXCEEDED',
+        domain: 'googleapis.com',
+        metadata: {
+          service: 'generativelanguage.googleapis.com',
+          quota_limit: 'GenerateRequestsPerMinutePerProject',
+          quota_location: 'global'
+        }
+      }
+    ],
+    message: 'Gemini HTTP request failed: rate_limited (429).'
+  });
 });
 
 test('provider is not called when persisting in_flight intent fails', async () => {
@@ -279,7 +343,11 @@ test('exhausted retry marks failed once, creates no output, and rethrows final p
   assert.equal(outputCalls.length, 0);
   assert.equal(updateCalls.length, 7);
   assert.equal(updateCalls.at(-1)[1].status, 'failed');
-  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, { reason: 'provider_execution_failed' });
+  assert.deepEqual(updateCalls.at(-1)[1].failureInfo, {
+    reason: 'provider_execution_failed',
+    errorName: 'Error',
+    message: 'attempt 3 failed'
+  });
   assert.equal(updateCalls.some((call) => call[1].status === 'completed'), false);
 });
 

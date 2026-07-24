@@ -687,10 +687,11 @@ and [Session Records Architecture](session-records-architecture.md).
 
 Session re-translation derives immutable source input from the saved canonical
 transcript and submits a new request/execution asynchronously. Completed
-`TranslationOutput` records are formal, versioned results: versions are
+`TranslationOutput` records remain formal, versioned results: versions are
 monotonic per `(sessionId, targetLanguageCode)`, while an output is idempotent
-per execution. The Session detail read model prefers these formal outputs and
-uses legacy output projection only when no formal output exists.
+per execution. Each completed re-translation also materializes a separate
+completed retranslation `SessionRecord` for the history list, with provenance
+back to the original speech Session, request, execution, and output.
 
 Queue items remain identifier-and-claim records; request persistence owns source
 text, target language, and provenance. Worker/recovery reload request state by
@@ -699,11 +700,11 @@ writes. Reclaim safety is local persistence safety, not a Gemini remote
 deduplication guarantee. Failed terminal work produces no output and DLQ
 transfer never calls a provider.
 
-The detail UI separates completed outputs from pending/failed executions and
-polls only while pending work exists. It prevents stale responses from replacing
-newer session/refresh state, retains the selected output when possible, and
-exports the selected formal output as TXT/SRT/VTT. Legacy-only Sessions retain
-their existing read-only fallback and exporter.
+The detail UI keeps pending/failed re-translation executions on the original
+speech Session while completed re-translation articles appear as their own
+history records. It prevents stale responses from replacing newer
+session/refresh state and exports the selected record as TXT/SRT/VTT.
+Legacy-only Sessions retain their existing read-only fallback and exporter.
 
 ## 12. Export Architecture
 

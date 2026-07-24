@@ -93,7 +93,9 @@ function resolveCanonicalSource(detail, sessionId) {
       revisionId,
       items,
       sourceText: text,
-      sourceLanguageCode: sourceLanguageDetection.sourceLanguageCode,
+      ...(sourceLanguageDetection.sourceLanguageCode === undefined ? {} : {
+        sourceLanguageCode: sourceLanguageDetection.sourceLanguageCode
+      }),
       sourceLanguageDetection: sourceLanguageDetection.metadata
     }
   };
@@ -104,8 +106,9 @@ function canonicalLanguageDetection(items) {
     ...(Array.isArray(item.sourceLanguageDetection?.detectedLanguageCodes) ? item.sourceLanguageDetection.detectedLanguageCodes : []),
     ...(typeof item.languageCode === 'string' && item.languageCode.trim() ? [item.languageCode] : [])
   ]))];
+  const sourceLanguageCode = codes.length === 1 ? codes[0] : undefined;
   return {
-    sourceLanguageCode: codes.length === 1 ? codes[0] : 'mixed',
+    ...(sourceLanguageCode === undefined ? {} : { sourceLanguageCode }),
     metadata: { detectedLanguageCodes: codes, coverage: codes.length > 0 ? 'complete' : 'partial' }
   };
 }

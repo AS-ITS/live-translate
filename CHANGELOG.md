@@ -56,6 +56,24 @@
 
 ### Changed
 
+- Completed saved-session retranslation now creates a separate completed
+  history record with provenance back to the original speech record instead of
+  replacing the original session's main article view.
+
+- Default backend startup now assembles the Gemini translation runtime whenever
+  `GEMINI_API_KEY` is configured and starts the translation execution worker, so
+  queued saved-session retranslation can complete and persist outputs to
+  `data/session-records.json`. Startup also restores persisted queued
+  retranslation executions from file-backed session records into the active
+  worker queue.
+
+- Failed saved-session retranslation executions now persist safe provider error
+  details for diagnosis. Mixed-language source transcripts no longer send the
+  synthetic `mixed` value as a Gemini source-language hint.
+
+- History detail now shows a user-facing reason when saved-session
+  retranslation fails.
+
 - Production session records now default to file-backed storage at
   `data/session-records.json` when `SESSION_RECORDS_FILE` is unset. Explicit
   `SESSION_RECORDS_FILE` configuration continues to override the path.
@@ -544,7 +562,7 @@
   now supports the concrete `GeminiTranslationExecutionProvider` backed by
   `GeminiClient`, registers `gemini` through
   `TranslationExecutionProviderResolver`, uses `GEMINI_API_KEY` and
-  `GEMINI_MODEL`, and has fake HTTP vertical integration coverage proving
+  `SAVED_RETRANSLATION_GEMINI_MODEL`, and has fake HTTP vertical integration coverage proving
   provider dispatch, `TranslationOutput` persistence, completed and failed
   execution lifecycles, and no real Gemini API call during automated tests.
   Fake provider and fake resolver coverage remains supported. Real Gemini API
@@ -954,7 +972,7 @@
   frozen infrastructure adapter that delegates directly to
   `client.models.generateContent(request)` without transformation, retry,
   timeout, logging, or SDK construction, plus deterministic `GEMINI_API_KEY`
-  and `GEMINI_MODEL` validation for future saved-transcript provider
+  and `SAVED_RETRANSLATION_GEMINI_MODEL` validation for future saved-transcript provider
   composition. This does not wire the adapter into production composition,
   HTTP endpoints, application services, UI, persistence, or runtime
   translation flow.

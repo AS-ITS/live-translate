@@ -34,6 +34,7 @@ export function createTranslationHistoryQueryService({ sessionRepository, transl
               requestId: request.id,
               targetLanguageCode: request.targetLanguageCode,
               status: execution.status,
+              failureInfo: safeFailureInfo(execution.failureInfo),
               ...(execution.completedAt === null ? {} : { completedAt: execution.completedAt })
             });
           }
@@ -59,5 +60,13 @@ function mapHistoryOutput(output) { return { ...mapOutput(output), requestId: ou
 function compareOutputItems(first, second) { const completed = String(second.completedAt).localeCompare(String(first.completedAt)); return completed || String(first.id).localeCompare(String(second.id)); }
 function sourceTextFor(snapshot = {}) { if (typeof snapshot?.sourceText === 'string') return snapshot.sourceText; if (typeof snapshot?.text === 'string') return snapshot.text; return Array.isArray(snapshot?.items) ? snapshot.items.map((item) => item?.text).filter((text) => typeof text === 'string' && text.length > 0).join('\n') : null; }
 function sourceLanguageDetectionsFor(items = []) { return Object.freeze((items || []).filter((item) => item?.stream === 'source' && item.sourceLanguageDetection).map((item) => Object.freeze({ transcriptItemId: item.id, ...item.sourceLanguageDetection }))); }
-function safeFailureInfo(value) { if (!value || typeof value !== 'object' || Array.isArray(value)) return null; const result = {}; for (const key of ['reason', 'category', 'code', 'message']) if (typeof value[key] === 'string') result[key] = value[key]; return Object.keys(result).length ? result : null; }
+function safeFailureInfo(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const result = {};
+  for (const key of ['reason', 'category', 'code', 'errorName', 'message']) {
+    if (typeof value[key] === 'string') result[key] = value[key];
+  }
+  if (Number.isInteger(value.status)) result.status = value.status;
+  return Object.keys(result).length ? result : null;
+}
 function assertString(value, name) { if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError(`${name} must be a non-empty string.`); }

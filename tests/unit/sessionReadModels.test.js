@@ -41,8 +41,32 @@ test('maps a complete SessionRecord to a history list item', () => {
     failureReason: null,
     failureCategory: null,
     transcriptSummary,
+    recordKind: 'session',
+    retranslatedFrom: null,
     legacy: true
   });
+});
+
+test('maps retranslation provenance to history and detail DTOs', () => {
+  const sessionRecord = {
+    ...baseSessionRecord,
+    recordKind: 'retranslation',
+    retranslatedFrom: {
+      sessionId: 'session-source',
+      startedAt: 900,
+      requestId: 'request-1',
+      executionId: 'execution-1',
+      outputId: 'output-1'
+    }
+  };
+
+  const historyItem = mapSessionRecordToHistoryListItem(sessionRecord);
+  const dto = mapSessionRecordDetailToDTO({ sessionRecord, transcriptItems: [] });
+
+  assert.equal(historyItem.recordKind, 'retranslation');
+  assert.deepEqual(historyItem.retranslatedFrom, sessionRecord.retranslatedFrom);
+  assert.equal(dto.session.recordKind, 'retranslation');
+  assert.deepEqual(dto.session.retranslatedFrom, sessionRecord.retranslatedFrom);
 });
 
 test('maps missing nullable history metadata to null', () => {
@@ -286,7 +310,9 @@ test('detail DTO exposes expected legacy shapes', () => {
     failureCategory: null,
     selectedInputDeviceId: 'device-1',
     inputDeviceLabelSnapshot: 'Studio Mic',
-    transcriptSummary
+    transcriptSummary,
+    recordKind: 'session',
+    retranslatedFrom: null
   });
   assert.equal(dto.sourceTranscript.id, 'source:session-1');
   assert.equal(dto.sourceTranscript.revisionId, 'source-revision:session-1:final');

@@ -3,14 +3,21 @@ const REQUIRED_EXECUTION_FIELDS = Object.freeze([
   'targetLanguageCode'
 ]);
 
-const METADATA_FIELDS = Object.freeze(['requestId', 'sessionId', 'executionId']);
-
 export class GeminiHttpError extends Error {
-  constructor({ status, code, message }) {
+  constructor({ status, code, message, providerStatus, providerMessage, providerDetails }) {
     super(message);
     this.name = 'GeminiHttpError';
     this.status = status;
     this.code = code;
+    if (typeof providerStatus === 'string' && providerStatus.length > 0) {
+      this.providerStatus = providerStatus;
+    }
+    if (typeof providerMessage === 'string' && providerMessage.length > 0) {
+      this.providerMessage = providerMessage;
+    }
+    if (Array.isArray(providerDetails) && providerDetails.length > 0) {
+      this.providerDetails = providerDetails;
+    }
   }
 }
 
@@ -32,7 +39,7 @@ export function createGeminiClient({ httpClient, model, promptBuilder = buildDef
       });
       const response = await httpClient.post(request);
 
-      assertHttpResponse(response);
+      await assertHttpResponse(response);
 
       return normalizeGeminiExecutionResponse(await response.json(), {
         fallbackSourceLanguageCode: input.sourceLanguageCode
@@ -56,7 +63,6 @@ export function buildGeminiExecutionRequest({ input, model, promptBuilder = buil
       'content-type': 'application/json'
     }),
     body: Object.freeze({
-      model,
       systemInstruction: Object.freeze({
         parts: Object.freeze([Object.freeze({ text: prompt.systemInstruction })])
       }),
@@ -65,8 +71,7 @@ export function buildGeminiExecutionRequest({ input, model, promptBuilder = buil
           role: 'user',
           parts: Object.freeze(prompt.parts.map((text) => Object.freeze({ text })))
         })
-      ]),
-      metadata: buildMetadata(input)
+      ])
     })
   });
 }
@@ -113,13 +118,11 @@ export function normalizeGeminiExecutionResponse(response, { fallbackSourceLangu
 
   const detectedSourceLanguageCode = extractDetectedSourceLanguageCode(response) ?? fallbackSourceLanguageCode;
 
-  if (typeof detectedSourceLanguageCode !== 'string' || detectedSourceLanguageCode.length === 0) {
-    throw new TypeError('Gemini execution response is missing detected source language.');
-  }
-
   return Object.freeze({
     translatedText,
-    detectedSourceLanguageCode
+    ...(typeof detectedSourceLanguageCode === 'string' && detectedSourceLanguageCode.length > 0
+      ? { detectedSourceLanguageCode }
+      : {})
   });
 }
 
@@ -193,13 +196,13 @@ function assertPrompt(prompt) {
   }
 }
 
-function assertHttpResponse(response) {
+async function assertHttpResponse(response) {
   if (!response || typeof response !== 'object' || Array.isArray(response)) {
     throw new TypeError('Gemini HTTP response must be an object.');
   }
 
   if (response.ok === false) {
-    throw createGeminiHttpError(response.status);
+    throw createGeminiHttpError(response.status, await readErrorPayload(response));
   }
 
   if (typeof response.json !== 'function') {
@@ -207,14 +210,28 @@ function assertHttpResponse(response) {
   }
 }
 
-function createGeminiHttpError(status) {
+async function readErrorPayload(response) {
+  if (typeof response.json !== 'function') {
+    return undefined;
+  }
+
+  try {
+    return await response.json();
+  } catch {
+    return undefined;
+  }
+}
+
+function createGeminiHttpError(status, payload) {
   const normalizedStatus = typeof status === 'number' ? status : undefined;
   const code = mapGeminiHttpErrorCode(normalizedStatus);
+  const providerError = normalizeProviderErrorPayload(payload);
 
   return new GeminiHttpError({
     status: normalizedStatus,
     code,
-    message: `Gemini HTTP request failed: ${code}${normalizedStatus === undefined ? '' : ` (${normalizedStatus})`}.`
+    message: `Gemini HTTP request failed: ${code}${normalizedStatus === undefined ? '' : ` (${normalizedStatus})`}.`,
+    ...providerError
   });
 }
 
@@ -242,20 +259,78 @@ function mapGeminiHttpErrorCode(status) {
   return 'http_error';
 }
 
-function buildMetadata(input) {
-  const metadata = {};
+function normalizeProviderErrorPayload(payload) {
+  const error = payload?.error;
+  if (!error || typeof error !== 'object' || Array.isArray(error)) {
+    return {};
+  }
 
-  for (const field of METADATA_FIELDS) {
-    if (Object.hasOwn(input, field)) {
-      metadata[field] = input[field];
+  return {
+    ...(typeof error.status === 'string' ? { providerStatus: sanitizeErrorText(error.status) } : {}),
+    ...(typeof error.message === 'string' ? { providerMessage: sanitizeErrorText(error.message) } : {}),
+    ...providerDetailsFor(error.details)
+  };
+}
+
+function providerDetailsFor(details) {
+  if (!Array.isArray(details)) {
+    return {};
+  }
+
+  const providerDetails = details
+    .map((detail) => sanitizeProviderDetail(detail))
+    .filter((detail) => detail !== null);
+
+  return providerDetails.length > 0 ? { providerDetails: Object.freeze(providerDetails) } : {};
+}
+
+function sanitizeProviderDetail(detail) {
+  if (!detail || typeof detail !== 'object' || Array.isArray(detail)) {
+    return null;
+  }
+
+  const sanitized = {};
+
+  for (const field of ['@type', 'reason', 'domain']) {
+    if (typeof detail[field] === 'string' && detail[field].trim()) {
+      sanitized[field] = sanitizeErrorText(detail[field]);
     }
   }
 
-  if (input.providerIdempotencyKey !== undefined) {
-    metadata.idempotencyKey = input.providerIdempotencyKey;
+  const metadata = sanitizeProviderMetadata(detail.metadata);
+  if (metadata !== null) {
+    sanitized.metadata = metadata;
   }
 
-  return Object.freeze(metadata);
+  return Object.keys(sanitized).length > 0 ? Object.freeze(sanitized) : null;
+}
+
+function sanitizeProviderMetadata(metadata) {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return null;
+  }
+
+  const allowedFields = ['service', 'quota_limit', 'quota_location', 'quota_metric', 'quota_limit_value'];
+  const sanitized = {};
+
+  for (const field of allowedFields) {
+    if (typeof metadata[field] === 'string' && metadata[field].trim()) {
+      sanitized[field] = sanitizeErrorText(metadata[field]);
+    }
+  }
+
+  return Object.keys(sanitized).length > 0 ? Object.freeze(sanitized) : null;
+}
+
+function sanitizeErrorText(value) {
+  return redactSensitiveText(String(value)).slice(0, 240);
+}
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/GEMINI_API_KEY/gi, '[redacted]')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
+    .replace(/AQ\.[0-9A-Za-z._-]{20,}/g, '[redacted-token]');
 }
 
 function glossaryPromptParts(entries) {

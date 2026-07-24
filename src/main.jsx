@@ -4,7 +4,6 @@ import { Copy, Download, Mic, MicOff, Radio, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
-import { LiveTranslateSession } from './lib/liveSession.js';
 import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
@@ -164,16 +163,17 @@ function App() {
     reconnectController().reset();
     suppressReconnectErrorRef.current = false;
     setStatusLabelOverride('');
-    const session = createSession({ preserveTranscript: false });
-
-    sessionRef.current = session;
+    let session;
 
     try {
+      session = await createSession({ preserveTranscript: false });
+      sessionRef.current = session;
+
       await session.start();
       await createCurrentSessionRecord();
       setStatus('listening');
     } catch (nextError) {
-      await session.stop().catch(() => {});
+      await session?.stop().catch(() => {});
       setError(nextError.message || '無法開始即時翻譯。');
       setStatus('error');
     }
@@ -197,7 +197,7 @@ function App() {
     setStatus('stopped');
   }
 
-  function createSession({ preserveTranscript }) {
+  async function createSession({ preserveTranscript }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
@@ -212,6 +212,8 @@ function App() {
     const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
       ? selectedInputDeviceId
       : '';
+
+    const { LiveTranslateSession } = await import('./lib/liveSession.js');
 
     return new LiveTranslateSession({
       targetLanguageCode,
@@ -312,7 +314,7 @@ function App() {
     setStatusLabelOverride('');
     setStatus('reconnecting');
 
-    const session = createSession({ preserveTranscript: true });
+    const session = await createSession({ preserveTranscript: true });
     reconnectSessionRef.current = session;
 
     try {
@@ -960,6 +962,9 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                 </dl>
 
                 <p className="history-summary">{transcriptSummaryLabel(record.transcriptSummary)}</p>
+                {record.recordKind === 'retranslation' ? (
+                  <p className="history-summary">{retranslationSourceLabel(record.retranslatedFrom)}</p>
+                ) : null}
                 {shouldShowFailureReason(record) ? <p className="history-reason">原因：{record.failureReason}</p> : null}
               </article>
               {selectedRecordId === record.id ? (
@@ -1300,6 +1305,12 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
             <dd>{sessionRecord.inputDeviceLabelSnapshot}</dd>
           </div>
         ) : null}
+        {sessionRecord.recordKind === 'retranslation' ? (
+          <div>
+            <dt>來源</dt>
+            <dd>{retranslationSourceLabel(sessionRecord.retranslatedFrom)}</dd>
+          </div>
+        ) : null}
       </dl>
 
       <ReadingContentTabs
@@ -1381,6 +1392,7 @@ function RetranslationProgress({ progress }) {
             <li key={execution.id}>
               <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
               <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution.status)}</span>
+              {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
             </li>
           ))}
         </ol>
@@ -1555,6 +1567,41 @@ function translationExecutionStatusLabel(status) {
   return labels[status] || status || '未知狀態';
 }
 
+function translationFailureReasonText(failureInfo) {
+  return `失敗原因：${translationFailureReasonLabel(failureInfo)}`;
+}
+
+function translationFailureReasonLabel(failureInfo = {}) {
+  const code = typeof failureInfo?.code === 'string' ? failureInfo.code : '';
+  const status = Number.isInteger(failureInfo?.status) ? failureInfo.status : null;
+
+  if (code === 'unauthorized' || status === 401) {
+    return 'Gemini API 金鑰未授權，請確認後端 GEMINI_API_KEY。';
+  }
+
+  if (code === 'forbidden' || status === 403) {
+    return 'Gemini API 權限不足或專案未啟用此模型。';
+  }
+
+  if (code === 'bad_request' || status === 400) {
+    return 'Gemini 拒絕此翻譯請求，請確認模型與翻譯內容格式。';
+  }
+
+  if (code === 'rate_limited' || status === 429) {
+    return 'Gemini 暫時限制此請求，可能是短時間速率、Token、模型容量或滾動用量限制；不一定代表每日用量已達上限，請稍後重試。';
+  }
+
+  if (code === 'server_error' || (status >= 500 && status <= 599)) {
+    return 'Gemini 服務暫時失敗，請稍後重試。';
+  }
+
+  if (typeof failureInfo?.message === 'string' && failureInfo.message.trim()) {
+    return failureInfo.message.trim();
+  }
+
+  return '翻譯提供者執行失敗，請稍後重試。';
+}
+
 function translationOutputTitle(output) {
   const languageLabel = targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言';
   const versionLabel = Number.isFinite(output.version) ? ` v${output.version}` : '';
@@ -1719,6 +1766,10 @@ function transcriptSummaryLabel(summary = {}) {
   return `原文完成：${sourceFinalCount} · 翻譯完成：${translationFinalCount}`;
 }
 
+function retranslationSourceLabel(provenance = {}) {
+  return `由 ${formatRecordTime(provenance.startedAt)} 的語音紀錄重新翻譯`;
+}
+
 function shouldShowFailureReason(record) {
   return (record.status === 'failed' || record.status === 'expired') && record.failureReason;
 }
@@ -1736,7 +1787,9 @@ function sessionRecordForDetailDTO(detail, historyRecord) {
   return {
     ...session,
     targetLanguageCode: historyRecord?.targetLanguageCode || selectedTranslationOutput.targetLanguageCode || null,
-    targetLanguageLabel: historyRecord?.targetLanguageLabel || selectedTranslationOutput.targetLanguageLabel || null
+    targetLanguageLabel: historyRecord?.targetLanguageLabel || selectedTranslationOutput.targetLanguageLabel || null,
+    recordKind: historyRecord?.recordKind || session.recordKind || 'session',
+    retranslatedFrom: historyRecord?.retranslatedFrom || session.retranslatedFrom || null
   };
 }
 

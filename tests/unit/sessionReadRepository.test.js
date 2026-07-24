@@ -55,6 +55,8 @@ test('history records are mapped through the history read model contract', () =>
       failureReason: null,
       failureCategory: null,
       transcriptSummary,
+      recordKind: 'session',
+      retranslatedFrom: null,
       legacy: true
     }
   ]);

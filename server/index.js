@@ -195,12 +195,133 @@ function logProviderError(requestId, error) {
   });
 }
 
-const createDefaultApplicationDependencies =
-  process.env.NODE_ENV === 'production' ? createProductionApplicationDependencies : createApplicationDependencies;
-const { requestHandler: defaultRequestHandler } = createDefaultApplicationDependencies({
+const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
+  env: process.env
+});
+const defaultApplicationDependencies = createDefaultApplicationDependencies({
   requestHandlerFactory: createRequestHandler,
   includeSessionRetranslationCommandController: true
 });
+const { requestHandler: defaultRequestHandler } = defaultApplicationDependencies;
+
+export function selectDefaultApplicationDependenciesFactory({ env = process.env } = {}) {
+  return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env)
+    ? createProductionApplicationDependencies
+    : createApplicationDependencies;
+}
+
+function hasConfiguredGeminiApiKey(env) {
+  return typeof env?.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0;
+}
+
+export function startTranslationExecutionWorkerRuntime({
+  translationExecutionWorkerRuntime = defaultApplicationDependencies.translationExecutionWorkerRuntime,
+  sessionRepository = defaultApplicationDependencies.sessionRepository,
+  translationExecutionQueue = defaultApplicationDependencies.translationExecutionQueue,
+  logger = logEvent
+} = {}) {
+  if (!translationExecutionWorkerRuntime || typeof translationExecutionWorkerRuntime.start !== 'function') {
+    return () => undefined;
+  }
+
+  let isStopped = false;
+  startRuntimeAfterPersistedQueueRecovery({
+    translationExecutionWorkerRuntime,
+    sessionRepository,
+    translationExecutionQueue,
+    logger
+  }).catch((error) => {
+    logWorkerRuntimeError(logger, 'translation_execution_worker_runtime_start_failed', error);
+  });
+
+  return function stopTranslationExecutionWorkerRuntime() {
+    if (isStopped || typeof translationExecutionWorkerRuntime.stop !== 'function') {
+      return undefined;
+    }
+
+    isStopped = true;
+    try {
+      return translationExecutionWorkerRuntime.stop();
+    } catch (error) {
+      logWorkerRuntimeError(logger, 'translation_execution_worker_runtime_stop_failed', error);
+      return undefined;
+    }
+  };
+}
+
+async function startRuntimeAfterPersistedQueueRecovery({
+  translationExecutionWorkerRuntime,
+  sessionRepository,
+  translationExecutionQueue,
+  logger
+}) {
+  try {
+    await enqueuePersistedQueuedTranslationExecutions({
+      sessionRepository,
+      translationExecutionQueue
+    });
+  } catch (error) {
+    logWorkerRuntimeError(logger, 'translation_execution_queue_recovery_failed', error);
+  }
+
+  await translationExecutionWorkerRuntime.start();
+}
+
+export async function enqueuePersistedQueuedTranslationExecutions({
+  sessionRepository,
+  translationExecutionQueue
+} = {}) {
+  if (
+    !sessionRepository ||
+    typeof sessionRepository.listSessionRecords !== 'function' ||
+    !translationExecutionQueue ||
+    typeof translationExecutionQueue.enqueue !== 'function'
+  ) {
+    return 0;
+  }
+
+  const records = await sessionRepository.listSessionRecords();
+  let recoveredCount = 0;
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const state = record?.translationCommandState;
+    const requests = Array.isArray(state?.requests) ? state.requests : [];
+    const executions = Array.isArray(state?.executions) ? state.executions : [];
+    const outputs = Array.isArray(state?.outputs) ? state.outputs : [];
+
+    for (const execution of executions) {
+      if (execution?.status !== 'queued' || outputs.some((output) => output?.executionId === execution.id)) {
+        continue;
+      }
+
+      const request = requests.find((candidate) => candidate?.id === execution.translationRequestId);
+      if (!request) {
+        continue;
+      }
+
+      await translationExecutionQueue.enqueue({
+        executionId: execution.id,
+        requestId: request.id
+      });
+      recoveredCount += 1;
+    }
+  }
+
+  return recoveredCount;
+}
+
+function logWorkerRuntimeError(logger, event, error) {
+  if (typeof logger !== 'function') {
+    return;
+  }
+
+  logger({
+    level: 'error',
+    event,
+    errorName: error?.name || 'Error',
+    safeSummary: 'Translation execution worker runtime failed'
+  });
+}
 
 export function createRequestHandler(options = {}) {
   const {
@@ -392,7 +513,7 @@ async function handleRequestWithSessionReadController(
         try {
           const history = await translationHistoryController.listSessionTranslations({ sessionId, includeReadModel: true });
           const formalHistory = history?.translationHistory;
-          const outputs = formalHistory?.outputs || [];
+          const outputs = (formalHistory?.outputs || []).filter(isPrimarySessionTranslationOutput);
           session.translationHistory = {
             outputs: outputs.length > 0 ? outputs : legacyTranslationFallback(session.translationOutputs),
             executions: formalHistory?.executions || []
@@ -705,6 +826,10 @@ function legacyTranslationFallback(outputs) {
   }));
 }
 
+function isPrimarySessionTranslationOutput(output) {
+  return typeof output?.id === 'string' && output.id.startsWith('live-output:');
+}
+
 function applyFormalOutputReadModel(session, outputs) {
   const formalOutput = (Array.isArray(outputs) ? outputs : []).find((output) => output?.source === 'formal' || Number.isInteger(output?.version));
   if (!formalOutput || typeof formalOutput.translatedText !== 'string' || formalOutput.translatedText.trim().length === 0) {
@@ -917,7 +1042,19 @@ function serializeExecutionControlResponse(execution) {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  http.createServer(handleRequest).listen(PORT, HOST, () => {
+  const server = http.createServer(handleRequest);
+  const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
+
+  server.listen(PORT, HOST, () => {
     console.log(`Live Translate API listening on http://${HOST}:${PORT}`);
   });
+
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.once(signal, () => {
+      stopTranslationExecutionWorkerRuntime();
+      server.close(() => {
+        process.exit(0);
+      });
+    });
+  }
 }

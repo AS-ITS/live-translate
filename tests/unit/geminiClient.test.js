@@ -103,13 +103,8 @@ test('builds the Gemini HTTP request deterministically', () => {
   assert.equal(firstRequest.method, 'POST');
   assert.equal(firstRequest.path, '/v1beta/models/gemini-model:generateContent');
   assert.deepEqual(firstRequest.headers, { 'content-type': 'application/json' });
-  assert.equal(firstRequest.body.model, 'gemini-model');
-  assert.deepEqual(firstRequest.body.metadata, {
-    requestId: 'request-1',
-    sessionId: 'session-1',
-    executionId: 'execution-1',
-    idempotencyKey: 'translation-execution:execution-1'
-  });
+  assert.equal(Object.hasOwn(firstRequest.body, 'model'), false);
+  assert.equal(Object.hasOwn(firstRequest.body, 'metadata'), false);
 
   const userParts = firstRequest.body.contents[0].parts.map((part) => part.text);
   assert.equal(userParts.at(-1), input.sourceText);
@@ -122,14 +117,14 @@ test('builds the Gemini HTTP request deterministically', () => {
   assert.equal(userParts.some((part) => part.includes(input.providerIdempotencyKey)), false);
 });
 
-test('encodes model in request path without changing body model', () => {
+test('encodes model in request path without sending body model', () => {
   const request = buildGeminiExecutionRequest({
     input: executionInput(),
     model: 'models/gemini test'
   });
 
   assert.equal(request.path, '/v1beta/models/models%2Fgemini%20test:generateContent');
-  assert.equal(request.body.model, 'models/gemini test');
+  assert.equal(Object.hasOwn(request.body, 'model'), false);
 });
 
 test('default prompt keeps provider instruction separate from source text', () => {
@@ -203,7 +198,7 @@ test('http client is invoked exactly once with the constructed request', async (
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, '/v1beta/models/gemini-model:generateContent');
-  assert.equal(calls[0].body.metadata.requestId, 'request-1');
+  assert.equal(Object.hasOwn(calls[0].body, 'metadata'), false);
   assert.equal(calls[0].body.contents[0].parts.at(-1).text, input.sourceText);
   assert.deepEqual(input, before);
 });
@@ -283,6 +278,68 @@ test('HTTP error status maps failures and does not retry', async () => {
   }
 });
 
+test('HTTP 429 error preserves safe Gemini quota diagnostics', async () => {
+  const client = createClient({
+    httpClient: {
+      post() {
+        return httpResponse({
+          ok: false,
+          status: 429,
+          body: {
+            error: {
+              code: 429,
+              status: 'RESOURCE_EXHAUSTED',
+              message: 'Quota exceeded for quota metric Generate requests per minute and API key AIza12345678901234567890.',
+              details: [
+                {
+                  '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                  reason: 'RATE_LIMIT_EXCEEDED',
+                  domain: 'googleapis.com',
+                  metadata: {
+                    service: 'generativelanguage.googleapis.com',
+                    quota_limit: 'GenerateRequestsPerMinutePerProject',
+                    quota_location: 'global',
+                    quota_metric: 'generativelanguage.googleapis.com/generate_content_requests',
+                    quota_limit_value: '60',
+                    consumer: 'projects/secret-project'
+                  }
+                }
+              ]
+            }
+          }
+        });
+      }
+    }
+  });
+
+  await assert.rejects(
+    client.execute(executionInput()),
+    (error) => {
+      assert.equal(error instanceof GeminiHttpError, true);
+      assert.equal(error.status, 429);
+      assert.equal(error.code, 'rate_limited');
+      assert.equal(error.providerStatus, 'RESOURCE_EXHAUSTED');
+      assert.equal(error.providerMessage.includes('[redacted-api-key]'), true);
+      assert.deepEqual(error.providerDetails, [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          reason: 'RATE_LIMIT_EXCEEDED',
+          domain: 'googleapis.com',
+          metadata: {
+            service: 'generativelanguage.googleapis.com',
+            quota_limit: 'GenerateRequestsPerMinutePerProject',
+            quota_location: 'global',
+            quota_metric: 'generativelanguage.googleapis.com/generate_content_requests',
+            quota_limit_value: '60'
+          }
+        }
+      ]);
+      assert.equal(JSON.stringify(error.providerDetails).includes('secret-project'), false);
+      return true;
+    }
+  );
+});
+
 test('HTTP error status without numeric status maps to generic HTTP error', async () => {
   const calls = [];
   const client = createClient({
@@ -342,14 +399,21 @@ test('invalid HTTP response and invalid JSON payloads throw', async () => {
   const emptyTextClient = createClient({
     httpClient: httpClient({ body: { translatedText: '', detectedSourceLanguageCode: 'en' } })
   });
-  const missingLanguageClient = createClient({
-    httpClient: httpClient({ body: { translatedText: 'Bonjour' } })
-  });
-
   await assert.rejects(invalidResponseClient.execute(executionInput()), /response json must be a function/);
   await assert.rejects(missingTextClient.execute(executionInput()), /missing translated text/);
   await assert.rejects(emptyTextClient.execute(executionInput()), /translated text must be non-empty/);
-  await assert.rejects(missingLanguageClient.execute(executionInput({ sourceLanguageCode: undefined })), /missing detected source language/);
+});
+
+test('response detected language remains optional when Gemini omits it and no fallback is available', async () => {
+  const client = createClient({
+    httpClient: httpClient({
+      body: { translatedText: 'Bonjour' }
+    })
+  });
+
+  assert.deepEqual(await client.execute(executionInput({ sourceLanguageCode: undefined })), {
+    translatedText: 'Bonjour'
+  });
 });
 
 test('normalize accepts alternate Gemini response shapes', () => {

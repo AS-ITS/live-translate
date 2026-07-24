@@ -42,7 +42,7 @@ export function createTranslationExecutionRunner({
         await failExecutionAfterProviderError(
           translationRepository,
           error.providerAttemptExecution ?? providerAttemptExecution ?? execution,
-          payload,
+          { ...payload, providerError: error },
           onTranslationExecutionUpdated
         );
         throw error;
@@ -96,7 +96,7 @@ export function createTranslationExecutionRunner({
       return repositoryResult;
     },
 
-    async reconcileSucceeded({ execution, payload, executionFence } = {}) {
+    async reconcileSucceeded({ execution, payload, executionFence, onTranslationOutputCreated } = {}) {
       assertExecutionInput(execution);
       assertPayloadInput(payload);
       if (execution.providerAttemptStatus !== 'succeeded' || execution.providerResult === null) {
@@ -119,7 +119,11 @@ export function createTranslationExecutionRunner({
         completedAt: payload.completedAt ?? execution.startedAt
       });
       await assertWritable(executionFenceGuard, execution, executionFence);
-      await translationRepository.createTranslationOutput(output);
+      const outputRepositoryResult = await translationRepository.createTranslationOutput(output);
+      await notifyOptional(onTranslationOutputCreated, {
+        output: outputRepositoryResult,
+        repositoryResult: outputRepositoryResult
+      });
       const completed = new TranslationExecution({
         id: execution.id,
         translationRequestId: execution.translationRequestId,
@@ -208,7 +212,7 @@ async function failExecutionAfterProviderError(
   onTranslationExecutionUpdated
 ) {
   const failedExecution = execution.fail(
-    { reason: 'provider_execution_failed' },
+    failureInfoForProviderError(payload.providerError),
     payload.completedAt ?? execution.startedAt
   );
   const failedRepositoryResult = await translationRepository.updateTranslationExecution(failedExecution);
@@ -217,6 +221,63 @@ async function failExecutionAfterProviderError(
     execution: failedExecution,
     repositoryResult: failedRepositoryResult
   });
+}
+
+function failureInfoForProviderError(error) {
+  return {
+    reason: 'provider_execution_failed',
+    errorName: error?.name || 'Error',
+    ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+    ...(typeof error?.providerStatus === 'string' ? { providerStatus: safeFailureText(error.providerStatus) } : {}),
+    ...(typeof error?.providerMessage === 'string' ? { providerMessage: safeFailureText(error.providerMessage) } : {}),
+    ...(Array.isArray(error?.providerDetails) ? { providerDetails: safeFailureDetails(error.providerDetails) } : {}),
+    message: safeFailureMessage(error)
+  };
+}
+
+function safeFailureMessage(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return safeFailureText(message);
+}
+
+function safeFailureText(value) {
+  return redactSensitiveText(value).slice(0, 240);
+}
+
+function safeFailureDetails(value, depth = 0) {
+  if (depth > 3) {
+    return '[truncated]';
+  }
+
+  if (typeof value === 'string') {
+    return safeFailureText(value);
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => safeFailureDetails(item, depth + 1));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.freeze(Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 20)
+        .map(([key, entryValue]) => [safeFailureText(key), safeFailureDetails(entryValue, depth + 1)])
+    ));
+  }
+
+  return String(value);
+}
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(/GEMINI_API_KEY/gi, '[redacted]')
+    .replace(/AIza[0-9A-Za-z_-]{20,}/g, '[redacted-api-key]')
+    .replace(/AQ\.[0-9A-Za-z._-]{20,}/g, '[redacted-token]');
 }
 
 function assertTranslationRepository(translationRepository) {

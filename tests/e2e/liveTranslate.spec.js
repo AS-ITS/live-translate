@@ -94,6 +94,7 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({
         token: `mock-token-for-${body.targetLanguageCode}`,
         expiresAt: '2026-07-07T00:30:00.000Z',
+        liveConnectModel: 'gemini-live-e2e-model',
         liveGlossaryEntries: page.liveGlossaryEntries
       })
     });
@@ -297,7 +298,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
     };
   });
   expect(liveConnect).toEqual({
-    model: 'gemini-3.5-live-translate-preview',
+    model: 'gemini-live-e2e-model',
     targetLanguageCode: 'ja',
     responseModalities: ['AUDIO']
   });
@@ -757,6 +758,70 @@ test('session detail updates tracked retranslation when output completes', async
   await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('法文 v1')).toBeVisible();
   await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('已完成')).toBeVisible();
   await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('Bonjour terminé')).toBeVisible();
+});
+
+test('session detail displays failed retranslation reason', async ({ page }) => {
+  await page.route('**/api/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
+
+    if (!isSessionDetail) {
+      await route.continue();
+      return;
+    }
+
+    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(sessionDetailResponse({
+        sessionId,
+        translationHistory: {
+          outputs: [],
+          executions: [{
+            id: 'execution-fr-failed',
+            requestId: 'request-fr-failed',
+            targetLanguageCode: 'fr',
+            status: 'failed',
+            failureInfo: {
+              reason: 'provider_execution_failed',
+              code: 'unauthorized',
+              status: 401,
+              message: 'Gemini HTTP request failed: unauthorized (401).'
+            }
+          }, {
+            id: 'execution-ja-failed',
+            requestId: 'request-ja-failed',
+            targetLanguageCode: 'ja',
+            status: 'failed',
+            failureInfo: {
+              reason: 'provider_execution_failed',
+              code: 'rate_limited',
+              status: 429,
+              providerStatus: 'RESOURCE_EXHAUSTED',
+              providerMessage: 'Quota exceeded for GenerateRequestsPerMinutePerProject.',
+              message: 'Gemini HTTP request failed: rate_limited (429).'
+            }
+          }]
+        }
+      }))
+    });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'Hello failed retranslation', 'live output');
+  await page.getByRole('button', { name: '停止' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+
+  const progress = sessionDetail(page).getByLabel('重新翻譯進度');
+  await expect(progress.getByText('法文')).toBeVisible();
+  await expect(progress.getByText('日文')).toBeVisible();
+  await expect(progress.getByText('失敗')).toBeVisible();
+  await expect(progress.getByText('失敗原因：Gemini API 金鑰未授權，請確認後端 GEMINI_API_KEY。')).toBeVisible();
+  await expect(progress.getByText('失敗原因：Gemini 暫時限制此請求，可能是短時間速率、Token、模型容量或滾動用量限制；不一定代表每日用量已達上限，請稍後重試。')).toBeVisible();
 });
 
 function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory }) {

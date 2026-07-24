@@ -60,3 +60,46 @@ test('validation, session, source, and provider resolution failures persist noth
     assert.deepEqual(persisted, [], scenario.name);
   }
 });
+
+test('mixed-language source keeps detection metadata without sending mixed as a language hint', async () => {
+  const calls = [];
+  const service = createSessionRetranslationCommandService({
+    sessionRepository: {
+      getSessionRecord: () => ({
+        sessionRecord: { id: 'session-1' },
+        transcriptItems: [
+          {
+            stream: 'source',
+            status: 'final',
+            sequence: 0,
+            text: 'Hello こんにちは',
+            sourceLanguageDetection: { detectedLanguageCodes: ['en', 'ja'], coverage: 'complete' }
+          }
+        ]
+      })
+    },
+    translationProviderResolver: { resolve() {} },
+    translationCommandService: {
+      createTranslationRequest: (input) => {
+        calls.push(input);
+        return { ...input };
+      },
+      createTranslationExecution: (input) => ({
+        id: input.id,
+        translationRequestId: input.translationRequestId,
+        status: 'queued'
+      })
+    },
+    idGenerator: (prefix) => prefix === 'translation-request' ? 'request-1' : 'execution-1',
+    clock: () => 100
+  });
+
+  const result = await service.submitRetranslation({ sessionId: 'session-1', targetLanguageCode: 'fr' });
+
+  assert.equal(result.request.sourceLanguageCode, undefined);
+  assert.equal(Object.hasOwn(calls[0].sourceTranscriptSnapshot, 'sourceLanguageCode'), false);
+  assert.deepEqual(calls[0].sourceTranscriptSnapshot.sourceLanguageDetection, {
+    detectedLanguageCodes: ['en', 'ja'],
+    coverage: 'complete'
+  });
+});

@@ -6,6 +6,7 @@ import { createSavedTranscriptRetranslationService as createDefaultSavedTranscri
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
 import { createCancelQueuedTranslationExecutionService as createDefaultCancelQueuedTranslationExecutionService } from '../src/application/translation/cancelQueuedTranslationExecutionService.js';
 import { createManualRetryFailedTranslationExecutionService as createDefaultManualRetryFailedTranslationExecutionService } from '../src/application/translation/manualRetryFailedTranslationExecutionService.js';
+import { createRetranslationSessionMaterializer as createDefaultRetranslationSessionMaterializer } from '../src/application/translation/retranslationSessionMaterializer.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
 import { createTranslationExecutionRunner as createDefaultTranslationExecutionRunner } from '../src/application/translationExecutionRunner.js';
@@ -138,6 +139,7 @@ export function createApplicationDependencies(options = {}) {
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
       ? translationRepository
       : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
+    sessionRepository: sessionReadDependencies.sessionRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
     translationExecutionQueue,
@@ -164,7 +166,8 @@ export function createApplicationDependencies(options = {}) {
     translationCommandControllerFactory,
     translationExecutionRunnerFactory,
     translationExecutionWorkerFactory,
-    translationExecutionWorkerRuntimeFactory
+    translationExecutionWorkerRuntimeFactory,
+    retranslationSessionMaterializerFactory: createDefaultRetranslationSessionMaterializer
   });
   const shouldCreateSavedTranscriptRetranslationService =
     Object.prototype.hasOwnProperty.call(options, 'savedTranscriptTranslationProvider') ||
@@ -588,6 +591,7 @@ export function createSessionReadDependencies({ sessionRepository, sessionReadRe
 
 export function createTranslationCommandDependencies({
   translationRepository,
+  sessionRepository,
   domainEventPublisher,
   translationExecutionDispatcher,
   translationExecutionQueue,
@@ -614,7 +618,8 @@ export function createTranslationCommandDependencies({
   translationCommandControllerFactory = createDefaultTranslationCommandController,
   translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
   translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
-  translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime
+  translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+  retranslationSessionMaterializerFactory
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
   assertFactory(translationCommandControllerFactory, 'translationCommandControllerFactory');
@@ -623,6 +628,9 @@ export function createTranslationCommandDependencies({
   assertFactory(translationExecutionWorkerRuntimeFactory, 'translationExecutionWorkerRuntimeFactory');
   assertFactory(cancelQueuedTranslationExecutionServiceFactory, 'cancelQueuedTranslationExecutionServiceFactory');
   assertFactory(manualRetryFailedTranslationExecutionServiceFactory, 'manualRetryFailedTranslationExecutionServiceFactory');
+  if (retranslationSessionMaterializerFactory !== undefined) {
+    assertFactory(retranslationSessionMaterializerFactory, 'retranslationSessionMaterializerFactory');
+  }
 
   const translationDomainEventInfrastructure = createTranslationDomainEventInfrastructure({
     domainEventPublisher,
@@ -651,13 +659,17 @@ export function createTranslationCommandDependencies({
           ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
+  const retranslationSessionMaterializer = retranslationSessionMaterializerFactory === undefined || sessionRepository === undefined
+    ? undefined
+    : retranslationSessionMaterializerFactory({ sessionRepository, clock });
   const resolvedWorkerTranslationExecutionRunner =
     resolvedTranslationExecutionRunner === undefined
       ? undefined
       : createWorkerTranslationExecutionRunner({
           translationExecutionRunner: resolvedTranslationExecutionRunner,
           translationRepository,
-          translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver
+          translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
+          retranslationSessionMaterializer
         });
   const resolvedTranslationExecutionWorker =
     translationExecutionWorker ??
@@ -745,6 +757,9 @@ export function createTranslationCommandDependencies({
     ...(resolvedTranslationExecutionRunner !== undefined
       ? { translationExecutionRunner: resolvedTranslationExecutionRunner }
       : {}),
+    ...(retranslationSessionMaterializer !== undefined
+      ? { retranslationSessionMaterializer }
+      : {}),
     ...(resolvedTranslationExecutionWorker !== undefined
       ? { translationExecutionWorker: resolvedTranslationExecutionWorker }
       : {}),
@@ -814,7 +829,11 @@ function createResolverBackedTranslationExecutionProvider(translationExecutionPr
   });
 }
 
-function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver }) {
+function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer }) {
+  const onTranslationOutputCreated = retranslationSessionMaterializer === undefined
+    ? undefined
+    : ({ output }) => retranslationSessionMaterializer.materialize({ output });
+
   return Object.freeze({
     execute(input) {
       return translationExecutionRunner.execute(input);
@@ -830,6 +849,7 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
         return translationExecutionRunner.reconcileSucceeded({
           execution,
           payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
+          ...(onTranslationOutputCreated === undefined ? {} : { onTranslationOutputCreated }),
           ...(executionFence !== undefined ? { executionFence } : {})
         });
       }
@@ -841,6 +861,7 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
         execution: runningExecution,
         payload: createTranslationExecutionPayloadFromPersistedState({ execution, request }),
         repositoryResult,
+        ...(onTranslationOutputCreated === undefined ? {} : { onTranslationOutputCreated }),
         ...(executionFence !== undefined ? { executionFence } : {}),
         ...(deferProviderFailure === true ? { deferProviderFailure: true } : {})
       });

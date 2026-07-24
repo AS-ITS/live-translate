@@ -105,9 +105,12 @@ DLQ management, or cross-Session history search.
 ### Production and Manual Gemini Smoke Test
 
 Configure secrets outside version control. `GEMINI_API_KEY` is required by the
-backend and must never be supplied to the browser. Production translation also
-requires `GEMINI_MODEL`; `TRANSLATION_PROVIDER=gemini` is the supported provider
-selection (and is the default when omitted).
+backend and must never be supplied to the browser. Live speech translation uses
+`LIVE_TRANSLATE_MODEL`, and saved-session retranslation uses
+`SAVED_RETRANSLATION_GEMINI_MODEL`. The example environment sets Live
+translation to `gemini-3.5-live-translate-preview` and text retranslation to
+`gemini-3.5-flash`. `TRANSLATION_PROVIDER=gemini` is the supported
+provider selection (and is the default when omitted).
 
 For durable asynchronous work, set `TRANSLATION_DURABLE_QUEUE_ENABLED=true` and
 provide writable `TRANSLATION_DURABLE_QUEUE_FILE` and
@@ -506,8 +509,8 @@ Phase 2N status:
 
 - Production Translation Command execution now has a concrete
   `GeminiTranslationExecutionProvider` backed by `GeminiClient`.
-- Production composition wires `GEMINI_API_KEY` and `GEMINI_MODEL` into the
-  Gemini execution path:
+- Production composition wires `GEMINI_API_KEY` and
+  `SAVED_RETRANSLATION_GEMINI_MODEL` into the Gemini execution path:
 
 ```text
 TranslationExecutionRunner
@@ -538,7 +541,8 @@ Gemini HTTP client
 - Fake execution provider injection and fake resolver tests remain supported
   for deterministic test composition.
 - Real Gemini API validation still requires a configured `GEMINI_API_KEY` and
-  `GEMINI_MODEL` and remains outside automated test execution.
+  `SAVED_RETRANSLATION_GEMINI_MODEL` and remains outside automated test
+  execution.
 
 Current Phase 2N limitations:
 

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildTokenConfig, createLiveToken, normalizeTokenRequest } from '../server/tokenService.js';
+import {
+  DEFAULT_LIVE_TRANSLATE_MODEL,
+  buildTokenConfig,
+  createLiveToken,
+  normalizeTokenRequest,
+  resolveLiveTranslateModel
+} from '../server/tokenService.js';
 
 test('normalizeTokenRequest accepts valid language and defaults echoTargetLanguage', () => {
   assert.deepEqual(normalizeTokenRequest({ targetLanguageCode: 'ja' }), {
@@ -34,11 +40,33 @@ test('buildTokenConfig locks live translate model and audio settings', () => {
   assert.equal(config.uses, 1);
   assert.equal(config.expireTime, '2026-07-06T00:30:00.000Z');
   assert.equal(config.newSessionExpireTime, '2026-07-06T00:01:00.000Z');
-  assert.equal(config.liveConnectConstraints.model, 'gemini-3.5-live-translate-preview');
+  assert.equal(config.liveConnectConstraints.model, DEFAULT_LIVE_TRANSLATE_MODEL);
   assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['AUDIO']);
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.targetLanguageCode, 'zh-Hant');
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.echoTargetLanguage, false);
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
+});
+
+test('buildTokenConfig accepts an explicit live translate model', () => {
+  const config = buildTokenConfig(
+    {
+      targetLanguageCode: 'en',
+      echoTargetLanguage: true,
+      liveTranslateModel: 'gemini-live-env-model'
+    },
+    new Date('2026-07-06T00:00:00.000Z')
+  );
+
+  assert.equal(config.liveConnectConstraints.model, 'gemini-live-env-model');
+});
+
+test('resolveLiveTranslateModel reads and validates the environment model', () => {
+  assert.equal(resolveLiveTranslateModel({}), DEFAULT_LIVE_TRANSLATE_MODEL);
+  assert.equal(resolveLiveTranslateModel({ LIVE_TRANSLATE_MODEL: '  gemini-live-custom  ' }), 'gemini-live-custom');
+  assert.throws(
+    () => resolveLiveTranslateModel({ LIVE_TRANSLATE_MODEL: '   ' }),
+    /^Error: Invalid LIVE_TRANSLATE_MODEL$/
+  );
 });
 
 test('buildTokenConfig includes live glossary instruction only when entries are provided', () => {
@@ -76,6 +104,7 @@ test('createLiveToken maps Gemini token response', async () => {
 
   assert.equal(result.token, 'test-token');
   assert.equal(result.expiresAt, '2026-07-06T00:30:00.000Z');
+  assert.equal(result.liveConnectModel, DEFAULT_LIVE_TRANSLATE_MODEL);
   assert.deepEqual(result.liveConnectConfig, tokenConfig.liveConnectConstraints.config);
   assert.deepEqual(result.liveGlossaryEntries, []);
 });

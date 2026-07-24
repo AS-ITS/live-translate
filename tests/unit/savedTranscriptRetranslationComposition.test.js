@@ -104,6 +104,8 @@ test('application composition wires saved transcript re-translation once through
   assert.strictEqual(calls[2][1].executionControlController, dependencies.executionControlController);
   assert.deepEqual(Object.keys(calls[2][1]).sort(), [
     'executionControlController',
+    'glossaryController',
+    'liveTokenCreator',
     'savedTranscriptRetranslationController',
     'sessionReadController',
     'sessionRepository',
@@ -127,13 +129,12 @@ test('production composition wires request-scoped provider resolver through prov
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock',
       TRANSLATION_PROVIDER: configuredProviderKey
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory(options) {
       calls.push(['googleClient', options]);
@@ -220,12 +221,11 @@ test('production request-scoped resolver forwards omitted providerKey as undefin
   createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock',
       TRANSLATION_PROVIDER: 'configured-provider'
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory() {
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory() {
       return { models: { generateContent() {} } };
@@ -271,12 +271,11 @@ test('production request-scoped resolver returns the resolved provider object un
 
   createProductionApplicationDependencies({
     env: {
-      GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock'
+      GEMINI_API_KEY: 'unused-by-mock'
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory() {
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory() {
       return { models: { generateContent() {} } };
@@ -318,12 +317,11 @@ test('production composition does not extract configuration.defaultProviderKey l
 
   createProductionApplicationDependencies({
     env: {
-      GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock'
+      GEMINI_API_KEY: 'unused-by-mock'
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory() {
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory() {
       return { models: { generateContent() {} } };
@@ -359,12 +357,11 @@ test('production request-scoped resolver propagates provider resolution errors u
 
   createProductionApplicationDependencies({
     env: {
-      GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock'
+      GEMINI_API_KEY: 'unused-by-mock'
     },
     sessionRepository: repository(),
     geminiEnvironmentFactory() {
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory() {
       return { models: { generateContent() {} } };

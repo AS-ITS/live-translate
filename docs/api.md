@@ -234,6 +234,7 @@ Fields:
 {
   "token": "ephemeral-token-name",
   "expiresAt": "2026-07-06T08:30:00.000Z",
+  "liveConnectModel": "gemini-3.5-live-translate-preview",
   "liveConnectConfig": {
     "responseModalities": ["AUDIO"],
     "inputAudioTranscription": {},
@@ -259,6 +260,8 @@ Fields:
 
 - `token`: Gemini ephemeral token name returned by the provider.
 - `expiresAt`: ISO timestamp matching the configured token expiration.
+- `liveConnectModel`: Gemini Live model the browser must use with the
+  backend-issued ephemeral token.
 - `liveConnectConfig`: Browser Live API connect config matching the server-side
   token constraints. When live-scoped glossary entries exist, it also includes
   glossary instructions.

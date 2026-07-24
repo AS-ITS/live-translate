@@ -326,7 +326,7 @@ Deferred:
 - Phase 2N - Gemini Translation Execution Provider: Completed
   - Production `GeminiTranslationExecutionProvider`
   - `GeminiClient` request construction and response normalization
-  - Production composition wiring for `GEMINI_API_KEY` and `GEMINI_MODEL`
+  - Production composition wiring for `GEMINI_API_KEY` and `SAVED_RETRANSLATION_GEMINI_MODEL`
   - Runtime `gemini` provider registration
   - Gemini HTTP failure mapping for 400, 401, 403, 429, 5xx, and invalid
     responses
@@ -1153,7 +1153,7 @@ Scope:
 - Production `GeminiTranslationExecutionProvider`.
 - `GeminiClient` HTTP request construction, response parsing, and provider
   result normalization.
-- Production composition wiring for `GEMINI_API_KEY` and `GEMINI_MODEL`.
+- Production composition wiring for `GEMINI_API_KEY` and `SAVED_RETRANSLATION_GEMINI_MODEL`.
 - Runtime `gemini` provider registration through
   `TranslationExecutionProviderResolver`.
 - Fake HTTP vertical integration coverage for the Gemini runtime execution
@@ -1203,7 +1203,7 @@ Closeout:
 Deferred:
 
 - Real Gemini API validation. It still requires configured `GEMINI_API_KEY` and
-  `GEMINI_MODEL`.
+  `SAVED_RETRANSLATION_GEMINI_MODEL`.
 - Streaming.
 - Retry policy changes.
 - Timeout handling.
@@ -1281,7 +1281,7 @@ Closeout:
 Deferred:
 
 - Real Gemini API validation. It still requires configured `GEMINI_API_KEY` and
-  `GEMINI_MODEL`.
+  `SAVED_RETRANSLATION_GEMINI_MODEL`.
 - Streaming or live translation execution through this command path.
 - Retry policy changes.
 - Timeout handling.

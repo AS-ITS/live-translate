@@ -115,6 +115,7 @@ test('POST /api/live-token can return the server-constrained live connect config
       return {
         token: 'mock-token-name',
         expiresAt: config.expireTime,
+        liveConnectModel: config.liveConnectConstraints.model,
         liveConnectConfig: config.liveConnectConstraints.config,
         liveGlossaryEntries: [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]
       };
@@ -128,6 +129,7 @@ test('POST /api/live-token can return the server-constrained live connect config
   const body = response.json();
 
   assert.equal(response.status, 200);
+  assert.equal(body.liveConnectModel, 'gemini-3.5-live-translate-preview');
   assert.equal(body.liveConnectConfig.generationConfig.translationConfig.targetLanguageCode, 'ja');
   assert.match(body.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
   assert.deepEqual(body.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);

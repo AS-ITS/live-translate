@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
 import { createSavedTranscriptRetranslationService } from '../../src/application/translation/index.js';
-import { createGeminiSavedTranscriptTranslationProvider } from '../../src/infrastructure/geminiSavedTranscriptTranslationProvider.js';
+import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createTranslationProviderConfiguration } from '../../src/infrastructure/translationProviderConfiguration.js';
 import { createTranslationProviderResolutionComposition } from '../../src/infrastructure/translationProviderResolutionComposition.js';
 import { createTranslationProviderResolver } from '../../src/infrastructure/translationProviderResolver.js';
@@ -165,7 +165,7 @@ function createProviderSelectionHarness({ sdkText = 'GEMINI ja: Hello resolved p
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
-      GEMINI_MODEL: 'gemini-provider-resolution-wp6',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-provider-resolution-wp6',
       TRANSLATION_PROVIDER: 'gemini'
     },
     sessionRepository,
@@ -191,8 +191,8 @@ function createProviderSelectionHarness({ sdkText = 'GEMINI ja: Hello resolved p
         }
       };
     },
-    geminiSavedTranscriptTranslationCompositionFactory({ client, model }) {
-      const actualGeminiProvider = createGeminiSavedTranscriptTranslationProvider({ client, model });
+    geminiSavedTranscriptTranslationCompositionFactory(options) {
+      const actualGeminiProvider = createGeminiSavedTranscriptTranslationComposition(options).savedTranscriptTranslationProvider;
 
       geminiProvider = Object.freeze({
         async translate(input) {

@@ -170,7 +170,7 @@ test('POST /api/translation-executions does not call fake GeminiClient during su
     {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
       },
       geminiHttpClientFactory({ apiKey }) {
         assert.equal(apiKey, 'gemini-runtime-api-key');
@@ -314,7 +314,7 @@ test('POST /api/translation-executions dual-writes durable queue when feature is
     {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model',
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model',
         TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
         TRANSLATION_DURABLE_QUEUE_FILE: durableQueueFilePath
       },
@@ -414,7 +414,7 @@ test('POST queued execution is processed successfully by worker through producti
     {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
       },
       geminiHttpClientFactory({ apiKey }) {
         assert.equal(apiKey, 'gemini-runtime-api-key');
@@ -722,7 +722,7 @@ test('production worker runtime startup replays durable queue into active in-mem
     {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model',
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model',
         TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
         TRANSLATION_DURABLE_QUEUE_FILE: durableQueueFilePath
       },
@@ -886,7 +886,13 @@ test('worker processing rethrows provider error and persists failed lifecycle', 
       assert.equal(failedExecution.id, 'execution-1');
       assert.equal(failedExecution.translationRequestId, 'request-1');
       assert.equal(failedExecution.providerKey, 'gemini');
-      assert.deepEqual(failedExecution.failureInfo, { reason: 'provider_execution_failed' });
+      assert.deepEqual(failedExecution.failureInfo, {
+        reason: 'provider_execution_failed',
+        errorName: 'GeminiHttpError',
+        code: 'server_error',
+        status: 503,
+        message: 'Gemini HTTP request failed: server_error (503).'
+      });
       assert.equal(persistedRequest.sessionId, 'session-runtime-worker-failure');
       assert.equal(persistedRequest.targetLanguageCode, 'fr');
       assert.equal(persistedRequest.sourceTranscriptSnapshot.sourceLanguageCode, 'en');
@@ -896,7 +902,7 @@ test('worker processing rethrows provider error and persists failed lifecycle', 
     {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
       },
       geminiHttpClientFactory({ apiKey }) {
         assert.equal(apiKey, 'gemini-runtime-api-key');
@@ -1884,7 +1890,7 @@ function createRuntimeProviderResolutionFixture({
     options: {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
       },
       geminiHttpClientFactory({ apiKey }) {
         assert.equal(apiKey, 'gemini-runtime-api-key');
@@ -1913,7 +1919,7 @@ function productionRuntimeOptions({ scheduler, geminiClientCalls }) {
   return {
     env: {
       GEMINI_API_KEY: 'gemini-runtime-api-key',
-      GEMINI_MODEL: 'gemini-runtime-model'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
     },
     geminiHttpClientFactory({ apiKey }) {
       assert.equal(apiKey, 'gemini-runtime-api-key');
@@ -1956,7 +1962,7 @@ function createGeminiClientErrorRuntimeFixture({ error }) {
     options: {
       env: {
         GEMINI_API_KEY: 'gemini-runtime-api-key',
-        GEMINI_MODEL: 'gemini-runtime-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-runtime-model'
       },
       geminiHttpClientFactory({ apiKey }) {
         assert.equal(apiKey, 'gemini-runtime-api-key');

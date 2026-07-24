@@ -25,14 +25,17 @@ test('production Gemini saved-transcript path resolves through HTTP and invokes 
   const originalHttpPayload = structuredClone(httpPayload);
 
   const dependencies = createProductionApplicationDependencies({
-    env: { GEMINI_API_KEY: 'test-api-key', GEMINI_MODEL: 'gemini-production-model' },
+    env: {
+      GEMINI_API_KEY: 'test-api-key',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-model'
+    },
     sessionRepository,
     requestHandlerFactory: createRequestHandler,
     idGenerator: deterministicIdGenerator(),
     clock: deterministicClock(),
     geminiEnvironmentFactory(options) {
       calls.record('environment', options);
-      return { apiKey: options.env.GEMINI_API_KEY, model: options.env.GEMINI_MODEL };
+      return { apiKey: options.env.GEMINI_API_KEY };
     },
     googleGenAIClientFactory(options) {
       calls.record('sdkFactory', options);
@@ -114,7 +117,10 @@ test('production Gemini saved-transcript service propagates generateContent erro
   const expectedError = new Error('sdk unavailable');
   const calls = createCallRecorder();
   const dependencies = createProductionApplicationDependencies({
-    env: { GEMINI_API_KEY: 'test-api-key', GEMINI_MODEL: 'gemini-production-model' },
+    env: {
+      GEMINI_API_KEY: 'test-api-key',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-model'
+    },
     sessionRepository: seededSessionRepository(),
     idGenerator: deterministicIdGenerator(),
     clock: deterministicClock(),
@@ -144,7 +150,10 @@ test('production Gemini saved-transcript service propagates generateContent erro
 test('production Gemini provider factory composes the SDK adapter path without resolving an injected fake provider', async () => {
   const sdkRequests = [];
   const provider = createProductionSavedTranscriptTranslationProvider({
-    env: { GEMINI_API_KEY: 'test-api-key', GEMINI_MODEL: 'gemini-production-model' },
+    env: {
+      GEMINI_API_KEY: 'test-api-key',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-model'
+    },
     googleGenAIClientFactory() {
       return {
         models: {
@@ -170,6 +179,7 @@ test('production Gemini provider factory composes the SDK adapter path without r
     }
   );
   assert.equal(sdkRequests.length, 1);
+  assert.equal(sdkRequests[0].model, 'gemini-production-model');
 });
 
 function seededSessionRepository() {

@@ -18,7 +18,10 @@ import { createTranslationExecutionRetryErrorClassifier } from '../src/applicati
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
-import { createGeminiSavedTranscriptTranslationComposition } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+import {
+  createGeminiSavedTranscriptTranslationComposition,
+  resolveSavedRetranslationModel
+} from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createGeminiTranslationExecutionProvider } from '../src/infrastructure/geminiTranslationExecutionProvider.js';
 import { createDefaultGoogleGenAIClient } from '../src/infrastructure/googleGenAIClient.js';
 import { createFakeTranslationExecutionDispatcher } from '../src/infrastructure/fakeTranslationExecutionDispatcher.js';
@@ -493,7 +496,7 @@ export function createProductionSavedTranscriptTranslationProvider({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: environment.model,
+    env,
     ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
@@ -546,7 +549,7 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: environment.model,
+    env,
     ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({
@@ -954,7 +957,7 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   });
   const geminiClient = geminiClientFactory({
     httpClient,
-    model: resolvedEnvironment.model,
+    model: resolveSavedRetranslationModel(env),
     ...(glossary === undefined ? {} : { glossary })
   });
   const geminiProvider = geminiTranslationExecutionProviderFactory({
@@ -1004,7 +1007,7 @@ function createProductionProviderResolutionComposition({
   });
   const geminiProvider = geminiSavedTranscriptTranslationCompositionFactory({
     client: geminiClient,
-    model: resolvedEnvironment.model,
+    env,
     ...(glossary === undefined ? {} : { glossary })
   }).savedTranscriptTranslationProvider;
   const providerResolutionComposition = translationProviderResolutionCompositionFactory({

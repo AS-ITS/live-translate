@@ -1,6 +1,6 @@
 import { GoogleGenAI, Modality } from '@google/genai';
 import { isSupportedLanguage } from '../server/languages.js';
-import { createLiveToken, LIVE_TRANSLATE_MODEL } from '../server/tokenService.js';
+import { createLiveToken } from '../server/tokenService.js';
 
 const ENABLED = process.env.ENABLE_REAL_GEMINI_TEST === 'true';
 const TARGET_LANGUAGE = process.env.LIVE_SMOKE_TARGET_LANGUAGE || 'en';
@@ -45,8 +45,8 @@ async function main() {
 
   const session = await withTimeout(
     ai.live.connect({
-      model: LIVE_TRANSLATE_MODEL,
-      config: {
+      model: tokenResponse.liveConnectModel,
+      config: tokenResponse.liveConnectConfig || {
         responseModalities: [Modality.AUDIO],
         inputAudioTranscription: {},
         outputAudioTranscription: {},

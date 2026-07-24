@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
 import { createSavedTranscriptRetranslationService } from '../../src/application/translation/index.js';
-import { createGeminiSavedTranscriptTranslationProvider } from '../../src/infrastructure/geminiSavedTranscriptTranslationProvider.js';
+import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import { createTranslationProviderRegistry } from '../../src/infrastructure/translationProviderRegistry.js';
 import { createTranslationProviderResolver } from '../../src/infrastructure/translationProviderResolver.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
@@ -24,7 +24,7 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
-      GEMINI_MODEL: 'gemini-production-wp6'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-wp6'
     },
     sessionRepository,
     requestHandlerFactory: createRequestHandler,
@@ -43,8 +43,8 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
         }
       };
     },
-    geminiSavedTranscriptTranslationCompositionFactory({ client, model }) {
-      const actualProvider = createGeminiSavedTranscriptTranslationProvider({ client, model });
+    geminiSavedTranscriptTranslationCompositionFactory(options) {
+      const actualProvider = createGeminiSavedTranscriptTranslationComposition(options).savedTranscriptTranslationProvider;
 
       productionProvider = Object.freeze({
         async translate(input) {

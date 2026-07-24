@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createGeminiSavedTranscriptTranslationComposition } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+import {
+  DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL,
+  createGeminiSavedTranscriptTranslationComposition
+} from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 
 test('valid environment returns the expected frozen provider composition contract', () => {
   const composition = createGeminiSavedTranscriptTranslationComposition({
@@ -21,11 +24,14 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
   const provider = { translate() {} };
 
   const composition = createGeminiSavedTranscriptTranslationComposition({
-    env: env({ GEMINI_API_KEY: 'exact-api-key', GEMINI_MODEL: 'exact-model' }),
+    env: env({
+      GEMINI_API_KEY: 'exact-api-key',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model'
+    }),
     promptBuilder,
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
-      return { apiKey: 'exact-api-key', model: 'exact-model' };
+      return { apiKey: 'exact-api-key' };
     },
     googleGenAIClientFactory(options) {
       calls.push(['sdk', options]);
@@ -43,7 +49,15 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
 
   assert.strictEqual(composition.savedTranscriptTranslationProvider, provider);
   assert.equal(calls.length, 4);
-  assert.deepEqual(calls[0], ['environment', { env: env({ GEMINI_API_KEY: 'exact-api-key', GEMINI_MODEL: 'exact-model' }) }]);
+  assert.deepEqual(calls[0], [
+    'environment',
+    {
+      env: env({
+        GEMINI_API_KEY: 'exact-api-key',
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model'
+      })
+    }
+  ]);
   assert.deepEqual(calls[1], ['sdk', { apiKey: 'exact-api-key' }]);
   assert.deepEqual(calls[2], ['adapter', { client: sdkClient }]);
   assert.deepEqual(calls[3], [
@@ -54,6 +68,80 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
       promptBuilder
     }
   ]);
+});
+
+test('saved retranslation defaults to flash when its model env is omitted', () => {
+  const calls = [];
+  const provider = { translate() {} };
+
+  createGeminiSavedTranscriptTranslationComposition({
+    env: env(),
+    GoogleGenAI: fakeGoogleGenAI(),
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(options);
+      return provider;
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL);
+});
+
+test('saved retranslation model env is trimmed', () => {
+  const calls = [];
+  const provider = { translate() {} };
+
+  createGeminiSavedTranscriptTranslationComposition({
+    env: env({
+      SAVED_RETRANSLATION_GEMINI_MODEL: '  gemini-3.5-flash-custom  '
+    }),
+    GoogleGenAI: fakeGoogleGenAI(),
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(options);
+      return provider;
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'gemini-3.5-flash-custom');
+});
+
+test('client injection without explicit model uses saved retranslation model env', () => {
+  const calls = [];
+  const provider = { translate() {} };
+
+  createGeminiSavedTranscriptTranslationComposition({
+    client: { generateContent() {} },
+    env: env({
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'client-env-model'
+    }),
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(options);
+      return provider;
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'client-env-model');
+});
+
+test('explicit model input takes precedence over saved retranslation model env', () => {
+  const calls = [];
+  const provider = { translate() {} };
+
+  const composition = createGeminiSavedTranscriptTranslationComposition({
+    client: { generateContent() {} },
+    model: 'explicit-model',
+    env: env({ SAVED_RETRANSLATION_GEMINI_MODEL: 'env-model' }),
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(options);
+      return provider;
+    }
+  });
+
+  assert.strictEqual(composition.savedTranscriptTranslationProvider, provider);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].model, 'explicit-model');
 });
 
 test('injected GoogleGenAI constructor receives the API key exactly once', () => {
@@ -96,6 +184,14 @@ test('missing required configuration and invalid dependencies fail', () => {
         geminiEnvironmentFactory: {}
       }),
     /geminiEnvironmentFactory must be a function/
+  );
+  assert.throws(
+    () =>
+      createGeminiSavedTranscriptTranslationComposition({
+        env: env({ SAVED_RETRANSLATION_GEMINI_MODEL: '   ' }),
+        GoogleGenAI
+      }),
+    /^Error: Invalid SAVED_RETRANSLATION_GEMINI_MODEL$/
   );
 });
 
@@ -169,7 +265,7 @@ test('returned provider performs deterministic translation through fake SDK resp
   }
 
   const { savedTranscriptTranslationProvider } = createGeminiSavedTranscriptTranslationComposition({
-    env: env({ GEMINI_MODEL: 'gemini-test-model' }),
+    env: env({ SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-test-model' }),
     GoogleGenAI: FakeGoogleGenAI
   });
 
@@ -191,7 +287,6 @@ test('returned provider performs deterministic translation through fake SDK resp
 function env(overrides = {}) {
   return {
     GEMINI_API_KEY: 'test-api-key',
-    GEMINI_MODEL: 'gemini-test-model',
     ...overrides
   };
 }

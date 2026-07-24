@@ -7,7 +7,7 @@ import {
 
 test('production composition assembles Gemini provider and injects saved transcript provider resolver', () => {
   const calls = [];
-  const env = { GEMINI_API_KEY: 'unused-by-mock', GEMINI_MODEL: 'unused-by-mock' };
+  const env = { GEMINI_API_KEY: 'unused-by-mock', SAVED_RETRANSLATION_GEMINI_MODEL: 'unused-by-mock' };
   const googleClient = { models: { generateContent() {} } };
   const geminiClient = { generateContent() {} };
   const geminiProvider = { translate() {} };
@@ -27,7 +27,7 @@ test('production composition assembles Gemini provider and injects saved transcr
     sessionRepository: repository(),
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
-      return { apiKey: 'exact-api-key', model: 'exact-model' };
+      return { apiKey: 'exact-api-key' };
     },
     googleGenAIClientFactory(options) {
       calls.push(['googleClient', options]);
@@ -99,7 +99,8 @@ test('production composition assembles Gemini provider and injects saved transcr
   assert.deepEqual(calls[2][1], { apiKey: 'exact-api-key' });
   assert.deepEqual(calls[3][1], { client: googleClient });
   assert.equal(calls[4][1].client, geminiClient);
-  assert.equal(calls[4][1].model, 'exact-model');
+  assert.deepEqual(calls[4][1].env, { ...env, TRANSLATION_PROVIDER: configuredProviderKey });
+  assert.equal(Object.hasOwn(calls[4][1], 'model'), false);
   assert.equal(typeof calls[4][1].glossary.entriesFor, 'function');
   assert.equal(configurationCallCount, 1);
   assert.equal(geminiProviderCallCount, 1);
@@ -150,7 +151,7 @@ test('configured glossary is shared by execution and saved-transcript Gemini pro
   createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'shared-history-model',
       TRANSLATION_GLOSSARY_FILE: '/tmp/glossary.json'
     },
     sessionRepository: repository(),
@@ -175,6 +176,7 @@ test('configured glossary is shared by execution and saved-transcript Gemini pro
   assert.equal(glossaryOptions.filePath, '/tmp/glossary.json');
   assert.equal(typeof glossaryOptions.idFactory, 'function');
   assert.equal(typeof glossaryOptions.clock, 'function');
+  assert.equal(executionClientOptions.model, 'shared-history-model');
   assert.strictEqual(executionClientOptions.glossary, glossary);
   assert.strictEqual(savedProviderOptions.glossary, glossary);
 });
@@ -184,8 +186,7 @@ test('production composition uses a default glossary file when the environment o
 
   createProductionApplicationDependencies({
     env: {
-      GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock'
+      GEMINI_API_KEY: 'unused-by-mock'
     },
     sessionRepository: repository(),
     translationGlossaryFactory(options) {
@@ -228,7 +229,7 @@ test('production Gemini provider factory returns resolver output exactly once', 
     env: { GEMINI_API_KEY: 'unused-by-mock', TRANSLATION_PROVIDER: configuredProviderKey },
     geminiEnvironmentFactory(options) {
       calls.push(['environment', options]);
-      return { apiKey: 'api-key', model: 'model-name' };
+      return { apiKey: 'api-key' };
     },
     googleGenAIClientFactory(options) {
       calls.push(['googleClient', options]);

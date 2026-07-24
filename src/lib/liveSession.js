@@ -83,7 +83,7 @@ export class LiveTranslateSession {
       throw new Error(userMessageForErrorCode(error.error?.code));
     }
 
-    const { token, liveConnectConfig, liveGlossaryEntries } = await tokenResponse.json();
+    const { token, liveConnectModel, liveConnectConfig, liveGlossaryEntries } = await tokenResponse.json();
     this.liveGlossaryEntries = Array.isArray(liveGlossaryEntries) ? liveGlossaryEntries : [];
     const ai = new GoogleGenAI({
       apiKey: token,
@@ -94,7 +94,7 @@ export class LiveTranslateSession {
 
     this.session = await withTimeout(
       ai.live.connect({
-        model: 'gemini-3.5-live-translate-preview',
+        model: liveConnectModel || 'gemini-3.5-live-translate-preview',
         config: liveConnectConfig || {
           responseModalities: [Modality.AUDIO],
           inputAudioTranscription: {},

@@ -195,7 +195,15 @@ test('application dependencies assemble translation command graph with injected 
   assert.strictEqual(calls[5][1].translationCommandController, translationCommandController);
   assert.strictEqual(calls[5][1].executionControlController, executionControlController);
   assert.strictEqual(calls[5][1].sessionReadController, dependencies.sessionReadController);
-  assert.deepEqual(Object.keys(calls[5][1]).sort(), ['executionControlController', 'sessionReadController', 'sessionRepository', 'translationCommandController', 'translationHistoryController']);
+  assert.deepEqual(Object.keys(calls[5][1]).sort(), [
+    'executionControlController',
+    'glossaryController',
+    'liveTokenCreator',
+    'sessionReadController',
+    'sessionRepository',
+    'translationCommandController',
+    'translationHistoryController'
+  ]);
 });
 
 test('translation command dependencies use the service factory result to build the controller', () => {
@@ -265,7 +273,7 @@ test('production composition injects an execution provider resolver for the prod
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
@@ -352,10 +360,9 @@ test('production composition injects an execution provider resolver for the prod
     'geminiExecutionProvider'
   ]);
   assert.strictEqual(calls[2][1].apiKey, 'api-key-from-env');
-  assert.deepEqual(calls[3][1], {
-    httpClient: geminiHttpClient,
-    model: 'model-from-env'
-  });
+  assert.strictEqual(calls[3][1].httpClient, geminiHttpClient);
+  assert.equal(calls[3][1].model, 'model-from-env');
+  assert.equal(typeof calls[3][1].glossary.entriesFor, 'function');
   assert.deepEqual(calls[4][1], { client: geminiClient });
   assert.equal(Object.hasOwn(observedServiceOptions, 'translationProviderResolver'), false);
   assert.equal(Object.hasOwn(observedServiceOptions, 'translationExecutionProvider'), false);
@@ -383,7 +390,7 @@ test('production composition wires shared queue repository runner and worker', a
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env'
     },
     sessionReadRepository: readRepository(),
     translationRepository,
@@ -454,7 +461,7 @@ test('production composition creates an in-memory execution queue by default', (
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
@@ -494,7 +501,7 @@ test('production composition does not create durable queue repository by default
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
@@ -551,7 +558,7 @@ test('production composition creates durable queue repository when feature flag 
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
       TRANSLATION_DURABLE_QUEUE_FILE: '/tmp/translation-queue.json'
     },
@@ -590,7 +597,7 @@ test('production composition uses file-backed durable repository factory when en
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
       TRANSLATION_DURABLE_QUEUE_FILE: '/tmp/translation-queue.json'
     },
@@ -650,7 +657,7 @@ test('production composition dual-writes enqueue and keeps dequeue size on prima
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
     },
     sessionReadRepository: readRepository(),
@@ -749,7 +756,7 @@ test('production composition injects active dual-write queue into service worker
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true',
       TRANSLATION_QUEUE_LEASE_MS: '1000',
       TRANSLATION_QUEUE_LEASE_RENEWAL_MS: '500'
@@ -834,7 +841,7 @@ test('production composition creates startup recovery when durable queue is enab
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
     },
     sessionReadRepository: readRepository(),
@@ -875,7 +882,7 @@ test('production runtime start awaits startup recovery before starting worker ru
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env',
       TRANSLATION_DURABLE_QUEUE_ENABLED: 'true'
     },
     sessionReadRepository: readRepository(),
@@ -947,7 +954,7 @@ test('production composition allows worker and runner override without rebuildin
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'model-from-env'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'model-from-env'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository(),
@@ -993,7 +1000,7 @@ test('production composition queues execution for providerKey gemini without exe
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'gemini-composed-model'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-composed-model'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository({
@@ -1066,7 +1073,7 @@ test('production composition queues default Gemini execution when providerKey is
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'api-key-from-env',
-      GEMINI_MODEL: 'gemini-default-model'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-default-model'
     },
     sessionReadRepository: readRepository(),
     translationRepository: repository({
@@ -1350,7 +1357,7 @@ test('production runtime wiring preserves saved transcript resolver composition'
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'unused-by-mock',
-      GEMINI_MODEL: 'unused-by-mock'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'unused-by-mock'
     },
     sessionReadRepository: readRepository(),
     geminiEnvironmentFactory() {

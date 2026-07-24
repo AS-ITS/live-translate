@@ -14,7 +14,7 @@ test('production saved-transcript translation applies target glossary instructio
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
-      GEMINI_MODEL: 'gemini-test',
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-test',
       TRANSLATION_GLOSSARY_FILE: 'translation-glossary.json'
     },
     sessionRepository,

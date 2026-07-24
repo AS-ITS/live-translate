@@ -6,6 +6,9 @@ import {
   createGoogleGenAIClient
 } from './googleGenAIClient.js';
 
+export const DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL = 'gemini-3.5-flash';
+export const SAVED_RETRANSLATION_GEMINI_MODEL_ENV = 'SAVED_RETRANSLATION_GEMINI_MODEL';
+
 export function createGeminiSavedTranscriptTranslationComposition({
   client,
   model,
@@ -24,7 +27,7 @@ export function createGeminiSavedTranscriptTranslationComposition({
     return Object.freeze({
       savedTranscriptTranslationProvider: geminiSavedTranscriptTranslationProviderFactory({
         client,
-        model,
+        model: model ?? resolveSavedRetranslationModel(env),
         ...(promptBuilder ? { promptBuilder } : {}),
         ...(glossary ? { glossary } : {})
       })
@@ -40,6 +43,7 @@ export function createGeminiSavedTranscriptTranslationComposition({
   assertFactory(geminiSavedTranscriptTranslationProviderFactory, 'geminiSavedTranscriptTranslationProviderFactory');
 
   const geminiEnvironment = geminiEnvironmentFactory({ env });
+  const savedRetranslationModel = resolveSavedRetranslationModel(env);
   const sdkClient = resolvedGoogleGenAIClientFactory({
     apiKey: geminiEnvironment.apiKey,
     ...(GoogleGenAI ? { GoogleGenAI } : {})
@@ -47,7 +51,7 @@ export function createGeminiSavedTranscriptTranslationComposition({
   const adaptedClient = geminiClientAdapterFactory({ client: sdkClient });
   const savedTranscriptTranslationProvider = geminiSavedTranscriptTranslationProviderFactory({
     client: adaptedClient,
-    model: geminiEnvironment.model,
+    model: savedRetranslationModel,
     ...(promptBuilder ? { promptBuilder } : {}),
     ...(glossary ? { glossary } : {})
   });
@@ -61,4 +65,23 @@ function assertFactory(factory, name) {
   if (typeof factory !== 'function') {
     throw new TypeError(`${name} must be a function.`);
   }
+}
+
+export function resolveSavedRetranslationModel(env = process.env) {
+  const value = env[SAVED_RETRANSLATION_GEMINI_MODEL_ENV];
+
+  if (value === undefined) {
+    return DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error(`Invalid ${SAVED_RETRANSLATION_GEMINI_MODEL_ENV}`);
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`Invalid ${SAVED_RETRANSLATION_GEMINI_MODEL_ENV}`);
+  }
+
+  return trimmed;
 }

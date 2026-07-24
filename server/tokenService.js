@@ -1,6 +1,7 @@
 import { isSupportedLanguage } from './languages.js';
 
-export const LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
+export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
+export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
 
 export function normalizeTokenRequest(body = {}) {
   const targetLanguageCode = Object.hasOwn(body, 'targetLanguageCode') ? body.targetLanguageCode : 'en';
@@ -16,7 +17,12 @@ export function normalizeTokenRequest(body = {}) {
   return { targetLanguageCode, echoTargetLanguage };
 }
 
-export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage, glossaryEntries }, now = new Date()) {
+export function buildTokenConfig({
+  targetLanguageCode,
+  echoTargetLanguage,
+  glossaryEntries,
+  liveTranslateModel = resolveLiveTranslateModel()
+}, now = new Date()) {
   const expireTime = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now.getTime() + 60 * 1000).toISOString();
   const translationConfig = {
@@ -40,7 +46,7 @@ export function buildTokenConfig({ targetLanguageCode, echoTargetLanguage, gloss
     expireTime,
     newSessionExpireTime,
     liveConnectConstraints: {
-      model: LIVE_TRANSLATE_MODEL,
+      model: liveTranslateModel,
       config: liveConnectConfig
     },
     httpOptions: {
@@ -58,10 +64,14 @@ export async function createLiveToken(body, options = {}) {
 
   const request = normalizeTokenRequest(body);
   const now = options.now || new Date();
+  const liveTranslateModel = options.liveTranslateModel ?? resolveLiveTranslateModel(process.env);
   const glossaryEntries = options.glossary === undefined
     ? undefined
     : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
-  const configWithGlossary = buildTokenConfig({ ...request, ...(glossaryEntries === undefined ? {} : { glossaryEntries }) }, now);
+  const configWithGlossary = buildTokenConfig(
+    { ...request, liveTranslateModel, ...(glossaryEntries === undefined ? {} : { glossaryEntries }) },
+    now
+  );
   const client = options.client || (await createGenAiClient(process.env.GEMINI_API_KEY));
 
   try {
@@ -69,6 +79,7 @@ export async function createLiveToken(body, options = {}) {
     return {
       token: token.name,
       expiresAt: configWithGlossary.expireTime,
+      liveConnectModel: liveTranslateModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
       liveGlossaryEntries: glossaryEntries || []
     };
@@ -78,6 +89,25 @@ export async function createLiveToken(body, options = {}) {
     error.cause = cause;
     throw error;
   }
+}
+
+export function resolveLiveTranslateModel(env = process.env) {
+  const value = env.LIVE_TRANSLATE_MODEL;
+
+  if (value === undefined) {
+    return DEFAULT_LIVE_TRANSLATE_MODEL;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('Invalid LIVE_TRANSLATE_MODEL');
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error('Invalid LIVE_TRANSLATE_MODEL');
+  }
+
+  return trimmed;
 }
 
 function glossaryInstruction(entries) {

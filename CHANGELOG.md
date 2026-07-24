@@ -56,6 +56,11 @@
 
 ### Changed
 
+- Saved-session retranslation now wakes the execution worker immediately after
+  submission, exposes provider attempt timing in progress read models, and
+  applies a configurable Gemini timeout through
+  `SAVED_RETRANSLATION_TIMEOUT_MS`.
+
 - Completed saved-session retranslation now creates a separate completed
   history record with provenance back to the original speech record instead of
   replacing the original session's main article view.
@@ -89,6 +94,18 @@
   canonical transcript items.
 
 ### Added
+
+- Added a dedicated `#retranslate` workflow for saved Session re-translation.
+  History detail now links into the workflow with the selected Session ID, while
+  the new page can also be opened without a selected Session to search and pick
+  an original saved Session. The workflow keeps original transcript and
+  article-style retranslation output in a two-column reading view, supports
+  provider/target-language selection, pending/completed/failed status display,
+  failed retry, version switching, and TXT export of the selected retranslation
+  output.
+
+- Added `GET /api/translation-providers` so the frontend can show only
+  backend-supported, safe provider options for saved Session re-translation.
 
 - Translation glossary entries now support `live`, `history`, and `both` scopes.
   The glossary UI is available as its own `#glossary` page; live sessions use

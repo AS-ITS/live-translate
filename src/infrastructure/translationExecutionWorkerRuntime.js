@@ -52,6 +52,15 @@ export function createTranslationExecutionWorkerRuntime({
     return isStarted || isProcessing;
   }
 
+  function wake() {
+    if (!isStarted || isProcessing) {
+      return;
+    }
+
+    clearScheduledPoll();
+    timerHandle = scheduler.set(processNextPoll, 0);
+  }
+
   function scheduleNextPoll(resolveAvailableAt) {
     if (!isStarted || timerHandle !== undefined) {
       return;
@@ -128,7 +137,8 @@ export function createTranslationExecutionWorkerRuntime({
   return Object.freeze({
     start,
     stop,
-    isRunning
+    isRunning,
+    wake
   });
 }
 

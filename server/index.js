@@ -36,6 +36,15 @@ const ERROR_RESPONSES = {
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 
+const SAFE_TRANSLATION_PROVIDERS = Object.freeze([
+  Object.freeze({
+    key: 'gemini',
+    label: 'Gemini',
+    provider: 'gemini',
+    model: 'gemini saved transcript retranslation'
+  })
+]);
+
 function sendJson(res, status, payload, requestId) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
@@ -330,9 +339,11 @@ export function createRequestHandler(options = {}) {
     translationCommandController,
     executionControlController,
     translationHistoryController,
+    translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
+    translationExecutionWorkerRuntime,
     liveTokenCreator = createLiveToken
   } = options;
 
@@ -350,9 +361,11 @@ export function createRequestHandler(options = {}) {
       translationCommandController,
       executionControlController,
       translationHistoryController,
+      translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
+      translationExecutionWorkerRuntime,
       liveTokenCreator
     });
   };
@@ -365,7 +378,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -434,6 +447,23 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'GET' && path === '/api/translation-providers') {
+    try {
+      const providers = translationProviderOptionsController
+        ? await translationProviderOptionsController.listTranslationProviders()
+        : SAFE_TRANSLATION_PROVIDERS;
+      statusCode = 200;
+      sendJson(res, statusCode, { providers }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (isGlossaryRoute(req.method, path)) {
     try {
       if (!glossaryController) throw createHttpError('glossary_not_configured');
@@ -488,6 +518,7 @@ async function handleRequestWithSessionReadController(
       const result = await sessionRetranslationCommandController.submitRetranslation(
         validateSessionRetranslationRequest({ sessionId: extractSessionRetranslationSessionId(path), body })
       );
+      translationExecutionWorkerRuntime?.wake?.();
       statusCode = 202;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -513,12 +544,13 @@ async function handleRequestWithSessionReadController(
         try {
           const history = await translationHistoryController.listSessionTranslations({ sessionId, includeReadModel: true });
           const formalHistory = history?.translationHistory;
-          const outputs = (formalHistory?.outputs || []).filter(isPrimarySessionTranslationOutput);
+          const historyOutputs = Array.isArray(formalHistory?.outputs) ? formalHistory.outputs : [];
+          const primaryOutputs = historyOutputs.filter(isLiveSessionTranslationOutput);
           session.translationHistory = {
-            outputs: outputs.length > 0 ? outputs : legacyTranslationFallback(session.translationOutputs),
+            outputs: legacyTranslationFallback(session.translationOutputs),
             executions: formalHistory?.executions || []
           };
-          applyFormalOutputReadModel(session, outputs);
+          applyFormalOutputReadModel(session, primaryOutputs);
         } catch {
           // Translation history is an isolated read enhancement; preserve detail.
         }
@@ -826,7 +858,7 @@ function legacyTranslationFallback(outputs) {
   }));
 }
 
-function isPrimarySessionTranslationOutput(output) {
+function isLiveSessionTranslationOutput(output) {
   return typeof output?.id === 'string' && output.id.startsWith('live-output:');
 }
 

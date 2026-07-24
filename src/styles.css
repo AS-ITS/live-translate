@@ -79,7 +79,8 @@ input {
 }
 
 .feature-page > .history-panel,
-.feature-page > .control-panel {
+.feature-page > .control-panel,
+.feature-page > .retranslation-workflow {
   margin-top: 0;
 }
 
@@ -680,6 +681,53 @@ input:disabled {
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
 }
 
+.retranslation-workflow {
+  display: grid;
+  gap: 16px;
+}
+
+.retranslation-picker-controls {
+  grid-template-columns: minmax(220px, 1fr);
+  margin-bottom: 16px;
+}
+
+.retranslation-control-panel {
+  gap: 16px;
+}
+
+.retranslation-controls {
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) auto;
+}
+
+.retranslation-loading {
+  padding: 0 4px;
+}
+
+.retranslation-source-metadata {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.retranslation-version-field {
+  margin-bottom: 16px;
+}
+
+.retranslation-provider-readonly strong {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fbfcfd;
+  color: #17202a;
+  font-weight: 700;
+}
+
+.retranslation-output-content {
+  margin-bottom: 16px;
+}
+
 .detail-button + .saved-export-controls {
   margin-top: 12px;
 }
@@ -745,6 +793,8 @@ input:disabled {
   .controls,
   .transcript-grid,
   .saved-export-controls,
+  .retranslation-controls,
+  .retranslation-picker-controls,
   .glossary-controls,
   .glossary-list li {
     grid-template-columns: 1fr;
@@ -773,6 +823,10 @@ input:disabled {
   .history-item-header,
   .session-detail-header {
     display: grid;
+  }
+
+  .retranslation-source-metadata {
+    grid-template-columns: 1fr;
   }
 
   .reading-content-header {

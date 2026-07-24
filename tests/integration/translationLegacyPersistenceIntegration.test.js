@@ -238,6 +238,8 @@ test('translation command HTTP path persists command state through production co
       failureReason: null,
       failureCategory: null,
       transcriptSummary,
+      recordKind: 'session',
+      retranslatedFrom: null,
       legacy: true
     });
 

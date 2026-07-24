@@ -26,6 +26,9 @@ test('compact translation history includes safe failure details for failed execu
         id: 'execution-1',
         translationRequestId: 'request-1',
         status: 'failed',
+        providerAttemptStatus: 'failed',
+        providerAttemptedAt: '2026-07-24T07:11:12.000Z',
+        providerCompletedAt: '2026-07-24T07:11:30.000Z',
         startedAt: 2,
         completedAt: 3,
         failureInfo: {
@@ -51,6 +54,11 @@ test('compact translation history includes safe failure details for failed execu
     requestId: 'request-1',
     targetLanguageCode: 'ja',
     status: 'failed',
+    startedAt: 2,
+    createdAt: 1,
+    providerAttemptStatus: 'failed',
+    providerAttemptedAt: '2026-07-24T07:11:12.000Z',
+    providerCompletedAt: '2026-07-24T07:11:30.000Z',
     failureInfo: {
       reason: 'provider_execution_failed',
       errorName: 'GeminiHttpError',

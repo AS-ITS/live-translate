@@ -222,7 +222,6 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
               status: 'final',
               text: 'First source sentence.',
               sequence: 1,
-              startedAt: undefined,
               finalizedAt: '2026-07-15T00:00:01.000Z'
             },
             {
@@ -232,7 +231,6 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
               status: 'final',
               text: 'Second source sentence.',
               sequence: 2,
-              startedAt: undefined,
               finalizedAt: '2026-07-15T00:00:02.000Z'
             }
           ]

@@ -214,6 +214,9 @@ export function createApplicationDependencies(options = {}) {
       translationHistoryController,
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
+      ...(translationCommandDependencies.translationExecutionWorkerRuntime
+        ? { translationExecutionWorkerRuntime: translationCommandDependencies.translationExecutionWorkerRuntime }
+        : {}),
       ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
       ...(includeSessionRetranslationCommandController ? { sessionRetranslationCommandController } : {})
       })
@@ -659,7 +662,7 @@ export function createTranslationCommandDependencies({
           ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
-  const retranslationSessionMaterializer = retranslationSessionMaterializerFactory === undefined || sessionRepository === undefined
+  const retranslationSessionMaterializer = retranslationSessionMaterializerFactory === undefined || !supportsRetranslationSessionMaterializer(sessionRepository)
     ? undefined
     : retranslationSessionMaterializerFactory({ sessionRepository, clock });
   const resolvedWorkerTranslationExecutionRunner =
@@ -781,6 +784,12 @@ function createDefaultLeaseHeartbeatScheduler() {
   });
 }
 
+function supportsRetranslationSessionMaterializer(sessionRepository) {
+  return Boolean(sessionRepository) &&
+    ['createSessionRecord', 'appendTranscriptItem', 'finalizeSessionRecord', 'getSessionRecord']
+      .every((methodName) => typeof sessionRepository[methodName] === 'function');
+}
+
 export function createSavedTranscriptRetranslationDependencies({
   translationCommandService,
   savedTranscriptTranslationProvider,
@@ -878,6 +887,10 @@ function createRecoveryBackedWorkerRuntime({ startupTranslationExecutionQueueRec
 
     stop() {
       return translationExecutionWorkerRuntime.stop();
+    },
+
+    wake() {
+      return translationExecutionWorkerRuntime.wake?.();
     },
 
     isRunning() {

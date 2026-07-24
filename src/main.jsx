@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Download, Mic, MicOff, Radio, Square } from 'lucide-react';
+import { Copy, Download, Mic, MicOff, Radio, RefreshCw, Square } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -37,19 +37,26 @@ import {
   resetTranscriptState,
   transcriptItemsForStream
 } from './lib/transcript.js';
-import { HISTORY_REFRESH_MS } from './lib/sessionHistoryState.js';
+import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'glossary']);
+const FEATURE_PAGES = new Set(['live', 'history', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 
 function pageFromLocation() {
-  const page = window.location.hash.replace('#', '');
-  return FEATURE_PAGES.has(page) ? page : 'live';
+  return pageInfoFromLocation().page;
+}
+
+function pageInfoFromLocation() {
+  const rawHash = window.location.hash.replace('#', '');
+  const [pageName, queryString = ''] = rawHash.split('?');
+  const page = FEATURE_PAGES.has(pageName) ? pageName : 'live';
+  const params = new URLSearchParams(queryString);
+  return { page, sessionId: params.get('sessionId') || '' };
 }
 
 function App() {
@@ -70,6 +77,7 @@ function App() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
+  const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
@@ -103,13 +111,19 @@ function App() {
   }, []);
 
   useEffect(() => {
-    const handleHashChange = () => setPage(pageFromLocation());
+    const handleHashChange = () => {
+      const next = pageInfoFromLocation();
+      setPage(next.page);
+      if (next.page === 'retranslate') {
+        setRetranslationSessionId((current) => next.sessionId || current);
+      }
+    };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   useEffect(() => {
-    if (page === 'history') {
+    if (page === 'history' || page === 'retranslate') {
       void refreshHistoryRecords();
     }
   }, [page]);
@@ -601,12 +615,21 @@ function App() {
     };
   }
 
-  function navigateTo(nextPage) {
+  function navigateTo(nextPage, event) {
+    event?.preventDefault();
+
     if (nextPage === page) {
       return;
     }
 
-    window.location.hash = nextPage;
+    window.location.hash = nextPage === 'retranslate' && retranslationSessionId
+      ? `retranslate?sessionId=${encodeURIComponent(retranslationSessionId)}`
+      : nextPage;
+  }
+
+  function openRetranslationWorkflow(sessionId) {
+    const encodedSessionId = encodeURIComponent(sessionId);
+    window.location.hash = `retranslate?sessionId=${encodedSessionId}`;
   }
 
   function downloadTranscript() {
@@ -669,9 +692,10 @@ function App() {
           <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
         </div>
         <nav className="feature-navigation" aria-label="主要導覽">
-          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={() => navigateTo('live')}>即時翻譯</a>
-          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}>翻譯紀錄</a>
-          <a href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} onClick={() => navigateTo('glossary')}>翻譯字典</a>
+          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={(event) => navigateTo('live', event)}>即時翻譯</a>
+          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={(event) => navigateTo('history', event)}>翻譯紀錄</a>
+          <a href="#retranslate" aria-current={page === 'retranslate' ? 'page' : undefined} onClick={(event) => navigateTo('retranslate', event)}>重新翻譯</a>
+          <a href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} onClick={(event) => navigateTo('glossary', event)}>翻譯字典</a>
         </nav>
       </header>
 
@@ -818,6 +842,16 @@ function App() {
           onViewDetails={openHistoryRecordDetail}
           onCloseDetails={closeHistoryRecordDetail}
           onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
+          onOpenRetranslationWorkflow={openRetranslationWorkflow}
+        />
+      </section>
+
+      <section className="feature-page retranslation-page" aria-labelledby="retranslation-page-title" hidden={page !== 'retranslate'}>
+        <RetranslationWorkflow
+          titleId="retranslation-page-title"
+          records={historyRecords}
+          selectedSessionId={retranslationSessionId}
+          onSelectSession={openRetranslationWorkflow}
         />
       </section>
 
@@ -919,7 +953,7 @@ function ArticlePanel({
   );
 }
 
-function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails, onRetranslationSubmitted }) {
+function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
@@ -973,6 +1007,7 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                   historyRecord={selectedRecord}
                   onClose={onCloseDetails}
                   onRetranslationSubmitted={onRetranslationSubmitted}
+                  onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
                 />
               ) : null}
             </li>
@@ -980,6 +1015,309 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
         </ol>
       )}
     </section>
+  );
+}
+
+function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
+  const [query, setQuery] = useState('');
+  const [detail, setDetail] = useState(null);
+  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState('');
+  const [providers, setProviders] = useState([]);
+  const [providerError, setProviderError] = useState('');
+  const [targetLanguageCode, setTargetLanguageCode] = useState('en');
+  const [providerKey, setProviderKey] = useState('');
+  const [selectedOutputId, setSelectedOutputId] = useState('');
+  const [trackedRetranslations, setTrackedRetranslations] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRetryingExecutionId, setIsRetryingExecutionId] = useState('');
+  const [statusMessage, setStatusMessage] = useState('');
+  const [operationError, setOperationError] = useState('');
+  const detailRequestIdRef = useRef(0);
+  const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const sessionRetranslationApiClientRef = useRef(createSessionRetranslationApiClient());
+  const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
+
+  useEffect(() => {
+    let cancelled = false;
+    sessionRetranslationApiClientRef.current.listProviders()
+      .then((nextProviders) => {
+        if (cancelled) return;
+        setProviders(nextProviders);
+        setProviderKey((current) => current || nextProviders[0]?.key || '');
+        setProviderError('');
+      })
+      .catch(() => {
+        if (!cancelled) setProviderError('無法載入可用的翻譯提供者。');
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    setDetail(null);
+    setDetailError('');
+    setSelectedOutputId('');
+    setTrackedRetranslations([]);
+    setStatusMessage('');
+    setOperationError('');
+
+    if (!selectedSessionId) {
+      setIsLoadingDetail(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    void loadSelectedSessionDetail({ cancelled: () => cancelled });
+    return () => { cancelled = true; };
+  }, [selectedSessionId]);
+
+  const translationHistory = compactTranslationHistoryForDetail(detail);
+  const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
+  const selectedOutput = selectedOutputFor({ translationHistory: { outputs: retranslationProgress.outputs } }, selectedOutputId);
+  const hasPendingProgress = hasPendingRetranslationItems(retranslationProgress);
+
+  useEffect(() => {
+    if (!selectedSessionId || !hasPendingProgress) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      void loadSelectedSessionDetail();
+    }, HISTORY_REFRESH_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedSessionId, hasPendingProgress, detail?.translationHistory]);
+
+  useEffect(() => {
+    if (!selectedOutput) {
+      return;
+    }
+
+    setSelectedOutputId((current) => current || selectedOutput.id);
+  }, [selectedOutput?.id]);
+
+  async function loadSelectedSessionDetail({ cancelled = () => false } = {}) {
+    const requestId = detailRequestIdRef.current + 1;
+    detailRequestIdRef.current = requestId;
+    setIsLoadingDetail(true);
+
+    try {
+      const [nextDetail, nextTranslations] = await Promise.all([
+        sessionReadApiClientRef.current.getSessionDetail(selectedSessionId),
+        sessionReadApiClientRef.current.getSessionTranslations(selectedSessionId).catch(() => null)
+      ]);
+      if (cancelled() || detailRequestIdRef.current !== requestId) return false;
+      setDetail(mergeRetranslationHistoryIntoDetail(nextDetail, nextTranslations));
+      setDetailError(nextDetail ? '' : '找不到此工作階段。');
+      return Boolean(nextDetail);
+    } catch {
+      if (cancelled() || detailRequestIdRef.current !== requestId) return false;
+      setDetail(null);
+      setDetailError('無法載入重新翻譯工作階段。');
+      return false;
+    } finally {
+      if (!cancelled() && detailRequestIdRef.current === requestId) {
+        setIsLoadingDetail(false);
+      }
+    }
+  }
+
+  async function submitRetranslation() {
+    setIsSubmitting(true);
+    setStatusMessage('');
+    setOperationError('');
+
+    try {
+      const command = {
+        targetLanguageCode,
+        ...(providerKey ? { providerKey } : {})
+      };
+      const result = await sessionRetranslationApiClientRef.current.submit(selectedSessionId, command);
+      setTrackedRetranslations((current) => upsertTrackedRetranslation(current, trackedRetranslationForSubmitResult(result, targetLanguageCode)));
+      setStatusMessage(`已將${targetLanguageLabelFor(targetLanguageCode)}重新翻譯加入佇列。`);
+      await loadSelectedSessionDetail();
+    } catch {
+      setOperationError('無法將重新翻譯加入佇列。請確認此 Session 有原始逐字稿後再試一次。');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function retryExecution(execution) {
+    const executionId = execution?.id;
+    if (!executionId) return;
+    setIsRetryingExecutionId(executionId);
+    setStatusMessage('');
+    setOperationError('');
+
+    try {
+      const result = await translationCommandApiClientRef.current.retryFailedTranslationExecution(executionId);
+      setTrackedRetranslations((current) => upsertTrackedRetranslation(current, {
+        requestId: result.requestId || result.translationRequestId || execution.requestId,
+        executionId: result.id,
+        targetLanguageCode: execution.targetLanguageCode
+      }));
+      setStatusMessage('已重新加入佇列。');
+      await loadSelectedSessionDetail();
+    } catch {
+      setOperationError('無法重試此重新翻譯工作。');
+    } finally {
+      setIsRetryingExecutionId('');
+    }
+  }
+
+  function exportSelectedRetranslation() {
+    if (!selectedOutput?.translatedText) return;
+    downloadTextFile(
+      selectedOutput.translatedText,
+      buildRetranslationOutputFileName(selectedSessionId, selectedOutput),
+      'text/plain;charset=utf-8'
+    );
+  }
+
+  const selectableRecords = retranslationSourceRecords(records);
+  const filteredRecords = selectableRecords.filter((record) => retranslationRecordMatches(record, query));
+  const sourceContent = sourceContentForRetranslationDetail(detail);
+  const sourceLanguage = sourceLanguageLabelForDetail(detail);
+  const articleParagraphs = paragraphsForArticleText(selectedOutput?.translatedText || '');
+  const selectedProvider = providers.find((provider) => provider.key === providerKey) || providers[0] || null;
+  const canSubmit = Boolean(selectedSessionId && detail && sourceContent.paragraphs.length > 0 && targetLanguageCode && providerKey && !isSubmitting);
+
+  return (
+    <section className="retranslation-workflow" aria-labelledby={titleId}>
+      <div className="history-header">
+        <div>
+          <h2 id={titleId}>重新翻譯</h2>
+          <p className="history-description">從已保存 Session 的原始逐字稿產生新的文章式翻譯。</p>
+        </div>
+      </div>
+
+      {!selectedSessionId ? (
+        <section className="history-panel" aria-label="選擇歷史紀錄">
+          <div className="controls retranslation-picker-controls">
+            <label className="field">
+              <span>搜尋 Session</span>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="日期、語言或摘要" />
+            </label>
+          </div>
+          {selectableRecords.length === 0 ? <p className="history-empty">尚無可重新翻譯的原始 Session。</p> : null}
+          {selectableRecords.length > 0 && filteredRecords.length === 0 ? <p className="history-empty">找不到符合條件的 Session。</p> : null}
+          {filteredRecords.length > 0 ? (
+            <ol className="history-list retranslation-session-list">
+              {filteredRecords.map((record) => (
+                <li className="history-item" key={record.id}>
+                  <div className="history-item-header">
+                    <div>
+                      <h3>{historyLanguageLabel(record)}</h3>
+                      <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
+                    </div>
+                    <button className="button detail-button" type="button" onClick={() => onSelectSession(record.id)}>選擇</button>
+                  </div>
+                  <dl className="history-metadata">
+                    <div><dt>開始時間</dt><dd>{formatRecordTime(record.startedAt)}</dd></div>
+                    <div><dt>結束時間</dt><dd>{formatRecordTime(record.endedAt)}</dd></div>
+                    <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(record.transcriptSummary)}</dd></div>
+                  </dl>
+                </li>
+              ))}
+            </ol>
+          ) : null}
+        </section>
+      ) : (
+        <>
+          <section className="control-panel retranslation-control-panel" aria-label="重新翻譯控制項">
+            <div className="title-block">
+              <div className="status-pill">
+                <RefreshCw size={16} aria-hidden="true" />
+                {hasPendingProgress ? '處理中' : selectedOutput ? '已完成' : '準備重新翻譯'}
+              </div>
+            </div>
+            <div className="controls retranslation-controls">
+              <label className="field">
+                <span>目標語言</span>
+                <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={isSubmitting}>
+                  {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+                </select>
+              </label>
+              <div className="field retranslation-provider-readonly" aria-label="使用模型">
+                <span>使用模型</span>
+                <strong>{selectedProvider ? translationProviderOptionLabel(selectedProvider) : '正在載入可用模型…'}</strong>
+              </div>
+              <button className="button primary" type="button" onClick={submitRetranslation} disabled={!canSubmit}>
+                <RefreshCw size={18} aria-hidden="true" />
+                {isSubmitting ? '正在送出…' : '開始重新翻譯'}
+              </button>
+            </div>
+            {providerError ? <p className="error-message" role="alert">{providerError}</p> : null}
+            {operationError ? <p className="error-message" role="alert">{operationError}</p> : null}
+            {statusMessage ? <p className="success-message" role="status">{statusMessage}</p> : null}
+          </section>
+
+          {isLoadingDetail ? <p className="history-empty retranslation-loading">正在載入 Session 原始逐字稿…</p> : null}
+          {detailError ? <p className="error-message" role="alert">{detailError}</p> : null}
+
+          {detail ? (
+            <>
+              <section className="transcript-grid retranslation-reading-grid" aria-label="重新翻譯閱讀區">
+                <article className="transcript-panel">
+                  <div className="article-panel-header">
+                    <h2>原始逐字稿</h2>
+                  </div>
+                  <dl className="session-detail-metadata retranslation-source-metadata">
+                    <div><dt>日期</dt><dd>{formatRecordTime(detail.session?.startedAt)}</dd></div>
+                    <div><dt>來源語言</dt><dd>{sourceLanguage}</dd></div>
+                    <div><dt>Session</dt><dd>{detail.session?.id || selectedSessionId}</dd></div>
+                  </dl>
+                  {sourceContent.paragraphs.length > 0 ? (
+                    <div className="article-content">
+                      {sourceContent.paragraphs.map((paragraph, index) => <p key={`source-${index}`}>{paragraph}</p>)}
+                    </div>
+                  ) : <p className="transcript-text empty">{readingContentEmptyText(sourceContent)}</p>}
+                </article>
+
+                <article className="transcript-panel">
+                  <div className="article-panel-header">
+                    <h2>文章式重新翻譯</h2>
+                    <div className="article-actions">
+                      <button className="button detail-button" type="button" onClick={exportSelectedRetranslation} disabled={!selectedOutput?.translatedText}>
+                        <Download size={16} aria-hidden="true" />
+                        匯出 TXT
+                      </button>
+                    </div>
+                  </div>
+                  <RetranslationVersionSelector outputs={retranslationProgress.outputs} selectedOutputId={selectedOutput?.id || ''} onSelect={setSelectedOutputId} />
+                  {articleParagraphs.length > 0 ? (
+                    <div className="article-content retranslation-output-content">
+                      {articleParagraphs.map((paragraph, index) => <p key={`output-${selectedOutput.id}-${index}`}>{paragraph}</p>)}
+                    </div>
+                  ) : (
+                    <p className="transcript-text empty">{hasPendingProgress ? '重新翻譯正在處理中，完成後會顯示文章式結果。' : '尚無重新翻譯結果。'}</p>
+                  )}
+                  <RetranslationProgress progress={retranslationProgress} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} />
+                </article>
+              </section>
+            </>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+function RetranslationVersionSelector({ outputs, selectedOutputId, onSelect }) {
+  if (!outputs.length) {
+    return null;
+  }
+
+  return (
+    <label className="field retranslation-version-field">
+      <span>重新翻譯版本</span>
+      <select value={selectedOutputId} onChange={(event) => onSelect(event.target.value)}>
+        {outputs.map((output) => (
+          <option key={output.id} value={output.id}>{translationOutputTitle(output)}</option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -1153,16 +1491,11 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitted }) {
+function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
-  const [showRetranslation, setShowRetranslation] = useState(false);
-  const [retranslationLanguage, setRetranslationLanguage] = useState('en');
-  const [isSubmittingRetranslation, setIsSubmittingRetranslation] = useState(false);
-  const [retranslationError, setRetranslationError] = useState('');
-  const [retranslationStatus, setRetranslationStatus] = useState('');
   const [trackedRetranslations, setTrackedRetranslations] = useState([]);
   const sessionRecordId = detail?.session?.id;
 
@@ -1171,9 +1504,6 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
     setSavedExportStream('translation');
     setSavedExportError('');
     setReadingTab('translationArticle');
-    setShowRetranslation(false);
-    setRetranslationError('');
-    setRetranslationStatus('');
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
 
@@ -1222,6 +1552,7 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
   }
 
   const sessionRecord = sessionRecordForDetailDTO(detail, historyRecord);
+  const retranslationSourceSessionId = sourceSessionIdForRetranslation(sessionRecord, sessionRecordId);
   const sourceItems = finalTranscriptItemsForStream(detail.sourceTranscript?.items, 'source');
   const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
   const readingContent = readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord });
@@ -1320,23 +1651,7 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
       />
 
       <section className="saved-export-panel" aria-label="重新翻譯">
-        <button className="button detail-button" type="button" onClick={() => setShowRetranslation((value) => !value)}>以此內容重新翻譯</button>
-        {showRetranslation ? <div className="controls saved-export-controls">
-          <label className="field"><span>目標語言</span><select value={retranslationLanguage} onChange={(event) => { setRetranslationLanguage(event.target.value); setRetranslationStatus(''); }}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
-          <button className="button" type="button" disabled={isSubmittingRetranslation} onClick={async () => {
-            setIsSubmittingRetranslation(true); setRetranslationError(''); setRetranslationStatus('');
-            try {
-              const result = await createSessionRetranslationApiClient().submit(sessionRecordId, { targetLanguageCode: retranslationLanguage });
-              setTrackedRetranslations((current) => upsertTrackedRetranslation(current, trackedRetranslationForSubmitResult(result, retranslationLanguage)));
-              setRetranslationStatus(`已將${targetLanguageLabelFor(retranslationLanguage)}重新翻譯加入佇列。`);
-              setShowRetranslation(false);
-              await onRetranslationSubmitted?.(sessionRecordId);
-            } catch { setRetranslationError('無法將重新翻譯加入佇列。請再試一次。'); }
-            finally { setIsSubmittingRetranslation(false); }
-          }}>{isSubmittingRetranslation ? '正在送出…' : '開始翻譯'}</button>
-          {retranslationError ? <p className="error-message" role="alert">{retranslationError}</p> : null}
-        </div> : null}
-        {retranslationStatus ? <p className="success-message" role="status">{retranslationStatus}</p> : null}
+        <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>
         <RetranslationProgress progress={retranslationProgress} />
       </section>
 
@@ -1378,7 +1693,19 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
   );
 }
 
-function RetranslationProgress({ progress }) {
+function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) {
+  const hasTimedProgress = progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!hasTimedProgress) {
+      return undefined;
+    }
+
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [hasTimedProgress]);
+
   if (progress.outputs.length === 0 && progress.executions.length === 0) {
     return null;
   }
@@ -1391,8 +1718,14 @@ function RetranslationProgress({ progress }) {
           {progress.executions.map((execution) => (
             <li key={execution.id}>
               <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
-              <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution.status)}</span>
+              <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
+              {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
               {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
+              {execution.status === 'failed' && onRetry ? (
+                <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
+                  {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
+                </button>
+              ) : null}
             </li>
           ))}
         </ol>
@@ -1512,6 +1845,73 @@ function readingContentForDetail(detail, { sourceItems, translationItems, sessio
   };
 }
 
+function sourceContentForRetranslationDetail(detail) {
+  const source = detail?.readingContent?.sourceTranscript;
+  if (source) {
+    return source;
+  }
+
+  const sourceItems = finalTranscriptItemsForStream(detail?.sourceTranscript?.items || [], 'source');
+  const paragraphs = buildTranscriptArticleParagraphs(sourceItems).map(toTraditionalChineseText);
+  return {
+    kind: 'sourceTranscript',
+    status: paragraphs.length > 0 ? 'available' : 'empty',
+    text: paragraphs.join('\n\n'),
+    paragraphs,
+    createdAt: detail?.sourceTranscript?.createdAt ?? detail?.session?.startedAt ?? null,
+    finalizedAt: detail?.sourceTranscript?.finalizedAt ?? detail?.session?.endedAt ?? null,
+    emptyReason: paragraphs.length > 0 ? null : 'no_content'
+  };
+}
+
+function sourceLanguageLabelForDetail(detail) {
+  const itemLanguageCodes = (detail?.sourceTranscript?.items || [])
+    .flatMap((item) => [
+      ...(Array.isArray(item?.sourceLanguageDetection?.detectedLanguageCodes) ? item.sourceLanguageDetection.detectedLanguageCodes : []),
+      ...(typeof item?.languageCode === 'string' && item.languageCode.trim() ? [item.languageCode] : [])
+    ]);
+  const uniqueCodes = [...new Set(itemLanguageCodes)];
+  if (uniqueCodes.length === 0) return '未標記';
+  return uniqueCodes.map((code) => targetLanguageLabelFor(code) || code).join('、');
+}
+
+function paragraphsForArticleText(text) {
+  return String(text || '')
+    .split(/\n\s*\n/g)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+}
+
+function retranslationSourceRecords(records = []) {
+  return records.filter((record) => (record.recordKind || 'session') === 'session' && TERMINAL_HISTORY_STATUSES.has(record.status));
+}
+
+function retranslationRecordMatches(record, query) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  return [
+    record.id,
+    historyLanguageLabel(record),
+    historyStatusLabel(record.status),
+    formatRecordTime(record.startedAt),
+    formatRecordTime(record.endedAt),
+    transcriptSummaryLabel(record.transcriptSummary)
+  ].some((value) => String(value || '').toLowerCase().includes(normalizedQuery));
+}
+
+function translationProviderOptionLabel(provider = {}) {
+  const label = provider.label || provider.key || '未知 provider';
+  return provider.model ? `${label}（${provider.model}）` : label;
+}
+
+function buildRetranslationOutputFileName(sessionId, output = {}) {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const language = String(output.targetLanguageCode || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '-');
+  const version = Number.isFinite(output.version) ? `-v${output.version}` : '';
+  const safeSessionId = String(sessionId || 'session').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
+  return `live-translate-retranslation-${safeSessionId}-${stamp}-${language}${version}.txt`;
+}
+
 function terminalContentStatus(sessionRecord) {
   if (!['completed', 'stopped', 'failed', 'expired'].includes(sessionRecord?.status)) {
     return 'processing';
@@ -1555,7 +1955,19 @@ function historyStatusLabel(status) {
   return labels[status] || status;
 }
 
-function translationExecutionStatusLabel(status) {
+function translationExecutionStatusLabel(executionOrStatus) {
+  const status = typeof executionOrStatus === 'string' ? executionOrStatus : executionOrStatus?.status;
+  const providerAttemptStatus = typeof executionOrStatus === 'string' ? '' : executionOrStatus?.providerAttemptStatus;
+  const failureInfo = typeof executionOrStatus === 'string' ? null : executionOrStatus?.failureInfo;
+
+  if ((status === 'running' || status === 'processing' || status === 'queued') && providerAttemptStatus === 'in_flight') {
+    return '正在送往 Gemini';
+  }
+
+  if (status === 'failed' && isProviderTimeoutFailure(failureInfo)) {
+    return '已逾時';
+  }
+
   const labels = {
     queued: '已排隊',
     processing: '處理中',
@@ -1565,6 +1977,25 @@ function translationExecutionStatusLabel(status) {
   };
 
   return labels[status] || status || '未知狀態';
+}
+
+function translationExecutionTimingText(execution, nowMs = Date.now()) {
+  const startValue = execution?.providerAttemptedAt || execution?.startedAt || execution?.createdAt;
+  const startMs = timestampMs(startValue);
+  if (!Number.isFinite(startMs)) {
+    return '';
+  }
+
+  const endMs = timestampMs(execution?.providerCompletedAt || execution?.completedAt);
+  const durationMs = Number.isFinite(endMs)
+    ? endMs - startMs
+    : nowMs - startMs;
+
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return '';
+  }
+
+  return `已等待 ${formatDuration(durationMs)}`;
 }
 
 function translationFailureReasonText(failureInfo) {
@@ -1577,6 +2008,10 @@ function translationFailureReasonLabel(failureInfo = {}) {
 
   if (code === 'unauthorized' || status === 401) {
     return 'Gemini API 金鑰未授權，請確認後端 GEMINI_API_KEY。';
+  }
+
+  if (isProviderTimeoutFailure(failureInfo)) {
+    return 'Gemini 回應逾時，請稍後重試。';
   }
 
   if (code === 'forbidden' || status === 403) {
@@ -1600,6 +2035,24 @@ function translationFailureReasonLabel(failureInfo = {}) {
   }
 
   return '翻譯提供者執行失敗，請稍後重試。';
+}
+
+function isProviderTimeoutFailure(failureInfo = {}) {
+  const code = typeof failureInfo?.code === 'string' ? failureInfo.code : '';
+  const status = Number.isInteger(failureInfo?.status) ? failureInfo.status : null;
+  return code === 'provider_timeout' || status === 504;
+}
+
+function timestampMs(value) {
+  if (typeof value === 'number') {
+    return value;
+  }
+
+  if (typeof value !== 'string' || value.length === 0) {
+    return NaN;
+  }
+
+  return new Date(value).getTime();
 }
 
 function translationOutputTitle(output) {
@@ -1666,6 +2119,22 @@ function compactTranslationHistoryForDetail(detail) {
   };
 }
 
+function mergeRetranslationHistoryIntoDetail(detail, translations) {
+  if (!detail) {
+    return detail;
+  }
+
+  const translationHistory = compactTranslationHistoryForDetail(translations);
+  if (translationHistory.outputs.length === 0 && translationHistory.executions.length === 0) {
+    return detail;
+  }
+
+  return {
+    ...detail,
+    translationHistory
+  };
+}
+
 function trackedRetranslationForSubmitResult(result, fallbackTargetLanguageCode) {
   return {
     requestId: result?.request?.id || result?.execution?.requestId || null,
@@ -1722,6 +2191,10 @@ function retranslationProgressFor(history, trackedRetranslations) {
 }
 
 function isFormalRetranslationOutput(output) {
+  if (typeof output?.id === 'string' && output.id.startsWith('live-output:')) {
+    return false;
+  }
+
   return output?.source !== 'legacy' && (
     output?.source === 'formal' ||
     Boolean(output?.requestId) ||
@@ -1730,6 +2203,10 @@ function isFormalRetranslationOutput(output) {
 }
 
 function isRetranslationExecution(execution) {
+  const executionId = execution?.id || '';
+  const requestId = execution?.requestId || execution?.translationRequestId || '';
+  if (typeof executionId === 'string' && executionId.startsWith('legacy-execution:')) return false;
+  if (typeof requestId === 'string' && requestId.startsWith('legacy-request:')) return false;
   return Boolean(execution?.id || execution?.requestId);
 }
 
@@ -1791,6 +2268,14 @@ function sessionRecordForDetailDTO(detail, historyRecord) {
     recordKind: historyRecord?.recordKind || session.recordKind || 'session',
     retranslatedFrom: historyRecord?.retranslatedFrom || session.retranslatedFrom || null
   };
+}
+
+function sourceSessionIdForRetranslation(sessionRecord, fallbackSessionId) {
+  if (sessionRecord?.recordKind === 'retranslation' && sessionRecord.retranslatedFrom?.sessionId) {
+    return sessionRecord.retranslatedFrom.sessionId;
+  }
+
+  return fallbackSessionId || '';
 }
 
 function exportDetailForSessionDetailDTO(detail, historyRecord) {

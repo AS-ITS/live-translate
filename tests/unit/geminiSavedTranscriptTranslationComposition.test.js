@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  DEFAULT_SAVED_RETRANSLATION_TIMEOUT_MS,
   DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL,
   createGeminiSavedTranscriptTranslationComposition
 } from '../../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
@@ -26,7 +27,8 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
   const composition = createGeminiSavedTranscriptTranslationComposition({
     env: env({
       GEMINI_API_KEY: 'exact-api-key',
-      SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model',
+      SAVED_RETRANSLATION_TIMEOUT_MS: '12345'
     }),
     promptBuilder,
     geminiEnvironmentFactory(options) {
@@ -54,7 +56,8 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
     {
       env: env({
         GEMINI_API_KEY: 'exact-api-key',
-        SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model'
+        SAVED_RETRANSLATION_GEMINI_MODEL: 'exact-model',
+        SAVED_RETRANSLATION_TIMEOUT_MS: '12345'
       })
     }
   ]);
@@ -65,6 +68,7 @@ test('constructs SDK, adapter, and provider once with exact forwarded dependenci
     {
       client: adaptedClient,
       model: 'exact-model',
+      timeoutMs: 12345,
       promptBuilder
     }
   ]);
@@ -85,6 +89,23 @@ test('saved retranslation defaults to flash when its model env is omitted', () =
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model, DEFAULT_SAVED_RETRANSLATION_GEMINI_MODEL);
+  assert.equal(calls[0].timeoutMs, DEFAULT_SAVED_RETRANSLATION_TIMEOUT_MS);
+});
+
+test('saved retranslation timeout env is forwarded to provider', () => {
+  const calls = [];
+
+  createGeminiSavedTranscriptTranslationComposition({
+    env: env({ SAVED_RETRANSLATION_TIMEOUT_MS: '2500' }),
+    GoogleGenAI: fakeGoogleGenAI(),
+    geminiSavedTranscriptTranslationProviderFactory(options) {
+      calls.push(options);
+      return { translate() {} };
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].timeoutMs, 2500);
 });
 
 test('saved retranslation model env is trimmed', () => {
@@ -192,6 +213,14 @@ test('missing required configuration and invalid dependencies fail', () => {
         GoogleGenAI
       }),
     /^Error: Invalid SAVED_RETRANSLATION_GEMINI_MODEL$/
+  );
+  assert.throws(
+    () =>
+      createGeminiSavedTranscriptTranslationComposition({
+        env: env({ SAVED_RETRANSLATION_TIMEOUT_MS: '0' }),
+        GoogleGenAI
+      }),
+    /^Error: Invalid SAVED_RETRANSLATION_TIMEOUT_MS$/
   );
 });
 

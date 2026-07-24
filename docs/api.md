@@ -76,6 +76,25 @@ provider output, but subtitle replacement is the deterministic behavior.
 
 ## Execution Control
 
+## `GET /api/translation-providers`
+
+Returns the backend-supported provider options that are safe for saved Session
+re-translation UI selection. The response exposes only stable UI metadata, not
+provider credentials or internal client configuration.
+
+```json
+{
+  "providers": [
+    {
+      "key": "gemini",
+      "label": "Gemini",
+      "provider": "gemini",
+      "model": "gemini saved transcript retranslation"
+    }
+  ]
+}
+```
+
 ### `POST /api/translation-executions/:executionId/cancel`
 
 Cancels the identified execution only when its current status is `queued`.
@@ -119,10 +138,11 @@ from the persisted Session and request state. On completion, it allocates the
 formal output version by `(sessionId, targetLanguageCode)` and materializes a
 separate completed retranslation Session record for the history list.
 
-Translation history responses include `translationHistory.outputs` for formal
-completed outputs and `translationHistory.executions` for executions without an
-output. Formal output versions are scoped to `(sessionId, targetLanguageCode)`
-and are ordered by completion time, newest first.
+The dedicated translation history endpoint includes `translationHistory.outputs`
+for formal completed outputs and `translationHistory.executions` for executions
+without an output. Formal output versions are scoped to
+`(sessionId, targetLanguageCode)` and are ordered by completion time, newest
+first.
 
 Completed retranslation history list records expose provenance so the UI can
 show which original speech record produced the translated article:
@@ -140,30 +160,29 @@ show which original speech record produced the translated article:
 }
 ```
 
-`GET /api/sessions/:sessionId` includes this compact read model when the
-translation-history read succeeds:
+`GET /api/sessions/:sessionId` keeps completed retranslation output out of the
+original Session detail. Completed retranslation articles are shown through the
+separate `recordKind: 'retranslation'` Session record materialized for the
+history list. Original Session detail may include non-terminal or failed
+execution progress so the UI can show queued, processing, or failed work without
+placing completed output back on the source record:
 
 ```js
 {
   translationHistory: {
-    outputs: [
-      {
-        id,
-        executionId,
-        requestId,
-        translatedText,
-        targetLanguageCode,
-        version,
-        completedAt,
-        source: 'formal'
-      }
-    ],
+    outputs: [],
     executions: [
       {
         id,
         requestId,
         targetLanguageCode,
-        status // queued | processing | failed
+        status, // queued | running | processing | failed
+        startedAt,
+        createdAt,
+        providerAttemptStatus, // not_started | in_flight | succeeded | failed
+        providerAttemptedAt,
+        providerCompletedAt,
+        failureInfo
       }
     ]
   }

@@ -467,6 +467,58 @@ test('queued work after empty poll is processed without restarting runtime', asy
   assert.equal(scheduler.pendingCount(), 1);
 });
 
+test('wake schedules immediate processing without creating a duplicate polling loop', async () => {
+  const calls = [];
+  const scheduler = createFakeScheduler();
+  const runtime = createTranslationExecutionWorkerRuntime({
+    translationExecutionWorker: worker({ calls }),
+    translationExecutionQueue: queue(['job-1']),
+    scheduler,
+    pollIntervalMs: 25
+  });
+
+  runtime.start();
+  runtime.wake();
+
+  assert.equal(scheduler.pendingCount(), 1);
+  assert.deepEqual(scheduler.setCalls, [25, 0]);
+  assert.equal(scheduler.clearCalls.length, 1);
+
+  await scheduler.runNext();
+
+  assert.deepEqual(calls, ['processNext']);
+  assert.equal(scheduler.pendingCount(), 1);
+});
+
+test('wake is ignored while worker is already processing', async () => {
+  const calls = [];
+  const gate = createDeferred();
+  const scheduler = createFakeScheduler();
+  const runtime = createTranslationExecutionWorkerRuntime({
+    translationExecutionWorker: worker({
+      async processNext() {
+        calls.push('processNext');
+        await gate.promise;
+      }
+    }),
+    translationExecutionQueue: queue(['job-1']),
+    scheduler
+  });
+
+  runtime.start();
+  const firstPoll = scheduler.runNext();
+  await Promise.resolve();
+
+  runtime.wake();
+  assert.equal(scheduler.pendingCount(), 0);
+
+  gate.resolve();
+  await firstPoll;
+
+  assert.deepEqual(calls, ['processNext']);
+  assert.equal(scheduler.pendingCount(), 1);
+});
+
 test('runtime processes multiple jobs in FIFO order without restart', async () => {
   const processedJobs = [];
   const executionQueue = queue(['job-1', 'job-2', 'job-3']);

@@ -102,7 +102,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 function historyPanel(page) {
-  return page.locator('.history-panel');
+  return page.locator('.history-page > .history-panel');
 }
 
 function historyItems(page) {
@@ -123,6 +123,10 @@ function activeExportPanel(page) {
 
 function glossaryPanel(page) {
   return page.locator('.glossary-panel');
+}
+
+function retranslationPage(page) {
+  return page.locator('.retranslation-workflow');
 }
 
 async function openHistoryPage(page) {
@@ -630,6 +634,14 @@ test('stopped session can open and close inline detail with metadata and final t
 });
 
 test('session detail queues retranslation and displays pending status', async ({ page }) => {
+  await page.route('**/api/translation-providers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
+    });
+  });
+
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -676,26 +688,114 @@ test('session detail queues retranslation and displays pending status', async ({
   await expect(detail.getByLabel('重新翻譯進度')).toHaveCount(0);
   const retranslation = detail.getByLabel('重新翻譯');
 
-  await retranslation.getByRole('button', { name: '以此內容重新翻譯' }).click();
-  await retranslation.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await retranslation.getByRole('button', { name: '開始翻譯' }).click();
+  await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
+  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
+  const workflow = retranslationPage(page);
+  await expect(workflow.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
+  await expect(workflow.getByText('Hello retranslation')).toBeVisible();
+  await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
+  await expect(workflow.getByLabel('使用模型')).toContainText('Gemini（test model）');
+  await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
 
-  await expect(retranslation.getByRole('status')).toHaveText('已將法文重新翻譯加入佇列。');
-  await expect(detail.getByLabel('重新翻譯進度').getByText('法文')).toBeVisible();
-  await expect(detail.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
-  await expect(detail.getByLabel('重新翻譯進度').getByText('live output')).toHaveCount(0);
+  await expect(workflow.getByRole('status')).toHaveText('已將法文重新翻譯加入佇列。');
+  await expect(workflow.getByLabel('重新翻譯進度').getByText('法文')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯進度').getByText('live output')).toHaveCount(0);
+
+  await openHistoryPage(page);
+  await page.getByRole('link', { name: '重新翻譯' }).click();
+  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
+  await expect(workflow.getByText('Hello retranslation')).toBeVisible();
+  await expect(workflow.getByRole('button', { name: '開始重新翻譯' })).toBeEnabled();
 });
 
-test('session detail updates tracked retranslation when output completes', async ({ page }) => {
+test('completed retranslation appears as a derived history record instead of original session output', async ({ page }) => {
   let submitted = false;
   let postSubmitDetailReads = 0;
+  let completed = false;
+  const originalSessionId = 'session-complete-retranslation';
+  const derivedSessionId = 'retranslation-session:execution-fr-1';
+
+  await page.route('**/api/translation-providers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
+    });
+  });
+
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([
+        historyRecord({ id: originalSessionId, targetLanguageCode: 'ja', targetLanguageLabel: '日文' }),
+        ...(completed ? [historyRecord({
+          id: derivedSessionId,
+          targetLanguageCode: 'fr',
+          targetLanguageLabel: '法文',
+          recordKind: 'retranslation',
+          retranslatedFrom: {
+            sessionId: originalSessionId,
+            startedAt: 1,
+            requestId: 'request-fr-1',
+            executionId: 'execution-fr-1',
+            outputId: 'output-fr-1'
+          }
+        })] : [])
+      ])
+    });
+  });
 
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    const isTranslationHistory = request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname);
     const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
     const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
     const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+
+    if (isTranslationHistory) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          sessionId,
+          translations: [],
+          translationHistory: !submitted
+            ? { outputs: [], executions: [] }
+            : completed
+              ? {
+                  outputs: [{
+                    id: 'output-fr-1',
+                    executionId: 'execution-fr-1',
+                    requestId: 'request-fr-1',
+                    targetLanguageCode: 'fr',
+                    translatedText: 'Bonjour terminé',
+                    version: 1,
+                    source: 'formal',
+                    completedAt: '2026-07-21T00:00:10.000Z'
+                  }],
+                  executions: []
+                }
+              : {
+                  outputs: [],
+                  executions: [{
+                    id: 'execution-fr-1',
+                    requestId: 'request-fr-1',
+                    targetLanguageCode: 'fr',
+                    status: 'running',
+                    providerAttemptStatus: 'in_flight',
+                    providerAttemptedAt: new Date(Date.now() - 2000).toISOString()
+                  }]
+                }
+        })
+      });
+      return;
+    }
 
     if (isRetranslationSubmit) {
       submitted = true;
@@ -715,15 +815,47 @@ test('session detail updates tracked retranslation when output completes', async
         postSubmitDetailReads += 1;
       }
 
+      if (sessionId === derivedSessionId) {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify(sessionDetailResponse({
+            sessionId,
+            sourceText: 'Hello complete retranslation',
+            recordKind: 'retranslation',
+            retranslatedFrom: {
+              sessionId: originalSessionId,
+              startedAt: 1,
+              requestId: 'request-fr-1',
+              executionId: 'execution-fr-1',
+              outputId: 'output-fr-1'
+            },
+            selectedTranslationOutput: {
+              id: 'output-fr-1',
+              targetLanguageCode: 'fr',
+              targetLanguageLabel: '法文',
+              version: 1,
+              items: [{ id: 'translation-fr-1', stream: 'translation', status: 'final', text: 'Bonjour terminé' }],
+              translatedText: 'Bonjour terminé'
+            },
+            readingContent: {
+              sourceTranscript: { status: 'available', paragraphs: ['Hello complete retranslation'], text: 'Hello complete retranslation' },
+              translationArticle: { status: 'available', targetLanguageCode: 'fr', targetLanguageLabel: '法文', version: 1, paragraphs: ['Bonjour terminé'], text: 'Bonjour terminé' }
+            },
+            translationHistory: { outputs: [], executions: [] }
+          }))
+        });
+        return;
+      }
+
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify(sessionDetailResponse({
-          sessionId,
+          sessionId: originalSessionId,
           translationHistory: !submitted
             ? { outputs: [], executions: [] }
             : postSubmitDetailReads === 1
-              ? { outputs: [], executions: [{ id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'queued' }] }
-              : { outputs: [{ id: 'output-fr-1', executionId: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', version: 1, source: 'formal', translatedText: 'Bonjour terminé', completedAt: '2026-07-21T00:00:02.000Z' }], executions: [] }
+              ? { outputs: [], executions: [{ id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'running', providerAttemptStatus: 'in_flight', providerAttemptedAt: new Date(Date.now() - 2000).toISOString() }] }
+              : { outputs: [], executions: [] }
         }))
       });
       return;
@@ -743,24 +875,36 @@ test('session detail updates tracked retranslation when output completes', async
 
   const detail = sessionDetail(page);
   const retranslation = detail.getByLabel('重新翻譯');
-  await retranslation.getByRole('button', { name: '以此內容重新翻譯' }).click();
-  await retranslation.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await retranslation.getByRole('button', { name: '開始翻譯' }).click();
+  await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
+  const workflow = retranslationPage(page);
+  await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
+  await expect(workflow.getByLabel('使用模型')).toContainText('Gemini（test model）');
+  await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
 
-  await expect(detail.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
-  await expect(detail.getByLabel('重新翻譯進度').getByText('已完成')).toBeVisible();
-  await expect(detail.getByLabel('重新翻譯進度').getByText('Bonjour terminé')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯進度').getByText('正在送往 Gemini')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯進度').getByText(/已等待 \d+ 秒/)).toBeVisible();
+  completed = true;
+  await expect(workflow.getByText('Bonjour terminé')).toBeVisible();
 
-  await detail.getByRole('button', { name: '關閉詳細資料' }).click();
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await openHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(2);
+  await expect(historyItems(page).nth(1).getByText('由')).toBeVisible();
+  await historyItems(page).nth(1).getByRole('button', { name: '查看詳細資料' }).click();
 
   const reopenedDetail = sessionDetail(page);
-  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('法文 v1')).toBeVisible();
-  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('已完成')).toBeVisible();
-  await expect(reopenedDetail.getByLabel('重新翻譯進度').getByText('Bonjour terminé')).toBeVisible();
+  await expect(reopenedDetail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await expect(reopenedDetail.getByLabel('文章版翻譯').getByText('Bonjour terminé')).toBeVisible();
 });
 
 test('session detail displays failed retranslation reason', async ({ page }) => {
+  await page.route('**/api/translation-providers', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
+    });
+  });
+
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -790,6 +934,20 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
               message: 'Gemini HTTP request failed: unauthorized (401).'
             }
           }, {
+            id: 'execution-de-timeout',
+            requestId: 'request-de-timeout',
+            targetLanguageCode: 'de',
+            status: 'failed',
+            providerAttemptStatus: 'failed',
+            providerAttemptedAt: '2026-07-21T00:00:00.000Z',
+            providerCompletedAt: '2026-07-21T00:00:30.000Z',
+            failureInfo: {
+              reason: 'provider_execution_failed',
+              code: 'provider_timeout',
+              status: 504,
+              message: 'Gemini saved transcript translation timed out after 30000ms.'
+            }
+          }, {
             id: 'execution-ja-failed',
             requestId: 'request-ja-failed',
             targetLanguageCode: 'ja',
@@ -815,21 +973,50 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
   await page.getByRole('button', { name: '停止' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await sessionDetail(page).getByLabel('重新翻譯').getByRole('button', { name: '以此原文重新翻譯' }).click();
 
-  const progress = sessionDetail(page).getByLabel('重新翻譯進度');
+  const progress = retranslationPage(page).getByLabel('重新翻譯進度');
   await expect(progress.getByText('法文')).toBeVisible();
+  await expect(progress.getByText('德文')).toBeVisible();
   await expect(progress.getByText('日文')).toBeVisible();
-  await expect(progress.getByText('失敗')).toBeVisible();
+  await expect(progress.locator('.history-status-failed')).toHaveCount(3);
+  await expect(progress.getByText('已逾時')).toBeVisible();
   await expect(progress.getByText('失敗原因：Gemini API 金鑰未授權，請確認後端 GEMINI_API_KEY。')).toBeVisible();
+  await expect(progress.getByText('失敗原因：Gemini 回應逾時，請稍後重試。')).toBeVisible();
   await expect(progress.getByText('失敗原因：Gemini 暫時限制此請求，可能是短時間速率、Token、模型容量或滾動用量限制；不一定代表每日用量已達上限，請稍後重試。')).toBeVisible();
 });
 
-function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory }) {
+function historyRecord(overrides = {}) {
   return {
-    session: { id: sessionId, status: 'stopped', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true } },
+    id: overrides.id || 'session-1',
+    status: overrides.status || 'stopped',
+    startedAt: overrides.startedAt ?? 1,
+    endedAt: overrides.endedAt ?? 2,
+    durationMs: overrides.durationMs ?? 1,
+    targetLanguageCode: overrides.targetLanguageCode || 'ja',
+    targetLanguageLabel: overrides.targetLanguageLabel || '日文',
+    failureReason: overrides.failureReason ?? null,
+    failureCategory: overrides.failureCategory ?? null,
+    transcriptSummary: overrides.transcriptSummary || {
+      totalItems: 2,
+      sourceFinalCount: 1,
+      translationFinalCount: 1,
+      sourcePartialCount: 0,
+      translationPartialCount: 0,
+      hasTranscript: true
+    },
+    recordKind: overrides.recordKind || 'session',
+    retranslatedFrom: overrides.retranslatedFrom || null
+  };
+}
+
+function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory, recordKind = 'session', retranslatedFrom = null, selectedTranslationOutput, readingContent }) {
+  return {
+    session: { id: sessionId, status: 'stopped', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true }, recordKind, retranslatedFrom },
     sourceTranscript: { id: `source:${sessionId}`, sessionId, revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: sourceText }], createdAt: 1, finalizedAt: 2 },
     translationOutputs: [],
-    selectedTranslationOutput: { id: `legacy-output:${sessionId}:ja`, targetLanguageCode: 'ja', items: [{ id: 'translation-1', stream: 'translation', status: 'final', text: 'live output' }] },
+    selectedTranslationOutput: selectedTranslationOutput || { id: `legacy-output:${sessionId}:ja`, targetLanguageCode: 'ja', items: [{ id: 'translation-1', stream: 'translation', status: 'final', text: 'live output' }] },
+    readingContent,
     translationHistory,
     legacy: false
   };

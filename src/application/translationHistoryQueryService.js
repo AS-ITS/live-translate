@@ -34,6 +34,11 @@ export function createTranslationHistoryQueryService({ sessionRepository, transl
               requestId: request.id,
               targetLanguageCode: request.targetLanguageCode,
               status: execution.status,
+              startedAt: execution.startedAt ?? null,
+              createdAt: request.createdAt ?? null,
+              providerAttemptStatus: execution.providerAttemptStatus ?? null,
+              providerAttemptedAt: execution.providerAttemptedAt ?? null,
+              providerCompletedAt: execution.providerCompletedAt ?? null,
               failureInfo: safeFailureInfo(execution.failureInfo),
               ...(execution.completedAt === null ? {} : { completedAt: execution.completedAt })
             });

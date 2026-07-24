@@ -1,7 +1,10 @@
+import { formatTranscriptArticleText } from './transcript.js';
+
 const FORMATS = ['txt', 'srt', 'vtt'];
 const STREAMS = ['source', 'translation'];
 const DEFAULT_STREAM = 'translation';
 const DEFAULT_FALLBACK_CUE_MS = 2000;
+const SOURCE_SUBTITLE_PAUSE_GAP_MS = 1200;
 
 export function formatTranscriptExport(items, options = {}) {
   const format = normalizeFormat(options.format);
@@ -72,11 +75,11 @@ function formatTxt(items, options) {
     const sections = [];
 
     if (sourceItems.length > 0) {
-      sections.push(['Source', ...sourceItems.map((item) => item.text)].join('\n'));
+      sections.push(['Source', formatTranscriptArticleText(sourceItems)].join('\n'));
     }
 
     if (translationItems.length > 0) {
-      sections.push(['Translation', ...translationItems.map((item) => item.text)].join('\n'));
+      sections.push(['Translation', formatTranscriptArticleText(translationItems)].join('\n'));
     }
 
     if (sections.length === 0) {
@@ -91,7 +94,7 @@ function formatTxt(items, options) {
     throw new Error('No exportable transcript text.');
   }
 
-  return `${selectedItems.map((item) => item.text).join('\n')}\n`;
+  return `${formatTranscriptArticleText(selectedItems)}\n`;
 }
 
 function formatTimedCues(items, options) {
@@ -105,13 +108,14 @@ function formatTimedCues(items, options) {
     throw new Error('No exportable transcript text.');
   }
 
+  const cueItems = buildSubtitleCueItems(items, selectedItems, options);
   const fallbackCueMs = Number.isFinite(options.fallbackCueMs) ? Math.max(0, options.fallbackCueMs) : DEFAULT_FALLBACK_CUE_MS;
-  const cues = selectedItems.map((item, index) => {
+  const cues = cueItems.map((item, index) => {
     if (!Number.isFinite(item.startedAt)) {
       throw new Error('Timed transcript export requires item timestamps.');
     }
 
-    const nextItem = selectedItems[index + 1];
+    const nextItem = cueItems[index + 1];
     const derivedEndAt = validEndTime(item)
       ? item.finalizedAt
       : Number.isFinite(nextItem?.startedAt)
@@ -125,11 +129,254 @@ function formatTimedCues(items, options) {
       index: index + 1,
       startMs,
       endMs,
-      text: item.text
+      text: normalizeSubtitleText(item.text)
     };
   });
 
   return options.format === 'srt' ? formatSrt(cues) : formatVtt(cues);
+}
+
+function buildSubtitleCueItems(allItems, selectedItems, options) {
+  if (options.stream === 'source') {
+    return groupSourceSubtitleItems(selectedItems);
+  }
+
+  const sourceItems = selectExportItems(allItems, { ...options, stream: 'source' });
+  const sourceCueItems = groupSourceSubtitleItems(sourceItems);
+  if (sourceCueItems.length === 0 || !sourceCueItems.every((item) => Number.isFinite(item.startedAt))) {
+    return selectedItems;
+  }
+
+  return alignTranslationItemsToSourceCues(selectedItems, sourceCueItems);
+}
+
+function alignTranslationItemsToSourceCues(translationItems, sourceCueItems) {
+  const translationText = joinSubtitleTextParts(translationItems.map((item) => item.text));
+  const cueTexts = splitSubtitleTextByCueCount(translationText, sourceCueItems.length);
+
+  return sourceCueItems.map((sourceCueItem, index) => ({
+    ...sourceCueItem,
+    stream: 'translation',
+    text: cueTexts[index] || ''
+  }));
+}
+
+function groupSourceSubtitleItems(items) {
+  const groups = [];
+  let currentGroup = [];
+
+  items.forEach((item, index) => {
+    currentGroup.push(item);
+
+    const nextItem = items[index + 1];
+    if (!nextItem || shouldEndSourceSubtitleGroup(item, nextItem)) {
+      groups.push(createSourceSubtitleGroup(currentGroup));
+      currentGroup = [];
+    }
+  });
+
+  return groups;
+}
+
+function shouldEndSourceSubtitleGroup(item, nextItem) {
+  return endsWithSentenceBoundary(item.text) || hasSourceSubtitlePause(item, nextItem);
+}
+
+function createSourceSubtitleGroup(groupItems) {
+  const firstItem = groupItems[0];
+  const lastItem = groupItems.at(-1);
+
+  return {
+    ...firstItem,
+    text: joinSubtitleTextParts(groupItems.map((item) => item.text)),
+    startedAt: firstItem.startedAt,
+    finalizedAt: validEndTime(lastItem) ? lastItem.finalizedAt : undefined
+  };
+}
+
+function endsWithSentenceBoundary(text) {
+  return /[.!?。！？]$/.test(text);
+}
+
+function hasSourceSubtitlePause(item, nextItem) {
+  if (!Number.isFinite(nextItem?.startedAt)) {
+    return false;
+  }
+
+  const itemEndAt = validEndTime(item) ? item.finalizedAt : item.startedAt;
+  return Number.isFinite(itemEndAt) && nextItem.startedAt - itemEndAt >= SOURCE_SUBTITLE_PAUSE_GAP_MS;
+}
+
+function joinSubtitleTextParts(parts) {
+  return normalizeSubtitleText(parts.filter(Boolean).join(' '));
+}
+
+function normalizeSubtitleText(text) {
+  return String(text || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])\s+([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])/gu, '$1$2')
+    .replace(/\s+([，。！？、；：])/gu, '$1')
+    .replace(/([「『（《])\s+/gu, '$1');
+}
+
+function splitSubtitleTextByCueCount(text, cueCount) {
+  const normalizedText = normalizeSubtitleText(text);
+  if (cueCount <= 1 || normalizedText.length === 0) {
+    return [normalizedText];
+  }
+
+  const phraseCueTexts = splitSubtitleTextByPhraseUnits(normalizedText, cueCount);
+  if (phraseCueTexts) {
+    return phraseCueTexts;
+  }
+
+  return splitSubtitleTextByLength(normalizedText, cueCount);
+}
+
+function splitSubtitleTextByPhraseUnits(text, cueCount) {
+  const phraseUnits = buildSubtitlePhraseUnits(text);
+  if (phraseUnits.length < cueCount) {
+    return null;
+  }
+
+  const cueTexts = [];
+  let remainingUnits = phraseUnits;
+
+  for (let index = 0; index < cueCount - 1; index += 1) {
+    const remainingCueCount = cueCount - index;
+    const targetLength = totalTextLength(remainingUnits) / remainingCueCount;
+    const unitCount = chooseSubtitleUnitCount(remainingUnits, targetLength, remainingCueCount - 1);
+    const cueUnits = remainingUnits.slice(0, unitCount);
+    cueTexts.push(joinSubtitleTextParts(cueUnits));
+    remainingUnits = remainingUnits.slice(unitCount);
+  }
+
+  cueTexts.push(joinSubtitleTextParts(remainingUnits));
+  return cueTexts;
+}
+
+function buildSubtitlePhraseUnits(text) {
+  const units = [];
+  const sentenceParts = text.match(/[^.!?。！？]+[.!?。！？]+|[^.!?。！？]+$/gu) || [];
+
+  sentenceParts.forEach((sentencePart) => {
+    const phraseParts = sentencePart.match(/[^,，;；:：]+[,，;；:：]+|[^,，;；:：]+$/gu) || [];
+    units.push(...mergeRepeatedSubtitlePhrases(phraseParts.map(normalizeSubtitleText).filter(Boolean)));
+  });
+
+  return units;
+}
+
+function mergeRepeatedSubtitlePhrases(phrases) {
+  const merged = [];
+  let index = 0;
+
+  while (index < phrases.length) {
+    const currentPhrase = phrases[index];
+    const nextPhrase = phrases[index + 1];
+
+    if (nextPhrase && repeatedSubtitlePhraseKey(currentPhrase) === repeatedSubtitlePhraseKey(nextPhrase)) {
+      merged.push(joinSubtitleTextParts([currentPhrase, nextPhrase]));
+      index += 2;
+      continue;
+    }
+
+    merged.push(currentPhrase);
+    index += 1;
+  }
+
+  return merged;
+}
+
+function repeatedSubtitlePhraseKey(phrase) {
+  return normalizeSubtitleText(phrase)
+    .replace(/[,，;；:：.!?。！？]+$/u, '')
+    .trim()
+    .toLocaleLowerCase();
+}
+
+function chooseSubtitleUnitCount(units, targetLength, remainingCueCount) {
+  const maxUnitCount = Math.max(1, units.length - remainingCueCount);
+  let bestUnitCount = 1;
+  let bestDistance = Infinity;
+  let currentLength = 0;
+
+  for (let unitCount = 1; unitCount <= maxUnitCount; unitCount += 1) {
+    currentLength += units[unitCount - 1].length;
+    const distance = Math.abs(currentLength - targetLength);
+    if (distance < bestDistance) {
+      bestUnitCount = unitCount;
+      bestDistance = distance;
+    }
+  }
+
+  return bestUnitCount;
+}
+
+function totalTextLength(units) {
+  return units.reduce((total, unit) => total + unit.length, 0);
+}
+
+function splitSubtitleTextByLength(normalizedText, cueCount) {
+  const cueTexts = [];
+  let remainingText = normalizedText;
+
+  for (let index = 0; index < cueCount - 1; index += 1) {
+    const remainingCueCount = cueCount - index;
+    if (remainingText.length <= remainingCueCount) {
+      cueTexts.push(remainingText.slice(0, 1));
+      remainingText = remainingText.slice(1).trim();
+      continue;
+    }
+
+    const targetIndex = Math.ceil(remainingText.length / remainingCueCount);
+    const splitIndex = findSubtitleSplitIndex(remainingText, targetIndex, remainingCueCount - 1);
+    cueTexts.push(normalizeSubtitleText(remainingText.slice(0, splitIndex)));
+    remainingText = remainingText.slice(splitIndex).trim();
+  }
+
+  cueTexts.push(normalizeSubtitleText(remainingText));
+  return cueTexts;
+}
+
+function findSubtitleSplitIndex(text, targetIndex, remainingCueCount) {
+  const maxIndex = Math.max(1, text.length - remainingCueCount);
+  const clampedTarget = Math.min(Math.max(1, targetIndex), maxIndex);
+  const searchRadius = Math.max(8, Math.ceil(text.length * 0.12));
+  const minIndex = Math.max(1, clampedTarget - searchRadius);
+  const maxSearchIndex = Math.min(maxIndex, clampedTarget + searchRadius);
+  const punctuationSplit = nearestSplitIndex(text, clampedTarget, minIndex, maxSearchIndex, /[.!?。！？,，;；:：]/u, 0);
+  if (punctuationSplit !== null) {
+    return punctuationSplit;
+  }
+
+  const whitespaceSplit = nearestSplitIndex(text, clampedTarget, minIndex, maxSearchIndex, /\s/u, 0);
+  if (whitespaceSplit !== null) {
+    return whitespaceSplit;
+  }
+
+  return clampedTarget;
+}
+
+function nearestSplitIndex(text, targetIndex, minIndex, maxIndex, pattern, offset) {
+  let bestIndex = null;
+  let bestDistance = Infinity;
+
+  for (let index = minIndex; index <= maxIndex; index += 1) {
+    if (!pattern.test(text[index - 1])) {
+      continue;
+    }
+
+    const splitIndex = Math.min(maxIndex, Math.max(minIndex, index + offset));
+    const distance = Math.abs(splitIndex - targetIndex);
+    if (distance < bestDistance) {
+      bestIndex = splitIndex;
+      bestDistance = distance;
+    }
+  }
+
+  return bestIndex;
 }
 
 function formatSrt(cues) {

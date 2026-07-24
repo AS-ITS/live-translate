@@ -84,6 +84,19 @@ Recommended behavior:
 - Export translated transcript items by default because subtitles usually target
   the translated audio or viewing language.
 - Allow source export only if the UI exposes a clear stream choice.
+- Source SRT export groups adjacent source transcript fragments into
+  sentence-like cues until sentence-ending punctuation, a clear pause, or the end
+  of the stream because source recognition may finalize in smaller fragments
+  than translated output.
+- Translation SRT export should reuse source cue timing when source cues are
+  available and split translation text deterministically across those cue
+  windows. Translation splitting should prefer sentence and phrase punctuation,
+  preserve repeated short phrases such as `123, 123,`, and fall back to
+  whitespace or length only when punctuation is insufficient. If source cues are
+  unavailable, translation export falls back to its own transcript item timing.
+- Subtitle cue text should normalize repeated whitespace and remove spacing
+  between CJK characters or adjacent CJK punctuation without changing normal
+  English or number spacing.
 - Use `startedAt` and `finalizedAt` from transcript items only as frontend
   timestamps, not precise media timings.
 - If a cue is missing an end time, derive a conservative end time from the next
@@ -111,6 +124,8 @@ Recommended behavior:
 - Use translated transcript items by default.
 - Preserve transcript order by `sequence`.
 - Use the same timing policy as SRT.
+- Use the same source-fragment grouping policy as SRT for source VTT export.
+- Use the same source-aligned translation and subtitle spacing policy as SRT.
 - Format cue timestamps as `HH:MM:SS.mmm`.
 - Avoid metadata blocks or styling until a concrete need is selected.
 

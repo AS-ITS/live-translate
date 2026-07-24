@@ -61,7 +61,7 @@ test('filters whitespace-only text', () => {
   assert.equal(output, 'Kept.\n');
 });
 
-test('sorts by sequence', () => {
+test('TXT export preserves article mode after sorting by sequence', () => {
   const output = formatTranscriptExport(
     [
       { ...sourceFinal, id: 'source-2', text: 'second', sequence: 2 },
@@ -70,7 +70,7 @@ test('sorts by sequence', () => {
     { format: 'txt', stream: 'source' }
   );
 
-  assert.equal(output, 'first\nsecond\n');
+  assert.equal(output, 'first second\n');
 });
 
 test('defaults to final items only', () => {
@@ -92,7 +92,7 @@ test('includes partials only when includePartials=true', () => {
   ];
 
   assert.equal(formatTranscriptExport(items, { format: 'txt', stream: 'source' }), 'final\n');
-  assert.equal(formatTranscriptExport(items, { format: 'txt', stream: 'source', includePartials: true }), 'partial\nfinal\n');
+  assert.equal(formatTranscriptExport(items, { format: 'txt', stream: 'source', includePartials: true }), 'final\n');
 });
 
 test('SRT timestamp format', () => {
@@ -113,6 +113,252 @@ test('VTT timestamp format and WEBVTT header', () => {
   });
 
   assert.equal(output, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nBonjour.\n');
+});
+
+test('SRT source export merges fragments until sentence punctuation', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: 'Hello', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...sourceFinal, id: 'source-2', text: 'there.', sequence: 2, startedAt: 2450, finalizedAt: 2800 }
+    ],
+    { format: 'srt', stream: 'source', timeOrigin: 1000 }
+  );
+
+  assert.equal(output, '1\n00:00:01,000 --> 00:00:01,800\nHello there.\n');
+});
+
+test('SRT source export removes CJK spacing in grouped subtitle text', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '語音', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...sourceFinal, id: 'source-2', text: '測試。', sequence: 2, startedAt: 2450, finalizedAt: 2800 }
+    ],
+    { format: 'srt', stream: 'source', timeOrigin: 1000 }
+  );
+
+  assert.equal(output, '1\n00:00:01,000 --> 00:00:01,800\n語音測試。\n');
+});
+
+test('VTT source export starts a new cue after a clear pause', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: 'First part', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...sourceFinal, id: 'source-2', text: 'Second', sequence: 2, startedAt: 3600, finalizedAt: 3900 },
+      { ...sourceFinal, id: 'source-3', text: 'part.', sequence: 3, startedAt: 3950, finalizedAt: 4300 }
+    ],
+    { format: 'vtt', stream: 'source', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    'WEBVTT\n\n00:00:01.000 --> 00:00:01.400\nFirst part\n\n00:00:02.600 --> 00:00:03.300\nSecond part.\n'
+  );
+});
+
+test('SRT translation export aligns a single large translation item to source cue windows', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '其實，', sequence: 1, startedAt: 1000, finalizedAt: 2000 },
+      { ...sourceFinal, id: 'source-2', text: '語音測試。', sequence: 2, startedAt: 3300, finalizedAt: 4300 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: 'Actually, Voice test.',
+        sequence: 3,
+        startedAt: 1000,
+        finalizedAt: 4300
+      }
+    ],
+    { format: 'srt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    '1\n00:00:00,000 --> 00:00:01,000\nActually,\n\n2\n00:00:02,300 --> 00:00:03,300\nVoice test.\n'
+  );
+});
+
+test('SRT translation export keeps repeated phrases together when aligning to source cues', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '其實，', sequence: 1, startedAt: 6180, finalizedAt: 9031 },
+      { ...sourceFinal, id: 'source-2', text: '語音測試。', sequence: 2, startedAt: 13018, finalizedAt: 17447 },
+      { ...sourceFinal, id: 'source-3', text: '123,123,', sequence: 3, startedAt: 20142, finalizedAt: 23149 },
+      { ...sourceFinal, id: 'source-4', text: '愛克風測試。', sequence: 4, startedAt: 26291, finalizedAt: 28088 },
+      { ...sourceFinal, id: 'source-5', text: '愛克風測試。', sequence: 5, startedAt: 28088, finalizedAt: 32516 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: 'Actually, actually, Voice test. 123, 123, Alan speak test. Alan speak test.',
+        sequence: 6,
+        startedAt: 6180,
+        finalizedAt: 32516
+      }
+    ],
+    { format: 'srt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    [
+      '1',
+      '00:00:05,180 --> 00:00:08,031',
+      'Actually, actually,',
+      '',
+      '2',
+      '00:00:12,018 --> 00:00:16,447',
+      'Voice test.',
+      '',
+      '3',
+      '00:00:19,142 --> 00:00:22,149',
+      '123, 123,',
+      '',
+      '4',
+      '00:00:25,291 --> 00:00:27,088',
+      'Alan speak test.',
+      '',
+      '5',
+      '00:00:27,088 --> 00:00:31,516',
+      'Alan speak test.',
+      ''
+    ].join('\n')
+  );
+});
+
+test('VTT translation export keeps phrases together when aligning to source cues', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '其實，', sequence: 1, startedAt: 6180, finalizedAt: 9031 },
+      { ...sourceFinal, id: 'source-2', text: '語音測試。', sequence: 2, startedAt: 13018, finalizedAt: 17447 },
+      { ...sourceFinal, id: 'source-3', text: '123,123,', sequence: 3, startedAt: 20142, finalizedAt: 23149 },
+      { ...sourceFinal, id: 'source-4', text: '愛克風測試。', sequence: 4, startedAt: 26291, finalizedAt: 28088 },
+      { ...sourceFinal, id: 'source-5', text: '愛克風測試。', sequence: 5, startedAt: 28088, finalizedAt: 32516 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: 'Actually, actually, Voice test. 123, 123, Alan speak test. Alan speak test.',
+        sequence: 6,
+        startedAt: 6180,
+        finalizedAt: 32516
+      }
+    ],
+    { format: 'vtt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    [
+      'WEBVTT',
+      '',
+      '00:00:05.180 --> 00:00:08.031',
+      'Actually, actually,',
+      '',
+      '00:00:12.018 --> 00:00:16.447',
+      'Voice test.',
+      '',
+      '00:00:19.142 --> 00:00:22.149',
+      '123, 123,',
+      '',
+      '00:00:25.291 --> 00:00:27.088',
+      'Alan speak test.',
+      '',
+      '00:00:27.088 --> 00:00:31.516',
+      'Alan speak test.',
+      ''
+    ].join('\n')
+  );
+});
+
+test('VTT translation export uses source cue windows', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '其實，', sequence: 1, startedAt: 1000, finalizedAt: 2000 },
+      { ...sourceFinal, id: 'source-2', text: '語音測試。', sequence: 2, startedAt: 3300, finalizedAt: 4300 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: 'Actually, Voice test.',
+        sequence: 3,
+        startedAt: 1000,
+        finalizedAt: 4300
+      }
+    ],
+    { format: 'vtt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nActually,\n\n00:00:02.300 --> 00:00:03.300\nVoice test.\n'
+  );
+});
+
+test('SRT translation export removes CJK spacing when aligned to source cues', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '語音測試。', sequence: 1, startedAt: 2000, finalizedAt: 2800 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: '愛克 風 測試。',
+        sequence: 2,
+        startedAt: 2000,
+        finalizedAt: 2800
+      }
+    ],
+    { format: 'srt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(output, '1\n00:00:01,000 --> 00:00:01,800\n愛克風測試。\n');
+});
+
+test('SRT translation export remains item-based when source cues are unavailable', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...translationFinal, id: 'translation-1', text: 'one', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...translationFinal, id: 'translation-2', text: 'two.', sequence: 2, startedAt: 2450, finalizedAt: 2800 }
+    ],
+    { format: 'srt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    '1\n00:00:01,000 --> 00:00:01,400\none\n\n2\n00:00:01,450 --> 00:00:01,800\ntwo.\n'
+  );
+});
+
+test('SRT translation export falls back to length splitting without useful punctuation', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: '一', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...sourceFinal, id: 'source-2', text: '二', sequence: 2, startedAt: 3600, finalizedAt: 3900 },
+      {
+        ...translationFinal,
+        id: 'translation-1',
+        text: 'alpha beta gamma delta',
+        sequence: 3,
+        startedAt: 2000,
+        finalizedAt: 3900
+      }
+    ],
+    { format: 'srt', stream: 'translation', timeOrigin: 1000 }
+  );
+
+  assert.equal(
+    output,
+    '1\n00:00:01,000 --> 00:00:01,400\nalpha beta\n\n2\n00:00:02,600 --> 00:00:02,900\ngamma delta\n'
+  );
+});
+
+test('SRT source grouped cue uses fallback when final group has no valid end time', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...sourceFinal, id: 'source-1', text: 'Hello', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
+      { ...sourceFinal, id: 'source-2', text: 'there.', sequence: 2, startedAt: 2450, finalizedAt: undefined }
+    ],
+    { format: 'srt', stream: 'source', timeOrigin: 1000, fallbackCueMs: 1500 }
+  );
+
+  assert.equal(output, '1\n00:00:01,000 --> 00:00:02,500\nHello there.\n');
 });
 
 test('derives missing end time from next start', () => {

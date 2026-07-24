@@ -43,6 +43,20 @@ test('TXT translation export', () => {
   assert.equal(formatSavedSessionExport(detail(), { format: 'txt', stream: 'translation' }), 'Bonjour.\n');
 });
 
+test('TXT saved export preserves article mode', () => {
+  const output = formatSavedSessionExport(
+    detail({
+      transcriptItems: [
+        { ...translationFinal, id: 'translation-2', text: 'second', sequence: 2 },
+        { ...translationFinal, id: 'translation-1', text: 'first', sequence: 1 }
+      ]
+    }),
+    { format: 'txt', stream: 'translation' }
+  );
+
+  assert.equal(output, 'first second\n');
+});
+
 test('TXT both export', () => {
   assert.equal(formatSavedSessionExport(detail(), { format: 'txt', stream: 'both' }), 'Source\nHello.\n\nTranslation\nBonjour.\n');
 });
@@ -50,7 +64,7 @@ test('TXT both export', () => {
 test('SRT uses sessionRecord.startedAt as timeOrigin', () => {
   assert.equal(
     formatSavedSessionExport(detail(), { format: 'srt', stream: 'translation' }),
-    '1\n00:00:02,000 --> 00:00:03,000\nBonjour.\n'
+    '1\n00:00:01,000 --> 00:00:01,800\nBonjour.\n'
   );
 });
 

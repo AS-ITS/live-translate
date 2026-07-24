@@ -115,7 +115,7 @@ function App() {
       const next = pageInfoFromLocation();
       setPage(next.page);
       if (next.page === 'retranslate') {
-        setRetranslationSessionId((current) => next.sessionId || current);
+        setRetranslationSessionId(next.sessionId);
       }
     };
     window.addEventListener('hashchange', handleHashChange);
@@ -618,13 +618,17 @@ function App() {
   function navigateTo(nextPage, event) {
     event?.preventDefault();
 
+    if (nextPage === 'retranslate') {
+      setRetranslationSessionId('');
+      window.location.hash = 'retranslate';
+      return;
+    }
+
     if (nextPage === page) {
       return;
     }
 
-    window.location.hash = nextPage === 'retranslate' && retranslationSessionId
-      ? `retranslate?sessionId=${encodeURIComponent(retranslationSessionId)}`
-      : nextPage;
+    window.location.hash = nextPage;
   }
 
   function openRetranslationWorkflow(sessionId) {
@@ -1031,6 +1035,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const [trackedRetranslations, setTrackedRetranslations] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRetryingExecutionId, setIsRetryingExecutionId] = useState('');
+  const [copiedOutputId, setCopiedOutputId] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [operationError, setOperationError] = useState('');
   const detailRequestIdRef = useRef(0);
@@ -1058,6 +1063,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     setDetailError('');
     setSelectedOutputId('');
     setTrackedRetranslations([]);
+    setCopiedOutputId('');
     setStatusMessage('');
     setOperationError('');
 
@@ -1073,7 +1079,9 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
 
   const translationHistory = compactTranslationHistoryForDetail(detail);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
-  const selectedOutput = selectedOutputFor({ translationHistory: { outputs: retranslationProgress.outputs } }, selectedOutputId);
+  const selectedOutput = selectedOutputId
+    ? selectedOutputFor({ translationHistory: { outputs: retranslationProgress.outputs } }, selectedOutputId)
+    : null;
   const hasPendingProgress = hasPendingRetranslationItems(retranslationProgress);
 
   useEffect(() => {
@@ -1087,14 +1095,6 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
 
     return () => window.clearTimeout(timer);
   }, [selectedSessionId, hasPendingProgress, detail?.translationHistory]);
-
-  useEffect(() => {
-    if (!selectedOutput) {
-      return;
-    }
-
-    setSelectedOutputId((current) => current || selectedOutput.id);
-  }, [selectedOutput?.id]);
 
   async function loadSelectedSessionDetail({ cancelled = () => false } = {}) {
     const requestId = detailRequestIdRef.current + 1;
@@ -1167,12 +1167,25 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   }
 
   function exportSelectedRetranslation() {
-    if (!selectedOutput?.translatedText) return;
+    const articleText = formattedSelectedRetranslationText(selectedOutput);
+    if (!articleText) return;
     downloadTextFile(
-      selectedOutput.translatedText,
+      articleText,
       buildRetranslationOutputFileName(selectedSessionId, selectedOutput),
       'text/plain;charset=utf-8'
     );
+  }
+
+  async function copySelectedRetranslation() {
+    const articleText = formattedSelectedRetranslationText(selectedOutput);
+    if (!articleText) return;
+    try {
+      await navigator.clipboard.writeText(articleText);
+      setCopiedOutputId(selectedOutput.id);
+      window.setTimeout(() => setCopiedOutputId((current) => current === selectedOutput.id ? '' : current), 1500);
+    } catch {
+      setOperationError('無法複製重翻逐字稿。');
+    }
   }
 
   const selectableRecords = retranslationSourceRecords(records);
@@ -1182,6 +1195,8 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const articleParagraphs = paragraphsForArticleText(selectedOutput?.translatedText || '');
   const selectedProvider = providers.find((provider) => provider.key === providerKey) || providers[0] || null;
   const canSubmit = Boolean(selectedSessionId && detail && sourceContent.paragraphs.length > 0 && targetLanguageCode && providerKey && !isSubmitting);
+  const hasCompletedOutputs = retranslationProgress.outputs.length > 0;
+  const shouldShowRetranslationContent = !hasCompletedOutputs || Boolean(selectedOutput);
 
   return (
     <section className="retranslation-workflow" aria-labelledby={titleId}>
@@ -1258,43 +1273,55 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
 
           {detail ? (
             <>
-              <section className="transcript-grid retranslation-reading-grid" aria-label="重新翻譯閱讀區">
-                <article className="transcript-panel">
-                  <div className="article-panel-header">
-                    <h2>原始逐字稿</h2>
-                  </div>
-                  <dl className="session-detail-metadata retranslation-source-metadata">
-                    <div><dt>日期</dt><dd>{formatRecordTime(detail.session?.startedAt)}</dd></div>
-                    <div><dt>來源語言</dt><dd>{sourceLanguage}</dd></div>
-                    <div><dt>Session</dt><dd>{detail.session?.id || selectedSessionId}</dd></div>
-                  </dl>
-                  {sourceContent.paragraphs.length > 0 ? (
-                    <div className="article-content">
-                      {sourceContent.paragraphs.map((paragraph, index) => <p key={`source-${index}`}>{paragraph}</p>)}
-                    </div>
-                  ) : <p className="transcript-text empty">{readingContentEmptyText(sourceContent)}</p>}
-                </article>
+              <RetranslationProgress progress={{ ...retranslationProgress, outputs: [] }} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} />
+              <section className="retranslation-result-workspace" aria-label="重新翻譯結果與內容">
+                <RetranslationOutputList outputs={retranslationProgress.outputs} selectedOutputId={selectedOutput?.id || ''} onSelect={setSelectedOutputId} />
+                {!shouldShowRetranslationContent ? (
+                  <section className="history-panel retranslation-selection-panel" aria-label="重新翻譯內容選取">
+                    <p className="history-empty">選取一筆重新翻譯結果後查看原文與翻譯文。</p>
+                  </section>
+                ) : (
+                  <section className="transcript-grid retranslation-reading-grid" aria-label="重新翻譯閱讀區">
+                    <article className="transcript-panel">
+                      <div className="article-panel-header">
+                        <h2>原始逐字稿</h2>
+                      </div>
+                      <dl className="session-detail-metadata retranslation-source-metadata">
+                        <div><dt>日期</dt><dd>{formatRecordTime(detail.session?.startedAt)}</dd></div>
+                        <div><dt>來源語言</dt><dd>{sourceLanguage}</dd></div>
+                        <div><dt>Session</dt><dd>{detail.session?.id || selectedSessionId}</dd></div>
+                      </dl>
+                      {sourceContent.paragraphs.length > 0 ? (
+                        <div className="article-content">
+                          {sourceContent.paragraphs.map((paragraph, index) => <p key={`source-${index}`}>{paragraph}</p>)}
+                        </div>
+                      ) : <p className="transcript-text empty">{readingContentEmptyText(sourceContent)}</p>}
+                    </article>
 
-                <article className="transcript-panel">
-                  <div className="article-panel-header">
-                    <h2>文章式重新翻譯</h2>
-                    <div className="article-actions">
-                      <button className="button detail-button" type="button" onClick={exportSelectedRetranslation} disabled={!selectedOutput?.translatedText}>
-                        <Download size={16} aria-hidden="true" />
-                        匯出 TXT
-                      </button>
-                    </div>
-                  </div>
-                  <RetranslationVersionSelector outputs={retranslationProgress.outputs} selectedOutputId={selectedOutput?.id || ''} onSelect={setSelectedOutputId} />
-                  {articleParagraphs.length > 0 ? (
-                    <div className="article-content retranslation-output-content">
-                      {articleParagraphs.map((paragraph, index) => <p key={`output-${selectedOutput.id}-${index}`}>{paragraph}</p>)}
-                    </div>
-                  ) : (
-                    <p className="transcript-text empty">{hasPendingProgress ? '重新翻譯正在處理中，完成後會顯示文章式結果。' : '尚無重新翻譯結果。'}</p>
-                  )}
-                  <RetranslationProgress progress={retranslationProgress} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} />
-                </article>
+                    <article className="transcript-panel">
+                      <div className="article-panel-header">
+                        <h2>重翻逐字稿</h2>
+                        <div className="article-actions">
+                          <button className="button detail-button" type="button" onClick={copySelectedRetranslation} disabled={!selectedOutput?.translatedText}>
+                            <Copy size={16} aria-hidden="true" />
+                            {copiedOutputId === selectedOutput?.id ? '已複製' : '複製'}
+                          </button>
+                          <button className="button detail-button" type="button" onClick={exportSelectedRetranslation} disabled={!selectedOutput?.translatedText}>
+                            <Download size={16} aria-hidden="true" />
+                            匯出 TXT
+                          </button>
+                        </div>
+                      </div>
+                      {articleParagraphs.length > 0 ? (
+                        <div className="article-content" aria-label="重翻逐字稿內容">
+                          {articleParagraphs.map((paragraph, index) => <p key={`output-${selectedOutput.id}-${index}`}>{paragraph}</p>)}
+                        </div>
+                      ) : (
+                        <p className="transcript-text empty">{hasPendingProgress ? '重新翻譯正在處理中，完成後會顯示重翻逐字稿。' : '尚無重翻逐字稿。'}</p>
+                      )}
+                    </article>
+                  </section>
+                )}
               </section>
             </>
           ) : null}
@@ -1304,20 +1331,40 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   );
 }
 
-function RetranslationVersionSelector({ outputs, selectedOutputId, onSelect }) {
-  if (!outputs.length) {
-    return null;
-  }
-
+function RetranslationOutputList({ outputs, selectedOutputId, onSelect }) {
   return (
-    <label className="field retranslation-version-field">
-      <span>重新翻譯版本</span>
-      <select value={selectedOutputId} onChange={(event) => onSelect(event.target.value)}>
-        {outputs.map((output) => (
-          <option key={output.id} value={output.id}>{translationOutputTitle(output)}</option>
-        ))}
-      </select>
-    </label>
+    <section className="history-panel retranslation-output-list-panel" aria-label="重新翻譯結果">
+      <h3>{`重新翻譯結果（${outputs.length}）`}</h3>
+      {outputs.length === 0 ? (
+        <p className="history-empty retranslation-output-empty">尚無重新翻譯結果。</p>
+      ) : (
+        <ol className="history-list retranslation-output-list">
+          {outputs.map((output) => (
+            <li className="history-item" key={output.id}>
+              <div className="history-item-header">
+                <div>
+                  <h4>{translationOutputTitle(output)}</h4>
+                  <span className="history-status history-status-completed">已完成</span>
+                </div>
+                <button
+                  className="button detail-button"
+                  type="button"
+                  aria-pressed={selectedOutputId === output.id}
+                  onClick={() => onSelect(output.id)}
+                >
+                  {selectedOutputId === output.id ? '已選取' : '查看內容'}
+                </button>
+              </div>
+              <dl className="history-metadata">
+                <div><dt>目標語言</dt><dd>{targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言'}</dd></div>
+                <div><dt>完成時間</dt><dd>{formatRecordTime(output.completedAt)}</dd></div>
+                <div><dt>輸出</dt><dd>{output.translatedText ? '可閱讀' : '沒有內容'}</dd></div>
+              </dl>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
   );
 }
 
@@ -1736,7 +1783,6 @@ function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) 
             <li key={output.id}>
               <span>{translationOutputTitle(output)}</span>
               <span className="history-status history-status-completed">已完成</span>
-              {output.translatedText ? <p>{output.translatedText}</p> : null}
             </li>
           ))}
         </ol>
@@ -1798,9 +1844,6 @@ function ReadingContentMetadata({ content }) {
 
   if (content.kind === 'translationArticle') {
     metadata.push(`目標語言：${targetLanguageLabelFor(content.targetLanguageCode) || content.targetLanguageLabel || content.targetLanguageCode || '未知語言'}`);
-    if (Number.isFinite(content.version)) {
-      metadata.push(`版本：v${content.version}`);
-    }
     metadata.push(`建立時間：${formatRecordTime(content.createdAt)}`);
     metadata.push(`完成時間：${formatRecordTime(content.completedAt)}`);
   } else {
@@ -1876,10 +1919,17 @@ function sourceLanguageLabelForDetail(detail) {
 }
 
 function paragraphsForArticleText(text) {
-  return String(text || '')
-    .split(/\n\s*\n/g)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+  return buildTranscriptArticleParagraphs([{
+    id: 'article-text',
+    stream: 'translation',
+    status: 'final',
+    text,
+    sequence: 0
+  }]);
+}
+
+function formattedSelectedRetranslationText(output) {
+  return paragraphsForArticleText(output?.translatedText || '').join('\n\n');
 }
 
 function retranslationSourceRecords(records = []) {
@@ -2057,8 +2107,7 @@ function timestampMs(value) {
 
 function translationOutputTitle(output) {
   const languageLabel = targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言';
-  const versionLabel = Number.isFinite(output.version) ? ` v${output.version}` : '';
-  return `${languageLabel}${versionLabel}`;
+  return `${languageLabel}重新翻譯`;
 }
 
 function glossaryReplacementLabel(entry = {}) {
@@ -2124,15 +2173,29 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     return detail;
   }
 
-  const translationHistory = compactTranslationHistoryForDetail(translations);
-  if (translationHistory.outputs.length === 0 && translationHistory.executions.length === 0) {
+  const detailHistory = compactTranslationHistoryForDetail(detail);
+  const translationsHistory = compactTranslationHistoryForDetail(translations);
+  if (translationsHistory.outputs.length === 0 && translationsHistory.executions.length === 0) {
     return detail;
   }
 
   return {
     ...detail,
-    translationHistory
+    translationHistory: {
+      outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
+      executions: mergeHistoryItemsById(detailHistory.executions, translationsHistory.executions)
+    }
   };
+}
+
+function mergeHistoryItemsById(firstItems, secondItems) {
+  const merged = new Map();
+  for (const item of [...firstItems, ...secondItems]) {
+    const key = item?.id || item?.executionId || item?.requestId;
+    if (!key) continue;
+    merged.set(key, item);
+  }
+  return [...merged.values()];
 }
 
 function trackedRetranslationForSubmitResult(result, fallbackTargetLanguageCode) {

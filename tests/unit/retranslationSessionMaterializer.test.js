@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createRetranslationSessionMaterializer } from '../../src/application/translation/retranslationSessionMaterializer.js';
 import { createMemorySessionRepository } from '../../src/lib/sessionRepository.js';
 
-test('materializes a completed derived session record from a translation output', async () => {
+test('does not materialize completed retranslation output into session history', async () => {
   const sessionRepository = createMemorySessionRepository();
   sessionRepository.createSessionRecord({ id: 'session-1', startedAt: 1000, targetLanguageCode: 'ja' });
   sessionRepository.appendTranscriptItem('session-1', {
@@ -47,23 +47,12 @@ test('materializes a completed derived session record from a translation output'
 
   const detail = sessionRepository.getSessionRecord('retranslation-session:execution-1');
 
-  assert.equal(record.id, 'retranslation-session:execution-1');
-  assert.equal(record.status, 'completed');
-  assert.equal(record.recordKind, 'retranslation');
-  assert.deepEqual(record.retranslatedFrom, {
-    sessionId: 'session-1',
-    startedAt: 1000,
-    requestId: 'request-1',
-    executionId: 'execution-1',
-    outputId: 'output-1'
-  });
-  assert.deepEqual(detail.transcriptItems.map((item) => [item.stream, item.text]), [
-    ['source', 'Hello'],
-    ['translation', 'Bonjour']
-  ]);
+  assert.equal(record, null);
+  assert.equal(detail, null);
+  assert.deepEqual(sessionRepository.listSessionRecords().map((sessionRecord) => sessionRecord.id), ['session-1']);
 });
 
-test('materialization is idempotent for the same execution output', async () => {
+test('no-op materialization is idempotent for the same execution output', async () => {
   const sessionRepository = createMemorySessionRepository();
   sessionRepository.createSessionRecord({ id: 'session-1', startedAt: 1000, targetLanguageCode: 'ja' });
   const materializer = createRetranslationSessionMaterializer({ sessionRepository, clock: () => 2000 });
@@ -82,8 +71,5 @@ test('materialization is idempotent for the same execution output', async () => 
   await materializer.materialize({ output });
   await materializer.materialize({ output });
 
-  assert.deepEqual(sessionRepository.listSessionRecords().map((record) => record.id), [
-    'session-1',
-    'retranslation-session:execution-1'
-  ]);
+  assert.deepEqual(sessionRepository.listSessionRecords().map((record) => record.id), ['session-1']);
 });

@@ -434,8 +434,8 @@ test('live article panels show completed paragraphs and keep pending text as sta
   const translationPanel = page.locator('.transcript-panel').nth(1);
   await expect(sourcePanel.locator('.transcript-history-item')).toHaveCount(0);
   await expect(translationPanel.locator('.transcript-history-item')).toHaveCount(0);
-  await expect(sourcePanel.locator('.article-content')).toContainText('第一句 第二句 第三句');
-  await expect(translationPanel.locator('.article-content')).toContainText('第一句翻譯 第二句翻譯 第三句翻譯');
+  await expect(sourcePanel.locator('.article-content')).toContainText('第一句第二句第三句');
+  await expect(translationPanel.locator('.article-content')).toContainText('第一句翻譯第二句翻譯第三句翻譯');
   await expect(sourcePanel.locator('.transcript-current')).toHaveText('辨識中…第四句辨識中');
   await expect(translationPanel.locator('.transcript-current')).toHaveText('翻譯中…第四句翻譯中');
 });
@@ -542,14 +542,14 @@ test('source and translation article panels render local final text separately w
 
   const sourcePanel = page.locator('.transcript-panel').nth(0);
   const translationPanel = page.locator('.transcript-panel').nth(1);
-  await expect(sourcePanel.locator('.article-content')).toContainText('漢語 軟體 腳踏車');
-  await expect(translationPanel.locator('.article-content')).toContainText('汉语 软件 自行车');
+  await expect(sourcePanel.locator('.article-content')).toContainText('漢語軟體腳踏車');
+  await expect(translationPanel.locator('.article-content')).toContainText('汉语软件自行车');
   await expect(sourcePanel.getByRole('button', { name: /整理成文章/ })).toHaveCount(0);
   await expect(translationPanel.getByRole('button', { name: /整理成文章/ })).toHaveCount(0);
 
   await emitFinalTranscript(page, 'new article source', 'new article translation');
-  await expect(sourcePanel.locator('.article-content')).toContainText('漢語 軟體 腳踏車 new article source');
-  await expect(translationPanel.locator('.article-content')).toContainText('汉语 软件 自行车 new article translation');
+  await expect(sourcePanel.locator('.article-content')).toContainText('漢語軟體腳踏車 new article source');
+  await expect(translationPanel.locator('.article-content')).toContainText('汉语软件自行车 new article translation');
   await expect(page.getByText('內容已更新，請重新整理。')).toHaveCount(0);
 });
 
@@ -693,6 +693,8 @@ test('session detail queues retranslation and displays pending status', async ({
   const workflow = retranslationPage(page);
   await expect(workflow.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
   await expect(workflow.getByText('Hello retranslation')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯結果').getByText('重新翻譯結果（0）')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯結果').getByText('尚無重新翻譯結果。')).toBeVisible();
   await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
   await expect(workflow.getByLabel('使用模型')).toContainText('Gemini（test model）');
   await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
@@ -704,17 +706,19 @@ test('session detail queues retranslation and displays pending status', async ({
 
   await openHistoryPage(page);
   await page.getByRole('link', { name: '重新翻譯' }).click();
+  await expect(page).toHaveURL(/#retranslate$/);
+  await expect(workflow.getByLabel('選擇歷史紀錄')).toBeVisible();
+  await expect(workflow.getByRole('button', { name: '開始重新翻譯' })).toHaveCount(0);
+  await workflow.getByLabel('選擇歷史紀錄').getByRole('button', { name: '選擇' }).click();
   await expect(page).toHaveURL(/#retranslate\?sessionId=/);
   await expect(workflow.getByText('Hello retranslation')).toBeVisible();
-  await expect(workflow.getByRole('button', { name: '開始重新翻譯' })).toBeEnabled();
 });
 
-test('completed retranslation appears as a derived history record instead of original session output', async ({ page }) => {
+test('completed retranslation stays out of translation history records', async ({ page }) => {
   let submitted = false;
   let postSubmitDetailReads = 0;
   let completed = false;
   const originalSessionId = 'session-complete-retranslation';
-  const derivedSessionId = 'retranslation-session:execution-fr-1';
 
   await page.route('**/api/translation-providers', async (route) => {
     await route.fulfill({
@@ -733,20 +737,7 @@ test('completed retranslation appears as a derived history record instead of ori
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify([
-        historyRecord({ id: originalSessionId, targetLanguageCode: 'ja', targetLanguageLabel: '日文' }),
-        ...(completed ? [historyRecord({
-          id: derivedSessionId,
-          targetLanguageCode: 'fr',
-          targetLanguageLabel: '法文',
-          recordKind: 'retranslation',
-          retranslatedFrom: {
-            sessionId: originalSessionId,
-            startedAt: 1,
-            requestId: 'request-fr-1',
-            executionId: 'execution-fr-1',
-            outputId: 'output-fr-1'
-          }
-        })] : [])
+        historyRecord({ id: originalSessionId, targetLanguageCode: 'ja', targetLanguageLabel: '日文' })
       ])
     });
   });
@@ -774,7 +765,7 @@ test('completed retranslation appears as a derived history record instead of ori
                     executionId: 'execution-fr-1',
                     requestId: 'request-fr-1',
                     targetLanguageCode: 'fr',
-                    translatedText: 'Bonjour terminé',
+                    translatedText: 'Bonjour terminé\nDeuxième phrase',
                     version: 1,
                     source: 'formal',
                     completedAt: '2026-07-21T00:00:10.000Z'
@@ -815,38 +806,6 @@ test('completed retranslation appears as a derived history record instead of ori
         postSubmitDetailReads += 1;
       }
 
-      if (sessionId === derivedSessionId) {
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify(sessionDetailResponse({
-            sessionId,
-            sourceText: 'Hello complete retranslation',
-            recordKind: 'retranslation',
-            retranslatedFrom: {
-              sessionId: originalSessionId,
-              startedAt: 1,
-              requestId: 'request-fr-1',
-              executionId: 'execution-fr-1',
-              outputId: 'output-fr-1'
-            },
-            selectedTranslationOutput: {
-              id: 'output-fr-1',
-              targetLanguageCode: 'fr',
-              targetLanguageLabel: '法文',
-              version: 1,
-              items: [{ id: 'translation-fr-1', stream: 'translation', status: 'final', text: 'Bonjour terminé' }],
-              translatedText: 'Bonjour terminé'
-            },
-            readingContent: {
-              sourceTranscript: { status: 'available', paragraphs: ['Hello complete retranslation'], text: 'Hello complete retranslation' },
-              translationArticle: { status: 'available', targetLanguageCode: 'fr', targetLanguageLabel: '法文', version: 1, paragraphs: ['Bonjour terminé'], text: 'Bonjour terminé' }
-            },
-            translationHistory: { outputs: [], executions: [] }
-          }))
-        });
-        return;
-      }
-
       await route.fulfill({
         contentType: 'application/json',
         body: JSON.stringify(sessionDetailResponse({
@@ -884,16 +843,36 @@ test('completed retranslation appears as a derived history record instead of ori
   await expect(workflow.getByLabel('重新翻譯進度').getByText('正在送往 Gemini')).toBeVisible();
   await expect(workflow.getByLabel('重新翻譯進度').getByText(/已等待 \d+ 秒/)).toBeVisible();
   completed = true;
-  await expect(workflow.getByText('Bonjour terminé')).toBeVisible();
+  const resultWorkspace = workflow.getByLabel('重新翻譯結果與內容');
+  const outputList = resultWorkspace.getByLabel('重新翻譯結果');
+  const selectionPrompt = resultWorkspace.getByLabel('重新翻譯內容選取');
+  await expect(selectionPrompt.getByText('選取一筆重新翻譯結果後查看原文與翻譯文。')).toBeVisible();
+  await expect(resultWorkspace.locator('.retranslation-output-list-panel')).toHaveCount(1);
+  await expect(resultWorkspace.locator('.retranslation-selection-panel')).toHaveCount(1);
+  await expect(outputList.getByText('法文重新翻譯')).toBeVisible();
+  await expect(outputList.getByText('已完成')).toBeVisible();
+  await expect(workflow.getByText('Bonjour terminé')).toHaveCount(0);
+  await expect(workflow.getByText('Hello complete retranslation')).toHaveCount(0);
+  await expect(workflow.getByText(/v1/)).toHaveCount(0);
+  await outputList.getByRole('button', { name: '查看內容' }).click();
+  await expect(selectionPrompt).toHaveCount(0);
+  await expect(resultWorkspace.getByRole('heading', { name: '重翻逐字稿' })).toBeVisible();
+  await expect(resultWorkspace.getByRole('button', { name: '複製' })).toBeEnabled();
+  await expect(resultWorkspace.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
+  await expect(resultWorkspace.getByLabel('重新翻譯閱讀區').getByText('Hello complete retranslation')).toBeVisible();
+  const retranslatedContent = resultWorkspace.getByLabel('重翻逐字稿內容');
+  await expect(retranslatedContent.getByText('Bonjour terminé Deuxième phrase')).toBeVisible();
+  await expect(retranslatedContent.locator('p')).toHaveCount(1);
 
   await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(2);
-  await expect(historyItems(page).nth(1).getByText('由')).toBeVisible();
-  await historyItems(page).nth(1).getByRole('button', { name: '查看詳細資料' }).click();
+  await expect(historyItems(page)).toHaveCount(1);
+  await expect(historyItems(page).first().getByText('由')).toHaveCount(0);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
-  const reopenedDetail = sessionDetail(page);
-  await expect(reopenedDetail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
-  await expect(reopenedDetail.getByLabel('文章版翻譯').getByText('Bonjour terminé')).toBeVisible();
+  const originalDetail = sessionDetail(page);
+  await expect(originalDetail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await expect(originalDetail.getByLabel('文章版翻譯').getByText('live output')).toBeVisible();
+  await expect(originalDetail.getByText('Bonjour terminé')).toHaveCount(0);
 });
 
 test('session detail displays failed retranslation reason', async ({ page }) => {

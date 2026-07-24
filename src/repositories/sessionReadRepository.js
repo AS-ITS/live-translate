@@ -34,7 +34,9 @@ function mapMaybePromise(value, mapper) {
 }
 
 function mapHistoryRecords(records) {
-  return records.map(mapSessionRecordToHistoryListItem);
+  return records
+    .filter((record) => (record?.recordKind ?? 'session') === 'session')
+    .map(mapSessionRecordToHistoryListItem);
 }
 
 function mapSessionDetail(detail) {

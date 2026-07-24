@@ -87,14 +87,14 @@ export function buildTranscriptArticleParagraphs(items = []) {
 
   const finalItems = items
     .filter((item) => item?.status === 'final')
-    .map((item) => ({ ...item, text: item.text?.trim() || '' }))
+    .map((item) => ({ ...item, text: String(item.text || '').trim() }))
     .filter((item) => item.text)
     .sort(compareTranscriptItemsBySequence);
 
   for (const item of finalItems) {
     const hardParts = item.text
       .split(/\n\s*\n/g)
-      .map((part) => part.trim())
+      .map(normalizeSubtitleText)
       .filter(Boolean);
 
     hardParts.forEach((part, index) => {
@@ -106,7 +106,7 @@ export function buildTranscriptArticleParagraphs(items = []) {
           paragraphLengthWith(currentParagraph, part) > ARTICLE_MAX_CHARS_PER_PARAGRAPH);
 
       if (shouldBreakBefore) {
-        paragraphs.push(currentParagraph.join(' '));
+        paragraphs.push(joinSubtitleParts(currentParagraph));
         currentParagraph = [];
       }
 
@@ -117,7 +117,7 @@ export function buildTranscriptArticleParagraphs(items = []) {
   }
 
   if (currentParagraph.length > 0) {
-    paragraphs.push(currentParagraph.join(' '));
+    paragraphs.push(joinSubtitleParts(currentParagraph));
   }
 
   return paragraphs;
@@ -430,7 +430,33 @@ function itemStartTime(item) {
 }
 
 function paragraphLengthWith(parts, nextPart) {
-  return parts.length === 0 ? nextPart.length : `${parts.join(' ')} ${nextPart}`.length;
+  return joinSubtitleParts([...parts, nextPart]).length;
+}
+
+function normalizeSubtitleText(text) {
+  return String(text || '')
+    .replace(/\s+/gu, ' ')
+    .replace(/([\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])\s+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])/gu, '$1')
+    .trim();
+}
+
+function joinSubtitleParts(parts) {
+  return parts.reduce((text, part) => {
+    if (!text) return part;
+    return shouldJoinWithoutSpace(text, part) ? `${text}${part}` : `${text} ${part}`;
+  }, '');
+}
+
+function shouldJoinWithoutSpace(previous, next) {
+  return endsWithCjk(previous) && startsWithCjk(next);
+}
+
+function endsWithCjk(text) {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(text);
+}
+
+function startsWithCjk(text) {
+  return /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
 }
 
 function createTranscriptItem(state, event, status, now) {

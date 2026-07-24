@@ -25,25 +25,15 @@ test('retranslation worker restores canonical request metadata and creates versi
 
   const outputs = await dependencies.translationRepository.listTranslationOutputsBySession('session-1');
   const history = await dependencies.sessionReadController.listSessions();
-  const derivedDetail = await dependencies.sessionReadController.getSession('retranslation-session:translation-execution-2');
 
   assert.deepEqual(outputs.map((output) => output.version), [1, 2]);
   assert.deepEqual(outputs.map((output) => output.sourceText), ['Hello', 'Hello']);
   assert.deepEqual(outputs.map((output) => output.sourceTranscriptMetadata.revisionId), ['source-revision:session-1:final', 'source-revision:session-1:final']);
   assert.deepEqual(calls.map((call) => [call.sourceText, call.sourceLanguageCode, call.targetLanguageCode]), [['Hello', 'en', 'ja'], ['Hello', 'en', 'ja']]);
   assert.deepEqual(history.map((record) => [record.id, record.recordKind]), [
-    ['session-1', 'session'],
-    ['retranslation-session:translation-execution-2', 'retranslation'],
-    ['retranslation-session:translation-execution-4', 'retranslation']
+    ['session-1', 'session']
   ]);
-  assert.deepEqual(derivedDetail.session.retranslatedFrom, {
-    sessionId: 'session-1',
-    startedAt: 0,
-    requestId: 'translation-request-1',
-    executionId: 'translation-execution-2',
-    outputId: 'translation-execution-2-output-0'
-  });
-  assert.equal(derivedDetail.readingContent.translationArticle.text, '[fake] Hello');
+  assert.equal(await dependencies.sessionReadController.getSession('retranslation-session:translation-execution-2'), null);
 });
 
 test('retranslation can save different target languages and provider keys from the same source transcript', async () => {

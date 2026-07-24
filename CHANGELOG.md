@@ -56,14 +56,21 @@
 
 ### Changed
 
+- Translation history now lists only live translation Sessions. Completed
+  saved-session retranslation outputs remain available from the retranslation
+  workflow but are no longer materialized as separate history records.
+
+- Live and saved retranslation reading views now share subtitle-merged
+  transcript formatting, including extra whitespace removal for adjacent CJK
+  subtitle segments.
+
 - Saved-session retranslation now wakes the execution worker immediately after
   submission, exposes provider attempt timing in progress read models, and
   applies a configurable Gemini timeout through
   `SAVED_RETRANSLATION_TIMEOUT_MS`.
 
-- Completed saved-session retranslation now creates a separate completed
-  history record with provenance back to the original speech record instead of
-  replacing the original session's main article view.
+- Completed saved-session retranslation no longer replaces the original
+  session's main article view or creates a separate history record.
 
 - Default backend startup now assembles the Gemini translation runtime whenever
   `GEMINI_API_KEY` is configured and starts the translation execution worker, so

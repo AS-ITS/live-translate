@@ -78,6 +78,22 @@ test('history ordering follows the underlying repository order', () => {
   );
 });
 
+test('history list excludes retranslation records', () => {
+  const repository = createSessionReadRepository({
+    sessionRepository: legacyRepository({
+      records: [
+        sessionRecord({ id: 'session-1', recordKind: 'session' }),
+        sessionRecord({ id: 'retranslation-session-1', recordKind: 'retranslation' })
+      ]
+    })
+  });
+
+  assert.deepEqual(
+    repository.listSessionHistory().map((item) => [item.id, item.recordKind]),
+    [['session-1', 'session']]
+  );
+});
+
 test('raw legacy records are not returned from history', () => {
   const record = sessionRecord({
     id: 'session-1',
@@ -248,6 +264,7 @@ function sessionRecord(overrides = {}) {
     selectedInputDeviceId: overrides.selectedInputDeviceId || 'device-1',
     inputDeviceLabelSnapshot: overrides.inputDeviceLabelSnapshot || 'Studio Mic',
     transcriptSummary: overrides.transcriptSummary || transcriptSummary,
+    recordKind: overrides.recordKind || 'session',
     createdAt: overrides.createdAt ?? 900,
     updatedAt: overrides.updatedAt ?? 5100,
     lastLifecycleState: overrides.lastLifecycleState || 'completed'

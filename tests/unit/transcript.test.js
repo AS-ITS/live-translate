@@ -481,6 +481,14 @@ test('article paragraphs split on explicit blank lines', () => {
   assert.deepEqual(paragraphs, ['first paragraph', 'second paragraph']);
 });
 
+test('article paragraphs merge single subtitle line breaks within a paragraph', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: 'first sentence\nsecond sentence\nthird sentence', sequence: 1 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['first sentence second sentence third sentence']);
+});
+
 test('article paragraphs keep short speech gaps in the same paragraph', () => {
   const paragraphs = buildTranscriptArticleParagraphs([
     articleItem({ text: 'before short pause', sequence: 1, startedAt: 0, finalizedAt: 100 }),
@@ -517,6 +525,25 @@ test('article paragraphs keep short finalized segments in one readable paragraph
   ]);
 
   assert.deepEqual(paragraphs, ['one two three four']);
+});
+
+test('article paragraphs merge CJK subtitle segments without inserted spaces', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: '第一句', sequence: 1 }),
+    articleItem({ text: '第二句', sequence: 2 }),
+    articleItem({ text: '第三句', sequence: 3 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['第一句第二句第三句']);
+});
+
+test('article paragraphs remove extra subtitle whitespace consistently', () => {
+  const paragraphs = buildTranscriptArticleParagraphs([
+    articleItem({ text: '  Hello    world  ', sequence: 1 }),
+    articleItem({ text: '你 好   世 界', sequence: 2 })
+  ]);
+
+  assert.deepEqual(paragraphs, ['Hello world 你好世界']);
 });
 
 test('article paragraphs split before exceeding max character count', () => {

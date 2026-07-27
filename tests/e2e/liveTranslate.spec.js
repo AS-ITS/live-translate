@@ -702,7 +702,7 @@ test('session detail queues retranslation and displays pending status', async ({
   await expect(workflow.getByLabel('重新翻譯結果').getByText('重新翻譯結果（0）')).toBeVisible();
   await expect(workflow.getByLabel('重新翻譯結果').getByText('尚無重新翻譯結果。')).toBeVisible();
   await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await expect(workflow.getByLabel('使用模型')).toContainText('Gemini（test model）');
+  await expect(workflow.getByLabel('使用模型').locator('strong')).toHaveText('test model');
   await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
 
   await expect(workflow.getByRole('status')).toHaveText('已將法文重新翻譯加入佇列。');
@@ -843,7 +843,7 @@ test('completed retranslation stays out of translation history records', async (
   await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
   const workflow = retranslationPage(page);
   await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await expect(workflow.getByLabel('使用模型')).toContainText('Gemini（test model）');
+  await expect(workflow.getByLabel('使用模型').locator('strong')).toHaveText('test model');
   await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
 
   await expect(workflow.getByLabel('重新翻譯進度').getByText('正在送往 Gemini')).toBeVisible();

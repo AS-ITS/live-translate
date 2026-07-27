@@ -89,11 +89,14 @@ provider credentials or internal client configuration.
       "key": "gemini",
       "label": "Gemini",
       "provider": "gemini",
-      "model": "gemini saved transcript retranslation"
+      "model": "gemini-3.5-flash"
     }
   ]
 }
 ```
+
+The `model` value is resolved from `SAVED_RETRANSLATION_GEMINI_MODEL`, falling
+back to the backend default when the environment variable is unset.
 
 ### `POST /api/translation-executions/:executionId/cancel`
 

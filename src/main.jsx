@@ -1951,8 +1951,9 @@ function retranslationRecordMatches(record, query) {
 }
 
 function translationProviderOptionLabel(provider = {}) {
+  if (provider.model) return provider.model;
   const label = provider.label || provider.key || '未知 provider';
-  return provider.model ? `${label}（${provider.model}）` : label;
+  return label;
 }
 
 function buildRetranslationOutputFileName(sessionId, output = {}) {

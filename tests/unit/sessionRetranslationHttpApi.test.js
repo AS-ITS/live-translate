@@ -29,9 +29,27 @@ test('GET /api/translation-providers returns only safe provider options', async 
       key: 'gemini',
       label: 'Gemini',
       provider: 'gemini',
-      model: 'gemini saved transcript retranslation'
+      model: 'gemini-3.5-flash'
     }]
   });
+});
+
+test('GET /api/translation-providers exposes configured saved retranslation model', async () => {
+  const previousModel = process.env.SAVED_RETRANSLATION_GEMINI_MODEL;
+  process.env.SAVED_RETRANSLATION_GEMINI_MODEL = 'gemini-configured-model';
+
+  try {
+    const handler = createRequestHandler({});
+    const response = await get(handler, '/api/translation-providers');
+    assert.equal(response.status, 200);
+    assert.equal(response.json().providers[0].model, 'gemini-configured-model');
+  } finally {
+    if (previousModel === undefined) {
+      delete process.env.SAVED_RETRANSLATION_GEMINI_MODEL;
+    } else {
+      process.env.SAVED_RETRANSLATION_GEMINI_MODEL = previousModel;
+    }
+  }
 });
 
 async function request(handler, url, body) {

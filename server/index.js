@@ -4,6 +4,7 @@ import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
+import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 
 const PORT = Number.parseInt(process.env.PORT || '3001', 10);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -36,14 +37,16 @@ const ERROR_RESPONSES = {
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 
-const SAFE_TRANSLATION_PROVIDERS = Object.freeze([
-  Object.freeze({
-    key: 'gemini',
-    label: 'Gemini',
-    provider: 'gemini',
-    model: 'gemini saved transcript retranslation'
-  })
-]);
+function safeTranslationProvidersFor(env = process.env) {
+  return [
+    {
+      key: 'gemini',
+      label: 'Gemini',
+      provider: 'gemini',
+      model: resolveSavedRetranslationModel(env)
+    }
+  ];
+}
 
 function sendJson(res, status, payload, requestId) {
   const body = JSON.stringify(payload);
@@ -451,7 +454,7 @@ async function handleRequestWithSessionReadController(
     try {
       const providers = translationProviderOptionsController
         ? await translationProviderOptionsController.listTranslationProviders()
-        : SAFE_TRANSLATION_PROVIDERS;
+        : safeTranslationProvidersFor();
       statusCode = 200;
       sendJson(res, statusCode, { providers }, requestId);
     } catch (error) {

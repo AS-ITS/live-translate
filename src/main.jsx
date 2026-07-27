@@ -1036,6 +1036,9 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRetryingExecutionId, setIsRetryingExecutionId] = useState('');
   const [copiedOutputId, setCopiedOutputId] = useState('');
+  const [copiedRetranslationSource, setCopiedRetranslationSource] = useState(false);
+  const [retranslationExportFormat, setRetranslationExportFormat] = useState('txt');
+  const [retranslationExportStream, setRetranslationExportStream] = useState('translation');
   const [statusMessage, setStatusMessage] = useState('');
   const [operationError, setOperationError] = useState('');
   const detailRequestIdRef = useRef(0);
@@ -1064,6 +1067,9 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     setSelectedOutputId('');
     setTrackedRetranslations([]);
     setCopiedOutputId('');
+    setCopiedRetranslationSource(false);
+    setRetranslationExportFormat('txt');
+    setRetranslationExportStream('translation');
     setStatusMessage('');
     setOperationError('');
 
@@ -1167,13 +1173,25 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   }
 
   function exportSelectedRetranslation() {
-    const articleText = formattedSelectedRetranslationText(selectedOutput);
-    if (!articleText) return;
-    downloadTextFile(
-      articleText,
-      buildRetranslationOutputFileName(selectedSessionId, selectedOutput),
-      'text/plain;charset=utf-8'
-    );
+    setOperationError('');
+
+    try {
+      const content = formatTranscriptExport(retranslationExportItems, {
+        format: retranslationExportFormat,
+        stream: retranslationExportStream,
+        timeOrigin: detail?.session?.startedAt
+      });
+      downloadTextFile(
+        content,
+        buildRetranslationOutputFileName(selectedSessionId, selectedOutput, {
+          format: retranslationExportFormat,
+          stream: retranslationExportStream
+        }),
+        contentTypeForFormat(retranslationExportFormat)
+      );
+    } catch {
+      setOperationError('所選選項無法匯出重翻逐字稿。');
+    }
   }
 
   async function copySelectedRetranslation() {
@@ -1188,11 +1206,56 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     }
   }
 
+  async function copyRetranslationSource() {
+    const articleText = sourceContent.text || sourceContent.paragraphs.join('\n\n');
+    if (!articleText) return;
+    try {
+      await navigator.clipboard.writeText(articleText);
+      setCopiedRetranslationSource(true);
+      window.setTimeout(() => setCopiedRetranslationSource(false), 1500);
+    } catch {
+      setOperationError('無法複製原始逐字稿。');
+    }
+  }
+
+  function exportRetranslationSourceTxt() {
+    const articleText = sourceContent.text || sourceContent.paragraphs.join('\n\n');
+    if (!articleText) return;
+    downloadTextFile(
+      `${articleText}\n`,
+      buildRetranslationOutputFileName(selectedSessionId, selectedOutput, { format: 'txt', stream: 'source' }),
+      'text/plain;charset=utf-8'
+    );
+  }
+
+  function exportSelectedRetranslationTxt() {
+    const articleText = formattedSelectedRetranslationText(selectedOutput);
+    if (!articleText) return;
+    downloadTextFile(
+      `${articleText}\n`,
+      buildRetranslationOutputFileName(selectedSessionId, selectedOutput, { format: 'txt', stream: 'translation' }),
+      'text/plain;charset=utf-8'
+    );
+  }
+
   const selectableRecords = retranslationSourceRecords(records);
   const filteredRecords = selectableRecords.filter((record) => retranslationRecordMatches(record, query));
   const sourceContent = sourceContentForRetranslationDetail(detail);
   const sourceLanguage = sourceLanguageLabelForDetail(detail);
   const articleParagraphs = paragraphsForArticleText(selectedOutput?.translatedText || '');
+  const retranslationExportItems = retranslationExportItemsForDetail(detail, selectedOutput);
+  const canDownloadRetranslationExport = canExportTranscript(retranslationExportItems, {
+    format: retranslationExportFormat,
+    stream: retranslationExportStream,
+    timeOrigin: detail?.session?.startedAt
+  });
+  const retranslationExportUnavailableReason = selectedOutput
+    ? retranslationExportReason({
+        canExport: canDownloadRetranslationExport,
+        format: retranslationExportFormat,
+        stream: retranslationExportStream
+      })
+    : '';
   const selectedProvider = providers.find((provider) => provider.key === providerKey) || providers[0] || null;
   const canSubmit = Boolean(selectedSessionId && detail && sourceContent.paragraphs.length > 0 && targetLanguageCode && providerKey && !isSubmitting);
   const hasCompletedOutputs = retranslationProgress.outputs.length > 0;
@@ -1269,6 +1332,34 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
             {statusMessage ? <p className="success-message" role="status">{statusMessage}</p> : null}
           </section>
 
+          {detail && selectedOutput ? (
+            <section className="control-panel retranslation-export-panel" aria-label="重新翻譯匯出">
+              <div className="controls export-controls retranslation-export-actions">
+                <label className="field">
+                  <span>匯出格式</span>
+                  <select value={retranslationExportFormat} onChange={(event) => setRetranslationExportFormat(event.target.value)}>
+                    <option value="txt">TXT</option>
+                    <option value="srt">SRT</option>
+                    <option value="vtt">VTT</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>匯出內容</span>
+                  <select value={retranslationExportStream} onChange={(event) => setRetranslationExportStream(event.target.value)}>
+                    <option value="translation">翻譯</option>
+                    <option value="source">原文</option>
+                    <option value="both">兩者</option>
+                  </select>
+                </label>
+                <button className="button detail-button" type="button" onClick={exportSelectedRetranslation} disabled={!canDownloadRetranslationExport}>
+                  <Download size={16} aria-hidden="true" />
+                  下載
+                </button>
+              </div>
+              {retranslationExportUnavailableReason ? <p className="export-note">{retranslationExportUnavailableReason}</p> : null}
+            </section>
+          ) : null}
+
           {isLoadingDetail ? <p className="history-empty retranslation-loading">正在載入 Session 原始逐字稿…</p> : null}
           {detailError ? <p className="error-message" role="alert">{detailError}</p> : null}
 
@@ -1282,10 +1373,20 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                     <p className="history-empty">選取一筆重新翻譯結果後查看原文與翻譯文。</p>
                   </section>
                 ) : (
-                  <section className="transcript-grid retranslation-reading-grid" aria-label="重新翻譯閱讀區">
-                    <article className="transcript-panel">
+                  <section className="retranslation-reading-column" aria-label="重新翻譯閱讀區">
+                    <article className="transcript-panel" aria-label="原始逐字稿">
                       <div className="article-panel-header">
                         <h2>原始逐字稿</h2>
+                        <div className="article-actions">
+                          <button className="button detail-button" type="button" onClick={copyRetranslationSource} disabled={!sourceContent.text}>
+                            <Copy size={16} aria-hidden="true" />
+                            {copiedRetranslationSource ? '已複製' : '複製'}
+                          </button>
+                          <button className="button detail-button" type="button" onClick={exportRetranslationSourceTxt} disabled={!sourceContent.text}>
+                            <Download size={16} aria-hidden="true" />
+                            匯出 TXT
+                          </button>
+                        </div>
                       </div>
                       <dl className="session-detail-metadata retranslation-source-metadata">
                         <div><dt>日期</dt><dd>{formatRecordTime(detail.session?.startedAt)}</dd></div>
@@ -1299,7 +1400,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                       ) : <p className="transcript-text empty">{readingContentEmptyText(sourceContent)}</p>}
                     </article>
 
-                    <article className="transcript-panel">
+                    <article className="transcript-panel" aria-label="重翻逐字稿">
                       <div className="article-panel-header">
                         <h2>重翻逐字稿</h2>
                         <div className="article-actions">
@@ -1307,7 +1408,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                             <Copy size={16} aria-hidden="true" />
                             {copiedOutputId === selectedOutput?.id ? '已複製' : '複製'}
                           </button>
-                          <button className="button detail-button" type="button" onClick={exportSelectedRetranslation} disabled={!selectedOutput?.translatedText}>
+                          <button className="button detail-button" type="button" onClick={exportSelectedRetranslationTxt} disabled={!selectedOutput?.translatedText}>
                             <Download size={16} aria-hidden="true" />
                             匯出 TXT
                           </button>
@@ -1933,6 +2034,50 @@ function formattedSelectedRetranslationText(output) {
   return paragraphsForArticleText(output?.translatedText || '').join('\n\n');
 }
 
+function retranslationExportItemsForDetail(detail, output) {
+  if (!detail || !output) {
+    return [];
+  }
+
+  return [
+    ...finalTranscriptItemsForStream(detail?.sourceTranscript?.items || [], 'source'),
+    ...translationExportItemsForRetranslationOutput(detail, output)
+  ];
+}
+
+function translationExportItemsForRetranslationOutput(detail, output) {
+  if (Array.isArray(output?.items) && output.items.length > 0) {
+    return finalTranscriptItemsForStream(output.items, 'translation');
+  }
+
+  const translatedText = formattedSelectedRetranslationText(output);
+  if (!translatedText) {
+    return [];
+  }
+
+  return [{
+    id: `${output.id || 'retranslation-output'}:article`,
+    stream: 'translation',
+    status: 'final',
+    text: translatedText,
+    sequence: Number.MAX_SAFE_INTEGER,
+    startedAt: detail?.session?.startedAt ?? null,
+    finalizedAt: output.completedAt ?? detail?.session?.endedAt ?? null
+  }];
+}
+
+function retranslationExportReason({ canExport, format, stream }) {
+  if ((format === 'srt' || format === 'vtt') && stream === 'both') {
+    return 'SRT 與 VTT 一次只能匯出一個內容。';
+  }
+
+  if (!canExport) {
+    return '所選選項無法匯出重翻逐字稿。';
+  }
+
+  return '';
+}
+
 function retranslationSourceRecords(records = []) {
   return records.filter((record) => (record.recordKind || 'session') === 'session' && TERMINAL_HISTORY_STATUSES.has(record.status));
 }
@@ -1956,12 +2101,14 @@ function translationProviderOptionLabel(provider = {}) {
   return label;
 }
 
-function buildRetranslationOutputFileName(sessionId, output = {}) {
+function buildRetranslationOutputFileName(sessionId, output = {}, options = {}) {
+  const format = String(options.format || 'txt').replace(/[^a-zA-Z0-9]+/g, '') || 'txt';
+  const stream = String(options.stream || 'translation').replace(/[^a-zA-Z0-9._-]+/g, '-');
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   const language = String(output.targetLanguageCode || 'unknown').replace(/[^a-zA-Z0-9._-]+/g, '-');
   const version = Number.isFinite(output.version) ? `-v${output.version}` : '';
   const safeSessionId = String(sessionId || 'session').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
-  return `live-translate-retranslation-${safeSessionId}-${stamp}-${language}${version}.txt`;
+  return `live-translate-retranslation-${safeSessionId}-${stamp}-${language}-${stream}${version}.${format}`;
 }
 
 function terminalContentStatus(sessionRecord) {

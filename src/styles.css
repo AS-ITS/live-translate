@@ -285,6 +285,10 @@ input:disabled {
   gap: 8px;
 }
 
+.retranslation-export-actions .field {
+  min-width: 120px;
+}
+
 .article-content {
   display: grid;
   gap: 12px;
@@ -701,6 +705,10 @@ input:disabled {
   grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.2fr) auto;
 }
 
+.retranslation-export-panel {
+  gap: 12px;
+}
+
 .retranslation-loading {
   padding: 0 4px;
 }
@@ -734,6 +742,11 @@ input:disabled {
   max-height: min(420px, 55vh);
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.retranslation-reading-column {
+  display: grid;
+  gap: 16px;
 }
 
 .retranslation-provider-readonly strong {
@@ -805,9 +818,6 @@ input:disabled {
     top: 16px;
   }
 
-  .retranslation-reading-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 760px) {

@@ -111,6 +111,10 @@
   failed retry, version switching, and TXT export of the selected retranslation
   output.
 
+- Re-translation output export now supports source or translation TXT, SRT, and
+  VTT downloads with the same single-stream subtitle restriction as live and
+  saved Session exports.
+
 - Added `GET /api/translation-providers` so the frontend can show only
   backend-supported, safe provider options for saved Session re-translation.
 

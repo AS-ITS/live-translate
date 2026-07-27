@@ -863,8 +863,25 @@ test('completed retranslation stays out of translation history records', async (
   await outputList.getByRole('button', { name: '查看內容' }).click();
   await expect(selectionPrompt).toHaveCount(0);
   await expect(resultWorkspace.getByRole('heading', { name: '重翻逐字稿' })).toBeVisible();
-  await expect(resultWorkspace.getByRole('button', { name: '複製' })).toBeEnabled();
-  await expect(resultWorkspace.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
+  const retranslationExport = workflow.getByLabel('重新翻譯匯出');
+  const sourceArticle = resultWorkspace.getByLabel('原始逐字稿');
+  const outputArticle = resultWorkspace.getByLabel('重翻逐字稿');
+  await expect(sourceArticle.getByRole('button', { name: '複製' })).toBeEnabled();
+  await expect(sourceArticle.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
+  await expect(outputArticle.getByRole('button', { name: '複製' })).toBeEnabled();
+  await expect(outputArticle.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
+  await expect(retranslationExport.getByRole('combobox', { name: '匯出格式' })).toHaveValue('txt');
+  await expect(retranslationExport.getByRole('combobox', { name: '匯出內容' })).toHaveValue('translation');
+  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('srt');
+  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
+  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('both');
+  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeDisabled();
+  await expect(retranslationExport.getByText('SRT 與 VTT 一次只能匯出一個內容。')).toBeVisible();
+  await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('source');
+  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
   await expect(resultWorkspace.getByLabel('重新翻譯閱讀區').getByText('Hello complete retranslation')).toBeVisible();
   const retranslatedContent = resultWorkspace.getByLabel('重翻逐字稿內容');
   await expect(retranslatedContent.getByText('Bonjour terminé Deuxième phrase')).toBeVisible();
@@ -998,7 +1015,7 @@ function historyRecord(overrides = {}) {
 function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory, recordKind = 'session', retranslatedFrom = null, selectedTranslationOutput, readingContent }) {
   return {
     session: { id: sessionId, status: 'stopped', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true }, recordKind, retranslatedFrom },
-    sourceTranscript: { id: `source:${sessionId}`, sessionId, revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: sourceText }], createdAt: 1, finalizedAt: 2 },
+    sourceTranscript: { id: `source:${sessionId}`, sessionId, revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: sourceText, sequence: 0, startedAt: 1, finalizedAt: 2 }], createdAt: 1, finalizedAt: 2 },
     translationOutputs: [],
     selectedTranslationOutput: selectedTranslationOutput || { id: `legacy-output:${sessionId}:ja`, targetLanguageCode: 'ja', items: [{ id: 'translation-1', stream: 'translation', status: 'final', text: 'live output' }] },
     readingContent,

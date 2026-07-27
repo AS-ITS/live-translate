@@ -1205,6 +1205,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
           <h2 id={titleId}>重新翻譯</h2>
           <p className="history-description">從已保存 Session 的原始逐字稿產生新的文章式翻譯。</p>
         </div>
+        {selectedSessionId ? <a className="button detail-button" href="#retranslate">返回 Session 清單</a> : null}
       </div>
 
       {!selectedSessionId ? (

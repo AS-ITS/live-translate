@@ -173,6 +173,7 @@ input {
   border-radius: 8px;
   padding: 0 18px;
   font-weight: 700;
+  text-decoration: none;
   cursor: pointer;
   transition:
     background-color 180ms ease,

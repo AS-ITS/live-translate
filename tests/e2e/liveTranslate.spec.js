@@ -691,6 +691,12 @@ test('session detail queues retranslation and displays pending status', async ({
   await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
   await expect(page).toHaveURL(/#retranslate\?sessionId=/);
   const workflow = retranslationPage(page);
+  await expect(workflow.getByRole('link', { name: '返回 Session 清單' })).toBeVisible();
+  await workflow.getByRole('link', { name: '返回 Session 清單' }).click();
+  await expect(page).toHaveURL(/#retranslate$/);
+  await expect(workflow.getByLabel('選擇歷史紀錄')).toBeVisible();
+  await workflow.getByLabel('選擇歷史紀錄').getByRole('button', { name: '選擇' }).click();
+  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
   await expect(workflow.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
   await expect(workflow.getByText('Hello retranslation')).toBeVisible();
   await expect(workflow.getByLabel('重新翻譯結果').getByText('重新翻譯結果（0）')).toBeVisible();

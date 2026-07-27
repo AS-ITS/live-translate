@@ -21,9 +21,6 @@ writes the file.
       "translations": {
         "ja": "コーデックス"
       },
-      "replacementAliases": {
-        "ja": ["code x"]
-      },
       "scope": "history",
       "createdAt": 1000,
       "updatedAt": 1000
@@ -68,8 +65,9 @@ unsupported scopes, and blank replacement aliases are rejected. `scope` may be
 compatibility. The primary product behavior is deterministic subtitle text
 replacement: `source` is the text to find in translated subtitles, and
 `translations[targetLanguageCode]` is the text to display instead. Legacy
-`replacementAliases` is still accepted for stored JSON/API compatibility and
-adds extra find-text values for the same replacement target.
+`replacementAliases` is still accepted for existing data and API compatibility
+when explicitly provided, but current glossary entries omit it from stored JSON
+when there are no aliases.
 
 Glossary replacement is applied only to translated subtitle text for live output
 and saved retranslation output. It does not rewrite source transcripts and does

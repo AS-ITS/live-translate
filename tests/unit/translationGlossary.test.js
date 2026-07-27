@@ -148,6 +148,7 @@ test('glossary CRUD persists entries and updates cached provider entries', async
   const created = await glossary.createEntry({ source: 'Codex', translations: { ja: 'コーデックス' }, scope: 'both' });
   assert.equal(created.id, 'entry-1');
   assert.equal(created.scope, 'both');
+  assert.equal(Object.hasOwn(created, 'replacementAliases'), false);
   assert.deepEqual(await glossary.entriesFor('ja'), [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);
 
   await glossary.updateEntry('entry-1', {

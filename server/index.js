@@ -901,7 +901,12 @@ function validateGlossaryEntryBody(body) {
   }
   if (Object.keys(body.translations).length === 0) throw createHttpError('invalid_request');
   const replacementAliases = validateGlossaryReplacementAliases(body.replacementAliases);
-  return { source: body.source, translations: body.translations, replacementAliases, scope };
+  return {
+    source: body.source,
+    translations: body.translations,
+    ...(hasReplacementAliases(replacementAliases) ? { replacementAliases } : {}),
+    scope
+  };
 }
 
 function validateGlossaryReplacementAliases(value) {
@@ -915,6 +920,11 @@ function validateGlossaryReplacementAliases(value) {
     replacementAliases[languageCode] = aliases.map((alias) => validateRequiredString(alias));
   }
   return replacementAliases;
+}
+
+function hasReplacementAliases(replacementAliases) {
+  return Object.values(replacementAliases)
+    .some((aliases) => Array.isArray(aliases) && aliases.length > 0);
 }
 
 function extractSessionRetranslationSessionId(path) {

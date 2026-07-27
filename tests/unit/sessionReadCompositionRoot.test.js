@@ -82,7 +82,6 @@ test('application dependencies enable glossary routes with the default writable 
           id: 'glossary-entry-1',
           source: 'Codex',
           translations: { ja: 'コーデックス' },
-          replacementAliases: {},
           scope: 'live',
           createdAt: 1000,
           updatedAt: 1000

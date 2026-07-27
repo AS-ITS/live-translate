@@ -37,8 +37,8 @@ test('glossary HTTP routes list, create, update, and delete entries', async () =
 
   assert.deepEqual(calls, [
     ['listEntries'],
-    ['createEntry', { source: 'microphone', translations: { en: 'Alan speak' }, replacementAliases: {}, scope: 'live' }],
-    ['updateEntry', { id: 'entry-1', source: 'Codex', translations: { ja: 'コードエックス' }, replacementAliases: {}, scope: 'history' }],
+    ['createEntry', { source: 'microphone', translations: { en: 'Alan speak' }, scope: 'live' }],
+    ['updateEntry', { id: 'entry-1', source: 'Codex', translations: { ja: 'コードエックス' }, scope: 'history' }],
     ['deleteEntry', { id: 'entry-1' }]
   ]);
 });

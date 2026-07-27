@@ -44,7 +44,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
 
       storage.entries.push(entry);
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneEntry)));
+      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
       return cloneEntry(entry);
     },
 
@@ -69,7 +69,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
       }, index);
       storage.entries[index] = entry;
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneEntry)));
+      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
       return cloneEntry(entry);
     },
 
@@ -87,7 +87,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
 
       const [entry] = storage.entries.splice(index, 1);
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneEntry)));
+      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
       return cloneEntry(entry);
     }
   });
@@ -101,7 +101,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
 }
 
 async function readEntries(fileSystem, filePath) {
-  return Object.freeze((await readStorage(fileSystem, filePath)).entries.map(cloneEntry));
+  return Object.freeze((await readStorage(fileSystem, filePath)).entries.map(cloneNormalizedEntry));
 }
 
 async function readStorage(fileSystem, filePath) {
@@ -124,7 +124,7 @@ async function readStorage(fileSystem, filePath) {
 }
 
 async function writeStorage(fileSystem, filePath, storage) {
-  const value = { entries: validateGlossary(storage) };
+  const value = { entries: validateGlossary(storage).map(serializeStoredEntry) };
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.tmp`;
   await fileSystem.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -247,7 +247,28 @@ function assertWritableFileSystem(fileSystem) {
 }
 
 function cloneEntry(entry) {
+  return JSON.parse(JSON.stringify(serializeStoredEntry(entry)));
+}
+
+function cloneNormalizedEntry(entry) {
   return JSON.parse(JSON.stringify(entry));
+}
+
+function serializeStoredEntry(entry) {
+  return {
+    id: entry.id,
+    source: entry.source,
+    translations: entry.translations,
+    ...(hasReplacementAliases(entry.replacementAliases) ? { replacementAliases: entry.replacementAliases } : {}),
+    scope: entry.scope,
+    ...(entry.createdAt === undefined ? {} : { createdAt: entry.createdAt }),
+    ...(entry.updatedAt === undefined ? {} : { updatedAt: entry.updatedAt })
+  };
+}
+
+function hasReplacementAliases(replacementAliases) {
+  return Object.values(replacementAliases || {})
+    .some((aliases) => Array.isArray(aliases) && aliases.length > 0);
 }
 
 function defaultIdFactory() {

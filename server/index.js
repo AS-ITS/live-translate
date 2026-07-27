@@ -10,7 +10,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 
-const IS_MAIN = import.meta.url === `file://${process.argv[1]}`;
+const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
 if (IS_MAIN && process.argv.includes('--production')) {
   process.env.NODE_ENV ??= 'production';

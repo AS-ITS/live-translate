@@ -26,7 +26,7 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
-import { toTraditionalChineseText } from './lib/chineseText.js';
+import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
   applyTranscriptEvent,
   buildTranscriptArticleParagraphs,
@@ -1993,12 +1993,12 @@ function readingContentForDetail(detail, { sourceItems, translationItems, sessio
 function sourceContentForRetranslationDetail(detail) {
   const source = detail?.readingContent?.sourceTranscript;
   if (source) {
-    return source;
+    return toTraditionalChineseSourceContent(source);
   }
 
   const sourceItems = finalTranscriptItemsForStream(detail?.sourceTranscript?.items || [], 'source');
   const paragraphs = buildTranscriptArticleParagraphs(sourceItems).map(toTraditionalChineseText);
-  return {
+  return toTraditionalChineseSourceContent({
     kind: 'sourceTranscript',
     status: paragraphs.length > 0 ? 'available' : 'empty',
     text: paragraphs.join('\n\n'),
@@ -2006,7 +2006,7 @@ function sourceContentForRetranslationDetail(detail) {
     createdAt: detail?.sourceTranscript?.createdAt ?? detail?.session?.startedAt ?? null,
     finalizedAt: detail?.sourceTranscript?.finalizedAt ?? detail?.session?.endedAt ?? null,
     emptyReason: paragraphs.length > 0 ? null : 'no_content'
-  };
+  });
 }
 
 function sourceLanguageLabelForDetail(detail) {

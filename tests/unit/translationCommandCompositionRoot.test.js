@@ -77,6 +77,44 @@ test('production composition uses SESSION_RECORDS_FILE when env provides it', ()
   assert.equal(calls[0].filePath, 'custom/sessions.json');
 });
 
+test('production composition uses DATA_DIR for default session records path', () => {
+  const calls = [];
+
+  createProductionApplicationDependencies({
+    env: { DATA_DIR: '/tmp/live-translate-data' },
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepositoryDouble();
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, '/tmp/live-translate-data/session-records.json');
+});
+
+test('production composition defaults session records to /var/data in production', () => {
+  const calls = [];
+
+  createProductionApplicationDependencies({
+    env: { NODE_ENV: 'production' },
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileSessionRepositoryFactory(options) {
+      calls.push(options);
+      return sessionRepositoryDouble();
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, '/var/data/session-records.json');
+});
+
 test('application server composition uses default file-backed session records path', () => {
   const calls = [];
   const sessionRepository = sessionRepositoryDouble();

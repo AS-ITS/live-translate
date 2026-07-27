@@ -203,7 +203,7 @@ test('production composition uses a default glossary file when the environment o
     }
   });
 
-  assert.equal(glossaryOptions.filePath, 'translation-glossary.json');
+  assert.equal(glossaryOptions.filePath, 'data/translation-glossary.json');
 });
 
 function glossaryDouble() {

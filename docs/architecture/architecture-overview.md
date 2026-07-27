@@ -365,12 +365,14 @@ acknowledgement writes from stale owners.
 
 Feature flags:
 
+- `DATA_DIR`: default directory for file-backed persistence. It defaults to
+  `./data` outside production and `/var/data` in production.
 - `TRANSLATION_DURABLE_QUEUE_ENABLED`: disabled by default. When set to `true`,
   production composition enables dual-write enqueue persistence and startup
   recovery.
 - `TRANSLATION_DURABLE_QUEUE_FILE`: optional file path for the file-backed
   durable queue repository. When omitted, the default file is
-  `translation-execution-queue.json`.
+  `translation-execution-queue.json` under `DATA_DIR`.
 
 Feature-enabled enqueue flow:
 
@@ -849,8 +851,7 @@ contracts.
 Current state:
 
 - Backend server runtime uses a JSON file-backed SessionRepository by default at
-  `data/session-records.json`, relative to the server process current working
-  directory.
+  `session-records.json` under `DATA_DIR`.
 - `SESSION_RECORDS_FILE` overrides the default file path when configured.
 - File-backed session storage preserves saved sessions, transcript items, and
   translation command state across page refresh and server restart.

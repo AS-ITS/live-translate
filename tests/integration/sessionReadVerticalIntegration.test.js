@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
@@ -495,7 +497,10 @@ test('GET /api/sessions/:sessionId does not mutate legacy input data', async () 
 });
 
 async function withSessionReadServer(sessionRepository, run) {
-  const dependencies = createApplicationDependencies({ sessionRepository });
+  const dependencies = createApplicationDependencies({
+    env: { DATA_DIR: join(tmpdir(), `live-translate-session-read-${process.pid}`) },
+    sessionRepository
+  });
   const handler = createRequestHandler({
     sessionReadController: dependencies.sessionReadController,
     translationHistoryController: dependencies.translationHistoryController

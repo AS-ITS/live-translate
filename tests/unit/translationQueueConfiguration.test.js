@@ -48,8 +48,30 @@ test('default file path uses translation execution queue filename', () => {
     environment: {}
   });
 
-  assert.equal(configuration.durableQueueFilePath, DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE);
-  assert.equal(configuration.durableQueueFilePath, 'translation-execution-queue.json');
+  assert.equal(configuration.durableQueueFilePath, `data/${DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE}`);
+  assert.equal(configuration.deadLetterQueueFilePath, 'data/translation-execution-dead-letter-queue.json');
+});
+
+test('default file paths use DATA_DIR when provided', () => {
+  const configuration = createTranslationQueueConfiguration({
+    environment: {
+      DATA_DIR: '/tmp/live-translate-data'
+    }
+  });
+
+  assert.equal(configuration.durableQueueFilePath, '/tmp/live-translate-data/translation-execution-queue.json');
+  assert.equal(configuration.deadLetterQueueFilePath, '/tmp/live-translate-data/translation-execution-dead-letter-queue.json');
+});
+
+test('production default file paths use /var/data', () => {
+  const configuration = createTranslationQueueConfiguration({
+    environment: {
+      NODE_ENV: 'production'
+    }
+  });
+
+  assert.equal(configuration.durableQueueFilePath, '/var/data/translation-execution-queue.json');
+  assert.equal(configuration.deadLetterQueueFilePath, '/var/data/translation-execution-dead-letter-queue.json');
 });
 
 test('lease timeout defaults to five minutes and accepts a positive integer override', () => {

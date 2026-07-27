@@ -56,6 +56,11 @@
 
 ### Changed
 
+- Production startup now uses `npm run start` to run the Node server in
+  production mode, serving both `/api/*` and built `dist/` frontend assets.
+  File-backed persistence defaults are rooted at `DATA_DIR`, using `/var/data`
+  in production when unset.
+
 - Translation history now lists only live translation Sessions. Completed
   saved-session retranslation outputs remain available from the retranslation
   workflow but are no longer materialized as separate history records.

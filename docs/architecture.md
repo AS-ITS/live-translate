@@ -220,8 +220,14 @@ Configuration:
 
 - `TRANSLATION_DURABLE_QUEUE_ENABLED` defaults to disabled. When enabled, it
   activates dual-write enqueue persistence and startup recovery.
+- `DATA_DIR` selects the default directory for file-backed persistence. It
+  defaults to `./data` outside production and `/var/data` in production.
 - `TRANSLATION_DURABLE_QUEUE_FILE` optionally selects the JSON durable queue
-  file. When omitted, the default is `translation-execution-queue.json`.
+  file. When omitted, the default is `translation-execution-queue.json` under
+  `DATA_DIR`.
+- `TRANSLATION_DEAD_LETTER_QUEUE_FILE` optionally selects the dead-letter queue
+  file. When omitted, the default is
+  `translation-execution-dead-letter-queue.json` under `DATA_DIR`.
 - `TRANSLATION_QUEUE_LEASE_MS` defaults to `300000` milliseconds.
 - `TRANSLATION_QUEUE_LEASE_RENEWAL_MS` configures the heartbeat renewal interval.
 

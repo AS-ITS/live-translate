@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   createProductionApplicationDependencies,
@@ -27,7 +29,8 @@ test('production Gemini saved-transcript path resolves through HTTP and invokes 
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
-      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-model'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-model',
+      DATA_DIR: join(tmpdir(), `live-translate-gemini-production-${process.pid}`)
     },
     sessionRepository,
     requestHandlerFactory: createRequestHandler,

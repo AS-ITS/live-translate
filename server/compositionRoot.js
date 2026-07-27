@@ -1,5 +1,6 @@
 import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
@@ -56,6 +57,8 @@ import { createTranslationHistoryController as createDefaultTranslationHistoryCo
 import { createGlossaryController as createDefaultGlossaryController } from './glossaryController.js';
 import { createLiveToken } from './tokenService.js';
 
+export const DEFAULT_DATA_DIR = 'data';
+export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 
@@ -1090,11 +1093,19 @@ function assertFactory(factory, name) {
 }
 
 function translationGlossaryFilePathFor(env = {}) {
-  return env.TRANSLATION_GLOSSARY_FILE ?? DEFAULT_TRANSLATION_GLOSSARY_FILE;
+  return env.TRANSLATION_GLOSSARY_FILE ?? join(dataDirFor(env), DEFAULT_TRANSLATION_GLOSSARY_FILE);
 }
 
 function sessionRecordsFilePathFor(env = {}) {
-  return env.SESSION_RECORDS_FILE ?? DEFAULT_SESSION_RECORDS_FILE;
+  return env.SESSION_RECORDS_FILE ?? join(dataDirFor(env), 'session-records.json');
+}
+
+function dataDirFor(env = {}) {
+  if (typeof env.DATA_DIR === 'string' && env.DATA_DIR.trim().length > 0) {
+    return env.DATA_DIR;
+  }
+
+  return env.NODE_ENV === 'production' ? DEFAULT_PRODUCTION_DATA_DIR : DEFAULT_DATA_DIR;
 }
 
 function shouldUseDefaultFileSessionRepository({ requestHandlerFactory, sessionReadOptions }) {

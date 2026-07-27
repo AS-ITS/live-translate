@@ -27,8 +27,8 @@ Current scope:
 - Each user translation run creates one Session.
 - The current session produces one selected target-language translation output.
 - The Session preserves source transcript items for review and export.
-- Saved Sessions are persisted through backend file storage by default at
-  `data/session-records.json`; `SESSION_RECORDS_FILE` can override the path.
+- Saved Sessions are persisted through backend file storage by default under
+  `DATA_DIR`; `SESSION_RECORDS_FILE` can override the exact path.
 - The same saved SourceTranscript can produce additional TranslationOutput
   records through re-translation without new audio input or re-recording.
 

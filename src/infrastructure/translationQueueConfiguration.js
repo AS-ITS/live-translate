@@ -1,5 +1,9 @@
+import { join } from 'node:path';
+
 export const DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE = 'translation-execution-queue.json';
 export const DEFAULT_DEAD_LETTER_QUEUE_FILE = 'translation-execution-dead-letter-queue.json';
+export const DEFAULT_DATA_DIR = 'data';
+export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_QUEUE_LEASE_MS = 300000;
 export const DEFAULT_TRANSLATION_QUEUE_LEASE_RENEWAL_MS = 100000;
 
@@ -84,7 +88,7 @@ function readDurableQueueFilePath(environment) {
   const value = environment.TRANSLATION_DURABLE_QUEUE_FILE;
 
   if (value === undefined) {
-    return DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE;
+    return join(dataDirFor(environment), DEFAULT_DURABLE_TRANSLATION_QUEUE_FILE);
   }
 
   if (typeof value !== 'string') {
@@ -100,9 +104,17 @@ function readDurableQueueFilePath(environment) {
 
 function readDeadLetterQueueFilePath(environment) {
   const value = environment.TRANSLATION_DEAD_LETTER_QUEUE_FILE;
-  if (value === undefined) return DEFAULT_DEAD_LETTER_QUEUE_FILE;
+  if (value === undefined) return join(dataDirFor(environment), DEFAULT_DEAD_LETTER_QUEUE_FILE);
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new TypeError('TRANSLATION_DEAD_LETTER_QUEUE_FILE must be a non-empty string.');
   }
   return value;
+}
+
+function dataDirFor(environment) {
+  if (typeof environment.DATA_DIR === 'string' && environment.DATA_DIR.trim().length > 0) {
+    return environment.DATA_DIR;
+  }
+
+  return environment.NODE_ENV === 'production' ? DEFAULT_PRODUCTION_DATA_DIR : DEFAULT_DATA_DIR;
 }

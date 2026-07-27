@@ -75,8 +75,8 @@ test('application dependencies enable glossary routes with the default writable 
   assert.equal(createResponse.status, 201);
   assert.equal(createResponse.json().entry.scope, 'live');
   assert.deepEqual(writes, [
-    ['mkdir', '.'],
-    ['writeFile', 'translation-glossary.json.tmp', {
+    ['mkdir', 'data'],
+    ['writeFile', 'data/translation-glossary.json.tmp', {
       entries: [
         {
           id: 'glossary-entry-1',
@@ -89,7 +89,7 @@ test('application dependencies enable glossary routes with the default writable 
         }
       ]
     }],
-    ['rename', 'translation-glossary.json.tmp', 'translation-glossary.json']
+    ['rename', 'data/translation-glossary.json.tmp', 'data/translation-glossary.json']
   ]);
 });
 

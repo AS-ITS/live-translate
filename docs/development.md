@@ -7,7 +7,9 @@ Backend environment variables:
 - `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
-- `PORT`: Optional backend port. Defaults to `3001`.
+- `PORT`: Optional backend port. Defaults to `3000`.
+- `DATA_DIR`: Optional directory for file-backed persistence. Defaults to
+  `./data` outside production and `/var/data` in production.
 - `ALLOWED_ORIGIN`: Optional CORS origin for the frontend. Defaults to
   `http://127.0.0.1:5173`.
 
@@ -16,7 +18,8 @@ Development example:
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 SAVED_RETRANSLATION_TIMEOUT_MS=30000
-PORT=3001
+PORT=3000
+DATA_DIR=./data
 ALLOWED_ORIGIN=http://127.0.0.1:5173
 ```
 

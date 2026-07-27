@@ -1,14 +1,34 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, normalize, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 
-const PORT = Number.parseInt(process.env.PORT || '3001', 10);
+const IS_MAIN = import.meta.url === `file://${process.argv[1]}`;
+
+if (IS_MAIN && process.argv.includes('--production')) {
+  process.env.NODE_ENV ??= 'production';
+}
+
+if (IS_MAIN) {
+  loadDotenv();
+}
+
+if (IS_MAIN && process.argv.includes('--production')) {
+  process.env.HOST ??= '0.0.0.0';
+}
+
+const PORT = Number.parseInt(process.env.PORT || '8000', 10);
 const HOST = process.env.HOST || '127.0.0.1';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'http://127.0.0.1:5173';
+const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
+const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
 
 const ERROR_RESPONSES = {
@@ -205,6 +225,62 @@ function logProviderError(requestId, error) {
     errorName: cause?.name || 'Error',
     safeSummary: 'Gemini token creation failed'
   });
+}
+
+function loadDotenv({ cwd = process.cwd(), env = process.env } = {}) {
+  const nodeEnv = env.NODE_ENV || 'development';
+  const originalKeys = new Set(Object.keys(env));
+  for (const fileName of ['.env', `.env.${nodeEnv}`]) {
+    loadDotenvFile(join(cwd, fileName), env, originalKeys);
+  }
+}
+
+function loadDotenvFile(filePath, env, originalKeys) {
+  if (!existsSync(filePath)) {
+    return;
+  }
+
+  for (const [key, value] of parseDotenv(readFileSync(filePath, 'utf8'))) {
+    if (!originalKeys.has(key)) {
+      env[key] = value;
+    }
+  }
+}
+
+function parseDotenv(content) {
+  const entries = [];
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf('=');
+    if (separatorIndex <= 0) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, separatorIndex).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      continue;
+    }
+
+    entries.push([key, parseDotenvValue(trimmed.slice(separatorIndex + 1).trim())]);
+  }
+
+  return entries;
+}
+
+function parseDotenvValue(value) {
+  if (
+    (value.startsWith('"') && value.endsWith('"')) ||
+    (value.startsWith("'") && value.endsWith("'"))
+  ) {
+    return value.slice(1, -1);
+  }
+
+  const commentIndex = value.search(/\s#/);
+  return commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
 }
 
 const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
@@ -660,6 +736,13 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (process.env.NODE_ENV === 'production' && req.method === 'GET' && !path.startsWith('/api/')) {
+    const served = await serveProductionStatic(req, res, path);
+    if (served) {
+      return;
+    }
+  }
+
   if (req.method !== 'POST' || path !== '/api/live-token') {
     statusCode = 404;
     sendJson(res, statusCode, errorPayload('not_found', requestId), requestId);
@@ -1076,7 +1159,94 @@ function serializeExecutionControlResponse(execution) {
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+async function serveProductionStatic(req, res, requestPath) {
+  const filePath = resolveStaticPath(requestPath);
+  const staticPath = filePath && await existingFilePath(filePath);
+  const responsePath = staticPath || INDEX_HTML_PATH;
+
+  try {
+    const body = await readFile(responsePath);
+    res.writeHead(200, {
+      'Content-Type': contentTypeFor(responsePath),
+      'Content-Length': body.length,
+      'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(body);
+    return true;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      logEvent({
+        level: 'error',
+        event: 'static_file_error',
+        path: requestPath,
+        errorName: error?.name || 'Error',
+        safeSummary: 'Production static file serving failed'
+      });
+    }
+    return false;
+  }
+}
+
+function resolveStaticPath(requestPath) {
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(requestPath);
+  } catch {
+    return null;
+  }
+
+  const relativePath = normalize(decodedPath).replace(/^[/\\]+/, '');
+  const filePath = resolve(DIST_DIR, relativePath || 'index.html');
+  if (filePath !== DIST_DIR && !filePath.startsWith(`${DIST_DIR}${sep}`)) {
+    return null;
+  }
+
+  return filePath;
+}
+
+async function existingFilePath(filePath) {
+  try {
+    const stats = await stat(filePath);
+    return stats.isFile() ? filePath : null;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function contentTypeFor(filePath) {
+  switch (extname(filePath)) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'text/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.ico':
+      return 'image/x-icon';
+    case '.webp':
+      return 'image/webp';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+if (IS_MAIN) {
   const server = http.createServer(handleRequest);
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 

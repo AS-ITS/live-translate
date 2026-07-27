@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
@@ -24,7 +26,8 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
   const dependencies = createProductionApplicationDependencies({
     env: {
       GEMINI_API_KEY: 'test-api-key',
-      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-wp6'
+      SAVED_RETRANSLATION_GEMINI_MODEL: 'gemini-production-wp6',
+      DATA_DIR: join(tmpdir(), `live-translate-gemini-e2e-${process.pid}`)
     },
     sessionRepository,
     requestHandlerFactory: createRequestHandler,

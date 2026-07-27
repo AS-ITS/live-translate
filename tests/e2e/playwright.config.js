@@ -11,7 +11,7 @@ export default defineConfig({
   webServer: [
     {
       command: 'NODE_ENV=test GEMINI_API_KEY=test ALLOWED_ORIGIN=http://127.0.0.1:5174 SESSION_RECORDS_FILE=/private/tmp/live-translate-e2e-session-records.json npm run server',
-      url: 'http://127.0.0.1:3001/healthz',
+      url: 'http://127.0.0.1:3000/healthz',
       reuseExistingServer: false,
       timeout: 30_000
     },

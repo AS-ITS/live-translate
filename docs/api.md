@@ -7,8 +7,10 @@
 Returns the global translation glossary.
 
 When `TRANSLATION_GLOSSARY_FILE` is unset, the backend uses
-`translation-glossary.json`. If the file does not exist, the glossary is empty;
-the first successful create request writes the file.
+`translation-glossary.json` under `DATA_DIR`. If `DATA_DIR` is unset, it
+defaults to `./data` outside production and `/var/data` in production. If the
+file does not exist, the glossary is empty; the first successful create request
+writes the file.
 
 ```json
 {

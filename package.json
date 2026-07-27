@@ -6,8 +6,9 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "server": "node --env-file-if-exists=.env server/index.js",
-    "start:production": "NODE_ENV=production HOST=0.0.0.0 node --env-file-if-exists=.env server/index.js",
+    "server": "node server/index.js",
+    "start": "node server/index.js --production",
+    "start:production": "node server/index.js --production",
     "test": "node --test tests/*.test.js",
     "test:unit": "node --test tests/unit/*.test.js",
     "test:integration": "node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/*.test.js",

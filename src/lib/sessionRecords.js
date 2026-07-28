@@ -20,6 +20,8 @@ export function createSessionRecord(input = {}, options = {}) {
     targetLanguageCode: input.targetLanguageCode,
     targetLanguageLabel: input.targetLanguageLabel || null,
     sourceLanguageCode: input.sourceLanguageCode || null,
+    meetingId: input.meetingId || null,
+    segmentId: input.segmentId || null,
     status: 'active',
     failureReason: null,
     failureCategory: null,

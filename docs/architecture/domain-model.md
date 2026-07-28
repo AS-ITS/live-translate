@@ -79,6 +79,15 @@ Translation Aggregate
 └── TranslationOutput
 ```
 
+Long Meeting support adds a separate aggregate boundary for long-running
+meeting capture:
+
+```text
+Meeting Aggregate
+├── Meeting
+└── MeetingSegment 1..n
+```
+
 The aggregates use identity references:
 
 ```text
@@ -94,6 +103,10 @@ Rules:
   Translation data.
 - SourceTranscript is the Session aggregate's canonical source.
 - TranslationOutput must point to a fixed `sourceTranscriptRevisionId`.
+- Meeting lifecycle updates do not require modifying Translation aggregate
+  state.
+- A MeetingSegment may reference a Live Session by identity. The Live Session
+  remains the owner of the browser-to-Gemini attempt and audio flow.
 
 ## 5. Domain Entities
 
@@ -105,8 +118,63 @@ Canonical domain entities:
 - `TranslationExecution`
 - `TranslationOutput`
 - `TranscriptItem`
+- `Meeting`
+- `MeetingSegment`
 
 Application DTOs and read models are not domain entities.
+
+## 5A. Meeting
+
+`Meeting` represents one long-running meeting container. It can span multiple
+Live Session attempts through ordered `MeetingSegment` records.
+
+Fields:
+
+- `id`
+- `status`: `created`, `active`, `completed`, `interrupted`, or `failed`
+- `startedAt`
+- `endedAt`
+- `createdAt`
+- `updatedAt`
+- `failureInfo`, optional
+
+Rules:
+
+- A Meeting owns the ordered Segment collection by `meetingId`.
+- Meeting completion does not create or mutate TranslationOutput records.
+- Meeting failure does not rewrite completed Segment state.
+- Interrupted Meetings can be reactivated; completed and failed Meetings are
+  terminal.
+
+## 5B. MeetingSegment
+
+`MeetingSegment` represents one independently persisted and recoverable slice of
+a long Meeting.
+
+Fields:
+
+- `id`
+- `meetingId`
+- `sequence`
+- `status`: `created`, `active`, `completed`, `interrupted`, or `failed`
+- `startedAt`
+- `endedAt`
+- `liveSessionId`, optional
+- `checkpoint`, optional
+- `errorInfo`, optional
+- `createdAt`
+- `updatedAt`
+
+Rules:
+
+- Segment sequence is scoped to a Meeting and must not collide within the same
+  Meeting.
+- A Segment may independently transition through active, completed,
+  interrupted, or failed states.
+- Checkpoint and error metadata are retained on the Segment, not on the Live
+  Session.
+- Existing non-Meeting Live Session records remain valid with no `meetingId` or
+  `segmentId`.
 
 ## 6. Session
 
@@ -276,10 +344,18 @@ SessionRepository
 TranslationRepository
 ```
 
+Long Meeting support adds:
+
+```text
+MeetingRepository
+```
+
 Responsibilities:
 
 - `SessionRepository` manages the Session aggregate and SourceTranscript.
 - `TranslationRepository` manages the Translation aggregate.
+- `MeetingRepository` manages the Meeting aggregate and its ordered
+  MeetingSegments.
 - ExportArtifact is derived result data and does not need a repository.
 
 Not introduced in Phase 2B:
@@ -290,6 +366,7 @@ TranslationRequestRepository
 TranslationExecutionRepository
 TranslationOutputRepository
 ExportArtifactRepository
+MeetingSegmentRepository
 ```
 
 Compatibility Adapter placement:

@@ -30,6 +30,8 @@ test('create active session record', () => {
     targetLanguageCode: 'zh-Hant',
     targetLanguageLabel: 'Traditional Chinese',
     sourceLanguageCode: 'zh-Hant',
+    meetingId: null,
+    segmentId: null,
     status: 'active',
     failureReason: null,
     failureCategory: null,
@@ -47,6 +49,22 @@ test('create active session record', () => {
     createdAt: 1100,
     updatedAt: 1100
   });
+});
+
+test('create active session record can reference a meeting segment', () => {
+  const record = createSessionRecord(
+    {
+      id: 'session-1',
+      startedAt: 1000,
+      targetLanguageCode: 'en',
+      meetingId: 'meeting-1',
+      segmentId: 'segment-1'
+    },
+    { now: 1100 }
+  );
+
+  assert.equal(record.meetingId, 'meeting-1');
+  assert.equal(record.segmentId, 'segment-1');
 });
 
 test('injected idFactory is deterministic', () => {

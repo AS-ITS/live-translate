@@ -17,6 +17,8 @@ Readers should be able to understand:
 - How session history and derived translation data are stored in the
   in-memory repository.
 - How saved export reuses transcript formatting.
+- How long meetings are represented as Meetings composed from independently
+  persisted Segments.
 
 Relevant background docs:
 
@@ -65,6 +67,12 @@ repository and provider ports, TranslationRequest / TranslationExecution /
 TranslationOutput contracts, read-model contracts, and Compatibility Adapter
 mapping. Phase 2C adds saved transcript re-translation, multiple outputs,
 retry/cancel/delete, provider selection, and output version UI.
+
+Long Meeting support adds a separate Meeting aggregate with ordered
+MeetingSegment records. A MeetingSegment may reference an existing Live Session
+by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
+`meetingId` and `segmentId`. This does not change the browser-to-Gemini audio
+path or ephemeral token flow.
 
 ## 3. Runtime Architecture
 

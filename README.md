@@ -32,7 +32,6 @@ API.
 
 Create local environment configuration outside version control. Common settings:
 
-- `NODE_ENV`: `development` locally, `production` for the built Node service.
 - `PORT`: backend port, defaults to `3000`.
 - `DATA_DIR`: directory for file-backed persistence, defaults to `./data`
   outside production and `/var/data` in production.
@@ -79,6 +78,8 @@ npm run start
 
 In production, the Node.js server provides both `/api/*` routes and the built
 frontend from `dist/`. Non-API browser routes fall back to `dist/index.html`.
+`npm run build` and `npm run start` set production mode from their commands; do
+not put `NODE_ENV=production` in a Vite-loaded `.env` file.
 
 For Render, configure environment variables on the service instead of committing
 secrets:

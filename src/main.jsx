@@ -9,6 +9,7 @@ import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
+import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
@@ -38,6 +39,7 @@ import {
   transcriptItemsForStream
 } from './lib/transcript.js';
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
+import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
@@ -46,6 +48,7 @@ const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'comp
 const FEATURE_PAGES = new Set(['live', 'history', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
+const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -85,6 +88,7 @@ function App() {
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
+  const sessionSnapshotSyncCoordinatorRef = useRef(null);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
@@ -133,6 +137,7 @@ function App() {
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
     sessionRef.current = null;
     reconnectSessionRef.current = null;
+    sessionSnapshotSyncCoordinatorRef.current?.cancel();
     for (const session of sessions) {
       void session?.stop().catch(() => {});
     }
@@ -385,7 +390,7 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
-    await syncSessionSnapshot(record.id);
+    await flushSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
     return record;
   }
@@ -407,7 +412,7 @@ function App() {
     if (appended.length > 0) {
       const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
       if (activeSessionRecord) {
-        void syncSessionSnapshot(activeSessionRecordId);
+        scheduleSessionSnapshotSync(activeSessionRecordId);
         void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
     }
@@ -421,7 +426,7 @@ function App() {
       const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
 
       if (finalized) {
-        await syncSessionSnapshot(sessionId);
+        await flushSessionSnapshot(sessionId);
         await translationCommandLifecycle().recordSessionFinalized(finalized);
         await refreshHistoryRecords();
       }
@@ -491,7 +496,7 @@ function App() {
 
     const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
     if (activeSessionRecord) {
-      await syncSessionSnapshot(activeSessionRecordId);
+      scheduleSessionSnapshotSync(activeSessionRecordId);
       void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
     }
   }
@@ -511,6 +516,31 @@ function App() {
     const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
     if (!detail) return null;
     return sessionSnapshotApiClientRef.current.sync({ session: detail.sessionRecord, transcriptItems: detail.transcriptItems });
+  }
+
+  function sessionSnapshotSyncCoordinator() {
+    if (!sessionSnapshotSyncCoordinatorRef.current) {
+      sessionSnapshotSyncCoordinatorRef.current = createSessionSnapshotSyncCoordinator({
+        syncSessionSnapshot,
+        delayMs: SESSION_SNAPSHOT_SYNC_DELAY_MS,
+        onError: reportSessionSnapshotSyncError
+      });
+    }
+
+    return sessionSnapshotSyncCoordinatorRef.current;
+  }
+
+  function scheduleSessionSnapshotSync(sessionId) {
+    sessionSnapshotSyncCoordinator().schedule(sessionId);
+  }
+
+  function flushSessionSnapshot(sessionId) {
+    return sessionSnapshotSyncCoordinator().flush(sessionId);
+  }
+
+  function reportSessionSnapshotSyncError(error) {
+    console.error('Session snapshot persistence failed.', error);
+    setError('無法儲存工作階段紀錄，但目前逐字稿仍保留在畫面上。');
   }
 
   async function refreshHistoryRecords() {
@@ -2442,80 +2472,6 @@ function upsertTrackedRetranslation(current, next) {
   return current.some(matches)
     ? current.map((item) => matches(item) ? { ...item, ...next } : item)
     : [...current, next];
-}
-
-function retranslationProgressFor(history, trackedRetranslations) {
-  const outputs = history.outputs.filter(isFormalRetranslationOutput);
-  const executions = history.executions.filter(isRetranslationExecution);
-  const knownKeys = new Set();
-
-  for (const output of outputs) {
-    addProgressKeys(knownKeys, output);
-  }
-
-  for (const execution of executions) {
-    addProgressKeys(knownKeys, execution);
-  }
-
-  for (const tracked of trackedRetranslations) {
-    if (hasProgressKey(knownKeys, tracked)) {
-      continue;
-    }
-
-    const optimisticExecution = {
-      id: tracked.executionId || tracked.requestId,
-      requestId: tracked.requestId,
-      targetLanguageCode: tracked.targetLanguageCode,
-      status: 'queued'
-    };
-
-    executions.push(optimisticExecution);
-    addProgressKeys(knownKeys, optimisticExecution);
-  }
-
-  return { outputs, executions };
-}
-
-function isFormalRetranslationOutput(output) {
-  if (typeof output?.id === 'string' && output.id.startsWith('live-output:')) {
-    return false;
-  }
-
-  return output?.source !== 'legacy' && (
-    output?.source === 'formal' ||
-    Boolean(output?.requestId) ||
-    Boolean(output?.executionId)
-  );
-}
-
-function isRetranslationExecution(execution) {
-  const executionId = execution?.id || '';
-  const requestId = execution?.requestId || execution?.translationRequestId || '';
-  if (typeof executionId === 'string' && executionId.startsWith('legacy-execution:')) return false;
-  if (typeof requestId === 'string' && requestId.startsWith('legacy-request:')) return false;
-  return Boolean(execution?.id || execution?.requestId);
-}
-
-function addProgressKeys(keys, item) {
-  if (item?.requestId) {
-    keys.add(`request:${item.requestId}`);
-  }
-
-  const executionId = item?.executionId || item?.id;
-  if (executionId) {
-    keys.add(`execution:${executionId}`);
-  }
-}
-
-function hasProgressKey(keys, item) {
-  return Boolean(
-    (item?.requestId && keys.has(`request:${item.requestId}`)) ||
-    (item?.executionId && keys.has(`execution:${item.executionId}`))
-  );
-}
-
-function hasPendingRetranslationItems(progress) {
-  return progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
 }
 
 function transcriptSummaryLabel(summary = {}) {

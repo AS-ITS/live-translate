@@ -809,7 +809,14 @@ test('completed retranslation stays out of translation history records', async (
                     source: 'formal',
                     completedAt: '2026-07-21T00:00:10.000Z'
                   }],
-                  executions: []
+                  executions: [{
+                    id: 'execution-fr-1',
+                    requestId: 'request-fr-1',
+                    targetLanguageCode: 'fr',
+                    status: 'running',
+                    providerAttemptStatus: 'in_flight',
+                    providerAttemptedAt: new Date(Date.now() - 2000).toISOString()
+                  }]
                 }
               : {
                   outputs: [],
@@ -890,6 +897,7 @@ test('completed retranslation stays out of translation history records', async (
   await expect(resultWorkspace.locator('.retranslation-selection-panel')).toHaveCount(1);
   await expect(outputList.getByText('法文重新翻譯')).toBeVisible();
   await expect(outputList.getByText('已完成')).toBeVisible();
+  await expect(workflow.getByLabel('重新翻譯進度').getByText(/已等待 \d+ 秒/)).toHaveCount(0);
   await expect(workflow.getByText('Bonjour terminé')).toHaveCount(0);
   await expect(workflow.getByText('Hello complete retranslation')).toHaveCount(0);
   await expect(workflow.getByText(/v1/)).toHaveCount(0);

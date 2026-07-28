@@ -78,8 +78,8 @@ npm run start
 
 In production, the Node.js server provides both `/api/*` routes and the built
 frontend from `dist/`. Non-API browser routes fall back to `dist/index.html`.
-`npm run build` and `npm run start` set production mode from their commands; do
-not put `NODE_ENV=production` in a Vite-loaded `.env` file.
+Use the npm scripts above to select production mode; do not configure runtime
+mode in local environment files loaded by Vite.
 
 Deployment platform commands:
 
@@ -93,7 +93,6 @@ For Render, configure environment variables on the service instead of committing
 secrets:
 
 ```env
-NODE_ENV=production
 PORT=3000
 DATA_DIR=/var/data
 TRANSLATION_PROVIDER=gemini

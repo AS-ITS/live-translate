@@ -7,7 +7,7 @@ test('session snapshot sync is idempotent for sessions and transcript items, and
   const repository = createMemorySessionRepository({ now: () => 1000 });
   const service = createSessionSnapshotSyncService({ sessionRepository: repository });
   const snapshot = {
-    session: { id: 'session-1', startedAt: 100, endedAt: 200, targetLanguageCode: 'ja', targetLanguageLabel: 'Japanese', status: 'stopped', failureReason: 'user_stop', failureCategory: 'user_intent' },
+    session: { id: 'session-1', startedAt: 100, endedAt: 200, targetLanguageCode: 'ja', targetLanguageLabel: 'Japanese', sourceLanguageCode: 'zh-Hant', status: 'stopped', failureReason: 'user_stop', failureCategory: 'user_intent' },
     transcriptItems: [
       { id: 'source-1', stream: 'source', status: 'final', text: 'hello', sequence: 1 },
       { id: 'translation-1', stream: 'translation', status: 'final', text: 'こんにちは', sequence: 1 }
@@ -20,6 +20,7 @@ test('session snapshot sync is idempotent for sessions and transcript items, and
   const detail = repository.getSessionRecord('session-1');
   assert.equal(repository.listSessionRecords().length, 1);
   assert.equal(detail.sessionRecord.status, 'stopped');
+  assert.equal(detail.sessionRecord.sourceLanguageCode, 'zh-Hant');
   assert.equal(detail.sessionRecord.failureReason, 'user_stop');
   assert.deepEqual(detail.transcriptItems.map((item) => item.id), ['source-1', 'translation-1']);
   assert.deepEqual(detail.sessionRecord.transcriptSummary, {

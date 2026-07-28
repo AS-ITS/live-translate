@@ -278,6 +278,7 @@ must not expose `GEMINI_API_KEY`.
 ```json
 {
   "targetLanguageCode": "en",
+  "sourceLanguageCode": "zh-Hant",
   "echoTargetLanguage": true
 }
 ```
@@ -285,6 +286,9 @@ must not expose `GEMINI_API_KEY`.
 Fields:
 
 - `targetLanguageCode`: Optional string. Defaults to `en`.
+- `sourceLanguageCode`: Optional string. Defaults to `zh-Hant`. This is a soft
+  primary input-language hint for model context; it does not prevent mixed
+  speech and is not sent as `translationConfig.sourceLanguageCode`.
 - `echoTargetLanguage`: Optional boolean. Defaults to `true`.
 
 ## Response Body
@@ -303,6 +307,13 @@ Fields:
         "targetLanguageCode": "en",
         "echoTargetLanguage": true
       }
+    },
+    "systemInstruction": {
+      "parts": [
+        {
+          "text": "Primary input language hint: zh-Hant. ..."
+        }
+      ]
     }
   },
   "liveGlossaryEntries": [
@@ -322,8 +333,9 @@ Fields:
 - `liveConnectModel`: Gemini Live model the browser must use with the
   backend-issued ephemeral token.
 - `liveConnectConfig`: Browser Live API connect config matching the server-side
-  token constraints. When live-scoped glossary entries exist, it also includes
-  glossary instructions.
+  token constraints. It includes the soft primary input-language hint in
+  `systemInstruction`; when live-scoped glossary entries exist, they share that
+  same instruction.
 - `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
   requested target language. The browser uses these for deterministic translated
   subtitle replacement; source transcripts and translated audio are unchanged.
@@ -331,6 +343,8 @@ Fields:
 ## Validation Rules
 
 - `targetLanguageCode` must be in the supported language allowlist.
+- `sourceLanguageCode` must be in the supported language allowlist when
+  provided.
 - `echoTargetLanguage` defaults to `true` when omitted.
 - Invalid JSON returns `400`.
 - Oversized request bodies return `413`.

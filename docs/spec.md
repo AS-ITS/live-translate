@@ -73,7 +73,10 @@ The MVP includes:
 ## Functional Requirements
 
 - The user can select one supported target language before starting a session.
+- The user can select one supported primary input language before starting a
+  session. This is a soft context hint and does not block mixed-language speech.
 - The default target language is English (`en`).
+- The default primary input language is Traditional Chinese (`zh-Hant`).
 - The user can start a live translation session.
 - The browser requests microphone permission before streaming audio.
 - The browser streams microphone audio to Gemini Live API while the session is
@@ -102,16 +105,17 @@ The MVP includes:
 ## User Flow
 
 1. The user opens the web app.
-2. The user selects a target language or keeps the default `en`.
-3. The user clicks start.
-4. The browser requests microphone permission.
-5. The frontend requests an ephemeral token from `POST /api/live-token`.
-6. The frontend connects directly to Gemini Live API with the ephemeral token.
-7. The browser sends microphone audio chunks to Gemini.
-8. Gemini returns translated audio and transcript events.
-9. The frontend plays translated audio and updates transcripts.
-10. The user clicks stop.
-11. The frontend closes the Gemini session and stops microphone tracks.
+2. The user selects a primary input language or keeps `zh-Hant`.
+3. The user selects a target language or keeps the default `en`.
+4. The user clicks start.
+5. The browser requests microphone permission.
+6. The frontend requests an ephemeral token from `POST /api/live-token`.
+7. The frontend connects directly to Gemini Live API with the ephemeral token.
+8. The browser sends microphone audio chunks to Gemini.
+9. Gemini returns translated audio and transcript events.
+10. The frontend plays translated audio and updates transcripts.
+11. The user clicks stop.
+12. The frontend closes the Gemini session and stops microphone tracks.
 
 ## Supported MVP Languages
 
@@ -125,13 +129,13 @@ The MVP includes:
 - German: `de`
 
 Default target language: `en`.
+Default primary input language: `zh-Hant`.
 
 ## Future Enhancements
 
 - Persist transcript history.
 - Add user accounts.
 - Support shared rooms or multi-user sessions.
-- Add source language selection.
 - Add text input translation.
 - Add downloadable transcript exports.
 - Add configurable voices or playback settings.

@@ -15,6 +15,7 @@ test('create active session record', () => {
       startedAt: 1000,
       targetLanguageCode: 'zh-Hant',
       targetLanguageLabel: 'Traditional Chinese',
+      sourceLanguageCode: 'zh-Hant',
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic'
     },
@@ -28,6 +29,7 @@ test('create active session record', () => {
     durationMs: null,
     targetLanguageCode: 'zh-Hant',
     targetLanguageLabel: 'Traditional Chinese',
+    sourceLanguageCode: 'zh-Hant',
     status: 'active',
     failureReason: null,
     failureCategory: null,

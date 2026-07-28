@@ -76,6 +76,7 @@ function sessionMetadata(session) {
   return {
     targetLanguageCode: session.targetLanguageCode,
     targetLanguageLabel: session.targetLanguageLabel ?? null,
+    sourceLanguageCode: session.sourceLanguageCode ?? null,
     selectedInputDeviceId: session.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null
   };

@@ -281,9 +281,12 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
 
+  const sourceLanguage = page.getByRole('combobox', { name: '主要輸入語言' });
   const targetLanguage = page.getByRole('combobox', { name: '目標語言' });
 
+  await expect(sourceLanguage).toHaveValue('zh-Hant');
   await expect(targetLanguage).toHaveValue('en');
+  await sourceLanguage.selectOption('en');
   await targetLanguage.selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
 
@@ -291,7 +294,13 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect
     .poll(() => page.evaluate(() => window.__mockGoogleGenAI?.liveConnects.length || 0))
     .toBe(1);
+  await expect(sourceLanguage).toBeDisabled();
   await expect(targetLanguage).toBeDisabled();
+  expect(page.liveTokenRequests[0]).toEqual({
+    targetLanguageCode: 'ja',
+    sourceLanguageCode: 'en',
+    echoTargetLanguage: true
+  });
 
   const liveConnect = await page.evaluate(() => {
     const request = window.__mockGoogleGenAI.liveConnects[0];

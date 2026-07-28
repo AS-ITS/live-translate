@@ -87,15 +87,14 @@ function resolveCanonicalSource(detail, sessionId) {
 
   const revisionId = `source-revision:${sessionId}:final`;
   const sourceLanguageDetection = canonicalLanguageDetection(items);
+  const sourceLanguageCode = sourceLanguageDetection.sourceLanguageCode ?? optionalSourceLanguageCode(detail.sessionRecord.sourceLanguageCode);
   return {
     revisionId,
     snapshot: {
       revisionId,
       items,
       sourceText: text,
-      ...(sourceLanguageDetection.sourceLanguageCode === undefined ? {} : {
-        sourceLanguageCode: sourceLanguageDetection.sourceLanguageCode
-      }),
+      ...(sourceLanguageCode === undefined ? {} : { sourceLanguageCode }),
       sourceLanguageDetection: sourceLanguageDetection.metadata
     }
   };
@@ -114,6 +113,7 @@ function canonicalLanguageDetection(items) {
 }
 
 function sequenceValue(item) { return Number.isFinite(item?.sequence) ? item.sequence : 0; }
+function optionalSourceLanguageCode(value) { return typeof value === 'string' && value.trim().length > 0 ? value : undefined; }
 function requiredString(value, name) {
   if (typeof value !== 'string' || value.trim().length === 0) throw validationError(`${name} must be a non-empty string.`);
   return value;

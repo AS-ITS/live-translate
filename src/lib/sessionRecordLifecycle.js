@@ -7,6 +7,7 @@ export function buildSessionRecordInput(options = {}) {
     startedAt: options.startedAt,
     targetLanguageCode: options.targetLanguageCode,
     targetLanguageLabel: options.targetLanguageLabel || null,
+    sourceLanguageCode: options.sourceLanguageCode || null,
     selectedInputDeviceId: options.selectedInputDeviceId || null,
     inputDeviceLabelSnapshot: options.inputDeviceLabelSnapshot || null
   };

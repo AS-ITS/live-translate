@@ -16,6 +16,7 @@ test('build session record input', () => {
       startedAt: 1000,
       targetLanguageCode: 'zh-Hant',
       targetLanguageLabel: 'Traditional Chinese',
+      sourceLanguageCode: 'zh-Hant',
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic'
     }),
@@ -23,6 +24,7 @@ test('build session record input', () => {
       startedAt: 1000,
       targetLanguageCode: 'zh-Hant',
       targetLanguageLabel: 'Traditional Chinese',
+      sourceLanguageCode: 'zh-Hant',
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic'
     }

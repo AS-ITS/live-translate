@@ -189,7 +189,7 @@ function errorCodeFor(error) {
     return error.code;
   }
 
-  if (error.message === 'Unsupported targetLanguageCode') {
+  if (error.message === 'Unsupported targetLanguageCode' || error.message === 'Unsupported sourceLanguageCode') {
     return 'unsupported_language';
   }
   if (error.message === 'GEMINI_API_KEY is not configured') {

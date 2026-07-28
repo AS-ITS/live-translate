@@ -107,6 +107,11 @@
 
 ### Added
 
+- Live translation now lets users choose a primary input language before
+  starting a session. The value defaults to Traditional Chinese (`zh-Hant`), is
+  stored with session metadata, and is sent as a soft Gemini system-instruction
+  hint while preserving mixed-language speech.
+
 - Translation history now supports deleting finalized Session records from the
   history page through `DELETE /api/sessions/:sessionId`.
 

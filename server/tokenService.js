@@ -2,9 +2,13 @@ import { isSupportedLanguage } from './languages.js';
 
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
+export const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
 export function normalizeTokenRequest(body = {}) {
   const targetLanguageCode = Object.hasOwn(body, 'targetLanguageCode') ? body.targetLanguageCode : 'en';
+  const sourceLanguageCode = Object.hasOwn(body, 'sourceLanguageCode')
+    ? body.sourceLanguageCode
+    : DEFAULT_SOURCE_LANGUAGE_CODE;
   const echoTargetLanguage =
     typeof body.echoTargetLanguage === 'boolean' ? body.echoTargetLanguage : true;
 
@@ -14,11 +18,18 @@ export function normalizeTokenRequest(body = {}) {
     throw error;
   }
 
-  return { targetLanguageCode, echoTargetLanguage };
+  if (!isSupportedLanguage(sourceLanguageCode)) {
+    const error = new Error('Unsupported sourceLanguageCode');
+    error.status = 400;
+    throw error;
+  }
+
+  return { targetLanguageCode, sourceLanguageCode, echoTargetLanguage };
 }
 
 export function buildTokenConfig({
   targetLanguageCode,
+  sourceLanguageCode = DEFAULT_SOURCE_LANGUAGE_CODE,
   echoTargetLanguage,
   glossaryEntries,
   liveTranslateModel = resolveLiveTranslateModel()
@@ -36,9 +47,7 @@ export function buildTokenConfig({
     generationConfig: {
       translationConfig
     },
-    ...(Array.isArray(glossaryEntries) && glossaryEntries.length > 0
-      ? { systemInstruction: glossaryInstruction(glossaryEntries) }
-      : {})
+    systemInstruction: buildSystemInstruction({ sourceLanguageCode, glossaryEntries })
   };
 
   return {
@@ -111,13 +120,30 @@ export function resolveLiveTranslateModel(env = process.env) {
 }
 
 function glossaryInstruction(entries) {
+  return [
+    'Glossary instructions: when a source term occurs, use its specified target translation.',
+    ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
+  ].join('\n');
+}
+
+function buildSystemInstruction({ sourceLanguageCode, glossaryEntries }) {
+  const parts = [
+    [
+      `Primary input language hint: ${sourceLanguageCode}.`,
+      'Use this as a soft hint for the main speech context.',
+      `The speaker may still mix ${sourceLanguageCode} with English, Taiwanese, or other languages.`,
+      `Do not force all speech to be interpreted as ${sourceLanguageCode}; detect and preserve mixed-language meaning when present.`
+    ].join(' ')
+  ];
+
+  if (Array.isArray(glossaryEntries) && glossaryEntries.length > 0) {
+    parts.push(glossaryInstruction(glossaryEntries));
+  }
+
   return {
     parts: [
       {
-        text: [
-          'Glossary instructions: when a source term occurs, use its specified target translation.',
-          ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
-        ].join('\n')
+        text: parts.join('\n\n')
       }
     ]
   };

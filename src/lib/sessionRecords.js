@@ -19,6 +19,7 @@ export function createSessionRecord(input = {}, options = {}) {
     durationMs: null,
     targetLanguageCode: input.targetLanguageCode,
     targetLanguageLabel: input.targetLanguageLabel || null,
+    sourceLanguageCode: input.sourceLanguageCode || null,
     status: 'active',
     failureReason: null,
     failureCategory: null,

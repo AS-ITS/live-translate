@@ -49,6 +49,7 @@ const FEATURE_PAGES = new Set(['live', 'history', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
+const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -67,6 +68,7 @@ function App() {
   const [status, setStatus] = useState('idle');
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
+  const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [transcript, setTranscript] = useState(createTranscriptState);
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
@@ -236,6 +238,7 @@ function App() {
 
     return new LiveTranslateSession({
       targetLanguageCode,
+      sourceLanguageCode,
       echoTargetLanguage,
       liveGlossaryEntries: liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode),
       inputDeviceId: inputDeviceIdForSession,
@@ -386,6 +389,7 @@ function App() {
         startedAt: Date.now(),
         targetLanguageCode,
         targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
+        sourceLanguageCode,
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -769,30 +773,37 @@ function App() {
           </div>
 
         <div className="controls" aria-label="翻譯控制項">
-          <label className="field">
-            <span>目標語言</span>
-            <select
-              value={targetLanguageCode}
-              onChange={(event) => setTargetLanguageCode(event.target.value)}
-              disabled={isActive}
-            >
-              {SUPPORTED_LANGUAGES.map((language) => (
-                <option key={language.code} value={language.code}>
-                  {language.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="language-controls">
+            <label className="field">
+              <span>主要輸入語言</span>
+              <select
+                value={sourceLanguageCode}
+                onChange={(event) => setSourceLanguageCode(event.target.value)}
+                disabled={isActive}
+              >
+                {SUPPORTED_LANGUAGES.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={echoTargetLanguage}
-              onChange={(event) => setEchoTargetLanguage(event.target.checked)}
-              disabled={isActive}
-            />
-            <span>朗讀翻譯語言</span>
-          </label>
+            <label className="field">
+              <span>目標語言</span>
+              <select
+                value={targetLanguageCode}
+                onChange={(event) => setTargetLanguageCode(event.target.value)}
+                disabled={isActive}
+              >
+                {SUPPORTED_LANGUAGES.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
 
           <label className="field">
             <span>麥克風</span>
@@ -811,6 +822,16 @@ function App() {
                 </option>
               ))}
             </select>
+          </label>
+
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={echoTargetLanguage}
+              onChange={(event) => setEchoTargetLanguage(event.target.checked)}
+              disabled={isActive}
+            />
+            <span>朗讀翻譯語言</span>
           </label>
 
           {status === 'listening' ? (
@@ -1836,6 +1857,12 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           <dt>目標語言</dt>
           <dd>{historyLanguageLabel(sessionRecord)}</dd>
         </div>
+        {sessionRecord.sourceLanguageCode ? (
+          <div>
+            <dt>主要輸入語言</dt>
+            <dd>{targetLanguageLabelFor(sessionRecord.sourceLanguageCode) || sessionRecord.sourceLanguageCode}</dd>
+          </div>
+        ) : null}
         <div>
           <dt>狀態</dt>
           <dd>{historyStatusLabel(sessionRecord.status)}</dd>

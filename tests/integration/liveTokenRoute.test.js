@@ -148,6 +148,17 @@ test('POST /api/live-token rejects invalid language', async () => {
   assert.equal(globalThis.__mockGoogleGenAI.tokenCreates.length, 0);
 });
 
+test('POST /api/live-token rejects invalid source language', async () => {
+  process.env.GEMINI_API_KEY = 'test-api-key';
+
+  const response = await postJson({ targetLanguageCode: 'ja', sourceLanguageCode: 'xx' });
+  const body = response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error.code, 'unsupported_language');
+  assert.equal(globalThis.__mockGoogleGenAI.tokenCreates.length, 0);
+});
+
 test('POST /api/live-token rejects requests when api key is missing', async () => {
   delete process.env.GEMINI_API_KEY;
 

@@ -13,10 +13,12 @@ const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
 const DEMO_ACCESS_TOKEN = import.meta.env?.VITE_DEMO_ACCESS_TOKEN;
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
+const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
 export class LiveTranslateSession {
   constructor({
     targetLanguageCode,
+    sourceLanguageCode = DEFAULT_SOURCE_LANGUAGE_CODE,
     echoTargetLanguage,
     inputDeviceId = '',
     onInputDeviceFallback,
@@ -30,6 +32,7 @@ export class LiveTranslateSession {
     liveGlossaryEntries = []
   }) {
     this.targetLanguageCode = targetLanguageCode;
+    this.sourceLanguageCode = sourceLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
     this.inputDeviceId = inputDeviceId;
     this.onInputDeviceFallback = onInputDeviceFallback;
@@ -74,6 +77,7 @@ export class LiveTranslateSession {
       },
       body: JSON.stringify({
         targetLanguageCode: this.targetLanguageCode,
+        sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage
       })
     }, TOKEN_TIMEOUT_MS);

@@ -33,6 +33,8 @@ The backend exposes `POST /api/live-token`.
 Responsibilities:
 
 - Read and validate the requested target language.
+- Read and validate the optional primary input language hint, defaulting to
+  Traditional Chinese (`zh-Hant`) when omitted.
 - Default `echoTargetLanguage` to `true` when omitted.
 - Create a Gemini ephemeral token using `GEMINI_API_KEY`.
 - Return only the ephemeral token name and expiration time to the browser.
@@ -60,6 +62,7 @@ The backend must not return the real Gemini API key or any long-lived credential
 - Serve `POST /api/live-token`.
 - Validate request JSON.
 - Validate `targetLanguageCode` against the allowlist.
+- Validate optional `sourceLanguageCode` against the allowlist.
 - Validate or default token configuration options.
 - Use `GEMINI_API_KEY` only on the server.
 - Create Gemini ephemeral tokens.
@@ -429,7 +432,8 @@ Sessions retain the existing compatibility read model and exporter.
 - The browser may receive only short-lived ephemeral tokens.
 - Ephemeral tokens should be scoped to the Live Translate model and required
   session configuration.
-- Token requests must validate `targetLanguageCode`.
+- Token requests must validate `targetLanguageCode` and optional
+  `sourceLanguageCode`.
 - Backend CORS should be restricted to the local frontend origin in development
   and the production frontend origin in deployment.
 - The backend should not log secrets, raw audio, or transcript content.

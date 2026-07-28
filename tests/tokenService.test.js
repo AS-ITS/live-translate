@@ -11,6 +11,7 @@ import {
 test('normalizeTokenRequest accepts valid language and defaults echoTargetLanguage', () => {
   assert.deepEqual(normalizeTokenRequest({ targetLanguageCode: 'ja' }), {
     targetLanguageCode: 'ja',
+    sourceLanguageCode: 'zh-Hant',
     echoTargetLanguage: true
   });
 });
@@ -18,6 +19,21 @@ test('normalizeTokenRequest accepts valid language and defaults echoTargetLangua
 test('normalizeTokenRequest rejects unsupported language', () => {
   assert.throws(() => normalizeTokenRequest({ targetLanguageCode: 'xx' }), {
     message: 'Unsupported targetLanguageCode',
+    status: 400
+  });
+});
+
+test('normalizeTokenRequest accepts valid source language', () => {
+  assert.deepEqual(normalizeTokenRequest({ targetLanguageCode: 'ja', sourceLanguageCode: 'en' }), {
+    targetLanguageCode: 'ja',
+    sourceLanguageCode: 'en',
+    echoTargetLanguage: true
+  });
+});
+
+test('normalizeTokenRequest rejects unsupported source language', () => {
+  assert.throws(() => normalizeTokenRequest({ targetLanguageCode: 'ja', sourceLanguageCode: 'xx' }), {
+    message: 'Unsupported sourceLanguageCode',
     status: 400
   });
 });
@@ -44,6 +60,8 @@ test('buildTokenConfig locks live translate model and audio settings', () => {
   assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['AUDIO']);
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.targetLanguageCode, 'zh-Hant');
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.echoTargetLanguage, false);
+  assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.sourceLanguageCode, undefined);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
 });
 
@@ -69,7 +87,7 @@ test('resolveLiveTranslateModel reads and validates the environment model', () =
   );
 });
 
-test('buildTokenConfig includes live glossary instruction only when entries are provided', () => {
+test('buildTokenConfig includes source hint and adds live glossary instruction when entries are provided', () => {
   const config = buildTokenConfig(
     {
       targetLanguageCode: 'ja',
@@ -83,7 +101,9 @@ test('buildTokenConfig includes live glossary instruction only when entries are 
   assert.match(text, /Glossary instructions/);
   assert.match(text, /Source term: Codex/);
   assert.match(text, /Required translation: コーデックス/);
-  assert.equal(buildTokenConfig({ targetLanguageCode: 'ja', echoTargetLanguage: true }).liveConnectConstraints.config.systemInstruction, undefined);
+  const sourceHintOnly = buildTokenConfig({ targetLanguageCode: 'ja', echoTargetLanguage: true }).liveConnectConstraints.config.systemInstruction.parts[0].text;
+  assert.match(sourceHintOnly, /Primary input language hint: zh-Hant/);
+  assert.doesNotMatch(sourceHintOnly, /Glossary instructions/);
 });
 
 test('createLiveToken maps Gemini token response', async () => {

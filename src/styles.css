@@ -124,8 +124,14 @@ input {
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(360px, 2fr) minmax(220px, 1fr) auto auto;
   align-items: end;
+  gap: 16px;
+}
+
+.language-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
   gap: 16px;
 }
 
@@ -856,6 +862,7 @@ input:disabled {
   }
 
   .controls,
+  .language-controls,
   .transcript-grid,
   .saved-export-controls,
   .retranslation-controls,

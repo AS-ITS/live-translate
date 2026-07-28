@@ -81,6 +81,14 @@ frontend from `dist/`. Non-API browser routes fall back to `dist/index.html`.
 `npm run build` and `npm run start` set production mode from their commands; do
 not put `NODE_ENV=production` in a Vite-loaded `.env` file.
 
+Deployment platform commands:
+
+```text
+Install Command: npm ci
+Build Command: npm run build
+Start Command: npm run start
+```
+
 For Render, configure environment variables on the service instead of committing
 secrets:
 

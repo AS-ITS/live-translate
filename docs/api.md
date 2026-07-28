@@ -231,6 +231,40 @@ The detailed session-scoped history is also available from `GET
 If this history read fails while loading Session detail, the main Session detail
 response remains available; history is an isolated read enhancement.
 
+## `DELETE /api/sessions/:sessionId/translations/:outputId`
+
+Deletes one completed formal saved-session retranslation output attached to the
+identified Session. The endpoint deletes only the derived `TranslationOutput`;
+it does not delete the source Session, canonical source transcript,
+TranslationRequest, TranslationExecution, live-session primary output, active
+Live API session, or provider state.
+
+Successful deletion returns:
+
+```json
+{ "deleted": true, "sessionId": "session-1", "outputId": "output-1" }
+```
+
+Missing outputs, outputs owned by another Session, and live-session primary
+outputs return `404 translation_output_not_found`. Malformed identifiers return
+`400 invalid_request`.
+
+## `DELETE /api/sessions/:sessionId`
+
+Deletes one finalized Session history record and its related transcript items.
+The endpoint is intended for history consumers only; it does not affect any
+active Live API session, microphone resource, token flow, language preference,
+or current transcript state.
+
+Successful deletion returns:
+
+```json
+{ "deleted": true, "sessionId": "session-1" }
+```
+
+Missing records and non-finalized records return `404 session_not_found`.
+Malformed session identifiers return `400 invalid_request`.
+
 ## `POST /api/live-token`
 
 Creates a short-lived Gemini ephemeral token for one browser Live Translate

@@ -212,6 +212,7 @@ export function createApplicationDependencies(options = {}) {
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
       sessionRepository: sessionReadDependencies.sessionRepository,
+      translationRepository: translationCommandDependencies.translationRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,
       translationHistoryController,

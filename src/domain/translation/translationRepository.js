@@ -13,7 +13,8 @@ export const TRANSLATION_REPOSITORY_METHODS = Object.freeze([
   'listTranslationOutputsByExecution',
   'listTranslationOutputsBySession',
   'listTranslationOutputsByRequest',
-  'getTranslationOutput'
+  'getTranslationOutput',
+  'deleteTranslationOutput'
 ]);
 
 export function createTranslationRepository() {

@@ -456,6 +456,14 @@ input:disabled {
   margin-bottom: 12px;
 }
 
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .history-item h3,
 .history-item h4 {
   margin: 0 0 8px;
@@ -531,6 +539,18 @@ input:disabled {
   background: #ffffff;
   color: #314152;
   font-size: 0.875rem;
+}
+
+.danger-button {
+  border-color: #c62828;
+  background: #fff5f5;
+  color: #9f1d1d;
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: #a31616;
+  background: #ffe3e3;
+  color: #7d1717;
 }
 
 .session-detail {
@@ -893,6 +913,11 @@ input:disabled {
 
   .history-status {
     width: fit-content;
+  }
+
+  .history-actions {
+    display: grid;
+    justify-content: stretch;
   }
 
   .detail-button {

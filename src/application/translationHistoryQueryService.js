@@ -1,8 +1,12 @@
-import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
+const REQUIRED_TRANSLATION_HISTORY_REPOSITORY_METHODS = Object.freeze([
+  'listTranslationRequestsBySession',
+  'listTranslationExecutionsByRequest',
+  'listTranslationOutputsByExecution'
+]);
 
 export function createTranslationHistoryQueryService({ sessionRepository, translationRepository } = {}) {
   if (!sessionRepository || typeof sessionRepository.getSessionRecord !== 'function') throw new TypeError('sessionRepository.getSessionRecord is required.');
-  for (const method of TRANSLATION_REPOSITORY_METHODS) {
+  for (const method of REQUIRED_TRANSLATION_HISTORY_REPOSITORY_METHODS) {
     if (!translationRepository || typeof translationRepository[method] !== 'function') throw new TypeError(`translationRepository.${method} is required.`);
   }
 

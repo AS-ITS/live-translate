@@ -52,10 +52,12 @@ const ERROR_RESPONSES = {
   },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
   translation_execution_not_found: { status: 404, message: 'Translation execution not found.' },
+  translation_output_not_found: { status: 404, message: 'Translation output not found.' },
   translation_request_not_found: { status: 404, message: 'Translation request not found.' },
   execution_invalid_state: { status: 409, message: 'Translation execution is not in a valid state for this operation.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
+const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 
 function safeTranslationProvidersFor(env = process.env) {
   return [
@@ -415,6 +417,7 @@ export function createRequestHandler(options = {}) {
   const {
     sessionReadController,
     sessionRepository,
+    translationRepository,
     translationCommandController,
     executionControlController,
     translationHistoryController,
@@ -437,6 +440,7 @@ export function createRequestHandler(options = {}) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
       sessionRepository,
+      translationRepository,
       translationCommandController,
       executionControlController,
       translationHistoryController,
@@ -457,7 +461,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationCommandController, executionControlController, translationHistoryController, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -533,6 +537,75 @@ async function handleRequestWithSessionReadController(
         : safeTranslationProvidersFor();
       statusCode = 200;
       sendJson(res, statusCode, { providers }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && isSessionTranslationOutputPath(path)) {
+    try {
+      if (!translationRepository) throw createHttpError('saved_transcript_retranslation_unavailable');
+      const { sessionId, outputId } = parseSessionTranslationOutputPath(path);
+      const output = await translationRepository.getTranslationOutput(outputId);
+
+      if (!isDeletableRetranslationOutput(output, sessionId)) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('translation_output_not_found', requestId), requestId);
+        return;
+      }
+
+      const deleted = await translationRepository.deleteTranslationOutput(outputId);
+
+      if (!deleted) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('translation_output_not_found', requestId), requestId);
+        return;
+      }
+
+      statusCode = 200;
+      sendJson(res, statusCode, { deleted: true, sessionId, outputId }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
+    try {
+      let sessionId;
+      try {
+        sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
+      } catch {
+        throw createHttpError('invalid_request');
+      }
+      if (!sessionId.trim()) throw createHttpError('invalid_request');
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+
+      if (!existing?.sessionRecord || !DELETABLE_SESSION_STATUSES.has(existing.sessionRecord.status)) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+
+      const deleted = await sessionRepository.deleteSessionRecord(sessionId);
+
+      if (!deleted) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+
+      statusCode = 200;
+      sendJson(res, statusCode, { deleted: true, sessionId }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -845,6 +918,10 @@ function isSessionTranslationHistoryPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/translations') && path.length > '/api/sessions//translations'.length;
 }
 
+function isSessionTranslationOutputPath(path) {
+  return path.startsWith('/api/sessions/') && path.includes('/translations/') && path.length > '/api/sessions//translations/'.length;
+}
+
 function isSessionRetranslationPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
 }
@@ -1030,6 +1107,39 @@ function parseSessionTranslationHistoryPath(url) {
   if (targetLanguageCode === null) return { sessionId, targetLanguageCode: undefined };
   if (targetLanguageCode.trim().length === 0) throw createHttpError('invalid_request');
   return { sessionId, targetLanguageCode };
+}
+
+function parseSessionTranslationOutputPath(path) {
+  const prefix = '/api/sessions/';
+  const separator = '/translations/';
+  const separatorIndex = path.indexOf(separator, prefix.length);
+
+  if (separatorIndex === -1) throw createHttpError('invalid_request');
+
+  const encodedSessionId = path.slice(prefix.length, separatorIndex);
+  const encodedOutputId = path.slice(separatorIndex + separator.length);
+
+  if (!encodedSessionId || !encodedOutputId || encodedOutputId.includes('/')) throw createHttpError('invalid_request');
+
+  try {
+    const sessionId = decodeURIComponent(encodedSessionId);
+    const outputId = decodeURIComponent(encodedOutputId);
+    if (!sessionId.trim() || !outputId.trim()) throw createHttpError('invalid_request');
+    return { sessionId, outputId };
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function isDeletableRetranslationOutput(output, sessionId) {
+  return Boolean(
+    output &&
+      output.sessionId === sessionId &&
+      typeof output.requestId === 'string' &&
+      Number.isInteger(output.version) &&
+      !String(output.id).startsWith('live-output:')
+  );
 }
 
 function savedTranscriptRetranslationErrorCodeFor(error) {

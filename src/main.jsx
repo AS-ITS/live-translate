@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Download, Mic, MicOff, Radio, RefreshCw, Square } from 'lucide-react';
+import { Copy, Download, Mic, MicOff, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -543,6 +543,11 @@ function App() {
   }
 
   async function openHistoryRecordDetail(id) {
+    if (selectedHistoryRecordIdRef.current === id) {
+      closeHistoryRecordDetail();
+      return;
+    }
+
     const record = historyRecords.find((historyRecord) => historyRecord.id === id);
 
     if (!record || !TERMINAL_HISTORY_STATUSES.has(record.status)) {
@@ -604,6 +609,24 @@ function App() {
     selectedHistoryRecordIdRef.current = null;
     setSelectedHistoryRecordId(null);
     setSelectedHistoryDetail(null);
+  }
+
+  async function deleteHistoryRecord(id) {
+    if (!window.confirm('確定要刪除此翻譯紀錄？')) {
+      return;
+    }
+
+    try {
+      await sessionReadApiClientRef.current.deleteSessionRecord(id);
+      setError('');
+      setHistoryRecords((records) => records.filter((record) => record.id !== id));
+
+      if (selectedHistoryRecordIdRef.current === id) {
+        closeHistoryRecordDetail();
+      }
+    } catch {
+      setError('無法刪除翻譯紀錄。');
+    }
   }
 
   function selectedInputDeviceSnapshot() {
@@ -844,7 +867,7 @@ function App() {
           selectedDetail={selectedHistoryDetail}
           selectedRecord={selectedHistoryRecord}
           onViewDetails={openHistoryRecordDetail}
-          onCloseDetails={closeHistoryRecordDetail}
+          onDeleteRecord={deleteHistoryRecord}
           onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
           onOpenRetranslationWorkflow={openRetranslationWorkflow}
         />
@@ -957,7 +980,7 @@ function ArticlePanel({
   );
 }
 
-function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onCloseDetails, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
+function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, selectedRecord, onViewDetails, onDeleteRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <div className="history-header">
@@ -979,9 +1002,20 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                     <h3>{historyLanguageLabel(record)}</h3>
                     <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
                   </div>
-                  <button className="button detail-button" type="button" onClick={() => onViewDetails(record.id)}>
-                    查看詳細資料
-                  </button>
+                  <div className="history-actions">
+                    <button
+                      className="button detail-button"
+                      type="button"
+                      aria-expanded={selectedRecordId === record.id}
+                      onClick={() => onViewDetails(record.id)}
+                    >
+                      {selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'}
+                    </button>
+                    <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}>
+                      <Trash2 size={16} aria-hidden="true" />
+                      刪除
+                    </button>
+                  </div>
                 </div>
 
                 <dl className="history-metadata">
@@ -1009,7 +1043,6 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
                 <SessionDetail
                   detail={selectedDetail}
                   historyRecord={selectedRecord}
-                  onClose={onCloseDetails}
                   onRetranslationSubmitted={onRetranslationSubmitted}
                   onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
                 />
@@ -1169,6 +1202,30 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
       setOperationError('無法重試此重新翻譯工作。');
     } finally {
       setIsRetryingExecutionId('');
+    }
+  }
+
+  async function deleteRetranslationOutput(output) {
+    const outputId = output?.id;
+    if (!selectedSessionId || !outputId) return;
+    if (!window.confirm('確定要刪除此重新翻譯結果？')) {
+      return;
+    }
+
+    setStatusMessage('');
+    setOperationError('');
+
+    try {
+      await sessionReadApiClientRef.current.deleteSessionTranslationOutput(selectedSessionId, outputId);
+      const nextOutputs = retranslationProgress.outputs.filter((item) => item.id !== outputId);
+      setDetail((current) => removeRetranslationOutputFromDetail(current, outputId));
+      setStatusMessage('重新翻譯結果已刪除。');
+
+      if (selectedOutputId === outputId) {
+        setSelectedOutputId(nextOutputs[0]?.id || '');
+      }
+    } catch {
+      setOperationError('無法刪除此重新翻譯結果。');
     }
   }
 
@@ -1367,7 +1424,12 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
             <>
               <RetranslationProgress progress={{ ...retranslationProgress, outputs: [] }} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} />
               <section className="retranslation-result-workspace" aria-label="重新翻譯結果與內容">
-                <RetranslationOutputList outputs={retranslationProgress.outputs} selectedOutputId={selectedOutput?.id || ''} onSelect={setSelectedOutputId} />
+                <RetranslationOutputList
+                  outputs={retranslationProgress.outputs}
+                  selectedOutputId={selectedOutput?.id || ''}
+                  onSelect={setSelectedOutputId}
+                  onDelete={deleteRetranslationOutput}
+                />
                 {!shouldShowRetranslationContent ? (
                   <section className="history-panel retranslation-selection-panel" aria-label="重新翻譯內容選取">
                     <p className="history-empty">選取一筆重新翻譯結果後查看原文與翻譯文。</p>
@@ -1433,7 +1495,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   );
 }
 
-function RetranslationOutputList({ outputs, selectedOutputId, onSelect }) {
+function RetranslationOutputList({ outputs, selectedOutputId, onSelect, onDelete }) {
   return (
     <section className="history-panel retranslation-output-list-panel" aria-label="重新翻譯結果">
       <h3>{`重新翻譯結果（${outputs.length}）`}</h3>
@@ -1448,14 +1510,20 @@ function RetranslationOutputList({ outputs, selectedOutputId, onSelect }) {
                   <h4>{translationOutputTitle(output)}</h4>
                   <span className="history-status history-status-completed">已完成</span>
                 </div>
-                <button
-                  className="button detail-button"
-                  type="button"
-                  aria-pressed={selectedOutputId === output.id}
-                  onClick={() => onSelect(output.id)}
-                >
-                  {selectedOutputId === output.id ? '已選取' : '查看內容'}
-                </button>
+                <div className="history-actions">
+                  <button
+                    className="button detail-button"
+                    type="button"
+                    aria-pressed={selectedOutputId === output.id}
+                    onClick={() => onSelect(output.id)}
+                  >
+                    {selectedOutputId === output.id ? '已選取' : '查看內容'}
+                  </button>
+                  <button className="button detail-button danger-button" type="button" onClick={() => onDelete(output)}>
+                    <Trash2 size={16} aria-hidden="true" />
+                    刪除
+                  </button>
+                </div>
               </div>
               <dl className="history-metadata">
                 <div><dt>目標語言</dt><dd>{targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言'}</dd></div>
@@ -1640,7 +1708,7 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
+function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
@@ -1677,9 +1745,6 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
       <section className="session-detail" aria-label="工作階段詳細資料">
         <div className="session-detail-header">
           <h3>正在載入工作階段詳細資料</h3>
-          <button className="button detail-button" type="button" onClick={onClose}>
-            關閉詳細資料
-          </button>
         </div>
         <p className="history-empty">正在載入已儲存的工作階段…</p>
       </section>
@@ -1691,9 +1756,6 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
       <section className="session-detail" aria-label="工作階段詳細資料">
         <div className="session-detail-header">
           <h3>無法取得工作階段詳細資料</h3>
-          <button className="button detail-button" type="button" onClick={onClose}>
-            關閉詳細資料
-          </button>
         </div>
         <p className="history-empty">此工作階段紀錄無法使用。</p>
       </section>
@@ -1737,9 +1799,6 @@ function SessionDetail({ detail, historyRecord, onClose, onRetranslationSubmitte
     <section className="session-detail" aria-label="工作階段詳細資料">
       <div className="session-detail-header">
         <h3>{historyLanguageLabel(sessionRecord)}詳細資料</h3>
-        <button className="button detail-button" type="button" onClick={onClose}>
-          關閉詳細資料
-        </button>
       </div>
 
       <dl className="session-detail-metadata">
@@ -2333,6 +2392,21 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     translationHistory: {
       outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
       executions: mergeHistoryItemsById(detailHistory.executions, translationsHistory.executions)
+    }
+  };
+}
+
+function removeRetranslationOutputFromDetail(detail, outputId) {
+  if (!detail) {
+    return detail;
+  }
+
+  const history = compactTranslationHistoryForDetail(detail);
+  return {
+    ...detail,
+    translationHistory: {
+      outputs: history.outputs.filter((output) => output.id !== outputId),
+      executions: history.executions
     }
   };
 }

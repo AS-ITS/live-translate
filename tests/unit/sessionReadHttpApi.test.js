@@ -74,6 +74,140 @@ test('GET /api/sessions/:sessionId returns HTTP 404 when service returns null', 
   assert.equal(body.error.code, 'session_not_found');
 });
 
+test('DELETE /api/sessions/:sessionId deletes finalized session records', async () => {
+  const calls = [];
+  const handler = createHandler({
+    sessionRepository: {
+      async getSessionRecord(id) {
+        calls.push(['get', id]);
+        return { sessionRecord: historyItem({ id, status: 'stopped' }), transcriptItems: [] };
+      },
+      async deleteSessionRecord(id) {
+        calls.push(['delete', id]);
+        return true;
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session%201' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json(), { deleted: true, sessionId: 'session 1' });
+  assert.deepEqual(calls, [
+    ['get', 'session 1'],
+    ['delete', 'session 1']
+  ]);
+});
+
+test('DELETE /api/sessions/:sessionId returns 404 for missing or active records', async () => {
+  const missingHandler = createHandler({
+    sessionRepository: {
+      async getSessionRecord() {
+        return null;
+      },
+      async deleteSessionRecord() {
+        throw new Error('should not delete missing sessions');
+      }
+    }
+  });
+  const activeHandler = createHandler({
+    sessionRepository: {
+      async getSessionRecord(id) {
+        return { sessionRecord: historyItem({ id, status: 'active' }), transcriptItems: [] };
+      },
+      async deleteSessionRecord() {
+        throw new Error('should not delete active sessions');
+      }
+    }
+  });
+
+  const missingResponse = await request(missingHandler, { method: 'DELETE', url: '/api/sessions/missing' });
+  const activeResponse = await request(activeHandler, { method: 'DELETE', url: '/api/sessions/active' });
+
+  assert.equal(missingResponse.status, 404);
+  assert.equal(missingResponse.json().error.code, 'session_not_found');
+  assert.equal(activeResponse.status, 404);
+  assert.equal(activeResponse.json().error.code, 'session_not_found');
+});
+
+test('DELETE /api/sessions/:sessionId rejects malformed IDs', async () => {
+  const handler = createHandler({
+    sessionRepository: {
+      async getSessionRecord() {
+        throw new Error('should not read malformed session ids');
+      },
+      async deleteSessionRecord() {
+        throw new Error('should not delete malformed session ids');
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/%' });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json().error.code, 'invalid_request');
+});
+
+test('DELETE /api/sessions/:sessionId/translations/:outputId deletes formal retranslation outputs', async () => {
+  const calls = [];
+  const handler = createHandler({
+    translationRepository: {
+      async getTranslationOutput(outputId) {
+        calls.push(['get', outputId]);
+        return {
+          id: outputId,
+          sessionId: 'session 1',
+          requestId: 'request-1',
+          version: 1
+        };
+      },
+      async deleteTranslationOutput(outputId) {
+        calls.push(['delete', outputId]);
+        return true;
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session%201/translations/output%201' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json(), { deleted: true, sessionId: 'session 1', outputId: 'output 1' });
+  assert.deepEqual(calls, [
+    ['get', 'output 1'],
+    ['delete', 'output 1']
+  ]);
+});
+
+test('DELETE /api/sessions/:sessionId/translations/:outputId returns 404 for missing, wrong-session, or live outputs', async () => {
+  const missingHandler = createHandler({
+    translationRepository: translationRepositoryForOutput(null)
+  });
+  const wrongSessionHandler = createHandler({
+    translationRepository: translationRepositoryForOutput({ id: 'output-1', sessionId: 'other-session', requestId: 'request-1', version: 1 })
+  });
+  const liveOutputHandler = createHandler({
+    translationRepository: translationRepositoryForOutput({ id: 'live-output:session-1:ja', sessionId: 'session-1', requestId: 'request-live', version: 1 })
+  });
+
+  for (const handler of [missingHandler, wrongSessionHandler, liveOutputHandler]) {
+    const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session-1/translations/output-1' });
+
+    assert.equal(response.status, 404);
+    assert.equal(response.json().error.code, 'translation_output_not_found');
+  }
+});
+
+test('DELETE /api/sessions/:sessionId/translations/:outputId rejects malformed output path', async () => {
+  const handler = createHandler({
+    translationRepository: translationRepositoryForOutput({ id: 'output-1', sessionId: 'session-1', requestId: 'request-1', version: 1 })
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session-1/translations/%' });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json().error.code, 'invalid_request');
+});
+
 test('GET /api/sessions/:sessionId does not expose completed formal retranslation outputs on the original session', async () => {
   const liveOutput = formalOutput({ id: 'live-output:session-1:ja', targetLanguageCode: 'ja', translatedText: 'Live article', version: 1 });
   const retranslationOutput = formalOutput({ id: 'output-fr-1', executionId: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', translatedText: 'Bonjour terminé', version: 1 });
@@ -233,10 +367,23 @@ function createHandler(serviceOverrides = {}) {
 
   return createRequestHandler({
     sessionReadController,
+    ...(serviceOverrides.sessionRepository ? { sessionRepository: serviceOverrides.sessionRepository } : {}),
+    ...(serviceOverrides.translationRepository ? { translationRepository: serviceOverrides.translationRepository } : {}),
     ...(serviceOverrides.translationHistory
       ? { translationHistoryController: createTranslationHistoryController(serviceOverrides.translationHistory) }
       : {})
   });
+}
+
+function translationRepositoryForOutput(output) {
+  return {
+    async getTranslationOutput() {
+      return output;
+    },
+    async deleteTranslationOutput() {
+      throw new Error('should not delete ineligible translation outputs');
+    }
+  };
 }
 
 function createService(overrides = {}) {

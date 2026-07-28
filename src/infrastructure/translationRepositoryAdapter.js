@@ -256,6 +256,25 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
       return mapMaybePromise(findSessionRecord(sessionRepository, (state) => findById(state.outputs, outputId)), (result) =>
         result ? toTranslationOutput(result.entity) : null
       );
+    },
+
+    deleteTranslationOutput(outputId) {
+      assertRequiredString(outputId, 'outputId');
+
+      return mapMaybePromise(findSessionRecord(sessionRepository, (state) => findById(state.outputs, outputId)), (result) => {
+        if (!result) {
+          return false;
+        }
+
+        const state = translationCommandStateFor(result.sessionRecord);
+        const nextOutputs = state.outputs.filter((output) => output.id !== outputId);
+
+        if (nextOutputs.length === state.outputs.length) {
+          return false;
+        }
+
+        return saveTranslationState(sessionRepository, result.sessionRecord.id, { ...state, outputs: nextOutputs }).thenResult(() => true);
+      });
     }
   };
 

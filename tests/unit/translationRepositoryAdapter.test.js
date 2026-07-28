@@ -325,6 +325,21 @@ test('lists TranslationOutputs by session and request without collapsing same-la
   assert.throws(() => repository.listTranslationOutputsByRequest(undefined), /requestId must be a string/);
 });
 
+test('deletes TranslationOutput by id without removing requests or executions', () => {
+  const repository = seededRepositoryWithExecution();
+  repository.createTranslationOutput(outputPayload());
+
+  assert.equal(repository.deleteTranslationOutput('output-1'), true);
+  assert.equal(repository.getTranslationOutput('output-1'), null);
+  assert.deepEqual(repository.listTranslationOutputsByExecution('execution-1'), []);
+  assert.deepEqual(repository.listTranslationOutputsByRequest('request-1'), []);
+  assert.deepEqual(repository.listTranslationOutputsBySession('session-1'), []);
+  assert.equal(repository.getTranslationRequest('request-1').id, 'request-1');
+  assert.equal(repository.getTranslationExecution('execution-1').id, 'execution-1');
+  assert.equal(repository.deleteTranslationOutput('output-1'), false);
+  assert.throws(() => repository.deleteTranslationOutput('   '), /outputId must not be empty/);
+});
+
 test('output missing execution and duplicate identifier behavior is deterministic', () => {
   const repository = seededRepositoryWithExecution();
 

@@ -591,6 +591,27 @@ test('stopped session appears in history with language, status, and transcript s
   await expect(item.getByText('原文完成：1 · 翻譯完成：1')).toBeVisible();
 });
 
+test('stopped session can be deleted from history', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'delete source', 'delete translation');
+  await page.getByRole('button', { name: '停止' }).click();
+  await openHistoryPage(page);
+
+  await expect(historyItems(page)).toHaveCount(1);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await expect(sessionDetail(page)).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await historyItems(page).first().getByRole('button', { name: '刪除' }).click();
+
+  await expect(sessionDetail(page)).toBeHidden();
+  await expect(historyItems(page)).toHaveCount(0);
+  await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
+});
+
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
   await page.goto('/');
 
@@ -628,7 +649,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' })).toHaveValue('translation');
   await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
 
-  await detail.getByRole('button', { name: '關閉詳細資料' }).click();
+  await historyItems(page).first().getByRole('button', { name: '關閉詳細資料' }).click();
   await expect(sessionDetail(page)).toBeHidden();
   await expect(historyItems(page)).toHaveCount(1);
 });
@@ -724,6 +745,7 @@ test('completed retranslation stays out of translation history records', async (
   let submitted = false;
   let postSubmitDetailReads = 0;
   let completed = false;
+  let deletedOutput = false;
   const originalSessionId = 'session-complete-retranslation';
 
   await page.route('**/api/translation-providers', async (route) => {
@@ -752,9 +774,20 @@ test('completed retranslation stays out of translation history records', async (
     const request = route.request();
     const url = new URL(request.url());
     const isTranslationHistory = request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname);
+    const isTranslationOutputDelete = request.method() === 'DELETE' && /^\/api\/sessions\/[^/]+\/translations\/[^/]+$/.test(url.pathname);
     const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
     const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
     const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+
+    if (isTranslationOutputDelete) {
+      deletedOutput = true;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ deleted: true, sessionId, outputId: 'output-fr-1' })
+      });
+      return;
+    }
 
     if (isTranslationHistory) {
       await route.fulfill({
@@ -764,7 +797,7 @@ test('completed retranslation stays out of translation history records', async (
           translations: [],
           translationHistory: !submitted
             ? { outputs: [], executions: [] }
-            : completed
+            : completed && !deletedOutput
               ? {
                   outputs: [{
                     id: 'output-fr-1',
@@ -886,11 +919,19 @@ test('completed retranslation stays out of translation history records', async (
   const retranslatedContent = resultWorkspace.getByLabel('重翻逐字稿內容');
   await expect(retranslatedContent.getByText('Bonjour terminé Deuxième phrase')).toBeVisible();
   await expect(retranslatedContent.locator('p')).toHaveCount(1);
+  page.once('dialog', (dialog) => dialog.accept());
+  await outputList.getByRole('button', { name: '刪除' }).click();
+  await expect(outputList.getByText('尚無重新翻譯結果。')).toBeVisible();
+  await expect(workflow.getByText('重新翻譯結果已刪除。')).toBeVisible();
+  await expect(resultWorkspace.getByText('Bonjour terminé')).toHaveCount(0);
+  await expect(retranslationExport).toHaveCount(0);
 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
   await expect(historyItems(page).first().getByText('由')).toHaveCount(0);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  if (await sessionDetail(page).count() === 0) {
+    await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  }
 
   const originalDetail = sessionDetail(page);
   await expect(originalDetail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();

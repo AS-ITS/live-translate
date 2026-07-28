@@ -107,6 +107,12 @@
 
 ### Added
 
+- Translation history now supports deleting finalized Session records from the
+  history page through `DELETE /api/sessions/:sessionId`.
+
+- Saved-session retranslation results can now be deleted from the retranslation
+  workflow without removing the source Session or request/execution history.
+
 - Added a dedicated `#retranslate` workflow for saved Session re-translation.
   History detail now links into the workflow with the selected Session ID, while
   the new page can also be opened without a selected Session to search and pick

@@ -20,7 +20,8 @@ const EXPECTED_METHODS = [
   'listTranslationOutputsByExecution',
   'listTranslationOutputsBySession',
   'listTranslationOutputsByRequest',
-  'getTranslationOutput'
+  'getTranslationOutput',
+  'deleteTranslationOutput'
 ];
 
 test('exports translation repository factory', () => {

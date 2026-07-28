@@ -47,6 +47,33 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
       return detail;
     },
 
+    async deleteSessionRecord(sessionId) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}`), {
+        method: 'DELETE'
+      });
+
+      if (response?.status === 404) {
+        const body = await parseJsonResponse(response);
+
+        if (body?.error?.code === 'session_not_found') {
+          return null;
+        }
+
+        throw new Error('Session delete request failed with HTTP 404.');
+      }
+
+      await assertOkResponse(response);
+
+      const result = await parseJsonResponse(response);
+
+      if (!result || typeof result !== 'object' || Array.isArray(result) || result.deleted !== true) {
+        throw new Error('Session delete response must confirm deletion.');
+      }
+
+      return result;
+    },
+
     async getSessionTranslations(sessionId, { targetLanguageCode } = {}) {
       const normalizedSessionId = validateSessionId(sessionId);
       const query = targetLanguageCode === undefined ? '' : `?targetLanguageCode=${encodeURIComponent(targetLanguageCode)}`;
@@ -58,6 +85,29 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
         throw new Error('Session translation history response must be an object.');
       }
       return history;
+    },
+
+    async deleteSessionTranslationOutput(sessionId, outputId) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const normalizedOutputId = validateOutputId(outputId);
+      const response = await fetchImpl(
+        buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}/translations/${encodeURIComponent(normalizedOutputId)}`),
+        { method: 'DELETE' }
+      );
+
+      if (response?.status === 404) {
+        return null;
+      }
+
+      await assertOkResponse(response);
+
+      const result = await parseJsonResponse(response);
+
+      if (!result || typeof result !== 'object' || Array.isArray(result) || result.deleted !== true) {
+        throw new Error('Session translation output delete response must confirm deletion.');
+      }
+
+      return result;
     }
   };
 }
@@ -96,4 +146,12 @@ function validateSessionId(sessionId) {
   }
 
   return sessionId;
+}
+
+function validateOutputId(outputId) {
+  if (typeof outputId !== 'string' || outputId.trim() === '') {
+    throw new TypeError('outputId must be a non-empty string.');
+  }
+
+  return outputId;
 }

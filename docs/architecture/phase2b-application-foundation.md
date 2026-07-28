@@ -137,7 +137,7 @@ Notes:
 | `cancelTranslation` | Phase 2C |
 | `getTranslationRequest` | Phase 2B-2 implementation |
 | `listTranslationOutputs` | Phase 2B-2 implementation |
-| `deleteTranslationOutput` | Phase 2C |
+| `deleteTranslationOutput` | Saved retranslation API/UI implemented; ApplicationService wrapper Phase 2C |
 
 Notes:
 

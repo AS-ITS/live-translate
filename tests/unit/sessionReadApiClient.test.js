@@ -53,6 +53,66 @@ test('GET /api/sessions/:sessionId URL-encodes the ID', async () => {
   ]);
 });
 
+test('DELETE /api/sessions/:sessionId URL-encodes the ID and returns confirmation', async () => {
+  const calls = [];
+  const client = createSessionReadApiClient({
+    fetchImpl(url, options) {
+      calls.push({ url, options });
+      return jsonResponse({ deleted: true, sessionId: 'session 1/zh-Hant' });
+    }
+  });
+
+  const result = await client.deleteSessionRecord('session 1/zh-Hant');
+
+  assert.deepEqual(calls, [
+    {
+      url: '/api/sessions/session%201%2Fzh-Hant',
+      options: { method: 'DELETE' }
+    }
+  ]);
+  assert.deepEqual(result, { deleted: true, sessionId: 'session 1/zh-Hant' });
+});
+
+test('missing delete returns null for session_not_found response', async () => {
+  const client = createSessionReadApiClient({
+    fetchImpl() {
+      return jsonResponse({ error: { code: 'session_not_found', message: 'Session not found.' } }, { status: 404 });
+    }
+  });
+
+  assert.equal(await client.deleteSessionRecord('missing-session'), null);
+});
+
+test('DELETE /api/sessions/:sessionId/translations/:outputId URL-encodes IDs and returns confirmation', async () => {
+  const calls = [];
+  const client = createSessionReadApiClient({
+    fetchImpl(url, options) {
+      calls.push({ url, options });
+      return jsonResponse({ deleted: true, sessionId: 'session 1/zh-Hant', outputId: 'output 1/fr' });
+    }
+  });
+
+  const result = await client.deleteSessionTranslationOutput('session 1/zh-Hant', 'output 1/fr');
+
+  assert.deepEqual(calls, [
+    {
+      url: '/api/sessions/session%201%2Fzh-Hant/translations/output%201%2Ffr',
+      options: { method: 'DELETE' }
+    }
+  ]);
+  assert.deepEqual(result, { deleted: true, sessionId: 'session 1/zh-Hant', outputId: 'output 1/fr' });
+});
+
+test('missing translation output delete returns null for 404 response', async () => {
+  const client = createSessionReadApiClient({
+    fetchImpl() {
+      return jsonResponse({ error: { code: 'translation_output_not_found' } }, { status: 404 });
+    }
+  });
+
+  assert.equal(await client.deleteSessionTranslationOutput('session-1', 'missing-output'), null);
+});
+
 test('detail DTO response is returned unchanged', async () => {
   const detail = detailDTO({ id: 'session-1' });
   const client = createSessionReadApiClient({
@@ -136,6 +196,9 @@ test('invalid session ID does not issue a request', async () => {
   await assert.rejects(client.getSessionDetail(''), TypeError);
   await assert.rejects(client.getSessionDetail('   '), TypeError);
   await assert.rejects(client.getSessionDetail(null), TypeError);
+  await assert.rejects(client.deleteSessionRecord(''), TypeError);
+  await assert.rejects(client.deleteSessionTranslationOutput('', 'output-1'), TypeError);
+  await assert.rejects(client.deleteSessionTranslationOutput('session-1', ''), TypeError);
   assert.equal(calls, 0);
 });
 

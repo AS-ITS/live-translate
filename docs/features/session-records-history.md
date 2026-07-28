@@ -6,10 +6,10 @@ Session Records & Translation History is a Phase 2 capability for defining the
 session record model, translation history foundation, session-to-transcript
 relationship, and repository abstraction.
 
-Status: Slice 5 implemented with a read-only finalized history list, session
-detail, and saved-session export backed by the in-memory repository. The UI
-exposes history through a separate `#history` feature page; live translation
-remains on `#live`.
+Status: Slice 5 implemented with a finalized history list, inline session
+detail, saved-session export, finalized-record delete, and saved-retranslation
+output delete backed by the repository boundary. The UI exposes history through
+a separate `#history` feature page; live translation remains on `#live`.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,
@@ -252,9 +252,14 @@ has not emitted a final event yet.
 Deleting a record should remove the `SessionRecord` and its related
 `TranscriptItem[]` from the selected repository adapter.
 
-The first implementation should avoid deleting an active record. Delete behavior
-must not affect current active-session state, microphone resources, Gemini Live
+The implementation avoids deleting an active record. Delete behavior must not
+affect current active-session state, microphone resources, Gemini Live
 connections, export formatter code, device preferences, or language preferences.
+
+Saved-session retranslation output deletion removes only a completed derived
+`TranslationOutput` from the Session's translation command state. It must not
+remove the source Session, canonical source transcript, request/execution audit
+state, live-session primary output, or provider state.
 
 ## Repository Boundary
 

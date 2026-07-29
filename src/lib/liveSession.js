@@ -344,50 +344,73 @@ export class LiveTranslateSession {
     }
 
     this.cleaningUp = true;
-    this.closed = true;
-    this.chunker?.reset();
-    this.clearPlaybackQueue();
-
-    if (signalAudioEnd) {
-      try {
-        this.session?.sendRealtimeInput({ audioStreamEnd: true });
-      } catch {
-        // The session may already be closed.
-      }
-    }
-
     try {
-      this.processor?.disconnect();
-    } catch {
-      // Audio nodes may already be disconnected during error cleanup.
-    }
+      this.closed = true;
+      this.chunker?.reset();
+      this.clearPlaybackQueue();
 
-    try {
-      this.source?.disconnect();
-    } catch {
-      // Audio nodes may already be disconnected during error cleanup.
-    }
-
-    this.mediaStream?.getTracks().forEach((track) => track.stop());
-
-    if (closeSession) {
-      try {
-        this.session?.close();
-      } catch {
-        // Closing is best-effort during cleanup.
+      if (signalAudioEnd) {
+        try {
+          this.session?.sendRealtimeInput({ audioStreamEnd: true });
+        } catch {
+          // The session may already be closed.
+        }
       }
-    }
 
-    if (this.audioContext && this.audioContext.state !== 'closed') {
-      await this.audioContext.close();
-    }
+      if (this.processor) {
+        this.processor.onaudioprocess = null;
+      }
 
-    this.processor = null;
-    this.source = null;
-    this.mediaStream = null;
-    this.session = null;
-    this.audioContext = null;
-    this.cleaningUp = false;
+      try {
+        this.processor?.disconnect();
+      } catch {
+        // Audio nodes may already be disconnected during error cleanup.
+      }
+
+      try {
+        this.source?.disconnect();
+      } catch {
+        // Audio nodes may already be disconnected during error cleanup.
+      }
+
+      this.mediaStream?.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // Media tracks may already be stopped by the browser.
+        }
+      });
+
+      if (closeSession) {
+        try {
+          this.session?.close();
+        } catch {
+          // Closing is best-effort during cleanup.
+        }
+      }
+
+      if (this.audioContext && this.audioContext.state !== 'closed') {
+        try {
+          await this.audioContext.close();
+        } catch {
+          // Closing AudioContext is best-effort during browser teardown.
+        }
+      }
+
+      this.processor = null;
+      this.source = null;
+      this.mediaStream = null;
+      this.session = null;
+      this.audioContext = null;
+      this.chunker = null;
+      this.pendingInputTranscript = null;
+      this.pendingOutputTranscript = null;
+      this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.nextPlaybackTime = 0;
+    } finally {
+      this.cleaningUp = false;
+    }
   }
 
   clearPlaybackQueue() {
@@ -402,6 +425,7 @@ export class LiveTranslateSession {
       } catch {
         // Already disconnected.
       }
+      source.onended = null;
     }
 
     this.playbackSources.clear();

@@ -133,8 +133,12 @@ export function createApplicationDependencies(options = {}) {
   const resolvedLiveTokenCreator = liveTokenCreator === undefined
     ? (body) => createLiveToken(body, { glossary: translationGlossary })
     : liveTokenCreator;
+  const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
+    ? meetingRepository
+    : createMemoryMeetingRepository();
   const sessionReadDependencies = createSessionReadDependencies({
     ...sessionReadOptions,
+    meetingRepository: resolvedMeetingRepository,
     ...(shouldUseDefaultFileSessionRepository({ requestHandlerFactory, sessionReadOptions })
       ? {
           sessionRepository: fileSessionRepositoryFactory({
@@ -214,9 +218,6 @@ export function createApplicationDependencies(options = {}) {
     cancelQueuedTranslationExecutionService: translationCommandDependencies.cancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
   });
-  const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
-    ? meetingRepository
-    : createMemoryMeetingRepository();
   const meetingCheckpointService = meetingCheckpointServiceFactory({
     meetingRepository: resolvedMeetingRepository,
     idGenerator,
@@ -603,10 +604,13 @@ export function createProductionSavedTranscriptTranslationProviderResolver({
   };
 }
 
-export function createSessionReadDependencies({ sessionRepository, sessionReadRepository } = {}) {
+export function createSessionReadDependencies({ sessionRepository, sessionReadRepository, meetingRepository } = {}) {
   const resolvedSessionRepository = sessionRepository || createMemorySessionRepository();
   const resolvedSessionReadRepository =
-    sessionReadRepository || createSessionReadRepository({ sessionRepository: resolvedSessionRepository });
+    sessionReadRepository || createSessionReadRepository({
+      sessionRepository: resolvedSessionRepository,
+      meetingRepository
+    });
   const sessionQueryService = createSessionQueryService({
     sessionReadRepository: resolvedSessionReadRepository
   });

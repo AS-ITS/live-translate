@@ -83,6 +83,7 @@ function App() {
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [transcript, setTranscript] = useState(createTranscriptState);
+  const [archivedTranscript, setArchivedTranscript] = useState(createTranscriptState);
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
   const [copiedArticleStream, setCopiedArticleStream] = useState('');
   const [exportFormat, setExportFormat] = useState('txt');
@@ -97,9 +98,14 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [meetingViewStats, setMeetingViewStats] = useState({
+    archivedSegmentCount: 0,
+    loadedSegmentCount: 0
+  });
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
+  const archivedTranscriptRef = useRef(archivedTranscript);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
@@ -274,6 +280,10 @@ function App() {
       const resetTranscript = resetTranscriptState();
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
+      const resetArchivedTranscript = resetTranscriptState();
+      archivedTranscriptRef.current = resetArchivedTranscript;
+      setArchivedTranscript(() => resetArchivedTranscript);
+      setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
       setCopiedArticleStream('');
       setStatus('requesting-permission');
     }
@@ -408,6 +418,7 @@ function App() {
       if (!flushed) {
         throw new Error('Unable to flush meeting checkpoint before reconnect.');
       }
+      archiveActiveTranscriptSegment();
 
       recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
         meetingId: meetingCheckpoint.meetingId,
@@ -504,6 +515,7 @@ function App() {
       activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
       await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
+      resetActiveTranscriptForNextSegment(resumeDraft.transcriptState.nextSequence);
       session = await createSession({ preserveTranscript: true });
       sessionRef.current = session;
       await session.start();
@@ -535,6 +547,7 @@ function App() {
     const flushed = await flushMeetingCheckpointSync();
     if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
     if (segmentSwitchCancelledRef.current) return;
+    archiveActiveTranscriptSegment();
 
     const nextLiveSessionId = generateLiveSessionId();
     const rollover = await meetingCheckpointApiClientRef.current.rolloverSegment({
@@ -863,6 +876,28 @@ function App() {
     setError('長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。');
   }
 
+  function archiveActiveTranscriptSegment() {
+    const currentTranscript = transcriptRef.current;
+    const finalItemCount = transcriptHasFinalItems(currentTranscript);
+    const archived = archiveTranscriptFinalItems(archivedTranscriptRef.current, currentTranscript);
+    archivedTranscriptRef.current = archived;
+    setArchivedTranscript(() => archived);
+    resetActiveTranscriptForNextSegment(currentTranscript.nextSequence);
+
+    if (finalItemCount > 0) {
+      setMeetingViewStats((current) => ({
+        archivedSegmentCount: current.archivedSegmentCount + 1,
+        loadedSegmentCount: Math.max(current.loadedSegmentCount, current.archivedSegmentCount + 1)
+      }));
+    }
+  }
+
+  function resetActiveTranscriptForNextSegment(nextSequence) {
+    const nextTranscript = emptyTranscriptStateWithNextSequence(nextSequence);
+    transcriptRef.current = nextTranscript;
+    setTranscript(() => nextTranscript);
+  }
+
   async function refreshHistoryRecords() {
     try {
       const history = await sessionReadApiClientRef.current.listSessionHistory();
@@ -901,8 +936,9 @@ function App() {
         checkpointResult?.checkpoint?.durableChunks || []
       ));
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
-      transcriptRef.current = resumeTranscript;
-      setTranscript(() => resumeTranscript);
+      archivedTranscriptRef.current = resumeTranscript;
+      setArchivedTranscript(() => resumeTranscript);
+      resetActiveTranscriptForNextSegment(resumeTranscript.nextSequence);
       setTranscriptTimeOrigin(Date.now());
       setCopiedArticleStream('');
       activeMeetingCheckpointRef.current = {
@@ -913,6 +949,10 @@ function App() {
         meetingId,
         segmentId: activeSegment.id,
         transcriptState: resumeTranscript
+      });
+      setMeetingViewStats({
+        archivedSegmentCount: Math.max(0, segments.length - 1),
+        loadedSegmentCount: segments.length
       });
       setMeetingCheckpointStatus('synced');
       setStatus('idle');
@@ -1080,7 +1120,7 @@ function App() {
   }
 
   async function copyArticle(stream) {
-    const articleText = articleTextForStream(transcript, stream);
+    const articleText = articleTextForItems(stream === 'source' ? completedSourceSegments : completedTranslationSegments, stream);
     if (!articleText) return;
     try {
       await navigator.clipboard.writeText(articleText);
@@ -1092,16 +1132,28 @@ function App() {
   }
 
   function downloadArticle(stream) {
-    const articleText = articleTextForStream(transcript, stream);
+    const articleText = articleTextForItems(stream === 'source' ? completedSourceSegments : completedTranslationSegments, stream);
     if (!articleText) return;
     downloadTextFile(articleText, buildArticleFileName(stream), 'text/plain;charset=utf-8');
   }
 
-  const sourceTranscriptItems = transcriptItemsForStream(transcript, 'source');
-  const translationTranscriptItems = transcriptItemsForStream(transcript, 'translation');
+  const sourceTranscriptItems = [
+    ...archivedTranscript.source.finalItems,
+    ...transcriptItemsForStream(transcript, 'source')
+  ];
+  const translationTranscriptItems = [
+    ...archivedTranscript.translation.finalItems,
+    ...transcriptItemsForStream(transcript, 'translation')
+  ];
   const transcriptItems = [...sourceTranscriptItems, ...translationTranscriptItems];
-  const completedSourceSegments = transcript.source.finalItems;
-  const completedTranslationSegments = transcript.translation.finalItems;
+  const completedSourceSegments = [
+    ...archivedTranscript.source.finalItems,
+    ...transcript.source.finalItems
+  ];
+  const completedTranslationSegments = [
+    ...archivedTranscript.translation.finalItems,
+    ...transcript.translation.finalItems
+  ];
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
   const canDownloadTranscript = canExportTranscript(transcriptItems, {
@@ -1234,6 +1286,11 @@ function App() {
           <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
             {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
           </p>
+          {meetingViewStats.archivedSegmentCount > 0 ? (
+            <p className="checkpoint-note">
+              長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
+            </p>
+          ) : null}
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -1374,6 +1431,51 @@ function transcriptStateFromCheckpointChunks(chunks = []) {
   };
 }
 
+function archiveTranscriptFinalItems(archivedTranscript, activeTranscript) {
+  const archivedSource = mergeTranscriptItems(archivedTranscript?.source?.finalItems, activeTranscript?.source?.finalItems);
+  const archivedTranslation = mergeTranscriptItems(
+    archivedTranscript?.translation?.finalItems,
+    activeTranscript?.translation?.finalItems
+  );
+  const nextSequence = Math.max(
+    archivedTranscript?.nextSequence || 1,
+    activeTranscript?.nextSequence || 1
+  );
+
+  return {
+    source: { finalItems: archivedSource, currentPartial: null },
+    translation: { finalItems: archivedTranslation, currentPartial: null },
+    nextSequence
+  };
+}
+
+function mergeTranscriptItems(leftItems = [], rightItems = []) {
+  const byId = new Map();
+  for (const item of [...leftItems, ...rightItems]) {
+    if (item?.status === 'final' && typeof item.id === 'string') {
+      byId.set(item.id, item);
+    }
+  }
+  return Array.from(byId.values()).sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+function emptyTranscriptStateWithNextSequence(nextSequence) {
+  return {
+    ...createTranscriptState(),
+    nextSequence: Number.isFinite(nextSequence) && nextSequence > 0 ? nextSequence : 1
+  };
+}
+
+function transcriptHasFinalItems(transcriptState) {
+  return (transcriptState?.source?.finalItems?.length || 0) + (transcriptState?.translation?.finalItems?.length || 0);
+}
+
+function activeSegmentTranscriptCount(transcriptState) {
+  return transcriptHasFinalItems(transcriptState) +
+    (transcriptState?.source?.currentPartial ? 1 : 0) +
+    (transcriptState?.translation?.currentPartial ? 1 : 0);
+}
+
 function reconnectErrorMessage(result) {
   if (result?.decision?.stopReason === 'max_attempts_exceeded') {
     return RECONNECT_EXHAUSTED_MESSAGE;
@@ -1382,8 +1484,8 @@ function reconnectErrorMessage(result) {
   return RECONNECT_FAILED_MESSAGE;
 }
 
-function articleTextForStream(transcript, stream) {
-  const articleText = formatTranscriptArticleText(transcript?.[stream]?.finalItems || []);
+function articleTextForItems(items, stream) {
+  const articleText = formatTranscriptArticleText(items || []);
   return stream === 'source' ? toTraditionalChineseText(articleText) : articleText;
 }
 

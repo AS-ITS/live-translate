@@ -565,12 +565,15 @@ test('long meeting proactively switches through three segments and preserves con
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
   await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
+  await expect(page.getByText('長會議段落：已封存 1 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment two source', 'segment two translation');
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
+  await expect(page.getByText('長會議段落：已封存 2 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation');
+  await expect(page.getByText('長會議段落：已封存 2 段 · 目前段落 2 筆')).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 

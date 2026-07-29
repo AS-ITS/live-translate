@@ -1,5 +1,12 @@
 # Changelog
 
+- Long Meeting WP5 frontend archived view: live meeting article panels now keep
+  completed prior Segments visible through an archived transcript view while the
+  active transcript state is reset for the current Segment after rollover,
+  reconnect recovery, or reload resume. The live UI now shows a compact archived
+  Segment/current Segment count diagnostic. Backend token flow and Gemini Live
+  session behavior are unchanged.
+
 - Long Meeting WP5 API foundation: session detail reads can now materialize
   archived Segment transcript content from Meeting checkpoints when a
   SessionRecord references a Meeting. Existing `/api/sessions/:sessionId`

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 test.beforeEach(async ({ page }) => {
   const resetResponse = await page.request.delete('/api/test/sessions');
@@ -446,7 +447,23 @@ test('meeting history detail shows timeline, article views, and export controls'
 
   await detail.getByRole('tab', { name: '原始逐字稿' }).click();
   await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toBeVisible();
-  await expect(detail.getByLabel('整場會議逐字稿匯出').getByRole('button', { name: '下載整場逐字稿' })).toBeEnabled();
+
+  const exportPanel = detail.getByLabel('整場會議逐字稿匯出');
+  await expect(exportPanel.getByRole('button', { name: '下載整場逐字稿' })).toBeEnabled();
+  await exportPanel.getByRole('combobox', { name: '整場匯出格式' }).selectOption('srt');
+
+  const downloadPromise = page.waitForEvent('download');
+  await exportPanel.getByRole('button', { name: '下載整場逐字稿' }).click();
+  const download = await downloadPromise;
+  const downloadPath = await download.path();
+  const content = await readFile(downloadPath, 'utf8');
+
+  expect(download.suggestedFilename()).toMatch(/^live-translate-meeting-meeting-1-.*-translation\.srt$/);
+  expect(content).toContain('00:00:09,000 --> 00:00:10,000\n第一段翻譯');
+  expect(content).toContain('00:01:09,000 --> 00:01:10,000\n第二段翻譯');
+  expect(content).toContain('00:02:09,000 --> 00:02:10,000\n第三段翻譯');
+  expect(content.indexOf('第一段翻譯')).toBeLessThan(content.indexOf('第二段翻譯'));
+  expect(content.indexOf('第二段翻譯')).toBeLessThan(content.indexOf('第三段翻譯'));
 });
 
 test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
@@ -1533,7 +1550,7 @@ function meetingTranscriptItem(overrides = {}) {
   return {
     meetingId: 'meeting-1',
     status: 'final',
-    finalizedAt: overrides.startedAt,
+    finalizedAt: overrides.startedAt + 1000,
     liveSessionId: `live-${overrides.segmentSequence + 1}`,
     ...overrides
   };

@@ -112,6 +112,12 @@ reason/actor, batch or scheduled cancellation, cancelled-execution retry,
 retry-lineage UI, DLQ inspection/replay UI, and push status updates. Existing
 retry scheduling, lease/fence, reclaim, and DLQ behavior are unchanged.
 
+Long Meeting WP1 is completed. Long Meeting WP2 backend checkpoint API is
+completed: the backend can create Meetings, list Segments, and persist/read
+Segment checkpoints for confirmed transcript or translation chunks. Frontend
+checkpoint sync, proactive segmentation, Live reconnect, and segment switching
+remain deferred to later Long Meeting work.
+
 Completed Phase 1 capabilities include:
 
 - React frontend

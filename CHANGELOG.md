@@ -1,5 +1,13 @@
 # Changelog
 
+- Long Meeting WP2 backend checkpoint API: added backend Meeting creation,
+  Segment listing, and Segment checkpoint read/write APIs with file-backed
+  meeting repository production wiring. Checkpoint writes are idempotent for
+  repeated confirmed chunks, reject conflicting duplicate keys or stream
+  sequences, and keep pending partial text out of durable storage. No frontend
+  live flow, Gemini Live session, proactive segmentation, or reconnect behavior
+  changed.
+
 - Long Meeting WP1 foundation: added Meeting and MeetingSegment domain models,
   a MeetingRepository contract, in-memory and file-backed repository adapters,
   and optional `meetingId` / `segmentId` compatibility fields on SessionRecord.

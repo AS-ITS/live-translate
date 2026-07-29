@@ -176,6 +176,21 @@ Rules:
 - Existing non-Meeting Live Session records remain valid with no `meetingId` or
   `segmentId`.
 
+Checkpoint metadata stores only confirmed durable transcript or translation
+chunks:
+
+- `idempotencyKey`
+- `durableChunks[]`
+- `pendingPartial`: always `null` in durable storage
+- `updatedAt`
+
+Each durable chunk includes `meetingId`, `segmentId`, `stream`, `sequence`,
+`text`, `timestamp`, and an item-level `idempotencyKey`. Duplicate chunk keys
+with identical content are idempotent; duplicate keys or duplicate
+`stream + sequence` values with different content are conflicts. Pending
+partial text remains browser-local until it becomes confirmed final transcript
+content.
+
 ## 6. Session
 
 `Session` represents one user source-capture work unit.

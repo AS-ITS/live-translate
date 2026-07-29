@@ -1,5 +1,86 @@
 # Live Translate API and Events
 
+## Long Meeting Checkpoints
+
+## `POST /api/meetings`
+
+Creates one active Meeting with its first active Segment. This endpoint is the
+minimal backend entry point for checkpoint persistence; it does not start,
+stop, reconnect, or segment a Gemini Live session.
+
+Returns `201 Created`:
+
+```json
+{
+  "meeting": { "id": "meeting-1", "status": "active" },
+  "segment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "active" }
+}
+```
+
+## `GET /api/meetings/:meetingId/segments`
+
+Returns the Meeting's ordered segments.
+
+```json
+{
+  "meetingId": "meeting-1",
+  "segments": [
+    { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "active" }
+  ]
+}
+```
+
+Missing Meetings return `404`.
+
+## `PUT /api/meetings/:meetingId/segments/:segmentId/checkpoint`
+
+Persists confirmed transcript or translation chunks for one Segment.
+
+```json
+{
+  "idempotencyKey": "checkpoint:segment-1:12",
+  "durableChunks": [
+    {
+      "idempotencyKey": "segment-1:source:4",
+      "meetingId": "meeting-1",
+      "segmentId": "segment-1",
+      "stream": "source",
+      "sequence": 4,
+      "text": "confirmed text",
+      "timestamp": 1720000000000
+    }
+  ],
+  "pendingPartial": null
+}
+```
+
+The backend stores only confirmed durable chunks. Duplicate chunk
+`idempotencyKey` values with the same payload are accepted as idempotent
+success. A duplicate chunk key or duplicate `stream + sequence` with different
+content returns `409`. Chunks may arrive out of order; stored chunks are read
+back sorted by stream and sequence. Completed or failed Segments reject
+checkpoint updates with `409`.
+
+## `GET /api/meetings/:meetingId/segments/:segmentId/checkpoint`
+
+Returns the Segment checkpoint:
+
+```json
+{
+  "meetingId": "meeting-1",
+  "segmentId": "segment-1",
+  "checkpoint": {
+    "idempotencyKey": "checkpoint:segment-1:12",
+    "durableChunks": [],
+    "pendingPartial": null,
+    "updatedAt": 1720000000000
+  }
+}
+```
+
+Missing Meetings or Segments return `404`. Pending partial text is intentionally
+not durable checkpoint content.
+
 ## Glossary
 
 ## `GET /api/glossary`

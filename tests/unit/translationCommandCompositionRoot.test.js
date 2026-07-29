@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  DEFAULT_MEETING_RECORDS_FILE,
   DEFAULT_SESSION_RECORDS_FILE,
   createApplicationDependencies,
   createProductionApplicationDependencies,
@@ -94,6 +95,46 @@ test('production composition uses DATA_DIR for default session records path', ()
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].filePath, '/tmp/live-translate-data/session-records.json');
+});
+
+test('production composition wires file-backed meeting records with default DATA_DIR path', () => {
+  const calls = [];
+  const meetingRepository = meetingRepositoryDouble();
+
+  const dependencies = createProductionApplicationDependencies({
+    env: {},
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileMeetingRepositoryFactory(options) {
+      calls.push(options);
+      return meetingRepository;
+    }
+  });
+
+  assert.strictEqual(dependencies.meetingRepository, meetingRepository);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, `data/${DEFAULT_MEETING_RECORDS_FILE}`);
+});
+
+test('production composition uses MEETING_RECORDS_FILE when env provides it', () => {
+  const calls = [];
+
+  createProductionApplicationDependencies({
+    env: { MEETING_RECORDS_FILE: 'custom/meetings.json' },
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    fileMeetingRepositoryFactory(options) {
+      calls.push(options);
+      return meetingRepositoryDouble();
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, 'custom/meetings.json');
 });
 
 test('production composition defaults session records to /var/data in production', () => {
@@ -233,14 +274,17 @@ test('application dependencies assemble translation command graph with injected 
   assert.strictEqual(calls[5][1].translationCommandController, translationCommandController);
   assert.strictEqual(calls[5][1].executionControlController, executionControlController);
   assert.strictEqual(calls[5][1].sessionReadController, dependencies.sessionReadController);
+  assert.strictEqual(calls[5][1].meetingCheckpointService, dependencies.meetingCheckpointService);
   assert.deepEqual(Object.keys(calls[5][1]).sort(), [
     'executionControlController',
     'glossaryController',
     'liveTokenCreator',
+    'meetingCheckpointService',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',
-    'translationHistoryController'
+    'translationHistoryController',
+    'translationRepository'
   ]);
 });
 
@@ -1903,5 +1947,18 @@ function sessionRepositoryDouble() {
     listSessionRecords() { return []; },
     getSessionRecord() { return null; },
     deleteSessionRecord() { return false; }
+  };
+}
+
+function meetingRepositoryDouble() {
+  return {
+    createMeeting() {},
+    getMeeting() { return null; },
+    updateMeeting() {},
+    listMeetings() { return []; },
+    createMeetingSegment() {},
+    getMeetingSegment() { return null; },
+    listMeetingSegments() { return []; },
+    updateMeetingSegment() {}
   };
 }

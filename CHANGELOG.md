@@ -4,9 +4,10 @@
   accelerated 2+ hour Meeting scenario coverage across 14 ordered Segments,
   including proactive rollover, token-expiration recovery, network recovery,
   file-backed persistence reload, full transcript reconstruction, duplicate and
-  ordering checks, and failed-Segment readable checkpoint coverage. Existing
-  Gemini Live path, `/api/live-token`, UI flow, and real API usage remain
-  unchanged.
+  ordering checks, and failed-Segment readable checkpoint coverage. E2E coverage
+  now also verifies browser-suspended wake recovery and explicit resource
+  diagnostics after long-meeting Stop. Existing Gemini Live path,
+  `/api/live-token`, UI flow, and real API usage remain unchanged.
 
 - Long Meeting WP6 meeting history/detail and whole-meeting export page: added
   read-only Meeting history and detail APIs, a dedicated `#meetings` UI with

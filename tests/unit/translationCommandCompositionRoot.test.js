@@ -280,6 +280,7 @@ test('application dependencies assemble translation command graph with injected 
     'glossaryController',
     'liveTokenCreator',
     'meetingCheckpointService',
+    'meetingReadController',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',

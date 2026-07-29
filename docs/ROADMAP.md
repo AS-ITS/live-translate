@@ -136,7 +136,9 @@ Long Meeting WP7 reliability and stress validation is completed: deterministic
 tests now simulate a 135-minute Meeting across 14 ordered Segments with
 proactive rollover, token-expiration recovery, network recovery, file-backed
 persistence reload, full transcript reconstruction, duplicate/order checks, and
-failed-Segment readable checkpoint coverage.
+failed-Segment readable checkpoint coverage. E2E coverage verifies
+browser-suspended wake recovery and explicit resource diagnostics after
+long-meeting Stop.
 Offline pause/resume and device-disconnect recovery remain deferred resilience
 extensions.
 

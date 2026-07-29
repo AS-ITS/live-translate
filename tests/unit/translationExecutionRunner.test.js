@@ -565,6 +565,11 @@ function translationRepository(overrides = {}) {
       overrides.getTranslationOutput ||
       function getTranslationOutput() {
         return null;
+      },
+    deleteTranslationOutput:
+      overrides.deleteTranslationOutput ||
+      function deleteTranslationOutput() {
+        return false;
       }
   };
 }

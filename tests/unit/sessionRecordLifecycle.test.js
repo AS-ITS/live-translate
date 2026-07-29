@@ -25,6 +25,8 @@ test('build session record input', () => {
       targetLanguageCode: 'zh-Hant',
       targetLanguageLabel: 'Traditional Chinese',
       sourceLanguageCode: 'zh-Hant',
+      meetingId: null,
+      segmentId: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic'
     }

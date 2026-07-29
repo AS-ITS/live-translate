@@ -75,7 +75,7 @@ test('records article-level translation output and completes execution after dep
       sessionId: 'session-1',
       requestId: 'legacy-request:session-1:ja',
       sequence: 0,
-      translatedText: 'こんにちは 世界。',
+      translatedText: 'こんにちは世界。',
       targetLanguageCode: 'ja',
       providerMetadata: null,
       createdAt: 1200,

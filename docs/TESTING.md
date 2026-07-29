@@ -186,6 +186,8 @@ The Playwright flow:
 - Mocks an unexpected close and verifies controlled reconnect for that reason
 - Verifies token expiration triggers controlled reconnect with a fresh token and
   Segment recovery checkpoint
+- Verifies browser-suspended wake recovery triggers controlled reconnect with a
+  fresh token and Segment recovery checkpoint
 - Verifies `#live?meetingId=...` reload restores checkpointed transcript content
   and manual resume continues in the next recovered Segment
 - Verifies authorization failure and rate-limit UX messages do not trigger
@@ -194,6 +196,8 @@ The Playwright flow:
   transcript/export state, and reset transcript on manual Start
 - Verifies reconnect failure, retry exhaustion, Stop cancellation, and
   transcript preservation during recovery errors
+- Verifies long-meeting Stop resource diagnostics for mocked mic tracks,
+  AudioContexts, Live sessions, and cancelled rollover scheduling
 - Verifies read-only finalized session history list behavior for empty state,
   stopped sessions, failed sessions, manual restart, token-expiration reconnect,
   and reconnect without duplicate history records

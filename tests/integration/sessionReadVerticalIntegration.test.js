@@ -335,6 +335,9 @@ test('GET /api/sessions/:sessionId materializes meeting checkpoint transcript de
     createMeeting() {},
     getMeeting() {},
     updateMeeting() {},
+    listMeetings() {
+      return [];
+    },
     createMeetingSegment() {},
     getMeetingSegment() {},
     updateMeetingSegment() {},

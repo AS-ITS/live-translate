@@ -99,13 +99,12 @@ test('production Gemini saved-transcript path resolves through HTTP and invokes 
     const request = sdkRequests[0];
     assert.equal(request.model, 'gemini-production-model');
     assert.equal(typeof request.systemInstruction.parts[0].text, 'string');
-    assert.equal(request.systemInstruction.parts[0].text.includes('You translate saved transcript text'), true);
+    assert.equal(request.systemInstruction.parts[0].text.includes('Translate saved transcript text'), true);
     assert.deepEqual(
       request.contents[0].parts.map((part) => part.text),
       [
         'Source language hint: en',
         'Target language: fr',
-        'Transcript data to translate follows. Translate this data only.',
         'Hello world.\nSecond line.'
       ]
     );

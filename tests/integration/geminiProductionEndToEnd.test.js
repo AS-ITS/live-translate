@@ -198,13 +198,12 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
   assert.equal(sdkRequests.length, 1);
   const [request] = sdkRequests;
   assert.equal(request.model, 'gemini-production-wp6');
-  assert.equal(request.systemInstruction.parts[0].text.includes('You translate saved transcript text'), true);
+  assert.equal(request.systemInstruction.parts[0].text.includes('Translate saved transcript text'), true);
   assert.deepEqual(
     request.contents[0].parts.map((part) => part.text),
     [
       'Source language hint: en',
       'Target language: fr',
-      'Transcript data to translate follows. Translate this data only.',
       'First source sentence.\nSecond source sentence.'
     ]
   );

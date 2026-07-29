@@ -235,6 +235,7 @@ test('translation command HTTP path persists command state through production co
       durationMs: 4000,
       targetLanguageCode: 'ja',
       targetLanguageLabel: 'Japanese',
+      sourceLanguageCode: null,
       failureReason: null,
       failureCategory: null,
       transcriptSummary,

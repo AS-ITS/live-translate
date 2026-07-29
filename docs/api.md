@@ -69,6 +69,50 @@ association return the same next Segment. Conflicting duplicate rollover data
 returns `409`. Missing Meetings or Segments return `404`; non-active current
 Segments return `409`.
 
+## `POST /api/meetings/:meetingId/segments/:segmentId/recover`
+
+Marks the current active Segment as interrupted or failed with a final
+checkpoint. Interrupted recovery creates the next active Segment in the same
+Meeting for a fresh Live session association. Failed recovery terminalizes only
+the current Segment.
+
+```json
+{
+  "idempotencyKey": "recover:segment-1:live-session-2",
+  "checkpoint": {
+    "idempotencyKey": "checkpoint:segment-1:recover",
+    "durableChunks": [],
+    "pendingPartial": null
+  },
+  "nextLiveSessionId": "live-session-2",
+  "failureReason": "token_expired",
+  "failureCategory": "token",
+  "outcome": "interrupted"
+}
+```
+
+Interrupted recovery returns `201 Created`:
+
+```json
+{
+  "interruptedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "interrupted" },
+  "segment": { "id": "segment-2", "meetingId": "meeting-1", "sequence": 1, "status": "active", "liveSessionId": "live-session-2" }
+}
+```
+
+Failed recovery returns `201 Created`:
+
+```json
+{
+  "failedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "failed" }
+}
+```
+
+Duplicate recovery requests with the same idempotency key, outcome, failure
+metadata, and next Live session association return the same stored result.
+Conflicting duplicate recovery data returns `409`. Missing Meetings or Segments
+return `404`; non-active current Segments return `409`.
+
 ## `PUT /api/meetings/:meetingId/segments/:segmentId/checkpoint`
 
 Persists confirmed transcript or translation chunks for one Segment.

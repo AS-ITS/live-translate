@@ -132,6 +132,8 @@ function retranslationPage(page) {
 async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
   const checkpointRequests = [];
   const rolloverRequests = [];
+  const recoverRequests = [];
+  const checkpoints = new Map();
   let latestSegmentNumber = 1;
 
   await page.route('**/api/meetings**', async (route) => {
@@ -172,17 +174,37 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
         return;
       }
 
+      checkpoints.set(segmentMatch[1], {
+        idempotencyKey: body.idempotencyKey,
+        durableChunks: body.durableChunks,
+        pendingPartial: null,
+        updatedAt: 1000
+      });
+
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
           body: JSON.stringify({
             meetingId: 'meeting-1',
             segmentId: segmentMatch[1],
-            checkpoint: {
-              idempotencyKey: body.idempotencyKey,
-              durableChunks: body.durableChunks,
+            checkpoint: checkpoints.get(segmentMatch[1])
+        })
+      });
+      return;
+    }
+
+    if (method === 'GET' && segmentMatch) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meetingId: 'meeting-1',
+          segmentId: segmentMatch[1],
+          checkpoint: checkpoints.get(segmentMatch[1]) || {
+            idempotencyKey: null,
+            durableChunks: [],
             pendingPartial: null,
-            updatedAt: 1000
+            updatedAt: null
           }
         })
       });
@@ -219,6 +241,65 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
       return;
     }
 
+    const recoverMatch = url.pathname.match(/^\/api\/meetings\/meeting-1\/segments\/segment-(\d+)\/recover$/);
+    if (method === 'POST' && recoverMatch) {
+      const currentSegmentNumber = Number(recoverMatch[1]);
+      const body = JSON.parse(request.postData() || '{}');
+      latestSegmentNumber = Math.max(latestSegmentNumber, currentSegmentNumber + 1);
+      const nextSegmentId = `segment-${currentSegmentNumber + 1}`;
+      recoverRequests.push({ currentSegmentId: `segment-${currentSegmentNumber}`, body });
+      const existingCheckpoint = checkpoints.get(`segment-${currentSegmentNumber}`) || {
+        idempotencyKey: null,
+        durableChunks: [],
+        pendingPartial: null,
+        updatedAt: null
+      };
+      checkpoints.set(`segment-${currentSegmentNumber}`, {
+        ...existingCheckpoint,
+        idempotencyKey: body.idempotencyKey,
+        updatedAt: 1000
+      });
+
+      if (body.outcome === 'failed') {
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            failedSegment: {
+              id: `segment-${currentSegmentNumber}`,
+              meetingId: 'meeting-1',
+              sequence: currentSegmentNumber - 1,
+              status: 'failed',
+              errorInfo: { reason: body.failureReason, category: body.failureCategory }
+            }
+          })
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          interruptedSegment: {
+            id: `segment-${currentSegmentNumber}`,
+            meetingId: 'meeting-1',
+            sequence: currentSegmentNumber - 1,
+            status: 'interrupted',
+            errorInfo: { reason: body.failureReason, category: body.failureCategory }
+          },
+          segment: {
+            id: nextSegmentId,
+            meetingId: 'meeting-1',
+            sequence: currentSegmentNumber,
+            status: 'active',
+            liveSessionId: body.nextLiveSessionId
+          }
+        })
+      });
+      return;
+    }
+
     if (method === 'GET' && url.pathname === '/api/meetings/meeting-1/segments') {
       await route.fulfill({
         status: 200,
@@ -240,6 +321,7 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
   });
 
   checkpointRequests.rolloverRequests = rolloverRequests;
+  checkpointRequests.recoverRequests = recoverRequests;
   return checkpointRequests;
 }
 
@@ -521,6 +603,43 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
   await expect(page.getByText('長會議同步：同步失敗，等待重試')).toBeVisible({ timeout: 6500 });
   await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('長會議同步暫時失敗');
+});
+
+test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+
+  await emitFinalTranscript(page, 'before reload source', 'before reload translation');
+  await expect.poll(() => checkpointRequests.length, { timeout: 7000 }).toBe(1);
+
+  await page.reload();
+  await expect(page.getByText('before reload source')).toBeVisible();
+  await expect(page.getByText('before reload translation')).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
+
+  await page.getByRole('button', { name: '繼續錄製' }).click();
+  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('manual_resume');
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, 'after resume source', 'after resume translation');
+  await page.getByRole('button', { name: '停止' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+
+  const detail = sessionDetail(page);
+  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(detail.getByText('before reload source')).toBeVisible();
+  await expect(detail.getByText('after resume source')).toBeVisible();
+  await detail.getByRole('tab', { name: '文章版翻譯' }).click();
+  await expect(detail.getByText('before reload translation')).toBeVisible();
+  await expect(detail.getByText('after resume translation')).toBeVisible();
 });
 
 test('live glossary replacement is applied to final translation article text only', async ({ page }) => {
@@ -1437,7 +1556,7 @@ test('failed session detail shows normalized failure reason', async ({ page }) =
   await expect(detail.getByText('provider')).toBeVisible();
 });
 
-test('expired session appears in history with expired status', async ({ page }) => {
+test('token expiration reconnect does not finalize history until user stops', async ({ page }) => {
   await page.goto('/');
 
   await page.getByRole('button', { name: '開始' }).click();
@@ -1447,31 +1566,19 @@ test('expired session appears in history with expired status', async ({ page }) 
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
   });
 
+  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await openHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(0);
+
+  await openLivePage(page);
+  await page.getByRole('button', { name: '停止' }).click();
   await openHistoryPage(page);
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
-  await expect(item.getByText('已過期', { exact: true })).toBeVisible();
-  await expect(item.getByText('原因：token_expired')).toBeVisible();
-});
-
-test('expired session detail shows normalized failure reason', async ({ page }) => {
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
-  });
-
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  await expect(detail.getByText('失敗原因')).toBeVisible();
-  await expect(detail.getByText('token_expired')).toBeVisible();
-  await expect(detail.getByText('失敗類別')).toBeVisible();
-  await expect(detail.getByText('token', { exact: true })).toBeVisible();
+  await expect(item.getByText('已停止', { exact: true })).toBeVisible();
 });
 
 test('manual Start after a finalized session does not clear previous history', async ({ page }) => {
@@ -1517,6 +1624,7 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
 });
 
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
   await page.goto('/');
 
   await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
@@ -1543,13 +1651,17 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
   await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('unexpected_close');
+  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
 });
 
-test('token expired shows friendly message without reconnect and preserves transcript', async ({ page }) => {
+test('token expired recovers with a fresh token and preserves transcript', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
   await page.goto('/');
 
   await page.getByRole('button', { name: '開始' }).click();
@@ -1572,23 +1684,18 @@ test('token expired shows friendly message without reconnect and preserves trans
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
   });
 
-  await expect(page.getByText('工作階段已過期', { exact: true })).toBeVisible();
-  await expect(page.getByText('工作階段已過期。請開始新的工作階段。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: '停止' })).toBeHidden();
+  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('token_expired');
+  expect(checkpointRequests.recoverRequests[0].body.failureCategory).toBe('token');
+  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
-  await page.waitForTimeout(900);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
-  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(page.getByText('before token expiration')).toBeHidden();
-  await expect(page.getByText('still visible after expiration')).toBeHidden();
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
-  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
 });
 
 test('auth failed shows friendly message without reconnect', async ({ page }) => {

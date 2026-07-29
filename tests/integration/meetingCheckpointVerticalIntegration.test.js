@@ -50,19 +50,57 @@ test('meeting checkpoint API persists through production file-backed composition
       }
     );
     assert.equal(checkpointResponse.status, 200);
+
+    const recoveryResponse = await postJson(
+      `${baseUrl}/api/meetings/${encodeURIComponent(meeting.id)}/segments/${encodeURIComponent(segment.id)}/recover`,
+      {
+        idempotencyKey: 'recover-1',
+        checkpoint: {
+          idempotencyKey: 'checkpoint-recover-1',
+          durableChunks: [
+            {
+              idempotencyKey: 'chunk-source-3',
+              meetingId: meeting.id,
+              segmentId: segment.id,
+              stream: 'source',
+              sequence: 3,
+              text: 'resume',
+              timestamp: 1100
+            }
+          ],
+          pendingPartial: null
+        },
+        nextLiveSessionId: 'live-session-2',
+        failureReason: 'token_expired',
+        failureCategory: 'token',
+        outcome: 'interrupted'
+      }
+    );
+    assert.equal(recoveryResponse.status, 201);
   });
 
   const reloadedDependencies = createProductionApplicationDependencies(productionOptions({ env }));
   await withServer(reloadedDependencies.requestHandler, async (baseUrl) => {
     const response = await getJson(`${baseUrl}/api/meetings/meeting-1/segments/segment-1/checkpoint`);
     const body = await response.json();
+    const segmentsResponse = await getJson(`${baseUrl}/api/meetings/meeting-1/segments`);
+    const segmentsBody = await segmentsResponse.json();
 
     assert.equal(response.status, 200);
     assert.deepEqual(
       body.checkpoint.durableChunks.map(({ stream, sequence, text }) => ({ stream, sequence, text })),
       [
         { stream: 'source', sequence: 1, text: 'hello' },
+        { stream: 'source', sequence: 3, text: 'resume' },
         { stream: 'translation', sequence: 2, text: 'world' }
+      ]
+    );
+    assert.equal(segmentsResponse.status, 200);
+    assert.deepEqual(
+      segmentsBody.segments.map(({ id, status, liveSessionId, errorInfo }) => ({ id, status, liveSessionId, errorInfo })),
+      [
+        { id: 'segment-1', status: 'interrupted', liveSessionId: null, errorInfo: { reason: 'token_expired', category: 'token' } },
+        { id: 'segment-2', status: 'active', liveSessionId: 'live-session-2', errorInfo: null }
       ]
     );
   });

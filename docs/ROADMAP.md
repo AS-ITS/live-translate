@@ -120,8 +120,15 @@ SessionRecord, and syncs confirmed source/translation chunks on a short debounce
 and on Stop. Long Meeting WP3 proactive segmentation is completed: live sessions
 roll over the active Segment on a scheduled 10-minute interval, create the next
 ordered Segment with a fresh Live session association, and preserve the visible
-transcript while replacing the browser Gemini Live session. Checkpoint restore
-remains deferred to later Long Meeting work.
+transcript while replacing the browser Gemini Live session. Long Meeting WP4
+Live/token recovery is completed: the backend can recover an active Segment as
+interrupted with a next active Segment or as failed with final error metadata,
+and the live UI now uses Segment recovery for controlled reconnect after
+unexpected close or token expiration. Reload resume is completed for
+`#live?meetingId=...`: the live UI restores Segment checkpoints into the visible
+transcript and lets the user manually continue in the next recovered Segment.
+Offline pause/resume and device-disconnect recovery remain deferred resilience
+extensions.
 
 Completed Phase 1 capabilities include:
 

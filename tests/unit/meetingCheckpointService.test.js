@@ -198,6 +198,158 @@ test('rollover rejects non-active segments', async () => {
   );
 });
 
+test('interrupted recovery marks current segment and creates next active segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+
+  const result = await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recovery: recovery({
+      idempotencyKey: 'recover-1',
+      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+      nextLiveSessionId: 'live-session-2',
+      failureReason: 'token_expired',
+      failureCategory: 'token',
+      outcome: 'interrupted'
+    })
+  });
+
+  assert.equal(result.interruptedSegment.status, 'interrupted');
+  assert.equal(result.interruptedSegment.checkpoint.idempotencyKey, 'recover-1');
+  assert.deepEqual(result.interruptedSegment.errorInfo, { reason: 'token_expired', category: 'token' });
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(result.segment.sequence, 1);
+  assert.equal(result.segment.status, 'active');
+  assert.equal(result.segment.liveSessionId, 'live-session-2');
+});
+
+test('failed recovery terminalizes current segment without creating next segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+
+  const result = await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recovery: recovery({
+      idempotencyKey: 'recover-failed-1',
+      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+      nextLiveSessionId: 'live-session-2',
+      failureReason: 'auth_failed',
+      failureCategory: 'token',
+      outcome: 'failed'
+    })
+  });
+
+  assert.equal(result.failedSegment.status, 'failed');
+  assert.equal(result.failedSegment.checkpoint.idempotencyKey, 'recover-failed-1');
+  assert.deepEqual(result.failedSegment.errorInfo, { reason: 'auth_failed', category: 'token' });
+  assert.deepEqual(repository.listMeetingSegments(meeting.id).map((stored) => stored.id), ['segment-1']);
+});
+
+test('recovery is idempotent for repeated interrupted and failed requests', async () => {
+  const interruptedRepository = createMemoryMeetingRepository();
+  const interruptedService = createService(interruptedRepository);
+  const interruptedStart = await interruptedService.createMeeting();
+  const interruptedRecovery = recovery({
+    idempotencyKey: 'recover-1',
+    checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'network_interrupted',
+    failureCategory: 'network',
+    outcome: 'interrupted'
+  });
+
+  const interruptedFirst = await interruptedService.recoverSegment({
+    meetingId: interruptedStart.meeting.id,
+    segmentId: interruptedStart.segment.id,
+    recovery: interruptedRecovery
+  });
+  const interruptedDuplicate = await interruptedService.recoverSegment({
+    meetingId: interruptedStart.meeting.id,
+    segmentId: interruptedStart.segment.id,
+    recovery: interruptedRecovery
+  });
+
+  assert.equal(interruptedDuplicate.interruptedSegment.id, interruptedFirst.interruptedSegment.id);
+  assert.equal(interruptedDuplicate.segment.id, interruptedFirst.segment.id);
+
+  const failedRepository = createMemoryMeetingRepository();
+  const failedService = createService(failedRepository);
+  const failedStart = await failedService.createMeeting();
+  const failedRecovery = recovery({
+    idempotencyKey: 'recover-failed-1',
+    checkpoint: checkpoint(),
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'provider_error',
+    failureCategory: 'provider',
+    outcome: 'failed'
+  });
+
+  const failedFirst = await failedService.recoverSegment({
+    meetingId: failedStart.meeting.id,
+    segmentId: failedStart.segment.id,
+    recovery: failedRecovery
+  });
+  const failedDuplicate = await failedService.recoverSegment({
+    meetingId: failedStart.meeting.id,
+    segmentId: failedStart.segment.id,
+    recovery: failedRecovery
+  });
+
+  assert.equal(failedDuplicate.failedSegment.id, failedFirst.failedSegment.id);
+});
+
+test('recovery rejects conflicting repeated input', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const input = recovery({
+    idempotencyKey: 'recover-1',
+    checkpoint: checkpoint(),
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'network_interrupted',
+    failureCategory: 'network',
+    outcome: 'interrupted'
+  });
+
+  await service.recoverSegment({ meetingId: meeting.id, segmentId: segment.id, recovery: input });
+
+  await assert.rejects(
+    service.recoverSegment({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      recovery: { ...input, nextLiveSessionId: 'live-session-3' }
+    }),
+    /segment recovery conflict/
+  );
+});
+
+test('recovery rejects non-active segments', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  await repository.updateMeetingSegment(segment.complete({ endedAt: 2000 }));
+
+  await assert.rejects(
+    service.recoverSegment({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      recovery: recovery({
+        idempotencyKey: 'recover-completed-1',
+        checkpoint: checkpoint(),
+        nextLiveSessionId: 'live-session-2',
+        failureReason: 'unexpected_close',
+        failureCategory: 'provider',
+        outcome: 'interrupted'
+      })
+    }),
+    /segment recovery requires an active segment/
+  );
+});
+
 function createService(repository) {
   let meetingId = 0;
   let segmentId = 0;
@@ -217,6 +369,17 @@ function checkpoint(overrides = {}) {
     idempotencyKey: overrides.idempotencyKey ?? 'checkpoint-1',
     durableChunks: overrides.durableChunks ?? [],
     pendingPartial: null
+  };
+}
+
+function recovery(overrides = {}) {
+  return {
+    idempotencyKey: overrides.idempotencyKey ?? 'recover-1',
+    checkpoint: overrides.checkpoint ?? checkpoint(),
+    nextLiveSessionId: overrides.nextLiveSessionId ?? 'live-session-2',
+    failureReason: overrides.failureReason ?? 'unexpected_close',
+    failureCategory: overrides.failureCategory ?? 'provider',
+    outcome: overrides.outcome ?? 'interrupted'
   };
 }
 

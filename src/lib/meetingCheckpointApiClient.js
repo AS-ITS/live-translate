@@ -15,6 +15,27 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseCreateMeetingResponse(response);
     },
 
+    async listSegments({ meetingId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments`
+      ), { method: 'GET' });
+      await assertOkResponse(response);
+      return parseSegmentsResponse(response);
+    },
+
+    async getCheckpoint({ meetingId, segmentId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(segmentId, 'segmentId');
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
+      ), { method: 'GET' });
+      await assertOkResponse(response);
+      return parseCheckpointResponse(response);
+    },
+
     async updateCheckpoint({ meetingId, segmentId, idempotencyKey, durableChunks } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
@@ -58,6 +79,44 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       });
       await assertOkResponse(response);
       return parseRolloverResponse(response);
+    },
+
+    async recoverSegment({
+      meetingId,
+      segmentId,
+      idempotencyKey,
+      checkpoint,
+      nextLiveSessionId,
+      failureReason,
+      failureCategory,
+      outcome
+    } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(segmentId, 'segmentId');
+      assertNonEmptyString(idempotencyKey, 'idempotencyKey');
+      assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
+      assertNonEmptyString(failureReason, 'failureReason');
+      assertNonEmptyString(failureCategory, 'failureCategory');
+      if (outcome !== 'interrupted' && outcome !== 'failed') throw new TypeError('outcome must be interrupted or failed.');
+      if (!checkpoint || typeof checkpoint !== 'object') throw new TypeError('checkpoint must be an object.');
+
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/recover`
+      ), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idempotencyKey,
+          checkpoint,
+          nextLiveSessionId,
+          failureReason,
+          failureCategory,
+          outcome
+        })
+      });
+      await assertOkResponse(response);
+      return parseRecoverResponse(response);
     }
   });
 }
@@ -82,6 +141,14 @@ async function parseCreateMeetingResponse(response) {
   return body;
 }
 
+async function parseSegmentsResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object' || typeof body.meetingId !== 'string' || !Array.isArray(body.segments)) {
+    throw new Error('Segments response must contain meetingId and segments.');
+  }
+  return body;
+}
+
 async function parseCheckpointResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.checkpoint || !Array.isArray(body.checkpoint.durableChunks)) {
@@ -94,6 +161,23 @@ async function parseRolloverResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.completedSegment || !body.segment || typeof body.segment.id !== 'string') {
     throw new Error('Rollover response must contain completedSegment and segment.id.');
+  }
+  return body;
+}
+
+async function parseRecoverResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object') {
+    throw new Error('Recover response must be an object.');
+  }
+  if (body.outcome === 'failed' || body.failedSegment) {
+    if (!body.failedSegment || typeof body.failedSegment.id !== 'string') {
+      throw new Error('Recover failed response must contain failedSegment.id.');
+    }
+    return body;
+  }
+  if (!body.interruptedSegment || !body.segment || typeof body.segment.id !== 'string') {
+    throw new Error('Recover interrupted response must contain interruptedSegment and segment.id.');
   }
   return body;
 }

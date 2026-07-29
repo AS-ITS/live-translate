@@ -60,15 +60,14 @@ error/close payloads that clearly indicate token or session expiration. The
 classification is recoverable, requires a fresh token, does not require user
 action, and exposes only a safe user-facing message.
 
-This slice prepares UX messaging and recovery metadata only. Reconnect for
-`token_expired` remains not enabled, and the frontend reconnect allowlist remains
-limited to the previously implemented `unexpected_close` path. Proactive token
-refresh and a full token refresh system remain not implemented.
+This slice prepares UX messaging and recovery metadata. Long Meeting WP4 now
+uses `token_expired` as a controlled reconnect signal with a fresh token and
+Segment recovery checkpoint. Proactive token refresh remains not implemented.
 
 Current token status:
 
 - `token_expired` classification is complete.
-- `token_expired` reconnect is not enabled.
+- `token_expired` reconnect is enabled through the controlled reconnect path.
 - Proactive token refresh is not implemented.
 
 ## Recovery Matrix
@@ -191,8 +190,9 @@ Implementation files:
 - `tests/e2e/liveTranslate.spec.js`
 
 This slice wires the Reconnect Controller execution hook to a controlled
-frontend adapter path for `unexpected_close` only. After Live session cleanup and
-retry delay, the adapter creates a replacement `LiveTranslateSession`; the
+frontend adapter path. After Live session cleanup and retry delay, the adapter
+flushes the current Meeting Segment checkpoint, recovers the Segment through the
+backend recovery API, and creates a replacement `LiveTranslateSession`; the
 session start path naturally requests a fresh ephemeral token through the
 existing `/api/live-token` flow.
 
@@ -201,10 +201,10 @@ device, target language, and echo-target-language settings during reconnect.
 Stop remains available during reconnect and cancels pending or in-progress
 replacement startup.
 
-Reconnect for `token_expired`, `network_offline`, `provider_error`, microphone
-errors, and other failure reasons remains not implemented. Token Refresh remains
-not implemented as a separate capability. SessionFactory, backend/API changes,
-and full Auto Reconnect remain not implemented.
+Controlled reconnect is enabled for `unexpected_close`, `token_expired`, and
+selected transient provider/network/browser failure classifications. Offline
+pause/resume, microphone-disconnect recovery, proactive token refresh, and a
+separate SessionFactory remain not implemented.
 
 ## Retry Exhaustion and Failure UX Hardening
 
@@ -215,17 +215,37 @@ Implementation files:
 - `src/main.jsx`
 - `tests/e2e/liveTranslate.spec.js`
 
-This slice hardens the user-visible reconnect failure path for the existing
-`unexpected_close` controlled reconnect scope. Reconnecting state now has a
+This slice hardens the user-visible reconnect failure path for the controlled
+reconnect scope. Reconnecting state now has a
 clear user-visible message, reconnect startup failure shows a safe manual-retry
 error, retry exhaustion shows a distinct exhausted-retry message, stale
 callbacks are guarded by reconnect generation checks, and transcript/export
 state remains available after reconnect failure.
 
-Reconnect scope remains limited to `unexpected_close`. Reconnect for
-`token_expired`, `network_offline`, `provider_error`, microphone errors, and
-other failure reasons remains not implemented. Token Refresh remains not
-implemented as a separate capability.
+Token refresh remains reactive: replacement sessions request fresh ephemeral
+tokens through the existing token endpoint. Proactive token refresh and
+microphone-disconnect recovery remain not implemented.
+
+## Reload Resume for Long Meetings
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `src/lib/meetingCheckpointApiClient.js`
+- `tests/e2e/liveTranslate.spec.js`
+
+Opening the live page with `#live?meetingId=...` loads the Meeting's ordered
+Segments, reads Segment checkpoints, restores confirmed source and translation
+content into the live transcript panels, and shows a manual resume action. The
+manual resume path recovers the latest active Segment as interrupted, creates the
+next active Segment with a fresh Live session association, starts a replacement
+Live session through the existing `/api/live-token` flow, and keeps restored
+content in the final Session snapshot.
+
+This path does not auto-start the microphone on page load and does not add
+offline pause/resume or device-disconnect recovery.
 
 ## Token Expiration UX Display Path
 
@@ -236,17 +256,15 @@ Implementation files:
 - `src/main.jsx`
 - `tests/e2e/liveTranslate.spec.js`
 
-This slice displays stable, user-facing error messages when the frontend
-receives classified `token_expired`, `auth_failed`, or `rate_limited`
-connection failures. `token_expired` moves the UI to the reserved `expired`
-state and keeps transcript/export state available. `auth_failed` and
-`rate_limited` move to the existing error display path.
+This slice displays stable, user-facing behavior when the frontend receives
+classified `token_expired`, `auth_failed`, or `rate_limited` connection
+failures. `token_expired` enters the controlled reconnect path and keeps
+transcript/export state available. `auth_failed` and `rate_limited` move to the
+manual error display path.
 
-This slice does not schedule reconnect for `token_expired`, `auth_failed`, or
-`rate_limited`, does not request a fresh token, and does not create a replacement
-`LiveTranslateSession`. The controlled reconnect path for `unexpected_close`
-remains unchanged and is still the only enabled reconnect path. Proactive token
-refresh and a full token refresh system remain not implemented.
+This slice does not bypass auth or rate limits and does not add proactive token
+refresh. Replacement Live sessions still request fresh ephemeral tokens through
+the existing `/api/live-token` flow.
 
 ## Frontend Failure-State Mapping Unit Coverage
 
@@ -261,14 +279,15 @@ This slice covers the frontend mapping from classified connection failures to
 UI state metadata. It keeps manual-recovery failures distinct from the
 controlled reconnect path:
 
-- `token_expired` maps to the manual `expired` state and does not reconnect.
+- `token_expired` maps to the controlled reconnect path.
 - `auth_failed` maps to the manual error path and does not reconnect.
 - `rate_limited` maps to the manual error path and does not reconnect.
-- `unexpected_close` remains the only controlled reconnect path.
+- `unexpected_close` and transient provider/network/browser failures map to the
+  controlled reconnect path.
 
 This unit coverage documents and protects the current frontend boundary. It
-does not enable reconnect for `token_expired`, does not request fresh tokens for
-manual-recovery failures, and does not add proactive token refresh.
+does not request fresh tokens for manual-recovery failures and does not add
+proactive token refresh.
 
 ## Manual Recovery UX Polish
 
@@ -279,17 +298,15 @@ Implementation files:
 - `src/main.jsx`
 - `tests/e2e/liveTranslate.spec.js`
 
-This slice clarifies that `expired`, `auth_failed`, and `rate_limited` states
-require manual recovery. The UI shows direct next-step messages asking the user
-to start a new session or wait and try again. In these states, the Start button
-is available, the Stop button is hidden, and existing transcript/export state is
-kept available until the user manually starts a new session.
+This slice clarifies that `auth_failed` and `rate_limited` states require
+manual recovery. The UI shows direct next-step messages asking the user to check
+access or wait and try again. In these states, the Start button is available,
+the Stop button is hidden, and existing transcript/export state is kept
+available until the user manually starts a new session.
 
 Manual Start continues through the existing start flow and resets transcript
-state. This slice does not enable automatic reconnect for `token_expired`, does
-not change the `unexpected_close` controlled reconnect path, does not request
-tokens outside the existing start flow, and does not add proactive or full token
-refresh behavior.
+state. This slice does not request tokens outside the existing start/reconnect
+flow and does not add proactive token refresh behavior.
 
 ## Timeout Strategy
 

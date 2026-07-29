@@ -96,7 +96,8 @@ Current unit coverage:
 - Retry policy decisions
 - Reconnect controller lifecycle, cancellation, generation guard, and execution hook
 - LiveSession post-cleanup failure signal integration
-- Frontend failure-to-UI-state mapping for manual recovery and controlled reconnect
+- Frontend failure-to-UI-state mapping for manual recovery and controlled
+  reconnect, including token expiration recovery
 - Session records domain model creation, finalization, transcript item mapping,
   and transcript summary behavior
 - Session repository interface and in-memory adapter behavior
@@ -165,15 +166,19 @@ The Playwright flow:
 - Clicks `Stop`
 - Verifies the mocked session closes and microphone tracks stop
 - Mocks an unexpected close and verifies controlled reconnect for that reason
-- Verifies token expiration, authorization failure, and rate-limit UX messages
-  do not trigger reconnect
+- Verifies token expiration triggers controlled reconnect with a fresh token and
+  Segment recovery checkpoint
+- Verifies `#live?meetingId=...` reload restores checkpointed transcript content
+  and manual resume continues in the next recovered Segment
+- Verifies authorization failure and rate-limit UX messages do not trigger
+  reconnect
 - Verifies manual recovery states keep Start available, hide Stop, preserve
   transcript/export state, and reset transcript on manual Start
 - Verifies reconnect failure, retry exhaustion, Stop cancellation, and
   transcript preservation during recovery errors
 - Verifies read-only finalized session history list behavior for empty state,
-  stopped sessions, failed sessions, expired sessions, manual restart, and
-  reconnect without duplicate history records
+  stopped sessions, failed sessions, manual restart, token-expiration reconnect,
+  and reconnect without duplicate history records
 - Verifies read-only inline session detail behavior for saved metadata,
   final-only source and translation transcripts, close behavior, failure
   reasons, and no-transcript empty state

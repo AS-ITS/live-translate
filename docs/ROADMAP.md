@@ -117,8 +117,11 @@ completed: the backend can create Meetings, list Segments, and persist/read
 Segment checkpoints for confirmed transcript or translation chunks. The live UI
 now creates a Meeting by default, attaches the first Segment to the saved
 SessionRecord, and syncs confirmed source/translation chunks on a short debounce
-and on Stop. Checkpoint restore, proactive segmentation, Live reconnect, and
-segment switching remain deferred to later Long Meeting work.
+and on Stop. Long Meeting WP3 proactive segmentation is completed: live sessions
+roll over the active Segment on a scheduled 10-minute interval, create the next
+ordered Segment with a fresh Live session association, and preserve the visible
+transcript while replacing the browser Gemini Live session. Checkpoint restore
+remains deferred to later Long Meeting work.
 
 Completed Phase 1 capabilities include:
 

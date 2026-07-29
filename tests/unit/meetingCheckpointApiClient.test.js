@@ -18,6 +18,21 @@ test('meeting checkpoint API client creates a meeting', async () => {
   assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'POST' } }]);
 });
 
+test('meeting checkpoint API client creates a meeting with live session association', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok({ meeting: { id: 'meeting-1' }, segment: { id: 'segment-1', liveSessionId: 'live-session-1' } });
+    }
+  });
+
+  const result = await client.createMeeting({ liveSessionId: 'live-session-1' });
+
+  assert.equal(result.segment.liveSessionId, 'live-session-1');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { liveSessionId: 'live-session-1' });
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({
@@ -42,6 +57,37 @@ test('meeting checkpoint API client updates a segment checkpoint', async () => {
     idempotencyKey: 'checkpoint-1',
     durableChunks,
     pendingPartial: null
+  });
+});
+
+test('meeting checkpoint API client rolls over a segment', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok({
+        completedSegment: { id: 'segment-1', status: 'completed' },
+        segment: { id: 'segment-2', status: 'active' }
+      });
+    }
+  });
+  const checkpoint = { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null };
+
+  const result = await client.rolloverSegment({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    idempotencyKey: 'rollover-1',
+    checkpoint,
+    nextLiveSessionId: 'live-session-2'
+  });
+
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/segments/segment-1/rollover');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    idempotencyKey: 'rollover-1',
+    checkpoint,
+    nextLiveSessionId: 'live-session-2'
   });
 });
 

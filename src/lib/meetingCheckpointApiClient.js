@@ -2,8 +2,15 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting checkpoint API client requires fetchImpl to be a function.');
 
   return Object.freeze({
-    async createMeeting() {
-      const response = await fetchImpl(buildUrl(baseUrl, '/api/meetings'), { method: 'POST' });
+    async createMeeting({ liveSessionId } = {}) {
+      const options = { method: 'POST' };
+      if (liveSessionId !== undefined && liveSessionId !== null) {
+        assertNonEmptyString(liveSessionId, 'liveSessionId');
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify({ liveSessionId });
+      }
+
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/meetings'), options);
       await assertOkResponse(response);
       return parseCreateMeetingResponse(response);
     },
@@ -28,6 +35,29 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       });
       await assertOkResponse(response);
       return parseCheckpointResponse(response);
+    },
+
+    async rolloverSegment({ meetingId, segmentId, idempotencyKey, checkpoint, nextLiveSessionId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(segmentId, 'segmentId');
+      assertNonEmptyString(idempotencyKey, 'idempotencyKey');
+      assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
+      if (!checkpoint || typeof checkpoint !== 'object') throw new TypeError('checkpoint must be an object.');
+
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/rollover`
+      ), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          idempotencyKey,
+          checkpoint,
+          nextLiveSessionId
+        })
+      });
+      await assertOkResponse(response);
+      return parseRolloverResponse(response);
     }
   });
 }
@@ -56,6 +86,14 @@ async function parseCheckpointResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.checkpoint || !Array.isArray(body.checkpoint.durableChunks)) {
     throw new Error('Checkpoint response must contain checkpoint.durableChunks.');
+  }
+  return body;
+}
+
+async function parseRolloverResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object' || !body.completedSegment || !body.segment || typeof body.segment.id !== 'string') {
+    throw new Error('Rollover response must contain completedSegment and segment.id.');
   }
   return body;
 }

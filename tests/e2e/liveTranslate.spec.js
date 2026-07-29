@@ -131,6 +131,8 @@ function retranslationPage(page) {
 
 async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
   const checkpointRequests = [];
+  const rolloverRequests = [];
+  let latestSegmentNumber = 1;
 
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
@@ -138,18 +140,26 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
     const method = request.method();
 
     if (method === 'POST' && url.pathname === '/api/meetings') {
+      const body = JSON.parse(request.postData() || '{}');
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
         body: JSON.stringify({
           meeting: { id: 'meeting-1', status: 'active' },
-          segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active' }
+          segment: {
+            id: 'segment-1',
+            meetingId: 'meeting-1',
+            sequence: 0,
+            status: 'active',
+            liveSessionId: body.liveSessionId || null
+          }
         })
       });
       return;
     }
 
-    if (method === 'PUT' && url.pathname === '/api/meetings/meeting-1/segments/segment-1/checkpoint') {
+    const segmentMatch = url.pathname.match(/^\/api\/meetings\/meeting-1\/segments\/(segment-\d+)\/checkpoint$/);
+    if (method === 'PUT' && segmentMatch) {
       const body = JSON.parse(request.postData() || '{}');
       checkpointRequests.push(body);
 
@@ -165,12 +175,12 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          meetingId: 'meeting-1',
-          segmentId: 'segment-1',
-          checkpoint: {
-            idempotencyKey: body.idempotencyKey,
-            durableChunks: body.durableChunks,
+          body: JSON.stringify({
+            meetingId: 'meeting-1',
+            segmentId: segmentMatch[1],
+            checkpoint: {
+              idempotencyKey: body.idempotencyKey,
+              durableChunks: body.durableChunks,
             pendingPartial: null,
             updatedAt: 1000
           }
@@ -179,9 +189,57 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
       return;
     }
 
+    const rolloverMatch = url.pathname.match(/^\/api\/meetings\/meeting-1\/segments\/segment-(\d+)\/rollover$/);
+    if (method === 'POST' && rolloverMatch) {
+      const currentSegmentNumber = Number(rolloverMatch[1]);
+      const body = JSON.parse(request.postData() || '{}');
+      latestSegmentNumber = Math.max(latestSegmentNumber, currentSegmentNumber + 1);
+      const nextSegmentId = `segment-${currentSegmentNumber + 1}`;
+      rolloverRequests.push({ currentSegmentId: `segment-${currentSegmentNumber}`, body });
+
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          completedSegment: {
+            id: `segment-${currentSegmentNumber}`,
+            meetingId: 'meeting-1',
+            sequence: currentSegmentNumber - 1,
+            status: 'completed'
+          },
+          segment: {
+            id: nextSegmentId,
+            meetingId: 'meeting-1',
+            sequence: currentSegmentNumber,
+            status: 'active',
+            liveSessionId: body.nextLiveSessionId
+          }
+        })
+      });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/meetings/meeting-1/segments') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meetingId: 'meeting-1',
+          segments: Array.from({ length: latestSegmentNumber }, (_, index) => ({
+            id: `segment-${index + 1}`,
+            meetingId: 'meeting-1',
+            sequence: index,
+            status: index + 1 === latestSegmentNumber ? 'active' : 'completed'
+          }))
+        })
+      });
+      return;
+    }
+
     await route.fallback();
   });
 
+  checkpointRequests.rolloverRequests = rolloverRequests;
   return checkpointRequests;
 }
 
@@ -409,6 +467,47 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
     { meetingId: 'meeting-1', segmentId: 'segment-1', stream: 'translation', sequence: 2, text: 'checkpoint translation' }
   ]);
   await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+});
+
+test('long meeting proactively switches through three segments and preserves confirmed transcript', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__liveTranslateSegmentSwitchIntervalMs = 700;
+  });
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, 'segment one source', 'segment one translation');
+  await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
+  await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
+
+  await emitFinalTranscript(page, 'segment two source', 'segment two translation');
+  await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
+
+  await emitFinalTranscript(page, 'segment three source', 'segment three translation');
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+
+  expect(checkpointRequests.rolloverRequests.map((request) => request.currentSegmentId)).toEqual(['segment-1', 'segment-2']);
+  expect(checkpointRequests.rolloverRequests.map((request) => request.body.nextLiveSessionId)).toEqual([
+    expect.stringMatching(/^live-session-/),
+    expect.stringMatching(/^live-session-/)
+  ]);
+  expect(checkpointRequests.flatMap((request) => request.durableChunks.map(({ segmentId, text }) => ({ segmentId, text })))).toEqual([
+    { segmentId: 'segment-1', text: 'segment one source' },
+    { segmentId: 'segment-1', text: 'segment one translation' },
+    { segmentId: 'segment-2', text: 'segment two source' },
+    { segmentId: 'segment-2', text: 'segment two translation' },
+    { segmentId: 'segment-3', text: 'segment three source' },
+    { segmentId: 'segment-3', text: 'segment three translation' }
+  ]);
+  await expect(page.getByText('segment one source')).toBeVisible();
+  await expect(page.getByText('segment two source')).toBeVisible();
+  await expect(page.getByText('segment three source')).toBeVisible();
 });
 
 test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {

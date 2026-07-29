@@ -15,6 +15,7 @@ import {
   checkpointChunksForTranscriptItems,
   createMeetingCheckpointSyncCoordinator
 } from './lib/meetingCheckpointSyncCoordinator.js';
+import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
@@ -56,6 +57,7 @@ const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
+const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -100,7 +102,10 @@ function App() {
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
   const meetingCheckpointSyncCoordinatorRef = useRef(null);
+  const segmentSwitchOrchestratorRef = useRef(null);
   const activeMeetingCheckpointRef = useRef(null);
+  const liveSessionIdSequenceRef = useRef(0);
+  const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
@@ -109,7 +114,11 @@ function App() {
   const selectedHistoryRecordIdRef = useRef(null);
 
   const isActive =
-    status === 'requesting-permission' || status === 'connecting' || status === 'listening' || status === 'reconnecting';
+    status === 'requesting-permission' ||
+    status === 'connecting' ||
+    status === 'listening' ||
+    status === 'reconnecting' ||
+    status === 'switching-segment';
 
   useEffect(() => {
     void refreshInputDevices();
@@ -151,6 +160,7 @@ function App() {
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
     meetingCheckpointSyncCoordinatorRef.current?.cancel();
+    segmentSwitchOrchestratorRef.current?.cancel();
     for (const session of sessions) {
       void session?.stop().catch(() => {});
     }
@@ -193,22 +203,27 @@ function App() {
 
   async function startSession() {
     reconnectController().reset();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
     setStatusLabelOverride('');
     let session;
 
     try {
-      const meetingCheckpoint = await createMeetingCheckpointForSession();
+      const liveSessionId = generateLiveSessionId();
+      const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
       session = await createSession({ preserveTranscript: false });
       sessionRef.current = session;
 
       await session.start();
       await createCurrentSessionRecord(meetingCheckpoint);
       setStatus('listening');
+      segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
+      segmentSwitchOrchestratorRef.current?.cancel();
       setError(nextError.message || '無法開始即時翻譯。');
       setStatus('error');
     }
@@ -216,6 +231,8 @@ function App() {
 
   async function stopSession() {
     reconnectController().cancel();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
@@ -265,7 +282,9 @@ function App() {
         void refreshInputDevices();
       },
       onConnecting: () => {
-        setStatus((current) => (current === 'reconnecting' ? 'reconnecting' : 'connecting'));
+        setStatus((current) => (
+          current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
+        ));
       },
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
@@ -387,6 +406,66 @@ function App() {
     setStatus('listening');
   }
 
+  async function switchMeetingSegment() {
+    const meetingCheckpoint = activeMeetingCheckpointRef.current;
+    const previousSession = sessionRef.current;
+    if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current) return;
+
+    setError('');
+    setStatusLabelOverride('切換下一段中');
+    setStatus('switching-segment');
+
+    await finalizePendingTranscriptItemsForStop();
+    if (segmentSwitchCancelledRef.current) return;
+
+    const flushed = await flushMeetingCheckpointSync();
+    if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
+    if (segmentSwitchCancelledRef.current) return;
+
+    const nextLiveSessionId = generateLiveSessionId();
+    const rollover = await meetingCheckpointApiClientRef.current.rolloverSegment({
+      meetingId: meetingCheckpoint.meetingId,
+      segmentId: meetingCheckpoint.segmentId,
+      idempotencyKey: `rollover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
+      checkpoint: {
+        idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:rollover`,
+        durableChunks: [],
+        pendingPartial: null
+      },
+      nextLiveSessionId
+    });
+
+    if (segmentSwitchCancelledRef.current) return;
+
+    await previousSession.stop().catch(() => {});
+    if (sessionRef.current === previousSession) {
+      sessionRef.current = null;
+    }
+
+    const nextSession = await createSession({ preserveTranscript: true });
+    try {
+      await nextSession.start();
+    } catch (error) {
+      await nextSession.stop().catch(() => {});
+      throw error;
+    }
+
+    if (segmentSwitchCancelledRef.current) {
+      await nextSession.stop().catch(() => {});
+      return;
+    }
+
+    sessionRef.current = nextSession;
+    const nextMeetingCheckpoint = {
+      meetingId: meetingCheckpoint.meetingId,
+      segmentId: rollover.segment.id
+    };
+    activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
+    meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
+    setStatusLabelOverride('下一段已開始');
+    setStatus('listening');
+  }
+
   function reconnectController() {
     if (!reconnectControllerRef.current) {
       reconnectControllerRef.current = createReconnectController({
@@ -397,10 +476,48 @@ function App() {
     return reconnectControllerRef.current;
   }
 
-  async function createMeetingCheckpointForSession() {
+  function segmentSwitchOrchestrator() {
+    if (!segmentSwitchOrchestratorRef.current) {
+      segmentSwitchOrchestratorRef.current = createSegmentSwitchOrchestrator({
+        switchSegment: switchMeetingSegment,
+        intervalMs: configuredSegmentSwitchIntervalMs(),
+        onStatusChange: (nextStatus) => {
+          if (nextStatus === 'switching') setMeetingCheckpointStatus('switching');
+          if (nextStatus === 'switched') setMeetingCheckpointStatus('switched');
+        },
+        onError: reportSegmentSwitchError
+      });
+    }
+
+    return segmentSwitchOrchestratorRef.current;
+  }
+
+  function configuredSegmentSwitchIntervalMs() {
+    const testIntervalMs = import.meta.env?.DEV ? window.__liveTranslateSegmentSwitchIntervalMs : undefined;
+    return Number.isFinite(testIntervalMs) && testIntervalMs > 0 ? testIntervalMs : SEGMENT_SWITCH_INTERVAL_MS;
+  }
+
+  function reportSegmentSwitchError(error) {
+    console.error('Meeting segment switch failed.', error);
+    setStatusLabelOverride('切換失敗');
+    setError('長會議分段切換失敗。已保留目前逐字稿，請停止後重新開始。');
+    setStatus('error');
+    void finalizeCurrentSessionRecord({
+      status: 'failed',
+      failureReason: 'segment_switch_failed',
+      failureCategory: 'provider'
+    });
+  }
+
+  function generateLiveSessionId() {
+    liveSessionIdSequenceRef.current += 1;
+    return `live-session-${Date.now()}-${liveSessionIdSequenceRef.current}`;
+  }
+
+  async function createMeetingCheckpointForSession({ liveSessionId } = {}) {
     try {
       setMeetingCheckpointStatus('syncing');
-      const result = await meetingCheckpointApiClientRef.current.createMeeting();
+      const result = await meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId });
       const meetingCheckpoint = {
         meetingId: result.meeting.id,
         segmentId: result.segment.id
@@ -912,7 +1029,7 @@ function App() {
               <Square size={18} aria-hidden="true" />
               停止
             </button>
-          ) : status === 'reconnecting' ? (
+          ) : status === 'reconnecting' || status === 'switching-segment' ? (
             <button className="button secondary" type="button" onClick={stopSession}>
               <Square size={18} aria-hidden="true" />
               停止
@@ -926,6 +1043,7 @@ function App() {
         </div>
 
           {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
+          {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
           {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
           <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
             {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
@@ -2720,6 +2838,7 @@ function statusLabel(status, override = '') {
     connecting: '正在連線',
     listening: '聆聽中',
     reconnecting: '正在重新連線',
+    'switching-segment': '切換下一段中',
     stopped: '已停止',
     expired: '工作階段已過期',
     error: '需要處理'
@@ -2734,6 +2853,8 @@ function meetingCheckpointStatusLabel(status) {
     ready: '長會議同步：準備同步',
     syncing: '長會議同步：同步中',
     synced: '長會議同步：已同步',
+    switching: '長會議同步：切換下一段中',
+    switched: '長會議同步：下一段已開始',
     error: '長會議同步：同步失敗，等待重試'
   };
 

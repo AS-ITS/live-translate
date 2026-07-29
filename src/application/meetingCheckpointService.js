@@ -112,6 +112,82 @@ export function createMeetingCheckpointService({
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
 
       return { completedSegment, segment: activeNextSegment };
+    },
+
+    async recoverSegment({ meetingId, segmentId, recovery } = {}) {
+      const currentSegment = await requireSegment({ meetingRepository, meetingId, segmentId });
+      const input = validateRecoveryInput(recovery);
+      const existingSegments = await meetingRepository.listMeetingSegments(currentSegment.meetingId);
+      const existingNext = existingSegments.find((segment) => segment.sequence === currentSegment.sequence + 1);
+      const storedCheckpoint = normalizeStoredCheckpoint(currentSegment.checkpoint, currentSegment.meetingId, currentSegment.id);
+      const errorInfo = {
+        reason: input.failureReason,
+        category: input.failureCategory
+      };
+
+      if (input.outcome === 'interrupted') {
+        if (
+          existingNext &&
+          currentSegment.status === 'interrupted' &&
+          storedCheckpoint.idempotencyKey === input.idempotencyKey &&
+          existingNext.liveSessionId === input.nextLiveSessionId &&
+          sameErrorInfo(currentSegment.errorInfo, errorInfo)
+        ) {
+          return { interruptedSegment: currentSegment, segment: existingNext };
+        }
+
+        if (existingNext) {
+          throw codedError('checkpoint_conflict', `segment recovery conflict: ${input.idempotencyKey}`);
+        }
+      } else if (
+        currentSegment.status === 'failed' &&
+        storedCheckpoint.idempotencyKey === input.idempotencyKey &&
+        sameErrorInfo(currentSegment.errorInfo, errorInfo)
+      ) {
+        if (existingNext) {
+          throw codedError('checkpoint_conflict', `segment recovery conflict: ${input.idempotencyKey}`);
+        }
+        return { failedSegment: currentSegment };
+      }
+
+      if (currentSegment.status !== 'active') {
+        throw codedError('meeting_segment_invalid_state', `segment recovery requires an active segment, got ${currentSegment.status}`);
+      }
+
+      const now = clock();
+      const nextCheckpoint = mergeCheckpoint({
+        existing: currentSegment.checkpoint,
+        incoming: validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id),
+        meetingId: currentSegment.meetingId,
+        segmentId: currentSegment.id,
+        updatedAt: now
+      });
+      const recoveryCheckpoint = { ...nextCheckpoint, idempotencyKey: input.idempotencyKey, updatedAt: now };
+
+      if (input.outcome === 'failed') {
+        const failedSegment = await meetingRepository.updateMeetingSegment(currentSegment.fail({
+          endedAt: now,
+          checkpoint: recoveryCheckpoint,
+          errorInfo
+        }));
+        return { failedSegment };
+      }
+
+      const interruptedSegment = await meetingRepository.updateMeetingSegment(currentSegment.interrupt({
+        endedAt: now,
+        checkpoint: recoveryCheckpoint,
+        errorInfo
+      }));
+      const nextSegment = await meetingRepository.createMeetingSegment({
+        id: idGenerator('segment'),
+        meetingId: currentSegment.meetingId,
+        sequence: currentSegment.sequence + 1,
+        liveSessionId: input.nextLiveSessionId,
+        createdAt: now
+      });
+      const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+
+      return { interruptedSegment, segment: activeNextSegment };
     }
   });
 }
@@ -197,6 +273,21 @@ function validateRolloverInput(input) {
   };
 }
 
+function validateRecoveryInput(input) {
+  if (!isRecord(input)) invalid();
+  const outcome = input.outcome;
+  if (outcome !== 'interrupted' && outcome !== 'failed') invalid();
+
+  return {
+    idempotencyKey: validateRequiredString(input.idempotencyKey, 'idempotencyKey'),
+    checkpoint: input.checkpoint,
+    nextLiveSessionId: validateRequiredString(input.nextLiveSessionId, 'nextLiveSessionId'),
+    failureReason: validateRequiredString(input.failureReason, 'failureReason'),
+    failureCategory: validateRequiredString(input.failureCategory, 'failureCategory'),
+    outcome
+  };
+}
+
 async function requireSegment({ meetingRepository, meetingId, segmentId }) {
   const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
   const normalizedSegmentId = validateRequiredString(segmentId, 'segmentId');
@@ -276,6 +367,10 @@ function sameChunk(left, right) {
     left.sequence === right.sequence &&
     left.text === right.text &&
     left.timestamp === right.timestamp;
+}
+
+function sameErrorInfo(left, right) {
+  return left?.reason === right?.reason && left?.category === right?.category;
 }
 
 function assertMeetingRepository(repository) {

@@ -80,6 +80,12 @@ Meeting. This is separate from failure reconnect and token refresh: the browser
 still obtains each fresh ephemeral token through `/api/live-token` and connects
 directly to Gemini Live API.
 
+Long Meeting recovery API support can mark an active Segment as `interrupted`
+or `failed` with a final checkpoint. Interrupted recovery creates the next
+ordered active Segment for a fresh Live session association. The live UI uses
+this path for controlled reconnect after unexpected close or token expiration;
+reload-resume flows remain separate future work.
+
 ## 3. Runtime Architecture
 
 ```mermaid

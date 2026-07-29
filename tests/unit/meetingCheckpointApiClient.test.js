@@ -91,6 +91,64 @@ test('meeting checkpoint API client rolls over a segment', async () => {
   });
 });
 
+test('meeting checkpoint API client recovers a segment', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok({
+        interruptedSegment: { id: 'segment-1', status: 'interrupted' },
+        segment: { id: 'segment-2', status: 'active' }
+      });
+    }
+  });
+  const checkpoint = { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null };
+
+  const result = await client.recoverSegment({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    idempotencyKey: 'recover-1',
+    checkpoint,
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'token_expired',
+    failureCategory: 'token',
+    outcome: 'interrupted'
+  });
+
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/segments/segment-1/recover');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    idempotencyKey: 'recover-1',
+    checkpoint,
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'token_expired',
+    failureCategory: 'token',
+    outcome: 'interrupted'
+  });
+});
+
+test('meeting checkpoint API client parses failed recovery response', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ok({
+      failedSegment: { id: 'segment-1', status: 'failed' }
+    })
+  });
+
+  const result = await client.recoverSegment({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    idempotencyKey: 'recover-1',
+    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null },
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'auth_failed',
+    failureCategory: 'token',
+    outcome: 'failed'
+  });
+
+  assert.equal(result.failedSegment.id, 'segment-1');
+});
+
 test('meeting checkpoint API client rejects malformed and failed responses', async () => {
   const malformedClient = createMeetingCheckpointApiClient({ fetchImpl: async () => ok({ meeting: {}, segment: {} }) });
   await assert.rejects(malformedClient.createMeeting(), /meeting\.id and segment\.id/);

@@ -591,6 +591,27 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && isMeetingSegmentRecoverPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingSegmentRecoverPath(path);
+      const result = await meetingCheckpointService.recoverSegment({
+        meetingId,
+        segmentId,
+        recovery: await readJson(req)
+      });
+      statusCode = 201;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingSegmentsPath(path)) {
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
@@ -1028,6 +1049,13 @@ function isMeetingSegmentRolloverPath(path) {
     path.length > '/api/meetings//segments//rollover'.length;
 }
 
+function isMeetingSegmentRecoverPath(path) {
+  return path.startsWith('/api/meetings/') &&
+    path.includes('/segments/') &&
+    path.endsWith('/recover') &&
+    path.length > '/api/meetings//segments//recover'.length;
+}
+
 function parseMeetingSegmentsPath(path) {
   const prefix = '/api/meetings/';
   const suffix = '/segments';
@@ -1052,6 +1080,19 @@ function parseMeetingSegmentCheckpointPath(path) {
 function parseMeetingSegmentRolloverPath(path) {
   const prefix = '/api/meetings/';
   const suffix = '/rollover';
+  const body = path.slice(prefix.length, -suffix.length);
+  const separator = body.indexOf('/segments/');
+  if (separator <= 0) throw createHttpError('invalid_request');
+
+  return {
+    meetingId: safeDecodePathComponent(body.slice(0, separator)),
+    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
+  };
+}
+
+function parseMeetingSegmentRecoverPath(path) {
+  const prefix = '/api/meetings/';
+  const suffix = '/recover';
   const body = path.slice(prefix.length, -suffix.length);
   const separator = body.indexOf('/segments/');
   if (separator <= 0) throw createHttpError('invalid_request');

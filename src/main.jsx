@@ -362,18 +362,57 @@ function App() {
   }
 
   async function startReconnectSession({ generationId, classification }) {
-    if (classification.reason !== 'unexpected_close' || generationId !== reconnectController().currentGeneration()) {
+    if (generationId !== reconnectController().currentGeneration()) {
       return;
     }
 
     setError('');
     setStatusLabelOverride('');
     setStatus('reconnecting');
+    segmentSwitchOrchestrator().cancel();
 
+    const meetingCheckpoint = activeMeetingCheckpointRef.current;
+    const nextLiveSessionId = generateLiveSessionId();
+    let recovery;
     const session = await createSession({ preserveTranscript: true });
     reconnectSessionRef.current = session;
 
     try {
+      if (!meetingCheckpoint) {
+        throw new Error('Missing active meeting checkpoint.');
+      }
+
+      await finalizePendingTranscriptItemsForStop();
+      if (generationId !== reconnectController().currentGeneration()) {
+        await session.stop().catch(() => {});
+        return;
+      }
+
+      const flushed = await flushMeetingCheckpointSync();
+      if (!flushed) {
+        throw new Error('Unable to flush meeting checkpoint before reconnect.');
+      }
+
+      recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
+        meetingId: meetingCheckpoint.meetingId,
+        segmentId: meetingCheckpoint.segmentId,
+        idempotencyKey: `recover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
+        checkpoint: {
+          idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:recover:${nextLiveSessionId}`,
+          durableChunks: [],
+          pendingPartial: null
+        },
+        nextLiveSessionId,
+        failureReason: classification.reason,
+        failureCategory: classification.category,
+        outcome: 'interrupted'
+      });
+
+      if (generationId !== reconnectController().currentGeneration()) {
+        await session.stop().catch(() => {});
+        return;
+      }
+
       await session.start();
     } catch (nextError) {
       if (generationId !== reconnectController().currentGeneration()) {
@@ -395,13 +434,20 @@ function App() {
       return;
     }
 
-    if (generationId !== reconnectController().currentGeneration()) {
+    if (generationId !== reconnectController().currentGeneration() || segmentSwitchCancelledRef.current) {
       await session.stop().catch(() => {});
       return;
     }
 
     reconnectSessionRef.current = null;
     sessionRef.current = session;
+    const nextMeetingCheckpoint = {
+      meetingId: meetingCheckpoint.meetingId,
+      segmentId: recovery.segment.id
+    };
+    activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
+    meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
+    segmentSwitchOrchestrator().start();
     setStatusLabelOverride('');
     setStatus('listening');
   }

@@ -1,5 +1,4 @@
 const MANUAL_RECOVERY_MESSAGES = {
-  token_expired: '工作階段已過期。請開始新的工作階段。',
   auth_failed: '存取失敗。請檢查存取權杖或設定。',
   rate_limited: '請求過於頻繁。請稍候再試。'
 };
@@ -25,14 +24,6 @@ export function failureUiStateForClassification(classification = {}) {
     stopVisible: false
   };
 
-  if (reason === 'token_expired') {
-    return {
-      ...baseState,
-      status: 'expired',
-      message: MANUAL_RECOVERY_MESSAGES.token_expired
-    };
-  }
-
   if (reason === 'auth_failed' || reason === 'rate_limited') {
     return {
       ...baseState,
@@ -42,7 +33,7 @@ export function failureUiStateForClassification(classification = {}) {
     };
   }
 
-  if (reason === 'unexpected_close') {
+  if (shouldReconnect(reason)) {
     return {
       ...baseState,
       status: 'reconnecting',
@@ -55,4 +46,20 @@ export function failureUiStateForClassification(classification = {}) {
   }
 
   return baseState;
+}
+
+function shouldReconnect(reason) {
+  return [
+    'unexpected_close',
+    'token_expired',
+    'token_request_failed',
+    'live_connect_failed',
+    'network_timeout',
+    'network_interrupted',
+    'provider_unavailable',
+    'provider_error',
+    'browser_suspended',
+    'audio_context_lost',
+    'selected_device_missing'
+  ].includes(reason);
 }

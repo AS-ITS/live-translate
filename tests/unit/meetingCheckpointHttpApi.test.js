@@ -116,6 +116,96 @@ test('POST /api/meetings/:meetingId/segments/:segmentId/rollover creates next se
   assert.equal(response.json().segment.liveSessionId, 'live-session-2');
 });
 
+test('POST /api/meetings/:meetingId/segments/:segmentId/recover interrupts current segment and creates next segment', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ liveSessionId: 'live-session-1' })
+  })).json();
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/recover`,
+    body: JSON.stringify({
+      idempotencyKey: 'recover-1',
+      checkpoint: checkpoint({
+        meetingId: meeting.id,
+        segmentId: segment.id,
+        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
+      }),
+      nextLiveSessionId: 'live-session-2',
+      failureReason: 'token_expired',
+      failureCategory: 'token',
+      outcome: 'interrupted'
+    })
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.json().interruptedSegment.status, 'interrupted');
+  assert.equal(response.json().interruptedSegment.checkpoint.idempotencyKey, 'recover-1');
+  assert.deepEqual(response.json().interruptedSegment.errorInfo, { reason: 'token_expired', category: 'token' });
+  assert.equal(response.json().segment.sequence, 1);
+  assert.equal(response.json().segment.status, 'active');
+  assert.equal(response.json().segment.liveSessionId, 'live-session-2');
+});
+
+test('POST /api/meetings/:meetingId/segments/:segmentId/recover fails current segment without next segment', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ liveSessionId: 'live-session-1' })
+  })).json();
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/recover`,
+    body: JSON.stringify({
+      idempotencyKey: 'recover-failed-1',
+      checkpoint: checkpoint({
+        meetingId: meeting.id,
+        segmentId: segment.id,
+        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
+      }),
+      nextLiveSessionId: 'live-session-2',
+      failureReason: 'auth_failed',
+      failureCategory: 'token',
+      outcome: 'failed'
+    })
+  });
+  const segments = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}/segments` });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.json().failedSegment.status, 'failed');
+  assert.deepEqual(response.json().failedSegment.errorInfo, { reason: 'auth_failed', category: 'token' });
+  assert.deepEqual(segments.json().segments.map((stored) => stored.id), ['segment-1']);
+});
+
+test('POST recovery conflict returns HTTP 409', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const url = `/api/meetings/${meeting.id}/segments/${segment.id}/recover`;
+  const body = {
+    idempotencyKey: 'recover-1',
+    checkpoint: checkpoint({ meetingId: meeting.id, segmentId: segment.id }),
+    nextLiveSessionId: 'live-session-2',
+    failureReason: 'unexpected_close',
+    failureCategory: 'provider',
+    outcome: 'interrupted'
+  };
+
+  await request(handler, { method: 'POST', url, body: JSON.stringify(body) });
+  const response = await request(handler, {
+    method: 'POST',
+    url,
+    body: JSON.stringify({ ...body, nextLiveSessionId: 'live-session-3' })
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.json().error.code, 'checkpoint_conflict');
+});
+
 test('missing meeting or segment returns HTTP 404', async () => {
   const handler = createHandler();
   const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();

@@ -1,5 +1,13 @@
 # Changelog
 
+- Long Meeting WP4 Live/token recovery: added a Segment recovery endpoint that
+  persists a final checkpoint, marks the active Segment as interrupted or failed,
+  and creates the next active Segment for interrupted recovery with a fresh Live
+  session association. The live UI now uses this path for controlled reconnect
+  after unexpected close or token expiration while preserving visible transcript
+  and avoiding duplicate history records. Proactive token refresh, device
+  recovery, and reload resume wiring remain deferred.
+
 - Long Meeting WP3 proactive segmentation and Live continuity: live sessions now
   default to scheduled 10-minute Segment rollover with a 15-minute code cap,
   complete the current Segment with a final checkpoint, create the next ordered

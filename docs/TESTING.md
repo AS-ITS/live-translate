@@ -168,6 +168,8 @@ The Playwright flow:
 - Mocks an unexpected close and verifies controlled reconnect for that reason
 - Verifies token expiration triggers controlled reconnect with a fresh token and
   Segment recovery checkpoint
+- Verifies `#live?meetingId=...` reload restores checkpointed transcript content
+  and manual resume continues in the next recovered Segment
 - Verifies authorization failure and rate-limit UX messages do not trigger
   reconnect
 - Verifies manual recovery states keep Start available, hide Stop, preserve

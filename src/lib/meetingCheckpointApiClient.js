@@ -15,6 +15,27 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseCreateMeetingResponse(response);
     },
 
+    async listSegments({ meetingId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments`
+      ), { method: 'GET' });
+      await assertOkResponse(response);
+      return parseSegmentsResponse(response);
+    },
+
+    async getCheckpoint({ meetingId, segmentId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(segmentId, 'segmentId');
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
+      ), { method: 'GET' });
+      await assertOkResponse(response);
+      return parseCheckpointResponse(response);
+    },
+
     async updateCheckpoint({ meetingId, segmentId, idempotencyKey, durableChunks } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
@@ -116,6 +137,14 @@ async function parseCreateMeetingResponse(response) {
   const segment = body?.segment;
   if (!meeting || typeof meeting.id !== 'string' || !segment || typeof segment.id !== 'string') {
     throw new Error('Create meeting response must contain meeting.id and segment.id.');
+  }
+  return body;
+}
+
+async function parseSegmentsResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object' || typeof body.meetingId !== 'string' || !Array.isArray(body.segments)) {
+    throw new Error('Segments response must contain meetingId and segments.');
   }
   return body;
 }

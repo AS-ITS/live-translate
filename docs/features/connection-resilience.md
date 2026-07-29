@@ -226,6 +226,27 @@ Token refresh remains reactive: replacement sessions request fresh ephemeral
 tokens through the existing token endpoint. Proactive token refresh and
 microphone-disconnect recovery remain not implemented.
 
+## Reload Resume for Long Meetings
+
+Status: Implemented.
+
+Implementation files:
+
+- `src/main.jsx`
+- `src/lib/meetingCheckpointApiClient.js`
+- `tests/e2e/liveTranslate.spec.js`
+
+Opening the live page with `#live?meetingId=...` loads the Meeting's ordered
+Segments, reads Segment checkpoints, restores confirmed source and translation
+content into the live transcript panels, and shows a manual resume action. The
+manual resume path recovers the latest active Segment as interrupted, creates the
+next active Segment with a fresh Live session association, starts a replacement
+Live session through the existing `/api/live-token` flow, and keeps restored
+content in the final Session snapshot.
+
+This path does not auto-start the microphone on page load and does not add
+offline pause/resume or device-disconnect recovery.
+
 ## Token Expiration UX Display Path
 
 Status: Implemented.

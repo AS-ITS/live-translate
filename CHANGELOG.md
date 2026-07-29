@@ -5,8 +5,10 @@
   and creates the next active Segment for interrupted recovery with a fresh Live
   session association. The live UI now uses this path for controlled reconnect
   after unexpected close or token expiration while preserving visible transcript
-  and avoiding duplicate history records. Proactive token refresh, device
-  recovery, and reload resume wiring remain deferred.
+  and avoiding duplicate history records. Opening `#live?meetingId=...` now
+  reloads Segment checkpoints into the live transcript and offers manual resume
+  into the next recovered Segment. Proactive token refresh, offline pause/resume,
+  and device-disconnect recovery remain deferred.
 
 - Long Meeting WP3 proactive segmentation and Live continuity: live sessions now
   default to scheduled 10-minute Segment rollover with a 15-minute code cap,

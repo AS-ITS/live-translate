@@ -68,7 +68,11 @@ function pageInfoFromLocation() {
   const [pageName, queryString = ''] = rawHash.split('?');
   const page = FEATURE_PAGES.has(pageName) ? pageName : 'live';
   const params = new URLSearchParams(queryString);
-  return { page, sessionId: params.get('sessionId') || '' };
+  return {
+    page,
+    sessionId: params.get('sessionId') || '',
+    meetingId: params.get('meetingId') || ''
+  };
 }
 
 function App() {
@@ -93,6 +97,7 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const reconnectControllerRef = useRef(null);
@@ -104,6 +109,7 @@ function App() {
   const meetingCheckpointSyncCoordinatorRef = useRef(null);
   const segmentSwitchOrchestratorRef = useRef(null);
   const activeMeetingCheckpointRef = useRef(null);
+  const runtimeMeetingIdsRef = useRef(new Set());
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
@@ -152,6 +158,15 @@ function App() {
       void refreshHistoryRecords();
     }
   }, [page]);
+
+  useEffect(() => {
+    const { page: currentPage, meetingId } = pageInfoFromLocation();
+    if (currentPage !== 'live' || !meetingId || isActive) {
+      return;
+    }
+
+    void loadMeetingResumeDraft(meetingId);
+  }, [page, isActive]);
 
   useEffect(() => () => {
     reconnectControllerRef.current?.cancel();
@@ -218,6 +233,7 @@ function App() {
       await session.start();
       await createCurrentSessionRecord(meetingCheckpoint);
       setStatus('listening');
+      updateLiveMeetingUrl(meetingCheckpoint.meetingId);
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
@@ -452,6 +468,58 @@ function App() {
     setStatus('listening');
   }
 
+  async function resumeMeetingSession() {
+    if (!resumeDraft || isActive) return;
+
+    reconnectController().reset();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = false;
+    suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
+    setError('');
+    setResumeDraft(null);
+
+    let session;
+    try {
+      const nextLiveSessionId = generateLiveSessionId();
+      setStatus('reconnecting');
+      const recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
+        meetingId: resumeDraft.meetingId,
+        segmentId: resumeDraft.segmentId,
+        idempotencyKey: `recover:${resumeDraft.segmentId}:${nextLiveSessionId}`,
+        checkpoint: {
+          idempotencyKey: `checkpoint:${resumeDraft.segmentId}:resume:${nextLiveSessionId}`,
+          durableChunks: [],
+          pendingPartial: null
+        },
+        nextLiveSessionId,
+        failureReason: 'manual_resume',
+        failureCategory: 'user_intent',
+        outcome: 'interrupted'
+      });
+      const nextMeetingCheckpoint = {
+        meetingId: resumeDraft.meetingId,
+        segmentId: recovery.segment.id
+      };
+      activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
+      meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
+      await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
+      session = await createSession({ preserveTranscript: true });
+      sessionRef.current = session;
+      await session.start();
+      setStatus('listening');
+      segmentSwitchOrchestrator().start();
+    } catch (nextError) {
+      await session?.stop().catch(() => {});
+      sessionRef.current = null;
+      activeMeetingCheckpointRef.current = null;
+      meetingCheckpointSyncCoordinatorRef.current?.cancel();
+      segmentSwitchOrchestratorRef.current?.cancel();
+      setError(nextError.message || '無法續錄長會議。');
+      setStatus('error');
+    }
+  }
+
   async function switchMeetingSegment() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const previousSession = sessionRef.current;
@@ -579,7 +647,7 @@ function App() {
     }
   }
 
-  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current) {
+  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null) {
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
@@ -593,9 +661,21 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
     await flushSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
+    if (initialItems.length > 0) {
+      void translationCommandLifecycle().recordFinalTranscriptItems(record, initialItems);
+    }
     return record;
+  }
+
+  function appendInitialTranscriptItems(sessionId, initialTranscript) {
+    if (!sessionId || !initialTranscript) return [];
+    return transcriptItemsForStream(initialTranscript, 'source')
+      .concat(transcriptItemsForStream(initialTranscript, 'translation'))
+      .filter((item) => item.status === 'final')
+      .map((item) => sessionRepositoryRef.current.appendTranscriptItem(sessionId, item));
   }
 
   function applyTranscriptUpdate(update) {
@@ -796,6 +876,54 @@ function App() {
     }
   }
 
+  async function loadMeetingResumeDraft(meetingId) {
+    if (sessionRef.current || activeSessionRecordIdRef.current || runtimeMeetingIdsRef.current.has(meetingId)) {
+      return;
+    }
+
+    try {
+      setMeetingCheckpointStatus('syncing');
+      const result = await meetingCheckpointApiClientRef.current.listSegments({ meetingId });
+      const segments = [...result.segments].sort((left, right) => left.sequence - right.sequence);
+      const activeSegment = [...segments].reverse().find((segment) => segment.status === 'active');
+      if (!activeSegment) {
+        setResumeDraft(null);
+        setMeetingCheckpointStatus('idle');
+        return;
+      }
+
+      const checkpoints = await Promise.all(segments.map((segment) => (
+        meetingCheckpointApiClientRef.current
+          .getCheckpoint({ meetingId, segmentId: segment.id })
+          .catch(() => null)
+      )));
+      const chunks = checkpoints.flatMap((checkpointResult) => (
+        checkpointResult?.checkpoint?.durableChunks || []
+      ));
+      const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
+      transcriptRef.current = resumeTranscript;
+      setTranscript(() => resumeTranscript);
+      setTranscriptTimeOrigin(Date.now());
+      setCopiedArticleStream('');
+      activeMeetingCheckpointRef.current = {
+        meetingId,
+        segmentId: activeSegment.id
+      };
+      setResumeDraft({
+        meetingId,
+        segmentId: activeSegment.id,
+        transcriptState: resumeTranscript
+      });
+      setMeetingCheckpointStatus('synced');
+      setStatus('idle');
+      setError('');
+    } catch {
+      setResumeDraft(null);
+      setMeetingCheckpointStatus('error');
+      setError('無法載入長會議續錄資料。');
+    }
+  }
+
   function translationCommandLifecycle() {
     if (!translationCommandLifecycleRef.current) {
       translationCommandLifecycleRef.current = createTranslationCommandLifecycle({
@@ -922,6 +1050,12 @@ function App() {
     }
 
     window.location.hash = nextPage;
+  }
+
+  function updateLiveMeetingUrl(meetingId) {
+    if (!meetingId || pageFromLocation() !== 'live') return;
+    runtimeMeetingIdsRef.current.add(meetingId);
+    window.history.replaceState(null, '', `#live?meetingId=${encodeURIComponent(meetingId)}`);
   }
 
   function openRetranslationWorkflow(sessionId) {
@@ -1090,6 +1224,12 @@ function App() {
 
           {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
           {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
+          {resumeDraft && !isActive ? (
+            <button className="button secondary" type="button" onClick={resumeMeetingSession}>
+              <RefreshCw size={18} aria-hidden="true" />
+              繼續錄製
+            </button>
+          ) : null}
           {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
           <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
             {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
@@ -1195,6 +1335,43 @@ function logTranscriptSegmentDecision(update, decision, previous, next) {
     completedSegments: streamState?.finalItems?.map((item) => item.text) || [],
     pendingText: streamState?.currentPartial?.text || ''
   });
+}
+
+function transcriptStateFromCheckpointChunks(chunks = []) {
+  const state = createTranscriptState();
+  const transcriptItems = chunks
+    .filter((chunk) => (
+      chunk &&
+      (chunk.stream === 'source' || chunk.stream === 'translation') &&
+      Number.isInteger(chunk.sequence) &&
+      typeof chunk.text === 'string' &&
+      chunk.text.trim().length > 0
+    ))
+    .map((chunk) => ({
+      id: chunk.idempotencyKey || `checkpoint:${chunk.segmentId}:${chunk.stream}:${chunk.sequence}`,
+      stream: chunk.stream,
+      status: 'final',
+      text: chunk.text,
+      sequence: chunk.sequence,
+      startedAt: chunk.timestamp,
+      finalizedAt: chunk.timestamp
+    }))
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+
+  const maxSequence = transcriptItems.reduce((max, item) => Math.max(max, item.sequence), 0);
+
+  return {
+    ...state,
+    source: {
+      ...state.source,
+      finalItems: transcriptItems.filter((item) => item.stream === 'source')
+    },
+    translation: {
+      ...state.translation,
+      finalItems: transcriptItems.filter((item) => item.stream === 'translation')
+    },
+    nextSequence: maxSequence + 1
+  };
 }
 
 function reconnectErrorMessage(result) {

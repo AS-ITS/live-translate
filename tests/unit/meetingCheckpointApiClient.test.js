@@ -33,6 +33,29 @@ test('meeting checkpoint API client creates a meeting with live session associat
   assert.deepEqual(JSON.parse(calls[0].options.body), { liveSessionId: 'live-session-1' });
 });
 
+test('meeting checkpoint API client lists meeting segments and reads checkpoints', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith('/segments')) {
+        return ok({ meetingId: 'meeting-1', segments: [{ id: 'segment-1' }] });
+      }
+      return ok({ checkpoint: { durableChunks: [{ idempotencyKey: 'chunk-1' }] } });
+    }
+  });
+
+  const segments = await client.listSegments({ meetingId: 'meeting-1' });
+  const checkpoint = await client.getCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+
+  assert.equal(segments.segments[0].id, 'segment-1');
+  assert.equal(checkpoint.checkpoint.durableChunks[0].idempotencyKey, 'chunk-1');
+  assert.deepEqual(calls.map(({ url, options }) => ({ url, method: options.method })), [
+    { url: '/api/meetings/meeting-1/segments', method: 'GET' },
+    { url: '/api/meetings/meeting-1/segments/segment-1/checkpoint', method: 'GET' }
+  ]);
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({

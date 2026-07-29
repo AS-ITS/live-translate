@@ -85,6 +85,10 @@ test('meeting checkpoint API persists through production file-backed composition
     const body = await response.json();
     const segmentsResponse = await getJson(`${baseUrl}/api/meetings/meeting-1/segments`);
     const segmentsBody = await segmentsResponse.json();
+    const meetingsResponse = await getJson(`${baseUrl}/api/meetings`);
+    const meetingsBody = await meetingsResponse.json();
+    const meetingDetailResponse = await getJson(`${baseUrl}/api/meetings/meeting-1`);
+    const meetingDetailBody = await meetingDetailResponse.json();
 
     assert.equal(response.status, 200);
     assert.deepEqual(
@@ -101,6 +105,46 @@ test('meeting checkpoint API persists through production file-backed composition
       [
         { id: 'segment-1', status: 'interrupted', liveSessionId: null, errorInfo: { reason: 'token_expired', category: 'token' } },
         { id: 'segment-2', status: 'active', liveSessionId: 'live-session-2', errorInfo: null }
+      ]
+    );
+    assert.equal(meetingsResponse.status, 200);
+    assert.deepEqual(
+      meetingsBody.map(({ id, segmentSummary, transcriptSummary }) => ({
+        id,
+        segmentSummary,
+        transcriptSummary
+      })),
+      [
+        {
+          id: 'meeting-1',
+          segmentSummary: {
+            totalSegments: 2,
+            countsByStatus: { interrupted: 1, active: 1 },
+            hasInterruptedSegments: true,
+            hasFailedSegments: false
+          },
+          transcriptSummary: {
+            totalItems: 3,
+            sourceFinalCount: 2,
+            translationFinalCount: 1,
+            hasTranscript: true
+          }
+        }
+      ]
+    );
+    assert.equal(meetingDetailResponse.status, 200);
+    assert.deepEqual(
+      meetingDetailBody.transcriptItems.map(({ segmentId, segmentStatus, stream, sequence, text }) => ({
+        segmentId,
+        segmentStatus,
+        stream,
+        sequence,
+        text
+      })),
+      [
+        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'source', sequence: 1, text: 'hello' },
+        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'translation', sequence: 2, text: 'world' },
+        { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'resume' }
       ]
     );
   });

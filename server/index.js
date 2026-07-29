@@ -41,6 +41,7 @@ const ERROR_RESPONSES = {
   not_found: { status: 404, message: 'Route not found.' },
   glossary_entry_not_found: { status: 404, message: 'Glossary entry not found.' },
   glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
+  meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
@@ -426,6 +427,7 @@ export function createRequestHandler(options = {}) {
     translationCommandController,
     executionControlController,
     translationHistoryController,
+    meetingReadController,
     meetingCheckpointService,
     translationProviderOptionsController,
     glossaryController,
@@ -450,6 +452,7 @@ export function createRequestHandler(options = {}) {
       translationCommandController,
       executionControlController,
       translationHistoryController,
+      meetingReadController,
       meetingCheckpointService,
       translationProviderOptionsController,
       glossaryController,
@@ -468,7 +471,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingCheckpointService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -544,6 +547,46 @@ async function handleRequestWithSessionReadController(
         : safeTranslationProvidersFor();
       statusCode = 200;
       sendJson(res, statusCode, { providers }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/meetings') {
+    try {
+      if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
+      const meetings = await meetingReadController.listMeetings();
+      statusCode = 200;
+      sendJson(res, statusCode, meetings, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isMeetingDetailPath(path)) {
+    try {
+      if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
+      const { meetingId } = parseMeetingDetailPath(path);
+      const meeting = await meetingReadController.getMeeting(meetingId);
+
+      if (!meeting) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('meeting_not_found', requestId), requestId);
+        return;
+      }
+
+      statusCode = 200;
+      sendJson(res, statusCode, meeting, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1031,6 +1074,15 @@ function isSessionRetranslationPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
 }
 
+function isMeetingDetailPath(path) {
+  const prefix = '/api/meetings/';
+  if (!path.startsWith(prefix) || path.length <= prefix.length) {
+    return false;
+  }
+
+  return !path.slice(prefix.length).includes('/');
+}
+
 function isMeetingSegmentsPath(path) {
   return path.startsWith('/api/meetings/') && path.endsWith('/segments') && path.length > '/api/meetings//segments'.length;
 }
@@ -1061,6 +1113,13 @@ function parseMeetingSegmentsPath(path) {
   const suffix = '/segments';
   return {
     meetingId: safeDecodePathComponent(path.slice(prefix.length, -suffix.length))
+  };
+}
+
+function parseMeetingDetailPath(path) {
+  const prefix = '/api/meetings/';
+  return {
+    meetingId: safeDecodePathComponent(path.slice(prefix.length))
   };
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+- Long Meeting WP1 foundation: added Meeting and MeetingSegment domain models,
+  a MeetingRepository contract, in-memory and file-backed repository adapters,
+  and optional `meetingId` / `segmentId` compatibility fields on SessionRecord.
+  No Live API, token, UI, or reconnect behavior changed.
+
 - Phase 3J WP5 Dead-letter Queue Transfer: terminal durable failures now persist
   their execution failure before an ownership-checked DLQ transfer. The DLQ is
   written idempotently by `executionId` before the durable item is removed;

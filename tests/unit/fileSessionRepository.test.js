@@ -10,7 +10,13 @@ test('file session repository persists records and transcript items across reloa
   const filePath = join(directory, 'sessions.json');
   const repository = createFileSessionRepository({ filePath, fileSystem: await import('node:fs/promises'), now: () => 1000 });
 
-  await repository.createSessionRecord({ id: 'session-1', startedAt: 900, targetLanguageCode: 'ja' });
+  await repository.createSessionRecord({
+    id: 'session-1',
+    startedAt: 900,
+    targetLanguageCode: 'ja',
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1'
+  });
   await repository.appendTranscriptItem('session-1', {
     id: 'source-1',
     stream: 'source',
@@ -26,6 +32,8 @@ test('file session repository persists records and transcript items across reloa
   const detail = await reloaded.getSessionRecord('session-1');
 
   assert.equal(detail.sessionRecord.status, 'stopped');
+  assert.equal(detail.sessionRecord.meetingId, 'meeting-1');
+  assert.equal(detail.sessionRecord.segmentId, 'segment-1');
   assert.equal(detail.sessionRecord.durationMs, 300);
   assert.deepEqual(detail.transcriptItems.map((item) => item.text), ['Hello']);
 });

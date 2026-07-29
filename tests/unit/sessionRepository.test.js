@@ -24,7 +24,25 @@ test('createSessionRecord creates deterministic active record', () => {
   assert.equal(record.id, 'session-1');
   assert.equal(record.status, 'active');
   assert.equal(record.createdAt, 1000);
+  assert.equal(record.meetingId, null);
+  assert.equal(record.segmentId, null);
   assert.equal(repository.listSessionRecords().length, 1);
+});
+
+test('createSessionRecord preserves optional meeting segment association', () => {
+  const repository = createMemorySessionRepository({ now: 1000 });
+
+  repository.createSessionRecord({
+    id: 'session-1',
+    startedAt: 900,
+    targetLanguageCode: 'en',
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1'
+  });
+
+  const detail = repository.getSessionRecord('session-1');
+  assert.equal(detail.sessionRecord.meetingId, 'meeting-1');
+  assert.equal(detail.sessionRecord.segmentId, 'segment-1');
 });
 
 test('createSessionRecord rejects duplicate ids', () => {

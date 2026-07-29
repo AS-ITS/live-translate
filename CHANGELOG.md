@@ -1,5 +1,11 @@
 # Changelog
 
+- Translation History navigation merge: the visible history navigation is now a
+  single `#history` / 翻譯紀錄 entry. The page shows regular saved translation
+  Sessions and Long Meeting summaries in one chronological list, while the
+  existing Meeting read/detail APIs and legacy `#meetings` hash remain available
+  internally for compatibility.
+
 - Long Meeting WP7 reliability and stress validation: added deterministic
   accelerated 2+ hour Meeting scenario coverage across 14 ordered Segments,
   including proactive rollover, token-expiration recovery, network recovery,

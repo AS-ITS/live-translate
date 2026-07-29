@@ -102,10 +102,23 @@ test.beforeEach(async ({ page }) => {
       })
     });
   });
+
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([])
+    });
+  });
 });
 
 function historyPanel(page) {
-  return page.locator('.history-page > .history-panel');
+  return page.locator('.history-page > .history-panel:not(.meeting-panel)');
 }
 
 function historyItems(page) {
@@ -113,7 +126,7 @@ function historyItems(page) {
 }
 
 function meetingsPanel(page) {
-  return page.locator('.meetings-page > .meeting-panel');
+  return historyPanel(page);
 }
 
 function meetingItems(page) {
@@ -337,13 +350,12 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
 }
 
 async function openHistoryPage(page) {
-  await page.getByRole('link', { name: '翻譯紀錄' }).click();
+  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click();
   await expect(page).toHaveURL(/#history$/);
 }
 
 async function openMeetingsPage(page) {
-  await page.getByRole('link', { name: '會議紀錄' }).click();
-  await expect(page).toHaveURL(/#meetings$/);
+  await openHistoryPage(page);
 }
 
 async function openGlossaryPage(page) {
@@ -410,8 +422,8 @@ test('initial history shows empty state', async ({ page }) => {
   await page.goto('/');
   await openHistoryPage(page);
 
-  await expect(historyPanel(page).getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
 });
 
@@ -444,10 +456,10 @@ test('meeting history detail shows timeline, article views, and export controls'
   await page.goto('/');
   await openMeetingsPage(page);
 
-  await expect(meetingsPanel(page).getByRole('heading', { name: '會議紀錄' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
   await expect(meetingItems(page)).toHaveCount(1);
   await expect(meetingItems(page).first().getByText('3 段（完成 1、中斷 1、失敗 1）')).toBeVisible();
-  await meetingItems(page).first().getByRole('button', { name: '查看會議詳細資料' }).click();
+  await meetingItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = meetingItems(page).first().locator('.meeting-detail');
   const timeline = detail.getByLabel('會議段落時間軸');
@@ -560,7 +572,7 @@ test('active session is not shown while listening', async ({ page }) => {
   await expect(page.getByText('聆聽中')).toBeVisible();
   await openHistoryPage(page);
 
-  await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
   await expect(historyPanel(page).getByRole('button', { name: '查看詳細資料' })).toHaveCount(0);
 });
@@ -823,7 +835,7 @@ test('navigation keeps an active translation session and its article reading sta
   await emitFinalTranscript(page, 'keep this source', 'keep this translation');
 
   await openHistoryPage(page);
-  await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 
   await openLivePage(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1042,7 +1054,7 @@ test('stopped session can be deleted from history', async ({ page }) => {
 
   await expect(sessionDetail(page)).toBeHidden();
   await expect(historyItems(page)).toHaveCount(0);
-  await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 });
 
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
@@ -1100,6 +1112,20 @@ test('session detail queues retranslation and displays pending status', async ({
     const request = route.request();
     const url = new URL(request.url());
     const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
+    const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
+
+    if (isRetranslationSubmit) {
+      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          request: { id: 'request-fr-1', sessionId, targetLanguageCode: 'fr' },
+          execution: { id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'queued' }
+        })
+      });
+      return;
+    }
 
     if (!isSessionDetail) {
       await route.continue();
@@ -1668,6 +1694,7 @@ test('switching saved session resets saved export controls', async ({ page }) =>
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'first source', 'first translation');
   await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByText('已停止', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1809,6 +1836,7 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
 
   await openLivePage(page);
   await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByText('已停止', { exact: true })).toBeVisible();
 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);

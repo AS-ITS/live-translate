@@ -128,10 +128,11 @@ unexpected close or token expiration. Reload resume is completed for
 `#live?meetingId=...`: the live UI restores Segment checkpoints into the visible
 transcript and lets the user manually continue in the next recovered Segment.
 Long Meeting WP6 meeting history/detail and export is completed: users can open
-`#meetings`, inspect Meeting summaries, Segment timelines and statuses, browse
-per-Segment source/translation content, view whole-meeting source transcript and
-translation article content, and export whole-meeting TXT/SRT/VTT without
-changing the existing single Session export path.
+the unified `#history` translation history page, see regular Sessions and Long
+Meeting summaries in one chronological list, inspect Segment timelines and
+statuses, browse per-Segment source/translation content, view whole-meeting
+source transcript and translation article content, and export whole-meeting
+TXT/SRT/VTT without changing the existing single Session export path.
 Long Meeting WP7 reliability and stress validation is completed: deterministic
 tests now simulate a 135-minute Meeting across 14 ordered Segments with
 proactive rollover, token-expiration recovery, network recovery, file-backed

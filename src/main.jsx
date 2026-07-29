@@ -8,6 +8,7 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createMeetingReadApiClient } from './lib/meetingReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
@@ -51,7 +52,7 @@ import './styles.css';
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'retranslate', 'glossary']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
@@ -96,6 +97,9 @@ function App() {
   const [historyRecords, setHistoryRecords] = useState([]);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
+  const [meetingRecords, setMeetingRecords] = useState([]);
+  const [selectedMeetingId, setSelectedMeetingId] = useState(null);
+  const [selectedMeetingDetail, setSelectedMeetingDetail] = useState(null);
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
@@ -121,11 +125,14 @@ function App() {
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
   const selectedHistoryRecordIdRef = useRef(null);
+  const meetingDetailRequestIdRef = useRef(0);
+  const selectedMeetingIdRef = useRef(null);
 
   const isActive =
     status === 'requesting-permission' ||
@@ -164,6 +171,12 @@ function App() {
   useEffect(() => {
     if (page === 'history' || page === 'retranslate') {
       void refreshHistoryRecords();
+    }
+  }, [page]);
+
+  useEffect(() => {
+    if (page === 'meetings') {
+      void refreshMeetingRecords();
     }
   }, [page]);
 
@@ -926,6 +939,15 @@ function App() {
     }
   }
 
+  async function refreshMeetingRecords() {
+    try {
+      const meetings = await meetingReadApiClientRef.current.listMeetingHistory();
+      setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
+    } catch {
+      setError('會議紀錄無法使用。');
+    }
+  }
+
   async function loadMeetingResumeDraft(meetingId) {
     if (sessionRef.current || activeSessionRecordIdRef.current || runtimeMeetingIdsRef.current.has(meetingId)) {
       return;
@@ -1067,6 +1089,43 @@ function App() {
     setSelectedHistoryDetail(null);
   }
 
+  async function openMeetingDetail(id) {
+    if (selectedMeetingIdRef.current === id) {
+      closeMeetingDetail();
+      return;
+    }
+
+    const requestId = meetingDetailRequestIdRef.current + 1;
+    meetingDetailRequestIdRef.current = requestId;
+    selectedMeetingIdRef.current = id;
+    setSelectedMeetingId(id);
+    setSelectedMeetingDetail(undefined);
+
+    try {
+      const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+
+      if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
+        return;
+      }
+
+      setSelectedMeetingDetail(detail);
+    } catch {
+      if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
+        return;
+      }
+
+      setSelectedMeetingDetail(null);
+      setError('會議詳細資料無法使用。');
+    }
+  }
+
+  function closeMeetingDetail() {
+    meetingDetailRequestIdRef.current += 1;
+    selectedMeetingIdRef.current = null;
+    setSelectedMeetingId(null);
+    setSelectedMeetingDetail(null);
+  }
+
   async function deleteHistoryRecord(id) {
     if (!window.confirm('確定要刪除此翻譯紀錄？')) {
       return;
@@ -1195,6 +1254,7 @@ function App() {
         <nav className="feature-navigation" aria-label="主要導覽">
           <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={(event) => navigateTo('live', event)}>即時翻譯</a>
           <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={(event) => navigateTo('history', event)}>翻譯紀錄</a>
+          <a href="#meetings" aria-current={page === 'meetings' ? 'page' : undefined} onClick={(event) => navigateTo('meetings', event)}>會議紀錄</a>
           <a href="#retranslate" aria-current={page === 'retranslate' ? 'page' : undefined} onClick={(event) => navigateTo('retranslate', event)}>重新翻譯</a>
           <a href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} onClick={(event) => navigateTo('glossary', event)}>翻譯字典</a>
         </nav>
@@ -1376,6 +1436,16 @@ function App() {
           onDeleteRecord={deleteHistoryRecord}
           onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
           onOpenRetranslationWorkflow={openRetranslationWorkflow}
+        />
+      </section>
+
+      <section className="feature-page meetings-page" aria-labelledby="meetings-page-title" hidden={page !== 'meetings'}>
+        <MeetingPanel
+          titleId="meetings-page-title"
+          records={meetingRecords}
+          selectedMeetingId={selectedMeetingId}
+          selectedDetail={selectedMeetingDetail}
+          onViewDetails={openMeetingDetail}
         />
       </section>
 
@@ -1650,6 +1720,258 @@ function HistoryPanel({ titleId, records, selectedRecordId, selectedDetail, sele
               ) : null}
             </li>
           ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onViewDetails }) {
+  return (
+    <section className="history-panel meeting-panel" aria-labelledby={titleId}>
+      <div className="history-header">
+        <div>
+          <h2 id={titleId}>會議紀錄</h2>
+          <p className="history-description">查看長會議的分段時間軸、整場原文與文章版翻譯。</p>
+        </div>
+      </div>
+
+      {records.length === 0 ? (
+        <p className="history-empty">尚無會議紀錄。</p>
+      ) : (
+        <ol className="history-list">
+          {records.map((record) => (
+            <li className="history-item meeting-item" key={record.id}>
+              <article aria-label={`${meetingTitle(record)} ${meetingStatusLabel(record.status)}會議`}>
+                <div className="history-item-header">
+                  <div>
+                    <h3>{meetingTitle(record)}</h3>
+                    <span className={`history-status history-status-${record.status}`}>{meetingStatusLabel(record.status)}</span>
+                  </div>
+                  <div className="history-actions">
+                    <button
+                      className="button detail-button"
+                      type="button"
+                      aria-expanded={selectedMeetingId === record.id}
+                      onClick={() => onViewDetails(record.id)}
+                    >
+                      {selectedMeetingId === record.id ? '關閉會議詳細資料' : '查看會議詳細資料'}
+                    </button>
+                  </div>
+                </div>
+
+                <dl className="history-metadata">
+                  <div><dt>開始時間</dt><dd>{formatRecordTime(record.startedAt)}</dd></div>
+                  <div><dt>結束時間</dt><dd>{formatRecordTime(record.endedAt)}</dd></div>
+                  <div><dt>持續時間</dt><dd>{formatDuration(record.durationMs)}</dd></div>
+                  <div><dt>段落</dt><dd>{meetingSegmentSummaryLabel(record.segmentSummary)}</dd></div>
+                  <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(record.transcriptSummary)}</dd></div>
+                  <div><dt>異常段落</dt><dd>{meetingExceptionSummaryLabel(record.segmentSummary)}</dd></div>
+                </dl>
+              </article>
+              {selectedMeetingId === record.id ? <MeetingDetail detail={selectedDetail} /> : null}
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function MeetingDetail({ detail }) {
+  const [meetingExportFormat, setMeetingExportFormat] = useState('txt');
+  const [meetingExportStream, setMeetingExportStream] = useState('translation');
+  const [meetingExportError, setMeetingExportError] = useState('');
+  const [readingTab, setReadingTab] = useState('translationArticle');
+
+  const meetingId = detail?.meeting?.id;
+
+  useEffect(() => {
+    setMeetingExportFormat('txt');
+    setMeetingExportStream('translation');
+    setMeetingExportError('');
+    setReadingTab('translationArticle');
+  }, [meetingId]);
+
+  if (detail === undefined) {
+    return (
+      <section className="session-detail meeting-detail" aria-label="會議詳細資料">
+        <div className="session-detail-header">
+          <h3>正在載入會議詳細資料</h3>
+        </div>
+        <p className="history-empty">正在載入已儲存的會議…</p>
+      </section>
+    );
+  }
+
+  if (!detail) {
+    return (
+      <section className="session-detail meeting-detail" aria-label="會議詳細資料">
+        <div className="session-detail-header">
+          <h3>無法取得會議詳細資料</h3>
+        </div>
+        <p className="history-empty">此會議紀錄無法使用。</p>
+      </section>
+    );
+  }
+
+  const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
+  const timeline = Array.isArray(detail.timeline) ? detail.timeline : [];
+  const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
+  const canDownloadMeetingTranscript = canExportTranscript(transcriptItems, {
+    format: meetingExportFormat,
+    stream: meetingExportStream,
+    timeOrigin
+  });
+  const exportUnavailableReason = meetingExportUnavailableReason({
+    canExport: canDownloadMeetingTranscript,
+    format: meetingExportFormat,
+    stream: meetingExportStream
+  });
+
+  function downloadMeetingTranscript() {
+    setMeetingExportError('');
+
+    try {
+      const content = formatTranscriptExport(transcriptItems, {
+        format: meetingExportFormat,
+        stream: meetingExportStream,
+        timeOrigin
+      });
+      downloadTextFile(
+        content,
+        buildMeetingTranscriptFileName(detail.meeting, {
+          format: meetingExportFormat,
+          stream: meetingExportStream
+        }),
+        contentTypeForFormat(meetingExportFormat)
+      );
+    } catch {
+      setMeetingExportError('所選選項無法匯出整場會議逐字稿。');
+    }
+  }
+
+  return (
+    <section className="session-detail meeting-detail" aria-label="會議詳細資料">
+      <div className="session-detail-header">
+        <h3>{meetingTitle(detail.meeting)}詳細資料</h3>
+      </div>
+
+      <dl className="session-detail-metadata meeting-detail-metadata">
+        <div><dt>狀態</dt><dd>{meetingStatusLabel(detail.meeting?.status)}</dd></div>
+        <div><dt>開始時間</dt><dd>{formatRecordTime(detail.meeting?.startedAt)}</dd></div>
+        <div><dt>結束時間</dt><dd>{formatRecordTime(detail.meeting?.endedAt)}</dd></div>
+        <div><dt>持續時間</dt><dd>{formatDuration(detail.meeting?.durationMs)}</dd></div>
+        <div><dt>段落</dt><dd>{meetingSegmentSummaryLabel(detail.meeting?.segmentSummary)}</dd></div>
+        <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(detail.meeting?.transcriptSummary)}</dd></div>
+      </dl>
+
+      <section className="meeting-timeline" aria-label="會議段落時間軸">
+        <h4>段落時間軸</h4>
+        {timeline.length === 0 ? (
+          <p className="history-empty">尚無段落資料。</p>
+        ) : (
+          <ol>
+            {timeline.map((segment) => (
+              <li key={segment.id}>
+                <div className="meeting-timeline-marker" aria-hidden="true" />
+                <div>
+                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
+                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
+                  <p>{formatRecordTime(segment.startedAt)} · {formatDuration(segment.durationMs)}</p>
+                  {segment.errorInfo?.reason ? <p className="history-reason">原因：{segment.errorInfo.reason}</p> : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+      </section>
+
+      <MeetingSegmentTranscriptList segments={timeline} transcriptItems={transcriptItems} />
+
+      <ReadingContentTabs
+        content={meetingReadingContent(detail)}
+        selectedTab={readingTab}
+        onSelectTab={setReadingTab}
+      />
+
+      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出">
+        <div className="controls saved-export-controls">
+          <label className="field">
+            <span>整場匯出格式</span>
+            <select value={meetingExportFormat} onChange={(event) => setMeetingExportFormat(event.target.value)}>
+              <option value="txt">TXT</option>
+              <option value="srt">SRT</option>
+              <option value="vtt">VTT</option>
+            </select>
+          </label>
+
+          <label className="field">
+            <span>整場匯出內容</span>
+            <select value={meetingExportStream} onChange={(event) => setMeetingExportStream(event.target.value)}>
+              <option value="translation">翻譯</option>
+              <option value="source">原文</option>
+              <option value="both">兩者</option>
+            </select>
+          </label>
+
+          <button
+            className="button detail-button"
+            type="button"
+            onClick={downloadMeetingTranscript}
+            disabled={!canDownloadMeetingTranscript}
+          >
+            <Download size={16} aria-hidden="true" />
+            下載整場逐字稿
+          </button>
+        </div>
+        <p className="export-note">整場字幕依段落與時間順序輸出；中斷或失敗段落已保存的內容仍會保留。</p>
+        {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
+        {meetingExportError ? <p className="error-message">{meetingExportError}</p> : null}
+      </section>
+    </section>
+  );
+}
+
+function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
+  return (
+    <section className="meeting-segment-content" aria-label="會議段落內容">
+      <h4>段落內容</h4>
+      {segments.length === 0 ? (
+        <p className="history-empty">尚無段落內容。</p>
+      ) : (
+        <ol>
+          {segments.map((segment) => {
+            const items = transcriptItems.filter((item) => item.segmentId === segment.id);
+            const sourceItems = finalTranscriptItemsForStream(items, 'source');
+            const translationItems = finalTranscriptItemsForStream(items, 'translation');
+            return (
+              <li key={segment.id}>
+                <div className="meeting-segment-content-header">
+                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
+                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
+                </div>
+                <div className="meeting-segment-streams">
+                  <section aria-label={`段落 ${segment.sequence + 1} 原文`}>
+                    <h5>原文</h5>
+                    {sourceItems.length === 0 ? (
+                      <p className="history-empty">此段尚無原文。</p>
+                    ) : (
+                      sourceItems.map((item) => <p key={item.id}>{toTraditionalChineseText(item.text)}</p>)
+                    )}
+                  </section>
+                  <section aria-label={`段落 ${segment.sequence + 1} 翻譯`}>
+                    <h5>翻譯</h5>
+                    {translationItems.length === 0 ? (
+                      <p className="history-empty">此段尚無翻譯。</p>
+                    ) : (
+                      translationItems.map((item) => <p key={item.id}>{item.text}</p>)
+                    )}
+                  </section>
+                </div>
+              </li>
+            );
+          })}
         </ol>
       )}
     </section>
@@ -3141,6 +3463,117 @@ function savedSessionExportUnavailableReason(detail, options) {
   return '';
 }
 
+function meetingReadingContent(detail) {
+  const source = detail?.readingContent?.sourceTranscript;
+  const translation = detail?.readingContent?.translationArticle;
+
+  return {
+    sourceTranscript: source
+      ? toTraditionalChineseSourceContent({
+          ...source,
+          createdAt: source.createdAt ?? detail?.meeting?.startedAt ?? null,
+          finalizedAt: source.finalizedAt ?? detail?.meeting?.endedAt ?? null,
+          emptyReason: source.emptyReason || (source.status === 'empty' ? 'no_content' : null)
+        })
+      : {
+          kind: 'sourceTranscript',
+          status: 'empty',
+          text: '',
+          paragraphs: [],
+          emptyReason: 'no_content',
+          createdAt: detail?.meeting?.startedAt ?? null,
+          finalizedAt: detail?.meeting?.endedAt ?? null
+        },
+    translationArticle: translation
+      ? {
+          ...translation,
+          createdAt: translation.createdAt ?? detail?.meeting?.startedAt ?? null,
+          completedAt: translation.completedAt ?? detail?.meeting?.endedAt ?? null,
+          emptyReason: translation.emptyReason || (translation.status === 'empty' ? 'no_content' : null)
+        }
+      : {
+          kind: 'translationArticle',
+          status: 'empty',
+          text: '',
+          paragraphs: [],
+          emptyReason: 'no_content',
+          targetLanguageCode: null,
+          targetLanguageLabel: null,
+          createdAt: detail?.meeting?.startedAt ?? null,
+          completedAt: detail?.meeting?.endedAt ?? null
+        }
+  };
+}
+
+function meetingExportUnavailableReason({ canExport, format, stream }) {
+  if ((format === 'srt' || format === 'vtt') && stream === 'both') {
+    return 'SRT 與 VTT 一次只能匯出一個內容。';
+  }
+
+  if (!canExport) {
+    return '所選選項無法匯出整場會議逐字稿。';
+  }
+
+  return '';
+}
+
+function buildMeetingTranscriptFileName(meeting = {}, options = {}) {
+  const format = String(options.format || 'txt').replace(/[^a-zA-Z0-9]+/g, '') || 'txt';
+  const stream = String(options.stream || 'translation').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'translation';
+  const startedAt = meeting.startedAt ? new Date(meeting.startedAt) : new Date();
+  const stamp = Number.isNaN(startedAt.getTime())
+    ? new Date().toISOString()
+    : startedAt.toISOString();
+  const safeStamp = stamp.replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const safeMeetingId = String(meeting.id || 'meeting').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
+  return `live-translate-meeting-${safeMeetingId}-${safeStamp}-${stream}.${format}`;
+}
+
+function meetingTitle(record = {}) {
+  return `會議 ${record.id || ''}`.trim();
+}
+
+function meetingStatusLabel(status) {
+  const labels = {
+    created: '已建立',
+    active: '進行中',
+    completed: '已完成',
+    interrupted: '已中斷',
+    failed: '失敗'
+  };
+
+  return labels[status] || status || '未知狀態';
+}
+
+function meetingSegmentStatusLabel(status) {
+  return meetingStatusLabel(status);
+}
+
+function meetingSegmentSummaryLabel(summary = {}) {
+  const total = summary.totalSegments || 0;
+  const counts = summary.countsByStatus || {};
+  const parts = [
+    counts.completed ? `完成 ${counts.completed}` : '',
+    counts.active ? `進行中 ${counts.active}` : '',
+    counts.interrupted ? `中斷 ${counts.interrupted}` : '',
+    counts.failed ? `失敗 ${counts.failed}` : ''
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `${total} 段（${parts.join('、')}）` : `${total} 段`;
+}
+
+function meetingExceptionSummaryLabel(summary = {}) {
+  const counts = summary.countsByStatus || {};
+  const interrupted = counts.interrupted || 0;
+  const failed = counts.failed || 0;
+
+  if (interrupted === 0 && failed === 0) {
+    return '無';
+  }
+
+  return [`中斷 ${interrupted}`, `失敗 ${failed}`].join(' · ');
+}
+
 function formatRecordTime(value) {
   if (!value) {
     return '無資料';
@@ -3181,6 +3614,18 @@ function historyRecordSortTime(record) {
   const startedAt = new Date(record.startedAt).getTime();
 
   return Number.isFinite(startedAt) ? startedAt : 0;
+}
+
+function meetingRecordSortTime(record) {
+  const startedAt = new Date(record.startedAt).getTime();
+
+  if (Number.isFinite(startedAt)) {
+    return startedAt;
+  }
+
+  const endedAt = new Date(record.endedAt).getTime();
+
+  return Number.isFinite(endedAt) ? endedAt : 0;
 }
 
 function statusLabel(status, override = '') {

@@ -329,6 +329,101 @@ test('session stop flush applies glossary replacement to pending output without 
   ]);
 });
 
+test('cleanup releases audio resources and handlers idempotently', async () => {
+  const calls = [];
+  const track = {
+    stop() {
+      calls.push('track.stop');
+    }
+  };
+  const playbackSource = {
+    onended: () => {},
+    stop() {
+      calls.push('playback.stop');
+    },
+    disconnect() {
+      calls.push('playback.disconnect');
+    }
+  };
+  const processor = {
+    onaudioprocess: () => {},
+    disconnect() {
+      calls.push('processor.disconnect');
+    }
+  };
+  const source = {
+    disconnect() {
+      calls.push('source.disconnect');
+    }
+  };
+  const liveSession = {
+    sendRealtimeInput(payload) {
+      calls.push(['sendRealtimeInput', payload]);
+    },
+    close() {
+      calls.push('session.close');
+    }
+  };
+  const audioContext = {
+    state: 'running',
+    currentTime: 12,
+    async close() {
+      calls.push('audioContext.close');
+      this.state = 'closed';
+    }
+  };
+  const chunker = {
+    reset() {
+      calls.push('chunker.reset');
+    }
+  };
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true
+  });
+  session.audioContext = audioContext;
+  session.mediaStream = { getTracks: () => [track] };
+  session.source = source;
+  session.processor = processor;
+  session.session = liveSession;
+  session.chunker = chunker;
+  session.pendingInputTranscript = { text: 'pending source' };
+  session.pendingOutputTranscript = { text: 'pending output' };
+  session.awaitingInputTranscriptAfterTurnComplete = true;
+  session.awaitingOutputTranscriptAfterTurnComplete = true;
+  session.playbackSources.add(playbackSource);
+
+  await session.cleanup({ closeSession: true, signalAudioEnd: true });
+  await session.cleanup({ closeSession: true, signalAudioEnd: true });
+
+  assert.deepEqual(calls, [
+    'chunker.reset',
+    'playback.stop',
+    'playback.disconnect',
+    ['sendRealtimeInput', { audioStreamEnd: true }],
+    'processor.disconnect',
+    'source.disconnect',
+    'track.stop',
+    'session.close',
+    'audioContext.close'
+  ]);
+  assert.equal(processor.onaudioprocess, null);
+  assert.equal(playbackSource.onended, null);
+  assert.equal(session.processor, null);
+  assert.equal(session.source, null);
+  assert.equal(session.mediaStream, null);
+  assert.equal(session.session, null);
+  assert.equal(session.audioContext, null);
+  assert.equal(session.chunker, null);
+  assert.equal(session.pendingInputTranscript, null);
+  assert.equal(session.pendingOutputTranscript, null);
+  assert.equal(session.awaitingInputTranscriptAfterTurnComplete, false);
+  assert.equal(session.awaitingOutputTranscriptAfterTurnComplete, false);
+  assert.equal(session.playbackSources.size, 0);
+  assert.equal(session.nextPlaybackTime, 0);
+  assert.equal(session.cleaningUp, false);
+});
+
 function createTestSession({ events = [], onConnectionFailure, onError, onClose } = {}) {
   const session = new LiveTranslateSession({
     targetLanguageCode: 'ja',

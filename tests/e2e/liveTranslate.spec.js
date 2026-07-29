@@ -9,6 +9,7 @@ test.beforeEach(async ({ page }) => {
 
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
+    window.__mockAudioContexts = [];
 
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -35,6 +36,7 @@ test.beforeEach(async ({ page }) => {
         this.currentTime = 0;
         this.destination = {};
         this.state = 'running';
+        window.__mockAudioContexts.push(this);
       }
 
       createMediaStreamSource() {
@@ -565,17 +567,22 @@ test('long meeting proactively switches through three segments and preserves con
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
   await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
-  await expect(page.getByText('長會議段落：已封存 1 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('長會議段落：已封存 1 段 · 已載入 1 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment two source', 'segment two translation');
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
-  await expect(page.getByText('長會議段落：已封存 2 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation');
-  await expect(page.getByText('長會議段落：已封存 2 段 · 目前段落 2 筆')).toBeVisible();
+  await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 2 筆')).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__mockAudioContexts.every((context) => context.state === 'closed'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.every((session) => session.closed))).toBe(true);
+  await page.waitForTimeout(900);
+  expect(checkpointRequests.rolloverRequests).toHaveLength(2);
 
   expect(checkpointRequests.rolloverRequests.map((request) => request.currentSegmentId)).toEqual(['segment-1', 'segment-2']);
   expect(checkpointRequests.rolloverRequests.map((request) => request.body.nextLiveSessionId)).toEqual([

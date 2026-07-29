@@ -1,5 +1,13 @@
 # Changelog
 
+- Long Meeting WP5 frontend resource closeout: archived live transcript rendering
+  now uses a bounded recent-Segment cache with diagnostics for archived,
+  loaded, and active Segment counts. Live session cleanup now clears audio
+  processing callbacks, playback handlers, pending transcript references,
+  media tracks, AudioContext, and Live session references idempotently. E2E
+  coverage verifies long-meeting Stop releases mocked mic tracks, AudioContexts,
+  Live sessions, and cancels further rollover scheduling.
+
 - Long Meeting WP5 frontend archived view: live meeting article panels now keep
   completed prior Segments visible through an archived transcript view while the
   active transcript state is reset for the current Segment after rollover,

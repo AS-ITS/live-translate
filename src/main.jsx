@@ -58,6 +58,7 @@ const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
+const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -106,6 +107,7 @@ function App() {
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const archivedTranscriptRef = useRef(archivedTranscript);
+  const archivedTranscriptSegmentsRef = useRef([]);
   const reconnectControllerRef = useRef(null);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
@@ -281,6 +283,7 @@ function App() {
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
       const resetArchivedTranscript = resetTranscriptState();
+      archivedTranscriptSegmentsRef.current = [];
       archivedTranscriptRef.current = resetArchivedTranscript;
       setArchivedTranscript(() => resetArchivedTranscript);
       setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
@@ -879,15 +882,27 @@ function App() {
   function archiveActiveTranscriptSegment() {
     const currentTranscript = transcriptRef.current;
     const finalItemCount = transcriptHasFinalItems(currentTranscript);
-    const archived = archiveTranscriptFinalItems(archivedTranscriptRef.current, currentTranscript);
-    archivedTranscriptRef.current = archived;
-    setArchivedTranscript(() => archived);
+    if (finalItemCount > 0) {
+      archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments([
+        ...archivedTranscriptSegmentsRef.current,
+        {
+          id: `active-segment-${Date.now()}-${currentTranscript.nextSequence}`,
+          transcript: currentTranscript
+        }
+      ]);
+      const archived = archivedTranscriptFromSegments(archivedTranscriptSegmentsRef.current, currentTranscript.nextSequence);
+      archivedTranscriptRef.current = archived;
+      setArchivedTranscript(() => archived);
+    }
     resetActiveTranscriptForNextSegment(currentTranscript.nextSequence);
 
     if (finalItemCount > 0) {
       setMeetingViewStats((current) => ({
         archivedSegmentCount: current.archivedSegmentCount + 1,
-        loadedSegmentCount: Math.max(current.loadedSegmentCount, current.archivedSegmentCount + 1)
+        loadedSegmentCount: Math.min(
+          ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT,
+          Math.max(current.loadedSegmentCount, current.archivedSegmentCount + 1)
+        )
       }));
     }
   }
@@ -936,8 +951,11 @@ function App() {
         checkpointResult?.checkpoint?.durableChunks || []
       ));
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
-      archivedTranscriptRef.current = resumeTranscript;
-      setArchivedTranscript(() => resumeTranscript);
+      const archivedSegments = transcriptSegmentsFromCheckpoints({ segments, checkpoints });
+      archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments(archivedSegments);
+      const archivedResumeTranscript = archivedTranscriptFromSegments(archivedTranscriptSegmentsRef.current, resumeTranscript.nextSequence);
+      archivedTranscriptRef.current = archivedResumeTranscript;
+      setArchivedTranscript(() => archivedResumeTranscript);
       resetActiveTranscriptForNextSegment(resumeTranscript.nextSequence);
       setTranscriptTimeOrigin(Date.now());
       setCopiedArticleStream('');
@@ -952,7 +970,7 @@ function App() {
       });
       setMeetingViewStats({
         archivedSegmentCount: Math.max(0, segments.length - 1),
-        loadedSegmentCount: segments.length
+        loadedSegmentCount: archivedTranscriptSegmentsRef.current.length
       });
       setMeetingCheckpointStatus('synced');
       setStatus('idle');
@@ -1288,7 +1306,7 @@ function App() {
           </p>
           {meetingViewStats.archivedSegmentCount > 0 ? (
             <p className="checkpoint-note">
-              長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
+              長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 已載入 {meetingViewStats.loadedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
             </p>
           ) : null}
         </section>
@@ -1431,15 +1449,28 @@ function transcriptStateFromCheckpointChunks(chunks = []) {
   };
 }
 
-function archiveTranscriptFinalItems(archivedTranscript, activeTranscript) {
-  const archivedSource = mergeTranscriptItems(archivedTranscript?.source?.finalItems, activeTranscript?.source?.finalItems);
-  const archivedTranslation = mergeTranscriptItems(
-    archivedTranscript?.translation?.finalItems,
-    activeTranscript?.translation?.finalItems
-  );
+function transcriptSegmentsFromCheckpoints({ segments = [], checkpoints = [] } = {}) {
+  return segments
+    .map((segment, index) => ({
+      id: segment.id,
+      sequence: segment.sequence,
+      transcript: transcriptStateFromCheckpointChunks(checkpoints[index]?.checkpoint?.durableChunks || [])
+    }))
+    .filter((segment) => transcriptHasFinalItems(segment.transcript) > 0)
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+function capArchivedTranscriptSegments(segments = []) {
+  return segments.slice(-ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT);
+}
+
+function archivedTranscriptFromSegments(segments = [], fallbackNextSequence = 1) {
+  const transcripts = segments.map((segment) => segment.transcript);
+  const archivedSource = mergeTranscriptItems(transcripts.flatMap((transcript) => transcript?.source?.finalItems || []));
+  const archivedTranslation = mergeTranscriptItems(transcripts.flatMap((transcript) => transcript?.translation?.finalItems || []));
   const nextSequence = Math.max(
-    archivedTranscript?.nextSequence || 1,
-    activeTranscript?.nextSequence || 1
+    fallbackNextSequence,
+    ...transcripts.map((transcript) => transcript?.nextSequence || 1)
   );
 
   return {
@@ -1449,9 +1480,9 @@ function archiveTranscriptFinalItems(archivedTranscript, activeTranscript) {
   };
 }
 
-function mergeTranscriptItems(leftItems = [], rightItems = []) {
+function mergeTranscriptItems(items = []) {
   const byId = new Map();
-  for (const item of [...leftItems, ...rightItems]) {
+  for (const item of items) {
     if (item?.status === 'final' && typeof item.id === 'string') {
       byId.set(item.id, item);
     }

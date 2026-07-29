@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
+import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
 import { createCancelQueuedTranslationExecutionService as createDefaultCancelQueuedTranslationExecutionService } from '../src/application/translation/cancelQueuedTranslationExecutionService.js';
@@ -54,6 +55,7 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
+import { createMeetingReadController as createDefaultMeetingReadController } from './meetingReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
 import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
@@ -116,6 +118,8 @@ export function createApplicationDependencies(options = {}) {
     sessionRepositoryFileSystem = fileSystem,
     meetingRepository,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
+    meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
+    meetingReadControllerFactory = createDefaultMeetingReadController,
     liveTokenCreator,
     ...sessionReadOptions
   } = options;
@@ -223,6 +227,10 @@ export function createApplicationDependencies(options = {}) {
     idGenerator,
     clock
   });
+  const meetingReadQueryService = meetingReadQueryServiceFactory({
+    meetingRepository: resolvedMeetingRepository
+  });
+  const meetingReadController = meetingReadControllerFactory({ meetingReadQueryService });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
@@ -231,6 +239,7 @@ export function createApplicationDependencies(options = {}) {
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,
       translationHistoryController,
+      meetingReadController,
       meetingCheckpointService,
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
@@ -248,6 +257,8 @@ export function createApplicationDependencies(options = {}) {
     translationHistoryQueryService,
     translationHistoryController,
     executionControlController,
+    meetingReadQueryService,
+    meetingReadController,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     glossaryController: resolvedGlossaryController,

@@ -1,5 +1,14 @@
 # Changelog
 
+- Long Meeting WP6 meeting history/detail and whole-meeting export page: added
+  read-only Meeting history and detail APIs, a dedicated `#meetings` UI with
+  Segment timeline/statuses, per-Segment source/translation browsing,
+  whole-meeting source transcript and translation article views, plus
+  TXT/SRT/VTT export controls backed by deterministic export tests. Interrupted
+  and failed Segments remain visible with preserved checkpoint content. Existing
+  single Session export, Gemini Live path, and live-token security behavior are
+  unchanged.
+
 - Long Meeting WP5 frontend resource closeout: archived live transcript rendering
   now uses a bounded recent-Segment cache with diagnostics for archived,
   loaded, and active Segment counts. Live session cleanup now clears audio

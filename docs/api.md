@@ -2,6 +2,147 @@
 
 ## Long Meeting Checkpoints
 
+## `GET /api/meetings`
+
+Returns read-only Meeting history summaries. This endpoint does not create,
+stop, recover, or mutate Live sessions.
+
+```json
+[
+  {
+    "id": "meeting-1",
+    "status": "active",
+    "startedAt": 1720000000000,
+    "endedAt": null,
+    "durationMs": null,
+    "segmentSummary": {
+      "totalSegments": 3,
+      "countsByStatus": {
+        "completed": 2,
+        "active": 1
+      },
+      "hasInterruptedSegments": false,
+      "hasFailedSegments": false
+    },
+    "transcriptSummary": {
+      "totalItems": 12,
+      "sourceFinalCount": 6,
+      "translationFinalCount": 6,
+      "hasTranscript": true
+    },
+    "failureInfo": null,
+    "recordKind": "meeting"
+  }
+]
+```
+
+## `GET /api/meetings/:meetingId`
+
+Returns one composed Meeting detail read model with ordered Segments, a Segment
+timeline, final checkpoint transcript items, and article-style reading content.
+Transcript items are ordered by Segment sequence and chunk time while retaining
+Segment identity and status metadata.
+
+Missing Meetings return `404`.
+
+```json
+{
+  "meeting": {
+    "id": "meeting-1",
+    "status": "active",
+    "startedAt": 1720000000000,
+    "endedAt": null,
+    "durationMs": null,
+    "segmentSummary": {
+      "totalSegments": 2,
+      "countsByStatus": {
+        "interrupted": 1,
+        "active": 1
+      },
+      "hasInterruptedSegments": true,
+      "hasFailedSegments": false
+    },
+    "transcriptSummary": {
+      "totalItems": 2,
+      "sourceFinalCount": 1,
+      "translationFinalCount": 1,
+      "hasTranscript": true
+    },
+    "failureInfo": null,
+    "recordKind": "meeting"
+  },
+  "segments": [
+    {
+      "id": "segment-1",
+      "meetingId": "meeting-1",
+      "sequence": 0,
+      "status": "interrupted",
+      "startedAt": 1720000000000,
+      "endedAt": 1720000600000,
+      "durationMs": 600000,
+      "liveSessionId": "live-session-1",
+      "errorInfo": {
+        "reason": "token_expired",
+        "category": "token"
+      },
+      "checkpointUpdatedAt": 1720000600000,
+      "transcriptSummary": {
+        "totalItems": 2,
+        "sourceFinalCount": 1,
+        "translationFinalCount": 1,
+        "hasTranscript": true
+      }
+    }
+  ],
+  "timeline": [
+    {
+      "id": "segment-1",
+      "sequence": 0,
+      "status": "interrupted",
+      "startedAt": 1720000000000,
+      "endedAt": 1720000600000,
+      "durationMs": 600000,
+      "liveSessionId": "live-session-1",
+      "errorInfo": {
+        "reason": "token_expired",
+        "category": "token"
+      }
+    }
+  ],
+  "transcriptItems": [
+    {
+      "id": "segment-1:source:1",
+      "meetingId": "meeting-1",
+      "segmentId": "segment-1",
+      "segmentSequence": 0,
+      "segmentStatus": "interrupted",
+      "liveSessionId": "live-session-1",
+      "stream": "source",
+      "status": "final",
+      "text": "confirmed source text",
+      "sequence": 1,
+      "startedAt": 1720000100000,
+      "finalizedAt": 1720000100000
+    }
+  ],
+  "readingContent": {
+    "sourceTranscript": {
+      "kind": "sourceTranscript",
+      "status": "available",
+      "text": "confirmed source text",
+      "paragraphs": ["confirmed source text"]
+    },
+    "translationArticle": {
+      "kind": "translationArticle",
+      "status": "available",
+      "text": "confirmed translation text",
+      "paragraphs": ["confirmed translation text"]
+    }
+  },
+  "recordKind": "meeting"
+}
+```
+
 ## `POST /api/meetings`
 
 Creates one active Meeting with its first active Segment. This endpoint is the

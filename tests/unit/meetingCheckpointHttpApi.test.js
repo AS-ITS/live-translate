@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
+import { createMeetingReadController } from '../../server/meetingReadController.js';
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
+import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 
 test('POST /api/meetings creates an active meeting and first segment', async () => {
@@ -25,6 +27,113 @@ test('GET /api/meetings/:meetingId/segments returns ordered segments', async () 
   assert.equal(response.status, 200);
   assert.equal(response.json().meetingId, meeting.id);
   assert.deepEqual(response.json().segments.map((segment) => segment.sequence), [0]);
+});
+
+test('GET /api/meetings returns meeting history summaries', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+
+  await request(handler, {
+    method: 'PUT',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
+    body: JSON.stringify(checkpoint({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      durableChunks: [
+        chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'hello' }),
+        chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'world' })
+      ]
+    }))
+  });
+
+  const response = await request(handler, { method: 'GET', url: '/api/meetings' });
+  const body = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.length, 1);
+  assert.equal(body[0].id, meeting.id);
+  assert.equal(body[0].recordKind, 'meeting');
+  assert.deepEqual(body[0].segmentSummary, {
+    totalSegments: 1,
+    countsByStatus: { active: 1 },
+    hasInterruptedSegments: false,
+    hasFailedSegments: false
+  });
+  assert.deepEqual(body[0].transcriptSummary, {
+    totalItems: 2,
+    sourceFinalCount: 1,
+    translationFinalCount: 1,
+    hasTranscript: true
+  });
+});
+
+test('GET /api/meetings/:meetingId returns composed meeting detail with transcript items and timeline', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+
+  await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/rollover`,
+    body: JSON.stringify({
+      idempotencyKey: 'rollover-1',
+      checkpoint: checkpoint({
+        meetingId: meeting.id,
+        segmentId: segment.id,
+        durableChunks: [
+          chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'segment one source' }),
+          chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'segment one translation' })
+        ]
+      }),
+      nextLiveSessionId: 'live-session-2'
+    })
+  });
+  await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meeting.id}/segments/segment-2/recover`,
+    body: JSON.stringify({
+      idempotencyKey: 'recover-1',
+      checkpoint: checkpoint({
+        meetingId: meeting.id,
+        segmentId: 'segment-2',
+        durableChunks: [
+          chunk({ meetingId: meeting.id, segmentId: 'segment-2', stream: 'source', sequence: 3, text: 'segment two source' }),
+          chunk({ meetingId: meeting.id, segmentId: 'segment-2', stream: 'translation', sequence: 4, text: 'segment two translation' })
+        ]
+      }),
+      nextLiveSessionId: 'live-session-3',
+      failureReason: 'token_expired',
+      failureCategory: 'token',
+      outcome: 'interrupted'
+    })
+  });
+
+  const response = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}` });
+  const body = response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.meeting.id, meeting.id);
+  assert.deepEqual(body.timeline.map(({ id, status }) => ({ id, status })), [
+    { id: 'segment-1', status: 'completed' },
+    { id: 'segment-2', status: 'interrupted' },
+    { id: 'segment-3', status: 'active' }
+  ]);
+  assert.deepEqual(
+    body.transcriptItems.map(({ segmentId, segmentStatus, stream, sequence, text }) => ({
+      segmentId,
+      segmentStatus,
+      stream,
+      sequence,
+      text
+    })),
+    [
+      { segmentId: 'segment-1', segmentStatus: 'completed', stream: 'source', sequence: 1, text: 'segment one source' },
+      { segmentId: 'segment-1', segmentStatus: 'completed', stream: 'translation', sequence: 2, text: 'segment one translation' },
+      { segmentId: 'segment-2', segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'segment two source' },
+      { segmentId: 'segment-2', segmentStatus: 'interrupted', stream: 'translation', sequence: 4, text: 'segment two translation' }
+    ]
+  );
+  assert.equal(body.readingContent.sourceTranscript.status, 'available');
+  assert.equal(body.readingContent.translationArticle.status, 'available');
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
@@ -211,10 +320,13 @@ test('missing meeting or segment returns HTTP 404', async () => {
   const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
 
   const missingMeeting = await request(handler, { method: 'GET', url: '/api/meetings/missing/segments' });
+  const missingMeetingDetail = await request(handler, { method: 'GET', url: '/api/meetings/missing' });
   const missingSegment = await request(handler, { method: 'GET', url: `/api/meetings/${meeting.id}/segments/missing/checkpoint` });
 
   assert.equal(missingMeeting.status, 404);
   assert.equal(missingMeeting.json().error.code, 'meeting_not_found');
+  assert.equal(missingMeetingDetail.status, 404);
+  assert.equal(missingMeetingDetail.json().error.code, 'meeting_not_found');
   assert.equal(missingSegment.status, 404);
   assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
 });
@@ -232,9 +344,13 @@ function createHandler() {
     },
     clock: () => 1000
   });
+  const meetingReadController = createMeetingReadController({
+    meetingReadQueryService: createMeetingReadQueryService({ meetingRepository: repository })
+  });
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
+    meetingReadController,
     meetingCheckpointService
   });
 }

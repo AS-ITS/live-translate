@@ -115,6 +115,84 @@ test('VTT timestamp format and WEBVTT header', () => {
   assert.equal(output, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nBonjour.\n');
 });
 
+test('meeting TXT export includes all segments in time order including interrupted and failed segments', () => {
+  const output = formatTranscriptExport(meetingTranscriptItems(), {
+    format: 'txt',
+    stream: 'both'
+  });
+
+  assert.equal(
+    output,
+    [
+      'Source',
+      'segment one source',
+      '',
+      'segment two source',
+      '',
+      'segment three source',
+      '',
+      'Translation',
+      'segment one translation',
+      '',
+      'segment two translation',
+      '',
+      'segment three translation',
+      ''
+    ].join('\n')
+  );
+});
+
+test('meeting SRT export covers all translation segments in time order', () => {
+  const output = formatTranscriptExport(meetingTranscriptItems(), {
+    format: 'srt',
+    stream: 'translation',
+    timeOrigin: 1000
+  });
+
+  assert.equal(
+    output,
+    [
+      '1',
+      '00:00:00,000 --> 00:00:02,000',
+      'segment one translation',
+      '',
+      '2',
+      '00:01:00,000 --> 00:01:02,000',
+      'segment two translation',
+      '',
+      '3',
+      '00:02:00,000 --> 00:02:02,000',
+      'segment three translation',
+      ''
+    ].join('\n')
+  );
+});
+
+test('meeting VTT export covers all source segments in time order', () => {
+  const output = formatTranscriptExport(meetingTranscriptItems(), {
+    format: 'vtt',
+    stream: 'source',
+    timeOrigin: 1000
+  });
+
+  assert.equal(
+    output,
+    [
+      'WEBVTT',
+      '',
+      '00:00:00.000 --> 00:00:02.000',
+      'segment one source',
+      '',
+      '00:01:00.000 --> 00:01:02.000',
+      'segment two source',
+      '',
+      '00:02:00.000 --> 00:02:02.000',
+      'segment three source',
+      ''
+    ].join('\n')
+  );
+});
+
 test('SRT source export merges fragments until sentence punctuation', () => {
   const output = formatTranscriptExport(
     [
@@ -416,3 +494,23 @@ test('filename generation deterministic', () => {
 
   assert.equal(buildTranscriptFileName({ format: 'vtt', now }), 'live-translate-transcript-20260707-080910.vtt');
 });
+
+function meetingTranscriptItems() {
+  return [
+    meetingItem({ id: 'source-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'source', sequence: 1, text: 'segment one source', startedAt: 1000, finalizedAt: 3000 }),
+    meetingItem({ id: 'translation-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'translation', sequence: 2, text: 'segment one translation', startedAt: 1000, finalizedAt: 3000 }),
+    meetingItem({ id: 'source-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'segment two source', startedAt: 61000, finalizedAt: 63000 }),
+    meetingItem({ id: 'translation-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'translation', sequence: 4, text: 'segment two translation', startedAt: 61000, finalizedAt: 63000 }),
+    meetingItem({ id: 'source-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'source', sequence: 5, text: 'segment three source', startedAt: 121000, finalizedAt: 123000 }),
+    meetingItem({ id: 'translation-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'translation', sequence: 6, text: 'segment three translation', startedAt: 121000, finalizedAt: 123000 })
+  ];
+}
+
+function meetingItem(overrides) {
+  return {
+    meetingId: 'meeting-1',
+    liveSessionId: `live-${overrides.segmentSequence + 1}`,
+    status: 'final',
+    ...overrides
+  };
+}

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 test.beforeEach(async ({ page }) => {
   const resetResponse = await page.request.delete('/api/test/sessions');
@@ -109,6 +110,14 @@ function historyPanel(page) {
 
 function historyItems(page) {
   return historyPanel(page).locator('.history-item');
+}
+
+function meetingsPanel(page) {
+  return page.locator('.meetings-page > .meeting-panel');
+}
+
+function meetingItems(page) {
+  return meetingsPanel(page).locator('.meeting-item');
 }
 
 function sessionDetail(page) {
@@ -332,6 +341,11 @@ async function openHistoryPage(page) {
   await expect(page).toHaveURL(/#history$/);
 }
 
+async function openMeetingsPage(page) {
+  await page.getByRole('link', { name: '會議紀錄' }).click();
+  await expect(page).toHaveURL(/#meetings$/);
+}
+
 async function openGlossaryPage(page) {
   await page.getByRole('link', { name: '翻譯字典' }).click();
   await expect(page).toHaveURL(/#glossary$/);
@@ -384,6 +398,72 @@ test('initial history shows empty state', async ({ page }) => {
   await expect(historyPanel(page).getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
   await expect(historyPanel(page).getByText('尚無工作階段紀錄。')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
+});
+
+test('meeting history detail shows timeline, article views, and export controls', async ({ page }) => {
+  await page.route('**/api/meetings**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([meetingHistoryRecord()])
+      });
+      return;
+    }
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-1') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(meetingDetailResponse())
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await openMeetingsPage(page);
+
+  await expect(meetingsPanel(page).getByRole('heading', { name: '會議紀錄' })).toBeVisible();
+  await expect(meetingItems(page)).toHaveCount(1);
+  await expect(meetingItems(page).first().getByText('3 段（完成 1、中斷 1、失敗 1）')).toBeVisible();
+  await meetingItems(page).first().getByRole('button', { name: '查看會議詳細資料' }).click();
+
+  const detail = meetingItems(page).first().locator('.meeting-detail');
+  const timeline = detail.getByLabel('會議段落時間軸');
+  await expect(timeline.getByText('段落 1')).toBeVisible();
+  await expect(timeline.getByText('段落 2')).toBeVisible();
+  await expect(timeline.getByText('段落 3')).toBeVisible();
+  await expect(timeline.getByText('已中斷')).toBeVisible();
+  await expect(timeline.locator('.history-status-failed').getByText('失敗', { exact: true })).toBeVisible();
+  await expect(detail.getByLabel('段落 2 原文').getByText('第二段原文')).toBeVisible();
+  await expect(detail.getByLabel('段落 2 翻譯').getByText('第二段翻譯')).toBeVisible();
+  await expect(detail.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+
+  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toBeVisible();
+
+  const exportPanel = detail.getByLabel('整場會議逐字稿匯出');
+  await expect(exportPanel.getByRole('button', { name: '下載整場逐字稿' })).toBeEnabled();
+  await exportPanel.getByRole('combobox', { name: '整場匯出格式' }).selectOption('srt');
+
+  const downloadPromise = page.waitForEvent('download');
+  await exportPanel.getByRole('button', { name: '下載整場逐字稿' }).click();
+  const download = await downloadPromise;
+  const downloadPath = await download.path();
+  const content = await readFile(downloadPath, 'utf8');
+
+  expect(download.suggestedFilename()).toMatch(/^live-translate-meeting-meeting-1-.*-translation\.srt$/);
+  expect(content).toContain('00:00:09,000 --> 00:00:10,000\n第一段翻譯');
+  expect(content).toContain('00:01:09,000 --> 00:01:10,000\n第二段翻譯');
+  expect(content).toContain('00:02:09,000 --> 00:02:10,000\n第三段翻譯');
+  expect(content.indexOf('第一段翻譯')).toBeLessThan(content.indexOf('第二段翻譯'));
+  expect(content.indexOf('第二段翻譯')).toBeLessThan(content.indexOf('第三段翻譯'));
 });
 
 test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
@@ -1391,6 +1471,88 @@ function historyRecord(overrides = {}) {
     },
     recordKind: overrides.recordKind || 'session',
     retranslatedFrom: overrides.retranslatedFrom || null
+  };
+}
+
+function meetingHistoryRecord(overrides = {}) {
+  return {
+    id: overrides.id || 'meeting-1',
+    status: overrides.status || 'active',
+    startedAt: overrides.startedAt ?? 1000,
+    endedAt: overrides.endedAt ?? 190000,
+    durationMs: overrides.durationMs ?? 189000,
+    segmentSummary: overrides.segmentSummary || {
+      totalSegments: 3,
+      countsByStatus: { completed: 1, interrupted: 1, failed: 1 },
+      hasInterruptedSegments: true,
+      hasFailedSegments: true
+    },
+    transcriptSummary: overrides.transcriptSummary || {
+      totalItems: 6,
+      sourceFinalCount: 3,
+      translationFinalCount: 3,
+      hasTranscript: true
+    },
+    failureInfo: null,
+    recordKind: 'meeting'
+  };
+}
+
+function meetingDetailResponse() {
+  const meeting = meetingHistoryRecord();
+  const timeline = [
+    { id: 'segment-1', sequence: 0, status: 'completed', startedAt: 1000, endedAt: 60000, durationMs: 59000, liveSessionId: 'live-1', errorInfo: null },
+    { id: 'segment-2', sequence: 1, status: 'interrupted', startedAt: 61000, endedAt: 120000, durationMs: 59000, liveSessionId: 'live-2', errorInfo: { reason: 'token_expired', category: 'token' } },
+    { id: 'segment-3', sequence: 2, status: 'failed', startedAt: 121000, endedAt: 190000, durationMs: 69000, liveSessionId: 'live-3', errorInfo: { reason: 'provider_error', category: 'provider' } }
+  ];
+  const transcriptItems = [
+    meetingTranscriptItem({ id: 'source-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'source', sequence: 1, text: '第一段原文', startedAt: 10000 }),
+    meetingTranscriptItem({ id: 'translation-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'translation', sequence: 2, text: '第一段翻譯', startedAt: 11000 }),
+    meetingTranscriptItem({ id: 'source-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: '第二段原文', startedAt: 70000 }),
+    meetingTranscriptItem({ id: 'translation-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'translation', sequence: 4, text: '第二段翻譯', startedAt: 71000 }),
+    meetingTranscriptItem({ id: 'source-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'source', sequence: 5, text: '第三段原文', startedAt: 130000 }),
+    meetingTranscriptItem({ id: 'translation-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'translation', sequence: 6, text: '第三段翻譯', startedAt: 131000 })
+  ];
+
+  return {
+    meeting,
+    segments: timeline.map((segment) => ({
+      ...segment,
+      meetingId: 'meeting-1',
+      checkpointUpdatedAt: segment.endedAt,
+      transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, hasTranscript: true }
+    })),
+    timeline,
+    transcriptItems,
+    readingContent: {
+      sourceTranscript: {
+        kind: 'sourceTranscript',
+        status: 'available',
+        text: '第一段原文 第二段原文 第三段原文',
+        paragraphs: ['第一段原文 第二段原文 第三段原文'],
+        createdAt: 1000,
+        finalizedAt: 190000
+      },
+      translationArticle: {
+        kind: 'translationArticle',
+        status: 'available',
+        text: '第一段翻譯 第二段翻譯 第三段翻譯',
+        paragraphs: ['第一段翻譯 第二段翻譯 第三段翻譯'],
+        createdAt: 1000,
+        completedAt: 190000
+      }
+    },
+    recordKind: 'meeting'
+  };
+}
+
+function meetingTranscriptItem(overrides = {}) {
+  return {
+    meetingId: 'meeting-1',
+    status: 'final',
+    finalizedAt: overrides.startedAt + 1000,
+    liveSessionId: `live-${overrides.segmentSequence + 1}`,
+    ...overrides
   };
 }
 

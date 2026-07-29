@@ -1,5 +1,12 @@
 # Changelog
 
+- Long Meeting WP5 API foundation: session detail reads can now materialize
+  archived Segment transcript content from Meeting checkpoints when a
+  SessionRecord references a Meeting. Existing `/api/sessions/:sessionId`
+  response shape, Meeting checkpoint endpoints, Gemini Live path, and live-token
+  security behavior remain unchanged. Frontend virtualized rendering and audio
+  resource cleanup hardening remain deferred.
+
 - Long Meeting WP4 Live/token recovery: added a Segment recovery endpoint that
   persists a final checkpoint, marks the active Segment as interrupted or failed,
   and creates the next active Segment for interrupted recovery with a fresh Live

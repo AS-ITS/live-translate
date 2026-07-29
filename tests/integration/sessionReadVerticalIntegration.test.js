@@ -68,6 +68,7 @@ test('GET /api/sessions returns mapped legacy session history through production
       durationMs: null,
       targetLanguageCode: null,
       targetLanguageLabel: null,
+      sourceLanguageCode: null,
       failureReason: 'unexpected_close',
       failureCategory: 'provider',
       transcriptSummary: emptySummary,
@@ -83,6 +84,7 @@ test('GET /api/sessions returns mapped legacy session history through production
       durationMs: 4000,
       targetLanguageCode: 'fr',
       targetLanguageLabel: 'French',
+      sourceLanguageCode: null,
       failureReason: null,
       failureCategory: null,
       transcriptSummary: populatedSummary,
@@ -171,6 +173,7 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       durationMs: 4000,
       failureReason: null,
       failureCategory: null,
+      sourceLanguageCode: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic',
       transcriptSummary: populatedSummary,
@@ -214,8 +217,8 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       targetLanguageCode: 'ja',
       targetLanguageLabel: 'Japanese',
       version: null,
-      text: 'こんにちは 世界。',
-      paragraphs: ['こんにちは 世界。'],
+      text: 'こんにちは世界。',
+      paragraphs: ['こんにちは世界。'],
       createdAt: 1000,
       completedAt: 5000,
       emptyReason: null
@@ -304,6 +307,78 @@ test('GET /api/sessions/:sessionId returns no translation output without final t
     assert.deepEqual(response.body.translationOutputs, []);
     assert.equal(response.body.selectedTranslationOutput, null);
   });
+});
+
+test('GET /api/sessions/:sessionId materializes meeting checkpoint transcript detail', async () => {
+  const record = sessionRecord({
+    id: 'session-meeting',
+    meetingId: 'meeting-1',
+    segmentId: 'segment-2',
+    transcriptSummary: {
+      totalItems: 4,
+      sourceFinalCount: 2,
+      translationFinalCount: 2,
+      sourcePartialCount: 0,
+      translationPartialCount: 0,
+      hasTranscript: true
+    }
+  });
+  const detail = {
+    sessionRecord: record,
+    transcriptItems: []
+  };
+  const sessionRepository = legacyRepository({
+    records: [record],
+    details: { 'session-meeting': detail }
+  });
+  const meetingRepository = {
+    createMeeting() {},
+    getMeeting() {},
+    updateMeeting() {},
+    createMeetingSegment() {},
+    getMeetingSegment() {},
+    updateMeetingSegment() {},
+    listMeetingSegments(meetingId) {
+      assert.equal(meetingId, 'meeting-1');
+      return [{
+        id: 'segment-1',
+        meetingId,
+        sequence: 0,
+        checkpoint: {
+          durableChunks: [
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-1:source-1', segmentId: 'segment-1', stream: 'source', sequence: 1, text: 'Archived source one.' }),
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-1:translation-2', segmentId: 'segment-1', stream: 'translation', sequence: 2, text: 'Archived translation one.' })
+          ]
+        }
+      }, {
+        id: 'segment-2',
+        meetingId,
+        sequence: 1,
+        checkpoint: {
+          durableChunks: [
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-2:source-3', segmentId: 'segment-2', stream: 'source', sequence: 3, text: 'Archived source two.' }),
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-2:translation-4', segmentId: 'segment-2', stream: 'translation', sequence: 4, text: 'Archived translation two.' })
+          ]
+        }
+      }];
+    }
+  };
+
+  await withSessionReadServer(sessionRepository, async (baseUrl) => {
+    const response = await getJson(`${baseUrl}/api/sessions/session-meeting`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.sourceTranscript.items.map((item) => item.text), [
+      'Archived source one.',
+      'Archived source two.'
+    ]);
+    assert.deepEqual(response.body.selectedTranslationOutput.items.map((item) => item.text), [
+      'Archived translation one.',
+      'Archived translation two.'
+    ]);
+    assert.equal(response.body.readingContent.sourceTranscript.text, 'Archived source one. Archived source two.');
+    assert.equal(response.body.readingContent.translationArticle.text, 'Archived translation one. Archived translation two.');
+  }, { meetingRepository });
 });
 
 test('GET /api/sessions/:sessionId prefers formal output for selected article read model', async () => {
@@ -496,10 +571,11 @@ test('GET /api/sessions/:sessionId does not mutate legacy input data', async () 
   );
 });
 
-async function withSessionReadServer(sessionRepository, run) {
+async function withSessionReadServer(sessionRepository, run, options = {}) {
   const dependencies = createApplicationDependencies({
     env: { DATA_DIR: join(tmpdir(), `live-translate-session-read-${process.pid}`) },
-    sessionRepository
+    sessionRepository,
+    ...(options.meetingRepository ? { meetingRepository: options.meetingRepository } : {})
   });
   const handler = createRequestHandler({
     sessionReadController: dependencies.sessionReadController,
@@ -572,6 +648,8 @@ function sessionRecord(overrides = {}) {
     failureCategory: overrides.failureCategory ?? null,
     selectedInputDeviceId: overrides.selectedInputDeviceId ?? 'device-1',
     inputDeviceLabelSnapshot: overrides.inputDeviceLabelSnapshot ?? 'Studio Mic',
+    meetingId: overrides.meetingId ?? null,
+    segmentId: overrides.segmentId ?? null,
     transcriptSummary: overrides.transcriptSummary ?? populatedSummary,
     ...(overrides.translationCommandState ? { translationCommandState: overrides.translationCommandState } : {})
   };
@@ -610,4 +688,16 @@ function transcriptItem(overrides = {}) {
 
 function jsonClone(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function checkpointChunk(overrides = {}) {
+  return {
+    idempotencyKey: overrides.idempotencyKey || 'checkpoint:segment-1:source-1',
+    meetingId: overrides.meetingId || 'meeting-1',
+    segmentId: overrides.segmentId || 'segment-1',
+    stream: overrides.stream || 'source',
+    sequence: overrides.sequence ?? 1,
+    text: overrides.text || 'Checkpoint text.',
+    timestamp: overrides.timestamp ?? 1200
+  };
 }

@@ -180,6 +180,44 @@ test('composition root can build the read repository from the legacy persistence
   assert.equal(detail.session.id, 'session-1');
 });
 
+test('composition root injects meeting checkpoints into the default read repository', () => {
+  const dependencies = createSessionReadDependencies({
+    sessionRepository: {
+      listSessionRecords() {
+        return [legacySessionRecord({ id: 'session-1', meetingId: 'meeting-1', segmentId: 'segment-1' })];
+      },
+      getSessionRecord(sessionId) {
+        return legacySessionDetail({ id: sessionId, meetingId: 'meeting-1', segmentId: 'segment-1' });
+      }
+    },
+    meetingRepository: {
+      listMeetingSegments(meetingId) {
+        assert.equal(meetingId, 'meeting-1');
+        return [{
+          id: 'segment-1',
+          meetingId,
+          sequence: 0,
+          checkpoint: {
+            durableChunks: [{
+              idempotencyKey: 'checkpoint:segment-1:translation-1',
+              meetingId,
+              segmentId: 'segment-1',
+              stream: 'translation',
+              sequence: 1,
+              text: 'Checkpoint translation.',
+              timestamp: 1200
+            }]
+          }
+        }];
+      }
+    }
+  });
+
+  const detail = dependencies.sessionReadController.getSession('session-1');
+
+  assert.equal(detail.selectedTranslationOutput.items[0].text, 'Checkpoint translation.');
+});
+
 test('repository DTO and null behavior preserve WP3 and WP4 contracts', async () => {
   const history = [historyItem({ id: 'session-1' })];
   const dependencies = createApplicationDependencies({
@@ -311,6 +349,8 @@ function legacySessionRecord(overrides = {}) {
     targetLanguageLabel: 'French',
     failureReason: null,
     failureCategory: null,
+    meetingId: overrides.meetingId ?? null,
+    segmentId: overrides.segmentId ?? null,
     transcriptSummary: emptyTranscriptSummary()
   };
 }
@@ -319,7 +359,11 @@ function legacySessionDetail(overrides = {}) {
   const id = overrides.id || 'session-1';
 
   return {
-    sessionRecord: legacySessionRecord({ id }),
+    sessionRecord: legacySessionRecord({
+      id,
+      meetingId: overrides.meetingId,
+      segmentId: overrides.segmentId
+    }),
     transcriptItems: []
   };
 }

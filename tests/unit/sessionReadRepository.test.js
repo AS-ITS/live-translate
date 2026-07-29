@@ -52,6 +52,7 @@ test('history records are mapped through the history read model contract', () =>
       durationMs: 4000,
       targetLanguageCode: 'fr',
       targetLanguageLabel: 'French',
+      sourceLanguageCode: null,
       failureReason: null,
       failureCategory: null,
       transcriptSummary,
@@ -131,6 +132,73 @@ test('detail lookup returns a mapped detail DTO', () => {
   assert.deepEqual(dto.sourceTranscript.items.map((item) => item.id), ['source-1']);
   assert.deepEqual(dto.translationOutputs[0].items.map((item) => item.id), ['translation-1']);
   assert.equal(dto.selectedTranslationOutput, dto.translationOutputs[0]);
+});
+
+test('meeting-backed detail materializes final transcript items from segment checkpoints', () => {
+  const detail = sessionDetail({
+    sessionRecord: sessionRecord({ meetingId: 'meeting-1', segmentId: 'segment-2' }),
+    transcriptItems: []
+  });
+  const repository = createSessionReadRepository({
+    sessionRepository: legacyRepository({ details: { 'session-1': detail } }),
+    meetingRepository: meetingRepository({
+      segments: [
+        meetingSegment({
+          id: 'segment-2',
+          sequence: 1,
+          chunks: [
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-2:translation-4', segmentId: 'segment-2', stream: 'translation', sequence: 4, text: 'Second translation.' }),
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-2:source-3', segmentId: 'segment-2', stream: 'source', sequence: 3, text: 'Second source.' }),
+            checkpointChunk({ idempotencyKey: 'invalid-empty', segmentId: 'segment-2', stream: 'source', sequence: 5, text: '   ' })
+          ]
+        }),
+        meetingSegment({
+          id: 'segment-1',
+          sequence: 0,
+          chunks: [
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-1:translation-2', segmentId: 'segment-1', stream: 'translation', sequence: 2, text: 'First translation.' }),
+            checkpointChunk({ idempotencyKey: 'checkpoint:segment-1:source-1', segmentId: 'segment-1', stream: 'source', sequence: 1, text: 'First source.' })
+          ]
+        })
+      ]
+    })
+  });
+
+  const dto = repository.getSessionDetail('session-1');
+
+  assert.deepEqual(dto.sourceTranscript.items.map(({ id, text }) => ({ id, text })), [
+    { id: 'checkpoint:segment-1:source-1', text: 'First source.' },
+    { id: 'checkpoint:segment-2:source-3', text: 'Second source.' }
+  ]);
+  assert.deepEqual(dto.translationOutputs[0].items.map(({ id, text }) => ({ id, text })), [
+    { id: 'checkpoint:segment-1:translation-2', text: 'First translation.' },
+    { id: 'checkpoint:segment-2:translation-4', text: 'Second translation.' }
+  ]);
+  assert.equal(dto.readingContent.sourceTranscript.text, 'First source. Second source.');
+  assert.equal(dto.readingContent.translationArticle.text, 'First translation. Second translation.');
+});
+
+test('meeting-backed detail falls back to legacy transcript items when the meeting is missing', () => {
+  const detail = sessionDetail({
+    sessionRecord: sessionRecord({ meetingId: 'missing-meeting', segmentId: 'segment-1' }),
+    transcriptItems: [
+      transcriptItem({ id: 'source-legacy', stream: 'source', text: 'Legacy source.', sequence: 1 }),
+      transcriptItem({ id: 'translation-legacy', stream: 'translation', text: 'Legacy translation.', sequence: 2 })
+    ]
+  });
+  const repository = createSessionReadRepository({
+    sessionRepository: legacyRepository({ details: { 'session-1': detail } }),
+    meetingRepository: {
+      listMeetingSegments() {
+        throw new Error('Meeting not found: missing-meeting');
+      }
+    }
+  });
+
+  const dto = repository.getSessionDetail('session-1');
+
+  assert.deepEqual(dto.sourceTranscript.items.map((item) => item.id), ['source-legacy']);
+  assert.deepEqual(dto.translationOutputs[0].items.map((item) => item.id), ['translation-legacy']);
 });
 
 test('missing session detail returns null', () => {
@@ -263,6 +331,8 @@ function sessionRecord(overrides = {}) {
     failureCategory: overrides.failureCategory ?? null,
     selectedInputDeviceId: overrides.selectedInputDeviceId || 'device-1',
     inputDeviceLabelSnapshot: overrides.inputDeviceLabelSnapshot || 'Studio Mic',
+    meetingId: overrides.meetingId ?? null,
+    segmentId: overrides.segmentId ?? null,
     transcriptSummary: overrides.transcriptSummary || transcriptSummary,
     recordKind: overrides.recordKind || 'session',
     createdAt: overrides.createdAt ?? 900,
@@ -282,5 +352,37 @@ function transcriptItem(overrides = {}) {
     startedAt: overrides.startedAt ?? 1100,
     finalizedAt: overrides.finalizedAt ?? 1200,
     ...(overrides.languageCode ? { languageCode: overrides.languageCode } : {})
+  };
+}
+
+function meetingRepository({ segments = [] } = {}) {
+  return {
+    listMeetingSegments(meetingId) {
+      if (meetingId !== 'meeting-1') throw new Error(`Meeting not found: ${meetingId}`);
+      return segments;
+    }
+  };
+}
+
+function meetingSegment(overrides = {}) {
+  return {
+    id: overrides.id || 'segment-1',
+    meetingId: overrides.meetingId || 'meeting-1',
+    sequence: overrides.sequence ?? 0,
+    checkpoint: {
+      durableChunks: overrides.chunks || []
+    }
+  };
+}
+
+function checkpointChunk(overrides = {}) {
+  return {
+    idempotencyKey: overrides.idempotencyKey || 'checkpoint:segment-1:source-1',
+    meetingId: overrides.meetingId || 'meeting-1',
+    segmentId: overrides.segmentId || 'segment-1',
+    stream: overrides.stream || 'source',
+    sequence: overrides.sequence ?? 1,
+    text: overrides.text || 'Checkpoint text.',
+    timestamp: overrides.timestamp ?? 1200
   };
 }

@@ -385,6 +385,21 @@ async function emitPartialTranscript(page, sourceText = 'partial source', transl
   );
 }
 
+function liveResourceDiagnostics() {
+  const micTracks = window.__mockMicTracks || [];
+  const audioContexts = window.__mockAudioContexts || [];
+  const liveSessions = window.__mockGoogleGenAI?.liveSessions || [];
+
+  return {
+    micTrackCount: micTracks.length,
+    activeMicTrackCount: micTracks.filter((track) => !track.stopped).length,
+    audioContextCount: audioContexts.length,
+    openAudioContextCount: audioContexts.filter((context) => context.state !== 'closed').length,
+    liveSessionCount: liveSessions.length,
+    openLiveSessionCount: liveSessions.filter((session) => !session.closed).length
+  };
+}
+
 async function emitTurnComplete(page) {
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({ serverContent: { turnComplete: true } });
@@ -658,9 +673,14 @@ test('long meeting proactively switches through three segments and preserves con
   await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 2 筆')).toBeVisible();
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
-  await expect.poll(() => page.evaluate(() => window.__mockAudioContexts.every((context) => context.state === 'closed'))).toBe(true);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.every((session) => session.closed))).toBe(true);
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 3,
+    activeMicTrackCount: 0,
+    audioContextCount: 3,
+    openAudioContextCount: 0,
+    liveSessionCount: 3,
+    openLiveSessionCount: 0
+  });
   await page.waitForTimeout(900);
   expect(checkpointRequests.rolloverRequests).toHaveLength(2);
 
@@ -1867,6 +1887,37 @@ test('token expired recovers with a fresh token and preserves transcript', async
   await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+});
+
+test('browser suspended recovery preserves checkpointed transcript after wake', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, 'before browser sleep', 'visible after browser wake');
+  await expect(page.getByText('before browser sleep')).toBeVisible();
+  await expect(page.getByText('visible after browser wake')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitError({
+      code: 'browser_suspended',
+      message: 'page resumed after background sleep'
+    });
+  });
+
+  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('browser_suspended');
+  expect(checkpointRequests.recoverRequests[0].body.failureCategory).toBe('browser_runtime');
+  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('before browser sleep')).toBeVisible();
+  await expect(page.getByText('visible after browser wake')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
 });
 

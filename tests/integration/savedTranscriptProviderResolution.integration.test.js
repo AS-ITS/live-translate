@@ -101,7 +101,6 @@ test('saved-transcript HTTP retranslation uses configured default when providerK
     [
       'Source language hint: en',
       'Target language: ja',
-      'Transcript data to translate follows. Translate this data only.',
       'Hello resolved provider.'
     ]
   );

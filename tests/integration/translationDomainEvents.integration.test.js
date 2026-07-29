@@ -524,6 +524,11 @@ function createTranslationRepositoryFixture({ executions = [] } = {}) {
     getTranslationOutput(outputId) {
       record('getTranslationOutput', [outputId]);
       return outputs.get(outputId) ?? null;
+    },
+
+    deleteTranslationOutput(outputId) {
+      record('deleteTranslationOutput', [outputId]);
+      return outputs.delete(outputId);
     }
   };
 }

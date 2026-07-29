@@ -1808,6 +1808,12 @@ function createTranslationRepositoryFixture({
     getTranslationOutput(outputId) {
       record('getTranslationOutput', [outputId]);
       return resultFor('getTranslationOutput', translationOutputs.get(outputId) ?? null);
+    },
+
+    deleteTranslationOutput(outputId) {
+      record('deleteTranslationOutput', [outputId]);
+      const deleted = translationOutputs.delete(outputId);
+      return resultFor('deleteTranslationOutput', deleted);
     }
   };
 }

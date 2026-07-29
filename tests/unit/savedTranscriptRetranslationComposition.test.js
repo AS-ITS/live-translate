@@ -106,11 +106,14 @@ test('application composition wires saved transcript re-translation once through
     'executionControlController',
     'glossaryController',
     'liveTokenCreator',
+    'meetingCheckpointService',
+    'meetingReadController',
     'savedTranscriptRetranslationController',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',
-    'translationHistoryController'
+    'translationHistoryController',
+    'translationRepository'
   ]);
 });
 

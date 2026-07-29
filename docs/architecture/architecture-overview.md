@@ -74,6 +74,12 @@ by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
 `meetingId` and `segmentId`. This does not change the browser-to-Gemini audio
 path or ephemeral token flow.
 
+Long Meeting proactive segmentation rolls over one active Segment into the next
+active Segment before opening a replacement Gemini Live connection for the same
+Meeting. This is separate from failure reconnect and token refresh: the browser
+still obtains each fresh ephemeral token through `/api/live-token` and connects
+directly to Gemini Live API.
+
 ## 3. Runtime Architecture
 
 ```mermaid

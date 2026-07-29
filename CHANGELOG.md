@@ -1,5 +1,13 @@
 # Changelog
 
+- Long Meeting WP3 proactive segmentation and Live continuity: live sessions now
+  default to scheduled 10-minute Segment rollover with a 15-minute code cap,
+  complete the current Segment with a final checkpoint, create the next ordered
+  active Segment with a fresh Live session association, and replace the browser
+  Gemini Live session while preserving the visible transcript. This does not
+  change the `/api/live-token` security model, browser-to-Gemini audio path,
+  general reconnect scope, or token refresh behavior.
+
 - Long Meeting WP2 frontend checkpoint sync: live sessions now create a Meeting
   and first Segment by default, attach their identifiers to the saved
   SessionRecord, and sync confirmed source/translation chunks to the checkpoint

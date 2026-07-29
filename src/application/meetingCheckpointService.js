@@ -12,7 +12,7 @@ export function createMeetingCheckpointService({
   if (typeof clock !== 'function') throw new TypeError('clock is required.');
 
   return Object.freeze({
-    async createMeeting() {
+    async createMeeting({ liveSessionId = null } = {}) {
       const now = clock();
       const meeting = await meetingRepository.createMeeting({ id: idGenerator('meeting'), createdAt: now });
       const activeMeeting = await meetingRepository.updateMeeting(meeting.activate(now));
@@ -20,6 +20,7 @@ export function createMeetingCheckpointService({
         id: idGenerator('segment'),
         meetingId: activeMeeting.id,
         sequence: 0,
+        liveSessionId: liveSessionId === null ? null : validateRequiredString(liveSessionId, 'liveSessionId'),
         createdAt: now
       });
       const activeSegment = await meetingRepository.updateMeetingSegment(segment.activate(now));
@@ -63,6 +64,54 @@ export function createMeetingCheckpointService({
         segmentId: updated.id,
         checkpoint: updated.checkpoint
       };
+    },
+
+    async rolloverSegment({ meetingId, segmentId, rollover } = {}) {
+      const currentSegment = await requireSegment({ meetingRepository, meetingId, segmentId });
+      const input = validateRolloverInput(rollover);
+      const existingSegments = await meetingRepository.listMeetingSegments(currentSegment.meetingId);
+      const existingNext = existingSegments.find((segment) => segment.sequence === currentSegment.sequence + 1);
+      const storedCheckpoint = normalizeStoredCheckpoint(currentSegment.checkpoint, currentSegment.meetingId, currentSegment.id);
+      if (
+        existingNext &&
+        currentSegment.status === 'completed' &&
+        storedCheckpoint.idempotencyKey === input.idempotencyKey &&
+        existingNext.liveSessionId === input.nextLiveSessionId
+      ) {
+        return { completedSegment: currentSegment, segment: existingNext };
+      }
+
+      if (existingNext) {
+        throw codedError('checkpoint_conflict', `segment rollover conflict: ${input.idempotencyKey}`);
+      }
+
+      if (currentSegment.status !== 'active') {
+        throw codedError('meeting_segment_invalid_state', `segment rollover requires an active segment, got ${currentSegment.status}`);
+      }
+
+      const now = clock();
+      const nextCheckpoint = mergeCheckpoint({
+        existing: currentSegment.checkpoint,
+        incoming: validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id),
+        meetingId: currentSegment.meetingId,
+        segmentId: currentSegment.id,
+        updatedAt: now
+      });
+      const rolloverCheckpoint = { ...nextCheckpoint, idempotencyKey: input.idempotencyKey, updatedAt: now };
+      const completedSegment = await meetingRepository.updateMeetingSegment(currentSegment.complete({
+        endedAt: now,
+        checkpoint: rolloverCheckpoint
+      }));
+      const nextSegment = await meetingRepository.createMeetingSegment({
+        id: idGenerator('segment'),
+        meetingId: currentSegment.meetingId,
+        sequence: currentSegment.sequence + 1,
+        liveSessionId: input.nextLiveSessionId,
+        createdAt: now
+      });
+      const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+
+      return { completedSegment, segment: activeNextSegment };
     }
   });
 }
@@ -136,6 +185,15 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
     durableChunks: sortChunks(checkpoint.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId))),
     pendingPartial: null,
     updatedAt: checkpoint.updatedAt ?? null
+  };
+}
+
+function validateRolloverInput(input) {
+  if (!isRecord(input)) invalid();
+  return {
+    idempotencyKey: validateRequiredString(input.idempotencyKey, 'idempotencyKey'),
+    checkpoint: input.checkpoint,
+    nextLiveSessionId: validateRequiredString(input.nextLiveSessionId, 'nextLiveSessionId')
   };
 }
 

@@ -86,6 +86,36 @@ test('checkpoint conflict returns HTTP 409', async () => {
   assert.equal(response.json().error.code, 'checkpoint_conflict');
 });
 
+test('POST /api/meetings/:meetingId/segments/:segmentId/rollover creates next segment', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ liveSessionId: 'live-session-1' })
+  })).json();
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/rollover`,
+    body: JSON.stringify({
+      idempotencyKey: 'rollover-1',
+      checkpoint: checkpoint({
+        meetingId: meeting.id,
+        segmentId: segment.id,
+        durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, sequence: 1, text: 'hello' })]
+      }),
+      nextLiveSessionId: 'live-session-2'
+    })
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.json().completedSegment.status, 'completed');
+  assert.equal(response.json().completedSegment.liveSessionId, 'live-session-1');
+  assert.equal(response.json().segment.sequence, 1);
+  assert.equal(response.json().segment.status, 'active');
+  assert.equal(response.json().segment.liveSessionId, 'live-session-2');
+});
+
 test('missing meeting or segment returns HTTP 404', async () => {
   const handler = createHandler();
   const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();

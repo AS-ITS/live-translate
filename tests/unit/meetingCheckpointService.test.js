@@ -128,6 +128,76 @@ test('checkpoint validation rejects pending partials and mismatched ownership', 
   );
 });
 
+test('rollover completes current segment and creates next active segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+
+  const result = await service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    rollover: {
+      idempotencyKey: 'rollover-1',
+      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+      nextLiveSessionId: 'live-session-2'
+    }
+  });
+
+  assert.equal(result.completedSegment.status, 'completed');
+  assert.equal(result.completedSegment.liveSessionId, 'live-session-1');
+  assert.equal(result.completedSegment.checkpoint.idempotencyKey, 'rollover-1');
+  assert.equal(result.completedSegment.checkpoint.durableChunks.length, 1);
+  assert.equal(result.segment.id, 'segment-2');
+  assert.equal(result.segment.sequence, 1);
+  assert.equal(result.segment.status, 'active');
+  assert.equal(result.segment.liveSessionId, 'live-session-2');
+});
+
+test('rollover is idempotent for repeated request and rejects conflicting next segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const rollover = {
+    idempotencyKey: 'rollover-1',
+    checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+    nextLiveSessionId: 'live-session-2'
+  };
+
+  const first = await service.rolloverSegment({ meetingId: meeting.id, segmentId: segment.id, rollover });
+  const duplicate = await service.rolloverSegment({ meetingId: meeting.id, segmentId: segment.id, rollover });
+
+  assert.equal(duplicate.segment.id, first.segment.id);
+  assert.equal(duplicate.completedSegment.id, first.completedSegment.id);
+  await assert.rejects(
+    service.rolloverSegment({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      rollover: { ...rollover, nextLiveSessionId: 'live-session-3' }
+    }),
+    /segment rollover conflict/
+  );
+});
+
+test('rollover rejects non-active segments', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  await repository.updateMeetingSegment(segment.fail({ endedAt: 2000, errorInfo: { reason: 'test' } }));
+
+  await assert.rejects(
+    service.rolloverSegment({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      rollover: {
+        idempotencyKey: 'rollover-1',
+        checkpoint: checkpoint(),
+        nextLiveSessionId: 'live-session-2'
+      }
+    }),
+    /segment rollover requires an active segment/
+  );
+});
+
 function createService(repository) {
   let meetingId = 0;
   let segmentId = 0;

@@ -6,7 +6,13 @@
 
 Creates one active Meeting with its first active Segment. This endpoint is the
 minimal backend entry point for checkpoint persistence; it does not start,
-stop, reconnect, or segment a Gemini Live session.
+stop, reconnect, or segment a Gemini Live session. The optional
+`liveSessionId` request field associates the first Segment with the frontend's
+first Gemini Live connection.
+
+```json
+{ "liveSessionId": "live-session-1" }
+```
 
 Returns `201 Created`:
 
@@ -31,6 +37,37 @@ Returns the Meeting's ordered segments.
 ```
 
 Missing Meetings return `404`.
+
+## `POST /api/meetings/:meetingId/segments/:segmentId/rollover`
+
+Completes the current active Segment with a final checkpoint and creates the
+next active Segment in the same Meeting.
+
+```json
+{
+  "idempotencyKey": "rollover:segment-1:live-session-2",
+  "checkpoint": {
+    "idempotencyKey": "checkpoint:segment-1:rollover",
+    "durableChunks": [],
+    "pendingPartial": null
+  },
+  "nextLiveSessionId": "live-session-2"
+}
+```
+
+Returns `201 Created`:
+
+```json
+{
+  "completedSegment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "completed" },
+  "segment": { "id": "segment-2", "meetingId": "meeting-1", "sequence": 1, "status": "active", "liveSessionId": "live-session-2" }
+}
+```
+
+Duplicate rollover requests with the same idempotency key and next Live session
+association return the same next Segment. Conflicting duplicate rollover data
+returns `409`. Missing Meetings or Segments return `404`; non-active current
+Segments return `409`.
 
 ## `PUT /api/meetings/:meetingId/segments/:segmentId/checkpoint`
 

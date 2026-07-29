@@ -557,7 +557,28 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'POST' && path === '/api/meetings') {
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
-      const result = await meetingCheckpointService.createMeeting();
+      const result = await meetingCheckpointService.createMeeting(await readJson(req));
+      statusCode = 201;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingSegmentRolloverPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingSegmentRolloverPath(path);
+      const result = await meetingCheckpointService.rolloverSegment({
+        meetingId,
+        segmentId,
+        rollover: await readJson(req)
+      });
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -1000,6 +1021,13 @@ function isMeetingSegmentCheckpointPath(path) {
     path.length > '/api/meetings//segments//checkpoint'.length;
 }
 
+function isMeetingSegmentRolloverPath(path) {
+  return path.startsWith('/api/meetings/') &&
+    path.includes('/segments/') &&
+    path.endsWith('/rollover') &&
+    path.length > '/api/meetings//segments//rollover'.length;
+}
+
 function parseMeetingSegmentsPath(path) {
   const prefix = '/api/meetings/';
   const suffix = '/segments';
@@ -1011,6 +1039,19 @@ function parseMeetingSegmentsPath(path) {
 function parseMeetingSegmentCheckpointPath(path) {
   const prefix = '/api/meetings/';
   const suffix = '/checkpoint';
+  const body = path.slice(prefix.length, -suffix.length);
+  const separator = body.indexOf('/segments/');
+  if (separator <= 0) throw createHttpError('invalid_request');
+
+  return {
+    meetingId: safeDecodePathComponent(body.slice(0, separator)),
+    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
+  };
+}
+
+function parseMeetingSegmentRolloverPath(path) {
+  const prefix = '/api/meetings/';
+  const suffix = '/rollover';
   const body = path.slice(prefix.length, -suffix.length);
   const separator = body.indexOf('/segments/');
   if (separator <= 0) throw createHttpError('invalid_request');

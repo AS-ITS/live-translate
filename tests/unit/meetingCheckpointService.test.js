@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
+import { transcriptItemsFromSegments } from '../../src/readModels/meetingReadModels.js';
+import {
+  assertNoMissingDuplicateOrOutOfOrderChunks,
+  reconstructChunkText,
+  runFailedSegmentCheckpointScenario,
+  runLongMeetingCheckpointScenario
+} from '../helpers/longMeetingScenario.js';
 
 test('creates an active meeting with the first active segment', async () => {
   const repository = createMemoryMeetingRepository();
@@ -350,6 +357,54 @@ test('recovery rejects non-active segments', async () => {
   );
 });
 
+test('accelerated long meeting checkpoint scenario preserves 2+ hours of confirmed chunks', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const scenario = await runLongMeetingCheckpointScenario({ service });
+  const segments = repository.listMeetingSegments(scenario.meeting.id);
+  const transcriptItems = transcriptItemsFromSegments({ meeting: scenario.meeting, segments });
+
+  assert.equal(scenario.durationMs >= 2 * 60 * 60 * 1000, true);
+  assert.equal(segments.length, 14);
+  assert.deepEqual(
+    countSegmentStatuses(segments),
+    { active: 1, completed: 11, interrupted: 2 }
+  );
+  assert.deepEqual(
+    segments
+      .filter((segment) => segment.status === 'interrupted')
+      .map((segment) => segment.errorInfo),
+    [
+      { reason: 'token_expired', category: 'token' },
+      { reason: 'network_interrupted', category: 'network' }
+    ]
+  );
+  assertNoMissingDuplicateOrOutOfOrderChunks(assert, transcriptItems, scenario.expectedChunks);
+  assert.equal(
+    reconstructChunkText(transcriptItems, 'source'),
+    scenario.expectedChunks.filter((chunk) => chunk.stream === 'source').map((chunk) => chunk.text).join('\n')
+  );
+  assert.equal(
+    reconstructChunkText(transcriptItems, 'translation'),
+    scenario.expectedChunks.filter((chunk) => chunk.stream === 'translation').map((chunk) => chunk.text).join('\n')
+  );
+});
+
+test('failed meeting segment keeps checkpoint content readable without failing the meeting record', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const scenario = await runFailedSegmentCheckpointScenario({ service });
+  const meeting = repository.getMeeting(scenario.meeting.id);
+  const segments = repository.listMeetingSegments(scenario.meeting.id);
+  const transcriptItems = transcriptItemsFromSegments({ meeting, segments });
+
+  assert.equal(meeting.status, 'active');
+  assert.equal(segments.length, 1);
+  assert.equal(segments[0].status, 'failed');
+  assert.deepEqual(segments[0].errorInfo, { reason: 'provider_error', category: 'provider' });
+  assertNoMissingDuplicateOrOutOfOrderChunks(assert, transcriptItems, scenario.expectedChunks);
+});
+
 function createService(repository) {
   let meetingId = 0;
   let segmentId = 0;
@@ -370,6 +425,13 @@ function checkpoint(overrides = {}) {
     durableChunks: overrides.durableChunks ?? [],
     pendingPartial: null
   };
+}
+
+function countSegmentStatuses(segments = []) {
+  return segments.reduce((counts, segment) => {
+    counts[segment.status] = (counts[segment.status] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 function recovery(overrides = {}) {

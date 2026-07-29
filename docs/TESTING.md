@@ -84,6 +84,13 @@ Run saved session export unit tests:
 node --test tests/unit/sessionRecordExport.test.js
 ```
 
+Run Long Meeting checkpoint and reliability unit tests:
+
+```bash
+node --test tests/unit/meetingCheckpointService.test.js
+node --test tests/unit/segmentSwitchOrchestrator.test.js
+```
+
 Current unit coverage:
 
 - PCM16 audio conversion and base64 byte conversion
@@ -105,6 +112,9 @@ Current unit coverage:
   transcript append, and finalization
 - Saved session export helpers for TXT/SRT/VTT formatting, session-relative
   timing, file naming, and unavailable export states
+- Long Meeting accelerated 2+ hour checkpoint scenario coverage, including
+  ordered Segment reconstruction, rollover, interrupted recovery, failed Segment
+  checkpoint readability, duplicate protection, and ordering checks
 - Frontend/backend language allowlist alignment
 - Token request validation and token config shape
 
@@ -114,6 +124,12 @@ Run integration tests with the test-only Gemini mock loader:
 
 ```bash
 npm run test:integration
+```
+
+Run Long Meeting file-backed vertical integration tests:
+
+```bash
+node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/meetingCheckpointVerticalIntegration.test.js
 ```
 
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
@@ -131,6 +147,8 @@ Current integration coverage:
 - IP-based rate limiting
 - Security headers and request id response headers
 - `/healthz` and `/readyz`
+- Meeting checkpoint API persistence, Segment recovery, Meeting detail read
+  reconstruction, and accelerated 2+ hour Long Meeting reload validation
 
 ## E2E Tests
 

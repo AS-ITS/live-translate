@@ -6,6 +6,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 import { createRequestHandler } from '../../server/index.js';
+import {
+  assertNoMissingDuplicateOrOutOfOrderChunks,
+  buildLongMeetingScenario,
+  checkpointForSegment
+} from '../helpers/longMeetingScenario.js';
 
 test('meeting checkpoint API persists through production file-backed composition', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-meeting-api-'));
@@ -146,6 +151,85 @@ test('meeting checkpoint API persists through production file-backed composition
         { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'translation', sequence: 2, text: 'world' },
         { segmentId: 'segment-1', segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: 'resume' }
       ]
+    );
+  });
+});
+
+test('long meeting reliability scenario persists and reloads 2+ hours of ordered checkpoints', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-long-meeting-api-'));
+  const env = {
+    MEETING_RECORDS_FILE: join(directory, 'meetings.json'),
+    SESSION_RECORDS_FILE: join(directory, 'sessions.json'),
+    TRANSLATION_GLOSSARY_FILE: join(directory, 'glossary.json')
+  };
+  const scenario = buildLongMeetingScenario();
+
+  const firstDependencies = createProductionApplicationDependencies(productionOptions({ env }));
+  await withServer(firstDependencies.requestHandler, async (baseUrl) => {
+    const created = await postJson(`${baseUrl}/api/meetings`, {
+      liveSessionId: scenario.segments[0].liveSessionId
+    });
+    assert.equal(created.status, 201);
+    const { meeting, segment } = await created.json();
+    let currentSegment = segment;
+
+    for (const scenarioSegment of scenario.segments) {
+      assert.equal(currentSegment.id, scenarioSegment.id);
+      const checkpointResponse = await putJson(
+        `${baseUrl}/api/meetings/${encodeURIComponent(meeting.id)}/segments/${encodeURIComponent(currentSegment.id)}/checkpoint`,
+        checkpointForSegment(scenarioSegment, `checkpoint:${scenarioSegment.id}:sync`)
+      );
+      assert.equal(checkpointResponse.status, 200);
+
+      if (scenarioSegment.sequence === scenario.segments.length - 1) {
+        break;
+      }
+
+      const closeInput = {
+        idempotencyKey: `${scenarioSegment.closeAction.type}:${scenarioSegment.id}`,
+        checkpoint: checkpointForSegment(scenarioSegment, `checkpoint:${scenarioSegment.id}:${scenarioSegment.closeAction.type}`),
+        nextLiveSessionId: scenarioSegment.nextLiveSessionId
+      };
+      const closePath = scenarioSegment.closeAction.type === 'recover' ? 'recover' : 'rollover';
+      const closeBody = scenarioSegment.closeAction.type === 'recover'
+        ? {
+            ...closeInput,
+            failureReason: scenarioSegment.closeAction.failureReason,
+            failureCategory: scenarioSegment.closeAction.failureCategory,
+            outcome: 'interrupted'
+          }
+        : closeInput;
+      const closeResponse = await postJson(
+        `${baseUrl}/api/meetings/${encodeURIComponent(meeting.id)}/segments/${encodeURIComponent(currentSegment.id)}/${closePath}`,
+        closeBody
+      );
+      assert.equal(closeResponse.status, 201);
+      currentSegment = (await closeResponse.json()).segment;
+    }
+  });
+
+  const reloadedDependencies = createProductionApplicationDependencies(productionOptions({ env }));
+  await withServer(reloadedDependencies.requestHandler, async (baseUrl) => {
+    const detailResponse = await getJson(`${baseUrl}/api/meetings/meeting-1`);
+    assert.equal(detailResponse.status, 200);
+    const detail = await detailResponse.json();
+
+    assert.equal(detail.meeting.segmentSummary.totalSegments, scenario.segments.length);
+    assert.deepEqual(detail.meeting.segmentSummary.countsByStatus, {
+      active: 1,
+      completed: 11,
+      interrupted: 2
+    });
+    assert.equal(detail.meeting.segmentSummary.hasInterruptedSegments, true);
+    assert.equal(detail.meeting.transcriptSummary.totalItems, scenario.expectedChunks.length);
+    assertNoMissingDuplicateOrOutOfOrderChunks(assert, detail.transcriptItems, scenario.expectedChunks);
+    assert.equal(
+      detail.readingContent.sourceTranscript.text.includes('long meeting source segment 14'),
+      true
+    );
+    assert.equal(
+      detail.readingContent.translationArticle.text.includes('long meeting translation segment 14'),
+      true
     );
   });
 });

@@ -132,6 +132,11 @@ Long Meeting WP6 meeting history/detail and export is completed: users can open
 per-Segment source/translation content, view whole-meeting source transcript and
 translation article content, and export whole-meeting TXT/SRT/VTT without
 changing the existing single Session export path.
+Long Meeting WP7 reliability and stress validation is completed: deterministic
+tests now simulate a 135-minute Meeting across 14 ordered Segments with
+proactive rollover, token-expiration recovery, network recovery, file-backed
+persistence reload, full transcript reconstruction, duplicate/order checks, and
+failed-Segment readable checkpoint coverage.
 Offline pause/resume and device-disconnect recovery remain deferred resilience
 extensions.
 

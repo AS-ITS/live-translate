@@ -55,6 +55,11 @@ const ERROR_RESPONSES = {
   translation_output_not_found: { status: 404, message: 'Translation output not found.' },
   translation_request_not_found: { status: 404, message: 'Translation request not found.' },
   execution_invalid_state: { status: 409, message: 'Translation execution is not in a valid state for this operation.' },
+  checkpoint_conflict: { status: 409, message: 'Meeting checkpoint conflicts with previously persisted content.' },
+  meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
+  meeting_not_found: { status: 404, message: 'Meeting not found.' },
+  meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
+  meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
@@ -421,6 +426,7 @@ export function createRequestHandler(options = {}) {
     translationCommandController,
     executionControlController,
     translationHistoryController,
+    meetingCheckpointService,
     translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
@@ -444,6 +450,7 @@ export function createRequestHandler(options = {}) {
       translationCommandController,
       executionControlController,
       translationHistoryController,
+      meetingCheckpointService,
       translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
@@ -461,7 +468,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingCheckpointService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -537,6 +544,62 @@ async function handleRequestWithSessionReadController(
         : safeTranslationProvidersFor();
       statusCode = 200;
       sendJson(res, statusCode, { providers }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && path === '/api/meetings') {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const result = await meetingCheckpointService.createMeeting();
+      statusCode = 201;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isMeetingSegmentsPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId } = parseMeetingSegmentsPath(path);
+      const segments = await meetingCheckpointService.listMeetingSegments(meetingId);
+      statusCode = 200;
+      sendJson(res, statusCode, { meetingId, segments }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if ((req.method === 'GET' || req.method === 'PUT') && isMeetingSegmentCheckpointPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingSegmentCheckpointPath(path);
+      const result = req.method === 'GET'
+        ? await meetingCheckpointService.getCheckpoint({ meetingId, segmentId })
+        : await meetingCheckpointService.updateCheckpoint({
+            meetingId,
+            segmentId,
+            checkpoint: await readJson(req)
+          });
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -924,6 +987,47 @@ function isSessionTranslationOutputPath(path) {
 
 function isSessionRetranslationPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
+}
+
+function isMeetingSegmentsPath(path) {
+  return path.startsWith('/api/meetings/') && path.endsWith('/segments') && path.length > '/api/meetings//segments'.length;
+}
+
+function isMeetingSegmentCheckpointPath(path) {
+  return path.startsWith('/api/meetings/') &&
+    path.includes('/segments/') &&
+    path.endsWith('/checkpoint') &&
+    path.length > '/api/meetings//segments//checkpoint'.length;
+}
+
+function parseMeetingSegmentsPath(path) {
+  const prefix = '/api/meetings/';
+  const suffix = '/segments';
+  return {
+    meetingId: safeDecodePathComponent(path.slice(prefix.length, -suffix.length))
+  };
+}
+
+function parseMeetingSegmentCheckpointPath(path) {
+  const prefix = '/api/meetings/';
+  const suffix = '/checkpoint';
+  const body = path.slice(prefix.length, -suffix.length);
+  const separator = body.indexOf('/segments/');
+  if (separator <= 0) throw createHttpError('invalid_request');
+
+  return {
+    meetingId: safeDecodePathComponent(body.slice(0, separator)),
+    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
+  };
+}
+
+function safeDecodePathComponent(value) {
+  try {
+    return validateRequiredString(decodeURIComponent(value));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
 }
 
 function isGlossaryRoute(method, path) {

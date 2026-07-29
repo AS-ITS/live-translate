@@ -8,6 +8,8 @@ export function buildSessionRecordInput(options = {}) {
     targetLanguageCode: options.targetLanguageCode,
     targetLanguageLabel: options.targetLanguageLabel || null,
     sourceLanguageCode: options.sourceLanguageCode || null,
+    meetingId: options.meetingId || null,
+    segmentId: options.segmentId || null,
     selectedInputDeviceId: options.selectedInputDeviceId || null,
     inputDeviceLabelSnapshot: options.inputDeviceLabelSnapshot || null
   };

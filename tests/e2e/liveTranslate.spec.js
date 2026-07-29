@@ -129,6 +129,62 @@ function retranslationPage(page) {
   return page.locator('.retranslation-workflow');
 }
 
+async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
+  const checkpointRequests = [];
+
+  await page.route('**/api/meetings**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+
+    if (method === 'POST' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: { id: 'meeting-1', status: 'active' },
+          segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active' }
+        })
+      });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/meetings/meeting-1/segments/segment-1/checkpoint') {
+      const body = JSON.parse(request.postData() || '{}');
+      checkpointRequests.push(body);
+
+      if (failCheckpoint) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'meeting_checkpoint_unavailable' } })
+        });
+        return;
+      }
+
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meetingId: 'meeting-1',
+          segmentId: 'segment-1',
+          checkpoint: {
+            idempotencyKey: body.idempotencyKey,
+            durableChunks: body.durableChunks,
+            pendingPartial: null,
+            updatedAt: 1000
+          }
+        })
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  return checkpointRequests;
+}
+
 async function openHistoryPage(page) {
   await page.getByRole('link', { name: '翻譯紀錄' }).click();
   await expect(page).toHaveURL(/#history$/);
@@ -326,6 +382,46 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
+});
+
+test('live session creates a meeting checkpoint and flushes final chunks on Stop', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('長會議同步：準備同步')).toBeVisible();
+
+  await emitPartialTranscript(page, 'checkpoint source', 'checkpoint translation');
+  await page.getByRole('button', { name: '停止' }).click();
+
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect.poll(() => checkpointRequests.length).toBe(1);
+  expect(checkpointRequests[0].pendingPartial).toBeNull();
+  expect(checkpointRequests[0].durableChunks.map(({ meetingId, segmentId, stream, sequence, text }) => ({
+    meetingId,
+    segmentId,
+    stream,
+    sequence,
+    text
+  }))).toEqual([
+    { meetingId: 'meeting-1', segmentId: 'segment-1', stream: 'source', sequence: 1, text: 'checkpoint source' },
+    { meetingId: 'meeting-1', segmentId: 'segment-1', stream: 'translation', sequence: 2, text: 'checkpoint translation' }
+  ]);
+  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+});
+
+test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, { failCheckpoint: true });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'sync failure source', 'sync failure translation');
+
+  await expect(page.getByText('長會議同步：同步失敗，等待重試')).toBeVisible({ timeout: 6500 });
+  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toContainText('長會議同步暫時失敗');
 });
 
 test('live glossary replacement is applied to final translation article text only', async ({ page }) => {

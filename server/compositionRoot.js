@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
+import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
 import { createCancelQueuedTranslationExecutionService as createDefaultCancelQueuedTranslationExecutionService } from '../src/application/translation/cancelQueuedTranslationExecutionService.js';
@@ -37,6 +38,8 @@ import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExec
 import { createTranslationQueueConfiguration } from '../src/infrastructure/translationQueueConfiguration.js';
 import { createTranslationGlossary } from '../src/infrastructure/translationGlossary.js';
 import { createFileSessionRepository } from '../src/infrastructure/fileSessionRepository.js';
+import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
+import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -61,6 +64,7 @@ export const DEFAULT_DATA_DIR = 'data';
 export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
+export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -110,6 +114,8 @@ export function createApplicationDependencies(options = {}) {
     translationGlossaryFileSystem = fileSystem,
     fileSessionRepositoryFactory = createFileSessionRepository,
     sessionRepositoryFileSystem = fileSystem,
+    meetingRepository,
+    meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     liveTokenCreator,
     ...sessionReadOptions
   } = options;
@@ -208,6 +214,14 @@ export function createApplicationDependencies(options = {}) {
     cancelQueuedTranslationExecutionService: translationCommandDependencies.cancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
   });
+  const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
+    ? meetingRepository
+    : createMemoryMeetingRepository();
+  const meetingCheckpointService = meetingCheckpointServiceFactory({
+    meetingRepository: resolvedMeetingRepository,
+    idGenerator,
+    clock
+  });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
@@ -216,6 +230,7 @@ export function createApplicationDependencies(options = {}) {
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,
       translationHistoryController,
+      meetingCheckpointService,
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
@@ -232,6 +247,8 @@ export function createApplicationDependencies(options = {}) {
     translationHistoryQueryService,
     translationHistoryController,
     executionControlController,
+    meetingRepository: resolvedMeetingRepository,
+    meetingCheckpointService,
     glossaryController: resolvedGlossaryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
@@ -261,6 +278,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationGlossaryFactory = createTranslationGlossary,
     glossaryControllerFactory = createDefaultGlossaryController,
     fileSessionRepositoryFactory = createFileSessionRepository,
+    fileMeetingRepositoryFactory = createFileMeetingRepository,
     fileDurableTranslationExecutionQueueRepositoryFactory = createFileDurableTranslationExecutionQueueRepository,
     fileDeadLetterQueueRepositoryFactory = createFileDeadLetterQueueRepository,
     dualWriteTranslationExecutionQueueFactory = createDualWriteTranslationExecutionQueue,
@@ -268,6 +286,7 @@ export function createProductionApplicationDependencies(options = {}) {
     durableQueueFileSystem = fileSystem,
     translationGlossaryFileSystem = fileSystem,
     sessionRepositoryFileSystem = fileSystem,
+    meetingRepositoryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
@@ -304,6 +323,12 @@ export function createProductionApplicationDependencies(options = {}) {
     : fileSessionRepositoryFactory({
         filePath: sessionRecordsFilePathFor(env),
         fileSystem: sessionRepositoryFileSystem
+      });
+  const meetingRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingRepository')
+    ? applicationOptions.meetingRepository
+    : fileMeetingRepositoryFactory({
+        filePath: meetingRecordsFilePathFor(env),
+        fileSystem: meetingRepositoryFileSystem
       });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
@@ -410,6 +435,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
+    ...(meetingRepository !== undefined ? { meetingRepository } : {}),
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -1099,6 +1125,10 @@ function translationGlossaryFilePathFor(env = {}) {
 
 function sessionRecordsFilePathFor(env = {}) {
   return env.SESSION_RECORDS_FILE ?? join(dataDirFor(env), 'session-records.json');
+}
+
+function meetingRecordsFilePathFor(env = {}) {
+  return env.MEETING_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_RECORDS_FILE);
 }
 
 function dataDirFor(env = {}) {

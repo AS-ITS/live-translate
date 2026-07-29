@@ -1,5 +1,13 @@
 # Changelog
 
+- Long Meeting WP2 frontend checkpoint sync: live sessions now create a Meeting
+  and first Segment by default, attach their identifiers to the saved
+  SessionRecord, and sync confirmed source/translation chunks to the checkpoint
+  API on a short debounce and on Stop. Failed checkpoint writes keep live
+  translation running, retain unsynced chunks for retry, and show a retryable UI
+  status. No proactive segmentation, Live reconnect, segment switching, or
+  checkpoint restore behavior was added.
+
 - Long Meeting WP2 backend checkpoint API: added backend Meeting creation,
   Segment listing, and Segment checkpoint read/write APIs with file-backed
   meeting repository production wiring. Checkpoint writes are idempotent for

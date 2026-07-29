@@ -10,6 +10,11 @@ import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
+import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
+import {
+  checkpointChunksForTranscriptItems,
+  createMeetingCheckpointSyncCoordinator
+} from './lib/meetingCheckpointSyncCoordinator.js';
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
@@ -49,6 +54,7 @@ const FEATURE_PAGES = new Set(['live', 'history', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
+const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
 function pageFromLocation() {
@@ -84,6 +90,7 @@ function App() {
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
+  const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
   const sessionRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const reconnectControllerRef = useRef(null);
@@ -91,6 +98,9 @@ function App() {
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
+  const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
+  const meetingCheckpointSyncCoordinatorRef = useRef(null);
+  const activeMeetingCheckpointRef = useRef(null);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
@@ -140,6 +150,7 @@ function App() {
     sessionRef.current = null;
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
+    meetingCheckpointSyncCoordinatorRef.current?.cancel();
     for (const session of sessions) {
       void session?.stop().catch(() => {});
     }
@@ -187,14 +198,17 @@ function App() {
     let session;
 
     try {
+      const meetingCheckpoint = await createMeetingCheckpointForSession();
       session = await createSession({ preserveTranscript: false });
       sessionRef.current = session;
 
       await session.start();
-      await createCurrentSessionRecord();
+      await createCurrentSessionRecord(meetingCheckpoint);
       setStatus('listening');
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      activeMeetingCheckpointRef.current = null;
+      meetingCheckpointSyncCoordinatorRef.current?.cancel();
       setError(nextError.message || '無法開始即時翻譯。');
       setStatus('error');
     }
@@ -210,6 +224,7 @@ function App() {
     await sessionRef.current?.stop();
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
+    await flushMeetingCheckpointSync();
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
@@ -382,7 +397,26 @@ function App() {
     return reconnectControllerRef.current;
   }
 
-  async function createCurrentSessionRecord() {
+  async function createMeetingCheckpointForSession() {
+    try {
+      setMeetingCheckpointStatus('syncing');
+      const result = await meetingCheckpointApiClientRef.current.createMeeting();
+      const meetingCheckpoint = {
+        meetingId: result.meeting.id,
+        segmentId: result.segment.id
+      };
+      activeMeetingCheckpointRef.current = meetingCheckpoint;
+      meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
+      return meetingCheckpoint;
+    } catch (nextError) {
+      activeMeetingCheckpointRef.current = null;
+      meetingCheckpointSyncCoordinatorRef.current?.cancel();
+      setMeetingCheckpointStatus('error');
+      throw new Error('無法建立長會議同步紀錄。請稍後再試。', { cause: nextError });
+    }
+  }
+
+  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current) {
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
@@ -390,6 +424,8 @@ function App() {
         targetLanguageCode,
         targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
         sourceLanguageCode,
+        meetingId: meetingCheckpoint?.meetingId,
+        segmentId: meetingCheckpoint?.segmentId,
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -417,6 +453,7 @@ function App() {
       const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
       if (activeSessionRecord) {
         scheduleSessionSnapshotSync(activeSessionRecordId);
+        scheduleMeetingCheckpointSync(appended);
         void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
     }
@@ -427,6 +464,7 @@ function App() {
     activeSessionRecordIdRef.current = null;
 
     try {
+      await flushMeetingCheckpointSync();
       const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
 
       if (finalized) {
@@ -438,6 +476,8 @@ function App() {
       return finalized;
     } catch {
       return null;
+    } finally {
+      activeMeetingCheckpointRef.current = null;
     }
   }
 
@@ -501,6 +541,7 @@ function App() {
     const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
     if (activeSessionRecord) {
       scheduleSessionSnapshotSync(activeSessionRecordId);
+      scheduleMeetingCheckpointSync(appended);
       void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
     }
   }
@@ -545,6 +586,38 @@ function App() {
   function reportSessionSnapshotSyncError(error) {
     console.error('Session snapshot persistence failed.', error);
     setError('無法儲存工作階段紀錄，但目前逐字稿仍保留在畫面上。');
+  }
+
+  function meetingCheckpointSyncCoordinator() {
+    if (!meetingCheckpointSyncCoordinatorRef.current) {
+      meetingCheckpointSyncCoordinatorRef.current = createMeetingCheckpointSyncCoordinator({
+        updateCheckpoint: (payload) => meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
+        delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
+        onStatusChange: setMeetingCheckpointStatus,
+        onError: reportMeetingCheckpointSyncError
+      });
+    }
+
+    return meetingCheckpointSyncCoordinatorRef.current;
+  }
+
+  function scheduleMeetingCheckpointSync(transcriptItems) {
+    const meetingCheckpoint = activeMeetingCheckpointRef.current;
+    const chunks = checkpointChunksForTranscriptItems({
+      meetingId: meetingCheckpoint?.meetingId,
+      segmentId: meetingCheckpoint?.segmentId,
+      transcriptItems
+    });
+    meetingCheckpointSyncCoordinator().enqueue(chunks);
+  }
+
+  function flushMeetingCheckpointSync() {
+    return meetingCheckpointSyncCoordinatorRef.current?.flush() || Promise.resolve(true);
+  }
+
+  function reportMeetingCheckpointSyncError(error) {
+    console.error('Meeting checkpoint persistence failed.', error);
+    setError('長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。');
   }
 
   async function refreshHistoryRecords() {
@@ -854,6 +927,9 @@ function App() {
 
           {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
           {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
+          <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
+            {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+          </p>
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -2650,6 +2726,18 @@ function statusLabel(status, override = '') {
   };
 
   return labels[status] || status;
+}
+
+function meetingCheckpointStatusLabel(status) {
+  const labels = {
+    idle: '長會議同步：尚未開始',
+    ready: '長會議同步：準備同步',
+    syncing: '長會議同步：同步中',
+    synced: '長會議同步：已同步',
+    error: '長會議同步：同步失敗，等待重試'
+  };
+
+  return labels[status] || labels.idle;
 }
 
 function targetLanguageLabelFor(code) {

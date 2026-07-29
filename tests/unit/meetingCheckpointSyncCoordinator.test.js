@@ -1,0 +1,129 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {
+  checkpointChunksForTranscriptItems,
+  createMeetingCheckpointSyncCoordinator
+} from '../../src/lib/meetingCheckpointSyncCoordinator.js';
+
+test('meeting checkpoint sync coordinator batches scheduled chunks', async () => {
+  const calls = [];
+  const timers = [];
+  const statuses = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    onStatusChange: (status) => statuses.push(status),
+    setTimeoutFn: (callback) => {
+      timers.push(callback);
+      return callback;
+    },
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([
+    chunk({ idempotencyKey: 'chunk-translation-1', stream: 'translation', sequence: 1 }),
+    chunk({ idempotencyKey: 'chunk-source-0', stream: 'source', sequence: 0 })
+  ]);
+
+  assert.equal(timers.length, 1);
+  assert.deepEqual(calls, []);
+
+  timers[0]();
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].durableChunks.map(({ stream, sequence }) => ({ stream, sequence })), [
+    { stream: 'source', sequence: 0 },
+    { stream: 'translation', sequence: 1 }
+  ]);
+  assert.deepEqual(statuses, ['ready', 'syncing', 'synced']);
+});
+
+test('meeting checkpoint sync coordinator retains chunks after failure and retries', async () => {
+  const calls = [];
+  const errors = [];
+  let shouldFail = true;
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (shouldFail) throw new Error('checkpoint failed');
+    },
+    onError: (error) => errors.push(error.message),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk()]);
+
+  assert.equal(await coordinator.flush(), false);
+  shouldFail = false;
+  assert.equal(await coordinator.flush(), true);
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].durableChunks, calls[1].durableChunks);
+  assert.deepEqual(errors, ['checkpoint failed']);
+});
+
+test('meeting checkpoint sync coordinator flushes immediately on stop', async () => {
+  const calls = [];
+  const clearedTimers = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    delayMs: 5000,
+    setTimeoutFn: (callback) => callback,
+    clearTimeoutFn: (timer) => clearedTimers.push(timer)
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk()]);
+  await coordinator.flush();
+
+  assert.equal(clearedTimers.length, 1);
+  assert.equal(calls.length, 1);
+});
+
+test('checkpointChunksForTranscriptItems maps final transcript items only', () => {
+  const chunks = checkpointChunksForTranscriptItems({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    transcriptItems: [
+      { id: 'source-1', stream: 'source', status: 'final', sequence: 0, text: 'hello', startedAt: 1000, finalizedAt: 1200 },
+      { id: 'source-2', stream: 'source', status: 'partial', sequence: 1, text: 'draft', startedAt: 1300 },
+      { id: 'translation-1', stream: 'translation', status: 'final', sequence: 0, text: 'world', startedAt: 1000 }
+    ]
+  });
+
+  assert.deepEqual(chunks, [
+    {
+      idempotencyKey: 'checkpoint:segment-1:source-1',
+      meetingId: 'meeting-1',
+      segmentId: 'segment-1',
+      stream: 'source',
+      sequence: 0,
+      text: 'hello',
+      timestamp: 1200
+    },
+    {
+      idempotencyKey: 'checkpoint:segment-1:translation-1',
+      meetingId: 'meeting-1',
+      segmentId: 'segment-1',
+      stream: 'translation',
+      sequence: 0,
+      text: 'world',
+      timestamp: 1000
+    }
+  ]);
+});
+
+function chunk(overrides = {}) {
+  return {
+    idempotencyKey: overrides.idempotencyKey ?? 'chunk-source-0',
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    stream: overrides.stream ?? 'source',
+    sequence: overrides.sequence ?? 0,
+    text: overrides.text ?? 'hello',
+    timestamp: overrides.timestamp ?? 1000
+  };
+}

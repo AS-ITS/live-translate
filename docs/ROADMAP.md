@@ -112,11 +112,13 @@ reason/actor, batch or scheduled cancellation, cancelled-execution retry,
 retry-lineage UI, DLQ inspection/replay UI, and push status updates. Existing
 retry scheduling, lease/fence, reclaim, and DLQ behavior are unchanged.
 
-Long Meeting WP1 is completed. Long Meeting WP2 backend checkpoint API is
+Long Meeting WP1 is completed. Long Meeting WP2 checkpoint persistence is
 completed: the backend can create Meetings, list Segments, and persist/read
-Segment checkpoints for confirmed transcript or translation chunks. Frontend
-checkpoint sync, proactive segmentation, Live reconnect, and segment switching
-remain deferred to later Long Meeting work.
+Segment checkpoints for confirmed transcript or translation chunks. The live UI
+now creates a Meeting by default, attaches the first Segment to the saved
+SessionRecord, and syncs confirmed source/translation chunks on a short debounce
+and on Stop. Checkpoint restore, proactive segmentation, Live reconnect, and
+segment switching remain deferred to later Long Meeting work.
 
 Completed Phase 1 capabilities include:
 

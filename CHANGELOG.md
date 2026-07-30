@@ -141,6 +141,15 @@
 
 ### Changed
 
+- Original speaker audio recording now defaults off and can be enabled before
+  starting a live session; disabling it still allows live translation while
+  preventing local original-audio download creation.
+
+- Live glossary instructions now explicitly ask Gemini to use configured terms
+  in translated speech audio as well as output transcription, while the browser
+  still applies deterministic subtitle replacement. The live reading headings
+  now use 原文逐字稿 / 翻譯逐字稿.
+
 - Production startup now uses `npm run start` to run the Node server in
   production mode, serving both `/api/*` and built `dist/` frontend assets.
   File-backed persistence defaults are rooted at `DATA_DIR`, using `/var/data`

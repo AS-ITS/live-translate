@@ -73,6 +73,14 @@ const TRANSLATED_AUDIO_IDLE_STATE = {
   fileName: '',
   errorMessage: ''
 };
+const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
+  status: 'skipped',
+  blob: null,
+  mimeType: '',
+  extension: '',
+  fileName: '',
+  errorMessage: ''
+};
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -116,6 +124,7 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
     status: 'idle',
     blob: null,
@@ -506,6 +515,12 @@ function App() {
   }
 
   async function startRecordingForSession(record) {
+    if (!shouldRecordInputAudio) {
+      resetInputAudioDownload();
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return;
+    }
+
     prepareInputAudioDownload(record);
     const stream = pendingMicrophoneStreamRef.current;
     const state = await recordingController().start({
@@ -532,6 +547,10 @@ function App() {
   }
 
   function handleInputAudioChunk(bytes) {
+    if (!shouldRecordInputAudio) {
+      return;
+    }
+
     if (!bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) {
       return;
     }
@@ -540,6 +559,12 @@ function App() {
   }
 
   async function pauseRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      inputAudioChunksRef.current = [];
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
     const state = await recordingController().pause().catch((nextError) => ({
       status: 'error',
       blob: null,
@@ -553,6 +578,11 @@ function App() {
   }
 
   async function resumeRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
     const state = await recordingController().resume({ stream: pendingMicrophoneStreamRef.current }).catch((nextError) => ({
       status: 'error',
       blob: null,
@@ -566,6 +596,12 @@ function App() {
   }
 
   async function finalizeRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      inputAudioChunksRef.current = [];
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
     const state = await recordingController().finalize().catch((nextError) => ({
       status: 'error',
       blob: null,
@@ -1658,13 +1694,29 @@ function App() {
               />
               <span>朗讀翻譯語言</span>
             </label>
+
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={shouldRecordInputAudio}
+                onChange={(event) => setShouldRecordInputAudio(event.target.checked)}
+                disabled={controlsLocked}
+              />
+              <span>錄製講者原音</span>
+            </label>
           </div>
 
           <div className="control-status-row">
             <div className="control-status-messages">
               {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
               {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
-              {status === 'paused' ? <p className="device-note">工作階段已暫停；逐字稿、翻譯與本機錄音片段會保留到結束本次工作階段。</p> : null}
+              {status === 'paused' ? (
+                <p className="device-note">
+                  {shouldRecordInputAudio
+                    ? '工作階段已暫停；逐字稿、翻譯與本機錄音片段會保留到結束本次工作階段。'
+                    : '工作階段已暫停；逐字稿與翻譯會保留到結束本次工作階段。'}
+                </p>
+              ) : null}
               {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
               <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
                 {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
@@ -1783,7 +1835,7 @@ function App() {
 
         <section className="transcript-grid" aria-label="文章版閱讀區">
           <ArticlePanel
-            title="原文文章"
+            title="原文逐字稿"
             stream="source"
             paragraphs={sourceArticleParagraphs}
             currentPartial={traditionalChineseTranscriptItem(transcript.source.currentPartial)}
@@ -1794,7 +1846,7 @@ function App() {
             onExport={() => downloadArticle('source')}
           />
           <ArticlePanel
-            title="翻譯文章"
+            title="翻譯逐字稿"
             stream="translation"
             paragraphs={translationArticleParagraphs}
             currentPartial={transcript.translation.currentPartial}
@@ -4134,6 +4186,7 @@ function statusLabel(status, override = '') {
 function recordingStatusLabel(status) {
   const labels = {
     idle: '尚無可下載的原始語音。',
+    skipped: '未錄製講者原音。',
     recording: '正在保留本機麥克風輸入。',
     paused: '錄音已暫停，已保留目前片段。',
     finalizing: '正在完成錄音檔。',

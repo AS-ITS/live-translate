@@ -372,10 +372,11 @@ replacement: `source` is the text to find in translated subtitles, and
 when explicitly provided, but current glossary entries omit it from stored JSON
 when there are no aliases.
 
-Glossary replacement is applied only to translated subtitle text for live output
-and saved retranslation output. It does not rewrite source transcripts and does
-not post-process translated audio. Gemini glossary instructions may still help
-provider output, but subtitle replacement is the deterministic behavior.
+Glossary replacement is applied deterministically to translated subtitle text
+for live output and saved retranslation output. Live glossary instructions also
+ask Gemini to use the configured terms in translated speech audio, but the
+frontend does not post-process generated audio after Gemini returns it. Source
+transcripts are not rewritten.
 
 ## Execution Control
 
@@ -641,7 +642,8 @@ Fields:
   same instruction.
 - `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
   requested target language. The browser uses these for deterministic translated
-  subtitle replacement; source transcripts and translated audio are unchanged.
+  subtitle replacement. Translated audio follows the server-provided Gemini
+  glossary instruction and is not post-processed by the browser.
 
 ## Validation Rules
 

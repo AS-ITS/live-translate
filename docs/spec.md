@@ -86,8 +86,11 @@ The MVP includes:
 - The app displays translated transcript updates.
 - The user can stop the session.
 - Stopping a session closes microphone tracks and ends the Gemini Live session.
+- Before starting a session, the user can choose whether to locally record the
+  speaker's original microphone audio.
 - After stopping a session, the user can download the original microphone audio
-  as a browser-generated WAV file when local audio chunks are available.
+  as a browser-generated WAV file only when local speaker recording was enabled
+  and local audio chunks are available.
 - After stopping a session, the user can download translated audio received from
   Gemini as a browser-generated WAV file when output audio was produced.
 - The app shows recoverable errors and allows the user to retry.

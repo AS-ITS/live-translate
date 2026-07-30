@@ -743,8 +743,10 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeEnabled();
+  await expect(page.getByText('未錄製講者原音。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
   await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.__mockMediaRecorders.length)).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
 
@@ -757,6 +759,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
   await page.goto('/');
 
+  await page.getByLabel('錄製講者原音').check();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'before pause source', 'before pause translation');
@@ -792,6 +795,7 @@ test('pause keeps the session content and end exposes microphone recording downl
 test('microphone recording error does not stop live translation', async ({ page }) => {
   await page.goto('/');
 
+  await page.getByLabel('錄製講者原音').check();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -1021,8 +1025,8 @@ test('navigation keeps an active translation session and its article reading sta
 
   await openLivePage(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '原文文章' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '翻譯文章' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
   await expect(page.getByText('keep this source')).toBeVisible();
   await expect(page.getByText('keep this translation')).toBeVisible();
   await expect(page.getByLabel('文章版閱讀區').locator('.transcript-panel')).toHaveCount(2);

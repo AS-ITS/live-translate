@@ -67,6 +67,7 @@ test('token config can carry live glossary instruction in connect constraints', 
   );
 
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Glossary instructions/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /translated speech audio/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Source term: Gemini/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
 });

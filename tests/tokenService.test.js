@@ -99,6 +99,7 @@ test('buildTokenConfig includes source hint and adds live glossary instruction w
 
   const text = config.liveConnectConstraints.config.systemInstruction.parts[0].text;
   assert.match(text, /Glossary instructions/);
+  assert.match(text, /translated speech audio/);
   assert.match(text, /Source term: Codex/);
   assert.match(text, /Required translation: コーデックス/);
   const sourceHintOnly = buildTokenConfig({ targetLanguageCode: 'ja', echoTargetLanguage: true }).liveConnectConstraints.config.systemInstruction.parts[0].text;

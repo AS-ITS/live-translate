@@ -134,9 +134,37 @@ input {
 
 .controls {
   display: grid;
-  grid-template-columns: minmax(360px, 2fr) minmax(220px, 1fr) auto auto;
+  grid-template-columns: minmax(340px, 1.4fr) minmax(220px, 1fr) max-content;
   align-items: end;
   gap: 16px;
+}
+
+.control-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.control-status-messages {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+
+.control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
 }
 
 .language-controls {
@@ -242,6 +270,39 @@ input:disabled {
   border-radius: 8px;
   padding: 16px;
   background: #ffffff;
+}
+
+.recording-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 16px;
+  background: #ffffff;
+}
+
+.recording-panel h2 {
+  margin: 0 0 6px;
+  color: #314152;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.recording-note,
+.recording-error {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.recording-note {
+  color: #516070;
+}
+
+.recording-error {
+  color: #a51f1f;
 }
 
 .export-controls {
@@ -1000,6 +1061,22 @@ input:disabled {
   white-space: pre-wrap;
 }
 
+@media (max-width: 900px) {
+  .controls,
+  .control-status-row {
+    grid-template-columns: 1fr;
+  }
+
+  .control-status-row {
+    display: grid;
+  }
+
+  .control-actions,
+  .session-actions {
+    justify-content: flex-start;
+  }
+}
+
 @media (min-width: 761px) {
   .retranslation-result-workspace {
     grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.45fr);
@@ -1027,6 +1104,7 @@ input:disabled {
     align-items: start;
   }
 
+  .control-panel,
   .controls,
   .language-controls,
   .transcript-grid,
@@ -1050,6 +1128,18 @@ input:disabled {
 
   .article-panel-header {
     display: grid;
+  }
+
+  .recording-panel {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .control-actions,
+  .session-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-content: stretch;
   }
 
   .article-actions {

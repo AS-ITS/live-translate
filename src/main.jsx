@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Download, Mic, MicOff, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -47,6 +47,7 @@ import {
 } from './lib/transcript.js';
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
+import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
@@ -103,12 +104,22 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [recordingState, setRecordingState] = useState({
+    status: 'idle',
+    blob: null,
+    mimeType: '',
+    extension: '',
+    fileName: '',
+    errorMessage: ''
+  });
   const [meetingViewStats, setMeetingViewStats] = useState({
     archivedSegmentCount: 0,
     loadedSegmentCount: 0
   });
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
+  const pendingMicrophoneStreamRef = useRef(null);
+  const recordingControllerRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
@@ -140,6 +151,7 @@ function App() {
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment';
+  const controlsLocked = isActive || status === 'paused';
 
   useEffect(() => {
     void refreshInputDevices();
@@ -200,6 +212,7 @@ function App() {
     for (const session of sessions) {
       void session?.stop().catch(() => {});
     }
+    void recordingControllerRef.current?.cleanup({ discard: true }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -246,13 +259,16 @@ function App() {
     let session;
 
     try {
+      await recordingController().cleanup({ discard: true });
+      pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
       session = await createSession({ preserveTranscript: false });
       sessionRef.current = session;
 
       await session.start();
-      await createCurrentSessionRecord(meetingCheckpoint);
+      const record = await createCurrentSessionRecord(meetingCheckpoint);
+      await startRecordingForSession(record);
       setStatus('listening');
       updateLiveMeetingUrl(meetingCheckpoint.meetingId);
       segmentSwitchOrchestrator().start();
@@ -266,7 +282,7 @@ function App() {
     }
   }
 
-  async function stopSession() {
+  async function pauseSession() {
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -279,6 +295,53 @@ function App() {
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
     await flushMeetingCheckpointSync();
+    await recordingController().pause();
+    pendingMicrophoneStreamRef.current = null;
+    setStatus('paused');
+  }
+
+  async function continuePausedSession() {
+    if (status !== 'paused') return;
+
+    reconnectController().reset();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = false;
+    suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
+    setError('');
+    pendingMicrophoneStreamRef.current = null;
+
+    let session;
+    try {
+      session = await createSession({ preserveTranscript: true });
+      sessionRef.current = session;
+      await session.start();
+      await recordingController().resume({ stream: pendingMicrophoneStreamRef.current });
+      setStatus('listening');
+      segmentSwitchOrchestrator().start();
+    } catch (nextError) {
+      await session?.stop().catch(() => {});
+      sessionRef.current = null;
+      setError(nextError.message || '無法繼續即時翻譯。');
+      setStatus('error');
+    }
+  }
+
+  async function endCurrentSession() {
+    reconnectController().cancel();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = true;
+    suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
+    const reconnectingSession = reconnectSessionRef.current;
+    reconnectSessionRef.current = null;
+    await reconnectingSession?.stop().catch(() => {});
+    await sessionRef.current?.stop().catch(() => {});
+    sessionRef.current = null;
+    await finalizePendingTranscriptItemsForStop();
+    await flushMeetingCheckpointSync();
+    await recordingController().finalize();
+    pendingMicrophoneStreamRef.current = null;
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
@@ -320,7 +383,8 @@ function App() {
         setSelectedInputDeviceId('');
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
       },
-      onMicrophoneReady: () => {
+      onMicrophoneReady: ({ mediaStream } = {}) => {
+        pendingMicrophoneStreamRef.current = mediaStream || null;
         void refreshInputDevices();
       },
       onConnecting: () => {
@@ -390,6 +454,43 @@ function App() {
           });
       }
     });
+  }
+
+  function recordingController() {
+    if (!recordingControllerRef.current) {
+      recordingControllerRef.current = createMicrophoneRecordingController({
+        onStateChange: setRecordingState
+      });
+    }
+
+    return recordingControllerRef.current;
+  }
+
+  async function startRecordingForSession(record) {
+    const stream = pendingMicrophoneStreamRef.current;
+    const state = await recordingController().start({
+      stream,
+      sessionId: record?.id,
+      startedAt: record?.startedAt
+    });
+
+    if (state.status === 'error') {
+      setRecordingState(state);
+    }
+  }
+
+  function downloadRawAudio() {
+    const blob = recordingState.blob;
+    if (!blob || recordingState.status !== 'ready') return;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = recordingState.fileName || 'live-translate-input-audio.webm';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   function updateActiveSessionGlossaryEntries(entries) {
@@ -988,7 +1089,8 @@ function App() {
       setResumeDraft({
         meetingId,
         segmentId: activeSegment.id,
-        transcriptState: resumeTranscript
+        transcriptState: resumeTranscript,
+        hasTranscript: transcriptHasFinalItems(resumeTranscript) > 0
       });
       setMeetingViewStats({
         archivedSegmentCount: Math.max(0, segments.length - 1),
@@ -1271,103 +1373,147 @@ function App() {
             <p>選擇目標語言、啟用麥克風，並查看即時逐字稿。</p>
           </div>
 
-        <div className="controls" aria-label="翻譯控制項">
-          <div className="language-controls">
+          <div className="controls" aria-label="翻譯控制項">
+            <div className="language-controls">
+              <label className="field">
+                <span>主要輸入語言</span>
+                <select
+                  value={sourceLanguageCode}
+                  onChange={(event) => setSourceLanguageCode(event.target.value)}
+                  disabled={controlsLocked}
+                >
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <option key={language.code} value={language.code}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field">
+                <span>目標語言</span>
+                <select
+                  value={targetLanguageCode}
+                  onChange={(event) => setTargetLanguageCode(event.target.value)}
+                  disabled={controlsLocked}
+                >
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <option key={language.code} value={language.code}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
             <label className="field">
-              <span>主要輸入語言</span>
+              <span>麥克風</span>
               <select
-                value={sourceLanguageCode}
-                onChange={(event) => setSourceLanguageCode(event.target.value)}
-                disabled={isActive}
+                value={selectedInputDeviceId}
+                onChange={(event) => {
+                  setSelectedInputDeviceId(event.target.value);
+                  setDeviceMessage('');
+                }}
+                disabled={controlsLocked}
               >
-                {SUPPORTED_LANGUAGES.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.label}
+                <option value="">瀏覽器預設麥克風</option>
+                {inputDevices.map((device) => (
+                  <option key={device.deviceId || device.label} value={device.deviceId}>
+                    {device.label}
                   </option>
                 ))}
               </select>
             </label>
 
-            <label className="field">
-              <span>目標語言</span>
-              <select
-                value={targetLanguageCode}
-                onChange={(event) => setTargetLanguageCode(event.target.value)}
-                disabled={isActive}
-              >
-                {SUPPORTED_LANGUAGES.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.label}
-                  </option>
-                ))}
-              </select>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={echoTargetLanguage}
+                onChange={(event) => setEchoTargetLanguage(event.target.checked)}
+                disabled={controlsLocked}
+              />
+              <span>朗讀翻譯語言</span>
             </label>
           </div>
 
-          <label className="field">
-            <span>麥克風</span>
-            <select
-              value={selectedInputDeviceId}
-              onChange={(event) => {
-                setSelectedInputDeviceId(event.target.value);
-                setDeviceMessage('');
-              }}
-              disabled={isActive}
-            >
-              <option value="">瀏覽器預設麥克風</option>
-              {inputDevices.map((device) => (
-                <option key={device.deviceId || device.label} value={device.deviceId}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <div className="control-status-row">
+            <div className="control-status-messages">
+              {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
+              {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
+              {status === 'paused' ? <p className="device-note">工作階段已暫停；逐字稿、翻譯與本機錄音片段會保留到結束本次工作階段。</p> : null}
+              {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
+              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
+                {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              </p>
+              {meetingViewStats.archivedSegmentCount > 0 ? (
+                <p className="checkpoint-note">
+                  長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 已載入 {meetingViewStats.loadedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
+                </p>
+              ) : null}
+            </div>
 
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={echoTargetLanguage}
-              onChange={(event) => setEchoTargetLanguage(event.target.checked)}
-              disabled={isActive}
-            />
-            <span>朗讀翻譯語言</span>
-          </label>
+            <div className="control-actions">
+              {resumeDraft?.hasTranscript && !isActive && status !== 'paused' ? (
+                <button className="button secondary" type="button" onClick={resumeMeetingSession}>
+                  <RefreshCw size={18} aria-hidden="true" />
+                  繼續錄製
+                </button>
+              ) : null}
 
-          {status === 'listening' ? (
-            <button className="button secondary" type="button" onClick={stopSession}>
-              <Square size={18} aria-hidden="true" />
-              停止
-            </button>
-          ) : status === 'reconnecting' || status === 'switching-segment' ? (
-            <button className="button secondary" type="button" onClick={stopSession}>
-              <Square size={18} aria-hidden="true" />
-              停止
-            </button>
-          ) : (
-            <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
-              {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-              {isActive ? '正在開始' : '開始'}
-            </button>
-          )}
-        </div>
+              <div className="session-actions">
+                {status === 'listening' ? (
+                  <>
+                    <button className="button secondary" type="button" onClick={pauseSession}>
+                      <Pause size={18} aria-hidden="true" />
+                      暫停
+                    </button>
+                    <button className="button secondary" type="button" onClick={endCurrentSession}>
+                      <Square size={18} aria-hidden="true" />
+                      結束本次工作階段
+                    </button>
+                  </>
+                ) : status === 'reconnecting' || status === 'switching-segment' ? (
+                  <button className="button secondary" type="button" onClick={endCurrentSession}>
+                    <Square size={18} aria-hidden="true" />
+                    結束本次工作階段
+                  </button>
+                ) : status === 'paused' ? (
+                  <>
+                    <button className="button primary" type="button" onClick={continuePausedSession}>
+                      <Play size={18} aria-hidden="true" />
+                      繼續
+                    </button>
+                    <button className="button secondary" type="button" onClick={endCurrentSession}>
+                      <Square size={18} aria-hidden="true" />
+                      結束本次工作階段
+                    </button>
+                  </>
+                ) : (
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
+                    {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
+                    {isActive ? '正在開始' : '開始'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
 
-          {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
-          {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
-          {resumeDraft && !isActive ? (
-            <button className="button secondary" type="button" onClick={resumeMeetingSession}>
-              <RefreshCw size={18} aria-hidden="true" />
-              繼續錄製
-            </button>
-          ) : null}
-          {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-          <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
-            {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
-          </p>
-          {meetingViewStats.archivedSegmentCount > 0 ? (
-            <p className="checkpoint-note">
-              長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 已載入 {meetingViewStats.loadedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
-            </p>
-          ) : null}
+        <section className="recording-panel" aria-label="原始語音錄音">
+          <div>
+            <h2>原始語音</h2>
+            <p className="recording-note">{recordingStatusLabel(recordingState.status)}</p>
+            {recordingState.errorMessage ? <p className="recording-error" role="alert">{recordingState.errorMessage}</p> : null}
+          </div>
+          <button
+            className="button secondary"
+            type="button"
+            onClick={downloadRawAudio}
+            disabled={recordingState.status !== 'ready' || !recordingState.blob}
+          >
+            <Download size={18} aria-hidden="true" />
+            下載原始語音
+          </button>
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -3739,12 +3885,26 @@ function statusLabel(status, override = '') {
     listening: '聆聽中',
     reconnecting: '正在重新連線',
     'switching-segment': '切換下一段中',
+    paused: '已暫停',
     stopped: '已停止',
     expired: '工作階段已過期',
     error: '需要處理'
   };
 
   return labels[status] || status;
+}
+
+function recordingStatusLabel(status) {
+  const labels = {
+    idle: '尚無可下載的原始語音。',
+    recording: '正在保留本機麥克風輸入。',
+    paused: '錄音已暫停，已保留目前片段。',
+    finalizing: '正在完成錄音檔。',
+    ready: '原始語音已可下載。',
+    error: '原始語音錄音無法使用。'
+  };
+
+  return labels[status] || labels.idle;
 }
 
 function meetingCheckpointStatusLabel(status) {

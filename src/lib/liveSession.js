@@ -63,7 +63,7 @@ export class LiveTranslateSession {
 
   async start() {
     this.mediaStream = await this.openInputStream();
-    this.onMicrophoneReady?.();
+    this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
     this.audioContext = new AudioContext();
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });

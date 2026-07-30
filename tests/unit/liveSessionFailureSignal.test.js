@@ -139,6 +139,81 @@ test('turn completion finalizes preceding input and output transcript partials',
   ]);
 });
 
+test('interim input transcription emits a non-final source transcript without turn completion finalization', () => {
+  const inputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      interimInputTranscription: { text: 'interim source text' }
+    }
+  });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+
+  assert.deepEqual(inputEvents, [
+    { text: 'interim source text', isFinal: false }
+  ]);
+});
+
+test('final input transcription replaces interim source while preserving translation transcript', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      interimInputTranscription: { text: 'interim source' },
+      outputTranscription: { text: 'translated text' }
+    }
+  });
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'final source' },
+      turnComplete: true
+    }
+  });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+
+  assert.deepEqual(inputEvents, [
+    { text: 'interim source', isFinal: false },
+    { text: 'final source', isFinal: true }
+  ]);
+  assert.deepEqual(outputEvents, [
+    { text: 'translated text', isFinal: false },
+    { text: 'translated text', isFinal: true }
+  ]);
+});
+
+test('output-only transcript does not fabricate source transcript text', () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      outputTranscription: { text: 'translated only' },
+      turnComplete: true
+    }
+  });
+
+  assert.deepEqual(inputEvents, []);
+  assert.deepEqual(outputEvents, [{ text: 'translated only', isFinal: true }]);
+});
+
 test('live session applies glossary replacements only to output transcript events', () => {
   const inputEvents = [];
   const outputEvents = [];

@@ -11,6 +11,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
     window.__mockAudioContexts = [];
+    window.__mockAudioProcessors = [];
     window.__mockMediaRecorders = [];
 
     Object.defineProperty(navigator, 'mediaDevices', {
@@ -46,7 +47,9 @@ test.beforeEach(async ({ page }) => {
       }
 
       createScriptProcessor() {
-        return { connect() {}, disconnect() {}, onaudioprocess: null };
+        const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+        window.__mockAudioProcessors.push(processor);
+        return processor;
       }
 
       createBuffer() {
@@ -99,9 +102,12 @@ test.beforeEach(async ({ page }) => {
       stop() {
         if (this.state === 'inactive') return;
         this.state = 'inactive';
-        this.ondataavailable?.({
-          data: new Blob([`audio-${window.__mockMediaRecorders.length}`], { type: this.mimeType })
-        });
+        const tracks = typeof this.stream?.getTracks === 'function' ? this.stream.getTracks() : [];
+        if (!tracks.every((track) => track.stopped)) {
+          this.ondataavailable?.({
+            data: new Blob([`audio-${window.__mockMediaRecorders.length}`], { type: this.mimeType })
+          });
+        }
         this.onstop?.({});
       }
 
@@ -434,6 +440,51 @@ async function emitPartialTranscript(page, sourceText = 'partial source', transl
   );
 }
 
+async function emitInterimInputWithOutput(page, sourceText = 'interim source', translationText = 'interim translation') {
+  await page.evaluate(
+    ({ sourceText, translationText }) => {
+      window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+        serverContent: {
+          interimInputTranscription: { text: sourceText },
+          outputTranscription: { text: translationText }
+        }
+      });
+    },
+    { sourceText, translationText }
+  );
+}
+
+async function emitOutputAudio(page, bytes = [1, 0, 255, 127]) {
+  await page.evaluate((audioBytes) => {
+    const data = btoa(String.fromCharCode(...audioBytes));
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        modelTurn: {
+          parts: [{
+            inlineData: {
+              data,
+              mimeType: 'audio/pcm;rate=24000'
+            }
+          }]
+        }
+      }
+    });
+  }, bytes);
+}
+
+async function emitMicrophoneAudio(page, sampleValue = 0.25) {
+  await page.evaluate((value) => {
+    const processor = window.__mockAudioProcessors.at(-1);
+    processor?.onaudioprocess?.({
+      inputBuffer: {
+        getChannelData() {
+          return new Float32Array(1600).fill(value);
+        }
+      }
+    });
+  }, sampleValue);
+}
+
 function liveResourceDiagnostics() {
   const micTracks = window.__mockMicTracks || [];
   const audioContexts = window.__mockAudioContexts || [];
@@ -682,6 +733,8 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
     responseModalities: ['AUDIO']
   });
   await emitPartialTranscript(page, '麥克風', 'microphone and mic');
+  await emitMicrophoneAudio(page);
+  await emitOutputAudio(page);
   await expect(page.locator('.transcript-panel').nth(0).locator('.transcript-current')).toContainText('麥克風');
   await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).toContainText('Alan speak and Alan speak');
   await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).not.toContainText('microphone and mic');
@@ -691,8 +744,14 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByRole('button', { name: '下載原始語音' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeEnabled();
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
+
+  const translatedDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載翻譯語音' }).click();
+  const translatedDownload = await translatedDownloadPromise;
+  expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
@@ -707,6 +766,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await expect(page.getByText('before pause source')).toBeVisible();
   await expect(page.getByText('before pause translation')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeDisabled();
   await openHistoryPage(page);
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 
@@ -715,6 +775,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect.poll(() => page.liveTokenRequests.length).toBe(2);
   await expect(page.getByText('before pause source')).toBeVisible();
+  await emitMicrophoneAudio(page);
   await emitFinalTranscript(page, 'after continue source', 'after continue translation');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
@@ -725,7 +786,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   const downloadPromise = page.waitForEvent('download');
   await page.getByRole('button', { name: '下載原始語音' }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.webm$/);
+  expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
 test('microphone recording error does not stop live translation', async ({ page }) => {
@@ -755,6 +816,7 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
   await expect.poll(() => checkpointRequests.length).toBe(1);
   expect(checkpointRequests[0].pendingPartial).toBeNull();
   expect(checkpointRequests[0].durableChunks.map(({ meetingId, segmentId, stream, sequence, text }) => ({
@@ -1136,6 +1198,41 @@ test('Stop finalizes visible partial transcripts for export and history', async 
   await expect(sessionDetail(page).getByLabel('文章版翻譯').getByText('partial translation on stop')).toBeVisible();
   await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
   await expect(sessionDetail(page).getByLabel('原始逐字稿').getByText('partial source on stop')).toBeVisible();
+});
+
+test('interim input transcription keeps source visible before formal input finalizes it', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitInterimInputWithOutput(page, 'interim source before final', 'translation already available');
+
+  const sourcePanel = page.locator('.transcript-panel').nth(0);
+  const translationPanel = page.locator('.transcript-panel').nth(1);
+  await expect(sourcePanel.locator('.transcript-current')).toHaveText('辨識中…interim source before final');
+  await expect(translationPanel.locator('.transcript-current')).toHaveText('翻譯中…translation already available');
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'formal source after interim' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await expect(sourcePanel.locator('.transcript-current')).toHaveCount(0);
+  await expect(translationPanel.locator('.transcript-current')).toHaveCount(0);
+  await expect(sourcePanel.locator('.article-content')).toContainText('formal source after interim');
+  await expect(translationPanel.locator('.article-content')).toContainText('translation already available');
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(sessionDetail(page).getByLabel('原始逐字稿').getByText('formal source after interim')).toBeVisible();
+  await sessionDetail(page).getByRole('tab', { name: '文章版翻譯' }).click();
+  await expect(sessionDetail(page).getByLabel('文章版翻譯').getByText('translation already available')).toBeVisible();
 });
 
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {

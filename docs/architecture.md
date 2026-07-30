@@ -53,6 +53,8 @@ The backend must not return the real Gemini API key or any long-lived credential
 - Connect directly to Gemini Live API with the ephemeral token.
 - Send audio chunks to Gemini while the session is active.
 - Play returned translated audio.
+- Keep session-local original microphone audio and translated output audio
+  available as browser-generated WAV downloads after the session ends.
 - Display input and output transcript updates.
 - Stop microphone tracks and close the live session when the user stops.
 - Surface recoverable errors to the user.

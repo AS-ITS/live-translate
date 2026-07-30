@@ -48,6 +48,12 @@ import {
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
+import {
+  INPUT_SAMPLE_RATE,
+  buildInputAudioFileName,
+  buildTranslatedAudioFileName,
+  pcm16ChunksToWavBlob
+} from './lib/audio.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
@@ -61,6 +67,12 @@ const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
+const TRANSLATED_AUDIO_IDLE_STATE = {
+  status: 'idle',
+  blob: null,
+  fileName: '',
+  errorMessage: ''
+};
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -112,6 +124,7 @@ function App() {
     fileName: '',
     errorMessage: ''
   });
+  const [translatedAudioState, setTranslatedAudioState] = useState(TRANSLATED_AUDIO_IDLE_STATE);
   const [meetingViewStats, setMeetingViewStats] = useState({
     archivedSegmentCount: 0,
     loadedSegmentCount: 0
@@ -120,6 +133,10 @@ function App() {
   const sessionRef = useRef(null);
   const pendingMicrophoneStreamRef = useRef(null);
   const recordingControllerRef = useRef(null);
+  const inputAudioChunksRef = useRef([]);
+  const inputAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
+  const translatedAudioChunksRef = useRef([]);
+  const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const transcriptRef = useRef(transcript);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
@@ -262,6 +279,8 @@ function App() {
 
     try {
       await recordingController().cleanup({ discard: true });
+      resetInputAudioDownload();
+      resetTranslatedAudioDownload();
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
@@ -291,12 +310,12 @@ function App() {
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
+    await pauseRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
     await flushMeetingCheckpointSync();
-    await recordingController().pause();
     pendingMicrophoneStreamRef.current = null;
     setStatus('paused');
   }
@@ -317,7 +336,7 @@ function App() {
       session = await createSession({ preserveTranscript: true });
       sessionRef.current = session;
       await session.start();
-      await recordingController().resume({ stream: pendingMicrophoneStreamRef.current });
+      await resumeRawAudioRecording();
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -352,13 +371,14 @@ function App() {
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
+    await finalizeRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop().catch(() => {});
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
     await flushMeetingCheckpointSync();
-    await recordingController().finalize();
     pendingMicrophoneStreamRef.current = null;
+    setResumeDraft(null);
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
@@ -409,8 +429,10 @@ function App() {
           current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
         ));
       },
+      onInputAudioChunk: handleInputAudioChunk,
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
+      onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
@@ -484,6 +506,7 @@ function App() {
   }
 
   async function startRecordingForSession(record) {
+    prepareInputAudioDownload(record);
     const stream = pendingMicrophoneStreamRef.current;
     const state = await recordingController().start({
       stream,
@@ -496,6 +519,153 @@ function App() {
     }
   }
 
+  function prepareInputAudioDownload(record) {
+    inputAudioMetadataRef.current = {
+      sessionId: record?.id || '',
+      startedAt: record?.startedAt ?? Date.now()
+    };
+  }
+
+  function resetInputAudioDownload() {
+    inputAudioChunksRef.current = [];
+    inputAudioMetadataRef.current = { sessionId: '', startedAt: null };
+  }
+
+  function handleInputAudioChunk(bytes) {
+    if (!bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) {
+      return;
+    }
+
+    inputAudioChunksRef.current.push(new Uint8Array(bytes));
+  }
+
+  async function pauseRawAudioRecording() {
+    const state = await recordingController().pause().catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音錄音無法暫停。'
+    }));
+    setRecordingState(state);
+    return state;
+  }
+
+  async function resumeRawAudioRecording() {
+    const state = await recordingController().resume({ stream: pendingMicrophoneStreamRef.current }).catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音錄音無法繼續。'
+    }));
+    setRecordingState(state);
+    return state;
+  }
+
+  async function finalizeRawAudioRecording() {
+    const state = await recordingController().finalize().catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音音檔無法建立。'
+    }));
+
+    if (inputAudioChunksRef.current.length === 0) {
+      setRecordingState(state);
+      return state;
+    }
+
+    try {
+      const metadata = inputAudioMetadataRef.current;
+      const wavState = {
+        status: 'ready',
+        blob: pcm16ChunksToWavBlob(inputAudioChunksRef.current, {
+          sampleRate: INPUT_SAMPLE_RATE,
+          normalizePeak: true
+        }),
+        mimeType: 'audio/wav',
+        extension: 'wav',
+        fileName: buildInputAudioFileName(metadata),
+        errorMessage: ''
+      };
+      setRecordingState(wavState);
+      return wavState;
+    } catch (nextError) {
+      const errorState = {
+        status: 'error',
+        blob: null,
+        mimeType: '',
+        extension: '',
+        fileName: '',
+        errorMessage: nextError?.message || '原始語音音檔無法建立。'
+      };
+      setRecordingState(errorState);
+      return errorState;
+    }
+  }
+
+  function prepareTranslatedAudioDownload(record) {
+    translatedAudioMetadataRef.current = {
+      sessionId: record?.id || '',
+      startedAt: record?.startedAt ?? Date.now()
+    };
+  }
+
+  function resetTranslatedAudioDownload() {
+    translatedAudioChunksRef.current = [];
+    translatedAudioMetadataRef.current = { sessionId: '', startedAt: null };
+    setTranslatedAudioState(TRANSLATED_AUDIO_IDLE_STATE);
+  }
+
+  function handleTranslatedAudioChunk(bytes) {
+    if (!bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) {
+      return;
+    }
+
+    translatedAudioChunksRef.current.push(new Uint8Array(bytes));
+    setTranslatedAudioState((current) => (
+      current.status === 'ready'
+        ? current
+        : { status: 'recording', blob: null, fileName: '', errorMessage: '' }
+    ));
+  }
+
+  function finalizeTranslatedAudioDownload(sessionId) {
+    const chunks = translatedAudioChunksRef.current;
+    if (chunks.length === 0) {
+      setTranslatedAudioState((current) => (
+        current.status === 'recording' ? TRANSLATED_AUDIO_IDLE_STATE : current
+      ));
+      return;
+    }
+
+    try {
+      const metadata = translatedAudioMetadataRef.current;
+      const blob = pcm16ChunksToWavBlob(chunks, { normalizePeak: true });
+      setTranslatedAudioState({
+        status: 'ready',
+        blob,
+        fileName: buildTranslatedAudioFileName({
+          sessionId: metadata.sessionId || sessionId,
+          startedAt: metadata.startedAt
+        }),
+        errorMessage: ''
+      });
+    } catch (nextError) {
+      setTranslatedAudioState({
+        status: 'error',
+        blob: null,
+        fileName: '',
+        errorMessage: nextError?.message || '翻譯語音音檔無法建立。'
+      });
+    }
+  }
+
   function downloadRawAudio() {
     const blob = recordingState.blob;
     if (!blob || recordingState.status !== 'ready') return;
@@ -504,6 +674,20 @@ function App() {
     const link = document.createElement('a');
     link.href = url;
     link.download = recordingState.fileName || 'live-translate-input-audio.webm';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function downloadTranslatedAudio() {
+    const blob = translatedAudioState.blob;
+    if (!blob || translatedAudioState.status !== 'ready') return;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = translatedAudioState.fileName || 'live-translate-translated-audio.wav';
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -542,6 +726,7 @@ function App() {
         throw new Error('Missing active meeting checkpoint.');
       }
 
+      await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
@@ -575,6 +760,7 @@ function App() {
       }
 
       await session.start();
+      await resumeRawAudioRecording();
     } catch (nextError) {
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
@@ -623,6 +809,7 @@ function App() {
     setStatusLabelOverride('');
     setError('');
     setResumeDraft(null);
+    resetTranslatedAudioDownload();
 
     let session;
     try {
@@ -698,6 +885,7 @@ function App() {
 
     if (segmentSwitchCancelledRef.current) return;
 
+    await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
     if (sessionRef.current === previousSession) {
       sessionRef.current = null;
@@ -706,6 +894,7 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true });
     try {
       await nextSession.start();
+      await resumeRawAudioRecording();
     } catch (error) {
       await nextSession.stop().catch(() => {});
       throw error;
@@ -808,6 +997,8 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    prepareInputAudioDownload(record);
+    prepareTranslatedAudioDownload(record);
     const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
     await flushSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
@@ -851,6 +1042,7 @@ function App() {
 
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
+    finalizeTranslatedAudioDownload(sessionId);
     activeSessionRecordIdRef.current = null;
 
     try {
@@ -1485,7 +1677,7 @@ function App() {
             </div>
 
             <div className="control-actions">
-              {resumeDraft?.hasTranscript && !isActive && status !== 'paused' ? (
+              {resumeDraft?.hasTranscript && !isActive && status === 'idle' ? (
                 <button className="button secondary" type="button" onClick={resumeMeetingSession}>
                   <RefreshCw size={18} aria-hidden="true" />
                   繼續錄製
@@ -1531,21 +1723,34 @@ function App() {
           </div>
         </section>
 
-        <section className="recording-panel" aria-label="原始語音錄音">
+        <section className="recording-panel" aria-label="音檔下載">
           <div>
-            <h2>原始語音</h2>
-            <p className="recording-note">{recordingStatusLabel(recordingState.status)}</p>
+            <h2>音檔下載</h2>
+            <p className="recording-note">原始語音：{recordingStatusLabel(recordingState.status)}</p>
+            <p className="recording-note">翻譯語音：{translatedAudioStatusLabel(translatedAudioState.status)}</p>
             {recordingState.errorMessage ? <p className="recording-error" role="alert">{recordingState.errorMessage}</p> : null}
+            {translatedAudioState.errorMessage ? <p className="recording-error" role="alert">{translatedAudioState.errorMessage}</p> : null}
           </div>
-          <button
-            className="button secondary"
-            type="button"
-            onClick={downloadRawAudio}
-            disabled={recordingState.status !== 'ready' || !recordingState.blob}
-          >
-            <Download size={18} aria-hidden="true" />
-            下載原始語音
-          </button>
+          <div className="recording-downloads">
+            <button
+              className="button secondary"
+              type="button"
+              onClick={downloadRawAudio}
+              disabled={recordingState.status !== 'ready' || !recordingState.blob}
+            >
+              <Download size={18} aria-hidden="true" />
+              下載原始語音
+            </button>
+            <button
+              className="button secondary"
+              type="button"
+              onClick={downloadTranslatedAudio}
+              disabled={translatedAudioState.status !== 'ready' || !translatedAudioState.blob}
+            >
+              <Download size={18} aria-hidden="true" />
+              下載翻譯語音
+            </button>
+          </div>
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -3934,6 +4139,17 @@ function recordingStatusLabel(status) {
     finalizing: '正在完成錄音檔。',
     ready: '原始語音已可下載。',
     error: '原始語音錄音無法使用。'
+  };
+
+  return labels[status] || labels.idle;
+}
+
+function translatedAudioStatusLabel(status) {
+  const labels = {
+    idle: '尚無可下載的翻譯語音。',
+    recording: '正在保留即時翻譯輸出。',
+    ready: '翻譯語音已可下載。',
+    error: '翻譯語音音檔無法使用。'
   };
 
   return labels[status] || labels.idle;

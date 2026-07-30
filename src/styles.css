@@ -291,6 +291,13 @@ input:disabled {
   letter-spacing: 0;
 }
 
+.recording-downloads {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .recording-note,
 .recording-error {
   margin: 0;
@@ -1133,6 +1140,10 @@ input:disabled {
   .recording-panel {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .recording-downloads {
+    justify-content: flex-start;
   }
 
   .control-actions,

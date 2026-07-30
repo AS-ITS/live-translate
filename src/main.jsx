@@ -144,6 +144,7 @@ function App() {
   const selectedHistoryRecordIdRef = useRef(null);
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
+  const meetingResumeDraftRequestIdRef = useRef(0);
 
   const isActive =
     status === 'requesting-permission' ||
@@ -194,12 +195,12 @@ function App() {
 
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
-    if (currentPage !== 'live' || !meetingId || isActive) {
+    if (currentPage !== 'live' || !meetingId || status !== 'idle') {
       return;
     }
 
     void loadMeetingResumeDraft(meetingId);
-  }, [page, isActive]);
+  }, [page, status]);
 
   useEffect(() => () => {
     reconnectControllerRef.current?.cancel();
@@ -251,6 +252,7 @@ function App() {
   }
 
   async function startSession() {
+    meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
@@ -277,8 +279,7 @@ function App() {
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
       segmentSwitchOrchestratorRef.current?.cancel();
-      setError(nextError.message || '無法開始即時翻譯。');
-      setStatus('error');
+      applyStartFailure(nextError, '無法開始即時翻譯。');
     }
   }
 
@@ -322,9 +323,25 @@ function App() {
     } catch (nextError) {
       await session?.stop().catch(() => {});
       sessionRef.current = null;
-      setError(nextError.message || '無法繼續即時翻譯。');
-      setStatus('error');
+      applyStartFailure(nextError, '無法繼續即時翻譯。');
     }
+  }
+
+  function applyStartFailure(nextError, fallbackMessage) {
+    const classification = classifyFailureSignal({
+      source: 'microphone_capture',
+      rawError: nextError,
+      reasonHint: 'audio_capture_failed'
+    });
+    const noDefaultInputDevice =
+      classification.reason === 'selected_device_missing' && !selectedInputDeviceId;
+    const message = noDefaultInputDevice
+      ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
+      : classification.safeMessage || nextError?.message || fallbackMessage;
+
+    setStatusLabelOverride('');
+    setError(message);
+    setStatus('error');
   }
 
   async function endCurrentSession() {
@@ -1054,9 +1071,16 @@ function App() {
       return;
     }
 
+    const requestId = meetingResumeDraftRequestIdRef.current + 1;
+    meetingResumeDraftRequestIdRef.current = requestId;
+
     try {
       setMeetingCheckpointStatus('syncing');
       const result = await meetingCheckpointApiClientRef.current.listSegments({ meetingId });
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const segments = [...result.segments].sort((left, right) => left.sequence - right.sequence);
       const activeSegment = [...segments].reverse().find((segment) => segment.status === 'active');
       if (!activeSegment) {
@@ -1070,6 +1094,10 @@ function App() {
           .getCheckpoint({ meetingId, segmentId: segment.id })
           .catch(() => null)
       )));
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
       ));
@@ -1100,6 +1128,10 @@ function App() {
       setStatus('idle');
       setError('');
     } catch {
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setResumeDraft(null);
       setMeetingCheckpointStatus('error');
       setError('無法載入長會議續錄資料。');

@@ -189,7 +189,7 @@ function retranslationPage(page) {
   return page.locator('.retranslation-workflow');
 }
 
-async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
+async function mockMeetingCheckpointApi(page, { failCheckpoint = false, waitForSegmentList = null } = {}) {
   const checkpointRequests = [];
   const rolloverRequests = [];
   const recoverRequests = [];
@@ -361,6 +361,7 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
     }
 
     if (method === 'GET' && url.pathname === '/api/meetings/meeting-1/segments') {
+      await waitForSegmentList?.();
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -611,6 +612,30 @@ test('active session is not shown while listening', async ({ page }) => {
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
   await expect(historyPanel(page).getByRole('button', { name: '查看詳細資料' })).toHaveCount(0);
+});
+
+test('missing microphone keeps a retryable error visible', async ({ page }) => {
+  let resolveSegmentList;
+  const segmentListLoaded = new Promise((resolve) => {
+    resolveSegmentList = resolve;
+  });
+  await mockMeetingCheckpointApi(page, { waitForSegmentList: () => segmentListLoaded });
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      throw new DOMException('No microphone device found', 'NotFoundError');
+    };
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
+  await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
+  await expect.poll(() => page.liveTokenRequests.length).toBe(0);
+  resolveSegmentList();
+  await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
+  await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
 });
 
 test('starts and stops a mocked Gemini Live translation session', async ({ page }) => {

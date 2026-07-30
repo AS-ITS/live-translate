@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
@@ -163,6 +163,8 @@ function App() {
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
+  const sessionDetailCacheRef = useRef(new Map());
+  const meetingDetailCacheRef = useRef(new Map());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
@@ -1441,7 +1443,12 @@ function App() {
     detailRequestIdRef.current = requestId;
     selectedHistoryRecordIdRef.current = id;
     setSelectedHistoryRecordId(id);
-    setSelectedHistoryDetail(undefined);
+    const cachedDetail = sessionDetailCacheRef.current.get(id);
+    setSelectedHistoryDetail(cachedDetail || undefined);
+
+    if (cachedDetail) {
+      return;
+    }
 
     try {
       const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
@@ -1450,6 +1457,11 @@ function App() {
         return;
       }
 
+      if (detail) {
+        sessionDetailCacheRef.current.set(id, detail);
+      } else {
+        sessionDetailCacheRef.current.delete(id);
+      }
       setSelectedHistoryDetail(detail);
     } catch {
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
@@ -1476,6 +1488,11 @@ function App() {
         return false;
       }
 
+      if (detail) {
+        sessionDetailCacheRef.current.set(id, detail);
+      } else {
+        sessionDetailCacheRef.current.delete(id);
+      }
       setSelectedHistoryDetail(detail);
       return true;
     } catch {
@@ -1504,7 +1521,12 @@ function App() {
     meetingDetailRequestIdRef.current = requestId;
     selectedMeetingIdRef.current = id;
     setSelectedMeetingId(id);
-    setSelectedMeetingDetail(undefined);
+    const cachedDetail = meetingDetailCacheRef.current.get(id);
+    setSelectedMeetingDetail(cachedDetail || undefined);
+
+    if (cachedDetail) {
+      return;
+    }
 
     try {
       const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
@@ -1513,6 +1535,11 @@ function App() {
         return;
       }
 
+      if (detail) {
+        meetingDetailCacheRef.current.set(id, detail);
+      } else {
+        meetingDetailCacheRef.current.delete(id);
+      }
       setSelectedMeetingDetail(detail);
     } catch {
       if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
@@ -1539,6 +1566,7 @@ function App() {
     try {
       await sessionReadApiClientRef.current.deleteSessionRecord(id);
       setError('');
+      sessionDetailCacheRef.current.delete(id);
       setHistoryRecords((records) => records.filter((record) => record.id !== id));
 
       if (selectedHistoryRecordIdRef.current === id) {
@@ -2351,6 +2379,15 @@ function MeetingDetail({ detail }) {
   const [readingTab, setReadingTab] = useState('translationArticle');
 
   const meetingId = detail?.meeting?.id;
+  const transcriptItems = useMemo(
+    () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
+    [detail?.transcriptItems]
+  );
+  const timeline = useMemo(
+    () => Array.isArray(detail?.timeline) ? detail.timeline : [],
+    [detail?.timeline]
+  );
+  const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
   useEffect(() => {
     setMeetingExportFormat('txt');
@@ -2381,8 +2418,6 @@ function MeetingDetail({ detail }) {
     );
   }
 
-  const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
-  const timeline = Array.isArray(detail.timeline) ? detail.timeline : [];
   const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
   const canDownloadMeetingTranscript = canExportTranscript(transcriptItems, {
     format: meetingExportFormat,
@@ -2463,7 +2498,7 @@ function MeetingDetail({ detail }) {
       <MeetingSegmentTranscriptList segments={timeline} transcriptItems={transcriptItems} />
 
       <ReadingContentTabs
-        content={meetingReadingContent(detail)}
+        content={readingContent}
         selectedTab={readingTab}
         onSelectTab={setReadingTab}
       />
@@ -2507,6 +2542,11 @@ function MeetingDetail({ detail }) {
 }
 
 function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
+  const transcriptItemsBySegment = useMemo(
+    () => groupTranscriptItemsBySegment(transcriptItems),
+    [transcriptItems]
+  );
+
   return (
     <section className="meeting-segment-content" aria-label="會議段落內容">
       <h4>段落內容</h4>
@@ -2515,7 +2555,7 @@ function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
       ) : (
         <ol>
           {segments.map((segment) => {
-            const items = transcriptItems.filter((item) => item.segmentId === segment.id);
+            const items = transcriptItemsBySegment.get(segment.id) || [];
             const sourceItems = finalTranscriptItemsForStream(items, 'source');
             const translationItems = finalTranscriptItemsForStream(items, 'translation');
             return (
@@ -2549,6 +2589,19 @@ function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
       )}
     </section>
   );
+}
+
+function groupTranscriptItemsBySegment(transcriptItems = []) {
+  const groups = new Map();
+  for (const item of transcriptItems) {
+    if (!item?.segmentId) {
+      continue;
+    }
+    const items = groups.get(item.segmentId) || [];
+    items.push(item);
+    groups.set(item.segmentId, items);
+  }
+  return groups;
 }
 
 function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
@@ -3220,9 +3273,29 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
 
-  const translationHistory = compactTranslationHistoryForDetail(detail);
+  const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
+  const sessionRecord = useMemo(
+    () => sessionRecordForDetailDTO(detail, historyRecord),
+    [detail, historyRecord]
+  );
+  const sourceItems = useMemo(
+    () => finalTranscriptItemsForStream(detail?.sourceTranscript?.items, 'source'),
+    [detail?.sourceTranscript?.items]
+  );
+  const translationItems = useMemo(
+    () => finalTranscriptItemsForStream(detail?.selectedTranslationOutput?.items, 'translation'),
+    [detail?.selectedTranslationOutput?.items]
+  );
+  const readingContent = useMemo(
+    () => readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }),
+    [detail, sourceItems, translationItems, sessionRecord]
+  );
+  const exportDetail = useMemo(
+    () => exportDetailForSessionDetailDTO(detail, historyRecord),
+    [detail, historyRecord]
+  );
 
   useEffect(() => {
     if (!sessionRecordId || !hasPendingRetranslationProgress) {
@@ -3258,12 +3331,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     );
   }
 
-  const sessionRecord = sessionRecordForDetailDTO(detail, historyRecord);
   const retranslationSourceSessionId = sourceSessionIdForRetranslation(sessionRecord, sessionRecordId);
-  const sourceItems = finalTranscriptItemsForStream(detail.sourceTranscript?.items, 'source');
-  const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
-  const readingContent = readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord });
-  const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
   const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream

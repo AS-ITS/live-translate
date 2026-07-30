@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   base64ToBytes,
+  buildInputAudioFileName,
+  buildTranslatedAudioFileName,
   bytesToBase64,
   createPcmChunker,
   floatToPcm16,
+  normalizePcm16Peak,
+  pcm16ChunksToWavBlob,
   pcm16ToFloat,
   resampleLinear
 } from '../../src/lib/audio.js';
@@ -56,3 +60,72 @@ test('createPcmChunker emits 100ms 16kHz PCM frames and buffers remainders', () 
   assert.equal(chunks.length, 1);
   assert.equal(chunks[0].byteLength, 3200);
 });
+
+test('pcm16ChunksToWavBlob wraps PCM chunks as mono 24kHz WAV', async () => {
+  const blob = pcm16ChunksToWavBlob([
+    new Uint8Array([1, 2, 3, 4]),
+    new Uint8Array([5, 6])
+  ]);
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const view = new DataView(bytes.buffer);
+
+  assert.equal(blob.type, 'audio/wav');
+  assert.equal(ascii(bytes, 0, 4), 'RIFF');
+  assert.equal(view.getUint32(4, true), 42);
+  assert.equal(ascii(bytes, 8, 4), 'WAVE');
+  assert.equal(ascii(bytes, 12, 4), 'fmt ');
+  assert.equal(view.getUint16(20, true), 1);
+  assert.equal(view.getUint16(22, true), 1);
+  assert.equal(view.getUint32(24, true), 24000);
+  assert.equal(view.getUint32(28, true), 48000);
+  assert.equal(view.getUint16(32, true), 2);
+  assert.equal(view.getUint16(34, true), 16);
+  assert.equal(ascii(bytes, 36, 4), 'data');
+  assert.equal(view.getUint32(40, true), 6);
+  assert.deepEqual(Array.from(bytes.slice(44)), [1, 2, 3, 4, 5, 6]);
+});
+
+test('pcm16ChunksToWavBlob can normalize quiet PCM before wrapping', async () => {
+  const blob = pcm16ChunksToWavBlob([new Uint8Array([100, 0, 156, 255])], {
+    normalizePeak: true,
+    targetPeak: 0.5
+  });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const view = new DataView(bytes.buffer);
+
+  assert.equal(view.getInt16(44, true), 16384);
+  assert.equal(view.getInt16(46, true), -16384);
+});
+
+test('normalizePcm16Peak preserves silence and scales signed samples', () => {
+  assert.deepEqual(Array.from(normalizePcm16Peak(new Uint8Array([0, 0, 0, 0]))), [0, 0, 0, 0]);
+
+  const normalized = normalizePcm16Peak(new Uint8Array([100, 0, 156, 255]), { targetPeak: 0.5 });
+  const view = new DataView(normalized.buffer);
+  assert.equal(view.getInt16(0, true), 16384);
+  assert.equal(view.getInt16(2, true), -16384);
+});
+
+test('buildTranslatedAudioFileName includes sanitized session id and timestamp', () => {
+  assert.equal(
+    buildTranslatedAudioFileName({
+      sessionId: 'Session:ABC/123',
+      startedAt: Date.UTC(2026, 6, 30, 12, 34, 56)
+    }),
+    'live-translate-translated-audio-session-abc-123-20260730-123456.wav'
+  );
+});
+
+test('buildInputAudioFileName includes sanitized session id and timestamp', () => {
+  assert.equal(
+    buildInputAudioFileName({
+      sessionId: 'Session:ABC/123',
+      startedAt: Date.UTC(2026, 6, 30, 12, 34, 56)
+    }),
+    'live-translate-input-audio-session-abc-123-20260730-123456.wav'
+  );
+});
+
+function ascii(bytes, offset, length) {
+  return String.fromCharCode(...bytes.slice(offset, offset + length));
+}

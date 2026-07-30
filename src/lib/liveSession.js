@@ -24,8 +24,10 @@ export class LiveTranslateSession {
     onInputDeviceFallback,
     onMicrophoneReady,
     onConnecting,
+    onInputAudioChunk,
     onInputTranscript,
     onOutputTranscript,
+    onOutputAudioChunk,
     onError,
     onClose,
     onConnectionFailure,
@@ -38,8 +40,10 @@ export class LiveTranslateSession {
     this.onInputDeviceFallback = onInputDeviceFallback;
     this.onMicrophoneReady = onMicrophoneReady;
     this.onConnecting = onConnecting;
+    this.onInputAudioChunk = onInputAudioChunk;
     this.onInputTranscript = onInputTranscript;
     this.onOutputTranscript = onOutputTranscript;
+    this.onOutputAudioChunk = onOutputAudioChunk;
     this.onError = onError;
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
@@ -53,6 +57,7 @@ export class LiveTranslateSession {
     this.nextPlaybackTime = 0;
     this.playbackSources = new Set();
     this.pendingInputTranscript = null;
+    this.pendingInputTranscriptFinalizableOnTurnComplete = false;
     this.pendingOutputTranscript = null;
     this.awaitingInputTranscriptAfterTurnComplete = false;
     this.awaitingOutputTranscriptAfterTurnComplete = false;
@@ -63,7 +68,7 @@ export class LiveTranslateSession {
 
   async start() {
     this.mediaStream = await this.openInputStream();
-    this.onMicrophoneReady?.();
+    this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
     this.audioContext = new AudioContext();
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
@@ -136,6 +141,7 @@ export class LiveTranslateSession {
       const chunks = this.chunker.push(input);
 
       for (const chunk of chunks) {
+        this.onInputAudioChunk?.(new Uint8Array(chunk));
         this.session.sendRealtimeInput({
           audio: {
             data: bytesToBase64(chunk),
@@ -182,12 +188,26 @@ export class LiveTranslateSession {
       this.logLiveEvent('inputTranscription.callback', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
+      this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
       this.awaitingInputTranscriptAfterTurnComplete = false;
-    } else if (isFinal && this.pendingInputTranscript) {
+    } else if (content?.interimInputTranscription?.text) {
+      const transcript = {
+        text: content.interimInputTranscription.text,
+        isFinal: false,
+        ...(content.interimInputTranscription.sourceLanguageDetection === undefined
+          ? {}
+          : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
+      };
+      this.logLiveEvent('interimInputTranscription.callback', { transcript });
+      this.onInputTranscript?.(transcript);
+      this.pendingInputTranscript = transcript;
+      this.pendingInputTranscriptFinalizableOnTurnComplete = false;
+    } else if (isFinal && this.pendingInputTranscript && this.pendingInputTranscriptFinalizableOnTurnComplete) {
       const transcript = { ...this.pendingInputTranscript, isFinal: true };
       this.logLiveEvent('inputTranscription.flushOnTurnComplete', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = null;
+      this.pendingInputTranscriptFinalizableOnTurnComplete = false;
     } else if (isFinal) {
       this.logLiveEvent('inputTranscription.awaitingLateText');
       this.awaitingInputTranscriptAfterTurnComplete = true;
@@ -234,6 +254,7 @@ export class LiveTranslateSession {
     }
 
     const bytes = base64ToBytes(base64Audio);
+    this.onOutputAudioChunk?.(new Uint8Array(bytes));
     const samples = pcm16ToFloat(bytes);
     const buffer = this.audioContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
     buffer.copyToChannel(samples, 0);
@@ -316,12 +337,16 @@ export class LiveTranslateSession {
     }
 
     this[awaitingKey] = false;
+    if (isInput) {
+      this.pendingInputTranscriptFinalizableOnTurnComplete = false;
+    }
   }
 
   transcriptBoundaryState() {
     return {
       pendingInputText: this.pendingInputTranscript?.text || '',
       pendingOutputText: this.pendingOutputTranscript?.text || '',
+      pendingInputTranscriptFinalizableOnTurnComplete: this.pendingInputTranscriptFinalizableOnTurnComplete,
       awaitingInputTranscriptAfterTurnComplete: this.awaitingInputTranscriptAfterTurnComplete,
       awaitingOutputTranscriptAfterTurnComplete: this.awaitingOutputTranscriptAfterTurnComplete
     };
@@ -404,6 +429,7 @@ export class LiveTranslateSession {
       this.audioContext = null;
       this.chunker = null;
       this.pendingInputTranscript = null;
+      this.pendingInputTranscriptFinalizableOnTurnComplete = false;
       this.pendingOutputTranscript = null;
       this.awaitingInputTranscriptAfterTurnComplete = false;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
@@ -469,8 +495,10 @@ function summarizeLiveEvent(message) {
     generationComplete: Boolean(content?.generationComplete),
     interrupted: Boolean(content?.interrupted),
     inputTranscriptionText: content?.inputTranscription?.text || '',
+    interimInputTranscriptionText: content?.interimInputTranscription?.text || '',
     outputTranscriptionText: content?.outputTranscription?.text || '',
     inputTranscriptionKeys: objectKeys(content?.inputTranscription),
+    interimInputTranscriptionKeys: objectKeys(content?.interimInputTranscription),
     outputTranscriptionKeys: objectKeys(content?.outputTranscription),
     modelTurnPartCount: parts.length,
     inlineAudioPartCount: parts.filter((part) => part.inlineData?.data).length

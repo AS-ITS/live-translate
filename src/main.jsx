@@ -1,6 +1,6 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Download, Mic, MicOff, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -47,6 +47,13 @@ import {
 } from './lib/transcript.js';
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
+import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
+import {
+  INPUT_SAMPLE_RATE,
+  buildInputAudioFileName,
+  buildTranslatedAudioFileName,
+  pcm16ChunksToWavBlob
+} from './lib/audio.js';
 import './styles.css';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
@@ -60,6 +67,20 @@ const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
+const TRANSLATED_AUDIO_IDLE_STATE = {
+  status: 'idle',
+  blob: null,
+  fileName: '',
+  errorMessage: ''
+};
+const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
+  status: 'skipped',
+  blob: null,
+  mimeType: '',
+  extension: '',
+  fileName: '',
+  errorMessage: ''
+};
 
 function pageFromLocation() {
   return pageInfoFromLocation().page;
@@ -103,12 +124,28 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
+  const [recordingState, setRecordingState] = useState({
+    status: 'idle',
+    blob: null,
+    mimeType: '',
+    extension: '',
+    fileName: '',
+    errorMessage: ''
+  });
+  const [translatedAudioState, setTranslatedAudioState] = useState(TRANSLATED_AUDIO_IDLE_STATE);
   const [meetingViewStats, setMeetingViewStats] = useState({
     archivedSegmentCount: 0,
     loadedSegmentCount: 0
   });
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
+  const pendingMicrophoneStreamRef = useRef(null);
+  const recordingControllerRef = useRef(null);
+  const inputAudioChunksRef = useRef([]);
+  const inputAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
+  const translatedAudioChunksRef = useRef([]);
+  const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const transcriptRef = useRef(transcript);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
@@ -126,6 +163,8 @@ function App() {
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
+  const sessionDetailCacheRef = useRef(new Map());
+  const meetingDetailCacheRef = useRef(new Map());
   const translationCommandLifecycleRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
@@ -133,6 +172,7 @@ function App() {
   const selectedHistoryRecordIdRef = useRef(null);
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
+  const meetingResumeDraftRequestIdRef = useRef(0);
 
   const isActive =
     status === 'requesting-permission' ||
@@ -140,6 +180,7 @@ function App() {
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment';
+  const controlsLocked = isActive || status === 'paused';
 
   useEffect(() => {
     void refreshInputDevices();
@@ -182,12 +223,12 @@ function App() {
 
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
-    if (currentPage !== 'live' || !meetingId || isActive) {
+    if (currentPage !== 'live' || !meetingId || status !== 'idle') {
       return;
     }
 
     void loadMeetingResumeDraft(meetingId);
-  }, [page, isActive]);
+  }, [page, status]);
 
   useEffect(() => () => {
     reconnectControllerRef.current?.cancel();
@@ -200,6 +241,7 @@ function App() {
     for (const session of sessions) {
       void session?.stop().catch(() => {});
     }
+    void recordingControllerRef.current?.cleanup({ discard: true }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -238,6 +280,7 @@ function App() {
   }
 
   async function startSession() {
+    meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
@@ -246,13 +289,18 @@ function App() {
     let session;
 
     try {
+      await recordingController().cleanup({ discard: true });
+      resetInputAudioDownload();
+      resetTranslatedAudioDownload();
+      pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
       session = await createSession({ preserveTranscript: false });
       sessionRef.current = session;
 
       await session.start();
-      await createCurrentSessionRecord(meetingCheckpoint);
+      const record = await createCurrentSessionRecord(meetingCheckpoint);
+      await startRecordingForSession(record);
       setStatus('listening');
       updateLiveMeetingUrl(meetingCheckpoint.meetingId);
       segmentSwitchOrchestrator().start();
@@ -261,12 +309,11 @@ function App() {
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
       segmentSwitchOrchestratorRef.current?.cancel();
-      setError(nextError.message || '無法開始即時翻譯。');
-      setStatus('error');
+      applyStartFailure(nextError, '無法開始即時翻譯。');
     }
   }
 
-  async function stopSession() {
+  async function pauseSession() {
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -274,15 +321,80 @@ function App() {
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
+    await pauseRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
     await flushMeetingCheckpointSync();
+    pendingMicrophoneStreamRef.current = null;
+    setStatus('paused');
+  }
+
+  async function continuePausedSession() {
+    if (status !== 'paused') return;
+
+    reconnectController().reset();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = false;
+    suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
+    setError('');
+    pendingMicrophoneStreamRef.current = null;
+
+    let session;
+    try {
+      session = await createSession({ preserveTranscript: true });
+      sessionRef.current = session;
+      await session.start();
+      await resumeRawAudioRecording();
+      setStatus('listening');
+      segmentSwitchOrchestrator().start();
+    } catch (nextError) {
+      await session?.stop().catch(() => {});
+      sessionRef.current = null;
+      applyStartFailure(nextError, '無法繼續即時翻譯。');
+    }
+  }
+
+  function applyStartFailure(nextError, fallbackMessage) {
+    const classification = classifyFailureSignal({
+      source: 'microphone_capture',
+      rawError: nextError,
+      reasonHint: 'audio_capture_failed'
+    });
+    const noDefaultInputDevice =
+      classification.reason === 'selected_device_missing' && !selectedInputDeviceId;
+    const message = noDefaultInputDevice
+      ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
+      : classification.safeMessage || nextError?.message || fallbackMessage;
+
+    setStatusLabelOverride('');
+    setError(message);
+    setStatus('error');
+  }
+
+  async function endCurrentSession() {
+    reconnectController().cancel();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = true;
+    suppressReconnectErrorRef.current = false;
+    setStatusLabelOverride('');
+    const reconnectingSession = reconnectSessionRef.current;
+    reconnectSessionRef.current = null;
+    const inputAudioState = await finalizeRawAudioRecording();
+    await reconnectingSession?.stop().catch(() => {});
+    await sessionRef.current?.stop().catch(() => {});
+    sessionRef.current = null;
+    await finalizePendingTranscriptItemsForStop();
+    await flushMeetingCheckpointSync();
+    pendingMicrophoneStreamRef.current = null;
+    setResumeDraft(null);
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
-      failureCategory: 'user_intent'
+      failureCategory: 'user_intent',
+      audioStates: { input: inputAudioState }
     });
     setStatus('stopped');
   }
@@ -320,7 +432,8 @@ function App() {
         setSelectedInputDeviceId('');
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
       },
-      onMicrophoneReady: () => {
+      onMicrophoneReady: ({ mediaStream } = {}) => {
+        pendingMicrophoneStreamRef.current = mediaStream || null;
         void refreshInputDevices();
       },
       onConnecting: () => {
@@ -328,8 +441,10 @@ function App() {
           current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
         ));
       },
+      onInputAudioChunk: handleInputAudioChunk,
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
+      onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
@@ -392,6 +507,237 @@ function App() {
     });
   }
 
+  function recordingController() {
+    if (!recordingControllerRef.current) {
+      recordingControllerRef.current = createMicrophoneRecordingController({
+        onStateChange: setRecordingState
+      });
+    }
+
+    return recordingControllerRef.current;
+  }
+
+  async function startRecordingForSession(record) {
+    if (!shouldRecordInputAudio) {
+      resetInputAudioDownload();
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return;
+    }
+
+    prepareInputAudioDownload(record);
+    const stream = pendingMicrophoneStreamRef.current;
+    const state = await recordingController().start({
+      stream,
+      sessionId: record?.id,
+      startedAt: record?.startedAt
+    });
+
+    if (state.status === 'error') {
+      setRecordingState(state);
+    }
+  }
+
+  function prepareInputAudioDownload(record) {
+    inputAudioMetadataRef.current = {
+      sessionId: record?.id || '',
+      startedAt: record?.startedAt ?? Date.now()
+    };
+  }
+
+  function resetInputAudioDownload() {
+    inputAudioChunksRef.current = [];
+    inputAudioMetadataRef.current = { sessionId: '', startedAt: null };
+  }
+
+  function handleInputAudioChunk(bytes) {
+    if (!shouldRecordInputAudio) {
+      return;
+    }
+
+    if (!bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) {
+      return;
+    }
+
+    inputAudioChunksRef.current.push(new Uint8Array(bytes));
+  }
+
+  async function pauseRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      inputAudioChunksRef.current = [];
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
+    const state = await recordingController().pause().catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音錄音無法暫停。'
+    }));
+    setRecordingState(state);
+    return state;
+  }
+
+  async function resumeRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
+    const state = await recordingController().resume({ stream: pendingMicrophoneStreamRef.current }).catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音錄音無法繼續。'
+    }));
+    setRecordingState(state);
+    return state;
+  }
+
+  async function finalizeRawAudioRecording() {
+    if (!shouldRecordInputAudio) {
+      inputAudioChunksRef.current = [];
+      setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+      return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
+    }
+
+    const state = await recordingController().finalize().catch((nextError) => ({
+      status: 'error',
+      blob: null,
+      mimeType: '',
+      extension: '',
+      fileName: '',
+      errorMessage: nextError?.message || '原始語音音檔無法建立。'
+    }));
+
+    if (inputAudioChunksRef.current.length === 0) {
+      setRecordingState(state);
+      return state;
+    }
+
+    try {
+      const metadata = inputAudioMetadataRef.current;
+      const wavState = {
+        status: 'ready',
+        blob: pcm16ChunksToWavBlob(inputAudioChunksRef.current, {
+          sampleRate: INPUT_SAMPLE_RATE,
+          normalizePeak: true
+        }),
+        mimeType: 'audio/wav',
+        extension: 'wav',
+        fileName: buildInputAudioFileName(metadata),
+        errorMessage: ''
+      };
+      setRecordingState(wavState);
+      return wavState;
+    } catch (nextError) {
+      const errorState = {
+        status: 'error',
+        blob: null,
+        mimeType: '',
+        extension: '',
+        fileName: '',
+        errorMessage: nextError?.message || '原始語音音檔無法建立。'
+      };
+      setRecordingState(errorState);
+      return errorState;
+    }
+  }
+
+  function prepareTranslatedAudioDownload(record) {
+    translatedAudioMetadataRef.current = {
+      sessionId: record?.id || '',
+      startedAt: record?.startedAt ?? Date.now()
+    };
+  }
+
+  function resetTranslatedAudioDownload() {
+    translatedAudioChunksRef.current = [];
+    translatedAudioMetadataRef.current = { sessionId: '', startedAt: null };
+    setTranslatedAudioState(TRANSLATED_AUDIO_IDLE_STATE);
+  }
+
+  function handleTranslatedAudioChunk(bytes) {
+    if (!bytes || !Number.isFinite(bytes.byteLength) || bytes.byteLength === 0) {
+      return;
+    }
+
+    translatedAudioChunksRef.current.push(new Uint8Array(bytes));
+    setTranslatedAudioState((current) => (
+      current.status === 'ready'
+        ? current
+        : { status: 'recording', blob: null, fileName: '', errorMessage: '' }
+    ));
+  }
+
+  function finalizeTranslatedAudioDownload(sessionId) {
+    const chunks = translatedAudioChunksRef.current;
+    if (chunks.length === 0) {
+      let nextState = null;
+      setTranslatedAudioState((current) => (
+        current.status === 'recording' ? (nextState = TRANSLATED_AUDIO_IDLE_STATE) : (nextState = current)
+      ));
+      return nextState || TRANSLATED_AUDIO_IDLE_STATE;
+    }
+
+    try {
+      const metadata = translatedAudioMetadataRef.current;
+      const blob = pcm16ChunksToWavBlob(chunks, { normalizePeak: true });
+      const nextState = {
+        status: 'ready',
+        blob,
+        fileName: buildTranslatedAudioFileName({
+          sessionId: metadata.sessionId || sessionId,
+          startedAt: metadata.startedAt
+        }),
+        errorMessage: ''
+      };
+      setTranslatedAudioState(nextState);
+      return nextState;
+    } catch (nextError) {
+      const errorState = {
+        status: 'error',
+        blob: null,
+        fileName: '',
+        errorMessage: nextError?.message || '翻譯語音音檔無法建立。'
+      };
+      setTranslatedAudioState(errorState);
+      return errorState;
+    }
+  }
+
+  function downloadRawAudio() {
+    const blob = recordingState.blob;
+    if (!blob || recordingState.status !== 'ready') return;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = recordingState.fileName || 'live-translate-input-audio.webm';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  function downloadTranslatedAudio() {
+    const blob = translatedAudioState.blob;
+    if (!blob || translatedAudioState.status !== 'ready') return;
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = translatedAudioState.fileName || 'live-translate-translated-audio.wav';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
   function updateActiveSessionGlossaryEntries(entries) {
     const liveGlossaryEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
@@ -424,6 +770,7 @@ function App() {
         throw new Error('Missing active meeting checkpoint.');
       }
 
+      await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
@@ -457,6 +804,7 @@ function App() {
       }
 
       await session.start();
+      await resumeRawAudioRecording();
     } catch (nextError) {
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
@@ -505,6 +853,7 @@ function App() {
     setStatusLabelOverride('');
     setError('');
     setResumeDraft(null);
+    resetTranslatedAudioDownload();
 
     let session;
     try {
@@ -580,6 +929,7 @@ function App() {
 
     if (segmentSwitchCancelledRef.current) return;
 
+    await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
     if (sessionRef.current === previousSession) {
       sessionRef.current = null;
@@ -588,6 +938,7 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true });
     try {
       await nextSession.start();
+      await resumeRawAudioRecording();
     } catch (error) {
       await nextSession.stop().catch(() => {});
       throw error;
@@ -690,6 +1041,8 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    prepareInputAudioDownload(record);
+    prepareTranslatedAudioDownload(record);
     const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
     await flushSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
@@ -733,6 +1086,7 @@ function App() {
 
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
+    const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
     activeSessionRecordIdRef.current = null;
 
     try {
@@ -742,6 +1096,10 @@ function App() {
       if (finalized) {
         await flushSessionSnapshot(sessionId);
         await translationCommandLifecycle().recordSessionFinalized(finalized);
+        await uploadFinalizedSessionAudioArtifacts(sessionId, {
+          input: options?.audioStates?.input,
+          translation: translatedAudioFinalState
+        });
         await refreshHistoryRecords();
       }
 
@@ -750,6 +1108,39 @@ function App() {
       return null;
     } finally {
       activeMeetingCheckpointRef.current = null;
+    }
+  }
+
+  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}) {
+    const uploads = [
+      ['input', states.input],
+      ['translation', states.translation]
+    ].filter(([, state]) => state?.status === 'ready' && state.blob);
+
+    if (uploads.length === 0) {
+      return;
+    }
+
+    try {
+      await Promise.all(uploads.map(([kind, state]) => uploadSessionAudioArtifact(sessionId, kind, state)));
+    } catch (nextError) {
+      console.error('Session audio artifact persistence failed.', nextError);
+      setError('語音紀錄無法儲存到翻譯紀錄，但目前音檔仍可在本頁下載。');
+    }
+  }
+
+  async function uploadSessionAudioArtifact(sessionId, kind, state) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'audio/wav',
+        'X-File-Name': state.fileName || ''
+      },
+      body: state.blob
+    });
+
+    if (!response.ok) {
+      throw new Error(`Session audio upload failed with HTTP ${response.status}.`);
     }
   }
 
@@ -953,9 +1344,16 @@ function App() {
       return;
     }
 
+    const requestId = meetingResumeDraftRequestIdRef.current + 1;
+    meetingResumeDraftRequestIdRef.current = requestId;
+
     try {
       setMeetingCheckpointStatus('syncing');
       const result = await meetingCheckpointApiClientRef.current.listSegments({ meetingId });
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const segments = [...result.segments].sort((left, right) => left.sequence - right.sequence);
       const activeSegment = [...segments].reverse().find((segment) => segment.status === 'active');
       if (!activeSegment) {
@@ -969,6 +1367,10 @@ function App() {
           .getCheckpoint({ meetingId, segmentId: segment.id })
           .catch(() => null)
       )));
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
       ));
@@ -988,7 +1390,8 @@ function App() {
       setResumeDraft({
         meetingId,
         segmentId: activeSegment.id,
-        transcriptState: resumeTranscript
+        transcriptState: resumeTranscript,
+        hasTranscript: transcriptHasFinalItems(resumeTranscript) > 0
       });
       setMeetingViewStats({
         archivedSegmentCount: Math.max(0, segments.length - 1),
@@ -998,6 +1401,10 @@ function App() {
       setStatus('idle');
       setError('');
     } catch {
+      if (meetingResumeDraftRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setResumeDraft(null);
       setMeetingCheckpointStatus('error');
       setError('無法載入長會議續錄資料。');
@@ -1036,7 +1443,12 @@ function App() {
     detailRequestIdRef.current = requestId;
     selectedHistoryRecordIdRef.current = id;
     setSelectedHistoryRecordId(id);
-    setSelectedHistoryDetail(undefined);
+    const cachedDetail = sessionDetailCacheRef.current.get(id);
+    setSelectedHistoryDetail(cachedDetail || undefined);
+
+    if (cachedDetail) {
+      return;
+    }
 
     try {
       const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
@@ -1045,6 +1457,11 @@ function App() {
         return;
       }
 
+      if (detail) {
+        sessionDetailCacheRef.current.set(id, detail);
+      } else {
+        sessionDetailCacheRef.current.delete(id);
+      }
       setSelectedHistoryDetail(detail);
     } catch {
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
@@ -1071,6 +1488,11 @@ function App() {
         return false;
       }
 
+      if (detail) {
+        sessionDetailCacheRef.current.set(id, detail);
+      } else {
+        sessionDetailCacheRef.current.delete(id);
+      }
       setSelectedHistoryDetail(detail);
       return true;
     } catch {
@@ -1099,7 +1521,12 @@ function App() {
     meetingDetailRequestIdRef.current = requestId;
     selectedMeetingIdRef.current = id;
     setSelectedMeetingId(id);
-    setSelectedMeetingDetail(undefined);
+    const cachedDetail = meetingDetailCacheRef.current.get(id);
+    setSelectedMeetingDetail(cachedDetail || undefined);
+
+    if (cachedDetail) {
+      return;
+    }
 
     try {
       const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
@@ -1108,6 +1535,11 @@ function App() {
         return;
       }
 
+      if (detail) {
+        meetingDetailCacheRef.current.set(id, detail);
+      } else {
+        meetingDetailCacheRef.current.delete(id);
+      }
       setSelectedMeetingDetail(detail);
     } catch {
       if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
@@ -1134,6 +1566,7 @@ function App() {
     try {
       await sessionReadApiClientRef.current.deleteSessionRecord(id);
       setError('');
+      sessionDetailCacheRef.current.delete(id);
       setHistoryRecords((records) => records.filter((record) => record.id !== id));
 
       if (selectedHistoryRecordIdRef.current === id) {
@@ -1271,103 +1704,176 @@ function App() {
             <p>選擇目標語言、啟用麥克風，並查看即時逐字稿。</p>
           </div>
 
-        <div className="controls" aria-label="翻譯控制項">
-          <div className="language-controls">
+          <div className="controls" aria-label="翻譯控制項">
+            <div className="language-controls">
+              <label className="field">
+                <span>主要輸入語言</span>
+                <select
+                  value={sourceLanguageCode}
+                  onChange={(event) => setSourceLanguageCode(event.target.value)}
+                  disabled={controlsLocked}
+                >
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <option key={language.code} value={language.code}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field">
+                <span>目標語言</span>
+                <select
+                  value={targetLanguageCode}
+                  onChange={(event) => setTargetLanguageCode(event.target.value)}
+                  disabled={controlsLocked}
+                >
+                  {SUPPORTED_LANGUAGES.map((language) => (
+                    <option key={language.code} value={language.code}>
+                      {language.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
             <label className="field">
-              <span>主要輸入語言</span>
+              <span>麥克風</span>
               <select
-                value={sourceLanguageCode}
-                onChange={(event) => setSourceLanguageCode(event.target.value)}
-                disabled={isActive}
+                value={selectedInputDeviceId}
+                onChange={(event) => {
+                  setSelectedInputDeviceId(event.target.value);
+                  setDeviceMessage('');
+                }}
+                disabled={controlsLocked}
               >
-                {SUPPORTED_LANGUAGES.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.label}
+                <option value="">瀏覽器預設麥克風</option>
+                {inputDevices.map((device) => (
+                  <option key={device.deviceId || device.label} value={device.deviceId}>
+                    {device.label}
                   </option>
                 ))}
               </select>
             </label>
 
-            <label className="field">
-              <span>目標語言</span>
-              <select
-                value={targetLanguageCode}
-                onChange={(event) => setTargetLanguageCode(event.target.value)}
-                disabled={isActive}
-              >
-                {SUPPORTED_LANGUAGES.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.label}
-                  </option>
-                ))}
-              </select>
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={echoTargetLanguage}
+                onChange={(event) => setEchoTargetLanguage(event.target.checked)}
+                disabled={controlsLocked}
+              />
+              <span>朗讀翻譯語言</span>
+            </label>
+
+            <label className="toggle">
+              <input
+                type="checkbox"
+                checked={shouldRecordInputAudio}
+                onChange={(event) => setShouldRecordInputAudio(event.target.checked)}
+                disabled={controlsLocked}
+              />
+              <span>錄製講者原音</span>
             </label>
           </div>
 
-          <label className="field">
-            <span>麥克風</span>
-            <select
-              value={selectedInputDeviceId}
-              onChange={(event) => {
-                setSelectedInputDeviceId(event.target.value);
-                setDeviceMessage('');
-              }}
-              disabled={isActive}
+          <div className="control-status-row">
+            <div className="control-status-messages">
+              {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
+              {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
+              {status === 'paused' ? (
+                <p className="device-note">
+                  {shouldRecordInputAudio
+                    ? '工作階段已暫停；逐字稿、翻譯與本機錄音片段會保留到結束本次工作階段。'
+                    : '工作階段已暫停；逐字稿與翻譯會保留到結束本次工作階段。'}
+                </p>
+              ) : null}
+              {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
+              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
+                {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              </p>
+              {meetingViewStats.archivedSegmentCount > 0 ? (
+                <p className="checkpoint-note">
+                  長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 已載入 {meetingViewStats.loadedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
+                </p>
+              ) : null}
+            </div>
+
+            <div className="control-actions">
+              {resumeDraft?.hasTranscript && !isActive && status === 'idle' ? (
+                <button className="button secondary" type="button" onClick={resumeMeetingSession}>
+                  <RefreshCw size={18} aria-hidden="true" />
+                  繼續錄製
+                </button>
+              ) : null}
+
+              <div className="session-actions">
+                {status === 'listening' ? (
+                  <>
+                    <button className="button secondary" type="button" onClick={pauseSession}>
+                      <Pause size={18} aria-hidden="true" />
+                      暫停
+                    </button>
+                    <button className="button secondary" type="button" onClick={endCurrentSession}>
+                      <Square size={18} aria-hidden="true" />
+                      結束本次工作階段
+                    </button>
+                  </>
+                ) : status === 'reconnecting' || status === 'switching-segment' ? (
+                  <button className="button secondary" type="button" onClick={endCurrentSession}>
+                    <Square size={18} aria-hidden="true" />
+                    結束本次工作階段
+                  </button>
+                ) : status === 'paused' ? (
+                  <>
+                    <button className="button primary" type="button" onClick={continuePausedSession}>
+                      <Play size={18} aria-hidden="true" />
+                      繼續
+                    </button>
+                    <button className="button secondary" type="button" onClick={endCurrentSession}>
+                      <Square size={18} aria-hidden="true" />
+                      結束本次工作階段
+                    </button>
+                  </>
+                ) : (
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
+                    {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
+                    {isActive ? '正在開始' : '開始'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="recording-panel" aria-label="音檔下載">
+          <div>
+            <h2>音檔下載</h2>
+            <p className="recording-note">原始語音：{recordingStatusLabel(recordingState.status)}</p>
+            <p className="recording-note">翻譯語音：{translatedAudioStatusLabel(translatedAudioState.status)}</p>
+            {recordingState.errorMessage ? <p className="recording-error" role="alert">{recordingState.errorMessage}</p> : null}
+            {translatedAudioState.errorMessage ? <p className="recording-error" role="alert">{translatedAudioState.errorMessage}</p> : null}
+          </div>
+          <div className="recording-downloads">
+            <button
+              className="button secondary"
+              type="button"
+              onClick={downloadRawAudio}
+              disabled={recordingState.status !== 'ready' || !recordingState.blob}
             >
-              <option value="">瀏覽器預設麥克風</option>
-              {inputDevices.map((device) => (
-                <option key={device.deviceId || device.label} value={device.deviceId}>
-                  {device.label}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={echoTargetLanguage}
-              onChange={(event) => setEchoTargetLanguage(event.target.checked)}
-              disabled={isActive}
-            />
-            <span>朗讀翻譯語言</span>
-          </label>
-
-          {status === 'listening' ? (
-            <button className="button secondary" type="button" onClick={stopSession}>
-              <Square size={18} aria-hidden="true" />
-              停止
+              <Download size={18} aria-hidden="true" />
+              下載原始語音
             </button>
-          ) : status === 'reconnecting' || status === 'switching-segment' ? (
-            <button className="button secondary" type="button" onClick={stopSession}>
-              <Square size={18} aria-hidden="true" />
-              停止
+            <button
+              className="button secondary"
+              type="button"
+              onClick={downloadTranslatedAudio}
+              disabled={translatedAudioState.status !== 'ready' || !translatedAudioState.blob}
+            >
+              <Download size={18} aria-hidden="true" />
+              下載翻譯語音
             </button>
-          ) : (
-            <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
-              {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-              {isActive ? '正在開始' : '開始'}
-            </button>
-          )}
-        </div>
-
-          {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
-          {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
-          {resumeDraft && !isActive ? (
-            <button className="button secondary" type="button" onClick={resumeMeetingSession}>
-              <RefreshCw size={18} aria-hidden="true" />
-              繼續錄製
-            </button>
-          ) : null}
-          {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-          <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
-            {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
-          </p>
-          {meetingViewStats.archivedSegmentCount > 0 ? (
-            <p className="checkpoint-note">
-              長會議段落：已封存 {meetingViewStats.archivedSegmentCount} 段 · 已載入 {meetingViewStats.loadedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
-            </p>
-          ) : null}
+          </div>
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -1400,7 +1906,7 @@ function App() {
 
         <section className="transcript-grid" aria-label="文章版閱讀區">
           <ArticlePanel
-            title="原文文章"
+            title="原文逐字稿"
             stream="source"
             paragraphs={sourceArticleParagraphs}
             currentPartial={traditionalChineseTranscriptItem(transcript.source.currentPartial)}
@@ -1411,7 +1917,7 @@ function App() {
             onExport={() => downloadArticle('source')}
           />
           <ArticlePanel
-            title="翻譯文章"
+            title="翻譯逐字稿"
             stream="translation"
             paragraphs={translationArticleParagraphs}
             currentPartial={transcript.translation.currentPartial}
@@ -1873,6 +2379,15 @@ function MeetingDetail({ detail }) {
   const [readingTab, setReadingTab] = useState('translationArticle');
 
   const meetingId = detail?.meeting?.id;
+  const transcriptItems = useMemo(
+    () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
+    [detail?.transcriptItems]
+  );
+  const timeline = useMemo(
+    () => Array.isArray(detail?.timeline) ? detail.timeline : [],
+    [detail?.timeline]
+  );
+  const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
   useEffect(() => {
     setMeetingExportFormat('txt');
@@ -1903,8 +2418,6 @@ function MeetingDetail({ detail }) {
     );
   }
 
-  const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
-  const timeline = Array.isArray(detail.timeline) ? detail.timeline : [];
   const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
   const canDownloadMeetingTranscript = canExportTranscript(transcriptItems, {
     format: meetingExportFormat,
@@ -1954,6 +2467,13 @@ function MeetingDetail({ detail }) {
         <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(detail.meeting?.transcriptSummary)}</dd></div>
       </dl>
 
+      <AudioArtifactDownloads
+        title="整場語音紀錄下載"
+        audioArtifacts={detail.audioArtifacts}
+        inputLabel="下載整場原始語音"
+        translationLabel="下載整場翻譯語音"
+      />
+
       <section className="meeting-timeline" aria-label="會議段落時間軸">
         <h4>段落時間軸</h4>
         {timeline.length === 0 ? (
@@ -1978,7 +2498,7 @@ function MeetingDetail({ detail }) {
       <MeetingSegmentTranscriptList segments={timeline} transcriptItems={transcriptItems} />
 
       <ReadingContentTabs
-        content={meetingReadingContent(detail)}
+        content={readingContent}
         selectedTab={readingTab}
         onSelectTab={setReadingTab}
       />
@@ -2022,6 +2542,11 @@ function MeetingDetail({ detail }) {
 }
 
 function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
+  const transcriptItemsBySegment = useMemo(
+    () => groupTranscriptItemsBySegment(transcriptItems),
+    [transcriptItems]
+  );
+
   return (
     <section className="meeting-segment-content" aria-label="會議段落內容">
       <h4>段落內容</h4>
@@ -2030,7 +2555,7 @@ function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
       ) : (
         <ol>
           {segments.map((segment) => {
-            const items = transcriptItems.filter((item) => item.segmentId === segment.id);
+            const items = transcriptItemsBySegment.get(segment.id) || [];
             const sourceItems = finalTranscriptItemsForStream(items, 'source');
             const translationItems = finalTranscriptItemsForStream(items, 'translation');
             return (
@@ -2064,6 +2589,19 @@ function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
       )}
     </section>
   );
+}
+
+function groupTranscriptItemsBySegment(transcriptItems = []) {
+  const groups = new Map();
+  for (const item of transcriptItems) {
+    if (!item?.segmentId) {
+      continue;
+    }
+    const items = groups.get(item.segmentId) || [];
+    items.push(item);
+    groups.set(item.segmentId, items);
+  }
+  return groups;
 }
 
 function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
@@ -2735,9 +3273,29 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
 
-  const translationHistory = compactTranslationHistoryForDetail(detail);
+  const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
+  const sessionRecord = useMemo(
+    () => sessionRecordForDetailDTO(detail, historyRecord),
+    [detail, historyRecord]
+  );
+  const sourceItems = useMemo(
+    () => finalTranscriptItemsForStream(detail?.sourceTranscript?.items, 'source'),
+    [detail?.sourceTranscript?.items]
+  );
+  const translationItems = useMemo(
+    () => finalTranscriptItemsForStream(detail?.selectedTranslationOutput?.items, 'translation'),
+    [detail?.selectedTranslationOutput?.items]
+  );
+  const readingContent = useMemo(
+    () => readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }),
+    [detail, sourceItems, translationItems, sessionRecord]
+  );
+  const exportDetail = useMemo(
+    () => exportDetailForSessionDetailDTO(detail, historyRecord),
+    [detail, historyRecord]
+  );
 
   useEffect(() => {
     if (!sessionRecordId || !hasPendingRetranslationProgress) {
@@ -2773,12 +3331,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     );
   }
 
-  const sessionRecord = sessionRecordForDetailDTO(detail, historyRecord);
   const retranslationSourceSessionId = sourceSessionIdForRetranslation(sessionRecord, sessionRecordId);
-  const sourceItems = finalTranscriptItemsForStream(detail.sourceTranscript?.items, 'source');
-  const translationItems = finalTranscriptItemsForStream(detail.selectedTranslationOutput?.items, 'translation');
-  const readingContent = readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord });
-  const exportDetail = exportDetailForSessionDetailDTO(detail, historyRecord);
   const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
     format: savedExportFormat,
     stream: savedExportStream
@@ -2869,6 +3422,13 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         ) : null}
       </dl>
 
+      <AudioArtifactDownloads
+        title="語音紀錄下載"
+        audioArtifacts={sessionRecord.audioArtifacts}
+        inputLabel="下載原始語音紀錄"
+        translationLabel="下載翻譯語音紀錄"
+      />
+
       <ReadingContentTabs
         content={readingContent}
         selectedTab={readingTab}
@@ -2914,6 +3474,51 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
         {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
       </section>
+    </section>
+  );
+}
+
+function AudioArtifactDownloads({
+  title,
+  audioArtifacts = {},
+  inputLabel = '下載原始語音',
+  translationLabel = '下載翻譯語音'
+}) {
+  const inputArtifact = audioArtifacts?.input;
+  const translationArtifact = audioArtifacts?.translation;
+
+  return (
+    <section className="saved-export-panel" aria-label={title}>
+      <h4>{title}</h4>
+      <div className="recording-downloads">
+        <a
+          className={`button detail-button${inputArtifact?.downloadUrl ? '' : ' disabled-link'}`}
+          href={inputArtifact?.downloadUrl || '#'}
+          download={inputArtifact?.fileName || undefined}
+          aria-disabled={!inputArtifact?.downloadUrl}
+          onClick={(event) => {
+            if (!inputArtifact?.downloadUrl) event.preventDefault();
+          }}
+        >
+          <Download size={16} aria-hidden="true" />
+          {inputLabel}
+        </a>
+        <a
+          className={`button detail-button${translationArtifact?.downloadUrl ? '' : ' disabled-link'}`}
+          href={translationArtifact?.downloadUrl || '#'}
+          download={translationArtifact?.fileName || undefined}
+          aria-disabled={!translationArtifact?.downloadUrl}
+          onClick={(event) => {
+            if (!translationArtifact?.downloadUrl) event.preventDefault();
+          }}
+        >
+          <Download size={16} aria-hidden="true" />
+          {translationLabel}
+        </a>
+      </div>
+      {!inputArtifact?.downloadUrl || !translationArtifact?.downloadUrl ? (
+        <p className="export-note">只有已成功儲存的語音紀錄可下載。</p>
+      ) : null}
     </section>
   );
 }
@@ -3739,12 +4344,38 @@ function statusLabel(status, override = '') {
     listening: '聆聽中',
     reconnecting: '正在重新連線',
     'switching-segment': '切換下一段中',
+    paused: '已暫停',
     stopped: '已停止',
     expired: '工作階段已過期',
     error: '需要處理'
   };
 
   return labels[status] || status;
+}
+
+function recordingStatusLabel(status) {
+  const labels = {
+    idle: '尚無可下載的原始語音。',
+    skipped: '未錄製講者原音。',
+    recording: '正在保留本機麥克風輸入。',
+    paused: '錄音已暫停，已保留目前片段。',
+    finalizing: '正在完成錄音檔。',
+    ready: '原始語音已可下載。',
+    error: '原始語音錄音無法使用。'
+  };
+
+  return labels[status] || labels.idle;
+}
+
+function translatedAudioStatusLabel(status) {
+  const labels = {
+    idle: '尚無可下載的翻譯語音。',
+    recording: '正在保留即時翻譯輸出。',
+    ready: '翻譯語音已可下載。',
+    error: '翻譯語音音檔無法使用。'
+  };
+
+  return labels[status] || labels.idle;
 }
 
 function meetingCheckpointStatusLabel(status) {

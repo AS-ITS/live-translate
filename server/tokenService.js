@@ -121,7 +121,8 @@ export function resolveLiveTranslateModel(env = process.env) {
 
 function glossaryInstruction(entries) {
   return [
-    'Glossary instructions: when a source term occurs, use its specified target translation.',
+    'Glossary instructions: when a source term occurs, use its specified target translation in both translated speech audio and output transcription.',
+    'Do not say or write the source term in the translated output when a required translation is provided.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');
 }

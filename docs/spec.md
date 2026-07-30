@@ -29,6 +29,8 @@ Current scope:
 - The Session preserves source transcript items for review and export.
 - Saved Sessions are persisted through backend file storage by default under
   `DATA_DIR`; `SESSION_RECORDS_FILE` can override the exact path.
+- Saved Session audio artifacts are persisted under `DATA_DIR/session-audio`;
+  `SESSION_AUDIO_DIR` can override the exact directory.
 - The same saved SourceTranscript can produce additional TranslationOutput
   records through re-translation without new audio input or re-recording.
 
@@ -86,6 +88,16 @@ The MVP includes:
 - The app displays translated transcript updates.
 - The user can stop the session.
 - Stopping a session closes microphone tracks and ends the Gemini Live session.
+- Before starting a session, the user can choose whether to locally record the
+  speaker's original microphone audio.
+- After stopping a session, the user can download the original microphone audio
+  as a browser-generated WAV file only when local speaker recording was enabled
+  and local audio chunks are available.
+- After stopping a session, the user can download translated audio received from
+  Gemini as a browser-generated WAV file when output audio was produced.
+- Saved translation history details can download persisted original and
+  translated WAV audio artifacts when those artifacts were produced and
+  successfully stored.
 - The app shows recoverable errors and allows the user to retry.
 - The backend rejects unsupported target languages.
 - The backend never exposes `GEMINI_API_KEY` to the browser.

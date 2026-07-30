@@ -1,4 +1,5 @@
 import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
+import { sanitizeAudioArtifactsForDTO } from '../infrastructure/sessionAudioArtifacts.js';
 
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -26,7 +27,7 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
   };
 }
 
-export function mapMeetingToDetailDTO({ meeting, segments = [] } = {}) {
+export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts = {} } = {}) {
   const normalizedSegments = sortedSegments(segments);
   const transcriptItems = transcriptItemsFromSegments({ meeting, segments: normalizedSegments });
   const summary = mapMeetingToHistoryListItem({ meeting, segments: normalizedSegments });
@@ -36,6 +37,7 @@ export function mapMeetingToDetailDTO({ meeting, segments = [] } = {}) {
     segments: normalizedSegments.map(mapSegmentToDTO),
     timeline: normalizedSegments.map(mapSegmentToTimelineItem),
     transcriptItems,
+    audioArtifacts: sanitizeAudioArtifactsForDTO(audioArtifacts, { meetingId: meeting?.id }),
     readingContent: buildReadingContent(transcriptItems),
     recordKind: 'meeting'
   };

@@ -9,6 +9,10 @@ import { createLiveToken } from './tokenService.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+import {
+  sanitizeAudioArtifactsForDTO,
+  validateAudioArtifactKind
+} from '../src/infrastructure/sessionAudioArtifacts.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -64,6 +68,7 @@ const ERROR_RESPONSES = {
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
+const MAX_AUDIO_ARTIFACT_BYTES = 50 * 1024 * 1024;
 
 function safeTranslationProvidersFor(env = process.env) {
   return [
@@ -83,7 +88,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -91,6 +96,24 @@ function sendJson(res, status, payload, requestId) {
     ...(requestId ? { 'X-Request-Id': requestId } : {})
   });
   res.end(body);
+}
+
+function sendBinary(res, status, bytes, { contentType = 'application/octet-stream', fileName = 'download.bin', requestId } = {}) {
+  const buffer = Buffer.from(bytes);
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Content-Length': buffer.byteLength,
+    'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY',
+    ...(requestId ? { 'X-Request-Id': requestId } : {})
+  });
+  res.end(buffer);
 }
 
 async function readJson(req) {
@@ -117,6 +140,23 @@ async function readJson(req) {
     error.code = 'invalid_json';
     throw error;
   }
+}
+
+async function readBinary(req, { maxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}) {
+  const chunks = [];
+  let byteLength = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk);
+    byteLength += buffer.byteLength;
+    if (byteLength > maxBytes) {
+      const error = new Error('Request body too large');
+      error.status = 413;
+      error.code = 'request_too_large';
+      throw error;
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, byteLength);
 }
 
 function getRequestPath(req) {
@@ -429,6 +469,7 @@ export function createRequestHandler(options = {}) {
     translationHistoryController,
     meetingReadController,
     meetingCheckpointService,
+    sessionAudioArtifactRepository,
     translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
@@ -454,6 +495,7 @@ export function createRequestHandler(options = {}) {
       translationHistoryController,
       meetingReadController,
       meetingCheckpointService,
+      sessionAudioArtifactRepository,
       translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
@@ -471,7 +513,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -503,6 +545,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
     try {
       for (const record of await sessionRepository.listSessionRecords()) {
+        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
         await sessionRepository.deleteSessionRecord(record.id);
       }
       statusCode = 204;
@@ -587,6 +630,32 @@ async function handleRequestWithSessionReadController(
 
       statusCode = 200;
       sendJson(res, statusCode, meeting, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isMeetingAudioPath(path)) {
+    try {
+      const { meetingId, kind } = parseMeetingAudioPath(path);
+      const artifact = await readMeetingAudioArtifact({ sessionRepository, sessionAudioArtifactRepository, meetingId, kind });
+      if (!artifact) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+
+      statusCode = 200;
+      sendBinary(res, statusCode, artifact.bytes, {
+        contentType: artifact.metadata.mimeType,
+        fileName: artifact.metadata.fileName,
+        requestId
+      });
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -727,6 +796,70 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && isSessionAudioPath(path)) {
+    try {
+      const { sessionId, kind } = parseSessionAudioPath(path);
+      if (req.headers?.['content-type']?.split(';')[0] !== 'audio/wav') throw createHttpError('invalid_request');
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+      if (!existing?.sessionRecord) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+      const bytes = await readBinary(req);
+      if (bytes.byteLength === 0) throw createHttpError('invalid_request');
+      const metadata = await sessionAudioArtifactRepository.save({
+        sessionId,
+        kind,
+        bytes,
+        fileName: String(req.headers?.['x-file-name'] || '')
+      });
+      const audioArtifacts = {
+        ...(existing.sessionRecord.audioArtifacts || {}),
+        [kind]: metadata
+      };
+      const updated = await sessionRepository.updateSessionRecord(sessionId, { audioArtifacts });
+      statusCode = 201;
+      sendJson(res, statusCode, {
+        artifact: sanitizeAudioArtifactsForDTO(updated.audioArtifacts, { sessionId })[kind]
+      }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isSessionAudioPath(path)) {
+    try {
+      const { sessionId, kind } = parseSessionAudioPath(path);
+      const detail = await sessionRepository.getSessionRecord(sessionId);
+      const metadata = detail?.sessionRecord?.audioArtifacts?.[kind];
+      if (!metadata) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+      const artifact = await sessionAudioArtifactRepository.read(metadata);
+      statusCode = 200;
+      sendBinary(res, statusCode, artifact.bytes, {
+        contentType: artifact.metadata.mimeType,
+        fileName: artifact.metadata.fileName,
+        requestId
+      });
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (req.method === 'DELETE' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
     try {
       let sessionId;
@@ -744,6 +877,7 @@ async function handleRequestWithSessionReadController(
         return;
       }
 
+      await sessionAudioArtifactRepository?.deleteMany?.(existing.sessionRecord.audioArtifacts);
       const deleted = await sessionRepository.deleteSessionRecord(sessionId);
 
       if (!deleted) {
@@ -1074,6 +1208,34 @@ function isSessionRetranslationPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/retranslations') && path.length > '/api/sessions//retranslations'.length;
 }
 
+function isSessionAudioPath(path) {
+  return path.startsWith('/api/sessions/') && path.includes('/audio/') && path.length > '/api/sessions//audio/'.length;
+}
+
+function parseSessionAudioPath(path) {
+  const prefix = '/api/sessions/';
+  const separator = path.indexOf('/audio/', prefix.length);
+  if (separator <= prefix.length) throw createHttpError('invalid_request');
+  return {
+    sessionId: safeDecodePathComponent(path.slice(prefix.length, separator)),
+    kind: validateAudioArtifactKind(path.slice(separator + '/audio/'.length))
+  };
+}
+
+function isMeetingAudioPath(path) {
+  return path.startsWith('/api/meetings/') && path.includes('/audio/') && path.length > '/api/meetings//audio/'.length;
+}
+
+function parseMeetingAudioPath(path) {
+  const prefix = '/api/meetings/';
+  const separator = path.indexOf('/audio/', prefix.length);
+  if (separator <= prefix.length) throw createHttpError('invalid_request');
+  return {
+    meetingId: safeDecodePathComponent(path.slice(prefix.length, separator)),
+    kind: validateAudioArtifactKind(path.slice(separator + '/audio/'.length))
+  };
+}
+
 function isMeetingDetailPath(path) {
   const prefix = '/api/meetings/';
   if (!path.startsWith(prefix) || path.length <= prefix.length) {
@@ -1081,6 +1243,22 @@ function isMeetingDetailPath(path) {
   }
 
   return !path.slice(prefix.length).includes('/');
+}
+
+async function readMeetingAudioArtifact({ sessionRepository, sessionAudioArtifactRepository, meetingId, kind }) {
+  const records = await sessionRepository.listSessionRecords();
+  const record = [...records]
+    .filter((sessionRecord) => sessionRecord?.meetingId === meetingId && sessionRecord.audioArtifacts?.[kind])
+    .sort((left, right) => timestampValue(left.startedAt) - timestampValue(right.startedAt))[0];
+  const metadata = record?.audioArtifacts?.[kind];
+  if (!metadata) return null;
+  return sessionAudioArtifactRepository.read(metadata);
+}
+
+function timestampValue(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function isMeetingSegmentsPath(path) {

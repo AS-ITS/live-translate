@@ -1,5 +1,11 @@
 # Changelog
 
+- Translation History audio artifacts: finalized translated audio, and optional
+  original speaker recording when enabled, are now uploaded to backend file
+  storage when a Session ends. Session and Long Meeting detail views expose
+  saved WAV download links from history, with Meeting downloads resolving the
+  whole-meeting artifact.
+
 - Translation History navigation merge: the visible history navigation is now a
   single `#history` / 翻譯紀錄 entry. The page shows regular saved translation
   Sessions and Long Meeting summaries in one chronological list, while the
@@ -140,6 +146,15 @@
 ## Unreleased
 
 ### Changed
+
+- Original speaker audio recording now defaults off and can be enabled before
+  starting a live session; disabling it still allows live translation while
+  preventing local original-audio download creation.
+
+- Live glossary instructions now explicitly ask Gemini to use configured terms
+  in translated speech audio as well as output transcription, while the browser
+  still applies deterministic subtitle replacement. The live reading headings
+  now use 原文逐字稿 / 翻譯逐字稿.
 
 - Production startup now uses `npm run start` to run the Node server in
   production mode, serving both `/api/*` and built `dist/` frontend assets.

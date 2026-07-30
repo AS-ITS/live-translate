@@ -372,10 +372,11 @@ replacement: `source` is the text to find in translated subtitles, and
 when explicitly provided, but current glossary entries omit it from stored JSON
 when there are no aliases.
 
-Glossary replacement is applied only to translated subtitle text for live output
-and saved retranslation output. It does not rewrite source transcripts and does
-not post-process translated audio. Gemini glossary instructions may still help
-provider output, but subtitle replacement is the deterministic behavior.
+Glossary replacement is applied deterministically to translated subtitle text
+for live output and saved retranslation output. Live glossary instructions also
+ask Gemini to use the configured terms in translated speech audio, but the
+frontend does not post-process generated audio after Gemini returns it. Source
+transcripts are not rewritten.
 
 ## Execution Control
 
@@ -527,6 +528,59 @@ preserves the recognized source-language text without translation or local
 rewriting. Partial live transcript chunks are excluded unless they were
 finalized during turn completion, Stop, or session finalization.
 
+When finalized WAV audio artifacts were persisted, Session detail includes
+download metadata:
+
+```js
+{
+  audioArtifacts: {
+    input: {
+      kind: "input",
+      mimeType: "audio/wav",
+      byteLength,
+      fileName,
+      createdAt,
+      downloadUrl
+    },
+    translation: {
+      kind: "translation",
+      mimeType: "audio/wav",
+      byteLength,
+      fileName,
+      createdAt,
+      downloadUrl
+    }
+  }
+}
+```
+
+`input` exists only when the user enabled original speaker recording and the
+artifact uploaded successfully. `translation` exists when translated audio was
+produced and uploaded successfully. Storage paths are never exposed.
+
+## `POST /api/sessions/:sessionId/audio/:kind`
+
+Uploads one finalized WAV audio artifact for a Session. `kind` must be `input`
+or `translation`. The request body is binary `audio/wav`; `X-File-Name` may
+provide the browser-generated download filename. Empty bodies, unsupported
+kinds, unsupported content types, and oversized bodies are rejected.
+
+The endpoint updates the SessionRecord `audioArtifacts` metadata and returns the
+public artifact metadata with its download URL. Upload failures do not affect the
+Live API session or transcript persistence.
+
+## `GET /api/sessions/:sessionId/audio/:kind`
+
+Downloads one persisted Session audio artifact as `audio/wav`. Missing Sessions
+or missing artifacts return `404 session_not_found`.
+
+## `GET /api/meetings/:meetingId/audio/:kind`
+
+Downloads the whole-meeting audio artifact for a Long Meeting. The backend
+resolves the SessionRecord associated with the Meeting and serves its persisted
+`input` or `translation` artifact. Missing Meetings or missing artifacts return
+`404 session_not_found`.
+
 The detailed session-scoped history is also available from `GET
 /api/sessions/:sessionId/translations`, optionally filtered by an allowlisted
 `targetLanguageCode`. Source-language detection is exposed there as canonical
@@ -554,10 +608,10 @@ outputs return `404 translation_output_not_found`. Malformed identifiers return
 
 ## `DELETE /api/sessions/:sessionId`
 
-Deletes one finalized Session history record and its related transcript items.
-The endpoint is intended for history consumers only; it does not affect any
-active Live API session, microphone resource, token flow, language preference,
-or current transcript state.
+Deletes one finalized Session history record, its related transcript items, and
+any persisted audio artifacts. The endpoint is intended for history consumers
+only; it does not affect any active Live API session, microphone resource, token
+flow, language preference, or current transcript state.
 
 Successful deletion returns:
 
@@ -641,7 +695,8 @@ Fields:
   same instruction.
 - `liveGlossaryEntries`: The same live-scoped glossary entries resolved for the
   requested target language. The browser uses these for deterministic translated
-  subtitle replacement; source transcripts and translated audio are unchanged.
+  subtitle replacement. Translated audio follows the server-provided Gemini
+  glossary instruction and is not post-processed by the browser.
 
 ## Validation Rules
 

@@ -18,6 +18,7 @@ export function createFileSessionRepository({ filePath, fileSystem, now, idFacto
   assertFileSystem(fileSystem);
 
   let mutationQueue = Promise.resolve();
+  let cachedStorage = null;
 
   return Object.freeze({
     async createSessionRecord(input = {}) {
@@ -79,12 +80,12 @@ export function createFileSessionRepository({ filePath, fileSystem, now, idFacto
     },
 
     async listSessionRecords() {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       return storage.records.map(clonePlain);
     },
 
     async getSessionRecord(id) {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       const record = storage.records.find((stored) => stored.id === id);
       if (!record) return null;
 
@@ -107,14 +108,27 @@ export function createFileSessionRepository({ filePath, fileSystem, now, idFacto
 
   function mutate(operation) {
     const nextMutation = mutationQueue.then(async () => {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readMutableStorage();
       const result = await operation(storage);
-      await writeStorage({ filePath, fileSystem, storage });
+      cachedStorage = await writeStorage({ filePath, fileSystem, storage });
       return result;
     });
 
     mutationQueue = nextMutation.catch(() => {});
     return nextMutation;
+  }
+
+  async function readCachedStorage() {
+    if (cachedStorage) {
+      return cachedStorage;
+    }
+
+    cachedStorage = await readStorage({ filePath, fileSystem });
+    return cachedStorage;
+  }
+
+  async function readMutableStorage() {
+    return clonePlain(await readCachedStorage());
   }
 }
 
@@ -146,6 +160,7 @@ async function writeStorage({ filePath, fileSystem, storage }) {
   const temporaryPath = `${filePath}.tmp`;
   await fileSystem.writeFile(temporaryPath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
   await fileSystem.rename(temporaryPath, filePath);
+  return normalized;
 }
 
 function normalizeStorage(value) {

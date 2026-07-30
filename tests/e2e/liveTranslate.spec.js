@@ -11,6 +11,8 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
     window.__mockAudioContexts = [];
+    window.__mockAudioProcessors = [];
+    window.__mockMediaRecorders = [];
 
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -45,7 +47,9 @@ test.beforeEach(async ({ page }) => {
       }
 
       createScriptProcessor() {
-        return { connect() {}, disconnect() {}, onaudioprocess: null };
+        const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+        window.__mockAudioProcessors.push(processor);
+        return processor;
       }
 
       createBuffer() {
@@ -75,6 +79,44 @@ test.beforeEach(async ({ page }) => {
 
     window.AudioContext = MockAudioContext;
     window.webkitAudioContext = MockAudioContext;
+
+    class MockMediaRecorder {
+      static isTypeSupported(mimeType) {
+        return mimeType === 'audio/webm;codecs=opus' || mimeType === 'audio/webm';
+      }
+
+      constructor(stream, options = {}) {
+        this.stream = stream;
+        this.mimeType = options.mimeType || 'audio/webm';
+        this.state = 'inactive';
+        this.ondataavailable = null;
+        this.onerror = null;
+        this.onstop = null;
+        window.__mockMediaRecorders.push(this);
+      }
+
+      start() {
+        this.state = 'recording';
+      }
+
+      stop() {
+        if (this.state === 'inactive') return;
+        this.state = 'inactive';
+        const tracks = typeof this.stream?.getTracks === 'function' ? this.stream.getTracks() : [];
+        if (!tracks.every((track) => track.stopped)) {
+          this.ondataavailable?.({
+            data: new Blob([`audio-${window.__mockMediaRecorders.length}`], { type: this.mimeType })
+          });
+        }
+        this.onstop?.({});
+      }
+
+      emitError(message = 'mock recorder error') {
+        this.onerror?.({ error: new Error(message) });
+      }
+    }
+
+    window.MediaRecorder = MockMediaRecorder;
   });
 
   await page.route('**/api/live-token', async (route) => {
@@ -153,7 +195,7 @@ function retranslationPage(page) {
   return page.locator('.retranslation-workflow');
 }
 
-async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
+async function mockMeetingCheckpointApi(page, { failCheckpoint = false, waitForSegmentList = null } = {}) {
   const checkpointRequests = [];
   const rolloverRequests = [];
   const recoverRequests = [];
@@ -325,6 +367,7 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false } = {}) {
     }
 
     if (method === 'GET' && url.pathname === '/api/meetings/meeting-1/segments') {
+      await waitForSegmentList?.();
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -395,6 +438,51 @@ async function emitPartialTranscript(page, sourceText = 'partial source', transl
     },
     { sourceText, translationText }
   );
+}
+
+async function emitInterimInputWithOutput(page, sourceText = 'interim source', translationText = 'interim translation') {
+  await page.evaluate(
+    ({ sourceText, translationText }) => {
+      window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+        serverContent: {
+          interimInputTranscription: { text: sourceText },
+          outputTranscription: { text: translationText }
+        }
+      });
+    },
+    { sourceText, translationText }
+  );
+}
+
+async function emitOutputAudio(page, bytes = [1, 0, 255, 127]) {
+  await page.evaluate((audioBytes) => {
+    const data = btoa(String.fromCharCode(...audioBytes));
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        modelTurn: {
+          parts: [{
+            inlineData: {
+              data,
+              mimeType: 'audio/pcm;rate=24000'
+            }
+          }]
+        }
+      }
+    });
+  }, bytes);
+}
+
+async function emitMicrophoneAudio(page, sampleValue = 0.25) {
+  await page.evaluate((value) => {
+    const processor = window.__mockAudioProcessors.at(-1);
+    processor?.onaudioprocess?.({
+      inputBuffer: {
+        getChannelData() {
+          return new Float32Array(1600).fill(value);
+        }
+      }
+    });
+  }, sampleValue);
 }
 
 function liveResourceDiagnostics() {
@@ -577,6 +665,30 @@ test('active session is not shown while listening', async ({ page }) => {
   await expect(historyPanel(page).getByRole('button', { name: '查看詳細資料' })).toHaveCount(0);
 });
 
+test('missing microphone keeps a retryable error visible', async ({ page }) => {
+  let resolveSegmentList;
+  const segmentListLoaded = new Promise((resolve) => {
+    resolveSegmentList = resolve;
+  });
+  await mockMeetingCheckpointApi(page, { waitForSegmentList: () => segmentListLoaded });
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = async () => {
+      throw new DOMException('No microphone device found', 'NotFoundError');
+    };
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+
+  await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
+  await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
+  await expect.poll(() => page.liveTokenRequests.length).toBe(0);
+  resolveSegmentList();
+  await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
+  await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
+});
+
 test('starts and stops a mocked Gemini Live translation session', async ({ page }) => {
   page.liveGlossaryEntries = [
     { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
@@ -621,16 +733,95 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
     responseModalities: ['AUDIO']
   });
   await emitPartialTranscript(page, '麥克風', 'microphone and mic');
+  await emitMicrophoneAudio(page);
+  await emitOutputAudio(page);
   await expect(page.locator('.transcript-panel').nth(0).locator('.transcript-current')).toContainText('麥克風');
   await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).toContainText('Alan speak and Alan speak');
   await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-current')).not.toContainText('microphone and mic');
 
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
+  await expect(page.getByText('未錄製講者原音。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => window.__mockMediaRecorders.length)).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
+
+  const translatedDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載翻譯語音' }).click();
+  const translatedDownload = await translatedDownloadPromise;
+  expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await expect(sessionDetail(page).getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
+  await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+  const savedTranslatedDownloadPromise = page.waitForEvent('download');
+  await sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' }).click();
+  const savedTranslatedDownload = await savedTranslatedDownloadPromise;
+  expect(savedTranslatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+});
+
+test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByLabel('錄製講者原音').check();
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'before pause source', 'before pause translation');
+
+  await page.getByRole('button', { name: '暫停' }).click();
+  await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(page.getByText('before pause source')).toBeVisible();
+  await expect(page.getByText('before pause translation')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeDisabled();
+  await openHistoryPage(page);
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
+
+  await openLivePage(page);
+  await page.getByRole('button', { name: '繼續' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
+  await expect(page.getByText('before pause source')).toBeVisible();
+  await emitMicrophoneAudio(page);
+  await emitFinalTranscript(page, 'after continue source', 'after continue translation');
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByText('after continue source')).toBeVisible();
+  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeEnabled();
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下載原始語音' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  const savedInputDownloadPromise = page.waitForEvent('download');
+  await sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' }).click();
+  const savedInputDownload = await savedInputDownloadPromise;
+  expect(savedInputDownload.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+});
+
+test('microphone recording error does not stop live translation', async ({ page }) => {
+  await page.goto('/');
+
+  await page.getByLabel('錄製講者原音').check();
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.evaluate(() => {
+    window.__mockMediaRecorders.at(-1).emitError('recording unavailable');
+  });
+
+  await expect(page.getByText('recording unavailable')).toBeVisible();
+  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
+  await emitFinalTranscript(page, 'recording failed source', 'recording failed translation');
+  await expect(page.getByText('recording failed source')).toBeVisible();
 });
 
 test('live session creates a meeting checkpoint and flushes final chunks on Stop', async ({ page }) => {
@@ -642,9 +833,10 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
   await expect(page.getByText('長會議同步：準備同步')).toBeVisible();
 
   await emitPartialTranscript(page, 'checkpoint source', 'checkpoint translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
   await expect.poll(() => checkpointRequests.length).toBe(1);
   expect(checkpointRequests[0].pendingPartial).toBeNull();
   expect(checkpointRequests[0].durableChunks.map(({ meetingId, segmentId, stream, sequence, text }) => ({
@@ -683,7 +875,7 @@ test('long meeting proactively switches through three segments and preserves con
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation');
   await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 2 筆')).toBeVisible();
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
     micTrackCount: 3,
@@ -751,7 +943,7 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await emitFinalTranscript(page, 'after resume source', 'after resume translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -762,6 +954,16 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
   await detail.getByRole('tab', { name: '文章版翻譯' }).click();
   await expect(detail.getByText('before reload translation')).toBeVisible();
   await expect(detail.getByText('after resume translation')).toBeVisible();
+});
+
+test('empty meeting resume draft does not show continue recording action', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 });
 
 test('live glossary replacement is applied to final translation article text only', async ({ page }) => {
@@ -839,8 +1041,8 @@ test('navigation keeps an active translation session and its article reading sta
 
   await openLivePage(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '原文文章' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '翻譯文章' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '原文逐字稿' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯逐字稿' })).toBeVisible();
   await expect(page.getByText('keep this source')).toBeVisible();
   await expect(page.getByText('keep this translation')).toBeVisible();
   await expect(page.getByLabel('文章版閱讀區').locator('.transcript-panel')).toHaveCount(2);
@@ -974,7 +1176,7 @@ test('downloads the active transcript through a browser download', async ({ page
   await emitFinalTranscript(page, 'download source', 'download translation');
 
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載' }).click();
+  await page.getByRole('button', { name: '下載', exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^live-translate-transcript-.*\.txt$/);
 });
@@ -1004,18 +1206,53 @@ test('Stop finalizes visible partial transcripts for export and history', async 
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitPartialTranscript(page, 'partial source on stop', 'partial translation on stop');
 
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.transcript-panel').nth(0).locator('.transcript-history-item')).toHaveCount(0);
   await expect(page.locator('.transcript-panel').nth(1).locator('.transcript-history-item')).toHaveCount(0);
   await expect(page.locator('.transcript-current')).toHaveCount(0);
   await expect(page.locator('.transcript-panel').nth(0).locator('.article-content')).toContainText('partial source on stop');
   await expect(page.locator('.transcript-panel').nth(1).locator('.article-content')).toContainText('partial translation on stop');
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
   await expect(sessionDetail(page).getByLabel('文章版翻譯').getByText('partial translation on stop')).toBeVisible();
   await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
   await expect(sessionDetail(page).getByLabel('原始逐字稿').getByText('partial source on stop')).toBeVisible();
+});
+
+test('interim input transcription keeps source visible before formal input finalizes it', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitInterimInputWithOutput(page, 'interim source before final', 'translation already available');
+
+  const sourcePanel = page.locator('.transcript-panel').nth(0);
+  const translationPanel = page.locator('.transcript-panel').nth(1);
+  await expect(sourcePanel.locator('.transcript-current')).toHaveText('辨識中…interim source before final');
+  await expect(translationPanel.locator('.transcript-current')).toHaveText('翻譯中…translation already available');
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: 'formal source after interim' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await expect(sourcePanel.locator('.transcript-current')).toHaveCount(0);
+  await expect(translationPanel.locator('.transcript-current')).toHaveCount(0);
+  await expect(sourcePanel.locator('.article-content')).toContainText('formal source after interim');
+  await expect(translationPanel.locator('.article-content')).toContainText('translation already available');
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
+  await expect(sessionDetail(page).getByLabel('原始逐字稿').getByText('formal source after interim')).toBeVisible();
+  await sessionDetail(page).getByRole('tab', { name: '文章版翻譯' }).click();
+  await expect(sessionDetail(page).getByLabel('文章版翻譯').getByText('translation already available')).toBeVisible();
 });
 
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
@@ -1026,7 +1263,7 @@ test('stopped session appears in history with language, status, and transcript s
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'hello history', '履歴');
 
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
 
   const item = historyItems(page).first();
@@ -1042,7 +1279,7 @@ test('stopped session can be deleted from history', async ({ page }) => {
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'delete source', 'delete translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
 
   await expect(historyItems(page)).toHaveCount(1);
@@ -1066,7 +1303,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await emitPartialTranscript(page, 'partial should not save', 'partial translation should not save');
   await emitFinalTranscript(page, 'saved source detail', 'saved translation detail');
 
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1157,7 +1394,7 @@ test('session detail queues retranslation and displays pending status', async ({
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello retranslation', 'live output');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1333,7 +1570,7 @@ test('completed retranslation stays out of translation history records', async (
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello complete retranslation', 'live output');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1372,16 +1609,16 @@ test('completed retranslation stays out of translation history records', async (
   await expect(outputArticle.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
   await expect(retranslationExport.getByRole('combobox', { name: '匯出格式' })).toHaveValue('txt');
   await expect(retranslationExport.getByRole('combobox', { name: '匯出內容' })).toHaveValue('translation');
-  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('srt');
-  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
-  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('both');
-  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeDisabled();
+  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeDisabled();
   await expect(retranslationExport.getByText('SRT 與 VTT 一次只能匯出一個內容。')).toBeVisible();
   await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('source');
-  await expect(retranslationExport.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await expect(resultWorkspace.getByLabel('重新翻譯閱讀區').getByText('Hello complete retranslation')).toBeVisible();
   const retranslatedContent = resultWorkspace.getByLabel('重翻逐字稿內容');
   await expect(retranslatedContent.getByText('Bonjour terminé Deuxième phrase')).toBeVisible();
@@ -1480,7 +1717,7 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello failed retranslation', 'live output');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
   await sessionDetail(page).getByLabel('重新翻譯').getByRole('button', { name: '以此原文重新翻譯' }).click();
@@ -1620,7 +1857,7 @@ test('saved SRT and VTT export are enabled when timing exists', async ({ page })
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'timed source', 'timed translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1639,7 +1876,7 @@ test('downloads a saved transcript through a browser download', async ({ page })
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'saved download source', 'saved download translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1655,7 +1892,7 @@ test('both stream is unavailable for saved SRT and VTT export', async ({ page })
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'source subtitle', 'translation subtitle');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1675,7 +1912,7 @@ test('no transcript detail shows empty state', async ({ page }) => {
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
 
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -1693,13 +1930,13 @@ test('switching saved session resets saved export controls', async ({ page }) =>
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'first source', 'first translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.getByText('已停止', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'second source', 'second translation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(2);
 
@@ -1721,7 +1958,7 @@ test('saved export controls do not alter active export controls', async ({ page 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'source export separation', 'translation export separation');
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
@@ -1793,7 +2030,7 @@ test('token expiration reconnect does not finalize history until user stops', as
   await expect(historyItems(page)).toHaveCount(0);
 
   await openLivePage(page);
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
@@ -1805,7 +2042,7 @@ test('manual Start after a finalized session does not clear previous history', a
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
 
@@ -1835,7 +2072,7 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
   await expect(historyItems(page)).toHaveCount(0);
 
   await openLivePage(page);
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.getByText('已停止', { exact: true })).toBeVisible();
 
   await openHistoryPage(page);
@@ -1862,7 +2099,7 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   });
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
@@ -1877,7 +2114,7 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 });
 
 test('token expired recovers with a fresh token and preserves transcript', async ({ page }) => {
@@ -1898,7 +2135,7 @@ test('token expired recovers with a fresh token and preserves transcript', async
   });
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
@@ -1912,10 +2149,10 @@ test('token expired recovers with a fresh token and preserves transcript', async
   expect(checkpointRequests.recoverRequests[0].body.failureCategory).toBe('token');
   expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(page.getByRole('button', { name: '停止' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeVisible();
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 });
 
 test('browser suspended recovery preserves checkpointed transcript after wake', async ({ page }) => {
@@ -1946,7 +2183,7 @@ test('browser suspended recovery preserves checkpointed transcript after wake', 
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page.getByText('before browser sleep')).toBeVisible();
   await expect(page.getByText('visible after browser wake')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 });
 
 test('auth failed shows friendly message without reconnect', async ({ page }) => {
@@ -1975,10 +2212,10 @@ test('auth failed shows friendly message without reconnect', async ({ page }) =>
   await expect(page.getByText('存取失敗', { exact: true })).toBeVisible();
   await expect(page.getByText('存取失敗。請檢查存取權杖或設定。')).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: '停止' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before auth failure')).toBeVisible();
   await expect(page.getByText('auth failure transcript')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await page.waitForTimeout(900);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(1);
@@ -2010,10 +2247,10 @@ test('rate limited shows friendly message without reconnect', async ({ page }) =
   await expect(page.getByText('請求受限', { exact: true })).toBeVisible();
   await expect(page.getByText('請求過於頻繁。請稍候再試。')).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
-  await expect(page.getByRole('button', { name: '停止' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before rate limit')).toBeVisible();
   await expect(page.getByText('rate limit transcript')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await page.waitForTimeout(900);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(1);
@@ -2030,7 +2267,7 @@ test('stop during reconnect cancels pending replacement session', async ({ page 
   });
   await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
 
-  await page.getByRole('button', { name: '停止' }).click();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await page.waitForTimeout(900);
 
@@ -2075,7 +2312,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
   });
   await expect(page.getByText('hello before failure')).toBeVisible();
   await expect(page.getByText('translated before failure')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
@@ -2086,7 +2323,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByText('hello before failure')).toBeVisible();
   await expect(page.getByText('translated before failure')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
 
   page.failLiveTokenRequestAt = null;
   await page.getByRole('button', { name: '開始' }).click();
@@ -2127,6 +2364,6 @@ test('retry exhaustion shows explicit error and preserves transcript', async ({ 
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByText('still exportable')).toBeVisible();
   await expect(page.getByText('after exhaustion')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(4);
 });

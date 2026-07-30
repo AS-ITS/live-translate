@@ -53,6 +53,10 @@ The backend must not return the real Gemini API key or any long-lived credential
 - Connect directly to Gemini Live API with the ephemeral token.
 - Send audio chunks to Gemini while the session is active.
 - Play returned translated audio.
+- Keep session-local original microphone audio and translated output audio
+  available as browser-generated WAV downloads after the session ends.
+- Upload finalized WAV audio artifacts to backend file storage so saved
+  translation history can download original and translated audio after reload.
 - Display input and output transcript updates.
 - Stop microphone tracks and close the live session when the user stops.
 - Surface recoverable errors to the user.
@@ -71,6 +75,11 @@ The backend must not return the real Gemini API key or any long-lived credential
 
 The backend must not proxy audio, store transcripts, or maintain session state in
 the MVP.
+
+Saved audio artifact persistence is separate from the live audio path. The
+browser still streams live microphone audio directly to Gemini; only finalized
+browser-generated WAV artifacts are uploaded after a session ends for later
+history downloads.
 
 ## Translation Execution Durable Queue
 

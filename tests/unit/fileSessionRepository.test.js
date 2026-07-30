@@ -61,3 +61,48 @@ test('file session repository writes deterministic schema wrapper', async () => 
   assert.equal(stored.records[0].id, 'session-1');
   assert.deepEqual(stored.transcriptItems['session-1'], []);
 });
+
+test('file session repository reuses cached storage between reads and refreshes after mutations', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-session-repo-'));
+  const filePath = join(directory, 'sessions.json');
+  const fs = await import('node:fs/promises');
+  let readCount = 0;
+  const countingFileSystem = {
+    async readFile(...args) {
+      readCount += 1;
+      return fs.readFile(...args);
+    },
+    mkdir: fs.mkdir,
+    writeFile: fs.writeFile,
+    rename: fs.rename
+  };
+  const repository = createFileSessionRepository({
+    filePath,
+    fileSystem: countingFileSystem,
+    now: () => 1000
+  });
+
+  await repository.createSessionRecord({ id: 'session-1', startedAt: 900, targetLanguageCode: 'en' });
+  assert.equal(readCount, 1);
+
+  const history = await repository.listSessionRecords();
+  const detail = await repository.getSessionRecord('session-1');
+
+  assert.equal(readCount, 1);
+  assert.deepEqual(history.map((record) => record.id), ['session-1']);
+  assert.equal(detail.sessionRecord.id, 'session-1');
+
+  await repository.appendTranscriptItem('session-1', {
+    id: 'source-1',
+    stream: 'source',
+    status: 'final',
+    text: 'cached detail',
+    sequence: 0,
+    startedAt: 900,
+    finalizedAt: 950
+  });
+  const updatedDetail = await repository.getSessionRecord('session-1');
+
+  assert.equal(readCount, 1);
+  assert.deepEqual(updatedDetail.transcriptItems.map((item) => item.text), ['cached detail']);
+});

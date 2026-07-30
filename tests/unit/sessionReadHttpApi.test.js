@@ -148,6 +148,141 @@ test('DELETE /api/sessions/:sessionId rejects malformed IDs', async () => {
   assert.equal(response.json().error.code, 'invalid_request');
 });
 
+test('POST and GET /api/sessions/:sessionId/audio/:kind persist and download session audio', async () => {
+  const calls = [];
+  const sessionRecord = historyItem({ id: 'session-1', status: 'stopped' });
+  const audioRepository = {
+    async save(input) {
+      calls.push(['save', input.sessionId, input.kind, input.bytes.toString('utf8'), input.fileName]);
+      return {
+        kind: input.kind,
+        mimeType: 'audio/wav',
+        byteLength: input.bytes.byteLength,
+        fileName: input.fileName,
+        storagePath: 'session-1/translation.wav',
+        createdAt: 1234
+      };
+    },
+    async read(metadata) {
+      calls.push(['read', metadata.storagePath]);
+      return { metadata, bytes: Buffer.from('wav-bytes') };
+    }
+  };
+  const handler = createHandler({
+    sessionAudioArtifactRepository: audioRepository,
+    sessionRepository: {
+      async getSessionRecord(id) {
+        calls.push(['get', id]);
+        return { sessionRecord, transcriptItems: [] };
+      },
+      async updateSessionRecord(id, patch) {
+        calls.push(['update', id, patch.audioArtifacts.translation.fileName]);
+        sessionRecord.audioArtifacts = patch.audioArtifacts;
+        return { ...sessionRecord };
+      }
+    }
+  });
+
+  const upload = await request(handler, {
+    method: 'POST',
+    url: '/api/sessions/session-1/audio/translation',
+    body: Buffer.from('wav-bytes'),
+    headers: { 'content-type': 'audio/wav', 'x-file-name': 'translated.wav' }
+  });
+  const uploadBody = upload.json();
+
+  assert.equal(upload.status, 201);
+  assert.equal(uploadBody.artifact.downloadUrl, '/api/sessions/session-1/audio/translation');
+
+  const download = await request(handler, {
+    method: 'GET',
+    url: '/api/sessions/session-1/audio/translation'
+  });
+
+  assert.equal(download.status, 200);
+  assert.equal(download.headers['Content-Type'], 'audio/wav');
+  assert.equal(download.body.toString('utf8'), 'wav-bytes');
+  assert.deepEqual(calls, [
+    ['get', 'session-1'],
+    ['save', 'session-1', 'translation', 'wav-bytes', 'translated.wav'],
+    ['update', 'session-1', 'translated.wav'],
+    ['get', 'session-1'],
+    ['read', 'session-1/translation.wav']
+  ]);
+});
+
+test('DELETE /api/sessions/:sessionId deletes stored audio artifacts', async () => {
+  const calls = [];
+  const audioArtifacts = {
+    translation: { kind: 'translation', storagePath: 'session-1/translation.wav' }
+  };
+  const handler = createHandler({
+    sessionAudioArtifactRepository: {
+      async deleteMany(artifacts) {
+        calls.push(['deleteAudio', artifacts]);
+      }
+    },
+    sessionRepository: {
+      async getSessionRecord(id) {
+        calls.push(['get', id]);
+        return { sessionRecord: historyItem({ id, status: 'stopped', audioArtifacts }), transcriptItems: [] };
+      },
+      async deleteSessionRecord(id) {
+        calls.push(['deleteSession', id]);
+        return true;
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session-1' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [
+    ['get', 'session-1'],
+    ['deleteAudio', audioArtifacts],
+    ['deleteSession', 'session-1']
+  ]);
+});
+
+test('GET /api/meetings/:meetingId/audio/:kind downloads linked whole-meeting audio artifact', async () => {
+  const calls = [];
+  const audioArtifacts = {
+    input: {
+      kind: 'input',
+      mimeType: 'audio/wav',
+      fileName: 'meeting-input.wav',
+      storagePath: 'session-1/input.wav'
+    }
+  };
+  const handler = createHandler({
+    sessionAudioArtifactRepository: {
+      async read(metadata) {
+        calls.push(['read', metadata.storagePath]);
+        return { metadata, bytes: Buffer.from('meeting-wav') };
+      }
+    },
+    sessionRepository: {
+      async listSessionRecords() {
+        calls.push(['list']);
+        return [
+          historyItem({ id: 'session-1', meetingId: 'meeting-1', status: 'stopped', audioArtifacts })
+        ];
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'GET', url: '/api/meetings/meeting-1/audio/input' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers['Content-Type'], 'audio/wav');
+  assert.equal(response.headers['Content-Disposition'], 'attachment; filename="meeting-input.wav"');
+  assert.equal(response.body.toString('utf8'), 'meeting-wav');
+  assert.deepEqual(calls, [
+    ['list'],
+    ['read', 'session-1/input.wav']
+  ]);
+});
+
 test('DELETE /api/sessions/:sessionId/translations/:outputId deletes formal retranslation outputs', async () => {
   const calls = [];
   const handler = createHandler({
@@ -368,6 +503,7 @@ function createHandler(serviceOverrides = {}) {
   return createRequestHandler({
     sessionReadController,
     ...(serviceOverrides.sessionRepository ? { sessionRepository: serviceOverrides.sessionRepository } : {}),
+    ...(serviceOverrides.sessionAudioArtifactRepository ? { sessionAudioArtifactRepository: serviceOverrides.sessionAudioArtifactRepository } : {}),
     ...(serviceOverrides.translationRepository ? { translationRepository: serviceOverrides.translationRepository } : {}),
     ...(serviceOverrides.translationHistory
       ? { translationHistoryController: createTranslationHistoryController(serviceOverrides.translationHistory) }
@@ -414,13 +550,13 @@ async function request(handler, { method = 'GET', url = '/api/sessions', body = 
   const response = {
     statusCode: null,
     headers: null,
-    body: '',
+    body: Buffer.alloc(0),
     writeHead(statusCode, nextHeaders) {
       this.statusCode = statusCode;
       this.headers = nextHeaders;
     },
     end(nextBody = '') {
-      this.body = nextBody;
+      this.body = Buffer.isBuffer(nextBody) ? nextBody : Buffer.from(String(nextBody));
     }
   };
 
@@ -429,13 +565,15 @@ async function request(handler, { method = 'GET', url = '/api/sessions', body = 
   return {
     status: response.statusCode,
     headers: response.headers,
-    json: () => JSON.parse(response.body || '{}')
+    body: response.body,
+    json: () => JSON.parse(response.body.toString('utf8') || '{}')
   };
 }
 
 function historyItem(overrides = {}) {
   return {
     id: overrides.id || 'session-1',
+    ...(Object.hasOwn(overrides, 'meetingId') ? { meetingId: overrides.meetingId } : {}),
     status: overrides.status || 'completed',
     startedAt: overrides.startedAt ?? 1000,
     endedAt: overrides.endedAt ?? 2000,
@@ -444,6 +582,7 @@ function historyItem(overrides = {}) {
     targetLanguageLabel: overrides.targetLanguageLabel || 'French',
     failureReason: overrides.failureReason ?? null,
     failureCategory: overrides.failureCategory ?? null,
+    audioArtifacts: overrides.audioArtifacts || {},
     transcriptSummary: overrides.transcriptSummary || {
       totalItems: 0,
       sourceFinalCount: 0,

@@ -754,6 +754,15 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await page.getByRole('button', { name: '下載翻譯語音' }).click();
   const translatedDownload = await translatedDownloadPromise;
   expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await expect(sessionDetail(page).getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
+  await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+  const savedTranslatedDownloadPromise = page.waitForEvent('download');
+  await sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' }).click();
+  const savedTranslatedDownload = await savedTranslatedDownloadPromise;
+  expect(savedTranslatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
@@ -790,6 +799,13 @@ test('pause keeps the session content and end exposes microphone recording downl
   await page.getByRole('button', { name: '下載原始語音' }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+
+  await openHistoryPage(page);
+  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  const savedInputDownloadPromise = page.waitForEvent('download');
+  await sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' }).click();
+  const savedInputDownload = await savedInputDownloadPromise;
+  expect(savedInputDownload.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
 test('microphone recording error does not stop live translation', async ({ page }) => {

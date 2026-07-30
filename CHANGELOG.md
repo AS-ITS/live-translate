@@ -1,5 +1,11 @@
 # Changelog
 
+- Translation History audio artifacts: finalized translated audio, and optional
+  original speaker recording when enabled, are now uploaded to backend file
+  storage when a Session ends. Session and Long Meeting detail views expose
+  saved WAV download links from history, with Meeting downloads resolving the
+  whole-meeting artifact.
+
 - Translation History navigation merge: the visible history navigation is now a
   single `#history` / 翻譯紀錄 entry. The page shows regular saved translation
   Sessions and Long Meeting summaries in one chronological list, while the

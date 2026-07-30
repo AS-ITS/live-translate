@@ -1,4 +1,5 @@
 import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
+import { sanitizeAudioArtifactsForDTO } from '../infrastructure/sessionAudioArtifacts.js';
 
 const TERMINAL_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
@@ -78,6 +79,7 @@ function mapSessionRecordToDetailSession(sessionRecord) {
     sourceLanguageCode: sessionRecord.sourceLanguageCode ?? null,
     selectedInputDeviceId: sessionRecord.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: sessionRecord.inputDeviceLabelSnapshot ?? null,
+    audioArtifacts: sanitizeAudioArtifactsForDTO(sessionRecord.audioArtifacts, { sessionId: sessionRecord.id }),
     transcriptSummary: copyTranscriptSummary(sessionRecord.transcriptSummary),
     recordKind: sessionRecord.recordKind ?? 'session',
     retranslatedFrom: copyRetranslationProvenance(sessionRecord.retranslatedFrom)

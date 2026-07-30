@@ -380,7 +380,7 @@ function App() {
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
-    await finalizeRawAudioRecording();
+    const inputAudioState = await finalizeRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop().catch(() => {});
     sessionRef.current = null;
@@ -391,7 +391,8 @@ function App() {
     await finalizeCurrentSessionRecord({
       status: 'stopped',
       failureReason: 'user_stop',
-      failureCategory: 'user_intent'
+      failureCategory: 'user_intent',
+      audioStates: { input: inputAudioState }
     });
     setStatus('stopped');
   }
@@ -674,16 +675,17 @@ function App() {
   function finalizeTranslatedAudioDownload(sessionId) {
     const chunks = translatedAudioChunksRef.current;
     if (chunks.length === 0) {
+      let nextState = null;
       setTranslatedAudioState((current) => (
-        current.status === 'recording' ? TRANSLATED_AUDIO_IDLE_STATE : current
+        current.status === 'recording' ? (nextState = TRANSLATED_AUDIO_IDLE_STATE) : (nextState = current)
       ));
-      return;
+      return nextState || TRANSLATED_AUDIO_IDLE_STATE;
     }
 
     try {
       const metadata = translatedAudioMetadataRef.current;
       const blob = pcm16ChunksToWavBlob(chunks, { normalizePeak: true });
-      setTranslatedAudioState({
+      const nextState = {
         status: 'ready',
         blob,
         fileName: buildTranslatedAudioFileName({
@@ -691,14 +693,18 @@ function App() {
           startedAt: metadata.startedAt
         }),
         errorMessage: ''
-      });
+      };
+      setTranslatedAudioState(nextState);
+      return nextState;
     } catch (nextError) {
-      setTranslatedAudioState({
+      const errorState = {
         status: 'error',
         blob: null,
         fileName: '',
         errorMessage: nextError?.message || '翻譯語音音檔無法建立。'
-      });
+      };
+      setTranslatedAudioState(errorState);
+      return errorState;
     }
   }
 
@@ -1078,7 +1084,7 @@ function App() {
 
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
-    finalizeTranslatedAudioDownload(sessionId);
+    const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
     activeSessionRecordIdRef.current = null;
 
     try {
@@ -1088,6 +1094,10 @@ function App() {
       if (finalized) {
         await flushSessionSnapshot(sessionId);
         await translationCommandLifecycle().recordSessionFinalized(finalized);
+        await uploadFinalizedSessionAudioArtifacts(sessionId, {
+          input: options?.audioStates?.input,
+          translation: translatedAudioFinalState
+        });
         await refreshHistoryRecords();
       }
 
@@ -1096,6 +1106,39 @@ function App() {
       return null;
     } finally {
       activeMeetingCheckpointRef.current = null;
+    }
+  }
+
+  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}) {
+    const uploads = [
+      ['input', states.input],
+      ['translation', states.translation]
+    ].filter(([, state]) => state?.status === 'ready' && state.blob);
+
+    if (uploads.length === 0) {
+      return;
+    }
+
+    try {
+      await Promise.all(uploads.map(([kind, state]) => uploadSessionAudioArtifact(sessionId, kind, state)));
+    } catch (nextError) {
+      console.error('Session audio artifact persistence failed.', nextError);
+      setError('語音紀錄無法儲存到翻譯紀錄，但目前音檔仍可在本頁下載。');
+    }
+  }
+
+  async function uploadSessionAudioArtifact(sessionId, kind, state) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'audio/wav',
+        'X-File-Name': state.fileName || ''
+      },
+      body: state.blob
+    });
+
+    if (!response.ok) {
+      throw new Error(`Session audio upload failed with HTTP ${response.status}.`);
     }
   }
 
@@ -2389,6 +2432,13 @@ function MeetingDetail({ detail }) {
         <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(detail.meeting?.transcriptSummary)}</dd></div>
       </dl>
 
+      <AudioArtifactDownloads
+        title="整場語音紀錄下載"
+        audioArtifacts={detail.audioArtifacts}
+        inputLabel="下載整場原始語音"
+        translationLabel="下載整場翻譯語音"
+      />
+
       <section className="meeting-timeline" aria-label="會議段落時間軸">
         <h4>段落時間軸</h4>
         {timeline.length === 0 ? (
@@ -3304,6 +3354,13 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         ) : null}
       </dl>
 
+      <AudioArtifactDownloads
+        title="語音紀錄下載"
+        audioArtifacts={sessionRecord.audioArtifacts}
+        inputLabel="下載原始語音紀錄"
+        translationLabel="下載翻譯語音紀錄"
+      />
+
       <ReadingContentTabs
         content={readingContent}
         selectedTab={readingTab}
@@ -3349,6 +3406,51 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
         {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
       </section>
+    </section>
+  );
+}
+
+function AudioArtifactDownloads({
+  title,
+  audioArtifacts = {},
+  inputLabel = '下載原始語音',
+  translationLabel = '下載翻譯語音'
+}) {
+  const inputArtifact = audioArtifacts?.input;
+  const translationArtifact = audioArtifacts?.translation;
+
+  return (
+    <section className="saved-export-panel" aria-label={title}>
+      <h4>{title}</h4>
+      <div className="recording-downloads">
+        <a
+          className={`button detail-button${inputArtifact?.downloadUrl ? '' : ' disabled-link'}`}
+          href={inputArtifact?.downloadUrl || '#'}
+          download={inputArtifact?.fileName || undefined}
+          aria-disabled={!inputArtifact?.downloadUrl}
+          onClick={(event) => {
+            if (!inputArtifact?.downloadUrl) event.preventDefault();
+          }}
+        >
+          <Download size={16} aria-hidden="true" />
+          {inputLabel}
+        </a>
+        <a
+          className={`button detail-button${translationArtifact?.downloadUrl ? '' : ' disabled-link'}`}
+          href={translationArtifact?.downloadUrl || '#'}
+          download={translationArtifact?.fileName || undefined}
+          aria-disabled={!translationArtifact?.downloadUrl}
+          onClick={(event) => {
+            if (!translationArtifact?.downloadUrl) event.preventDefault();
+          }}
+        >
+          <Download size={16} aria-hidden="true" />
+          {translationLabel}
+        </a>
+      </div>
+      {!inputArtifact?.downloadUrl || !translationArtifact?.downloadUrl ? (
+        <p className="export-note">只有已成功儲存的語音紀錄可下載。</p>
+      ) : null}
     </section>
   );
 }

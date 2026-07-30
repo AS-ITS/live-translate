@@ -28,10 +28,22 @@ export function createSessionRecord(input = {}, options = {}) {
     lastLifecycleState: 'listening',
     selectedInputDeviceId: input.selectedInputDeviceId || null,
     inputDeviceLabelSnapshot: input.inputDeviceLabelSnapshot || null,
+    audioArtifacts: sanitizeAudioArtifacts(input.audioArtifacts),
     transcriptSummary: summarizeTranscriptItems(input.transcriptItems || []),
     createdAt: now,
     updatedAt: now
   };
+}
+
+function sanitizeAudioArtifacts(artifacts = {}) {
+  const result = {};
+  for (const kind of ['input', 'translation']) {
+    const artifact = artifacts?.[kind];
+    if (artifact && typeof artifact === 'object' && !Array.isArray(artifact)) {
+      result[kind] = { ...artifact, kind };
+    }
+  }
+  return result;
 }
 
 export function updateSessionRecord(record, patch = {}, options = {}) {

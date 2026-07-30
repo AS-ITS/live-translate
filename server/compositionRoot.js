@@ -1,6 +1,6 @@
 import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
@@ -39,6 +39,7 @@ import { createTranslationExecutionWorkerRuntime as createDefaultTranslationExec
 import { createTranslationQueueConfiguration } from '../src/infrastructure/translationQueueConfiguration.js';
 import { createTranslationGlossary } from '../src/infrastructure/translationGlossary.js';
 import { createFileSessionRepository } from '../src/infrastructure/fileSessionRepository.js';
+import { createFileSessionAudioArtifactRepository } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
 import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
 import {
@@ -116,6 +117,9 @@ export function createApplicationDependencies(options = {}) {
     translationGlossaryFileSystem = fileSystem,
     fileSessionRepositoryFactory = createFileSessionRepository,
     sessionRepositoryFileSystem = fileSystem,
+    sessionAudioArtifactRepository,
+    sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
+    sessionAudioArtifactFileSystem = fileSystem,
     meetingRepository,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
@@ -228,9 +232,17 @@ export function createApplicationDependencies(options = {}) {
     clock
   });
   const meetingReadQueryService = meetingReadQueryServiceFactory({
-    meetingRepository: resolvedMeetingRepository
+    meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository
   });
   const meetingReadController = meetingReadControllerFactory({ meetingReadQueryService });
+  const resolvedSessionAudioArtifactRepository = Object.prototype.hasOwnProperty.call(options, 'sessionAudioArtifactRepository')
+    ? sessionAudioArtifactRepository
+    : sessionAudioArtifactRepositoryFactory({
+        directory: sessionAudioArtifactsDirectoryFor(env),
+        fileSystem: sessionAudioArtifactFileSystem,
+        clock
+      });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
@@ -241,6 +253,7 @@ export function createApplicationDependencies(options = {}) {
       translationHistoryController,
       meetingReadController,
       meetingCheckpointService,
+      sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
@@ -259,6 +272,7 @@ export function createApplicationDependencies(options = {}) {
     executionControlController,
     meetingReadQueryService,
     meetingReadController,
+    sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     glossaryController: resolvedGlossaryController,
@@ -1144,6 +1158,16 @@ function sessionRecordsFilePathFor(env = {}) {
 
 function meetingRecordsFilePathFor(env = {}) {
   return env.MEETING_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_RECORDS_FILE);
+}
+
+function sessionAudioArtifactsDirectoryFor(env = {}) {
+  if (typeof env.SESSION_AUDIO_DIR === 'string' && env.SESSION_AUDIO_DIR.trim().length > 0) {
+    return env.SESSION_AUDIO_DIR;
+  }
+  if (typeof env.SESSION_RECORDS_FILE === 'string' && env.SESSION_RECORDS_FILE.trim().length > 0) {
+    return join(dirname(env.SESSION_RECORDS_FILE), 'session-audio');
+  }
+  return join(dataDirFor(env), 'session-audio');
 }
 
 function dataDirFor(env = {}) {

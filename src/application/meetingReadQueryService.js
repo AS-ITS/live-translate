@@ -3,7 +3,7 @@ import {
   mapMeetingToHistoryListItem
 } from '../readModels/meetingReadModels.js';
 
-export function createMeetingReadQueryService({ meetingRepository } = {}) {
+export function createMeetingReadQueryService({ meetingRepository, sessionRepository } = {}) {
   assertMeetingRepository(meetingRepository);
 
   return Object.freeze({
@@ -28,10 +28,22 @@ export function createMeetingReadQueryService({ meetingRepository } = {}) {
 
       return mapMeetingToDetailDTO({
         meeting,
-        segments: await meetingRepository.listMeetingSegments(normalizedMeetingId)
+        segments: await meetingRepository.listMeetingSegments(normalizedMeetingId),
+        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId)
       });
     }
   });
+}
+
+async function audioArtifactsForMeeting(sessionRepository, meetingId) {
+  if (!sessionRepository || typeof sessionRepository.listSessionRecords !== 'function') {
+    return {};
+  }
+  const records = await sessionRepository.listSessionRecords();
+  const record = [...records]
+    .filter((sessionRecord) => sessionRecord?.meetingId === meetingId && sessionRecord.audioArtifacts)
+    .sort((left, right) => timestampValue(left.startedAt) - timestampValue(right.startedAt))[0];
+  return record?.audioArtifacts || {};
 }
 
 function compareMeetingHistoryItems(left, right) {

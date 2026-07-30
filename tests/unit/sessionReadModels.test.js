@@ -85,6 +85,33 @@ test('maps missing nullable history metadata to null', () => {
   assert.equal(item.failureCategory, null);
 });
 
+test('detail DTO exposes audio artifact download metadata without storage paths', () => {
+  const dto = mapSessionRecordDetailToDTO(detail({
+    sessionRecord: {
+      ...baseSessionRecord,
+      audioArtifacts: {
+        translation: {
+          kind: 'translation',
+          mimeType: 'audio/wav',
+          byteLength: 12,
+          fileName: 'translation.wav',
+          storagePath: 'session-1/translation.wav',
+          createdAt: 1234
+        }
+      }
+    }
+  }));
+
+  assert.deepEqual(dto.session.audioArtifacts.translation, {
+    kind: 'translation',
+    mimeType: 'audio/wav',
+    byteLength: 12,
+    fileName: 'translation.wav',
+    createdAt: 1234,
+    downloadUrl: '/api/sessions/session-1/audio/translation'
+  });
+});
+
 test('defaults missing transcriptSummary to an empty summary', () => {
   assert.deepEqual(mapSessionRecordToHistoryListItem({ id: 'session-1' }).transcriptSummary, emptySummary());
   assert.deepEqual(mapSessionRecordDetailToDTO({ sessionRecord: { id: 'session-1' }, transcriptItems: [] }).session.transcriptSummary, emptySummary());
@@ -312,6 +339,7 @@ test('detail DTO exposes expected legacy shapes', () => {
     sourceLanguageCode: null,
     selectedInputDeviceId: 'device-1',
     inputDeviceLabelSnapshot: 'Studio Mic',
+    audioArtifacts: {},
     transcriptSummary,
     recordKind: 'session',
     retranslatedFrom: null

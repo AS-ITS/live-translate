@@ -847,7 +847,6 @@ input:disabled {
 
 .session-reading-panel {
   display: grid;
-  gap: 12px;
 }
 
 .reading-tabs {
@@ -944,6 +943,7 @@ input:disabled {
 
 .saved-export-panel {
   margin-top: 16px;
+  margin-bottom: 16px;
   border: 1px solid #d8dee6;
   border-radius: 8px;
   padding: 14px;

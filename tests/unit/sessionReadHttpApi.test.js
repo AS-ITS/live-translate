@@ -3,6 +3,7 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 import { createSessionReadController } from '../../server/sessionReadController.js';
+import { createPcm16WavBytes } from '../../src/lib/audio.js';
 
 test('GET /api/sessions calls listSessionHistory exactly once', async () => {
   let listCalls = 0;
@@ -209,6 +210,139 @@ test('POST and GET /api/sessions/:sessionId/audio/:kind persist and download ses
     ['get', 'session-1'],
     ['read', 'session-1/translation.wav']
   ]);
+});
+
+test('PUT /api/sessions/:sessionId accepts large snapshots under the configured snapshot limit', async () => {
+  const calls = [];
+  const sessionRecord = historyItem({ id: 'session-large', status: 'active' });
+  const handler = createHandler({
+    sessionSnapshotMaxBytes: 20_000,
+    sessionRepository: {
+      async getSessionRecord(id) {
+        calls.push(['get', id]);
+        return calls.length === 1 ? null : { sessionRecord, transcriptItems: [] };
+      },
+      async createSessionRecord(record) {
+        calls.push(['create', record.id]);
+        return record;
+      },
+      async appendTranscriptItem(sessionId, item) {
+        calls.push(['append', sessionId, item.id]);
+        return item;
+      },
+      async updateSessionRecord(id) {
+        calls.push(['update', id]);
+        return sessionRecord;
+      },
+      async finalizeSessionRecord() {
+        throw new Error('should not finalize active snapshot');
+      }
+    }
+  });
+  const text = 'a'.repeat(12_000);
+  const body = JSON.stringify({
+    session: { ...sessionRecord, targetLanguageCode: 'fr', status: 'active' },
+    transcriptItems: [{ id: 'item-large', stream: 'source', status: 'final', text, sequence: 1 }]
+  });
+
+  const response = await request(handler, {
+    method: 'PUT',
+    url: '/api/sessions/session-large',
+    body,
+    headers: { 'content-type': 'application/json' }
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(calls, [
+    ['get', 'session-large'],
+    ['create', 'session-large'],
+    ['get', 'session-large'],
+    ['append', 'session-large', 'item-large'],
+    ['get', 'session-large'],
+    ['update', 'session-large']
+  ]);
+});
+
+test('PUT /api/sessions/:sessionId rejects snapshots over the configured snapshot limit', async () => {
+  const handler = createHandler({
+    sessionSnapshotMaxBytes: 100,
+    sessionRepository: {
+      async getSessionRecord() {
+        throw new Error('should not read oversized snapshots');
+      }
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'PUT',
+    url: '/api/sessions/session-large',
+    body: JSON.stringify({
+      session: { id: 'session-large', targetLanguageCode: 'fr', status: 'active' },
+      transcriptItems: [{ id: 'item-large', stream: 'source', status: 'final', text: 'a'.repeat(200), sequence: 1 }]
+    }),
+    headers: { 'content-type': 'application/json' }
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.json().error.code, 'request_too_large');
+});
+
+test('POST /api/sessions/:sessionId/audio/:kind/segments persists manifest and GET composes WAV download', async () => {
+  const sessionRecord = historyItem({ id: 'session-1', status: 'stopped' });
+  const segmentBytes = [
+    Buffer.from(createPcm16WavBytes(new Uint8Array([1, 0, 2, 0]), { sampleRate: 24000 })),
+    Buffer.from(createPcm16WavBytes(new Uint8Array([3, 0, 4, 0]), { sampleRate: 24000 }))
+  ];
+  const stored = new Map();
+  const audioRepository = {
+    async saveSegment(input) {
+      const storagePath = `${input.sessionId}/${input.kind}-segments/${input.segmentIndex}.wav`;
+      stored.set(storagePath, Buffer.from(input.bytes));
+      return {
+        index: input.segmentIndex,
+        byteLength: input.bytes.byteLength,
+        storagePath,
+        createdAt: 1000 + input.segmentIndex
+      };
+    },
+    async read(metadata) {
+      const bytes = Buffer.concat(metadata.segments.map((segment) => stored.get(segment.storagePath)));
+      return { metadata, bytes };
+    }
+  };
+  const handler = createHandler({
+    sessionAudioArtifactRepository: audioRepository,
+    sessionRepository: {
+      async getSessionRecord() {
+        return { sessionRecord, transcriptItems: [] };
+      },
+      async updateSessionRecord(id, patch) {
+        sessionRecord.audioArtifacts = patch.audioArtifacts;
+        return { ...sessionRecord };
+      }
+    }
+  });
+
+  for (let index = 0; index < segmentBytes.length; index += 1) {
+    const upload = await request(handler, {
+      method: 'POST',
+      url: `/api/sessions/session-1/audio/translation/segments/${index}`,
+      body: segmentBytes[index],
+      headers: { 'content-type': 'audio/wav', 'x-file-name': 'translated.wav' }
+    });
+    assert.equal(upload.status, 201);
+    assert.equal(upload.json().artifact.storagePath, undefined);
+    assert.equal(upload.json().artifact.segments[0].storagePath, undefined);
+  }
+
+  const download = await request(handler, {
+    method: 'GET',
+    url: '/api/sessions/session-1/audio/translation'
+  });
+
+  assert.equal(download.status, 200);
+  assert.equal(download.headers['Content-Type'], 'audio/wav');
+  assert.equal(download.headers['Content-Disposition'], 'attachment; filename="translated.wav"');
 });
 
 test('DELETE /api/sessions/:sessionId deletes stored audio artifacts', async () => {
@@ -507,7 +641,9 @@ function createHandler(serviceOverrides = {}) {
     ...(serviceOverrides.translationRepository ? { translationRepository: serviceOverrides.translationRepository } : {}),
     ...(serviceOverrides.translationHistory
       ? { translationHistoryController: createTranslationHistoryController(serviceOverrides.translationHistory) }
-      : {})
+      : {}),
+    ...(serviceOverrides.sessionSnapshotMaxBytes ? { sessionSnapshotMaxBytes: serviceOverrides.sessionSnapshotMaxBytes } : {}),
+    ...(serviceOverrides.sessionAudioMaxBytes ? { sessionAudioMaxBytes: serviceOverrides.sessionAudioMaxBytes } : {})
   });
 }
 

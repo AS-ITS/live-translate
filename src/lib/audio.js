@@ -111,11 +111,18 @@ export function pcm16ChunksToWavBlob(chunks = [], {
   const pcmBytes = normalizePeak
     ? normalizePcm16Peak(concatenateBytes(chunks), { targetPeak })
     : concatenateBytes(chunks);
-  const wavBytes = new Uint8Array(WAV_HEADER_BYTES + pcmBytes.byteLength);
+  const wavBytes = createPcm16WavBytes(pcmBytes, { sampleRate });
+
+  return new BlobImpl([wavBytes], { type: 'audio/wav' });
+}
+
+export function createPcm16WavBytes(pcmBytes, { sampleRate = OUTPUT_SAMPLE_RATE } = {}) {
+  const normalizedPcmBytes = pcmBytes instanceof Uint8Array ? pcmBytes : new Uint8Array(pcmBytes || []);
+  const wavBytes = new Uint8Array(WAV_HEADER_BYTES + normalizedPcmBytes.byteLength);
   const view = new DataView(wavBytes.buffer);
 
   writeAscii(view, 0, 'RIFF');
-  view.setUint32(4, 36 + pcmBytes.byteLength, true);
+  view.setUint32(4, 36 + normalizedPcmBytes.byteLength, true);
   writeAscii(view, 8, 'WAVE');
   writeAscii(view, 12, 'fmt ');
   view.setUint32(16, 16, true);
@@ -126,10 +133,40 @@ export function pcm16ChunksToWavBlob(chunks = [], {
   view.setUint16(32, 2, true);
   view.setUint16(34, 16, true);
   writeAscii(view, 36, 'data');
-  view.setUint32(40, pcmBytes.byteLength, true);
-  wavBytes.set(pcmBytes, WAV_HEADER_BYTES);
+  view.setUint32(40, normalizedPcmBytes.byteLength, true);
+  wavBytes.set(normalizedPcmBytes, WAV_HEADER_BYTES);
 
-  return new BlobImpl([wavBytes], { type: 'audio/wav' });
+  return wavBytes;
+}
+
+export function composePcm16WavSegments(wavSegments = []) {
+  const segments = wavSegments
+    .map(readPcm16WavSegment)
+    .filter((segment) => segment.pcmBytes.byteLength > 0);
+  const sampleRate = segments[0]?.sampleRate || OUTPUT_SAMPLE_RATE;
+  const pcmBytes = concatenateBytes(segments.map((segment) => segment.pcmBytes));
+  return createPcm16WavBytes(pcmBytes, { sampleRate });
+}
+
+function readPcm16WavSegment(bytes) {
+  const source = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || []);
+  if (source.byteLength < WAV_HEADER_BYTES) {
+    throw new TypeError('WAV segment is invalid.');
+  }
+  const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
+  if (asciiAt(view, 0, 4) !== 'RIFF' || asciiAt(view, 8, 4) !== 'WAVE' || asciiAt(view, 36, 4) !== 'data') {
+    throw new TypeError('WAV segment is invalid.');
+  }
+  const sampleRate = view.getUint32(24, true);
+  const dataBytes = view.getUint32(40, true);
+  const end = WAV_HEADER_BYTES + dataBytes;
+  if (end > source.byteLength) {
+    throw new TypeError('WAV segment is invalid.');
+  }
+  return {
+    sampleRate,
+    pcmBytes: source.subarray(WAV_HEADER_BYTES, end)
+  };
 }
 
 export function buildTranslatedAudioFileName({ sessionId = '', startedAt = null } = {}) {
@@ -193,6 +230,14 @@ function writeAscii(view, offset, text) {
   for (let index = 0; index < text.length; index += 1) {
     view.setUint8(offset + index, text.charCodeAt(index));
   }
+}
+
+function asciiAt(view, offset, length) {
+  let text = '';
+  for (let index = 0; index < length; index += 1) {
+    text += String.fromCharCode(view.getUint8(offset + index));
+  }
+  return text;
 }
 
 function sanitizeFilePart(value) {

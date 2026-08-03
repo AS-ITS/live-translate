@@ -68,7 +68,9 @@ const ERROR_RESPONSES = {
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
-const MAX_AUDIO_ARTIFACT_BYTES = 50 * 1024 * 1024;
+const DEFAULT_JSON_REQUEST_MAX_BYTES = 10_000;
+const SESSION_SNAPSHOT_MAX_BYTES = parseByteLimit(process.env.SESSION_SNAPSHOT_MAX_BYTES, 25 * 1024 * 1024);
+const MAX_AUDIO_ARTIFACT_BYTES = parseByteLimit(process.env.SESSION_AUDIO_MAX_BYTES, 50 * 1024 * 1024);
 
 function safeTranslationProvidersFor(env = process.env) {
   return [
@@ -116,18 +118,22 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
   res.end(buffer);
 }
 
-async function readJson(req) {
-  let raw = '';
+async function readJson(req, { maxBytes = DEFAULT_JSON_REQUEST_MAX_BYTES } = {}) {
+  const chunks = [];
+  let byteLength = 0;
   for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 10_000) {
+    const buffer = Buffer.from(chunk);
+    byteLength += buffer.byteLength;
+    if (byteLength > maxBytes) {
       const error = new Error('Request body too large');
       error.status = 413;
       error.code = 'request_too_large';
       throw error;
     }
+    chunks.push(buffer);
   }
 
+  const raw = Buffer.concat(chunks, byteLength).toString('utf8');
   if (!raw) {
     return {};
   }
@@ -157,6 +163,11 @@ async function readBinary(req, { maxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}) {
     chunks.push(buffer);
   }
   return Buffer.concat(chunks, byteLength);
+}
+
+function parseByteLimit(value, fallback) {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function getRequestPath(req) {
@@ -475,7 +486,9 @@ export function createRequestHandler(options = {}) {
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
     translationExecutionWorkerRuntime,
-    liveTokenCreator = createLiveToken
+    liveTokenCreator = createLiveToken,
+    sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
+    sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -501,7 +514,9 @@ export function createRequestHandler(options = {}) {
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
       translationExecutionWorkerRuntime,
-      liveTokenCreator
+      liveTokenCreator,
+      sessionSnapshotMaxBytes,
+      sessionAudioMaxBytes
     });
   };
 }
@@ -513,7 +528,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken } = {}
+  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -806,7 +821,7 @@ async function handleRequestWithSessionReadController(
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
         return;
       }
-      const bytes = await readBinary(req);
+      const bytes = await readBinary(req, { maxBytes: sessionAudioMaxBytes });
       if (bytes.byteLength === 0) throw createHttpError('invalid_request');
       const metadata = await sessionAudioArtifactRepository.save({
         sessionId,
@@ -817,6 +832,61 @@ async function handleRequestWithSessionReadController(
       const audioArtifacts = {
         ...(existing.sessionRecord.audioArtifacts || {}),
         [kind]: metadata
+      };
+      const updated = await sessionRepository.updateSessionRecord(sessionId, { audioArtifacts });
+      statusCode = 201;
+      sendJson(res, statusCode, {
+        artifact: sanitizeAudioArtifactsForDTO(updated.audioArtifacts, { sessionId })[kind]
+      }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isSessionAudioSegmentPath(path)) {
+    try {
+      const { sessionId, kind, segmentIndex } = parseSessionAudioSegmentPath(path);
+      if (req.headers?.['content-type']?.split(';')[0] !== 'audio/wav') throw createHttpError('invalid_request');
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+      if (!existing?.sessionRecord) {
+        statusCode = 404;
+        sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+      const bytes = await readBinary(req, { maxBytes: sessionAudioMaxBytes });
+      if (bytes.byteLength === 0) throw createHttpError('invalid_request');
+      const segment = await sessionAudioArtifactRepository.saveSegment({
+        sessionId,
+        kind,
+        segmentIndex,
+        bytes
+      });
+      const currentArtifact = existing.sessionRecord.audioArtifacts?.[kind];
+      const fileName = String(req.headers?.['x-file-name'] || currentArtifact?.fileName || `${kind}.wav`);
+      const segments = [
+        ...((currentArtifact?.storageMode === 'segmented' && Array.isArray(currentArtifact.segments))
+          ? currentArtifact.segments.filter((item) => item.index !== segment.index)
+          : []),
+        segment
+      ].sort((left, right) => left.index - right.index);
+      const artifact = {
+        kind,
+        storageMode: 'segmented',
+        mimeType: 'audio/wav',
+        byteLength: segments.reduce((total, item) => total + item.byteLength, 0),
+        fileName,
+        segments,
+        createdAt: currentArtifact?.createdAt ?? segment.createdAt,
+        updatedAt: segment.createdAt
+      };
+      const audioArtifacts = {
+        ...(existing.sessionRecord.audioArtifacts || {}),
+        [kind]: artifact
       };
       const updated = await sessionRepository.updateSessionRecord(sessionId, { audioArtifacts });
       statusCode = 201;
@@ -917,7 +987,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'PUT' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
     try {
       const sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
-      const body = await readJson(req);
+      const body = await readJson(req, { maxBytes: sessionSnapshotMaxBytes });
       if (body?.session?.id !== sessionId) throw createHttpError('invalid_request');
       const result = await createSessionSnapshotSyncService({ sessionRepository }).sync(body);
       statusCode = 200;
@@ -1209,7 +1279,7 @@ function isSessionRetranslationPath(path) {
 }
 
 function isSessionAudioPath(path) {
-  return path.startsWith('/api/sessions/') && path.includes('/audio/') && path.length > '/api/sessions//audio/'.length;
+  return path.startsWith('/api/sessions/') && path.includes('/audio/') && !path.includes('/segments/') && path.length > '/api/sessions//audio/'.length;
 }
 
 function parseSessionAudioPath(path) {
@@ -1219,6 +1289,26 @@ function parseSessionAudioPath(path) {
   return {
     sessionId: safeDecodePathComponent(path.slice(prefix.length, separator)),
     kind: validateAudioArtifactKind(path.slice(separator + '/audio/'.length))
+  };
+}
+
+function isSessionAudioSegmentPath(path) {
+  return path.startsWith('/api/sessions/') && path.includes('/audio/') && path.includes('/segments/');
+}
+
+function parseSessionAudioSegmentPath(path) {
+  const prefix = '/api/sessions/';
+  const audioSeparator = path.indexOf('/audio/', prefix.length);
+  const segmentSeparator = path.indexOf('/segments/', audioSeparator + '/audio/'.length);
+  if (audioSeparator <= prefix.length || segmentSeparator <= audioSeparator) throw createHttpError('invalid_request');
+  const rawSegmentIndex = path.slice(segmentSeparator + '/segments/'.length);
+  if (!/^\d+$/.test(rawSegmentIndex)) throw createHttpError('invalid_request');
+  const segmentIndex = Number.parseInt(rawSegmentIndex, 10);
+  if (!Number.isInteger(segmentIndex) || segmentIndex < 0) throw createHttpError('invalid_request');
+  return {
+    sessionId: safeDecodePathComponent(path.slice(prefix.length, audioSeparator)),
+    kind: validateAudioArtifactKind(path.slice(audioSeparator + '/audio/'.length, segmentSeparator)),
+    segmentIndex
   };
 }
 

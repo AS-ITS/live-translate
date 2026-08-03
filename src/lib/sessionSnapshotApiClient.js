@@ -7,7 +7,17 @@ export function createSessionSnapshotApiClient({ fetchImpl = globalThis.fetch } 
       const response = await fetchImpl(`/api/sessions/${encodeURIComponent(sessionId)}`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(snapshot)
       });
-      if (!response?.ok) throw new Error(`Session snapshot API request failed with HTTP ${response?.status}.`);
+      if (!response?.ok) {
+        const error = new Error(`Session snapshot API request failed with HTTP ${response?.status}.`);
+        error.status = response?.status;
+        try {
+          const body = await response.json();
+          error.code = body?.error?.code;
+        } catch {
+          // Keep the HTTP status as the stable fallback signal.
+        }
+        throw error;
+      }
       return response.json();
     }
   });

@@ -1108,6 +1108,7 @@ function App() {
     const sessionId = activeSessionRecordIdRef.current;
     const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
     activeSessionRecordIdRef.current = null;
+    const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
     try {
       await flushMeetingCheckpointSync();
@@ -1116,11 +1117,11 @@ function App() {
       if (finalized) {
         await flushSessionSnapshot(sessionId);
         await translationCommandLifecycle().recordSessionFinalized(finalized);
-        await uploadFinalizedSessionAudioArtifacts(sessionId, {
+        await refreshHistoryRecords();
+        void uploadFinalizedSessionAudioArtifacts(sessionId, {
           input: options?.audioStates?.input,
           translation: translatedAudioFinalState
-        });
-        await refreshHistoryRecords();
+        }, { meetingId });
       }
 
       return finalized;
@@ -1131,12 +1132,13 @@ function App() {
     }
   }
 
-  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}) {
+  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}, options = {}) {
     try {
       await Promise.all([
         states.input?.status === 'ready' ? flushAudioSegment('input', { force: true, sessionId }) : null,
         states.translation?.status === 'ready' ? flushAudioSegment('translation', { force: true, sessionId }) : null
       ].filter(Boolean));
+      await refreshAudioArtifactDetails(sessionId, options);
     } catch (nextError) {
       console.error('Session audio artifact persistence failed.', nextError);
       if (nextError?.status === 413) {
@@ -1144,6 +1146,22 @@ function App() {
         return;
       }
       setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響，目前音檔仍可在本頁下載。');
+    }
+  }
+
+  async function refreshAudioArtifactDetails(sessionId, { meetingId = null } = {}) {
+    if (!sessionId) return;
+
+    sessionDetailCacheRef.current.delete(sessionId);
+    if (selectedHistoryRecordIdRef.current === sessionId) {
+      await refreshSelectedHistoryRecordDetail(sessionId);
+    }
+
+    if (meetingId) {
+      meetingDetailCacheRef.current.delete(meetingId);
+      if (selectedMeetingIdRef.current === meetingId) {
+        await refreshSelectedMeetingDetail(meetingId);
+      }
     }
   }
 
@@ -1655,6 +1673,37 @@ function App() {
 
       setSelectedMeetingDetail(null);
       setError('會議詳細資料無法使用。');
+    }
+  }
+
+  async function refreshSelectedMeetingDetail(id) {
+    if (!id || selectedMeetingIdRef.current !== id) {
+      return false;
+    }
+
+    const requestId = meetingDetailRequestIdRef.current + 1;
+    meetingDetailRequestIdRef.current = requestId;
+
+    try {
+      const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+
+      if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
+        return false;
+      }
+
+      if (detail) {
+        meetingDetailCacheRef.current.set(id, detail);
+      } else {
+        meetingDetailCacheRef.current.delete(id);
+      }
+      setSelectedMeetingDetail(detail);
+      return true;
+    } catch {
+      if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
+        setError('會議詳細資料無法更新。');
+      }
+
+      return false;
     }
   }
 

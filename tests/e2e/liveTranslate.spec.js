@@ -693,6 +693,20 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   page.liveGlossaryEntries = [
     { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
   ];
+  let releaseTranslatedAudioUpload;
+  let markTranslatedAudioUploadStarted;
+  const translatedAudioUploadStarted = new Promise((resolve) => {
+    markTranslatedAudioUploadStarted = resolve;
+  });
+  await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
+    if (route.request().method() === 'POST') {
+      markTranslatedAudioUploadStarted();
+      await new Promise((uploadResolve) => {
+        releaseTranslatedAudioUpload = uploadResolve;
+      });
+    }
+    await route.fallback();
+  });
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
@@ -756,9 +770,18 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 
   await openHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(1);
+  await translatedAudioUploadStarted;
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
   await expect(sessionDetail(page).getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
   await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+
+  releaseTranslatedAudioUpload();
+  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute(
+    'href',
+    /\/api\/sessions\/.+\/audio\/translation/
+  );
   const savedTranslatedDownloadPromise = page.waitForEvent('download');
   await sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' }).click();
   const savedTranslatedDownload = await savedTranslatedDownloadPromise;

@@ -109,6 +109,7 @@ test('application composition wires saved transcript re-translation once through
     'meetingCheckpointService',
     'meetingReadController',
     'savedTranscriptRetranslationController',
+    'sessionAudioArtifactRepository',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',

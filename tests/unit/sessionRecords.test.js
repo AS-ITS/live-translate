@@ -38,6 +38,7 @@ test('create active session record', () => {
     lastLifecycleState: 'listening',
     selectedInputDeviceId: 'device-1',
     inputDeviceLabelSnapshot: 'Studio Mic',
+    audioArtifacts: {},
     transcriptSummary: {
       totalItems: 0,
       sourceFinalCount: 0,

@@ -48,6 +48,7 @@ test('meeting detail exposes whole-meeting audio artifact download metadata from
 
   assert.deepEqual(detail.audioArtifacts.translation, {
     kind: 'translation',
+    storageMode: 'single',
     mimeType: 'audio/wav',
     byteLength: 20,
     fileName: 'meeting-translation.wav',

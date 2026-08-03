@@ -1,20 +1,26 @@
 export const LONG_MEETING_DURATION_MS = 135 * 60 * 1000;
 export const LONG_MEETING_SEGMENT_INTERVAL_MS = 10 * 60 * 1000;
 export const LONG_MEETING_SEGMENT_COUNT = Math.ceil(LONG_MEETING_DURATION_MS / LONG_MEETING_SEGMENT_INTERVAL_MS);
+export const LONG_MEETING_SOAK_DURATION_MS = 130 * 60 * 1000;
+export const LONG_MEETING_SOAK_ROLLOVER_COUNT = 12;
+export const LONG_MEETING_SOAK_SEGMENT_COUNT = 13;
 
 export function buildLongMeetingScenario({
   meetingId = 'meeting-1',
   segmentPrefix = 'segment',
-  liveSessionPrefix = 'live-session'
+  liveSessionPrefix = 'live-session',
+  durationMs = LONG_MEETING_DURATION_MS,
+  segmentCount = Math.ceil(durationMs / LONG_MEETING_SEGMENT_INTERVAL_MS),
+  closeActionForSegment = longMeetingCloseAction
 } = {}) {
   const segments = [];
   let sequence = 1;
 
-  for (let index = 0; index < LONG_MEETING_SEGMENT_COUNT; index += 1) {
+  for (let index = 0; index < segmentCount; index += 1) {
     const segmentNumber = index + 1;
     const segmentId = `${segmentPrefix}-${segmentNumber}`;
     const startedAt = index * LONG_MEETING_SEGMENT_INTERVAL_MS;
-    const endedAt = Math.min(startedAt + LONG_MEETING_SEGMENT_INTERVAL_MS, LONG_MEETING_DURATION_MS);
+    const endedAt = Math.min(startedAt + LONG_MEETING_SEGMENT_INTERVAL_MS, durationMs);
     const sourceSequence = sequence;
     const translationSequence = sequence + 1;
     sequence += 2;
@@ -26,7 +32,7 @@ export function buildLongMeetingScenario({
       endedAt,
       liveSessionId: `${liveSessionPrefix}-${segmentNumber}`,
       nextLiveSessionId: `${liveSessionPrefix}-${segmentNumber + 1}`,
-      closeAction: longMeetingCloseAction(segmentNumber),
+      closeAction: closeActionForSegment(segmentNumber),
       chunks: [
         {
           idempotencyKey: `checkpoint:${segmentId}:source:${sourceSequence}`,
@@ -51,12 +57,26 @@ export function buildLongMeetingScenario({
   }
 
   return {
-    durationMs: LONG_MEETING_DURATION_MS,
+    durationMs,
     intervalMs: LONG_MEETING_SEGMENT_INTERVAL_MS,
     meetingId,
     segments,
     expectedChunks: segments.flatMap((segment) => segment.chunks)
   };
+}
+
+export function buildLongMeetingSoakScenario(options = {}) {
+  return buildLongMeetingScenario({
+    ...options,
+    durationMs: LONG_MEETING_SOAK_DURATION_MS,
+    segmentCount: LONG_MEETING_SOAK_SEGMENT_COUNT,
+    closeActionForSegment(segmentNumber) {
+      if (segmentNumber === 7) {
+        return { type: 'recover', failureReason: 'network_interrupted', failureCategory: 'network' };
+      }
+      return { type: 'rollover' };
+    }
+  });
 }
 
 export async function runLongMeetingCheckpointScenario({ service } = {}) {

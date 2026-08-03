@@ -693,6 +693,20 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   page.liveGlossaryEntries = [
     { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
   ];
+  let releaseTranslatedAudioUpload;
+  let markTranslatedAudioUploadStarted;
+  const translatedAudioUploadStarted = new Promise((resolve) => {
+    markTranslatedAudioUploadStarted = resolve;
+  });
+  await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
+    if (route.request().method() === 'POST') {
+      markTranslatedAudioUploadStarted();
+      await new Promise((uploadResolve) => {
+        releaseTranslatedAudioUpload = uploadResolve;
+      });
+    }
+    await route.fallback();
+  });
   await page.goto('/');
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
@@ -756,9 +770,18 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 
   await openHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(1);
+  await translatedAudioUploadStarted;
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
   await expect(sessionDetail(page).getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
   await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+
+  releaseTranslatedAudioUpload();
+  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute(
+    'href',
+    /\/api\/sessions\/.+\/audio\/translation/
+  );
   const savedTranslatedDownloadPromise = page.waitForEvent('download');
   await sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' }).click();
   const savedTranslatedDownload = await savedTranslatedDownloadPromise;
@@ -904,6 +927,47 @@ test('long meeting proactively switches through three segments and preserves con
   await expect(page.getByText('segment one source')).toBeVisible();
   await expect(page.getByText('segment two source')).toBeVisible();
   await expect(page.getByText('segment three source')).toBeVisible();
+});
+
+test('long meeting accelerated 130 minute schedule creates 13 segments without waiting', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__liveTranslateSegmentSwitchIntervalMs = 700;
+  });
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  for (let index = 0; index < 12; index += 1) {
+    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`);
+    await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
+  }
+
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
+  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation');
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 13,
+    activeMicTrackCount: 0,
+    audioContextCount: 13,
+    openAudioContextCount: 0,
+    liveSessionCount: 13,
+    openLiveSessionCount: 0
+  });
+  expect(checkpointRequests.rolloverRequests).toHaveLength(12);
+  expect(checkpointRequests.rolloverRequests.map((request) => request.currentSegmentId)).toEqual(
+    Array.from({ length: 12 }, (_, index) => `segment-${index + 1}`)
+  );
+  expect(new Set(checkpointRequests.rolloverRequests.map((request) => request.body.nextLiveSessionId)).size).toBe(12);
+  expect(checkpointRequests.flatMap((request) => request.durableChunks.map(({ segmentId, text }) => ({ segmentId, text })))).toEqual(
+    Array.from({ length: 13 }, (_, index) => [
+      { segmentId: `segment-${index + 1}`, text: `soak segment ${index + 1} source` },
+      { segmentId: `segment-${index + 1}`, text: `soak segment ${index + 1} translation` }
+    ]).flat()
+  );
 });
 
 test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {

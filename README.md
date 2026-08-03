@@ -40,6 +40,10 @@ Create local environment configuration outside version control. Common settings:
 - `LIVE_TRANSLATE_MODEL`: Gemini Live translation model.
 - `SAVED_RETRANSLATION_GEMINI_MODEL`: model for saved-session retranslation.
 - `SESSION_RECORDS_FILE`: optional override for saved session records.
+- `SESSION_SNAPSHOT_MAX_BYTES`: optional saved session snapshot JSON request
+  limit, defaults to `26214400` bytes.
+- `SESSION_AUDIO_MAX_BYTES`: optional per-request WAV upload limit, defaults to
+  `52428800` bytes.
 
 Durable queue, dead-letter queue, glossary, timeout, and provider settings are
 documented in [docs/architecture.md](docs/architecture.md) and the feature docs.

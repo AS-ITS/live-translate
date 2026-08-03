@@ -4,6 +4,12 @@ import {
   createSegmentSwitchOrchestrator,
   normalizeSegmentIntervalMs
 } from '../../src/lib/segmentSwitchOrchestrator.js';
+import {
+  LONG_MEETING_SEGMENT_INTERVAL_MS,
+  LONG_MEETING_SOAK_DURATION_MS,
+  LONG_MEETING_SOAK_ROLLOVER_COUNT,
+  LONG_MEETING_SOAK_SEGMENT_COUNT
+} from '../helpers/longMeetingScenario.js';
 
 test('segment switch orchestrator triggers scheduled segment switches', async () => {
   const timers = [];
@@ -75,3 +81,93 @@ test('normalizeSegmentIntervalMs caps the production interval at 15 minutes', ()
   assert.equal(normalizeSegmentIntervalMs(20 * 60 * 1000), 15 * 60 * 1000);
   assert.equal(normalizeSegmentIntervalMs(1000), 1000);
 });
+
+test('segment switch orchestrator simulates a 130 minute meeting with 12 ten-minute rollovers', async () => {
+  const timers = createFakeTimers();
+  const segmentLiveSessionIds = ['live-session-1'];
+  const rolloverEvents = [];
+  let currentSequence = 0;
+
+  const orchestrator = createSegmentSwitchOrchestrator({
+    intervalMs: LONG_MEETING_SEGMENT_INTERVAL_MS,
+    switchSegment: async () => {
+      const previousSequence = currentSequence;
+      currentSequence += 1;
+      const nextLiveSessionId = `live-session-${currentSequence + 1}`;
+      segmentLiveSessionIds.push(nextLiveSessionId);
+      rolloverEvents.push({
+        previousSequence,
+        nextSequence: currentSequence,
+        nextLiveSessionId,
+        elapsedMs: timers.now()
+      });
+    },
+    setTimeoutFn: timers.setTimeout,
+    clearTimeoutFn: timers.clearTimeout
+  });
+
+  orchestrator.start();
+
+  for (let index = 0; index < LONG_MEETING_SOAK_ROLLOVER_COUNT; index += 1) {
+    await timers.advanceBy(LONG_MEETING_SEGMENT_INTERVAL_MS);
+  }
+  orchestrator.cancel();
+  await timers.advanceBy(LONG_MEETING_SOAK_DURATION_MS - (LONG_MEETING_SOAK_ROLLOVER_COUNT * LONG_MEETING_SEGMENT_INTERVAL_MS));
+
+  assert.equal(timers.now(), LONG_MEETING_SOAK_DURATION_MS);
+  assert.equal(rolloverEvents.length, LONG_MEETING_SOAK_ROLLOVER_COUNT);
+  assert.equal(segmentLiveSessionIds.length, LONG_MEETING_SOAK_SEGMENT_COUNT);
+  assert.deepEqual(
+    rolloverEvents.map((event) => event.elapsedMs),
+    Array.from({ length: LONG_MEETING_SOAK_ROLLOVER_COUNT }, (_, index) => (index + 1) * LONG_MEETING_SEGMENT_INTERVAL_MS)
+  );
+  assert.deepEqual(
+    rolloverEvents.map((event) => event.nextSequence),
+    Array.from({ length: LONG_MEETING_SOAK_ROLLOVER_COUNT }, (_, index) => index + 1)
+  );
+  assert.equal(new Set(segmentLiveSessionIds).size, LONG_MEETING_SOAK_SEGMENT_COUNT);
+});
+
+function createFakeTimers() {
+  let nowMs = 0;
+  let nextId = 1;
+  const timers = new Map();
+
+  return {
+    now() {
+      return nowMs;
+    },
+    setTimeout(callback, delayMs) {
+      const id = nextId;
+      nextId += 1;
+      timers.set(id, {
+        callback,
+        dueAt: nowMs + delayMs
+      });
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+    async advanceBy(delayMs) {
+      const target = nowMs + delayMs;
+      while (true) {
+        const next = nextDueTimer(timers, target);
+        if (!next) break;
+        nowMs = next.dueAt;
+        timers.delete(next.id);
+        next.callback();
+        await Promise.resolve();
+      }
+      nowMs = target;
+      await Promise.resolve();
+    }
+  };
+}
+
+function nextDueTimer(timers, target) {
+  return Array.from(timers.entries())
+    .map(([id, timer]) => ({ id, ...timer }))
+    .filter((timer) => timer.dueAt <= target)
+    .sort((left, right) => left.dueAt - right.dueAt || left.id - right.id)[0] || null;
+}

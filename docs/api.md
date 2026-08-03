@@ -528,6 +528,26 @@ preserves the recognized source-language text without translation or local
 rewriting. Partial live transcript chunks are excluded unless they were
 finalized during turn completion, Stop, or session finalization.
 
+## `PUT /api/sessions/:sessionId`
+
+Persists a live Session snapshot. The request body is JSON:
+
+```json
+{
+  "session": { "id": "session-id", "status": "active" },
+  "transcriptItems": []
+}
+```
+
+`session.id` must match the path parameter. `transcriptItems` may contain only
+newly finalized transcript items; the server appends them idempotently by item
+id and updates session metadata/status from the `session` object. This supports
+incremental long-session syncing, so Stop does not need to resend the complete
+transcript item list.
+
+The default request limit for this route is `25MB`. `SESSION_SNAPSHOT_MAX_BYTES`
+can override it. Oversized requests return `413 request_too_large`.
+
 When finalized WAV audio artifacts were persisted, Session detail includes
 download metadata:
 
@@ -569,10 +589,23 @@ The endpoint updates the SessionRecord `audioArtifacts` metadata and returns the
 public artifact metadata with its download URL. Upload failures do not affect the
 Live API session or transcript persistence.
 
+## `POST /api/sessions/:sessionId/audio/:kind/segments/:segmentIndex`
+
+Uploads one ordered WAV segment for long Session audio. `segmentIndex` is a
+zero-based integer. Each request is limited by `SESSION_AUDIO_MAX_BYTES`, which
+defaults to `50MB`.
+
+The server stores segmented artifact metadata as a manifest under
+`audioArtifacts[kind]`. Public DTOs expose segment indexes, byte lengths, and
+timestamps, but never storage paths. Re-uploading the same `segmentIndex`
+replaces that segment's manifest entry.
+
 ## `GET /api/sessions/:sessionId/audio/:kind`
 
-Downloads one persisted Session audio artifact as `audio/wav`. Missing Sessions
-or missing artifacts return `404 session_not_found`.
+Downloads one persisted Session audio artifact as `audio/wav`. Legacy single
+artifacts are returned directly. Segmented artifacts are composed from their
+manifest into one WAV response, preserving the existing one-click download URL.
+Missing Sessions or missing artifacts return `404 session_not_found`.
 
 ## `GET /api/meetings/:meetingId/audio/:kind`
 

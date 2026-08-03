@@ -104,6 +104,7 @@ test('detail DTO exposes audio artifact download metadata without storage paths'
 
   assert.deepEqual(dto.session.audioArtifacts.translation, {
     kind: 'translation',
+    storageMode: 'single',
     mimeType: 'audio/wav',
     byteLength: 12,
     fileName: 'translation.wav',

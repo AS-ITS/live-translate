@@ -10,6 +10,10 @@ Backend environment variables:
 - `PORT`: Optional backend port. Defaults to `3000`.
 - `DATA_DIR`: Optional directory for file-backed persistence. Defaults to
   `./data` outside production and `/var/data` in production.
+- `SESSION_SNAPSHOT_MAX_BYTES`: Optional saved session snapshot JSON request
+  limit. Defaults to `26214400`.
+- `SESSION_AUDIO_MAX_BYTES`: Optional per-request WAV upload limit. Defaults to
+  `52428800`.
 - `ALLOWED_ORIGIN`: Optional CORS origin for the frontend. Defaults to
   `http://127.0.0.1:5173`.
 
@@ -20,6 +24,8 @@ GEMINI_API_KEY=your_gemini_api_key
 SAVED_RETRANSLATION_TIMEOUT_MS=30000
 PORT=3000
 DATA_DIR=./data
+SESSION_SNAPSHOT_MAX_BYTES=26214400
+SESSION_AUDIO_MAX_BYTES=52428800
 ALLOWED_ORIGIN=http://127.0.0.1:5173
 ```
 

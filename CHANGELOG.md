@@ -1,5 +1,12 @@
 # Changelog
 
+- Long recording history persistence: session snapshot JSON uploads now use a
+  configurable `SESSION_SNAPSHOT_MAX_BYTES` limit with a `25MB` default, live
+  transcript history sync sends only newly finalized items, and saved WAV audio
+  can persist as ordered segments while history downloads still return one WAV.
+  Oversized transcript or audio requests now produce clearer, independent UI
+  errors without blocking the other persistence path.
+
 - Translation History audio artifacts: finalized translated audio, and optional
   original speaker recording when enabled, are now uploaded to backend file
   storage when a Session ends. Session and Long Meeting detail views expose

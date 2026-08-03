@@ -176,6 +176,7 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       sourceLanguageCode: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic',
+      audioArtifacts: {},
       transcriptSummary: populatedSummary,
       recordKind: 'session',
       retranslatedFrom: null

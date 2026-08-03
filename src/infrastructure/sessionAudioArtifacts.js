@@ -1,8 +1,10 @@
 import { dirname, join } from 'node:path';
+import { composePcm16WavSegments } from '../lib/audio.js';
 
 export const SESSION_AUDIO_KINDS = Object.freeze(['input', 'translation']);
 const SESSION_AUDIO_KIND_SET = new Set(SESSION_AUDIO_KINDS);
 const AUDIO_MIME_TYPE = 'audio/wav';
+const SEGMENTED_STORAGE_MODE = 'segmented';
 
 export function createFileSessionAudioArtifactRepository({ directory, fileSystem, clock = () => Date.now() } = {}) {
   if (typeof directory !== 'string' || directory.trim().length === 0) {
@@ -28,6 +30,7 @@ export function createFileSessionAudioArtifactRepository({ directory, fileSystem
 
       return {
         kind: normalizedKind,
+        storageMode: 'single',
         mimeType: AUDIO_MIME_TYPE,
         byteLength: buffer.byteLength,
         fileName: safeFileName,
@@ -36,7 +39,35 @@ export function createFileSessionAudioArtifactRepository({ directory, fileSystem
       };
     },
 
+    async saveSegment({ sessionId, kind, segmentIndex, bytes }) {
+      const normalizedSessionId = validateIdPart(sessionId, 'sessionId');
+      const normalizedKind = validateKind(kind);
+      const normalizedSegmentIndex = validateSegmentIndex(segmentIndex);
+      const buffer = normalizeBytes(bytes);
+      const relativePath = `${normalizedSessionId}/${normalizedKind}-segments/${String(normalizedSegmentIndex).padStart(6, '0')}.wav`;
+      const filePath = join(directory, relativePath);
+
+      await fileSystem.mkdir(dirname(filePath), { recursive: true });
+      await fileSystem.writeFile(filePath, buffer);
+
+      return {
+        index: normalizedSegmentIndex,
+        byteLength: buffer.byteLength,
+        storagePath: relativePath,
+        createdAt: clock()
+      };
+    },
+
     async read(metadata) {
+      const sanitized = sanitizeMetadata(metadata);
+      if (sanitized?.storageMode === SEGMENTED_STORAGE_MODE) {
+        const parts = await Promise.all(sanitized.segments.map((segment) => readBytes(segment.storagePath)));
+        return {
+          metadata: sanitized,
+          bytes: Buffer.from(composePcm16WavSegments(parts))
+        };
+      }
+
       const storagePath = validateStoragePath(metadata?.storagePath);
       let bytes;
       try {
@@ -57,9 +88,14 @@ export function createFileSessionAudioArtifactRepository({ directory, fileSystem
     },
 
     async deleteMany(artifacts = {}) {
-      const targets = Object.values(artifacts || {})
-        .map((metadata) => metadata?.storagePath)
-        .filter(Boolean);
+      const targets = Object.values(artifacts || {}).flatMap((metadata) => {
+        const sanitized = sanitizeMetadata(metadata);
+        if (!sanitized) return [];
+        if (sanitized.storageMode === SEGMENTED_STORAGE_MODE) {
+          return sanitized.segments.map((segment) => segment.storagePath);
+        }
+        return [sanitized.storagePath].filter(Boolean);
+      });
       await Promise.all(targets.map(async (storagePath) => {
         try {
           await fileSystem.unlink(join(directory, validateStoragePath(storagePath)));
@@ -69,6 +105,20 @@ export function createFileSessionAudioArtifactRepository({ directory, fileSystem
       }));
     }
   });
+
+  async function readBytes(storagePath) {
+    try {
+      return await fileSystem.readFile(join(directory, validateStoragePath(storagePath)));
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        const notFound = new Error('Session audio artifact not found.');
+        notFound.code = 'session_not_found';
+        notFound.status = 404;
+        throw notFound;
+      }
+      throw error;
+    }
+  }
 }
 
 export function audioArtifactDownloadUrl({ sessionId, kind, meetingId } = {}) {
@@ -84,9 +134,10 @@ export function sanitizeAudioArtifactsForDTO(artifacts = {}, { sessionId, meetin
   for (const kind of SESSION_AUDIO_KINDS) {
     const metadata = sanitizeMetadata(artifacts?.[kind]);
     if (metadata) {
-      const { storagePath, ...publicMetadata } = metadata;
+      const { storagePath, segments, ...publicMetadata } = metadata;
       result[kind] = {
         ...publicMetadata,
+        ...(segments ? { segments: segments.map(({ storagePath: _storagePath, ...segment }) => segment) } : {}),
         downloadUrl: audioArtifactDownloadUrl({ sessionId, meetingId, kind })
       };
     }
@@ -104,14 +155,44 @@ function sanitizeMetadata(metadata) {
   }
   const kind = SESSION_AUDIO_KIND_SET.has(metadata.kind) ? metadata.kind : null;
   if (!kind) return null;
+  if (metadata.storageMode === SEGMENTED_STORAGE_MODE) {
+    return {
+      kind,
+      storageMode: SEGMENTED_STORAGE_MODE,
+      mimeType: AUDIO_MIME_TYPE,
+      byteLength: Number.isFinite(metadata.byteLength) ? metadata.byteLength : 0,
+      fileName: sanitizeFileName(metadata.fileName) || `${kind}.wav`,
+      segments: sanitizeSegments(metadata.segments),
+      createdAt: metadata.createdAt ?? null,
+      updatedAt: metadata.updatedAt ?? null
+    };
+  }
   return {
     kind,
+    storageMode: metadata.storageMode === 'single' ? 'single' : 'single',
     mimeType: metadata.mimeType === AUDIO_MIME_TYPE ? AUDIO_MIME_TYPE : AUDIO_MIME_TYPE,
     byteLength: Number.isFinite(metadata.byteLength) ? metadata.byteLength : 0,
     fileName: sanitizeFileName(metadata.fileName) || `${kind}.wav`,
     storagePath: typeof metadata.storagePath === 'string' ? metadata.storagePath : '',
     createdAt: metadata.createdAt ?? null
   };
+}
+
+function sanitizeSegments(segments = []) {
+  if (!Array.isArray(segments)) return [];
+  return segments
+    .map((segment) => {
+      const index = Number.isInteger(segment?.index) && segment.index >= 0 ? segment.index : null;
+      if (index === null || typeof segment?.storagePath !== 'string') return null;
+      return {
+        index,
+        byteLength: Number.isFinite(segment.byteLength) ? segment.byteLength : 0,
+        storagePath: segment.storagePath,
+        createdAt: segment.createdAt ?? null
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.index - right.index);
 }
 
 function validateKind(kind) {
@@ -142,6 +223,17 @@ function validateStoragePath(value) {
     throw error;
   }
   return value;
+}
+
+function validateSegmentIndex(value) {
+  const segmentIndex = Number(value);
+  if (!Number.isInteger(segmentIndex) || segmentIndex < 0) {
+    const error = new Error('Invalid session audio segment index.');
+    error.code = 'invalid_request';
+    error.status = 400;
+    throw error;
+  }
+  return segmentIndex;
 }
 
 function normalizeBytes(bytes) {

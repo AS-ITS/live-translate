@@ -63,6 +63,8 @@ const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'gl
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
+const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
+const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
@@ -143,9 +145,12 @@ function App() {
   const pendingMicrophoneStreamRef = useRef(null);
   const recordingControllerRef = useRef(null);
   const inputAudioChunksRef = useRef([]);
+  const inputAudioUploadChunksRef = useRef([]);
   const inputAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const translatedAudioChunksRef = useRef([]);
+  const translatedAudioUploadChunksRef = useRef([]);
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
+  const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const transcriptRef = useRef(transcript);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
@@ -154,6 +159,7 @@ function App() {
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
+  const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
   const meetingCheckpointSyncCoordinatorRef = useRef(null);
   const segmentSwitchOrchestratorRef = useRef(null);
@@ -542,11 +548,15 @@ function App() {
       sessionId: record?.id || '',
       startedAt: record?.startedAt ?? Date.now()
     };
+    inputAudioUploadChunksRef.current = [];
+    resetAudioUploadSegment('input');
   }
 
   function resetInputAudioDownload() {
     inputAudioChunksRef.current = [];
+    inputAudioUploadChunksRef.current = [];
     inputAudioMetadataRef.current = { sessionId: '', startedAt: null };
+    resetAudioUploadSegment('input');
   }
 
   function handleInputAudioChunk(bytes) {
@@ -559,6 +569,8 @@ function App() {
     }
 
     inputAudioChunksRef.current.push(new Uint8Array(bytes));
+    inputAudioUploadChunksRef.current.push(new Uint8Array(bytes));
+    void flushAudioSegmentIfDue('input');
   }
 
   async function pauseRawAudioRecording() {
@@ -653,11 +665,15 @@ function App() {
       sessionId: record?.id || '',
       startedAt: record?.startedAt ?? Date.now()
     };
+    translatedAudioUploadChunksRef.current = [];
+    resetAudioUploadSegment('translation');
   }
 
   function resetTranslatedAudioDownload() {
     translatedAudioChunksRef.current = [];
+    translatedAudioUploadChunksRef.current = [];
     translatedAudioMetadataRef.current = { sessionId: '', startedAt: null };
+    resetAudioUploadSegment('translation');
     setTranslatedAudioState(TRANSLATED_AUDIO_IDLE_STATE);
   }
 
@@ -667,6 +683,8 @@ function App() {
     }
 
     translatedAudioChunksRef.current.push(new Uint8Array(bytes));
+    translatedAudioUploadChunksRef.current.push(new Uint8Array(bytes));
+    void flushAudioSegmentIfDue('translation');
     setTranslatedAudioState((current) => (
       current.status === 'ready'
         ? current
@@ -1044,6 +1062,7 @@ function App() {
     prepareInputAudioDownload(record);
     prepareTranslatedAudioDownload(record);
     const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
+    markPendingSessionSnapshotItems(record.id, initialItems);
     await flushSessionSnapshot(record.id);
     void translationCommandLifecycle().recordSessionStarted(record);
     if (initialItems.length > 0) {
@@ -1070,6 +1089,7 @@ function App() {
     transcriptRef.current = next;
     const activeSessionRecordId = activeSessionRecordIdRef.current;
     const appended = appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordId, current, next);
+    markPendingSessionSnapshotItems(activeSessionRecordId, appended);
     setTranscript((previous) => (
       previous === current ? next : applyTranscriptEvent(previous, update)
     ));
@@ -1088,6 +1108,7 @@ function App() {
     const sessionId = activeSessionRecordIdRef.current;
     const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
     activeSessionRecordIdRef.current = null;
+    const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
     try {
       await flushMeetingCheckpointSync();
@@ -1096,11 +1117,11 @@ function App() {
       if (finalized) {
         await flushSessionSnapshot(sessionId);
         await translationCommandLifecycle().recordSessionFinalized(finalized);
-        await uploadFinalizedSessionAudioArtifacts(sessionId, {
+        await refreshHistoryRecords();
+        void uploadFinalizedSessionAudioArtifacts(sessionId, {
           input: options?.audioStates?.input,
           translation: translatedAudioFinalState
-        });
-        await refreshHistoryRecords();
+        }, { meetingId });
       }
 
       return finalized;
@@ -1111,36 +1132,114 @@ function App() {
     }
   }
 
-  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}) {
-    const uploads = [
-      ['input', states.input],
-      ['translation', states.translation]
-    ].filter(([, state]) => state?.status === 'ready' && state.blob);
-
-    if (uploads.length === 0) {
-      return;
-    }
-
+  async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}, options = {}) {
     try {
-      await Promise.all(uploads.map(([kind, state]) => uploadSessionAudioArtifact(sessionId, kind, state)));
+      await Promise.all([
+        states.input?.status === 'ready' ? flushAudioSegment('input', { force: true, sessionId }) : null,
+        states.translation?.status === 'ready' ? flushAudioSegment('translation', { force: true, sessionId }) : null
+      ].filter(Boolean));
+      await refreshAudioArtifactDetails(sessionId, options);
     } catch (nextError) {
       console.error('Session audio artifact persistence failed.', nextError);
-      setError('語音紀錄無法儲存到翻譯紀錄，但目前音檔仍可在本頁下載。');
+      if (nextError?.status === 413) {
+        setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響，目前音檔仍可在本頁下載。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
+        return;
+      }
+      setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響，目前音檔仍可在本頁下載。');
     }
   }
 
-  async function uploadSessionAudioArtifact(sessionId, kind, state) {
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}`, {
+  async function refreshAudioArtifactDetails(sessionId, { meetingId = null } = {}) {
+    if (!sessionId) return;
+
+    sessionDetailCacheRef.current.delete(sessionId);
+    if (selectedHistoryRecordIdRef.current === sessionId) {
+      await refreshSelectedHistoryRecordDetail(sessionId);
+    }
+
+    if (meetingId) {
+      meetingDetailCacheRef.current.delete(meetingId);
+      if (selectedMeetingIdRef.current === meetingId) {
+        await refreshSelectedMeetingDetail(meetingId);
+      }
+    }
+  }
+
+  async function flushAudioSegmentIfDue(kind) {
+    const segment = audioUploadSegmentsRef.current[kind];
+    if (!segment || Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return;
+    await flushAudioSegment(kind);
+  }
+
+  async function flushAudioSegment(kind, { force = false, sessionId = activeSessionRecordIdRef.current } = {}) {
+    const chunksRef = kind === 'input' ? inputAudioUploadChunksRef : translatedAudioUploadChunksRef;
+    const metadata = kind === 'input' ? inputAudioMetadataRef.current : translatedAudioMetadataRef.current;
+    const segment = audioUploadSegmentsRef.current[kind];
+    if (!sessionId || !segment) return null;
+    if (segment.inFlight) {
+      if (!force) return null;
+      await segment.currentPromise?.catch(() => {});
+    }
+    if (chunksRef.current.length === 0) return null;
+    if (!force && Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return null;
+
+    const uploadChunks = chunksRef.current.slice();
+    chunksRef.current = [];
+    segment.inFlight = true;
+    const uploadPromise = (async () => {
+      const blob = pcm16ChunksToWavBlob(uploadChunks, {
+        sampleRate: kind === 'input' ? INPUT_SAMPLE_RATE : undefined,
+        normalizePeak: true
+      });
+      await uploadSessionAudioSegment(sessionId, kind, {
+        blob,
+        segmentIndex: segment.nextIndex,
+        fileName: kind === 'input' ? buildInputAudioFileName(metadata) : buildTranslatedAudioFileName({
+          sessionId: metadata.sessionId || sessionId,
+          startedAt: metadata.startedAt
+        })
+      });
+      segment.nextIndex += 1;
+      segment.lastFlushedAt = Date.now();
+      return true;
+    })();
+    segment.currentPromise = uploadPromise;
+    try {
+      return await uploadPromise;
+    } catch (nextError) {
+      chunksRef.current = uploadChunks.concat(chunksRef.current);
+      throw nextError;
+    } finally {
+      segment.inFlight = false;
+      if (segment.currentPromise === uploadPromise) {
+        segment.currentPromise = null;
+      }
+    }
+  }
+
+  function resetAudioUploadSegment(kind) {
+    audioUploadSegmentsRef.current[kind] = {
+      nextIndex: 0,
+      lastFlushedAt: Date.now(),
+      inFlight: false,
+      currentPromise: null
+    };
+  }
+
+  async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
+    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'audio/wav',
-        'X-File-Name': state.fileName || ''
+        'X-File-Name': fileName || ''
       },
-      body: state.blob
+      body: blob
     });
 
     if (!response.ok) {
-      throw new Error(`Session audio upload failed with HTTP ${response.status}.`);
+      const error = new Error(`Session audio segment upload failed with HTTP ${response.status}.`);
+      error.status = response.status;
+      throw error;
     }
   }
 
@@ -1223,7 +1322,25 @@ function App() {
   async function syncSessionSnapshot(sessionId) {
     const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
     if (!detail) return null;
-    return sessionSnapshotApiClientRef.current.sync({ session: detail.sessionRecord, transcriptItems: detail.transcriptItems });
+    const pendingIds = pendingSessionSnapshotItemIdsRef.current.get(sessionId) || new Set();
+    const transcriptItems = detail.transcriptItems.filter((item) => pendingIds.has(item.id));
+    const result = await sessionSnapshotApiClientRef.current.sync({ session: detail.sessionRecord, transcriptItems });
+    for (const item of transcriptItems) {
+      pendingIds.delete(item.id);
+    }
+    if (pendingIds.size === 0) {
+      pendingSessionSnapshotItemIdsRef.current.delete(sessionId);
+    }
+    return result;
+  }
+
+  function markPendingSessionSnapshotItems(sessionId, items = []) {
+    if (!sessionId || items.length === 0) return;
+    const pendingIds = pendingSessionSnapshotItemIdsRef.current.get(sessionId) || new Set();
+    for (const item of items) {
+      if (item?.id) pendingIds.add(item.id);
+    }
+    pendingSessionSnapshotItemIdsRef.current.set(sessionId, pendingIds);
   }
 
   function sessionSnapshotSyncCoordinator() {
@@ -1239,6 +1356,10 @@ function App() {
   }
 
   function scheduleSessionSnapshotSync(sessionId) {
+    if ((pendingSessionSnapshotItemIdsRef.current.get(sessionId)?.size || 0) >= SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE) {
+      void flushSessionSnapshot(sessionId);
+      return;
+    }
     sessionSnapshotSyncCoordinator().schedule(sessionId);
   }
 
@@ -1248,6 +1369,10 @@ function App() {
 
   function reportSessionSnapshotSyncError(error) {
     console.error('Session snapshot persistence failed.', error);
+    if (error?.status === 413 || error?.code === 'request_too_large') {
+      setError('翻譯紀錄內容超過伺服器保存上限，但目前逐字稿仍保留在畫面上。請調高 SESSION_SNAPSHOT_MAX_BYTES 或稍後重新儲存翻譯紀錄。');
+      return;
+    }
     setError('無法儲存翻譯紀錄，但目前逐字稿仍保留在畫面上。');
   }
 
@@ -1548,6 +1673,37 @@ function App() {
 
       setSelectedMeetingDetail(null);
       setError('會議詳細資料無法使用。');
+    }
+  }
+
+  async function refreshSelectedMeetingDetail(id) {
+    if (!id || selectedMeetingIdRef.current !== id) {
+      return false;
+    }
+
+    const requestId = meetingDetailRequestIdRef.current + 1;
+    meetingDetailRequestIdRef.current = requestId;
+
+    try {
+      const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+
+      if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
+        return false;
+      }
+
+      if (detail) {
+        meetingDetailCacheRef.current.set(id, detail);
+      } else {
+        meetingDetailCacheRef.current.delete(id);
+      }
+      setSelectedMeetingDetail(detail);
+      return true;
+    } catch {
+      if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
+        setError('會議詳細資料無法更新。');
+      }
+
+      return false;
     }
   }
 
@@ -4376,6 +4532,13 @@ function translatedAudioStatusLabel(status) {
   };
 
   return labels[status] || labels.idle;
+}
+
+function createAudioUploadSegmentState() {
+  return {
+    input: { nextIndex: 0, lastFlushedAt: Date.now(), inFlight: false, currentPromise: null },
+    translation: { nextIndex: 0, lastFlushedAt: Date.now(), inFlight: false, currentPromise: null }
+  };
 }
 
 function meetingCheckpointStatusLabel(status) {

@@ -929,6 +929,47 @@ test('long meeting proactively switches through three segments and preserves con
   await expect(page.getByText('segment three source')).toBeVisible();
 });
 
+test('long meeting accelerated 130 minute schedule creates 13 segments without waiting', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__liveTranslateSegmentSwitchIntervalMs = 700;
+  });
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  for (let index = 0; index < 12; index += 1) {
+    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`);
+    await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
+  }
+
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
+  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation');
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 13,
+    activeMicTrackCount: 0,
+    audioContextCount: 13,
+    openAudioContextCount: 0,
+    liveSessionCount: 13,
+    openLiveSessionCount: 0
+  });
+  expect(checkpointRequests.rolloverRequests).toHaveLength(12);
+  expect(checkpointRequests.rolloverRequests.map((request) => request.currentSegmentId)).toEqual(
+    Array.from({ length: 12 }, (_, index) => `segment-${index + 1}`)
+  );
+  expect(new Set(checkpointRequests.rolloverRequests.map((request) => request.body.nextLiveSessionId)).size).toBe(12);
+  expect(checkpointRequests.flatMap((request) => request.durableChunks.map(({ segmentId, text }) => ({ segmentId, text })))).toEqual(
+    Array.from({ length: 13 }, (_, index) => [
+      { segmentId: `segment-${index + 1}`, text: `soak segment ${index + 1} source` },
+      { segmentId: `segment-${index + 1}`, text: `soak segment ${index + 1} translation` }
+    ]).flat()
+  );
+});
+
 test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {
   await mockMeetingCheckpointApi(page, { failCheckpoint: true });
 

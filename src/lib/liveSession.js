@@ -8,6 +8,7 @@ import {
 } from './audio.js';
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
+import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -31,7 +32,12 @@ export class LiveTranslateSession {
     onError,
     onClose,
     onConnectionFailure,
-    liveGlossaryEntries = []
+    liveGlossaryEntries = [],
+    liveSessionId = null,
+    sessionId = null,
+    segmentId = null,
+    sessionClock = createDefaultSessionClock(),
+    onCueEvent
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
@@ -48,6 +54,12 @@ export class LiveTranslateSession {
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
+    this.liveSessionId = liveSessionId;
+    this.sessionId = sessionId;
+    this.segmentId = segmentId;
+    this.sessionClock = sessionClock;
+    this.onCueEvent = onCueEvent;
+    this.eventSequence = 0;
     this.audioContext = null;
     this.mediaStream = null;
     this.source = null;
@@ -172,6 +184,18 @@ export class LiveTranslateSession {
   handleMessage(message) {
     const content = message.serverContent;
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
+    this.eventSequence += 1;
+    for (const event of normalizeGeminiLiveCueEvents(message, {
+      liveSessionId: this.liveSessionId,
+      sessionId: this.sessionId,
+      segmentId: this.segmentId,
+      sourceLanguageCode: this.sourceLanguageCode,
+      targetLanguageCode: this.targetLanguageCode,
+      eventSequence: this.eventSequence,
+      sessionClock: this.sessionClock
+    })) {
+      this.onCueEvent?.(event);
+    }
     this.logLiveEvent('message.received', {
       event: summarizeLiveEvent(message),
       stateBefore: this.transcriptBoundaryState()
@@ -507,6 +531,14 @@ function summarizeLiveEvent(message) {
 
 function objectKeys(value) {
   return value && typeof value === 'object' ? Object.keys(value) : [];
+}
+
+function createDefaultSessionClock() {
+  const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
+  return () => {
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
+    return Math.max(0, now - startedAt);
+  };
 }
 
 function userMessageForErrorCode(code) {

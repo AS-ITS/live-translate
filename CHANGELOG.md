@@ -1,5 +1,13 @@
 # Changelog
 
+- Live subtitle cue WP1.5/WP2: strengthened the in-memory bilingual Cue
+  engine with deterministic event identity, replay-safe snapshots, normalized
+  session-relative timelines, out-of-order source/translation pairing, and
+  atomic length fallback. Gemini Live messages now pass through a dedicated
+  normalized-event adapter into Cue state while the existing transcript UI and
+  persistence paths remain unchanged. Cue persistence, history APIs, and Cue
+  UI remain deferred.
+
 - Long recording history persistence: session snapshot JSON uploads now use a
   configurable `SESSION_SNAPSHOT_MAX_BYTES` limit with a `25MB` default, live
   transcript history sync sends only newly finalized items, and saved WAV audio

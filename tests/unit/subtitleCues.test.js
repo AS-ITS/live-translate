@@ -7,6 +7,7 @@ import {
   resetSubtitleCueState,
   subtitleCuesForDisplay
 } from '../../src/lib/subtitleCues.js';
+import { normalizeGeminiLiveCueEvents } from '../../src/lib/geminiLiveCueEvent.js';
 
 test('aggregates source and translation partials into one pending cue', () => {
   let state = createSubtitleCueState();
@@ -89,7 +90,7 @@ test('Stop flush finalizes only paired source and translation cue text', () => {
   assert.equal(paired.finalCues[0].finalizedReason, 'stop');
 });
 
-test('length overflow splits paired long cue at a natural boundary', () => {
+test('length overflow finalizes the bilingual cue atomically when alignment is uncertain', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source',
@@ -103,11 +104,9 @@ test('length overflow splits paired long cue at a natural boundary', () => {
   }), { maxCueChars: 12 });
 
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText, cue.finalizedReason]), [
-    ['alpha beta', 'un deux', 'length']
+    ['alpha beta gamma delta', 'un deux trois quatre', 'length']
   ]);
-  assert.equal(state.currentCue.sourceText, 'gamma delta');
-  assert.equal(state.currentCue.translatedText, 'trois quatre');
-  assert.equal(state.currentCue.sequence, 2);
+  assert.equal(state.currentCue, null);
   assert.equal(state.nextSequence, 2);
 });
 
@@ -154,6 +153,87 @@ test('display cues include final cues followed by the current partial cue', () =
 
 test('reset clears subtitle cue state', () => {
   assert.deepEqual(resetSubtitleCueState(), createSubtitleCueState());
+});
+
+test('replayed eventId is a no-op and survives snapshot restore', () => {
+  const event = baseEvent({ eventId: 'provider:event:1', stream: 'source', text: 'hello', sessionTimeMs: 100 });
+  const first = applySubtitleCueEvent(createSubtitleCueState(), event);
+  const restored = createSubtitleCueState(first);
+  const replayed = applySubtitleCueEvent(restored, event);
+
+  assert.equal(replayed, restored);
+  assert.deepEqual(replayed.processedEventIds, ['provider:event:1']);
+  assert.equal(replayed.currentCue.sourceText, 'hello');
+});
+
+test('missing session-relative time is ignored without epoch timestamps', () => {
+  const state = createSubtitleCueState();
+  assert.equal(applySubtitleCueEvent(state, { ...baseEvent(), text: 'no clock' }), state);
+  assert.equal(applySubtitleCueEvent(state, { ...baseEvent(), text: 'no clock', now: Date.now() }), state);
+});
+
+test('minimum duration and gap normalize final cue timeline', () => {
+  let state = createSubtitleCueState();
+  const options = { minimumGapMs: 5, minimumCueDurationMs: 300 };
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's1', stream: 'source', text: 'one', sessionTimeMs: 100 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't1', stream: 'translation', text: 'uno', sessionTimeMs: 110, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's2', stream: 'source', text: 'two', sessionTimeMs: 111 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't2', stream: 'translation', text: 'dos', sessionTimeMs: 112, isFinal: true }), options);
+
+  assert.deepEqual(state.finalCues.map((cue) => [cue.startTimeMs, cue.endTimeMs]), [
+    [100, 400],
+    [405, 705]
+  ]);
+});
+
+test('source-first and translation-first partials share one cue', () => {
+  let sourceFirst = createSubtitleCueState();
+  sourceFirst = applySubtitleCueEvent(sourceFirst, baseEvent({ eventId: 'a', stream: 'source', text: 'source', sessionTimeMs: 10 }));
+  sourceFirst = applySubtitleCueEvent(sourceFirst, baseEvent({ eventId: 'b', stream: 'translation', text: 'translation', sessionTimeMs: 20 }));
+
+  let translationFirst = createSubtitleCueState();
+  translationFirst = applySubtitleCueEvent(translationFirst, baseEvent({ eventId: 'c', stream: 'translation', text: 'translation', sessionTimeMs: 10 }));
+  translationFirst = applySubtitleCueEvent(translationFirst, baseEvent({ eventId: 'd', stream: 'source', text: 'source', sessionTimeMs: 20 }));
+
+  assert.equal(sourceFirst.currentCue.sequence, 1);
+  assert.equal(translationFirst.currentCue.sequence, 1);
+  assert.equal(sourceFirst.currentCue.sourceText, translationFirst.currentCue.sourceText);
+  assert.equal(sourceFirst.currentCue.translatedText, translationFirst.currentCue.translatedText);
+});
+
+test('turnComplete and generationComplete may arrive before their counterpart transcript', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source', stream: 'source', text: 'late source', sessionTimeMs: 10 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn', turnComplete: true, sessionTimeMs: 20 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation', stream: 'translation', text: 'late translation', sessionTimeMs: 30 }));
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].finalizedReason, 'turnComplete');
+
+  state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'generation', generationComplete: true, sessionTimeMs: 5 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-2', stream: 'source', text: 'source', sessionTimeMs: 10 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-2', stream: 'translation', text: 'translation', sessionTimeMs: 12 }));
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].finalizedReason, 'generationComplete');
+});
+
+test('normalizer creates stable stream-specific IDs and control events', () => {
+  const message = {
+    eventId: 'provider-42',
+    serverContent: {
+      inputTranscription: { text: 'source' },
+      outputTranscription: { text: 'translation' },
+      turnComplete: true
+    }
+  };
+  const events = normalizeGeminiLiveCueEvents(message, {
+    liveSessionId: 'live-1', sessionId: 'session-1', segmentId: 'segment-1', sessionTimeMs: 123, eventSequence: 7
+  });
+  assert.equal(events.length, 3);
+  assert.equal(new Set(events.map((event) => event.eventId)).size, 3);
+  assert.deepEqual(events.map((event) => event.stream), ['source', 'translation', null]);
+  assert.equal(events[2].turnComplete, true);
+  assert.equal(events[0].sessionTimeMs, 123);
 });
 
 function baseEvent(overrides = {}) {

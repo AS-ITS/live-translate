@@ -49,6 +49,12 @@ import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
+  applySubtitleCueEvent,
+  createSubtitleCueState,
+  finalizePendingSubtitleCue,
+  resetSubtitleCueState
+} from './lib/subtitleCues.js';
+import {
   INPUT_SAMPLE_RATE,
   buildInputAudioFileName,
   buildTranslatedAudioFileName,
@@ -108,6 +114,7 @@ function App() {
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [transcript, setTranscript] = useState(createTranscriptState);
+  const [subtitleCueState, setSubtitleCueState] = useState(createSubtitleCueState);
   const [archivedTranscript, setArchivedTranscript] = useState(createTranscriptState);
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
   const [copiedArticleStream, setCopiedArticleStream] = useState('');
@@ -152,6 +159,8 @@ function App() {
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const transcriptRef = useRef(transcript);
+  const subtitleCueStateRef = useRef(subtitleCueState);
+  const transcriptTimeOriginRef = useRef(null);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
   const reconnectControllerRef = useRef(null);
@@ -301,7 +310,7 @@ function App() {
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
-      session = await createSession({ preserveTranscript: false });
+      session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
       await session.start();
@@ -332,6 +341,7 @@ function App() {
     await sessionRef.current?.stop();
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('pause');
     await flushMeetingCheckpointSync();
     pendingMicrophoneStreamRef.current = null;
     setStatus('paused');
@@ -350,7 +360,7 @@ function App() {
 
     let session;
     try {
-      session = await createSession({ preserveTranscript: true });
+      session = await createSession({ preserveTranscript: true, liveSessionId: generateLiveSessionId() });
       sessionRef.current = session;
       await session.start();
       await resumeRawAudioRecording();
@@ -393,6 +403,7 @@ function App() {
     await sessionRef.current?.stop().catch(() => {});
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('stop');
     await flushMeetingCheckpointSync();
     pendingMicrophoneStreamRef.current = null;
     setResumeDraft(null);
@@ -405,14 +416,19 @@ function App() {
     setStatus('stopped');
   }
 
-  async function createSession({ preserveTranscript }) {
+  async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId() }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
-      setTranscriptTimeOrigin(Date.now());
+      const sessionStartedAt = Date.now();
+      setTranscriptTimeOrigin(sessionStartedAt);
+      transcriptTimeOriginRef.current = sessionStartedAt;
       const resetTranscript = resetTranscriptState();
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
+      const resetCues = resetSubtitleCueState();
+      subtitleCueStateRef.current = resetCues;
+      setSubtitleCueState(resetCues);
       const resetArchivedTranscript = resetTranscriptState();
       archivedTranscriptSegmentsRef.current = [];
       archivedTranscriptRef.current = resetArchivedTranscript;
@@ -429,6 +445,10 @@ function App() {
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
 
     return new LiveTranslateSession({
+      liveSessionId,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      sessionClock: () => sessionTimeForSubtitleCues(),
       targetLanguageCode,
       sourceLanguageCode,
       echoTargetLanguage,
@@ -450,6 +470,7 @@ function App() {
       onInputAudioChunk: handleInputAudioChunk,
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
+      onCueEvent: applyLiveSubtitleCueEvent,
       onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
@@ -780,7 +801,7 @@ function App() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const nextLiveSessionId = generateLiveSessionId();
     let recovery;
-    const session = await createSession({ preserveTranscript: true });
+    const session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     reconnectSessionRef.current = session;
 
     try {
@@ -790,6 +811,7 @@ function App() {
 
       await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
+      flushSubtitleCues('reconnect');
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
         return;
@@ -899,7 +921,7 @@ function App() {
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
       await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
       resetActiveTranscriptForNextSegment(resumeDraft.transcriptState.nextSequence);
-      session = await createSession({ preserveTranscript: true });
+      session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
       setStatus('listening');
@@ -925,6 +947,7 @@ function App() {
     setStatus('switching-segment');
 
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('segment-rollover');
     if (segmentSwitchCancelledRef.current) return;
 
     const flushed = await flushMeetingCheckpointSync();
@@ -949,11 +972,12 @@ function App() {
 
     await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
+    flushSubtitleCues('segment-rollover');
     if (sessionRef.current === previousSession) {
       sessionRef.current = null;
     }
 
-    const nextSession = await createSession({ preserveTranscript: true });
+    const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
       await resumeRawAudioRecording();
@@ -1102,6 +1126,34 @@ function App() {
         void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
     }
+  }
+
+  function applyLiveSubtitleCueEvent(event) {
+    const current = subtitleCueStateRef.current;
+    const next = applySubtitleCueEvent(current, event, {
+      targetLanguageCode,
+      sourceLanguageCode,
+      sessionClock: () => sessionTimeForSubtitleCues()
+    });
+    if (next === current) return;
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+  }
+
+  function flushSubtitleCues(reason) {
+    const current = subtitleCueStateRef.current;
+    const next = finalizePendingSubtitleCue(current, {
+      sessionTimeMs: sessionTimeForSubtitleCues(),
+      reason
+    });
+    if (next === current) return;
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+  }
+
+  function sessionTimeForSubtitleCues() {
+    const origin = transcriptTimeOriginRef.current;
+    return Number.isFinite(origin) ? Math.max(0, Date.now() - origin) : null;
   }
 
   async function finalizeCurrentSessionRecord(options) {

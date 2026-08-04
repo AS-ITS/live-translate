@@ -135,6 +135,17 @@ node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integratio
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
+Run the Gemini Live normalized Cue flow integration test:
+
+```bash
+node --test tests/integration/liveSubtitleCue.integration.test.js
+```
+
+This test uses `LiveTranslateSession` with deterministic clock and provider
+message mocks to cover partial pairing, boundary events, Stop flush, segment
+sequence continuity, and replay de-duplication. Cue state remains in memory;
+file-backed Cue persistence and history integration are deferred.
+
 Current integration coverage:
 
 - Successful `POST /api/live-token`

@@ -20,6 +20,7 @@ import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
+import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import {
   appendNewFinalTranscriptItems,
@@ -480,7 +481,13 @@ function App() {
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
       onCueEvent: (event) => {
-        if (liveCueUpdatesAllowedRef.current) applyLiveSubtitleCueEvent(event);
+        if (!liveCueUpdatesAllowedRef.current) return;
+        const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
+          || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
+        const cueEvent = event?.stream === 'translation'
+          ? { ...event, text: applyGlossaryReplacements(event.text, activeGlossaryEntries) }
+          : event;
+        applyLiveSubtitleCueEvent(cueEvent);
       },
       onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
@@ -2384,18 +2391,18 @@ function LiveCuePanel({ cueState, isPaused, isStopped }) {
   }
 
   return (
-    <section className="cue-panel" aria-label="即時字幕">
+    <section className="cue-panel" aria-label="即時字幕" data-testid="live-cue-panel">
       <div className="cue-panel-header">
         <div>
           <h2>即時字幕</h2>
           <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
         </div>
         {!isFollowingLatest ? (
-          <button className="button detail-button" type="button" onClick={returnToLatest}>回到最新字幕</button>
+          <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
         ) : null}
       </div>
-      <div className="cue-list" ref={listRef} onScroll={handleScroll} role="log" aria-live="polite" aria-label="字幕列表">
-        {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
+      <div className="cue-list" data-testid="cue-list" ref={listRef} onScroll={handleScroll} role="log" aria-live="polite" aria-label="字幕列表">
+        {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
         {cues.map((cue) => cue.status === 'final'
           ? <FinalCueRow key={cue.cueId} cue={cue} />
           : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} />)}
@@ -2416,16 +2423,21 @@ function CueRow({ cue, partial = false }) {
   const [expanded, setExpanded] = useState(false);
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
   return (
-    <article className={`cue-row${partial ? ' cue-row-partial' : ''}${expanded ? ' cue-row-expanded' : ''}`} aria-label={label}>
+    <article
+      className={`cue-row${partial ? ' cue-row-partial' : ''}${expanded ? ' cue-row-expanded' : ''}`}
+      data-testid={partial ? 'cue-partial-row' : 'cue-final-row'}
+      data-cue-id={cue.cueId || undefined}
+      aria-label={label}
+    >
       <div className="cue-row-meta">
         <span className="cue-timecode">
-          {formatCueTimecode(cue.startTimeMs)} → {formatCueTimecode(cue.endTimeMs)}
+          <span data-testid="cue-timecode">{formatCueTimecode(cue.startTimeMs)} → {formatCueTimecode(cue.endTimeMs)}</span>
         </span>
         {partial ? <span className="cue-partial-status">{label}</span> : null}
       </div>
       <button className="cue-text-toggle" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="cue-source">{cue.sourceText || '—'}</span>
-        <span className="cue-translation">{cue.translatedText || '—'}</span>
+        <span className="cue-source" data-testid="cue-source-text">{cue.sourceText || '—'}</span>
+        <span className="cue-translation" data-testid="cue-translated-text">{cue.translatedText || '—'}</span>
         <span className="sr-only">{expanded ? '收合字幕' : '展開查看完整字幕'}</span>
       </button>
     </article>
@@ -3745,7 +3757,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
       />
 
       {historyCues.length > 0 ? (
-        <section className="session-cue-section" aria-label="已儲存字幕">
+        <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
           <h4>字幕</h4>
           <div className="cue-list cue-list-history">
             {historyCues.map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}
@@ -3905,7 +3917,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
   const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '文章版翻譯';
 
   return (
-    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容">
+    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback">
       <div className="reading-tabs" role="tablist" aria-label="歷史紀錄內容切換">
         <button
           className={`reading-tab${selectedTab === 'translationArticle' ? ' active' : ''}`}

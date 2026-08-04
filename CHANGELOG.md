@@ -1,5 +1,12 @@
 # Changelog
 
+- WP4 Closeout: migrated legacy live/history E2E assertions to the Cue UI
+  contract. Coverage now verifies paired source/translation rows, final-only
+  history Cues, reload fallback behavior, partial/final transitions, Stop
+  flush, and follow-latest scroll protection. Existing live glossary replacement
+  behavior is also applied to Cue translation display. The complete E2E suite
+  passes 52/52 without restoring the legacy article tab.
+
 - Live subtitle cue WP3: final Cues and recovery-only Cue checkpoints now use
   the existing file-backed Meeting/Segment checkpoint storage. Session detail
   reads expose merged, sequence-sorted final Cues while legacy transcript fields

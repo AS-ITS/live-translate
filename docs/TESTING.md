@@ -202,6 +202,14 @@ The Playwright flow:
 - Live Cue rows keep source and translation paired, show session-relative
   timecodes, keep one partial row at the list tail, protect manual scroll
   position, and restore persisted final Cues on session detail reload.
+- Stable Cue UI contract selectors include `live-cue-panel`, `cue-list`,
+  `cue-final-row`, `cue-partial-row`, `cue-source-text`,
+  `cue-translated-text`, `cue-timecode`, and `follow-latest-button`.
+- Legacy transcript assertions are retained only for the no-Cue fallback
+  fixture; Sessions with Cues are verified through the final Cue list and do
+  not require the removed article tabs.
+- The complete Playwright suite currently passes 52/52 tests, including the
+  manual-scroll follow-latest regression case.
 
 - Opens the home page
 - Selects a target language

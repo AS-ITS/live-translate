@@ -141,10 +141,16 @@ Run the Gemini Live normalized Cue flow integration test:
 node --test tests/integration/liveSubtitleCue.integration.test.js
 ```
 
+Run Cue persistence and checkpoint identity tests:
+
+```bash
+node --test tests/unit/subtitleCuePersistence.test.js
+```
+
 This test uses `LiveTranslateSession` with deterministic clock and provider
 message mocks to cover partial pairing, boundary events, Stop flush, segment
-sequence continuity, and replay de-duplication. Cue state remains in memory;
-file-backed Cue persistence and history integration are deferred.
+sequence continuity, and replay de-duplication. Cue persistence uses the
+existing Segment checkpoint file and is covered by the Cue persistence tests.
 
 Current integration coverage:
 

@@ -36,12 +36,16 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseCheckpointResponse(response);
     },
 
-    async updateCheckpoint({ meetingId, segmentId, idempotencyKey, durableChunks } = {}) {
+    async updateCheckpoint(input = {}) {
+      const { meetingId, segmentId, idempotencyKey, durableChunks } = input;
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
       assertNonEmptyString(idempotencyKey, 'idempotencyKey');
       if (!Array.isArray(durableChunks)) throw new TypeError('durableChunks must be an array.');
 
+      const body = { idempotencyKey, durableChunks, pendingPartial: null };
+      if (Object.hasOwn(input, 'finalCues')) body.finalCues = input.finalCues;
+      if (Object.hasOwn(input, 'cueCheckpoint')) body.cueCheckpoint = input.cueCheckpoint;
       const response = await fetchImpl(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
@@ -49,9 +53,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          idempotencyKey,
-          durableChunks,
-          pendingPartial: null
+          ...body
         })
       });
       await assertOkResponse(response);

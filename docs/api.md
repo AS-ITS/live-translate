@@ -497,6 +497,11 @@ and exposes the formal output `version`. Legacy sessions without a formal
 output still fall back to server-side projection from persisted final transcript
 items so older history remains readable:
 
+The same Session detail also includes `cues`, containing only final subtitle
+Cues merged from all persisted Segments and sorted by `sequence`. Partial Cue
+checkpoint state is never exposed through this read model; legacy transcript
+fields remain available for backward compatibility.
+
 ```js
 {
   readingContent: {

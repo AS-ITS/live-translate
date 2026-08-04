@@ -1133,11 +1133,14 @@ function App() {
     const next = applySubtitleCueEvent(current, event, {
       targetLanguageCode,
       sourceLanguageCode,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
       sessionClock: () => sessionTimeForSubtitleCues()
     });
     if (next === current) return;
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
   }
 
   function flushSubtitleCues(reason) {
@@ -1149,6 +1152,28 @@ function App() {
     if (next === current) return;
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
+  function enqueueCuePersistence(previous, next) {
+    const previousIds = new Set((previous?.finalCues || []).map((cue) => cue.cueId));
+    const newCues = (next?.finalCues || []).filter((cue) => !previousIds.has(cue.cueId));
+    const checkpoint = cueCheckpointForState(next);
+    meetingCheckpointSyncCoordinator().enqueueCues(newCues, checkpoint);
+  }
+
+  function cueCheckpointForState(state) {
+    const lastCue = state?.finalCues?.at(-1);
+    return {
+      currentCue: state?.currentCue || null,
+      pendingCues: state?.pendingCues || [],
+      nextSequence: state?.nextSequence || 1,
+      finalizedCueKeys: state?.finalizedCueKeys || [],
+      processedEventIds: state?.processedEventIds || [],
+      pendingBoundary: state?.pendingBoundary || { turnComplete: false, generationComplete: false },
+      lastCommittedCueSequence: lastCue?.sequence || 0,
+      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
+    };
   }
 
   function sessionTimeForSubtitleCues() {
@@ -1551,6 +1576,19 @@ function App() {
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
       ));
+      const persistedCues = checkpoints.flatMap((checkpointResult) => (
+        checkpointResult?.checkpoint?.finalCues || []
+      )).filter((cue) => cue?.status === 'final').sort((left, right) => left.sequence - right.sequence);
+      const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
+      if (persistedCues.length > 0 || latestCueCheckpoint) {
+        const restoredCueState = createSubtitleCueState({
+          ...(latestCueCheckpoint || {}),
+          finalCues: persistedCues,
+          nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
+        });
+        subtitleCueStateRef.current = restoredCueState;
+        setSubtitleCueState(restoredCueState);
+      }
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
       const archivedSegments = transcriptSegmentsFromCheckpoints({ segments, checkpoints });
       archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments(archivedSegments);

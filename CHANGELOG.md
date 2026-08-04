@@ -1,5 +1,11 @@
 # Changelog
 
+- Live subtitle cue WP3: final Cues and recovery-only Cue checkpoints now use
+  the existing file-backed Meeting/Segment checkpoint storage. Session detail
+  reads expose merged, sequence-sorted final Cues while legacy transcript fields
+  remain compatible; append and checkpoint writes are replay-safe across stop,
+  rollover, reconnect, and reload recovery.
+
 - Live subtitle cue WP1.5/WP2: strengthened the in-memory bilingual Cue
   engine with deterministic event identity, replay-safe snapshots, normalized
   session-relative timelines, out-of-order source/translation pairing, and

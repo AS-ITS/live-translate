@@ -45,9 +45,12 @@ export function createSessionReadRepository({ sessionRepository, meetingReposito
         meetingId
       });
 
-      return checkpointItems.length > 0
-        ? { ...detail, transcriptItems: checkpointItems }
-        : detail;
+      const cues = finalCuesFromMeetingSegments({ segments, sessionId: detail.sessionRecord.id });
+      return {
+        ...detail,
+        ...(checkpointItems.length > 0 ? { transcriptItems: checkpointItems } : {}),
+        cues
+      };
     });
   }
 
@@ -110,6 +113,16 @@ function transcriptItemsFromMeetingSegments({ segments = [], sessionId, meetingI
     })))
     .sort(compareCheckpointItems)
     .map(({ segmentSequence, segmentId, ...item }) => item);
+}
+
+function finalCuesFromMeetingSegments({ segments = [], sessionId } = {}) {
+  return segments
+    .flatMap((segment) => Array.isArray(segment?.checkpoint?.finalCues) ? segment.checkpoint.finalCues : [])
+    .filter((cue) => cue?.status === 'final' &&
+      typeof cue.sourceText === 'string' && cue.sourceText.trim() &&
+      typeof cue.translatedText === 'string' && cue.translatedText.trim())
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((cue) => ({ ...cue }));
 }
 
 function durableChunksForSegment(segment, meetingId) {

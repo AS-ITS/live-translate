@@ -228,6 +228,7 @@ export function createApplicationDependencies(options = {}) {
   });
   const meetingCheckpointService = meetingCheckpointServiceFactory({
     meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository,
     idGenerator,
     clock
   });

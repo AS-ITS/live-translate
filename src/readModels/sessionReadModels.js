@@ -53,6 +53,7 @@ export function mapSessionRecordDetailToDTO(detail = {}) {
 
   return {
     session: mapSessionRecordToDetailSession(sessionRecord),
+    cues: Array.isArray(detail?.cues) ? detail.cues.filter((cue) => cue?.status === 'final').map((cue) => ({ ...cue })) : [],
     sourceTranscript,
     translationOutputs,
     selectedTranslationOutput,

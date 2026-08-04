@@ -13,6 +13,8 @@ export function createMeetingCheckpointSyncCoordinator({
   if (typeof clearTimeoutFn !== 'function') throw new TypeError('clearTimeoutFn is required.');
 
   const pendingChunks = new Map();
+  const pendingCues = new Map();
+  let pendingCueCheckpoint = null;
   let context = null;
   let timer = null;
   let queue = Promise.resolve();
@@ -21,6 +23,8 @@ export function createMeetingCheckpointSyncCoordinator({
     start(nextContext = {}) {
       context = normalizeContext(nextContext);
       pendingChunks.clear();
+      pendingCues.clear();
+      pendingCueCheckpoint = null;
       clearTimer();
       onStatusChange?.('ready');
     },
@@ -38,6 +42,15 @@ export function createMeetingCheckpointSyncCoordinator({
       }, Math.max(0, delayMs));
     },
 
+    enqueueCues(cues = [], checkpoint = null) {
+      if (!context) return;
+      for (const cue of cues) if (cue?.status === 'final' && cue.cueId) pendingCues.set(cue.cueId, cue);
+      if (checkpoint) pendingCueCheckpoint = checkpoint;
+      if ((pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) && !timer) {
+        timer = setTimeoutFn(() => { timer = null; void enqueueFlush(); }, Math.max(0, delayMs));
+      }
+    },
+
     flush() {
       clearTimer();
       return enqueueFlush();
@@ -47,6 +60,8 @@ export function createMeetingCheckpointSyncCoordinator({
       clearTimer();
       context = null;
       pendingChunks.clear();
+      pendingCues.clear();
+      pendingCueCheckpoint = null;
       onStatusChange?.('idle');
     }
   });
@@ -57,9 +72,11 @@ export function createMeetingCheckpointSyncCoordinator({
   }
 
   async function flushPending() {
-    if (!context || pendingChunks.size === 0) return true;
+    if (!context || (pendingChunks.size === 0 && pendingCues.size === 0 && !pendingCueCheckpoint)) return true;
 
     const chunks = sortedChunks(Array.from(pendingChunks.values()));
+    const cues = [...pendingCues.values()].sort((left, right) => left.sequence - right.sequence);
+    const payloadCheckpoint = pendingCueCheckpoint;
     onStatusChange?.('syncing');
 
     try {
@@ -67,13 +84,20 @@ export function createMeetingCheckpointSyncCoordinator({
         meetingId: context.meetingId,
         segmentId: context.segmentId,
         idempotencyKey: checkpointIdempotencyKey(context.segmentId, chunks),
-        durableChunks: chunks
+        durableChunks: chunks,
+        finalCues: cues,
+        cueCheckpoint: payloadCheckpoint
       });
 
       for (const chunk of chunks) {
         const pending = pendingChunks.get(chunk.idempotencyKey);
         if (pending && sameChunk(pending, chunk)) pendingChunks.delete(chunk.idempotencyKey);
       }
+      for (const cue of cues) {
+        const pending = pendingCues.get(cue.cueId);
+        if (pending && JSON.stringify(pending) === JSON.stringify(cue)) pendingCues.delete(cue.cueId);
+      }
+      if (pendingCueCheckpoint && JSON.stringify(pendingCueCheckpoint) === JSON.stringify(payloadCheckpoint)) pendingCueCheckpoint = null;
       onStatusChange?.(pendingChunks.size > 0 ? 'ready' : 'synced');
       return true;
     } catch (error) {

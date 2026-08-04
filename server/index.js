@@ -65,6 +65,12 @@ const ERROR_RESPONSES = {
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
+  subtitle_cue_invalid: { status: 400, message: 'Subtitle cue is invalid.' },
+  subtitle_cue_conflict: { status: 409, message: 'Subtitle cue conflicts with previously persisted content.' },
+  subtitle_cue_sequence_conflict: { status: 409, message: 'Subtitle cue sequence conflicts with previously persisted content.' },
+  subtitle_cue_session_not_found: { status: 404, message: 'Subtitle cue session was not found.' },
+  subtitle_cue_segment_not_found: { status: 404, message: 'Subtitle cue segment was not found.' },
+  subtitle_cue_segment_session_mismatch: { status: 409, message: 'Subtitle cue segment does not belong to its session.' },
   internal_error: { status: 500, message: 'Unexpected server error.' }
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);

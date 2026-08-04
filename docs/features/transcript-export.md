@@ -1,6 +1,6 @@
 # Transcript Export
 
-Status: Minimal current-session export implemented
+Status: Cue-backed Session export implemented (WP5A); legacy fallback retained
 
 ## 1. Feature Overview
 
@@ -16,6 +16,13 @@ behavior.
 
 This feature does not add a backend endpoint, persistence, or real Gemini API
 validation.
+
+For persisted Sessions with final `cues`, TXT, SRT, and VTT exports use the
+same normalized Cue list: final-only filtering, cueId de-duplication,
+sequence ordering, session-relative timeline validation, and export-time
+language-aware wrapping. Partial Cues are never exported. Sessions without
+Cues continue to use the legacy transcript exporter; a non-empty but invalid
+Cue collection fails explicitly and does not silently fall back.
 
 SRT/VTT timing is approximate frontend observation timing, not media-aligned
 timing. Subtitle cues are derived from when transcript items are observed and

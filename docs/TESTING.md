@@ -269,3 +269,12 @@ Optional environment variables:
 
 CI must not set `ENABLE_REAL_GEMINI_TEST=true` unless the job is explicitly
 intended to spend real Gemini API quota.
+
+### Subtitle Cue export (WP5A)
+
+Session detail export tests should use persisted final Cues as the primary
+fixture. Verify TXT, SRT, and VTT content from the same sequence-sorted Cue
+list, including session-relative timestamps, partial filtering, duplicate and
+timeline validation, and export-time wrapping. A Session with no Cues keeps
+the legacy transcript export fallback. Do not use DOM layout or Cue UI line
+wrapping as export input.

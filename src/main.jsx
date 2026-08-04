@@ -4451,6 +4451,7 @@ function sourceSessionIdForRetranslation(sessionRecord, fallbackSessionId) {
 function exportDetailForSessionDetailDTO(detail, historyRecord) {
   return {
     sessionRecord: sessionRecordForDetailDTO(detail, historyRecord),
+    cues: Array.isArray(detail?.cues) ? detail.cues : [],
     transcriptItems: [
       ...(detail?.sourceTranscript?.items || []),
       ...translationExportItemsForDetail(detail)

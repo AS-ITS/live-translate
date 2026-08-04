@@ -1999,7 +1999,7 @@ test('saved SRT and VTT export are enabled when timing exists', async ({ page })
   await expect(panel.getByText('已儲存字幕的時間碼採用原始工作階段觀察時間。')).toBeVisible();
 });
 
-test('downloads a saved transcript through a browser download', async ({ page }) => {
+test('downloads saved Cue TXT, SRT, and VTT through browser downloads', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2008,10 +2008,29 @@ test('downloads a saved transcript through a browser download', async ({ page })
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
-  const downloadPromise = page.waitForEvent('download');
-  await savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/^live-translate-session-.*\.txt$/);
+  const panel = savedExportPanel(page);
+  const downloadSaved = async (format) => {
+    await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption(format);
+    const downloadPromise = page.waitForEvent('download');
+    await panel.getByRole('button', { name: '下載已儲存的逐字稿' }).click();
+    const download = await downloadPromise;
+    return {
+      download,
+      content: await readFile(await download.path(), 'utf8')
+    };
+  };
+
+  const txt = await downloadSaved('txt');
+  expect(txt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.txt$/);
+  expect(txt.content).toContain('saved download translation');
+
+  const srt = await downloadSaved('srt');
+  expect(srt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.srt$/);
+  expect(srt.content).toMatch(/^1\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\nsaved download translation\n/);
+
+  const vtt = await downloadSaved('vtt');
+  expect(vtt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.vtt$/);
+  expect(vtt.content).toMatch(/^WEBVTT\n\n\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\nsaved download translation\n/);
 });
 
 test('both stream is unavailable for saved SRT and VTT export', async ({ page }) => {

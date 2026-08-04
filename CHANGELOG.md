@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- WP5A Subtitle Cue Exporter: Session detail TXT, SRT, and VTT downloads now
+  use persisted final Cues when available, with deterministic filtering,
+  sequence ordering, session-relative timeline validation, and
+  language-aware export wrapping. Partial Cues never export; Sessions without
+  Cues retain the legacy transcript fallback, while invalid Cue data fails
+  explicitly instead of falling back.
+
 - WP4 Closeout: migrated legacy live/history E2E assertions to the Cue UI
   contract. Coverage now verifies paired source/translation rows, final-only
   history Cues, reload fallback behavior, partial/final transitions, Stop

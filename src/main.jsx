@@ -54,6 +54,7 @@ import {
   finalizePendingSubtitleCue,
   resetSubtitleCueState
 } from './lib/subtitleCues.js';
+import { cueListForDisplay, formatCueTimecode, shouldFollowLatest } from './lib/cueUi.js';
 import {
   INPUT_SAMPLE_RATE,
   buildInputAudioFileName,
@@ -113,6 +114,9 @@ function App() {
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
+  // Legacy transcript state remains in the data flow for persistence, summary,
+  // export, and backward-compatible Session detail fallback. Live rendering is
+  // owned by the Cue stream until the later transcript migration removes it.
   const [transcript, setTranscript] = useState(createTranscriptState);
   const [subtitleCueState, setSubtitleCueState] = useState(createSubtitleCueState);
   const [archivedTranscript, setArchivedTranscript] = useState(createTranscriptState);
@@ -188,6 +192,7 @@ function App() {
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
   const meetingResumeDraftRequestIdRef = useRef(0);
+  const liveCueUpdatesAllowedRef = useRef(false);
 
   const isActive =
     status === 'requesting-permission' ||
@@ -300,6 +305,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
     setStatusLabelOverride('');
     let session;
 
@@ -333,6 +339,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = false;
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -354,6 +361,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
     setStatusLabelOverride('');
     setError('');
     pendingMicrophoneStreamRef.current = null;
@@ -395,6 +403,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = false;
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -470,7 +479,9 @@ function App() {
       onInputAudioChunk: handleInputAudioChunk,
       onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
       onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
-      onCueEvent: applyLiveSubtitleCueEvent,
+      onCueEvent: (event) => {
+        if (liveCueUpdatesAllowedRef.current) applyLiveSubtitleCueEvent(event);
+      },
       onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
@@ -890,6 +901,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
     setStatusLabelOverride('');
     setError('');
     setResumeDraft(null);
@@ -2150,30 +2162,11 @@ function App() {
           {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         </section>
 
-        <section className="transcript-grid" aria-label="文章版閱讀區">
-          <ArticlePanel
-            title="原文逐字稿"
-            stream="source"
-            paragraphs={sourceArticleParagraphs}
-            currentPartial={traditionalChineseTranscriptItem(transcript.source.currentPartial)}
-            currentLabel="辨識中…"
-            emptyText="尚無原文內容。"
-            copied={copiedArticleStream === 'source'}
-            onCopy={() => copyArticle('source')}
-            onExport={() => downloadArticle('source')}
-          />
-          <ArticlePanel
-            title="翻譯逐字稿"
-            stream="translation"
-            paragraphs={translationArticleParagraphs}
-            currentPartial={transcript.translation.currentPartial}
-            currentLabel="翻譯中…"
-            emptyText="尚無翻譯內容。"
-            copied={copiedArticleStream === 'translation'}
-            onCopy={() => copyArticle('translation')}
-            onExport={() => downloadArticle('translation')}
-          />
-        </section>
+        <LiveCuePanel
+          cueState={subtitleCueState}
+          isPaused={status === 'paused'}
+          isStopped={status === 'stopped'}
+        />
       </section>
 
       <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
@@ -2365,6 +2358,78 @@ function traditionalChineseTranscriptItem(item) {
 function buildArticleFileName(stream) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   return `live-translate-article-${stream}-${stamp}.txt`;
+}
+
+function LiveCuePanel({ cueState, isPaused, isStopped }) {
+  const listRef = useRef(null);
+  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const cues = useMemo(() => cueListForDisplay(cueState), [cueState]);
+
+  useEffect(() => {
+    const element = listRef.current;
+    if (!element || !isFollowingLatest) return;
+    element.scrollTo({ top: element.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
+  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
+
+  function handleScroll() {
+    const element = listRef.current;
+    if (!element) return;
+    setIsFollowingLatest(shouldFollowLatest(element));
+  }
+
+  function returnToLatest() {
+    const element = listRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    setIsFollowingLatest(true);
+  }
+
+  return (
+    <section className="cue-panel" aria-label="即時字幕">
+      <div className="cue-panel-header">
+        <div>
+          <h2>即時字幕</h2>
+          <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
+        </div>
+        {!isFollowingLatest ? (
+          <button className="button detail-button" type="button" onClick={returnToLatest}>回到最新字幕</button>
+        ) : null}
+      </div>
+      <div className="cue-list" ref={listRef} onScroll={handleScroll} role="log" aria-live="polite" aria-label="字幕列表">
+        {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
+        {cues.map((cue) => cue.status === 'final'
+          ? <FinalCueRow key={cue.cueId} cue={cue} />
+          : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} />)}
+      </div>
+    </section>
+  );
+}
+
+function FinalCueRow({ cue }) {
+  return <CueRow cue={cue} />;
+}
+
+function PartialCueRow({ cue }) {
+  return <CueRow cue={cue} partial />;
+}
+
+function CueRow({ cue, partial = false }) {
+  const [expanded, setExpanded] = useState(false);
+  const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
+  return (
+    <article className={`cue-row${partial ? ' cue-row-partial' : ''}${expanded ? ' cue-row-expanded' : ''}`} aria-label={label}>
+      <div className="cue-row-meta">
+        <span className="cue-timecode">
+          {formatCueTimecode(cue.startTimeMs)} → {formatCueTimecode(cue.endTimeMs)}
+        </span>
+        {partial ? <span className="cue-partial-status">{label}</span> : null}
+      </div>
+      <button className="cue-text-toggle" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className="cue-source">{cue.sourceText || '—'}</span>
+        <span className="cue-translation">{cue.translatedText || '—'}</span>
+        <span className="sr-only">{expanded ? '收合字幕' : '展開查看完整字幕'}</span>
+      </button>
+    </article>
+  );
 }
 
 function ArticlePanel({
@@ -3534,6 +3599,10 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     () => finalTranscriptItemsForStream(detail?.selectedTranslationOutput?.items, 'translation'),
     [detail?.selectedTranslationOutput?.items]
   );
+  const historyCues = useMemo(
+    () => cueListForDisplay({ finalCues: detail?.cues || [] }, { includePartial: false }),
+    [detail?.cues]
+  );
   const readingContent = useMemo(
     () => readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }),
     [detail, sourceItems, translationItems, sessionRecord]
@@ -3675,11 +3744,20 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         translationLabel="下載翻譯語音紀錄"
       />
 
-      <ReadingContentTabs
-        content={readingContent}
-        selectedTab={readingTab}
-        onSelectTab={setReadingTab}
-      />
+      {historyCues.length > 0 ? (
+        <section className="session-cue-section" aria-label="已儲存字幕">
+          <h4>字幕</h4>
+          <div className="cue-list cue-list-history">
+            {historyCues.map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}
+          </div>
+        </section>
+      ) : (
+        <ReadingContentTabs
+          content={readingContent}
+          selectedTab={readingTab}
+          onSelectTab={setReadingTab}
+        />
+      )}
 
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>

@@ -86,6 +86,13 @@ stored only in the recovery Cue checkpoint. Session detail reads aggregate final
 Cues across Segments in sequence order while preserving legacy transcript fields
 for compatibility.
 
+The live UI renders `finalCues` as ordered bilingual rows and derives at most
+one trailing partial preview from `currentCue`/`pendingCues`. History and reload
+render only `sessionDetail.cues`; when that list is empty, the existing legacy
+transcript reading view remains available. The Cue list follows the latest row
+until the user scrolls upward, and Pause/Resume/Stop preserve readable Cue
+content while terminal sessions reject late partial UI updates.
+
 Long Meeting recovery API support can mark an active Segment as `interrupted`
 or `failed` with a final checkpoint. Interrupted recovery creates the next
 ordered active Segment for a fresh Live session association. The live UI uses

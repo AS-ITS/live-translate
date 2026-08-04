@@ -352,6 +352,144 @@ input:disabled {
   margin-top: 16px;
 }
 
+.cue-panel,
+.session-cue-section {
+  margin-top: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 20px;
+  background: #ffffff;
+}
+
+.cue-panel-header,
+.cue-row-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cue-panel-header {
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.cue-panel-header h2,
+.session-cue-section h4 {
+  margin: 0;
+  color: #314152;
+  font-size: 1rem;
+}
+
+.cue-panel-header p {
+  margin: 6px 0 0;
+  color: #6b7886;
+  line-height: 1.5;
+}
+
+.cue-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(58dvh, 620px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  scroll-behavior: smooth;
+}
+
+.cue-list-history {
+  max-height: none;
+  margin-top: 12px;
+}
+
+.cue-row {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fbfcfd;
+}
+
+.cue-row-partial {
+  border-style: dashed;
+  background: #f6f9fc;
+}
+
+.cue-row-meta {
+  justify-content: flex-start;
+  margin-bottom: 8px;
+  color: #6b7886;
+  font-size: 0.8125rem;
+}
+
+.cue-timecode {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.cue-partial-status {
+  color: #516070;
+  font-weight: 700;
+}
+
+.cue-text-toggle {
+  display: grid;
+  width: 100%;
+  gap: 6px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cue-text-toggle:focus-visible {
+  outline: 3px solid #89b8ff;
+  outline-offset: 4px;
+}
+
+.cue-source,
+.cue-translation {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.cue-source {
+  color: #516070;
+  font-size: 0.9375rem;
+}
+
+.cue-translation {
+  color: #17202a;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.cue-row-expanded .cue-source,
+.cue-row-expanded .cue-translation {
+  display: block;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+
+.cue-empty {
+  margin: 0;
+  padding: 28px 12px;
+  color: #6b7886;
+  text-align: center;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cue-list {
+    scroll-behavior: auto;
+  }
+}
+
 .transcript-panel {
   min-height: 320px;
   border: 1px solid #d8dee6;

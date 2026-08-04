@@ -1255,3 +1255,13 @@ These items are intentionally deferred:
 - Output device selection remains future/browser-limited
 - Auto Reconnect and Token Refresh are not implemented yet
 - SRT/VTT timing is approximate frontend observation timing
+## WP4 Subtitle Cue UI
+
+- Live translation now renders one bilingual row per final Cue with
+  session-relative timecodes and a single trailing partial preview.
+- History and reload prefer persisted final Cues and retain the legacy transcript
+  reading view when no Cues are available.
+- Pause and Resume preserve the Cue list; Stop preserves the flushed final Cue
+  list and ignores late partial UI updates.
+- Live subtitle scrolling follows the latest Cue until the user scrolls away;
+  `回到最新字幕` restores follow mode.

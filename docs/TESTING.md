@@ -93,6 +93,9 @@ node --test tests/unit/segmentSwitchOrchestrator.test.js
 
 Current unit coverage:
 
+- Cue UI timecode formatting, sequence sorting, cueId upsert, single partial
+  preview rendering, history final-only filtering, and follow-latest threshold
+
 - PCM16 audio conversion and base64 byte conversion
 - Linear resampling and PCM chunking
 - Transcript update behavior
@@ -154,6 +157,9 @@ existing Segment checkpoint file and is covered by the Cue persistence tests.
 
 Current integration coverage:
 
+- The live Cue integration path continues to validate normalized partial/final
+  Cue state; UI-level Cue rendering uses deterministic test-mode events.
+
 - Successful `POST /api/live-token`
 - Invalid language
 - Missing `GEMINI_API_KEY`
@@ -192,6 +198,10 @@ npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTransl
 ```
 
 The Playwright flow:
+
+- Live Cue rows keep source and translation paired, show session-relative
+  timecodes, keep one partial row at the list tail, protect manual scroll
+  position, and restore persisted final Cues on session detail reload.
 
 - Opens the home page
 - Selects a target language

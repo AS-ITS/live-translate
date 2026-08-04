@@ -211,9 +211,8 @@ async function expectCueRow(row, { sourceText, translatedText, timecode } = {}) 
       await expect(pairedTranslation).toHaveText(translatedText);
     } else {
       const rowIndex = await row.evaluate((element) => Array.from(element.parentElement.children).indexOf(element));
-      const rowTestId = await row.getAttribute('data-testid');
       const panel = row.locator('xpath=ancestor::*[@data-testid="live-cue-panel"]');
-      await expect(panel.getByTestId('cue-translation-list').getByTestId(rowTestId).nth(rowIndex).getByTestId('cue-translated-text')).toHaveText(translatedText);
+      await expect(panel.getByTestId('cue-translation-list').locator('.cue-row').nth(rowIndex).getByTestId('cue-translated-text')).toHaveText(translatedText);
     }
   }
   if (timecode !== undefined) await expect(row.getByTestId('cue-timecode')).toHaveText(timecode);
@@ -1196,7 +1195,66 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
   });
 });
 
-test('unpaired cumulative translation remains a single partial Cue', async ({ page }) => {
+test('repeated speech merges into one live Cue with cumulative translation', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: {
+        inputTranscription: { text: '123' },
+        outputTranscription: { text: '1, 2, 3' },
+        turnComplete: true
+      }
+    });
+    session.emitMessage({
+      serverContent: {
+        inputTranscription: { text: '123' },
+        outputTranscription: { text: '1, 2, 3, 1, 2' }
+      }
+    });
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '123 123',
+    translatedText: '1, 2, 3, 1, 2'
+  });
+});
+
+test('cumulative speech updates the preceding final Cue without leaving a partial row', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: {
+        inputTranscription: { text: '你好' },
+        outputTranscription: { text: 'Hello' },
+        turnComplete: true
+      }
+    });
+    session.emitMessage({
+      serverContent: {
+        inputTranscription: { text: '你好,你好。' },
+        outputTranscription: { text: 'Hello, hello.' }
+      }
+    });
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '你好,你好。',
+    translatedText: 'Hello, hello.'
+  });
+});
+
+test('unpaired cumulative translation stays hidden until its source arrives', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1215,15 +1273,28 @@ test('unpaired cumulative translation remains a single partial Cue', async ({ pa
     });
   });
 
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(translationCueList(page).getByTestId('cue-partial-row').first().getByTestId('cue-translated-text')).toHaveText('這是一個完整句末');
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expect(finalCueRows(page)).toHaveCount(0);
 
   await emitTurnComplete(page);
 
-  // The renderer cannot finalize an unpaired translation by itself; the Cue
-  // engine keeps the bilingual row partial until its counterpart arrives.
-  await expect(partialCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page)).toHaveCount(0);
   await expect(finalCueRows(page)).toHaveCount(0);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: '這是一個完整句末。' }
+      }
+    });
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '這是一個完整句末。',
+    translatedText: '這是一個完整句末'
+  });
 });
 
 test('manual scroll stops follow-latest until the user returns to the bottom', async ({ page }) => {
@@ -1810,10 +1881,63 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
     });
   });
 
+  const failedTranslationHistory = {
+    outputs: [],
+    executions: [{
+      id: 'execution-fr-failed',
+      requestId: 'request-fr-failed',
+      targetLanguageCode: 'fr',
+      status: 'failed',
+      failureInfo: {
+        reason: 'provider_execution_failed',
+        code: 'unauthorized',
+        status: 401,
+        message: 'Gemini HTTP request failed: unauthorized (401).'
+      }
+    }, {
+      id: 'execution-de-timeout',
+      requestId: 'request-de-timeout',
+      targetLanguageCode: 'de',
+      status: 'failed',
+      providerAttemptStatus: 'failed',
+      providerAttemptedAt: '2026-07-21T00:00:00.000Z',
+      providerCompletedAt: '2026-07-21T00:00:30.000Z',
+      failureInfo: {
+        reason: 'provider_execution_failed',
+        code: 'provider_timeout',
+        status: 504,
+        message: 'Gemini saved transcript translation timed out after 30000ms.'
+      }
+    }, {
+      id: 'execution-ja-failed',
+      requestId: 'request-ja-failed',
+      targetLanguageCode: 'ja',
+      status: 'failed',
+      failureInfo: {
+        reason: 'provider_execution_failed',
+        code: 'rate_limited',
+        status: 429,
+        providerStatus: 'RESOURCE_EXHAUSTED',
+        providerMessage: 'Quota exceeded for GenerateRequestsPerMinutePerProject.',
+        message: 'Gemini HTTP request failed: rate_limited (429).'
+      }
+    }]
+  };
+
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    const isTranslationHistory = request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname);
     const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
+
+    if (isTranslationHistory) {
+      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ sessionId, translations: [], translationHistory: failedTranslationHistory })
+      });
+      return;
+    }
 
     if (!isSessionDetail) {
       await route.continue();
@@ -1825,48 +1949,7 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
       contentType: 'application/json',
       body: JSON.stringify(sessionDetailResponse({
         sessionId,
-        translationHistory: {
-          outputs: [],
-          executions: [{
-            id: 'execution-fr-failed',
-            requestId: 'request-fr-failed',
-            targetLanguageCode: 'fr',
-            status: 'failed',
-            failureInfo: {
-              reason: 'provider_execution_failed',
-              code: 'unauthorized',
-              status: 401,
-              message: 'Gemini HTTP request failed: unauthorized (401).'
-            }
-          }, {
-            id: 'execution-de-timeout',
-            requestId: 'request-de-timeout',
-            targetLanguageCode: 'de',
-            status: 'failed',
-            providerAttemptStatus: 'failed',
-            providerAttemptedAt: '2026-07-21T00:00:00.000Z',
-            providerCompletedAt: '2026-07-21T00:00:30.000Z',
-            failureInfo: {
-              reason: 'provider_execution_failed',
-              code: 'provider_timeout',
-              status: 504,
-              message: 'Gemini saved transcript translation timed out after 30000ms.'
-            }
-          }, {
-            id: 'execution-ja-failed',
-            requestId: 'request-ja-failed',
-            targetLanguageCode: 'ja',
-            status: 'failed',
-            failureInfo: {
-              reason: 'provider_execution_failed',
-              code: 'rate_limited',
-              status: 429,
-              providerStatus: 'RESOURCE_EXHAUSTED',
-              providerMessage: 'Quota exceeded for GenerateRequestsPerMinutePerProject.',
-              message: 'Gemini HTTP request failed: rate_limited (429).'
-            }
-          }]
-        }
+        translationHistory: failedTranslationHistory
       }))
     });
   });

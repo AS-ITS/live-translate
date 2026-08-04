@@ -1686,12 +1686,8 @@ function App() {
     const cachedDetail = sessionDetailCacheRef.current.get(id);
     setSelectedHistoryDetail(cachedDetail || undefined);
 
-    if (cachedDetail) {
-      return;
-    }
-
     try {
-      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+      const detail = await getSessionDetailWithTranslationHistory(id);
 
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return;
@@ -1722,7 +1718,7 @@ function App() {
     detailRequestIdRef.current = requestId;
 
     try {
-      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+      const detail = await getSessionDetailWithTranslationHistory(id);
 
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return false;
@@ -1742,6 +1738,15 @@ function App() {
 
       return false;
     }
+  }
+
+  async function getSessionDetailWithTranslationHistory(sessionId) {
+    const [sessionDetail, translationHistory] = await Promise.all([
+      sessionReadApiClientRef.current.getSessionDetail(sessionId),
+      sessionReadApiClientRef.current.getSessionTranslations(sessionId)
+    ]);
+
+    return mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory);
   }
 
   function closeHistoryRecordDetail() {
@@ -2414,7 +2419,7 @@ function LiveCuePanel({
 }) {
   const listRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
-  const cues = useMemo(() => cueListForDisplay(cueState), [cueState]);
+  const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
 
   useEffect(() => {
     const element = listRef.current;
@@ -4581,7 +4586,14 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
 
   const detailHistory = compactTranslationHistoryForDetail(detail);
   const translationsHistory = compactTranslationHistoryForDetail(translations);
-  if (translationsHistory.outputs.length === 0 && translationsHistory.executions.length === 0) {
+  const hasAuthoritativeTranslationHistory = Boolean(
+    translations && typeof translations === 'object' && (
+      (translations.translationHistory && typeof translations.translationHistory === 'object') ||
+      Array.isArray(translations.outputs) ||
+      Array.isArray(translations.executions)
+    )
+  );
+  if (!hasAuthoritativeTranslationHistory) {
     return detail;
   }
 
@@ -4589,7 +4601,7 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     ...detail,
     translationHistory: {
       outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
-      executions: mergeHistoryItemsById(detailHistory.executions, translationsHistory.executions)
+      executions: translationsHistory.executions
     }
   };
 }

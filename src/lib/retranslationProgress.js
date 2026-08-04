@@ -53,11 +53,11 @@ function isFormalRetranslationOutput(output) {
 }
 
 function isRetranslationExecution(execution) {
-  const executionId = execution?.id || '';
+  const executionId = execution?.id || execution?.executionId || '';
   const requestId = execution?.requestId || execution?.translationRequestId || '';
   if (typeof executionId === 'string' && executionId.startsWith('legacy-execution:')) return false;
   if (typeof requestId === 'string' && requestId.startsWith('legacy-request:')) return false;
-  return Boolean(execution?.id || execution?.requestId);
+  return Boolean(executionId || execution?.requestId);
 }
 
 function addProgressKeys(keys, item) {

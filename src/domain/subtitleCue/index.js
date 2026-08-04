@@ -68,7 +68,10 @@ export function normalizeCueCheckpoint(checkpoint = null) {
     nextSequence: Number.isInteger(checkpoint.nextSequence) && checkpoint.nextSequence > 0 ? checkpoint.nextSequence : 1,
     finalizedCueKeys: Array.isArray(checkpoint.finalizedCueKeys) ? checkpoint.finalizedCueKeys : [],
     processedEventIds: Array.isArray(checkpoint.processedEventIds) ? checkpoint.processedEventIds : [],
-    pendingBoundary: checkpoint.pendingBoundary || { turnComplete: false, generationComplete: false },
+    pendingBoundary: {
+      turnComplete: Boolean(checkpoint.pendingBoundary?.turnComplete),
+      generationComplete: Boolean(checkpoint.pendingBoundary?.generationComplete)
+    },
     lastCommittedCueSequence: Number.isInteger(checkpoint.lastCommittedCueSequence) ? checkpoint.lastCommittedCueSequence : 0,
     lastCommittedEndTimeMs: Number.isFinite(checkpoint.lastCommittedEndTimeMs) ? checkpoint.lastCommittedEndTimeMs : null
   });

@@ -71,6 +71,48 @@ test('history display excludes partial cues', () => {
   }, { includePartial: false }).map((cue) => cue.cueId), ['cue-1']);
 });
 
+test('live display hides an unpaired translation partial without source text', () => {
+  assert.deepEqual(cueListForDisplay({
+    finalCues: [],
+    currentCue: { cueId: 'translation-only', status: 'partial', translatedText: 'translation only' }
+  }, { requireSourceTextForPartial: true }), []);
+});
+
+test('live display merges a repeated source with its cumulative translation', () => {
+  const first = {
+    ...finalCue('cue-1', 1, '123'),
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    translatedText: '1, 2, 3'
+  };
+  const second = {
+    cueId: 'cue-2',
+    sequence: 2,
+    status: 'partial',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sourceText: '123',
+    translatedText: '1, 2, 3, 1, 2',
+    startTimeMs: 2100,
+    endTimeMs: 2200,
+    updatedTimeMs: 2200
+  };
+
+  const display = cueListForDisplay({ finalCues: [first], currentCue: second });
+
+  assert.equal(display.length, 1);
+  assert.equal(display[0].sourceText, '123 123');
+  assert.equal(display[0].translatedText, '1, 2, 3, 1, 2');
+  assert.equal(display[0].status, 'partial');
+});
+
+test('history display keeps repeated cues as separate persisted records', () => {
+  const first = { ...finalCue('cue-1', 1, '123'), sessionId: 'session-1', segmentId: 'segment-1' };
+  const second = { ...finalCue('cue-2', 2, '123'), sessionId: 'session-1', segmentId: 'segment-1' };
+
+  assert.deepEqual(cueListForDisplay({ finalCues: [first, second] }, { includePartial: false }).map((cue) => cue.cueId), ['cue-1', 'cue-2']);
+});
+
 test('follow-latest uses distance from the scroll bottom threshold', () => {
   const element = { scrollHeight: 1000, scrollTop: 820, clientHeight: 100 };
   assert.equal(distanceFromScrollBottom(element), 80);

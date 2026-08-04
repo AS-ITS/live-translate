@@ -14,6 +14,11 @@ export class MeetingSummary {
     this.topics = stringArray(input.topics, 'topics');
     this.decisions = stringArray(input.decisions, 'decisions');
     this.actionItems = stringArray(input.actionItems, 'actionItems');
+    this.timeline = timelineArray(input.timeline);
+    this.keywords = stringArray(input.keywords ?? [], 'keywords');
+    this.risks = stringArray(input.risks ?? [], 'risks');
+    this.openQuestions = stringArray(input.openQuestions ?? [], 'openQuestions');
+    this.followUpSuggestions = stringArray(input.followUpSuggestions ?? [], 'followUpSuggestions');
     this.createdAt = requiredTimestamp(input.createdAt, 'createdAt');
     this.completedAt = input.completedAt === null || input.completedAt === undefined
       ? null
@@ -22,7 +27,7 @@ export class MeetingSummary {
     deepFreeze(this);
   }
 
-  complete({ summary, topics = [], decisions = [], actionItems = [], completedAt } = {}) {
+  complete({ summary, topics = [], decisions = [], actionItems = [], timeline = [], keywords = [], risks = [], openQuestions = [], followUpSuggestions = [], completedAt } = {}) {
     if (this.status !== 'pending') throw new RangeError(`meeting summary cannot complete from ${this.status}`);
     return new MeetingSummary({
       ...this,
@@ -31,13 +36,18 @@ export class MeetingSummary {
       topics,
       decisions,
       actionItems,
+      timeline,
+      keywords,
+      risks,
+      openQuestions,
+      followUpSuggestions,
       completedAt
     });
   }
 
   fail() {
     if (this.status !== 'pending') throw new RangeError(`meeting summary cannot fail from ${this.status}`);
-    return new MeetingSummary({ ...this, status: 'failed', summary: null, topics: [], decisions: [], actionItems: [], completedAt: null });
+    return new MeetingSummary({ ...this, status: 'failed', summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], completedAt: null });
   }
 }
 
@@ -48,7 +58,7 @@ function validateState(summary) {
   if (summaryKind === 'final' && summaryRange !== null) throw new TypeError('final meeting summaries cannot contain a range.');
   if (summary.status === 'completed') {
     if (summary.summary === null || summary.completedAt === null) throw new TypeError('completed meeting summaries require summary and completedAt.');
-  } else if (summary.summary !== null || summary.completedAt !== null || summary.topics.length > 0 || summary.decisions.length > 0 || summary.actionItems.length > 0) {
+  } else if (summary.summary !== null || summary.completedAt !== null || summary.topics.length > 0 || summary.decisions.length > 0 || summary.actionItems.length > 0 || summary.timeline.length > 0 || summary.keywords.length > 0 || summary.risks.length > 0 || summary.openQuestions.length > 0 || summary.followUpSuggestions.length > 0) {
     throw new TypeError(`${summary.status} meeting summaries cannot contain completed summary data.`);
   }
 }
@@ -68,6 +78,13 @@ function rangeValue(value) {
 }
 function objectValue(value, field) { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${field} must be an object.`); return clone(value); }
 function stringArray(value, field) { if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new TypeError(`${field} must be an array of strings.`); return value.map((item) => item.trim()).filter(Boolean); }
+function timelineArray(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new TypeError('timeline must be an array.');
+  return value.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map(clone).sort(compareTimeline);
+}
 function requiredTimestamp(value, field) { if (!Number.isFinite(value) && !(typeof value === 'string' && value.trim() !== '')) throw new TypeError(`${field} must be a timestamp.`); return value; }
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function deepFreeze(value) { if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value; Object.freeze(value); for (const child of Object.values(value)) deepFreeze(child); return value; }
+function compareTimeline(left, right) { return timelineTime(left) - timelineTime(right) || (Number.isFinite(left.endTimeMs) ? left.endTimeMs : 0) - (Number.isFinite(right.endTimeMs) ? right.endTimeMs : 0); }
+function timelineTime(value) { return Number.isFinite(value.startTimeMs) ? value.startTimeMs : Number.isFinite(value.timestampMs) ? value.timestampMs : Number.POSITIVE_INFINITY; }

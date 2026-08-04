@@ -66,3 +66,11 @@ not expose export actions.
 Exports are generated in the browser and use the deterministic filename pattern
 `live-translate-summary-<sessionId>-<exportTimestamp>.<format>`. This path is
 separate from translation and subtitle export behavior.
+
+## WP8 Rich Meeting Summary
+
+Final summaries derive optional structured insights from persisted Final
+Subtitle Cues and completed partial summaries. The final record carries
+timeline, keywords, risks, openQuestions, and followUpSuggestions alongside
+the existing summary fields. Timeline entries remain chronological, and older
+persisted records remain readable when these fields are absent.

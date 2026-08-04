@@ -111,13 +111,19 @@ export function chunkFinalCues(cues, { maxCuesPerChunk = DEFAULT_MAX_CUES_PER_CH
 export function mergeChunkSummaries(summaries) {
   if (!Array.isArray(summaries)) throw new TypeError('summaries must be an array.');
   const normalized = summaries.map(normalizeSummary);
-  return Object.freeze({
+  const merged = {
     title: normalized.find((summary) => summary.title)?.title || 'Meeting Summary',
     overview: normalized.map((summary) => summary.overview).filter(Boolean).join('\n\n'),
     keyPoints: uniqueInOrder(normalized.flatMap((summary) => summary.keyPoints)),
     decisions: uniqueInOrder(normalized.flatMap((summary) => summary.decisions)),
     actionItems: uniqueInOrder(normalized.flatMap((summary) => summary.actionItems))
-  });
+  };
+  if (normalized.some((summary) => summary.hasTimeline)) merged.timeline = normalized.flatMap((summary) => summary.timeline).sort(compareTimeline);
+  if (normalized.some((summary) => summary.hasKeywords)) merged.keywords = uniqueInOrder(normalized.flatMap((summary) => summary.keywords));
+  if (normalized.some((summary) => summary.hasRisks)) merged.risks = uniqueInOrder(normalized.flatMap((summary) => summary.risks));
+  if (normalized.some((summary) => summary.hasOpenQuestions)) merged.openQuestions = uniqueInOrder(normalized.flatMap((summary) => summary.openQuestions));
+  if (normalized.some((summary) => summary.hasFollowUpSuggestions)) merged.followUpSuggestions = uniqueInOrder(normalized.flatMap((summary) => summary.followUpSuggestions));
+  return Object.freeze(merged);
 }
 
 function normalizeSummary(summary = {}) {
@@ -126,9 +132,23 @@ function normalizeSummary(summary = {}) {
     overview: cleanString(summary.overview),
     keyPoints: cleanStringArray(summary.keyPoints),
     decisions: cleanStringArray(summary.decisions),
-    actionItems: cleanStringArray(summary.actionItems)
+    actionItems: cleanStringArray(summary.actionItems),
+    timeline: normalizeTimeline(summary.timeline),
+    keywords: cleanStringArray(summary.keywords),
+    risks: cleanStringArray(summary.risks),
+    openQuestions: cleanStringArray(summary.openQuestions),
+    followUpSuggestions: cleanStringArray(summary.followUpSuggestions),
+    hasTimeline: Object.prototype.hasOwnProperty.call(summary, 'timeline'),
+    hasKeywords: Object.prototype.hasOwnProperty.call(summary, 'keywords'),
+    hasRisks: Object.prototype.hasOwnProperty.call(summary, 'risks'),
+    hasOpenQuestions: Object.prototype.hasOwnProperty.call(summary, 'openQuestions'),
+    hasFollowUpSuggestions: Object.prototype.hasOwnProperty.call(summary, 'followUpSuggestions')
   };
 }
+
+function normalizeTimeline(value) { return Array.isArray(value) ? value.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map(clone).sort(compareTimeline) : []; }
+function compareTimeline(left, right) { return timelineTime(left) - timelineTime(right) || (Number.isFinite(left.endTimeMs) ? left.endTimeMs : 0) - (Number.isFinite(right.endTimeMs) ? right.endTimeMs : 0); }
+function timelineTime(value) { return Number.isFinite(value.startTimeMs) ? value.startTimeMs : Number.isFinite(value.timestampMs) ? value.timestampMs : Number.POSITIVE_INFINITY; }
 
 function compareCues(left, right) {
   return String(left.segmentSequence ?? '').localeCompare(String(right.segmentSequence ?? ''), undefined, { numeric: true }) ||

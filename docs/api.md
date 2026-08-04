@@ -16,6 +16,11 @@ pending, and failed records are returned unchanged. Missing summaries return
   "topics": [],
   "decisions": [],
   "actionItems": [],
+  "timeline": [],
+  "keywords": [],
+  "risks": [],
+  "openQuestions": [],
+  "followUpSuggestions": [],
   "createdAt": 1720000000000,
   "completedAt": 1720000100000
 }

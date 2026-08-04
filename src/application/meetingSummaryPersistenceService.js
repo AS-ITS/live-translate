@@ -18,7 +18,7 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
       if (!session?.sessionRecord) throw coded('session_not_found', `Session not found: ${sessionId}`);
       const existing = await summaryRepository.getSummaryBySessionId(sessionId);
       if (existing?.status === 'completed') return existing;
-      const pending = existing?.status === 'pending' ? existing : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], createdAt: clock(), completedAt: null });
+      const pending = existing?.status === 'pending' ? existing : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null });
       try {
         const result = await summaryService.generate({ meetingId });
         const summary = validateGeneratedSummary(result);
@@ -40,7 +40,7 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
         ? existing
         : await summaryRepository.createSummary({
             summaryId: idGenerator('meeting-summary'), sessionId, kind: 'partial', range, status: 'pending', model,
-            summary: null, topics: [], decisions: [], actionItems: [], createdAt: clock(), completedAt: null
+            summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null
           });
 
       try {
@@ -74,10 +74,10 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
       validateRanges(ranges, [...byRange.values()]);
       const pending = existing?.status === 'pending'
         ? existing
-        : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], createdAt: clock(), completedAt: null });
+        : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null });
       try {
         const merged = mergeChunkSummaries(ranges.map((range) => byRange.get(range.rangeKey).summary));
-        return await summaryRepository.updateSummary(pending.complete({ summary: merged, topics: merged.keyPoints, decisions: merged.decisions, actionItems: merged.actionItems, completedAt: clock() }));
+        return await summaryRepository.updateSummary(pending.complete({ summary: merged, topics: merged.keyPoints, decisions: merged.decisions, actionItems: merged.actionItems, timeline: merged.timeline, keywords: merged.keywords, risks: merged.risks, openQuestions: merged.openQuestions, followUpSuggestions: merged.followUpSuggestions, completedAt: clock() }));
       } catch (error) {
         await summaryRepository.updateSummary(pending.fail());
         throw error;
@@ -109,9 +109,16 @@ function validateGeneratedSummary(result) {
     summary,
     topics: strings(summary.keyPoints, 'summary.keyPoints'),
     decisions: strings(summary.decisions, 'summary.decisions'),
-    actionItems: strings(summary.actionItems, 'summary.actionItems')
+    actionItems: strings(summary.actionItems, 'summary.actionItems'),
+    timeline: timeline(summary.timeline),
+    keywords: stringsOptional(summary.keywords),
+    risks: stringsOptional(summary.risks),
+    openQuestions: stringsOptional(summary.openQuestions),
+    followUpSuggestions: stringsOptional(summary.followUpSuggestions)
   };
 }
+function timeline(value) { return Array.isArray(value) ? value.filter((item) => item && typeof item === 'object' && !Array.isArray(item)).map((item) => JSON.parse(JSON.stringify(item))) : []; }
+function stringsOptional(value) { return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []; }
 function strings(value, field) { if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new TypeError(`${field} must be an array of strings.`); return value; }
 function assertMethod(value, method, name) { if (!value || typeof value[method] !== 'function') throw new TypeError(`${name}.${method} must be a function.`); }
 function assertString(value, name) { if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${name} must be a non-empty string.`); }

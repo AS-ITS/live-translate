@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- WP8 Rich Meeting Summary: completed summaries now optionally persist and
+  expose chronologically ordered timeline entries, keywords, risks, open
+  questions, and follow-up suggestions across the summary API, UI, and PDF,
+  Markdown, DOCX, and TXT exports. Legacy summaries remain readable.
+
 - WP7 Meeting Summary Export: completed final summaries now provide PDF,
   Markdown, DOCX, and TXT downloads with structured sections and deterministic
   Session/timestamp filenames. Existing translation and subtitle exports are

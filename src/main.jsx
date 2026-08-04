@@ -3899,6 +3899,11 @@ function CompletedMeetingSummary({ summary, sessionId }) {
   const topics = summary.topics?.length > 0 ? summary.topics : content.keyPoints || [];
   const decisions = summary.decisions?.length > 0 ? summary.decisions : content.decisions || [];
   const actionItems = summary.actionItems?.length > 0 ? summary.actionItems : content.actionItems || [];
+  const timeline = summary.timeline?.length > 0 ? summary.timeline : content.timeline || [];
+  const keywords = summary.keywords?.length > 0 ? summary.keywords : content.keywords || [];
+  const risks = summary.risks?.length > 0 ? summary.risks : content.risks || [];
+  const openQuestions = summary.openQuestions?.length > 0 ? summary.openQuestions : content.openQuestions || [];
+  const followUpSuggestions = summary.followUpSuggestions?.length > 0 ? summary.followUpSuggestions : content.followUpSuggestions || [];
   const [format, setFormat] = useState('pdf');
   const [exportError, setExportError] = useState('');
 
@@ -3920,6 +3925,11 @@ function CompletedMeetingSummary({ summary, sessionId }) {
       <SummaryListBlock title="Key Topics" items={topics} />
       <SummaryListBlock title="Decisions" items={decisions} />
       <SummaryListBlock title="Action Items" items={actionItems} />
+      <SummaryTimelineBlock items={timeline} />
+      <SummaryListBlock title="Keywords" items={keywords} />
+      <SummaryListBlock title="Risks" items={risks} />
+      <SummaryListBlock title="Open Questions" items={openQuestions} />
+      <SummaryListBlock title="Follow-up Suggestions" items={followUpSuggestions} />
       <div className="meeting-summary-export" aria-label="會議摘要匯出">
         <label className="field">
           <span>匯出格式</span>
@@ -3954,6 +3964,19 @@ function SummaryListBlock({ title, items }) {
     </div>
   );
 }
+
+function SummaryTimelineBlock({ items }) {
+  const ordered = Array.isArray(items) ? items.filter((item) => item && typeof item === 'object').slice().sort((left, right) => timelineTime(left) - timelineTime(right)) : [];
+  return (
+    <div className="meeting-summary-block">
+      <h5>Timeline</h5>
+      {ordered.length > 0 ? <ol>{ordered.map((item, index) => <li key={`timeline-${index}`}><strong>{timelineTimeLabel(item)}</strong>{item.title ? ` ${item.title}` : ''}{item.description ? ` — ${item.description}` : item.text ? ` — ${item.text}` : ''}</li>)}</ol> : <p>尚無內容。</p>}
+    </div>
+  );
+}
+
+function timelineTime(item) { return Number.isFinite(item?.startTimeMs) ? item.startTimeMs : Number.isFinite(item?.timestampMs) ? item.timestampMs : Number.POSITIVE_INFINITY; }
+function timelineTimeLabel(item) { return item?.time || item?.startTimeMs != null ? String(item.time ?? item.startTimeMs) : ''; }
 
 function meetingSummaryStatusLabel(status) {
   return { pending: '產生中', completed: '已完成', failed: '失敗' }[status] || '未知狀態';

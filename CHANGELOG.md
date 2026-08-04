@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- WP4 Meeting Summary UI: Session Detail now loads and displays pending,
+  completed, failed, and missing meeting summaries with structured overview,
+  topics, decisions, and action items.
+
 - Added `GET /api/sessions/:sessionId/summary` for deterministic retrieval of
   completed, pending, and failed persisted meeting summaries.
 

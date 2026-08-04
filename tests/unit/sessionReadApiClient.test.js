@@ -126,6 +126,32 @@ test('detail DTO response is returned unchanged', async () => {
   assert.strictEqual(result, detail);
 });
 
+test('GET /api/sessions/:sessionId/summary URL-encodes the ID and returns the summary unchanged', async () => {
+  const calls = [];
+  const summary = { summaryId: 'summary-1', sessionId: 'session 1', status: 'pending' };
+  const client = createSessionReadApiClient({
+    fetchImpl(url, options) {
+      calls.push({ url, options });
+      return jsonResponse(summary);
+    }
+  });
+
+  const result = await client.getSessionSummary('session 1');
+
+  assert.deepEqual(calls, [{ url: '/api/sessions/session%201/summary', options: { method: 'GET' } }]);
+  assert.strictEqual(result, summary);
+});
+
+test('missing summary returns null for meeting_summary_not_found response', async () => {
+  const client = createSessionReadApiClient({
+    fetchImpl() {
+      return jsonResponse({ error: { code: 'meeting_summary_not_found' } }, { status: 404 });
+    }
+  });
+
+  assert.equal(await client.getSessionSummary('missing-session'), null);
+});
+
 test('missing detail returns null for session_not_found response', async () => {
   const client = createSessionReadApiClient({
     fetchImpl() {

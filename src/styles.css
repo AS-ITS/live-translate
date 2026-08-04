@@ -852,6 +852,66 @@ input:disabled {
   line-height: 1.4;
 }
 
+.meeting-summary {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfd;
+}
+
+.meeting-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meeting-summary-header h4,
+.meeting-summary-block h5 {
+  margin: 0;
+  color: #314152;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.meeting-summary-content {
+  display: grid;
+  gap: 14px;
+}
+
+.meeting-summary-content > h5 {
+  margin: 0;
+  color: #17202a;
+  font-size: 1.05rem;
+}
+
+.meeting-summary-block {
+  display: grid;
+  gap: 6px;
+}
+
+.meeting-summary-block p,
+.meeting-summary-block ul {
+  margin: 0;
+  color: #516070;
+  line-height: 1.5;
+}
+
+.meeting-summary-block ul {
+  display: grid;
+  gap: 4px;
+  padding-left: 20px;
+}
+
+.summary-error {
+  margin: 0;
+  color: #7d1717;
+  line-height: 1.5;
+}
+
 .meeting-detail-metadata {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }

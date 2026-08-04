@@ -1,25 +1,26 @@
 import { isTerminalSessionStatus } from '../lib/sessionRecords.js';
 
-export function createSessionSnapshotSyncService({ sessionRepository } = {}) {
+export function createSessionSnapshotSyncService({ sessionRepository, onSessionFinalized } = {}) {
   assertSessionRepository(sessionRepository);
+  if (onSessionFinalized !== undefined && typeof onSessionFinalized !== 'function') throw new TypeError('onSessionFinalized must be a function.');
 
   return Object.freeze({
     sync(snapshot) {
       const { session, transcriptItems } = validateSnapshot(snapshot);
       const existing = sessionRepository.getSessionRecord(session.id);
-      const sync = (detail) => syncSnapshot(sessionRepository, detail, session, transcriptItems);
+      const sync = (detail) => syncSnapshot(sessionRepository, detail, session, transcriptItems, onSessionFinalized);
 
       return isPromiseLike(existing) ? existing.then(sync) : sync(existing);
     }
   });
 }
 
-function syncSnapshot(repository, existing, session, transcriptItems) {
+function syncSnapshot(repository, existing, session, transcriptItems, onSessionFinalized) {
   if (!existing) {
     const created = repository.createSessionRecord(session);
     return isPromiseLike(created)
-      ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems))
-      : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems);
+      ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems, onSessionFinalized))
+      : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems, onSessionFinalized);
   }
 
   const apply = (detail) => {
@@ -29,24 +30,28 @@ function syncSnapshot(repository, existing, session, transcriptItems) {
       return mapMaybePromise(previous, () => repository.appendTranscriptItem(session.id, item));
     }, undefined);
 
-    return mapMaybePromise(appendResult, () => applySessionPatch(repository, session));
+    return mapMaybePromise(appendResult, () => applySessionPatch(repository, session, onSessionFinalized));
   };
 
   return isPromiseLike(existing) ? existing.then(apply) : apply(existing);
 }
 
-function applySessionPatch(repository, session) {
+function applySessionPatch(repository, session, onSessionFinalized) {
   const detail = repository.getSessionRecord(session.id);
   return mapMaybePromise(detail, (currentDetail) => {
     const current = currentDetail?.sessionRecord;
     if (isTerminalSessionStatus(session.status) && current?.status === 'active') {
-      return repository.finalizeSessionRecord(session.id, {
+      const finalized = repository.finalizeSessionRecord(session.id, {
         status: session.status,
         failureReason: session.failureReason ?? null,
         failureCategory: session.failureCategory ?? null,
         endedAt: session.endedAt,
         transcriptSummary: session.transcriptSummary
       });
+      if (onSessionFinalized) {
+        Promise.resolve(finalized).then(() => onSessionFinalized({ sessionId: session.id, meetingId: session.meetingId })).catch(() => {});
+      }
+      return finalized;
     }
 
     if (current?.status === 'active') {

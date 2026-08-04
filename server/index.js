@@ -404,6 +404,25 @@ export function startTranslationExecutionWorkerRuntime({
   };
 }
 
+export function startMeetingSummaryWorkerRuntime({
+  summaryWorkerRuntime = defaultApplicationDependencies.summaryWorkerRuntime,
+  summaryJobRecovery = defaultApplicationDependencies.summaryJobRecovery,
+  logger = logEvent
+} = {}) {
+  if (!summaryWorkerRuntime || typeof summaryWorkerRuntime.start !== 'function') return () => undefined;
+  let stopped = false;
+  Promise.resolve(summaryJobRecovery?.recover?.()).catch((error) => {
+    logWorkerRuntimeError(logger, 'meeting_summary_job_recovery_failed', error);
+  }).then(() => summaryWorkerRuntime.start()).catch((error) => {
+    logWorkerRuntimeError(logger, 'meeting_summary_worker_runtime_start_failed', error);
+  });
+  return function stopMeetingSummaryWorkerRuntime() {
+    if (stopped || typeof summaryWorkerRuntime.stop !== 'function') return undefined;
+    stopped = true;
+    try { return summaryWorkerRuntime.stop(); } catch (error) { logWorkerRuntimeError(logger, 'meeting_summary_worker_runtime_stop_failed', error); return undefined; }
+  };
+}
+
 async function startRuntimeAfterPersistedQueueRecovery({
   translationExecutionWorkerRuntime,
   sessionRepository,
@@ -490,6 +509,7 @@ export function createRequestHandler(options = {}) {
     meetingReadController,
     meetingCheckpointService,
     sessionAudioArtifactRepository,
+    summaryJobEnqueuer,
     translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
@@ -519,6 +539,7 @@ export function createRequestHandler(options = {}) {
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository,
+      ...(summaryJobEnqueuer ? { summaryJobEnqueuer } : {}),
       translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
@@ -538,7 +559,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionSummaryController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionSummaryController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1019,7 +1040,12 @@ async function handleRequestWithSessionReadController(
       const sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
       const body = await readJson(req, { maxBytes: sessionSnapshotMaxBytes });
       if (body?.session?.id !== sessionId) throw createHttpError('invalid_request');
-      const result = await createSessionSnapshotSyncService({ sessionRepository }).sync(body);
+      const result = await createSessionSnapshotSyncService({
+        sessionRepository,
+        onSessionFinalized: summaryJobEnqueuer
+          ? (input) => summaryJobEnqueuer.enqueue(input)
+          : undefined
+      }).sync(body);
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -1912,6 +1938,7 @@ function contentTypeFor(filePath) {
 if (IS_MAIN) {
   const server = http.createServer(handleRequest);
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
+  const stopMeetingSummaryWorkerRuntime = startMeetingSummaryWorkerRuntime();
 
   server.listen(PORT, HOST, () => {
     console.log(`Live Translate API listening on http://${HOST}:${PORT}`);
@@ -1920,6 +1947,7 @@ if (IS_MAIN) {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => {
       stopTranslationExecutionWorkerRuntime();
+      stopMeetingSummaryWorkerRuntime();
       server.close(() => {
         process.exit(0);
       });

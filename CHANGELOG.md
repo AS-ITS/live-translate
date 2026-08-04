@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- WP5 Summary Background Worker: completed Session finalization now enqueues
+  durable, idempotent MeetingSummaryJobs. A separate worker persists completed
+  or failed terminal job states, retries transient failures with exponential
+  backoff, and recovers queued or expired jobs after restart without duplicating
+  completed summaries.
+
 - WP4 Meeting Summary UI: Session Detail now loads and displays pending,
   completed, failed, and missing meeting summaries with structured overview,
   topics, decisions, and action items.

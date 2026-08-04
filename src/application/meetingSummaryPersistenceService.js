@@ -17,12 +17,14 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
       const session = await sessionRepository.getSessionRecord(sessionId);
       if (!session?.sessionRecord) throw coded('session_not_found', `Session not found: ${sessionId}`);
       const existing = await summaryRepository.getSummaryBySessionId(sessionId);
-      if (existing && existing.status !== 'failed') return existing;
+      if (existing?.status === 'completed') return existing;
 
-      const pending = await summaryRepository.createSummary({
-        summaryId: idGenerator('meeting-summary'), sessionId, status: 'pending', model,
-        summary: null, topics: [], decisions: [], actionItems: [], createdAt: clock(), completedAt: null
-      });
+      const pending = existing?.status === 'pending'
+        ? existing
+        : await summaryRepository.createSummary({
+            summaryId: idGenerator('meeting-summary'), sessionId, status: 'pending', model,
+            summary: null, topics: [], decisions: [], actionItems: [], createdAt: clock(), completedAt: null
+          });
 
       try {
         const result = await summaryService.generate({ meetingId });

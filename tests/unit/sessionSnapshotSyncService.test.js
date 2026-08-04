@@ -29,6 +29,25 @@ test('session snapshot sync is idempotent for sessions and transcript items, and
   });
 });
 
+test('completed session finalization schedules summary enqueue outside the sync result', async () => {
+  const repository = createMemorySessionRepository({ now: () => 1000 });
+  const enqueued = [];
+  const service = createSessionSnapshotSyncService({
+    sessionRepository: repository,
+    onSessionFinalized(input) { enqueued.push(input); }
+  });
+
+  const result = service.sync({
+    session: { id: 'session-1', meetingId: 'meeting-1', startedAt: 100, endedAt: 200, targetLanguageCode: 'ja', status: 'stopped' },
+    transcriptItems: []
+  });
+
+  assert.equal(result.status, 'stopped');
+  assert.deepEqual(enqueued, []);
+  await Promise.resolve();
+  assert.deepEqual(enqueued, [{ sessionId: 'session-1', meetingId: 'meeting-1' }]);
+});
+
 test('session snapshot sync rejects invalid input deterministically', () => {
   const service = createSessionSnapshotSyncService({ sessionRepository: createMemorySessionRepository() });
   assert.throws(() => service.sync({ session: { id: '' }, transcriptItems: [] }), (error) => error.code === 'invalid_request');

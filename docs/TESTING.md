@@ -278,3 +278,11 @@ list, including session-relative timestamps, partial filtering, duplicate and
 timeline validation, and export-time wrapping. A Session with no Cues keeps
 the legacy transcript export fallback. Do not use DOM layout or Cue UI line
 wrapping as export input.
+### Meeting summary pipeline (WP1)
+
+Run the focused summary pipeline tests:
+
+```bash
+node --test tests/unit/meetingSummaryService.test.js
+node --test tests/unit/geminiMeetingSummaryProvider.test.js
+```

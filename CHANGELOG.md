@@ -1281,3 +1281,8 @@ These items are intentionally deferred:
   list and ignores late partial UI updates.
 - Live subtitle scrolling follows the latest Cue until the user scrolls away;
   `回到最新字幕` restores follow mode.
+## Unreleased
+
+- Added the WP1 meeting summary pipeline for ordered Final Subtitle Cues,
+  configurable chunking, Gemini Flash Lite chunk summaries, and deterministic
+  structured merging.

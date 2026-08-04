@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- WP6 Incremental Meeting Summary: finalized Meeting Segments now produce
+  independently persisted, range-keyed partial summaries through the existing
+  durable summary worker. Session finalization merges completed partials in
+  chronological order; failed or missing partials remain retryable, and the
+  existing Session summary API continues to return only the final summary.
+
 - WP5 Summary Background Worker: completed Session finalization now enqueues
   durable, idempotent MeetingSummaryJobs. A separate worker persists completed
   or failed terminal job states, retries transient failures with exponential

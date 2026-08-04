@@ -11,15 +11,16 @@ export function createFileMeetingSummaryJobRepository({ filePath, fileSystem } =
 
   const implementation = {
     async enqueue(input) { return mutate((storage) => {
-      const existing = storage.jobs.find((job) => job.sessionId === input.sessionId && ['queued', 'processing', 'completed'].includes(job.status));
+      const key = input.idempotencyKey ?? (input.kind === 'partial' ? `partial:${input.sessionId}:${input.range?.rangeKey}` : `final:${input.sessionId}`);
+      const existing = storage.jobs.find((job) => job.idempotencyKey === key && ['queued', 'processing', 'completed'].includes(job.status));
       if (existing) return new MeetingSummaryJob(existing);
-      const job = new MeetingSummaryJob(input);
+      const job = new MeetingSummaryJob({ ...input, idempotencyKey: key });
       if (storage.jobs.some((item) => item.jobId === job.jobId)) throw new Error(`Meeting summary job already exists: ${job.jobId}`);
       storage.jobs.push(plain(job));
       return job;
     }); },
     async get(jobId) { const storage = await readStorage(); const job = storage.jobs.find((item) => item.jobId === jobId); return job ? new MeetingSummaryJob(job) : null; },
-    async getActiveBySessionId(sessionId) { const storage = await readStorage(); const job = storage.jobs.find((item) => item.sessionId === sessionId && ['queued', 'processing', 'completed'].includes(item.status)); return job ? new MeetingSummaryJob(job) : null; },
+    async getActiveBySessionId(sessionId) { const storage = await readStorage(); const job = storage.jobs.find((item) => item.sessionId === sessionId && (item.kind ?? 'final') === 'final' && ['queued', 'processing', 'completed'].includes(item.status)); return job ? new MeetingSummaryJob(job) : null; },
     async list() { const storage = await readStorage(); return storage.jobs.map((job) => new MeetingSummaryJob(job)); },
     async listAvailable(now) { const storage = await readStorage(); return storage.jobs.filter((job) => job.status === 'queued' && (!job.availableAt || job.availableAt <= now)).map((job) => new MeetingSummaryJob(job)); },
     async nextAvailableAt(now) { const storage = await readStorage(); return storage.jobs.filter((job) => job.status === 'queued' && job.availableAt && job.availableAt > now).map((job) => job.availableAt).sort()[0] ?? null; },

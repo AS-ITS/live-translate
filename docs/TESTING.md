@@ -135,6 +135,12 @@ Run Long Meeting file-backed vertical integration tests:
 node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/meetingCheckpointVerticalIntegration.test.js
 ```
 
+Run incremental meeting summary coverage:
+
+```bash
+node --test tests/unit/meetingSummaryIncremental.test.js
+```
+
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
@@ -172,6 +178,8 @@ Current integration coverage:
 - `/healthz` and `/readyz`
 - Meeting checkpoint API persistence, Segment recovery, Meeting detail read
   reconstruction, and accelerated 2+ hour Long Meeting reload validation
+- Incremental partial-summary range identity, retry, ordering, missing-range,
+  final-merge, and stable job-key behavior
 
 ## E2E Tests
 

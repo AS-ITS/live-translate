@@ -11,7 +11,9 @@ export function createFileMeetingSummaryRepository({ filePath, fileSystem } = {}
   const repository = {
     createSummary(input) { return mutate(async (storage) => { const summary = new MeetingSummary(input); if (storage.summaries.some((item) => item.summaryId === summary.summaryId)) throw new Error(`Meeting summary already exists: ${summary.summaryId}`); assertNoActiveSummary(storage.summaries, summary); storage.summaries.push(plain(summary)); return new MeetingSummary(summary); }); },
     async getSummary(summaryId) { const storage = await readStorage(); const item = storage.summaries.find((entry) => entry.summaryId === summaryId); return item ? new MeetingSummary(item) : null; },
-    async getSummaryBySessionId(sessionId) { const items = await repository.listSummariesBySessionId(sessionId); return items.find((item) => item.status !== 'failed') || items[0] || null; },
+    async getSummaryBySessionId(sessionId) { const items = await repository.listSummariesBySessionId(sessionId); const finals = items.filter((item) => (item.kind ?? 'final') === 'final'); return finals.find((item) => item.status !== 'failed') || finals[0] || null; },
+    async getSummaryByRange(sessionId, rangeKey) { const items = await repository.listPartialSummariesBySessionId(sessionId); return items.filter((item) => item.range.rangeKey === rangeKey).sort((left, right) => (left.status === 'failed') - (right.status === 'failed') || compareSummaries(left, right))[0] || null; },
+    async listPartialSummariesBySessionId(sessionId) { const storage = await readStorage(); return storage.summaries.filter((item) => item.sessionId === sessionId && item.kind === 'partial').sort(compareRanges).map((item) => new MeetingSummary(item)); },
     async listSummariesBySessionId(sessionId) { const storage = await readStorage(); return storage.summaries.filter((item) => item.sessionId === sessionId).sort(compareSummaries).map((item) => new MeetingSummary(item)); },
     updateSummary(input) { return mutate(async (storage) => { const summary = new MeetingSummary(input); const index = storage.summaries.findIndex((item) => item.summaryId === summary.summaryId); if (index === -1) return null; const existing = storage.summaries[index]; if (existing.status !== 'pending') throw new Error(`${existing.status} meeting summary is immutable: ${summary.summaryId}`); if (existing.sessionId !== summary.sessionId || existing.model !== summary.model || existing.createdAt !== summary.createdAt) throw new Error(`meeting summary identity is immutable: ${summary.summaryId}`); storage.summaries[index] = plain(summary); return new MeetingSummary(summary); }); }
   };
@@ -33,6 +35,11 @@ export function createFileMeetingSummaryRepository({ filePath, fileSystem } = {}
   async function writeStorage(storage) { await fileSystem.mkdir(dirname(filePath), { recursive: true }); const temporaryPath = `${filePath}.tmp`; await fileSystem.writeFile(temporaryPath, `${JSON.stringify(storage, null, 2)}\n`, 'utf8'); await fileSystem.rename(temporaryPath, filePath); }
 }
 
-function assertNoActiveSummary(summaries, summary) { if (summary.status !== 'failed' && summaries.some((item) => item.sessionId === summary.sessionId && item.status !== 'failed')) throw new Error(`an active meeting summary already exists for session: ${summary.sessionId}`); }
+function assertNoActiveSummary(summaries, summary) {
+  if (summary.status === 'failed') return;
+  if (summary.kind === 'partial' && summaries.some((item) => item.sessionId === summary.sessionId && item.kind === 'partial' && item.range?.rangeKey === summary.range?.rangeKey && item.status !== 'failed')) throw new Error(`an active partial meeting summary already exists for range: ${summary.range.rangeKey}`);
+  if ((summary.kind ?? 'final') === 'final' && summaries.some((item) => item.sessionId === summary.sessionId && (item.kind ?? 'final') === 'final' && item.status !== 'failed')) throw new Error(`an active meeting summary already exists for session: ${summary.sessionId}`);
+}
 function compareSummaries(left, right) { return String(right.createdAt).localeCompare(String(left.createdAt)) || String(right.summaryId).localeCompare(String(left.summaryId)); }
+function compareRanges(left, right) { return left.range.segmentSequence - right.range.segmentSequence || left.range.startCueId.localeCompare(right.range.startCueId) || left.range.endCueId.localeCompare(right.range.endCueId); }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }

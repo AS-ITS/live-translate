@@ -12,7 +12,9 @@ export function createMemoryMeetingSummaryRepository() {
       return new MeetingSummary(summary);
     },
     getSummary(summaryId) { const value = records.get(summaryId); return value ? new MeetingSummary(value) : null; },
-    getSummaryBySessionId(sessionId) { return latestForSession(records, sessionId); },
+    getSummaryBySessionId(sessionId) { return latestFinalForSession(records, sessionId); },
+    getSummaryByRange(sessionId, rangeKey) { const values = Array.from(records.values()).filter((item) => item.sessionId === sessionId && item.kind === 'partial' && item.range?.rangeKey === rangeKey).sort((left, right) => (left.status === 'failed') - (right.status === 'failed') || compareSummaries(left, right)); const value = values[0]; return value ? new MeetingSummary(value) : null; },
+    listPartialSummariesBySessionId(sessionId) { return Array.from(records.values()).filter((item) => item.sessionId === sessionId && item.kind === 'partial').sort(compareRanges).map((item) => new MeetingSummary(item)); },
     listSummariesBySessionId(sessionId) { return Array.from(records.values()).filter((item) => item.sessionId === sessionId).sort(compareSummaries).map((item) => new MeetingSummary(item)); },
     updateSummary(input) {
       const summary = new MeetingSummary(input);
@@ -29,14 +31,18 @@ export function createMemoryMeetingSummaryRepository() {
 
 function assertNoActiveSummary(records, summary) {
   if (summary.status === 'failed') return;
-  if (Array.from(records.values()).some((item) => item.sessionId === summary.sessionId && item.status !== 'failed')) {
+  if (summary.kind === 'partial' && Array.from(records.values()).some((item) => item.sessionId === summary.sessionId && item.kind === 'partial' && item.range?.rangeKey === summary.range?.rangeKey && item.status !== 'failed')) {
+    throw new Error(`an active partial meeting summary already exists for range: ${summary.range.rangeKey}`);
+  }
+  if ((summary.kind ?? 'final') === 'final' && Array.from(records.values()).some((item) => item.sessionId === summary.sessionId && (item.kind ?? 'final') === 'final' && item.status !== 'failed')) {
     throw new Error(`an active meeting summary already exists for session: ${summary.sessionId}`);
   }
 }
-function latestForSession(records, sessionId) {
-  const items = Array.from(records.values()).filter((item) => item.sessionId === sessionId).sort(compareSummaries);
+function latestFinalForSession(records, sessionId) {
+  const items = Array.from(records.values()).filter((item) => item.sessionId === sessionId && (item.kind ?? 'final') === 'final').sort(compareSummaries);
   const active = items.find((item) => item.status !== 'failed');
   return active ? new MeetingSummary(active) : items.length ? new MeetingSummary(items[0]) : null;
 }
 function compareSummaries(left, right) { return String(right.createdAt).localeCompare(String(left.createdAt)) || String(right.summaryId).localeCompare(String(left.summaryId)); }
+function compareRanges(left, right) { return left.range.segmentSequence - right.range.segmentSequence || left.range.startCueId.localeCompare(right.range.startCueId) || left.range.endCueId.localeCompare(right.range.endCueId); }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }

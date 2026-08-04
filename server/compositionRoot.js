@@ -207,7 +207,7 @@ export function createApplicationDependencies(options = {}) {
   const resolvedSummaryJobRepository = summaryJobRepository ?? (resolvedSummaryPersistenceService ? summaryJobRepositoryFactory({ filePath: meetingSummaryJobsFilePathFor(env), fileSystem: summaryRepositoryFileSystem }) : undefined);
   const resolvedSummaryJobQueue = resolvedSummaryJobRepository ? (summaryJobQueue ?? createMeetingSummaryJobQueue()) : undefined;
   const resolvedSummaryJobEnqueuer = summaryJobEnqueuer ?? (resolvedSummaryJobRepository && resolvedSummaryJobQueue
-    ? createMeetingSummaryJobEnqueuer({ jobRepository: resolvedSummaryJobRepository, activeQueue: resolvedSummaryJobQueue, idGenerator, clock: summaryJobClock })
+    ? createMeetingSummaryJobEnqueuer({ jobRepository: resolvedSummaryJobRepository, activeQueue: resolvedSummaryJobQueue, summaryService: resolvedSummaryService, idGenerator, clock: summaryJobClock })
     : undefined);
   const resolvedSummaryWorker = summaryWorker ?? (resolvedSummaryPersistenceService && resolvedSummaryJobRepository && resolvedSummaryJobQueue
     ? createMeetingSummaryWorker({ activeQueue: resolvedSummaryJobQueue, jobRepository: resolvedSummaryJobRepository, summaryPersistenceService: resolvedSummaryPersistenceService, retryPolicy: summaryJobRetryPolicy, retryErrorClassifier: summaryJobRetryErrorClassifier, clock: summaryJobClock, leaseDurationMs: summaryJobLeaseMs })
@@ -292,7 +292,13 @@ export function createApplicationDependencies(options = {}) {
     meetingRepository: resolvedMeetingRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
     idGenerator,
-    clock
+    clock,
+    onSegmentFinalized: resolvedSummaryJobEnqueuer && resolvedSummaryService
+      ? async ({ sessionId, meetingId, segmentId }) => {
+          const range = (await resolvedSummaryService.listFinalCueRanges({ sessionId, meetingId })).find((item) => item.segmentId === segmentId);
+          if (range) await resolvedSummaryJobEnqueuer.enqueuePartial({ sessionId, meetingId, range });
+        }
+      : undefined
   });
   const meetingReadQueryService = meetingReadQueryServiceFactory({
     meetingRepository: resolvedMeetingRepository,

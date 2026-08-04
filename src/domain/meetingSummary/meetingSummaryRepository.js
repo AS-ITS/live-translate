@@ -2,6 +2,8 @@ export const MEETING_SUMMARY_REPOSITORY_METHODS = Object.freeze([
   'createSummary',
   'getSummary',
   'getSummaryBySessionId',
+  'getSummaryByRange',
+  'listPartialSummariesBySessionId',
   'listSummariesBySessionId',
   'updateSummary'
 ]);

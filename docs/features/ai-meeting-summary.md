@@ -22,7 +22,8 @@ reads.
 `MeetingSummaryJob` is a separate domain from translation executions. Jobs are
 persisted with `queued`, `processing`, `completed`, or `failed` state, lease and
 fence metadata, attempt count, and retry timing. Only one queued, processing, or
-completed job is retained for a Session. Retryable provider failures use capped
+completed final job is retained for a Session; incremental partial jobs use
+range identity. Retryable provider failures use capped
 exponential backoff; validation and other non-retryable errors, or exhausted
 attempts, persist a failed terminal job.
 
@@ -31,3 +32,25 @@ expired. Completed jobs are never replayed. If a worker stops after the summary
 record is persisted but before the job is terminalized, replay calls the
 existing `generateAndPersist` service, which returns the completed summary
 without invoking the provider again.
+
+## WP6 Incremental Meeting Summary
+
+`MeetingSummary` records have a `kind` of `partial` or `final`. Partial records
+carry a stable range identity containing the Segment ID/sequence and first and
+last Final Subtitle Cue IDs. Multiple partial records are allowed for one
+Session only when their range identities differ. Final records retain the
+WP1–WP5 invariant of at most one active final summary per Session.
+
+When a Meeting Segment is finalized, the persisted Final Subtitle Cues for that
+Segment are grouped into one range and a partial job is enqueued with the stable
+key `partial:<sessionId>:<rangeKey>`. The existing summary provider and worker
+lease, fence, retry, and restart-recovery behavior process the range. Failed
+partial attempts remain as history and can be retried without replacing a
+completed partial record.
+
+Session finalization enqueues the separate stable final-merge key
+`final:<sessionId>`. The merge reads only completed partial summaries, validates
+that the required persisted Cue ranges exist exactly once, sorts by Segment
+sequence and Cue range, and merges them chronologically. Missing or failed
+partial ranges leave the final job retryable. The existing summary API returns
+the final record only.

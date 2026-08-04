@@ -1,10 +1,13 @@
 export const MEETING_SUMMARY_STATUSES = Object.freeze(['pending', 'completed', 'failed']);
+export const MEETING_SUMMARY_KINDS = Object.freeze(['partial', 'final']);
 
 export class MeetingSummary {
   constructor(input = {}) {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('MeetingSummary input must be an object.');
     this.summaryId = requiredString(input.summaryId, 'summaryId');
     this.sessionId = requiredString(input.sessionId, 'sessionId');
+    if (Object.prototype.hasOwnProperty.call(input, 'kind')) this.kind = kind(input.kind);
+    if (Object.prototype.hasOwnProperty.call(input, 'range')) this.range = input.range === null || input.range === undefined ? null : rangeValue(input.range);
     this.status = status(input.status ?? 'pending');
     this.model = requiredString(input.model, 'model');
     this.summary = input.summary === null || input.summary === undefined ? null : objectValue(input.summary, 'summary');
@@ -39,6 +42,10 @@ export class MeetingSummary {
 }
 
 function validateState(summary) {
+  const summaryKind = summary.kind ?? 'final';
+  const summaryRange = summary.range ?? null;
+  if (summaryKind === 'partial' && summaryRange === null) throw new TypeError('partial meeting summaries require a range.');
+  if (summaryKind === 'final' && summaryRange !== null) throw new TypeError('final meeting summaries cannot contain a range.');
   if (summary.status === 'completed') {
     if (summary.summary === null || summary.completedAt === null) throw new TypeError('completed meeting summaries require summary and completedAt.');
   } else if (summary.summary !== null || summary.completedAt !== null || summary.topics.length > 0 || summary.decisions.length > 0 || summary.actionItems.length > 0) {
@@ -48,6 +55,17 @@ function validateState(summary) {
 
 function requiredString(value, field) { if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${field} must be a non-empty string.`); return value; }
 function status(value) { if (!MEETING_SUMMARY_STATUSES.includes(value)) throw new TypeError(`meeting summary status is not supported: ${value}`); return value; }
+function kind(value) { if (!MEETING_SUMMARY_KINDS.includes(value)) throw new TypeError(`meeting summary kind is not supported: ${value}`); return value; }
+function rangeValue(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('summary range must be an object.');
+  const required = ['segmentId', 'segmentSequence', 'startCueId', 'endCueId'];
+  for (const field of required) {
+    const valid = field === 'segmentSequence' ? Number.isInteger(value[field]) : typeof value[field] === 'string' && value[field].trim() !== '';
+    if (!valid) throw new TypeError(`summary range.${field} is invalid.`);
+  }
+  if (value.segmentSequence < 0) throw new TypeError('summary range.segmentSequence is invalid.');
+  return clone({ segmentId: value.segmentId, segmentSequence: value.segmentSequence, startCueId: value.startCueId, endCueId: value.endCueId, rangeKey: value.rangeKey ?? `${value.segmentSequence}:${value.segmentId}:${value.startCueId}:${value.endCueId}` });
+}
 function objectValue(value, field) { if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError(`${field} must be an object.`); return clone(value); }
 function stringArray(value, field) { if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new TypeError(`${field} must be an array of strings.`); return value.map((item) => item.trim()).filter(Boolean); }
 function requiredTimestamp(value, field) { if (!Number.isFinite(value) && !(typeof value === 'string' && value.trim() !== '')) throw new TypeError(`${field} must be a timestamp.`); return value; }

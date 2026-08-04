@@ -7,7 +7,8 @@ export function createMeetingCheckpointService({
   meetingRepository,
   sessionRepository,
   idGenerator = defaultIdGenerator,
-  clock = () => Date.now()
+  clock = () => Date.now(),
+  onSegmentFinalized
 } = {}) {
   assertMeetingRepository(meetingRepository);
   if (typeof idGenerator !== 'function') throw new TypeError('idGenerator is required.');
@@ -118,6 +119,7 @@ export function createMeetingCheckpointService({
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+      await notifySegmentFinalized(onSegmentFinalized, completedSegment);
 
       return { completedSegment, segment: activeNextSegment };
     },
@@ -181,6 +183,7 @@ export function createMeetingCheckpointService({
           checkpoint: recoveryCheckpoint,
           errorInfo
         }));
+        await notifySegmentFinalized(onSegmentFinalized, failedSegment);
         return { failedSegment };
       }
 
@@ -197,10 +200,17 @@ export function createMeetingCheckpointService({
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+      await notifySegmentFinalized(onSegmentFinalized, interruptedSegment);
 
       return { interruptedSegment, segment: activeNextSegment };
     }
   });
+}
+
+async function notifySegmentFinalized(callback, segment) {
+  if (typeof callback !== 'function') return;
+  const sessionId = segment?.checkpoint?.finalCues?.find((cue) => cue.sessionId)?.sessionId;
+  if (sessionId) await callback({ sessionId, meetingId: segment.meetingId, segmentId: segment.id, segmentSequence: segment.sequence });
 }
 
 export function validateCheckpointInput(input, meetingId, segmentId) {

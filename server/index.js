@@ -1043,7 +1043,7 @@ async function handleRequestWithSessionReadController(
       const result = await createSessionSnapshotSyncService({
         sessionRepository,
         onSessionFinalized: summaryJobEnqueuer
-          ? (input) => summaryJobEnqueuer.enqueue(input)
+          ? (input) => (summaryJobEnqueuer.enqueueForSession ? summaryJobEnqueuer.enqueueForSession(input) : summaryJobEnqueuer.enqueue(input))
           : undefined
       }).sync(body);
       statusCode = 200;

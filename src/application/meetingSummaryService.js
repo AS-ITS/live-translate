@@ -42,6 +42,33 @@ export function createMeetingSummaryService({
         chunks: Object.freeze(chunkSummaries.map(clone)),
         summary: mergeChunkSummaries(chunkSummaries)
       });
+    },
+    async generatePartial({ sessionId, meetingId, range } = {}) {
+      assertNonEmptyString(sessionId, 'sessionId');
+      assertNonEmptyString(meetingId, 'meetingId');
+      const cues = await finalCueRepository.listFinalCuesByMeeting(meetingId);
+      const selected = cues.filter((cue) => cue.sessionId === sessionId && cue.segmentId === range?.segmentId);
+      const orderedCues = selected.map(clone).sort(compareCues);
+      if (!orderedCues.length || orderedCues[0].cueId !== range.startCueId || orderedCues.at(-1).cueId !== range.endCueId) throw coded('meeting_summary_range_unavailable', `Final Subtitle Cue range is not available: ${range?.rangeKey}`);
+      const result = await summaryProvider.summarizeChunk({ meetingId, sessionId, chunkIndex: range.segmentSequence, totalChunks: null, range: clone(range), cues: clone(orderedCues) });
+      return Object.freeze({ meetingId, sessionId, range: clone(range), cueCount: orderedCues.length, chunkCount: 1, chunks: Object.freeze([clone(result)]), summary: mergeChunkSummaries([result]) });
+    },
+    async listFinalCueRanges({ sessionId, meetingId } = {}) {
+      assertNonEmptyString(sessionId, 'sessionId');
+      assertNonEmptyString(meetingId, 'meetingId');
+      const cues = (await finalCueRepository.listFinalCuesByMeeting(meetingId)).filter((cue) => cue.sessionId === sessionId).sort(compareCues);
+      const groups = new Map();
+      for (const cue of cues) {
+        const key = `${cue.segmentSequence}:${cue.segmentId}`;
+        const group = groups.get(key) || { segmentId: cue.segmentId, segmentSequence: cue.segmentSequence, cues: [] };
+        group.cues.push(cue);
+        groups.set(key, group);
+      }
+      return [...groups.values()].sort((left, right) => left.segmentSequence - right.segmentSequence).map((group) => ({
+        segmentId: group.segmentId, segmentSequence: group.segmentSequence,
+        startCueId: group.cues[0].cueId, endCueId: group.cues.at(-1).cueId,
+        rangeKey: `${group.segmentSequence}:${group.segmentId}:${group.cues[0].cueId}:${group.cues.at(-1).cueId}`
+      }));
     }
   });
 }
@@ -126,3 +153,4 @@ function clone(value) { return JSON.parse(JSON.stringify(value)); }
 function assertMethod(value, method, name) { if (!value || typeof value[method] !== 'function') throw new TypeError(`${name}.${method} must be a function.`); }
 function assertNonEmptyString(value, name) { if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${name} must be a non-empty string.`); }
 function assertPositiveInteger(value, name) { if (!Number.isInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive integer.`); }
+function coded(code, message) { const error = new Error(message); error.code = code; error.retryable = true; return error; }

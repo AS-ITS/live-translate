@@ -23,7 +23,12 @@ export function createMeetingSummaryWorker({ activeQueue, jobRepository, summary
       const ownership = { leaseId: job.leaseId, fenceToken: job.fenceToken };
 
       try {
-        const result = await summaryPersistenceService.generateAndPersist({ sessionId: job.sessionId, meetingId: job.meetingId });
+        const generate = job.kind === 'partial' && typeof summaryPersistenceService.generatePartialAndPersist === 'function'
+          ? summaryPersistenceService.generatePartialAndPersist.bind(summaryPersistenceService)
+          : job.kind === 'final' && typeof summaryPersistenceService.generateFinalAndPersist === 'function'
+            ? summaryPersistenceService.generateFinalAndPersist.bind(summaryPersistenceService)
+            : summaryPersistenceService.generateAndPersist.bind(summaryPersistenceService);
+        const result = await generate({ sessionId: job.sessionId, meetingId: job.meetingId, range: job.range });
         await jobRepository.complete(job.jobId, ownership, clock());
         return { status: 'completed', jobId: job.jobId, summaryId: result?.summaryId };
       } catch (error) {

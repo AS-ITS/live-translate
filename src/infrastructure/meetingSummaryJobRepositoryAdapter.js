@@ -5,16 +5,17 @@ export function createMemoryMeetingSummaryJobRepository() {
   const jobs = new Map();
   return wrap({
     async enqueue(input) {
-      const existing = [...jobs.values()].find((job) => job.sessionId === input.sessionId && ['queued', 'processing', 'completed'].includes(job.status));
+      const key = input.idempotencyKey ?? (input.kind === 'partial' ? `partial:${input.sessionId}:${input.range?.rangeKey}` : `final:${input.sessionId}`);
+      const existing = [...jobs.values()].find((job) => job.idempotencyKey === key && ['queued', 'processing', 'completed'].includes(job.status));
       if (existing) return new MeetingSummaryJob(existing);
-      const job = new MeetingSummaryJob(input);
+      const job = new MeetingSummaryJob({ ...input, idempotencyKey: key });
       if (jobs.has(job.jobId)) throw new Error(`Meeting summary job already exists: ${job.jobId}`);
       jobs.set(job.jobId, plain(job));
       return new MeetingSummaryJob(job);
     },
     async get(jobId) { const job = jobs.get(jobId); return job ? new MeetingSummaryJob(job) : null; },
     async getActiveBySessionId(sessionId) {
-      const job = [...jobs.values()].find((item) => item.sessionId === sessionId && ['queued', 'processing', 'completed'].includes(item.status));
+      const job = [...jobs.values()].find((item) => item.sessionId === sessionId && (item.kind ?? 'final') === 'final' && ['queued', 'processing', 'completed'].includes(item.status));
       return job ? new MeetingSummaryJob(job) : null;
     },
     async list() { return [...jobs.values()].map((job) => new MeetingSummaryJob(job)); },

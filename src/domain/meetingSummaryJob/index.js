@@ -1,4 +1,5 @@
 export const MEETING_SUMMARY_JOB_STATUSES = Object.freeze(['queued', 'processing', 'completed', 'failed']);
+export const MEETING_SUMMARY_JOB_KINDS = Object.freeze(['partial', 'final']);
 
 export class MeetingSummaryJob {
   constructor(input = {}) {
@@ -6,6 +7,9 @@ export class MeetingSummaryJob {
     this.jobId = requiredString(input.jobId, 'jobId');
     this.sessionId = requiredString(input.sessionId, 'sessionId');
     this.meetingId = requiredString(input.meetingId, 'meetingId');
+    this.kind = kind(input.kind ?? 'final');
+    this.range = input.range === null || input.range === undefined ? null : cloneRange(input.range);
+    this.idempotencyKey = requiredString(input.idempotencyKey ?? (this.kind === 'final' ? `final:${this.sessionId}` : `partial:${this.sessionId}:${this.range?.rangeKey}`), 'idempotencyKey');
     this.status = status(input.status ?? 'queued');
     this.attempt = nonNegativeInteger(input.attempt ?? 0, 'attempt');
     this.fenceToken = nonNegativeInteger(input.fenceToken ?? 0, 'fenceToken');
@@ -63,6 +67,8 @@ export class MeetingSummaryJob {
 }
 
 function validateState(job) {
+  if (job.kind === 'partial' && !job.range) throw new TypeError('partial meeting summary jobs require a range.');
+  if (job.kind === 'final' && job.range !== null) throw new TypeError('final meeting summary jobs cannot contain a range.');
   const processing = job.status === 'processing';
   if (processing && (!job.leaseId || !job.claimedAt || !job.leaseExpiresAt)) throw new TypeError('Processing summary jobs require an active lease.');
   if (!processing && (job.leaseId || job.claimedAt || job.leaseExpiresAt)) throw new TypeError('Only processing summary jobs may have an active lease.');
@@ -72,6 +78,7 @@ function validateState(job) {
 }
 
 function status(value) { if (!MEETING_SUMMARY_JOB_STATUSES.includes(value)) throw new TypeError(`Unsupported meeting summary job status: ${value}`); return value; }
+function kind(value) { if (!MEETING_SUMMARY_JOB_KINDS.includes(value)) throw new TypeError(`Unsupported meeting summary job kind: ${value}`); return value; }
 function requiredString(value, field) { if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${field} must be a non-empty string.`); return value; }
 function nullableString(value, field) { return value === null ? null : requiredString(value, field); }
 function nonNegativeInteger(value, field) { if (!Number.isInteger(value) || value < 0) throw new TypeError(`${field} must be a non-negative integer.`); return value; }
@@ -81,5 +88,6 @@ function isTimestamp(value) { return (typeof value === 'number' && Number.isFini
 function coded(code, message) { const error = new Error(message); error.code = code; return error; }
 function isRecord(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function clone(value) { if (!isRecord(value)) throw new TypeError('failureInfo must be an object.'); return JSON.parse(JSON.stringify(value)); }
+function cloneRange(value) { if (!isRecord(value) || typeof value.rangeKey !== 'string' || !Number.isInteger(value.segmentSequence)) throw new TypeError('summary job range is invalid.'); return JSON.parse(JSON.stringify(value)); }
 function plain(value) { return JSON.parse(JSON.stringify(value)); }
 function deepFreeze(value) { if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value; Object.freeze(value); Object.values(value).forEach(deepFreeze); return value; }

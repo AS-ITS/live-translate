@@ -6,7 +6,9 @@ import {
   formatCueTimecode,
   partialCueForDisplay,
   shouldFollowLatest,
+  sourceTextForCopy,
   sortFinalCues,
+  translationTextForCopy,
   upsertFinalCue
 } from '../../src/lib/cueUi.js';
 
@@ -29,6 +31,24 @@ test('final cues sort by sequence and upsert by cueId without duplicates', () =>
   assert.deepEqual(upsertFinalCue([second, first], { ...first, sourceText: 'updated' }), [
     { ...first, sourceText: 'updated' }, second
   ]);
+});
+
+test('source text for copy includes only completed source cues in sequence order', () => {
+  assert.equal(sourceTextForCopy([
+    finalCue('cue-2', 2, '  第二段原文  '),
+    { ...finalCue('partial', 3, '不應複製'), status: 'partial' },
+    finalCue('cue-1', 1, '第一段原文'),
+    { ...finalCue('cue-empty', 4, '   '), translatedText: 'translation only' }
+  ]), '第一段原文\n第二段原文');
+});
+
+test('translation text for copy includes only completed translation cues in sequence order', () => {
+  assert.equal(translationTextForCopy([
+    finalCue('cue-2', 2, 'source 2'),
+    { ...finalCue('partial', 3, 'source 3'), status: 'partial', translatedText: '不應複製' },
+    { ...finalCue('cue-1', 1, 'source 1'), translatedText: '第一段翻譯' },
+    { ...finalCue('cue-empty', 4, 'source 4'), translatedText: '   ' }
+  ]), '第一段翻譯\ntranslation 2');
 });
 
 test('partial display merges pending pairing state into one trailing row', () => {

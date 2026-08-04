@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 即時字幕新增「複製原文」與「複製翻譯」，只會複製對應的已完成字幕；雙欄字幕的手動選取也不再連帶另一欄。
+
 - WP8 Rich Meeting Summary: completed summaries now optionally persist and
   expose chronologically ordered timeline entries, keywords, risks, open
   questions, and follow-up suggestions across the summary API, UI, and PDF,

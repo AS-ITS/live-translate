@@ -20,6 +20,20 @@ export function sortFinalCues(cues = []) {
     .sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
 }
 
+export function sourceTextForCopy(cues = []) {
+  return sortFinalCues(cues)
+    .map((cue) => String(cue?.sourceText || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function translationTextForCopy(cues = []) {
+  return sortFinalCues(cues)
+    .map((cue) => String(cue?.translatedText || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function upsertFinalCue(cues = [], cue) {
   if (!cue?.cueId || cue.status !== 'final') return sortFinalCues(cues);
   const next = [...cues];

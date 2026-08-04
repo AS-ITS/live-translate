@@ -56,7 +56,12 @@ import {
   finalizePendingSubtitleCue,
   resetSubtitleCueState
 } from './lib/subtitleCues.js';
-import { cueListForDisplay, formatCueTimecode, shouldFollowLatest } from './lib/cueUi.js';
+import {
+  cueListForDisplay,
+  shouldFollowLatest,
+  sourceTextForCopy,
+  translationTextForCopy
+} from './lib/cueUi.js';
 import {
   INPUT_SAMPLE_RATE,
   buildInputAudioFileName,
@@ -1895,6 +1900,32 @@ function App() {
     }
   }
 
+  async function copyLiveSource() {
+    const sourceText = sourceTextForCopy(subtitleCueState.finalCues);
+    if (!sourceText) return;
+
+    try {
+      await navigator.clipboard.writeText(sourceText);
+      setCopiedArticleStream('source');
+      window.setTimeout(() => setCopiedArticleStream((current) => current === 'source' ? '' : current), 1500);
+    } catch {
+      setError('無法複製原文。');
+    }
+  }
+
+  async function copyLiveTranslation() {
+    const translationText = translationTextForCopy(subtitleCueState.finalCues);
+    if (!translationText) return;
+
+    try {
+      await navigator.clipboard.writeText(translationText);
+      setCopiedArticleStream('translation');
+      window.setTimeout(() => setCopiedArticleStream((current) => current === 'translation' ? '' : current), 1500);
+    } catch {
+      setError('無法複製翻譯。');
+    }
+  }
+
   async function copyArticle(stream) {
     const articleText = articleTextForItems(stream === 'source' ? completedSourceSegments : completedTranslationSegments, stream);
     if (!articleText) return;
@@ -2174,6 +2205,10 @@ function App() {
           cueState={subtitleCueState}
           isPaused={status === 'paused'}
           isStopped={status === 'stopped'}
+          copiedSource={copiedArticleStream === 'source'}
+          copiedTranslation={copiedArticleStream === 'translation'}
+          onCopySource={copyLiveSource}
+          onCopyTranslation={copyLiveTranslation}
         />
       </section>
 
@@ -2368,7 +2403,15 @@ function buildArticleFileName(stream) {
   return `live-translate-article-${stream}-${stamp}.txt`;
 }
 
-function LiveCuePanel({ cueState, isPaused, isStopped }) {
+function LiveCuePanel({
+  cueState,
+  isPaused,
+  isStopped,
+  copiedSource,
+  copiedTranslation,
+  onCopySource,
+  onCopyTranslation
+}) {
   const listRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const cues = useMemo(() => cueListForDisplay(cueState), [cueState]);
@@ -2398,49 +2441,78 @@ function LiveCuePanel({ cueState, isPaused, isStopped }) {
           <h2>即時字幕</h2>
           <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
         </div>
-        {!isFollowingLatest ? (
-          <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
-        ) : null}
+        <div className="cue-panel-actions">
+          {!isFollowingLatest ? (
+            <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
+          ) : null}
+        </div>
       </div>
       <div className="cue-list" data-testid="cue-list" ref={listRef} onScroll={handleScroll} role="log" aria-live="polite" aria-label="字幕列表">
-        {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
-        {cues.map((cue) => cue.status === 'final'
-          ? <FinalCueRow key={cue.cueId} cue={cue} />
-          : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} />)}
+        <section className="cue-language-section" aria-label="即時字幕原文">
+          <div className="cue-section-header">
+            <h3>輸入／原文</h3>
+            <button className="button detail-button" type="button" onClick={onCopySource} disabled={!sourceTextForCopy(cueState.finalCues)}>
+              <Copy size={14} aria-hidden="true" />
+              {copiedSource ? '已複製' : '複製原文'}
+            </button>
+          </div>
+          <div className="cue-section-list" data-testid="cue-source-list">
+            {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
+            {cues.map((cue) => cue.status === 'final'
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="source" />)}
+          </div>
+        </section>
+        <section className="cue-language-section" aria-label="即時字幕翻譯">
+          <div className="cue-section-header">
+            <h3>翻譯</h3>
+            <button className="button detail-button" type="button" onClick={onCopyTranslation} disabled={!translationTextForCopy(cueState.finalCues)}>
+              <Copy size={14} aria-hidden="true" />
+              {copiedTranslation ? '已複製' : '複製翻譯'}
+            </button>
+          </div>
+          <div className="cue-section-list" data-testid="cue-translation-list">
+            {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
+            {cues.map((cue) => cue.status === 'final'
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
+          </div>
+        </section>
       </div>
     </section>
   );
 }
 
-function FinalCueRow({ cue }) {
-  return <CueRow cue={cue} />;
+function FinalCueRow({ cue, stream }) {
+  return <CueRow cue={cue} stream={stream} />;
 }
 
-function PartialCueRow({ cue }) {
-  return <CueRow cue={cue} partial />;
+function PartialCueRow({ cue, stream }) {
+  return <CueRow cue={cue} partial stream={stream} />;
 }
 
-function CueRow({ cue, partial = false }) {
-  const [expanded, setExpanded] = useState(false);
+function CueRow({ cue, partial = false, stream }) {
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
+  const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
+  const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
   return (
     <article
-      className={`cue-row${partial ? ' cue-row-partial' : ''}${expanded ? ' cue-row-expanded' : ''}`}
+      className={`cue-row${partial ? ' cue-row-partial' : ''}`}
       data-testid={partial ? 'cue-partial-row' : 'cue-final-row'}
       data-cue-id={cue.cueId || undefined}
       aria-label={label}
     >
-      <div className="cue-row-meta">
-        <span className="cue-timecode">
-          <span data-testid="cue-timecode">{formatCueTimecode(cue.startTimeMs)} → {formatCueTimecode(cue.endTimeMs)}</span>
-        </span>
-        {partial ? <span className="cue-partial-status">{label}</span> : null}
+      {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
+      <div className="cue-text-toggle">
+        {stream ? (
+          <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{text || '—'}</span>
+        ) : (
+          <>
+            <span className="cue-source" data-testid="cue-source-text">{cue.sourceText || '—'}</span>
+            <span className="cue-translation" data-testid="cue-translated-text">{cue.translatedText || '—'}</span>
+          </>
+        )}
       </div>
-      <button className="cue-text-toggle" type="button" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className="cue-source" data-testid="cue-source-text">{cue.sourceText || '—'}</span>
-        <span className="cue-translation" data-testid="cue-translated-text">{cue.translatedText || '—'}</span>
-        <span className="sr-only">{expanded ? '收合字幕' : '展開查看完整字幕'}</span>
-      </button>
     </article>
   );
 }

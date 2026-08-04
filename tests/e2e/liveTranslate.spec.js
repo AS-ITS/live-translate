@@ -187,12 +187,16 @@ function cueList(page) {
   return liveCuePanel(page).getByTestId('cue-list');
 }
 
+function translationCueList(page) {
+  return liveCuePanel(page).getByTestId('cue-translation-list');
+}
+
 function finalCueRows(page) {
-  return cueList(page).getByTestId('cue-final-row');
+  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-final-row');
 }
 
 function partialCueRows(page) {
-  return cueList(page).getByTestId('cue-partial-row');
+  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-partial-row');
 }
 
 function cueRow(page, cueId) {
@@ -201,7 +205,17 @@ function cueRow(page, cueId) {
 
 async function expectCueRow(row, { sourceText, translatedText, timecode } = {}) {
   if (sourceText !== undefined) await expect(row.getByTestId('cue-source-text')).toHaveText(sourceText);
-  if (translatedText !== undefined) await expect(row.getByTestId('cue-translated-text')).toHaveText(translatedText);
+  if (translatedText !== undefined) {
+    const pairedTranslation = row.getByTestId('cue-translated-text');
+    if (await pairedTranslation.count() > 0) {
+      await expect(pairedTranslation).toHaveText(translatedText);
+    } else {
+      const rowIndex = await row.evaluate((element) => Array.from(element.parentElement.children).indexOf(element));
+      const rowTestId = await row.getAttribute('data-testid');
+      const panel = row.locator('xpath=ancestor::*[@data-testid="live-cue-panel"]');
+      await expect(panel.getByTestId('cue-translation-list').getByTestId(rowTestId).nth(rowIndex).getByTestId('cue-translated-text')).toHaveText(translatedText);
+    }
+  }
   if (timecode !== undefined) await expect(row.getByTestId('cue-timecode')).toHaveText(timecode);
 }
 
@@ -1202,7 +1216,7 @@ test('unpaired cumulative translation remains a single partial Cue', async ({ pa
   });
 
   await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page).first().getByTestId('cue-translated-text')).toHaveText('這是一個完整句末');
+  await expect(translationCueList(page).getByTestId('cue-partial-row').first().getByTestId('cue-translated-text')).toHaveText('這是一個完整句末');
 
   await emitTurnComplete(page);
 
@@ -1319,6 +1333,22 @@ test('source and translation remain paired in one Cue row without article aggreg
     translatedText: 'new article translation'
   });
   await expect(page.getByText('內容已更新，請重新整理。')).toHaveCount(0);
+});
+
+test('copies only completed source transcript from live subtitles', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, '第一段原文', '第一段翻譯');
+  await emitFinalTranscript(page, '第二段原文', '第二段翻譯');
+
+  await page.evaluate(() => {
+    navigator.clipboard.writeText = async (value) => { window.__copiedText = value; };
+  });
+  await page.getByRole('button', { name: '複製原文' }).click();
+  await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段原文\n第二段原文');
+  await page.getByRole('button', { name: '複製翻譯' }).click();
+  await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段翻譯\n第二段翻譯');
 });
 
 test('Stop finalizes visible partial transcripts for export and history', async ({ page }) => {

@@ -40,6 +40,19 @@ test('summary API decodes the Session ID and delegates through the query control
   assert.deepEqual(calls, ['session 1']);
 });
 
+test('POST /api/sessions/:sessionId/summary/retry enqueues a new summary job', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    sessionRepository: { async getSessionRecord() { return { sessionRecord: { id: 'session 1', meetingId: 'meeting-1' } }; } },
+    summaryRepository: { async getSummaryBySessionId() { return { status: 'failed' }; } },
+    summaryJobEnqueuer: { async retryForSession(input) { calls.push(input); return { jobId: 'job-1' }; } }
+  });
+  const response = await request(handler, { method: 'POST', url: '/api/sessions/session%201/summary/retry' });
+  assert.equal(response.status, 202);
+  assert.deepEqual(response.json(), { accepted: true, jobId: 'job-1', sessionId: 'session 1' });
+  assert.deepEqual(calls, [{ sessionId: 'session 1', meetingId: 'meeting-1' }]);
+});
+
 function createHandler(value) {
   return createRequestHandler({
     sessionSummaryController: createSessionSummaryController({

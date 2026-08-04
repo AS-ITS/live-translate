@@ -17,6 +17,18 @@ title, joins overviews, and de-duplicates list items while preserving first
 appearance order, producing a deterministic result for persistence and API
 reads.
 
+The source builder filters empty and punctuation-only entries, de-duplicates
+Cue identities, rejects conflicting duplicates, and hashes a canonical source
+representation. New records retain `sourceType`, `sourceHash`, source Cue and
+character counts, and source schema version. Sessions without persisted Final
+Cues use finalized legacy source transcript only when no Cue source exists;
+Cue integrity errors never silently fall back.
+
+Failed summaries can be manually retried with
+`POST /api/sessions/:sessionId/summary/retry`. The retry creates a new durable
+job and summary attempt while retaining the failed attempt and preserving the
+same source hash.
+
 ## WP5 Background Worker
 
 `MeetingSummaryJob` is a separate domain from translation executions. Jobs are

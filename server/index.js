@@ -48,6 +48,8 @@ const ERROR_RESPONSES = {
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   meeting_summary_read_unavailable: { status: 503, message: 'Meeting summary read API is not configured.' },
   meeting_summary_not_found: { status: 404, message: 'Meeting summary not found.' },
+  meeting_summary_retry_unavailable: { status: 503, message: 'Meeting summary retry is not configured.' },
+  meeting_summary_retry_invalid_state: { status: 409, message: 'Meeting summary is not eligible for retry.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
@@ -502,6 +504,7 @@ export function createRequestHandler(options = {}) {
     sessionReadController,
     sessionSummaryController,
     sessionRepository,
+    summaryRepository,
     translationRepository,
     translationCommandController,
     executionControlController,
@@ -532,6 +535,7 @@ export function createRequestHandler(options = {}) {
       sessionReadController,
       sessionSummaryController,
       sessionRepository,
+      summaryRepository,
       translationRepository,
       translationCommandController,
       executionControlController,
@@ -559,7 +563,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionSummaryController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionSummaryController, sessionRepository, summaryRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -641,6 +645,27 @@ async function handleRequestWithSessionReadController(
       if (!summary) throw createHttpError('meeting_summary_not_found');
       statusCode = 200;
       sendJson(res, statusCode, summary, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && path.startsWith('/api/sessions/') && path.endsWith('/summary/retry')) {
+    try {
+      if (!summaryJobEnqueuer?.retryForSession) throw createHttpError('meeting_summary_retry_unavailable');
+      const encodedSessionId = path.slice('/api/sessions/'.length, -'/summary/retry'.length);
+      if (!encodedSessionId || encodedSessionId.includes('/')) throw createHttpError('invalid_request');
+      const sessionId = decodeURIComponent(encodedSessionId);
+      const session = await sessionRepository.getSessionRecord(sessionId);
+      if (!session?.sessionRecord?.meetingId) throw createHttpError('session_not_found');
+      const existingSummary = await summaryRepository?.getSummaryBySessionId?.(sessionId);
+      if (existingSummary && existingSummary.status !== 'failed') throw createHttpError('meeting_summary_retry_invalid_state');
+      const job = await summaryJobEnqueuer.retryForSession({ sessionId, meetingId: session.sessionRecord.meetingId });
+      statusCode = 202;
+      sendJson(res, statusCode, { accepted: true, jobId: job.jobId, sessionId }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;

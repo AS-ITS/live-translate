@@ -10,6 +10,11 @@ export class MeetingSummary {
     if (Object.prototype.hasOwnProperty.call(input, 'range')) this.range = input.range === null || input.range === undefined ? null : rangeValue(input.range);
     this.status = status(input.status ?? 'pending');
     this.model = requiredString(input.model, 'model');
+    if (Object.prototype.hasOwnProperty.call(input, 'schemaVersion')) this.schemaVersion = input.schemaVersion;
+    if (Object.prototype.hasOwnProperty.call(input, 'sourceType')) this.sourceType = input.sourceType;
+    if (Object.prototype.hasOwnProperty.call(input, 'sourceHash')) this.sourceHash = input.sourceHash;
+    if (Object.prototype.hasOwnProperty.call(input, 'sourceCueCount')) this.sourceCueCount = input.sourceCueCount;
+    if (Object.prototype.hasOwnProperty.call(input, 'sourceCharacterCount')) this.sourceCharacterCount = input.sourceCharacterCount;
     this.summary = input.summary === null || input.summary === undefined ? null : objectValue(input.summary, 'summary');
     this.topics = stringArray(input.topics, 'topics');
     this.decisions = stringArray(input.decisions, 'decisions');
@@ -27,7 +32,7 @@ export class MeetingSummary {
     deepFreeze(this);
   }
 
-  complete({ summary, topics = [], decisions = [], actionItems = [], timeline = [], keywords = [], risks = [], openQuestions = [], followUpSuggestions = [], completedAt } = {}) {
+  complete({ summary, topics = [], decisions = [], actionItems = [], timeline = [], keywords = [], risks = [], openQuestions = [], followUpSuggestions = [], completedAt, sourceType, sourceHash, sourceCueCount, sourceCharacterCount } = {}) {
     if (this.status !== 'pending') throw new RangeError(`meeting summary cannot complete from ${this.status}`);
     return new MeetingSummary({
       ...this,
@@ -41,6 +46,10 @@ export class MeetingSummary {
       risks,
       openQuestions,
       followUpSuggestions,
+      sourceType: sourceType ?? this.sourceType,
+      sourceHash: sourceHash ?? this.sourceHash,
+      sourceCueCount: sourceCueCount ?? this.sourceCueCount,
+      sourceCharacterCount: sourceCharacterCount ?? this.sourceCharacterCount,
       completedAt
     });
   }

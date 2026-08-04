@@ -18,11 +18,18 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
       if (!session?.sessionRecord) throw coded('session_not_found', `Session not found: ${sessionId}`);
       const existing = await summaryRepository.getSummaryBySessionId(sessionId);
       if (existing?.status === 'completed') return existing;
-      const pending = existing?.status === 'pending' ? existing : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null });
+      const pending = existing?.status === 'pending' ? existing : await summaryRepository.createSummary({ schemaVersion: 1, sourceType: null, sourceHash: null, sourceCueCount: 0, sourceCharacterCount: 0, summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null });
       try {
-        const result = await summaryService.generate({ meetingId });
+        const result = await summaryService.generate({ sessionId, meetingId });
         const summary = validateGeneratedSummary(result);
-        return await summaryRepository.updateSummary(pending.complete({ ...summary, completedAt: clock() }));
+        return await summaryRepository.updateSummary(pending.complete({
+          ...summary,
+          sourceType: result.sourceType,
+          sourceHash: result.sourceHash,
+          sourceCueCount: result.sourceCueCount,
+          sourceCharacterCount: result.sourceCharacterCount,
+          completedAt: clock()
+        }));
       } catch (error) {
         await summaryRepository.updateSummary(pending.fail());
         throw error;
@@ -60,7 +67,7 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
       const existing = await summaryRepository.getSummaryBySessionId(sessionId);
       if (existing?.status === 'completed') return existing;
       const ranges = await summaryService.listFinalCueRanges({ sessionId, meetingId });
-      if (!ranges.length) throw coded('meeting_summary_cues_unavailable', `Final Subtitle Cues are not available for meeting ${meetingId}.`);
+      if (!ranges.length) return this.generateAndPersist({ sessionId, meetingId });
       const partials = await summaryRepository.listPartialSummariesBySessionId(sessionId);
       const completedPartials = partials.filter((item) => item.status === 'completed');
       const completedKeys = new Set();
@@ -77,7 +84,8 @@ export function createMeetingSummaryPersistenceService({ summaryRepository, summ
         : await summaryRepository.createSummary({ summaryId: idGenerator('meeting-summary'), sessionId, kind: 'final', range: null, status: 'pending', model, summary: null, topics: [], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [], createdAt: clock(), completedAt: null });
       try {
         const merged = mergeChunkSummaries(ranges.map((range) => byRange.get(range.rangeKey).summary));
-        return await summaryRepository.updateSummary(pending.complete({ summary: merged, topics: merged.keyPoints, decisions: merged.decisions, actionItems: merged.actionItems, timeline: merged.timeline, keywords: merged.keywords, risks: merged.risks, openQuestions: merged.openQuestions, followUpSuggestions: merged.followUpSuggestions, completedAt: clock() }));
+        const source = typeof summaryService.buildSource === 'function' ? await summaryService.buildSource({ sessionId, meetingId }) : null;
+        return await summaryRepository.updateSummary(pending.complete({ summary: merged, topics: merged.keyPoints, decisions: merged.decisions, actionItems: merged.actionItems, timeline: merged.timeline, keywords: merged.keywords, risks: merged.risks, openQuestions: merged.openQuestions, followUpSuggestions: merged.followUpSuggestions, ...(source ? { sourceType: source.sourceType, sourceHash: source.sourceHash, sourceCueCount: source.sourceCueCount, sourceCharacterCount: source.sourceCharacterCount } : {}), completedAt: clock() }));
       } catch (error) {
         await summaryRepository.updateSummary(pending.fail());
         throw error;

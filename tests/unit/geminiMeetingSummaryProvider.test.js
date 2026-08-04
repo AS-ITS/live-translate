@@ -8,7 +8,7 @@ test('builds a JSON summary request and normalizes Gemini output', async () => {
     client: { async generateContent(request) { requests.push(request); return { text: JSON.stringify({ title: 'Meeting', overview: 'Overview', keyPoints: ['Point'], decisions: [], actionItems: [] }) }; } }
   });
   const result = await provider.summarizeChunk({ meetingId: 'meeting-1', chunkIndex: 0, totalChunks: 1, cues: [{ sourceText: 'hello' }] });
-  assert.deepEqual(result, { title: 'Meeting', overview: 'Overview', keyPoints: ['Point'], decisions: [], actionItems: [] });
+  assert.deepEqual(result, { title: 'Meeting', overview: 'Overview', keyPoints: ['Point'], decisions: [], actionItems: [], timeline: [], keywords: [], risks: [], openQuestions: [], followUpSuggestions: [] });
   assert.equal(requests[0].model, 'gemini-3.5-flash-lite');
   assert.equal(requests[0].config.responseMimeType, 'application/json');
 });

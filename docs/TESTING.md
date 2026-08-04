@@ -301,6 +301,7 @@ Run the focused summary pipeline tests:
 ```bash
 node --test tests/unit/meetingSummaryService.test.js
 node --test tests/unit/geminiMeetingSummaryProvider.test.js
+node --test tests/unit/meetingSummarySource.test.js
 ```
 
 ### Meeting summary persistence (WP2)
@@ -314,4 +315,5 @@ node --test tests/unit/fileMeetingSummaryRepository.test.js
 
 ```bash
 node --test tests/unit/sessionSummaryHttpApi.test.js
+node --test tests/unit/sessionReadApiClient.test.js
 ```

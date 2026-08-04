@@ -152,6 +152,18 @@ test('missing summary returns null for meeting_summary_not_found response', asyn
   assert.equal(await client.getSessionSummary('missing-session'), null);
 });
 
+test('POST /api/sessions/:sessionId/summary/retry URL-encodes the ID', async () => {
+  const calls = [];
+  const client = createSessionReadApiClient({
+    fetchImpl(url, options) {
+      calls.push({ url, options });
+      return jsonResponse({ accepted: true, jobId: 'job-1' }, { status: 202 });
+    }
+  });
+  assert.deepEqual(await client.retrySessionSummary('session 1'), { accepted: true, jobId: 'job-1' });
+  assert.deepEqual(calls, [{ url: '/api/sessions/session%201/summary/retry', options: { method: 'POST' } }]);
+});
+
 test('missing detail returns null for session_not_found response', async () => {
   const client = createSessionReadApiClient({
     fetchImpl() {

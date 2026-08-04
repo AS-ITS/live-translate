@@ -199,7 +199,7 @@ export function createApplicationDependencies(options = {}) {
   });
   const resolvedFinalCueRepository = finalCueRepository ?? (summaryProvider ? createSubtitleCueRepository({ sessionRepository: sessionReadDependencies.sessionRepository, meetingRepository: resolvedMeetingRepository }) : undefined);
   const resolvedSummaryService = summaryService ?? (summaryProvider && resolvedFinalCueRepository
-    ? createMeetingSummaryService({ finalCueRepository: resolvedFinalCueRepository, summaryProvider })
+    ? createMeetingSummaryService({ finalCueRepository: resolvedFinalCueRepository, sessionRepository: sessionReadDependencies.sessionRepository, summaryProvider })
     : undefined);
   const resolvedSummaryPersistenceService = summaryPersistenceService ?? (resolvedSummaryService
     ? createMeetingSummaryPersistenceService({ summaryRepository: resolvedSummaryRepository, summaryService: resolvedSummaryService, sessionRepository: sessionReadDependencies.sessionRepository, model: summaryModel, idGenerator, clock })
@@ -317,6 +317,7 @@ export function createApplicationDependencies(options = {}) {
       sessionReadController: sessionReadDependencies.sessionReadController,
       sessionSummaryController,
       sessionRepository: sessionReadDependencies.sessionRepository,
+      summaryRepository: resolvedSummaryRepository,
       translationRepository: translationCommandDependencies.translationRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,

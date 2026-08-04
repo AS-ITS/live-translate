@@ -19,6 +19,17 @@ export function createMeetingSummaryJobEnqueuer({ jobRepository, activeQueue, id
       const ranges = await summaryService.listFinalCueRanges({ sessionId, meetingId });
       for (const range of ranges) await this.enqueuePartial({ sessionId, meetingId, range });
       return enqueueFinal({ sessionId, meetingId });
+    },
+    async retryForSession({ sessionId, meetingId } = {}) {
+      if (!nonEmpty(sessionId) || !nonEmpty(meetingId)) throw new TypeError('sessionId and meetingId must be non-empty strings.');
+      const job = await jobRepository.enqueue({
+        jobId: idGenerator('meeting-summary-job'),
+        idempotencyKey: `final:${sessionId}:retry:${idGenerator('attempt')}`,
+        kind: 'final', range: null, sessionId, meetingId, status: 'queued', attempt: 0, fenceToken: 0,
+        enqueuedAt: clock(), availableAt: null
+      });
+      if (job.status === 'queued') await activeQueue.enqueue({ jobId: job.jobId, sessionId: job.sessionId, meetingId: job.meetingId });
+      return job;
     }
   });
 

@@ -3860,7 +3860,20 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         translationLabel="下載翻譯語音紀錄"
       />
 
-      <MeetingSummarySection summary={meetingSummary} error={meetingSummaryError} sessionId={sessionRecordId} />
+      <MeetingSummarySection
+        summary={meetingSummary}
+        error={meetingSummaryError}
+        sessionId={sessionRecordId}
+        onRetry={async () => {
+          setMeetingSummaryError('');
+          try {
+            await sessionReadApiClient.retrySessionSummary(sessionRecordId);
+            setMeetingSummary({ status: 'pending' });
+          } catch {
+            setMeetingSummaryError('會議摘要重試失敗，請稍後再試。');
+          }
+        }}
+      />
 
       {historyCues.length > 0 ? (
         <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
@@ -3920,7 +3933,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   );
 }
 
-function MeetingSummarySection({ summary, error, sessionId }) {
+function MeetingSummarySection({ summary, error, sessionId, onRetry }) {
   if (summary === undefined) {
     return (
       <section className="meeting-summary" aria-labelledby="meeting-summary-title" aria-busy="true">
@@ -3965,7 +3978,12 @@ function MeetingSummarySection({ summary, error, sessionId }) {
       </div>
 
       {status === 'pending' ? <p className="history-empty">會議摘要正在產生中，完成後會顯示內容。</p> : null}
-      {status === 'failed' ? <p className="summary-error">會議摘要產生失敗，暫時沒有可顯示的內容。</p> : null}
+      {status === 'failed' ? (
+        <>
+          <p className="summary-error">會議摘要產生失敗，暫時沒有可顯示的內容。</p>
+          <button className="button detail-button" type="button" onClick={() => void onRetry?.()}>重試會議摘要</button>
+        </>
+      ) : null}
       {status === 'completed' ? <CompletedMeetingSummary summary={summary} sessionId={sessionId} /> : null}
     </section>
   );

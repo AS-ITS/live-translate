@@ -1,28 +1,39 @@
+import { buildMeetingSummarySource } from './meetingSummarySource.js';
+
 const DEFAULT_MAX_CUES_PER_CHUNK = 40;
 const DEFAULT_MAX_CHARACTERS_PER_CHUNK = 12000;
 
 export function createMeetingSummaryService({
   finalCueRepository,
+  sessionRepository,
   summaryProvider,
   maxCuesPerChunk = DEFAULT_MAX_CUES_PER_CHUNK,
   maxCharactersPerChunk = DEFAULT_MAX_CHARACTERS_PER_CHUNK
 } = {}) {
   assertMethod(finalCueRepository, 'listFinalCuesByMeeting', 'finalCueRepository');
+  if (sessionRepository !== undefined) assertMethod(sessionRepository, 'getSessionRecord', 'sessionRepository');
   assertMethod(summaryProvider, 'summarizeChunk', 'summaryProvider');
   assertPositiveInteger(maxCuesPerChunk, 'maxCuesPerChunk');
   assertPositiveInteger(maxCharactersPerChunk, 'maxCharactersPerChunk');
 
   return Object.freeze({
-    async generate({ meetingId } = {}) {
+    async buildSource({ sessionId, meetingId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       const cues = await finalCueRepository.listFinalCuesByMeeting(meetingId);
-      if (!Array.isArray(cues) || cues.length === 0) {
-        const error = new Error(`Final Subtitle Cues are not available for meeting ${meetingId}.`);
-        error.code = 'meeting_summary_cues_unavailable';
+      const detail = (!Array.isArray(cues) || cues.length === 0) && sessionRepository && sessionId
+        ? await sessionRepository.getSessionRecord(sessionId)
+        : null;
+      try {
+        return buildMeetingSummarySource({ cues, transcriptItems: detail?.transcriptItems || [] });
+      } catch (error) {
+        if (error.code === 'meeting_summary_source_empty') error.code = 'meeting_summary_cues_unavailable';
         throw error;
       }
-
-      const orderedCues = cues.map(clone).sort(compareCues);
+    },
+    async generate({ sessionId, meetingId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const source = await this.buildSource({ sessionId, meetingId });
+      const orderedCues = source.cues.map((cue, index) => ({ ...cue, sequence: index })).sort(compareCues);
       const chunks = chunkFinalCues(orderedCues, { maxCuesPerChunk, maxCharactersPerChunk });
       const chunkSummaries = [];
 
@@ -31,12 +42,18 @@ export function createMeetingSummaryService({
           meetingId,
           chunkIndex,
           totalChunks: chunks.length,
+          sourceHash: source.sourceHash,
+          sourceType: source.sourceType,
           cues: clone(chunk)
         }));
       }
 
       return Object.freeze({
         meetingId,
+        sourceType: source.sourceType,
+        sourceHash: source.sourceHash,
+        sourceCueCount: source.sourceCueCount,
+        sourceCharacterCount: source.sourceCharacterCount,
         cueCount: orderedCues.length,
         chunkCount: chunkSummaries.length,
         chunks: Object.freeze(chunkSummaries.map(clone)),

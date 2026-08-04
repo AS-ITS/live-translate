@@ -74,6 +74,13 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
       return summary;
     },
 
+    async retrySessionSummary(sessionId) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}/summary/retry`), { method: 'POST' });
+      await assertOkResponse(response);
+      return parseJsonResponse(response);
+    },
+
     async deleteSessionRecord(sessionId) {
       const normalizedSessionId = validateSessionId(sessionId);
       const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}`), {

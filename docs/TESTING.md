@@ -141,6 +141,12 @@ Run incremental meeting summary coverage:
 node --test tests/unit/meetingSummaryIncremental.test.js
 ```
 
+Run meeting summary export coverage:
+
+```bash
+node --test tests/unit/meetingSummaryExport.test.js
+```
+
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
@@ -180,6 +186,8 @@ Current integration coverage:
   reconstruction, and accelerated 2+ hour Long Meeting reload validation
 - Incremental partial-summary range identity, retry, ordering, missing-range,
   final-merge, and stable job-key behavior
+- Meeting summary TXT/Markdown formatting, deterministic filenames, and PDF/DOCX
+  document signatures
 
 ## E2E Tests
 

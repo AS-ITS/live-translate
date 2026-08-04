@@ -906,6 +906,25 @@ input:disabled {
   padding-left: 20px;
 }
 
+.meeting-summary-export {
+  align-items: end;
+  border-top: 1px solid #d8dee6;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 16px;
+}
+
+.meeting-summary-export .field {
+  min-width: 140px;
+}
+
+.meeting-summary-export .error-message {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 .summary-error {
   margin: 0;
   color: #7d1717;

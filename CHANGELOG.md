@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- WP7 Meeting Summary Export: completed final summaries now provide PDF,
+  Markdown, DOCX, and TXT downloads with structured sections and deterministic
+  Session/timestamp filenames. Existing translation and subtitle exports are
+  unchanged.
+
 - WP6 Incremental Meeting Summary: finalized Meeting Segments now produce
   independently persisted, range-keyed partial summaries through the existing
   durable summary worker. Session finalization merges completed partials in

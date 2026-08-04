@@ -35,6 +35,7 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import { buildMeetingSummaryFileName, createMeetingSummaryExport, MEETING_SUMMARY_EXPORT_FORMATS } from './lib/meetingSummaryExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
   applyTranscriptEvent,
@@ -3782,7 +3783,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         translationLabel="下載翻譯語音紀錄"
       />
 
-      <MeetingSummarySection summary={meetingSummary} error={meetingSummaryError} />
+      <MeetingSummarySection summary={meetingSummary} error={meetingSummaryError} sessionId={sessionRecordId} />
 
       {historyCues.length > 0 ? (
         <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
@@ -3842,7 +3843,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   );
 }
 
-function MeetingSummarySection({ summary, error }) {
+function MeetingSummarySection({ summary, error, sessionId }) {
   if (summary === undefined) {
     return (
       <section className="meeting-summary" aria-labelledby="meeting-summary-title" aria-busy="true">
@@ -3888,16 +3889,29 @@ function MeetingSummarySection({ summary, error }) {
 
       {status === 'pending' ? <p className="history-empty">會議摘要正在產生中，完成後會顯示內容。</p> : null}
       {status === 'failed' ? <p className="summary-error">會議摘要產生失敗，暫時沒有可顯示的內容。</p> : null}
-      {status === 'completed' ? <CompletedMeetingSummary summary={summary} /> : null}
+      {status === 'completed' ? <CompletedMeetingSummary summary={summary} sessionId={sessionId} /> : null}
     </section>
   );
 }
 
-function CompletedMeetingSummary({ summary }) {
+function CompletedMeetingSummary({ summary, sessionId }) {
   const content = summary.summary || {};
   const topics = summary.topics?.length > 0 ? summary.topics : content.keyPoints || [];
   const decisions = summary.decisions?.length > 0 ? summary.decisions : content.decisions || [];
   const actionItems = summary.actionItems?.length > 0 ? summary.actionItems : content.actionItems || [];
+  const [format, setFormat] = useState('pdf');
+  const [exportError, setExportError] = useState('');
+
+  function downloadSummary() {
+    setExportError('');
+    try {
+      const result = createMeetingSummaryExport(summary, format);
+      const fileName = buildMeetingSummaryFileName(sessionId, { format, timestamp: new Date() });
+      downloadBlob(result.blob, fileName);
+    } catch {
+      setExportError('會議摘要匯出失敗，請稍後再試。');
+    }
+  }
 
   return (
     <div className="meeting-summary-content">
@@ -3906,6 +3920,19 @@ function CompletedMeetingSummary({ summary }) {
       <SummaryListBlock title="Key Topics" items={topics} />
       <SummaryListBlock title="Decisions" items={decisions} />
       <SummaryListBlock title="Action Items" items={actionItems} />
+      <div className="meeting-summary-export" aria-label="會議摘要匯出">
+        <label className="field">
+          <span>匯出格式</span>
+          <select aria-label="會議摘要匯出格式" value={format} onChange={(event) => setFormat(event.target.value)}>
+            {MEETING_SUMMARY_EXPORT_FORMATS.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+          </select>
+        </label>
+        <button className="button detail-button" type="button" onClick={downloadSummary}>
+          <Download size={16} aria-hidden="true" />
+          下載會議摘要
+        </button>
+        {exportError ? <p className="error-message" role="alert">{exportError}</p> : null}
+      </div>
     </div>
   );
 }
@@ -4893,6 +4920,18 @@ function contentTypeForFormat(format) {
 
 function downloadTextFile(content, fileName, type) {
   const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.style.display = 'none';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

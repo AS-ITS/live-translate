@@ -54,3 +54,15 @@ that the required persisted Cue ranges exist exactly once, sorts by Segment
 sequence and Cue range, and merges them chronologically. Missing or failed
 partial ranges leave the final job retryable. The existing summary API returns
 the final record only.
+
+## WP7 Meeting Summary Export
+
+Completed final summaries can be exported from Session Detail as PDF, Markdown,
+DOCX, or TXT. Export content is derived from the same structured summary data
+rendered by the Meeting Summary section: Executive Summary, Key Topics,
+Decisions, and Action Items. Partial, pending, failed, and missing summaries do
+not expose export actions.
+
+Exports are generated in the browser and use the deterministic filename pattern
+`live-translate-summary-<sessionId>-<exportTimestamp>.<format>`. This path is
+separate from translation and subtitle export behavior.

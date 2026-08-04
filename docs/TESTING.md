@@ -286,3 +286,16 @@ Run the focused summary pipeline tests:
 node --test tests/unit/meetingSummaryService.test.js
 node --test tests/unit/geminiMeetingSummaryProvider.test.js
 ```
+
+### Meeting summary persistence (WP2)
+
+```bash
+node --test tests/unit/meetingSummaryPersistenceService.test.js tests/unit/meetingSummaryRepository.test.js
+node --test tests/unit/fileMeetingSummaryRepository.test.js
+```
+
+### Meeting summary API (WP3)
+
+```bash
+node --test tests/unit/sessionSummaryHttpApi.test.js
+```

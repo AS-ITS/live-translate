@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added `GET /api/sessions/:sessionId/summary` for deterministic retrieval of
+  completed, pending, and failed persisted meeting summaries.
+
+- Added WP2 AI meeting summary persistence with Session association,
+  immutable completed records, retained failed attempts, retry support, and
+  memory/file-backed repositories.
+
 - WP5A Subtitle Cue Exporter: Session detail TXT, SRT, and VTT downloads now
   use persisted final Cues when available, with deterministic filtering,
   sequence ordering, session-relative timeline validation, and

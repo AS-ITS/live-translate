@@ -1,5 +1,26 @@
 # Live Translate API and Events
 
+## `GET /api/sessions/:sessionId/summary`
+
+Returns the persisted meeting summary associated with a Session. Completed,
+pending, and failed records are returned unchanged. Missing summaries return
+`404` with error code `meeting_summary_not_found`.
+
+```json
+{
+  "summaryId": "summary-1",
+  "sessionId": "session-1",
+  "status": "completed",
+  "model": "gemini-3.5-flash-lite",
+  "summary": { "title": "Meeting", "overview": "..." },
+  "topics": [],
+  "decisions": [],
+  "actionItems": [],
+  "createdAt": 1720000000000,
+  "completedAt": 1720000100000
+}
+```
+
 ## Long Meeting Checkpoints
 
 ## `GET /api/meetings`

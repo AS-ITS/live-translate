@@ -3,3 +3,4 @@ export { createSavedTranscriptRetranslationService } from './savedTranscriptRetr
 export { createSavedTranscriptTranslationProvider } from './savedTranscriptTranslationProvider.js';
 export { createTranslationDomainEventHandlers } from './translationDomainEventHandlers.js';
 export { createMeetingSummaryService, createFinalCueSummaryTrigger } from '../meetingSummaryService.js';
+export { createMeetingSummaryPersistenceService } from '../meetingSummaryPersistenceService.js';

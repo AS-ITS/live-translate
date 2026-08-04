@@ -2,6 +2,7 @@ import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createSessionSummaryQueryService } from '../src/application/sessionSummaryQueryService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
@@ -42,6 +43,8 @@ import { createFileSessionRepository } from '../src/infrastructure/fileSessionRe
 import { createFileSessionAudioArtifactRepository } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
 import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
+import { createFileMeetingSummaryRepository } from '../src/infrastructure/fileMeetingSummaryRepository.js';
+import { createMemoryMeetingSummaryRepository } from '../src/infrastructure/meetingSummaryRepositoryAdapter.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -56,6 +59,7 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
+import { createSessionSummaryController } from './sessionSummaryController.js';
 import { createMeetingReadController as createDefaultMeetingReadController } from './meetingReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
@@ -68,6 +72,7 @@ export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
+export const DEFAULT_MEETING_SUMMARY_RECORDS_FILE = 'meeting-summaries.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -121,6 +126,9 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
     sessionAudioArtifactFileSystem = fileSystem,
     meetingRepository,
+    summaryRepository,
+    summaryRepositoryFactory = createMemoryMeetingSummaryRepository,
+    summaryRepositoryFileSystem = fileSystem,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
     meetingReadControllerFactory = createDefaultMeetingReadController,
@@ -144,6 +152,11 @@ export function createApplicationDependencies(options = {}) {
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository
     : createMemoryMeetingRepository();
+  const resolvedSummaryRepository = Object.prototype.hasOwnProperty.call(options, 'summaryRepository')
+    ? summaryRepository
+    : summaryRepositoryFactory({ filePath: meetingSummaryRecordsFilePathFor(env), fileSystem: summaryRepositoryFileSystem });
+  const sessionSummaryQueryService = createSessionSummaryQueryService({ summaryRepository: resolvedSummaryRepository });
+  const sessionSummaryController = createSessionSummaryController({ sessionSummaryQueryService });
   const sessionReadDependencies = createSessionReadDependencies({
     ...sessionReadOptions,
     meetingRepository: resolvedMeetingRepository,
@@ -247,6 +260,7 @@ export function createApplicationDependencies(options = {}) {
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
+      sessionSummaryController,
       sessionRepository: sessionReadDependencies.sessionRepository,
       translationRepository: translationCommandDependencies.translationRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
@@ -267,6 +281,9 @@ export function createApplicationDependencies(options = {}) {
 
   return {
     ...sessionReadDependencies,
+    sessionSummaryQueryService,
+    sessionSummaryController,
+    summaryRepository: resolvedSummaryRepository,
     ...translationCommandDependencies,
     translationHistoryQueryService,
     translationHistoryController,
@@ -314,6 +331,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationGlossaryFileSystem = fileSystem,
     sessionRepositoryFileSystem = fileSystem,
     meetingRepositoryFileSystem = fileSystem,
+    summaryRepositoryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
@@ -356,6 +374,12 @@ export function createProductionApplicationDependencies(options = {}) {
     : fileMeetingRepositoryFactory({
         filePath: meetingRecordsFilePathFor(env),
         fileSystem: meetingRepositoryFileSystem
+      });
+  const summaryRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'summaryRepository')
+    ? applicationOptions.summaryRepository
+    : createFileMeetingSummaryRepository({
+        filePath: meetingSummaryRecordsFilePathFor(env),
+        fileSystem: summaryRepositoryFileSystem
       });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
@@ -463,6 +487,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...applicationOptions,
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
+    summaryRepository,
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -1159,6 +1184,10 @@ function sessionRecordsFilePathFor(env = {}) {
 
 function meetingRecordsFilePathFor(env = {}) {
   return env.MEETING_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_RECORDS_FILE);
+}
+
+function meetingSummaryRecordsFilePathFor(env = {}) {
+  return env.MEETING_SUMMARY_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_SUMMARY_RECORDS_FILE);
 }
 
 function sessionAudioArtifactsDirectoryFor(env = {}) {

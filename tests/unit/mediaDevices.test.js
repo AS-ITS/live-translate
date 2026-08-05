@@ -13,9 +13,9 @@ import {
 test('buildAudioInputConstraints uses browser default microphone without inputDeviceId', () => {
   assert.deepEqual(buildAudioInputConstraints(), {
     audio: {
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
       channelCount: 1
     }
   });
@@ -25,9 +25,9 @@ test('buildAudioInputConstraints includes exact deviceId for selected microphone
   assert.deepEqual(buildAudioInputConstraints('mic-1'), {
     audio: {
       deviceId: { exact: 'mic-1' },
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: true,
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
       channelCount: 1
     }
   });

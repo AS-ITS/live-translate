@@ -202,7 +202,7 @@ function applyPartialEvent(state, event) {
 function applyFinalEvent(state, event) {
   const streamState = state[event.stream];
   const lastFinal = streamState.finalItems.at(-1);
-  const isDuplicateFinal = lastFinal?.text === event.text && lastFinal?.languageCode === event.languageCode;
+  const isDuplicateFinal = isDuplicateTranscriptItem(lastFinal, event);
 
   if (isDuplicateFinal) {
     if (!streamState.currentPartial || streamState.currentPartial.text !== event.text) {
@@ -278,14 +278,23 @@ function decideTranscriptEvent(state, event) {
     return { action: 'duplicate', reason: 'matches-current-partial-suffix', text: event.text };
   }
 
-  if (lastFinal?.text === event.text && lastFinal.languageCode === event.languageCode) {
+  if (isDuplicateTranscriptItem(lastFinal, event)) {
     return { action: 'duplicate', reason: 'matches-last-final', text: event.text };
   }
 
   const cumulativeDelta = deltaFromFinalTranscript(streamState, event.text);
   if (cumulativeDelta) {
     if (!cumulativeDelta.text) {
-      return { action: 'duplicate', reason: 'matches-completed-transcript', text: event.text };
+      if (isDuplicateTranscriptItem(lastFinal, event)) {
+        return { action: 'duplicate', reason: 'matches-completed-transcript', text: event.text };
+      }
+
+      return {
+        action: event.isFinal ? 'append' : 'partial',
+        reason: 'repeated-text-starts-next-segment',
+        text: event.text,
+        commitCurrentBeforeEvent: false
+      };
     }
 
     if (currentPartial?.text === cumulativeDelta.text && currentPartial.languageCode === event.languageCode) {
@@ -448,6 +457,7 @@ function createTranscriptItem(state, event, status, now) {
     sequence: state.nextSequence,
     startedAt: now,
     finalizedAt: status === 'final' ? now : undefined,
+    ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
     ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
   };
@@ -459,9 +469,18 @@ function finalizeTranscriptItem(item, event, now) {
     status: 'final',
     text: event.text,
     finalizedAt: now,
+    ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
     ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
   };
+}
+
+function isDuplicateTranscriptItem(item, event) {
+  if (!item || item.text !== event.text || item.languageCode !== event.languageCode) {
+    return false;
+  }
+  if (item.eventId && event.eventId) return item.eventId === event.eventId;
+  return !item.eventId && !event.eventId;
 }
 
 function replaceStreamState(state, stream, streamState) {

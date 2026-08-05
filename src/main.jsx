@@ -537,8 +537,8 @@ function App() {
         ));
       },
       onInputAudioChunk: handleInputAudioChunk,
-      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
-      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
+      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' }),
+      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' }),
       onCueEvent: (event) => {
         if (!liveCueUpdatesAllowedRef.current) return;
         const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
@@ -1234,10 +1234,13 @@ function App() {
   }
 
   function enqueueCuePersistence(previous, next) {
-    const previousIds = new Set((previous?.finalCues || []).map((cue) => cue.cueId));
-    const newCues = (next?.finalCues || []).filter((cue) => !previousIds.has(cue.cueId));
+    const previousCues = new Map((previous?.finalCues || []).map((cue) => [cue.cueId, cue]));
+    const changedCues = (next?.finalCues || []).filter((cue) => {
+      const previousCue = previousCues.get(cue.cueId);
+      return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
+    });
     const checkpoint = cueCheckpointForState(next);
-    meetingCheckpointSyncCoordinator().enqueueCues(newCues, checkpoint);
+    meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
   }
 
   function cueCheckpointForState(state) {

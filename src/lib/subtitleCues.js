@@ -46,6 +46,10 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
     ? findCumulativeFinalCue(eventState, event)
     : null;
   if (cumulativeFinalTarget) return updateFinalCue(eventState, cumulativeFinalTarget, event);
+  const lateSourceOnlyTarget = !eventState.currentCue && eventState.pendingCues.length === 0 && event.stream === 'translation'
+    ? findLateSourceOnlyCue(eventState, event)
+    : null;
+  if (lateSourceOnlyTarget) return updateFinalCue(eventState, lateSourceOnlyTarget, event);
   const target = findPairingCue(eventState, event);
   const next = target
     ? updateCue(eventState, target, event)
@@ -264,6 +268,17 @@ function findCumulativeFinalCue(state, event) {
     if (previousText && event.text.length > previousText.length && event.text.startsWith(previousText)) {
       return { index, cue };
     }
+  }
+  return null;
+}
+
+function findLateSourceOnlyCue(state, event) {
+  for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
+    const cue = state.finalCues[index];
+    if (cue.translatedText || !cue.sourceText || !cue.retranslationRequested) continue;
+    if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) continue;
+    if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
+    return { index, cue };
   }
   return null;
 }
@@ -501,6 +516,10 @@ function splitCompleteCue(state, cue, event, options) {
   const translationLimit = languageCueLimit(cue.targetLanguageCode || options.targetLanguageCode, options);
   const sourceParts = splitCueText(cue.sourceText, sourceLimit);
   const translationParts = splitCueText(cue.translatedText, translationLimit);
+  // Keep the bilingual Cue atomic when only one side has a safe split. This
+  // prevents a source fragment from becoming a source-only export Cue, or a
+  // short translation from being duplicated across multiple source Cues.
+  if (sourceParts.length < 2 || translationParts.length < 2) return null;
   const partCount = Math.max(sourceParts.length, translationParts.length);
   if (partCount < 2) return null;
 

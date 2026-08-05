@@ -286,6 +286,29 @@ test('avoid duplicate final append', () => {
   assert.equal(duplicate.nextSequence, 2);
 });
 
+test('keeps identical final text from a later provider event as a new segment', () => {
+  let state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source', text: '一二三', isFinal: true, eventId: 'turn-1', now: 100
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'source', text: '一二三', isFinal: true, eventId: 'turn-2', now: 300
+  });
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.text), ['一二三', '一二三']);
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.eventId), ['turn-1', 'turn-2']);
+});
+
+test('deduplicates identical final text from the same provider event', () => {
+  let state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source', text: '一二三', isFinal: true, eventId: 'turn-1', now: 100
+  });
+  state = applyTranscriptEvent(state, {
+    stream: 'source', text: '一二三', isFinal: true, eventId: 'turn-1', now: 200
+  });
+
+  assert.equal(transcriptItemsForStream(state, 'source').length, 1);
+});
+
 test('a repeated final does not discard the next pending segment', () => {
   const first = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source', text: 'first segment', isFinal: true, now: 100

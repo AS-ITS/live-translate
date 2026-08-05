@@ -6,6 +6,10 @@
   final-Cue or legacy-transcript sources with filtering, deduplication,
   conflict validation, source hashes, source metadata, and manual retry API/UI.
 
+- AI Meeting Summary validation closeout: summary Cues now sort by Segment and
+  sequence, partial Cues are excluded from source construction, and deterministic
+  fake-provider E2E coverage verifies Stop completion, reload, and retry flows.
+
 - 即時字幕不再顯示尚未配對原文的翻譯 partial，避免原文欄卡住空白的「辨識中／翻譯中」；原文到達後會保留並完成配對。
 
 - 即時字幕不再依麥克風靜音猜測句子完成；字幕會保留到 Gemini boundary、句末標點或使用者明確 Pause／Stop，避免晚到翻譯被錯誤拆成孤立 partial。

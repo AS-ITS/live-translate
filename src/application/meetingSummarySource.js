@@ -29,6 +29,7 @@ export function buildMeetingSummarySource({ cues = [], transcriptItems = [] } = 
 function normalizeCandidates(candidates, { sourceType }) {
   const byId = new Map();
   for (const [index, candidate] of candidates.entries()) {
+    if (candidate?.status !== undefined && candidate.status !== 'final') continue;
     const sourceText = String(candidate?.sourceText ?? candidate?.text ?? '').trim();
     if (!sourceText || /^[\s\p{P}\p{S}]+$/u.test(sourceText)) continue;
     const cue = {
@@ -80,5 +81,5 @@ function toHashCue(cue) {
 }
 
 function hashSource(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
-function compareCues(left, right) { return left.segmentSequence - right.segmentSequence || numberCompare(left.startTimeMs, right.startTimeMs) || numberCompare(left.sequence, right.sequence) || left.cueId.localeCompare(right.cueId); }
+function compareCues(left, right) { return left.segmentSequence - right.segmentSequence || numberCompare(left.sequence, right.sequence) || numberCompare(left.startTimeMs, right.startTimeMs) || numberCompare(left.endTimeMs, right.endTimeMs) || left.cueId.localeCompare(right.cueId); }
 function numberCompare(left, right) { return (Number.isFinite(left) ? left : 0) - (Number.isFinite(right) ? right : 0); }

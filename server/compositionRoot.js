@@ -57,6 +57,7 @@ import { createFileMeetingSummaryJobRepository } from '../src/infrastructure/fil
 import { createMeetingSummaryWorkerRuntime } from '../src/infrastructure/meetingSummaryWorkerRuntime.js';
 import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
 import { createGeminiMeetingSummaryProvider } from '../src/infrastructure/geminiMeetingSummaryProvider.js';
+import { createFakeMeetingSummaryProvider } from '../src/infrastructure/fakeMeetingSummaryProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -450,7 +451,9 @@ export function createProductionApplicationDependencies(options = {}) {
     ? geminiEnvironmentFactory({ env })
     : undefined;
   let meetingSummaryGoogleClient;
-  const meetingSummaryProvider = applicationOptions.summaryProvider ?? (productionEnvironment
+  const meetingSummaryProvider = applicationOptions.summaryProvider ?? (env.NODE_ENV === 'test' && env.MEETING_SUMMARY_PROVIDER === 'fake'
+    ? createFakeMeetingSummaryProvider()
+    : productionEnvironment
     ? createGeminiMeetingSummaryProvider({
         client: {
           generateContent(input) {

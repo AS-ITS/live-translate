@@ -169,9 +169,9 @@ function timelineTime(value) { return Number.isFinite(value.startTimeMs) ? value
 
 function compareCues(left, right) {
   return String(left.segmentSequence ?? '').localeCompare(String(right.segmentSequence ?? ''), undefined, { numeric: true }) ||
+    numberCompare(left.sequence, right.sequence) ||
     numberCompare(left.startTimeMs, right.startTimeMs) ||
     numberCompare(left.endTimeMs, right.endTimeMs) ||
-    numberCompare(left.sequence, right.sequence) ||
     String(left.cueId).localeCompare(String(right.cueId));
 }
 

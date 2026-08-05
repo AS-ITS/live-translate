@@ -1,5 +1,34 @@
 export const DEFAULT_MEETING_SUMMARY_MODEL = 'gemini-3.5-flash-lite';
 
+export const MEETING_SUMMARY_RESPONSE_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    overview: { type: 'string' },
+    keyPoints: { type: 'array', items: { type: 'string' } },
+    decisions: { type: 'array', items: { type: 'string' } },
+    actionItems: { type: 'array', items: { type: 'string' } },
+    timeline: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          startTimeMs: { type: 'integer' },
+          endTimeMs: { type: 'integer' },
+          title: { type: 'string' },
+          description: { type: 'string' }
+        },
+        required: ['startTimeMs', 'endTimeMs', 'title', 'description']
+      }
+    },
+    keywords: { type: 'array', items: { type: 'string' } },
+    risks: { type: 'array', items: { type: 'string' } },
+    openQuestions: { type: 'array', items: { type: 'string' } },
+    followUpSuggestions: { type: 'array', items: { type: 'string' } }
+  },
+  required: ['title', 'overview', 'keyPoints', 'decisions', 'actionItems', 'timeline', 'keywords', 'risks', 'openQuestions', 'followUpSuggestions']
+};
+
 export function createGeminiMeetingSummaryProvider({ client, model = DEFAULT_MEETING_SUMMARY_MODEL, promptBuilder = buildMeetingSummaryPrompt } = {}) {
   if (!client || typeof client.generateContent !== 'function') throw new TypeError('client.generateContent must be a function.');
   if (typeof model !== 'string' || model.trim() === '') throw new TypeError('model must be a non-empty string.');
@@ -12,7 +41,10 @@ export function createGeminiMeetingSummaryProvider({ client, model = DEFAULT_MEE
         model,
         systemInstruction: { parts: [{ text: prompt.systemInstruction }] },
         contents: [{ role: 'user', parts: [{ text: prompt.data }] }],
-        config: { responseMimeType: 'application/json' }
+        config: {
+          responseMimeType: 'application/json',
+          responseJsonSchema: MEETING_SUMMARY_RESPONSE_JSON_SCHEMA
+        }
       });
       return normalizeSummaryResponse(response);
     }

@@ -20,9 +20,15 @@ validation.
 For persisted Sessions with final `cues`, TXT, SRT, and VTT exports use the
 same normalized Cue list: final-only filtering, cueId de-duplication,
 sequence ordering, session-relative timeline validation, and export-time
-language-aware wrapping. Partial Cues are never exported. Sessions without
-Cues continue to use the legacy transcript exporter; a non-empty but invalid
-Cue collection fails explicitly and does not silently fall back.
+language-aware wrapping. Partial Cues are never exported. Live subtitle
+exports now use the same in-memory bilingual Cue list, so source and
+translation downloads preserve identical Cue numbers and time windows.
+
+When an older Session, Meeting, or re-translation has no persisted Cues,
+timed export derives one shared set of Cue windows from the source transcript
+and distributes translation text across those windows. If no source timing is
+available at all, the legacy item-timing fallback remains available because
+there is no reference timeline from which alignment can be derived.
 
 SRT/VTT timing is approximate frontend observation timing, not media-aligned
 timing. Subtitle cues are derived from when transcript items are observed and
@@ -99,8 +105,8 @@ Recommended behavior:
   available and split translation text deterministically across those cue
   windows. Translation splitting should prefer sentence and phrase punctuation,
   preserve repeated short phrases such as `123, 123,`, and fall back to
-  whitespace or length only when punctuation is insufficient. If source cues are
-  unavailable, translation export falls back to its own transcript item timing.
+  whitespace or length only when punctuation is insufficient. Source and
+  translation exports must use the same resulting Cue windows.
 - Subtitle cue text should normalize repeated whitespace and remove spacing
   between CJK characters or adjacent CJK punctuation without changing normal
   English or number spacing.

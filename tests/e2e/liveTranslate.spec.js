@@ -1446,6 +1446,32 @@ test('downloads the active transcript through a browser download', async ({ page
   expect(download.suggestedFilename()).toMatch(/^live-translate-transcript-.*\.txt$/);
 });
 
+test('active source and translation SRT downloads use the same Cue timeline', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'first source', 'first translation');
+  await emitFinalTranscript(page, 'second source', 'second translation');
+
+  const exportPanel = page.locator('.export-panel');
+  await exportPanel.getByRole('combobox', { name: '匯出格式' }).selectOption('srt');
+
+  const downloadStream = async (stream) => {
+    await exportPanel.getByRole('combobox', { name: '匯出內容' }).selectOption(stream);
+    const downloadPromise = page.waitForEvent('download');
+    await exportPanel.getByRole('button', { name: '下載', exact: true }).click();
+    const download = await downloadPromise;
+    return readFile(await download.path(), 'utf8');
+  };
+
+  const source = await downloadStream('source');
+  const translation = await downloadStream('translation');
+  const timeline = (content) => [...content.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)]
+    .map((match) => match.slice(1));
+
+  expect(timeline(source)).toEqual(timeline(translation));
+});
+
 test('source and translation remain paired in one Cue row without article aggregation', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();

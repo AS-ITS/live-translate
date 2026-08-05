@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 即時 SRT／VTT 匯出改用雙語 final Cue；原文與翻譯下載會保留完全相同的 Cue 編號與時間軸。沒有 persisted Cue 的舊 Session、Meeting 與重新翻譯則會優先以原文時間窗對齊翻譯文字。
+
 - 修正 boundary 先於原文或翻譯文字抵達時的即時字幕狀態；晚到的 transcript 會沿用已完成狀態，配對完成後不再停留在「辨識中／翻譯中」。
 
 - 即時字幕會將同一個 Gemini Turn 的非累積來源／翻譯片段合併成單一暫存列，直到 `turnComplete`、`generationComplete` 或 transcript idle fallback 才完成，避免一句話被逐詞拆成多列，也避免缺少 boundary 時永久停留在 partial。

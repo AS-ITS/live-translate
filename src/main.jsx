@@ -35,7 +35,12 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
-import { wrapSubtitleText } from './lib/subtitleCueExport.js';
+import {
+  canExportCues,
+  exportCuesToSrt,
+  exportCuesToVtt,
+  wrapSubtitleText
+} from './lib/subtitleCueExport.js';
 import { buildMeetingSummaryFileName, createMeetingSummaryExport, MEETING_SUMMARY_EXPORT_FORMATS } from './lib/meetingSummaryExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
@@ -1941,11 +1946,15 @@ function App() {
     setError('');
 
     try {
-      const content = formatTranscriptExport(transcriptItems, {
-        format: exportFormat,
-        stream: exportStream,
-        timeOrigin: transcriptTimeOrigin
-      });
+      const content = exportFormat === 'srt' && subtitleCueState.finalCues.length > 0
+        ? exportCuesToSrt(subtitleCueState.finalCues, { stream: exportStream })
+        : exportFormat === 'vtt' && subtitleCueState.finalCues.length > 0
+          ? exportCuesToVtt(subtitleCueState.finalCues, { stream: exportStream })
+          : formatTranscriptExport(transcriptItems, {
+            format: exportFormat,
+            stream: exportStream,
+            timeOrigin: transcriptTimeOrigin
+          });
       const fileName = buildTranscriptFileName({ format: exportFormat });
       downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
@@ -2016,11 +2025,13 @@ function App() {
   ];
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
-  const canDownloadTranscript = canExportTranscript(transcriptItems, {
-    format: exportFormat,
-    stream: exportStream,
-    timeOrigin: transcriptTimeOrigin
-  });
+  const canDownloadTranscript = exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
+    ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream })
+    : canExportTranscript(transcriptItems, {
+      format: exportFormat,
+      stream: exportStream,
+      timeOrigin: transcriptTimeOrigin
+    });
   const exportUnavailableReason =
     exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
   const selectedHistoryRecord = selectedHistoryRecordId

@@ -112,3 +112,25 @@ test('exports SRT blocks and VTT header from session-relative Cue time', () => {
   assert.equal(exportCuesToSrt(cues, { stream: 'translation' }), '1\n00:00:01,200 --> 00:00:04,800\n你好翻譯。\n');
   assert.equal(exportCuesToVtt(cues, { stream: 'source' }), 'WEBVTT\n\n00:00:01.200 --> 00:00:04.800\nHello source.\n');
 });
+
+test('source and translation exports preserve the same Cue timeline', () => {
+  const cues = [
+    cue(),
+    cue({
+      cueId: 'cue-2',
+      sequence: 2,
+      startTimeMs: 5000,
+      endTimeMs: 6200,
+      sourceText: 'Second source.',
+      translatedText: '第二段翻譯。'
+    })
+  ];
+
+  const source = exportCuesToSrt(cues, { stream: 'source' });
+  const translation = exportCuesToSrt(cues, { stream: 'translation' });
+
+  assert.deepEqual(
+    [...source.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)].map((match) => match.slice(1)),
+    [...translation.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)].map((match) => match.slice(1))
+  );
+});

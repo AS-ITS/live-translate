@@ -399,11 +399,7 @@ input:disabled {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0;
-  max-height: min(58dvh, 620px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
   padding: 4px;
-  scroll-behavior: smooth;
 }
 
 .cue-language-section {
@@ -533,12 +529,6 @@ input:disabled {
   color: #6b7886;
   text-align: center;
   line-height: 1.5;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .cue-list {
-    scroll-behavior: auto;
-  }
 }
 
 @media (max-width: 760px) {

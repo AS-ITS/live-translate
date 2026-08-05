@@ -1317,7 +1317,7 @@ test('unpaired cumulative translation stays hidden until its source arrives', as
   });
 });
 
-test('manual scroll stops follow-latest until the user returns to the bottom', async ({ page }) => {
+test('page scroll stops follow-latest until the user returns to the latest subtitle', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1326,21 +1326,20 @@ test('manual scroll stops follow-latest until the user returns to the bottom', a
     await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`);
   }
 
-  await cueList(page).evaluate((element) => {
-    element.style.height = '100px';
-    element.style.maxHeight = '100px';
-    element.scrollTop = 0;
-    element.dispatchEvent(new Event('scroll', { bubbles: true }));
-  });
+  await expect(cueList(page)).toHaveCSS('overflow-y', 'visible');
+  await expect(cueList(page)).toHaveCSS('max-height', 'none');
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
   await expect(page.getByTestId('follow-latest-button')).toBeVisible();
 
+  const scrollTopBeforeNewCue = await page.evaluate(() => window.scrollY);
   await emitFinalTranscript(page, 'scroll source newest', 'scroll translation newest');
   await expect(finalCueRows(page)).toHaveCount(6);
-  await expect.poll(() => cueList(page).evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeGreaterThan(80);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollTopBeforeNewCue);
 
   await page.getByTestId('follow-latest-button').click();
   await expect(page.getByTestId('follow-latest-button')).toHaveCount(0);
-  await expect.poll(() => cueList(page).evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollTopBeforeNewCue);
 });
 
 test('paired Cue auto-finalizes after idle when a provider boundary is absent', async ({ page }) => {

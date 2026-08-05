@@ -65,7 +65,6 @@ import {
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
-  shouldFollowLatest,
   sourceTextForCopy,
   translationTextForCopy
 } from './lib/cueUi.js';
@@ -2486,6 +2485,14 @@ function buildArticleFileName(stream) {
   return `live-translate-article-${stream}-${stamp}.txt`;
 }
 
+const CUE_PAGE_FOLLOW_THRESHOLD_PX = 80;
+
+function isPageAtLatestCuePosition(panel) {
+  if (!panel || typeof window === 'undefined') return false;
+  const distanceFromViewportBottom = window.innerHeight - panel.getBoundingClientRect().bottom;
+  return Math.abs(distanceFromViewportBottom) <= CUE_PAGE_FOLLOW_THRESHOLD_PX;
+}
+
 function LiveCuePanel({
   cueState,
   isPaused,
@@ -2495,30 +2502,41 @@ function LiveCuePanel({
   onCopySource,
   onCopyTranslation
 }) {
-  const listRef = useRef(null);
-  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const panelRef = useRef(null);
+  const [isFollowingLatest, setIsFollowingLatest] = useState(false);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
 
   useEffect(() => {
-    const element = listRef.current;
-    if (!element || !isFollowingLatest) return;
-    element.scrollTo({ top: element.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
+    const panel = panelRef.current;
+    if (!panel) return undefined;
+
+    const updateFollowState = () => {
+      setIsFollowingLatest(isPageAtLatestCuePosition(panel));
+    };
+
+    updateFollowState();
+    window.addEventListener('scroll', updateFollowState, { passive: true });
+    window.addEventListener('resize', updateFollowState);
+    return () => {
+      window.removeEventListener('scroll', updateFollowState);
+      window.removeEventListener('resize', updateFollowState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !isFollowingLatest || cues.length === 0) return;
+    panel.scrollIntoView({ block: 'end', behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
 
-  function handleScroll() {
-    const element = listRef.current;
-    if (!element) return;
-    setIsFollowingLatest(shouldFollowLatest(element));
-  }
-
   function returnToLatest() {
-    const element = listRef.current;
-    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    const panel = panelRef.current;
+    if (panel) panel.scrollIntoView({ block: 'end', behavior: 'smooth' });
     setIsFollowingLatest(true);
   }
 
   return (
-    <section className="cue-panel" aria-label="即時字幕" data-testid="live-cue-panel">
+    <section className="cue-panel" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
       <div className="cue-panel-header">
         <div>
           <h2>即時字幕</h2>
@@ -2530,7 +2548,7 @@ function LiveCuePanel({
           ) : null}
         </div>
       </div>
-      <div className="cue-list" data-testid="cue-list" ref={listRef} onScroll={handleScroll} role="log" aria-live="polite" aria-label="字幕列表">
+      <div className="cue-list" data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
         <section className="cue-language-section" aria-label="即時字幕原文">
           <div className="cue-section-header">
             <h3>輸入／原文</h3>
@@ -4068,12 +4086,12 @@ function MeetingSummarySection({ summary, error, sessionId, onRetry }) {
           <button className="button detail-button" type="button" onClick={() => void onRetry?.()}>重試會議摘要</button>
         </>
       ) : null}
-      {status === 'completed' ? <CompletedMeetingSummary summary={summary} sessionId={sessionId} /> : null}
+      {status === 'completed' ? <CompletedMeetingSummary summary={summary} sessionId={sessionId} onRetry={onRetry} /> : null}
     </section>
   );
 }
 
-function CompletedMeetingSummary({ summary, sessionId }) {
+function CompletedMeetingSummary({ summary, sessionId, onRetry }) {
   const content = summary.summary || {};
   const topics = summary.topics?.length > 0 ? summary.topics : content.keyPoints || [];
   const decisions = summary.decisions?.length > 0 ? summary.decisions : content.decisions || [];
@@ -4083,8 +4101,30 @@ function CompletedMeetingSummary({ summary, sessionId }) {
   const risks = summary.risks?.length > 0 ? summary.risks : content.risks || [];
   const openQuestions = summary.openQuestions?.length > 0 ? summary.openQuestions : content.openQuestions || [];
   const followUpSuggestions = summary.followUpSuggestions?.length > 0 ? summary.followUpSuggestions : content.followUpSuggestions || [];
+  const hasContent = Boolean(
+    content.overview
+      || topics.length > 0
+      || decisions.length > 0
+      || actionItems.length > 0
+      || timeline.length > 0
+      || keywords.length > 0
+      || risks.length > 0
+      || openQuestions.length > 0
+      || followUpSuggestions.length > 0
+  );
   const [format, setFormat] = useState('pdf');
   const [exportError, setExportError] = useState('');
+
+  if (!hasContent) {
+    return (
+      <div className="meeting-summary-content">
+        <p className="history-empty">摘要沒有可用內容。</p>
+        <button className="button detail-button" type="button" onClick={() => void onRetry?.()}>
+          重試會議摘要
+        </button>
+      </div>
+    );
+  }
 
   function downloadSummary() {
     setExportError('');
@@ -4100,15 +4140,15 @@ function CompletedMeetingSummary({ summary, sessionId }) {
   return (
     <div className="meeting-summary-content">
       {content.title ? <h5>{content.title}</h5> : null}
-      <SummaryContentBlock title="Executive Summary" content={content.overview} />
-      <SummaryListBlock title="Key Topics" items={topics} />
-      <SummaryListBlock title="Decisions" items={decisions} />
-      <SummaryListBlock title="Action Items" items={actionItems} />
-      <SummaryTimelineBlock items={timeline} />
-      <SummaryListBlock title="Keywords" items={keywords} />
-      <SummaryListBlock title="Risks" items={risks} />
-      <SummaryListBlock title="Open Questions" items={openQuestions} />
-      <SummaryListBlock title="Follow-up Suggestions" items={followUpSuggestions} />
+      {content.overview ? <SummaryContentBlock title="Executive Summary" content={content.overview} /> : null}
+      {topics.length > 0 ? <SummaryListBlock title="Key Topics" items={topics} /> : null}
+      {decisions.length > 0 ? <SummaryListBlock title="Decisions" items={decisions} /> : null}
+      {actionItems.length > 0 ? <SummaryListBlock title="Action Items" items={actionItems} /> : null}
+      {timeline.length > 0 ? <SummaryTimelineBlock items={timeline} /> : null}
+      {keywords.length > 0 ? <SummaryListBlock title="Keywords" items={keywords} /> : null}
+      {risks.length > 0 ? <SummaryListBlock title="Risks" items={risks} /> : null}
+      {openQuestions.length > 0 ? <SummaryListBlock title="Open Questions" items={openQuestions} /> : null}
+      {followUpSuggestions.length > 0 ? <SummaryListBlock title="Follow-up Suggestions" items={followUpSuggestions} /> : null}
       <div className="meeting-summary-export" aria-label="會議摘要匯出">
         <label className="field">
           <span>匯出格式</span>

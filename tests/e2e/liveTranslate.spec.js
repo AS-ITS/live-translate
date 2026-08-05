@@ -1734,6 +1734,12 @@ test('stopped session can open and close inline detail with metadata and final t
   await expect(detail.getByText('持續時間')).toBeVisible();
   await expect(detail.getByText(/原文完成：\d+ · 翻譯完成：\d+/)).toBeVisible();
   await expect(detail.getByTestId('session-cue-list')).toBeVisible();
+  await expect(detail.getByTestId('history-cue-columns')).toContainText('原文');
+  await expect(detail.getByTestId('history-cue-columns')).toContainText('翻譯');
+  await expect(detail.getByTestId('cue-final-row').locator('.cue-text-toggle')).toHaveCSS(
+    'grid-template-columns',
+    /\S+\s+\S+/
+  );
   await expect(detail.getByTestId('session-cue-list').getByTestId('cue-final-row')).toHaveCount(1);
   await expect(detail.getByTestId('session-cue-list').getByTestId('cue-partial-row')).toHaveCount(0);
   await expect(detail.getByTestId('session-cue-list').getByTestId('cue-source-text')).toHaveText('saved source detail');

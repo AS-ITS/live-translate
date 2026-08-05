@@ -3958,6 +3958,10 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
       {historyCues.length > 0 ? (
         <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
           <h4>字幕</h4>
+          <div className="cue-history-columns" data-testid="history-cue-columns" aria-hidden="true">
+            <span>原文</span>
+            <span>翻譯</span>
+          </div>
           <div className="cue-list cue-list-history">
             {historyCues.map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}
           </div>

@@ -274,6 +274,10 @@ function decideTranscriptEvent(state, event) {
     return { action: 'duplicate', reason: 'matches-current-partial', text: event.text };
   }
 
+  if (currentPartial && currentPartial.languageCode === event.languageCode && isRedundantSuffixUpdate(currentPartial.text, event.text)) {
+    return { action: 'duplicate', reason: 'matches-current-partial-suffix', text: event.text };
+  }
+
   if (lastFinal?.text === event.text && lastFinal.languageCode === event.languageCode) {
     return { action: 'duplicate', reason: 'matches-last-final', text: event.text };
   }
@@ -318,16 +322,6 @@ function decideTranscriptEvent(state, event) {
   }
 
   if (currentPartial) {
-    const currentExtensionDelta = currentPartialExtensionDelta(currentPartial.text, event.text);
-    if (currentExtensionDelta && shouldCommitCumulativeExtension(currentPartial, currentExtensionDelta)) {
-      return {
-        action: 'delta',
-        reason: 'incoming-text-extends-current-pending-as-cumulative-transcript',
-        text: currentExtensionDelta,
-        commitCurrentBeforeEvent: true
-      };
-    }
-
     if (isTextRevisionForCurrentPartial(currentPartial.text, event.text)) {
       return {
         action: event.isFinal ? 'append' : 'partial',
@@ -381,24 +375,10 @@ function isTextRevisionForCurrentPartial(currentText, incomingText) {
   return incomingText.startsWith(currentText) || currentText.startsWith(incomingText);
 }
 
-function currentPartialExtensionDelta(currentText, incomingText) {
-  if (!incomingText.startsWith(currentText) || incomingText === currentText) {
-    return '';
-  }
-
-  return incomingText.slice(currentText.length).trim();
-}
-
-function shouldCommitCumulativeExtension(currentPartial, deltaText) {
-  if (!deltaText) {
-    return false;
-  }
-
-  return endsWithSegmentBoundary(currentPartial.text);
-}
-
-function endsWithSegmentBoundary(text) {
-  return /[.!?。！？；;，,、]$/.test(text);
+function isRedundantSuffixUpdate(currentText, incomingText) {
+  const current = String(currentText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  return incoming.length > 0 && incoming.length < current.length && current.endsWith(incoming);
 }
 
 function compareTranscriptItemsBySequence(first, second) {

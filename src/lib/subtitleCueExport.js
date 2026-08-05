@@ -84,6 +84,7 @@ export function wrapSubtitleText(text, languageCode, options = {}) {
   const normalized = normalizeExportText(text);
   if (!normalized) return '';
   const maxChars = options.maxChars ?? options.maxCharsByLanguage?.[languageCode] ?? DEFAULT_MAX_CHARS_BY_LANGUAGE[languageCode] ?? 40;
+  if (normalized.length <= maxChars) return normalized;
   const tokens = tokenizeForWrapping(normalized);
   const lines = [''];
 
@@ -189,7 +190,7 @@ function tokenizeForWrapping(text) {
     const protectedMatch = remaining.match(PROTECTED_TOKEN);
     const wordMatch = remaining.match(WORD_TOKEN);
     const cjkMatch = remaining.match(CJK_TOKEN);
-    const candidates = [protectedMatch, wordMatch, cjkMatch].filter(Boolean).sort((left, right) => left.index - right.index);
+    const candidates = [protectedMatch, cjkMatch, wordMatch].filter(Boolean).sort((left, right) => left.index - right.index);
     const match = candidates[0];
     if (!match || match.index > 0) {
       const prefix = remaining.slice(0, match?.index ?? remaining.length);

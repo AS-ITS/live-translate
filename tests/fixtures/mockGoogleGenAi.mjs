@@ -43,8 +43,12 @@ export class GoogleGenAI {
         const session = {
           closed: false,
           sentInputs: [],
+          sentClientContent: [],
           sendRealtimeInput(input) {
             this.sentInputs.push(input);
+          },
+          sendClientContent(content) {
+            this.sentClientContent.push(content);
           },
           close() {
             this.closed = true;

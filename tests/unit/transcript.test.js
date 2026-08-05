@@ -381,7 +381,7 @@ test('segments real-style partial-only turns without relying on turn completion'
   assert.deepEqual(stopped.translation.finalItems.map((item) => item.text), ['第一句翻譯', '第二句翻譯', '第三句翻譯']);
 });
 
-test('keeps cumulative partial extensions in one pending segment until a sentence boundary', () => {
+test('keeps cumulative partial extensions in one pending segment until finalization', () => {
   let state = createTranscriptState();
   state = applyTranscriptEvent(state, { stream: 'translation', text: '這是', isFinal: false, now: 100 });
 
@@ -405,7 +405,7 @@ test('keeps cumulative partial extensions in one pending segment until a sentenc
   assert.equal(state.nextSequence, 2);
 });
 
-test('uses only the delta after a sentence boundary when live transcription sends cumulative full text', () => {
+test('keeps cumulative full text together instead of splitting on punctuation', () => {
   let state = createTranscriptState();
   state = applyTranscriptEvent(state, { stream: 'source', text: '第一句。', isFinal: false, now: 100 });
 
@@ -428,10 +428,10 @@ test('uses only the delta after a sentence boundary when live transcription send
     now: 300
   });
 
-  assert.equal(secondDecision.action, 'delta');
-  assert.equal(secondDecision.segmentText, '第二句。');
-  assert.deepEqual(state.source.finalItems.map((item) => item.text), ['第一句。', '第二句。']);
-  assert.equal(state.source.currentPartial.text, '第三句');
+  assert.equal(secondDecision.action, 'partial');
+  assert.equal(secondDecision.segmentText, '第一句。第二句。');
+  assert.deepEqual(state.source.finalItems, []);
+  assert.equal(state.source.currentPartial.text, '第一句。第二句。第三句');
 
   const duplicate = applyTranscriptEvent(state, {
     stream: 'source',
@@ -440,6 +440,18 @@ test('uses only the delta after a sentence boundary when live transcription send
     now: 400
   });
   assert.equal(duplicate, state);
+});
+
+test('a shorter suffix update is ignored while the same partial is active', () => {
+  let state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source', text: '123', isFinal: false, now: 100
+  });
+  const next = applyTranscriptEvent(state, {
+    stream: 'source', text: '3', isFinal: false, now: 120
+  });
+
+  assert.equal(next, state);
+  assert.equal(next.source.currentPartial.text, '123');
 });
 
 test('finalizing cumulative pending text preserves the full sentence ending in article text', () => {

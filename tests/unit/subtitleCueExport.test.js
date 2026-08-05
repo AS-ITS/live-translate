@@ -79,6 +79,25 @@ test('wraps language-aware subtitle lines without splitting protected tokens', (
   assert.ok(wrapped.includes('12.50 kg'));
 });
 
+test('wraps each supported subtitle language to at most two configured lines', () => {
+  const cases = [
+    ['zh-Hant', '這是一段很長的繁體中文字幕，用兩行顯示。', 16],
+    ['ja', 'これは二行以内に表示するための長い日本語字幕です。', 18],
+    ['ko', '두 줄 안에 표시할 수 있도록 충분히 긴 한국어 자막입니다.', 22],
+    ['en', 'This is a long English subtitle that should wrap at a word boundary.', 40],
+    ['fr', 'Voici un long sous-titre français qui doit rester lisible sur deux lignes.', 42],
+    ['de', 'Dies ist ein langer deutscher Untertitel für zwei lesbare Zeilen.', 38]
+  ];
+
+  for (const [language, text, maxChars] of cases) {
+    const wrapped = wrapSubtitleText(text, language);
+    const lines = wrapped.split('\n');
+    assert.ok(lines.length <= 2, `${language} exceeded two lines`);
+    assert.ok(lines.every((line) => line.length <= maxChars), `${language} exceeded its line limit`);
+    assert.equal(wrapped.replace(/\s/gu, ''), text.replace(/\s/gu, ''));
+  }
+});
+
 test('exports Cue TXT in sequence order and preserves source/translation pairing', () => {
   const cues = [
     cue({ cueId: 'cue-2', sequence: 2, startTimeMs: 5000, endTimeMs: 6000, sourceText: 'source two', translatedText: 'translation two' }),

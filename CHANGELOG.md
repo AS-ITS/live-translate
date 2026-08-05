@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Live Cue 在最後一個文字事件後閒置 1200ms 時會自動收尾；已配對字幕直接完成，只有原文時透過同一 Live session 重翻一次，重翻失敗則保留 source-only final，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
+
+- 即時字幕 Cue 超過語言字數目標時，會依子句、詞界或安全字元邊界拆成連續的雙語 Cue；短字幕不再因句尾標點提前切碎。Live transcript、Cue checkpoint 與新儲存逐字稿會忽略同一段語音的尾段重複文字（例如 `123` 後的 `3`），但保留 boundary 後真正重複的發話；Live 與歷史字幕 renderer 會依原文／譯文語言各自換行，每個 Cue 最多顯示兩行，儲存與匯出仍保留完整文字。
+
 - AI Meeting Summary source contract closeout: summaries now use deterministic
   final-Cue or legacy-transcript sources with filtering, deduplication,
   conflict validation, source hashes, source metadata, and manual retry API/UI.

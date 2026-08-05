@@ -35,6 +35,7 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import { wrapSubtitleText } from './lib/subtitleCueExport.js';
 import { buildMeetingSummaryFileName, createMeetingSummaryExport, MEETING_SUMMARY_EXPORT_FORMATS } from './lib/meetingSummaryExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
@@ -54,7 +55,8 @@ import {
   applySubtitleCueEvent,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
-  resetSubtitleCueState
+  resetSubtitleCueState,
+  resolveIdleSubtitleCue
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
@@ -76,6 +78,7 @@ const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'comp
 const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
+const LIVE_CUE_IDLE_FINALIZE_MS = 1200;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
 const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
@@ -200,6 +203,7 @@ function App() {
   const selectedMeetingIdRef = useRef(null);
   const meetingResumeDraftRequestIdRef = useRef(0);
   const liveCueUpdatesAllowedRef = useRef(false);
+  const liveCueIdleTimersRef = useRef(new Map());
 
   const isActive =
     status === 'requesting-permission' ||
@@ -285,6 +289,40 @@ function App() {
     transcript.translation.currentPartial?.text
   ]);
 
+  useEffect(() => {
+    cancelLiveCueIdleTimers();
+    if (!liveCueUpdatesAllowedRef.current || status !== 'listening') return undefined;
+    const candidates = [
+      subtitleCueState.currentCue,
+      ...(subtitleCueState.pendingCues || [])
+    ].filter((cue) => cue?.cueId && Number.isFinite(cue.updatedTimeMs));
+    const now = sessionTimeForSubtitleCues();
+    for (const cue of candidates) {
+      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - cue.updatedTimeMs));
+      const timer = setTimeout(() => {
+        liveCueIdleTimersRef.current.delete(cue.cueId);
+        const result = resolveIdleSubtitleCue(subtitleCueStateRef.current, {
+          cueId: cue.cueId,
+          updatedTimeMs: cue.updatedTimeMs,
+          sessionTimeMs: sessionTimeForSubtitleCues(),
+          targetLanguageCode,
+          sourceLanguageCode
+        });
+        if (result.state !== subtitleCueStateRef.current) {
+          const previous = subtitleCueStateRef.current;
+          subtitleCueStateRef.current = result.state;
+          setSubtitleCueState(result.state);
+          enqueueCuePersistence(previous, result.state);
+        }
+        if (result.action === 'needs-retranslation') {
+          sessionRef.current?.retranslateSourceText(result.cue?.sourceText, result.cue?.cueId);
+        }
+      }, remaining);
+      liveCueIdleTimersRef.current.set(cue.cueId, timer);
+    }
+    return cancelLiveCueIdleTimers;
+  }, [subtitleCueState, status, targetLanguageCode, sourceLanguageCode]);
+
   async function refreshInputDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
       return;
@@ -306,6 +344,11 @@ function App() {
     }
   }
 
+  function cancelLiveCueIdleTimers() {
+    for (const timer of liveCueIdleTimersRef.current.values()) clearTimeout(timer);
+    liveCueIdleTimersRef.current.clear();
+  }
+
   async function startSession() {
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -313,6 +356,7 @@ function App() {
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
     liveCueUpdatesAllowedRef.current = true;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     let session;
 
@@ -347,6 +391,7 @@ function App() {
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
     liveCueUpdatesAllowedRef.current = false;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -369,6 +414,7 @@ function App() {
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
     liveCueUpdatesAllowedRef.current = true;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     setError('');
     pendingMicrophoneStreamRef.current = null;
@@ -411,6 +457,7 @@ function App() {
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
     liveCueUpdatesAllowedRef.current = false;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -443,6 +490,7 @@ function App() {
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
       const resetCues = resetSubtitleCueState();
+      cancelLiveCueIdleTimers();
       subtitleCueStateRef.current = resetCues;
       setSubtitleCueState(resetCues);
       const resetArchivedTranscript = resetTranscriptState();
@@ -2500,6 +2548,8 @@ function CueRow({ cue, partial = false, stream }) {
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
   const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
   const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
+  const languageCode = stream === 'translation' ? cue.targetLanguageCode : cue.sourceLanguageCode;
+  const wrappedText = wrapSubtitleText(text, languageCode);
   return (
     <article
       className={`cue-row${partial ? ' cue-row-partial' : ''}`}
@@ -2510,11 +2560,11 @@ function CueRow({ cue, partial = false, stream }) {
       {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
       <div className="cue-text-toggle">
         {stream ? (
-          <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{text || '—'}</span>
+          <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{wrappedText || '—'}</span>
         ) : (
           <>
-            <span className="cue-source" data-testid="cue-source-text">{cue.sourceText || '—'}</span>
-            <span className="cue-translation" data-testid="cue-translated-text">{cue.translatedText || '—'}</span>
+            <span className="cue-source" data-testid="cue-source-text">{wrapSubtitleText(cue.sourceText, cue.sourceLanguageCode) || '—'}</span>
+            <span className="cue-translation" data-testid="cue-translated-text">{wrapSubtitleText(cue.translatedText, cue.targetLanguageCode) || '—'}</span>
           </>
         )}
       </div>

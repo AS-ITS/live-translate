@@ -1323,7 +1323,7 @@ test('manual scroll stops follow-latest until the user returns to the bottom', a
   await expect.poll(() => cueList(page).evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
-test('idle pending Cue remains partial without renderer-side finalization', async ({ page }) => {
+test('idle pending Cue auto-finalizes after transcript idle debounce', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1336,8 +1336,12 @@ test('idle pending Cue remains partial without renderer-side finalization', asyn
     translatedText: 'idle translation finalizes'
   });
 
-  await expect(partialCueRows(page)).toHaveCount(1, { timeout: 4500 });
-  await expect(finalCueRows(page)).toHaveCount(0);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'idle source finalizes',
+    translatedText: 'idle translation finalizes'
+  });
 });
 
 test('replaced pending Cue text remains one partial preview', async ({ page }) => {

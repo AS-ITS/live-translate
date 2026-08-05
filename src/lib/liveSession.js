@@ -76,6 +76,7 @@ export class LiveTranslateSession {
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
+    this.retranslationCueIds = new Set();
   }
 
   async start() {
@@ -178,6 +179,30 @@ export class LiveTranslateSession {
       this.inputDeviceId = '';
       this.onInputDeviceFallback?.();
       return navigator.mediaDevices.getUserMedia(buildAudioInputConstraints());
+    }
+  }
+
+  retranslateSourceText(sourceText, cueId = '') {
+    const text = String(sourceText || '').trim();
+    const key = String(cueId || text);
+    if (!text || this.closed || !this.session || this.retranslationCueIds.has(key)) return false;
+
+    this.retranslationCueIds.add(key);
+    try {
+      this.session.sendClientContent({
+        turns: [{
+          role: 'user',
+          parts: [{
+            text: `Translate the following source text into ${this.targetLanguageCode}. Return only the translation, without explanation:\n${text}`
+          }]
+        }],
+        turnComplete: true
+      });
+      return true;
+    } catch (error) {
+      this.retranslationCueIds.delete(key);
+      this.logLiveEvent('retranslation.failed', { message: error?.message || 'sendClientContent failed' });
+      return false;
     }
   }
 

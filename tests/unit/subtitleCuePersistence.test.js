@@ -15,6 +15,16 @@ test('persists final cues idempotently and rejects conflicting identity', async 
   assert.deepEqual((await repository.listFinalCuesBySession('session-1')).map((item) => item.cueId), ['cue:session-1:segment-1:1']);
 });
 
+test('persists source-only final cues while translation reads remain empty', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const cue = finalCue({ translatedText: '', finalizedReason: 'idle-source-only' });
+  const result = await repository.appendFinalCue(cue);
+  assert.equal(result.appended, true);
+  assert.equal(result.cue.sourceText, '你好');
+  assert.equal(result.cue.translatedText, '');
+});
+
 test('checkpoint saves and reloads recovery-only cue state', async () => {
   const { sessions, meetings } = await fixture();
   const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });

@@ -101,8 +101,20 @@ If the SDK event does not expose a reliable partial/final flag:
   text.
 - Commit `currentPartial` to final only when the SDK provides an explicit final
   marker, a reliable segment boundary, or a session-end policy is selected.
+- Do not finalize or split a short transcript merely because it ends with
+  punctuation; punctuation remains part of the current segment until an
+  explicit provider boundary, final marker, or session-end policy.
+- When a live provider sends a shorter suffix of the active cumulative text,
+  treat it as a duplicate update for the same segment. After a boundary, the
+  same text remains valid as a new utterance.
 - If no final signal exists, keep the display behavior conservative and do not
   fabricate precise final timestamps.
+- After 1200ms without a new transcript event, resolve the active Cue by idle
+  policy: paired source/translation text becomes final; source-only text gets
+  one same-session retranslation attempt and then remains source-only final if
+  that attempt produces no translation; translation-only text is discarded.
+- Idle timers are versioned by Cue id and `updatedTimeMs`, and are cancelled by
+  new transcript events, Pause, Stop, reconnect, and Segment rollover.
 - Document the unresolved SDK behavior before enabling export/history features
   that depend on final transcript items.
 
@@ -144,6 +156,9 @@ If the SDK event does not expose a reliable partial/final flag:
 - If no matching `currentPartial` exists, create a new final item with a new
   `id`, `sequence`, `startedAt`, and `finalizedAt`.
 - Final items must not be overwritten by later partial events.
+- Cumulative transcript updates must not append suffix fragments such as `3`
+  after an active `123` item; independent post-boundary repeated speech remains
+  a separate item.
 
 ### Matching Partial to Final
 

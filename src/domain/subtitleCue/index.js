@@ -24,7 +24,7 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     sourceLanguageCode: languageCode(input.sourceLanguageCode, 'sourceLanguageCode'),
     targetLanguageCode: languageCode(input.targetLanguageCode, 'targetLanguageCode'),
     sourceText: text(input.sourceText, 'sourceText'),
-    translatedText: text(input.translatedText, 'translatedText'),
+    translatedText: optionalText(input.translatedText, 'translatedText'),
     status: input.status,
     finalizedReason: requiredString(input.finalizedReason || 'final', 'finalizedReason')
   };
@@ -94,6 +94,7 @@ function finite(value, field) { if (!Number.isFinite(value)) return invalid(`${f
 function nonNegativeFinite(value, field) { if (!Number.isFinite(value) || value < 0) return invalid(`${field} must be non-negative and finite.`); return value; }
 function languageCode(value, field) { if (!LANGUAGE_CODES.has(value)) return invalid(`${field} is not supported.`); return value; }
 function text(value, field) { if (typeof value !== 'string' || value.trim() === '' || PUNCTUATION_ONLY.test(value.trim())) return invalid(`${field} must contain non-punctuation text.`); return value.trim(); }
+function optionalText(value, field) { if (value === '') return ''; return text(value, field); }
 function invalid(message) { const error = new TypeError(message); error.code = CUE_ERROR_CODES.invalid; throw error; }
 function conflict(message) { const error = new Error(message); error.code = CUE_ERROR_CODES.conflict; throw error; }
 function sequenceConflict(message) { const error = new Error(message); error.code = CUE_ERROR_CODES.sequenceConflict; throw error; }

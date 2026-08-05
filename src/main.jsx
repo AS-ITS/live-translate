@@ -1269,7 +1269,10 @@ function App() {
     const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
     try {
-      await flushMeetingCheckpointSync();
+      const checkpointFlushed = await flushMeetingCheckpointSync();
+      if (!checkpointFlushed) {
+        setError('長會議同步尚未完成，但目前逐字稿仍會保存；未同步片段會保留以便重試。');
+      }
       const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
 
       if (finalized) {
@@ -1563,7 +1566,20 @@ function App() {
 
   function reportMeetingCheckpointSyncError(error) {
     console.error('Meeting checkpoint persistence failed.', error);
-    setError('長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。');
+    const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
+    if (error?.status === 413 || error?.code === 'request_too_large') {
+      setError(`長會議同步內容超過伺服器保存上限，未同步片段會保留並重試；請調高 MEETING_CHECKPOINT_MAX_BYTES。${diagnostic}`);
+      return;
+    }
+    if (error?.status === 409 || error?.code === 'checkpoint_conflict') {
+      setError(`長會議同步發生 checkpoint 衝突，未同步片段會保留；請重新載入會議後再繼續。${diagnostic}`);
+      return;
+    }
+    if (error?.status === 404 || error?.code === 'meeting_not_found' || error?.code === 'meeting_segment_not_found') {
+      setError(`長會議同步找不到目前的會議段落，未同步片段已保留。${diagnostic}`);
+      return;
+    }
+    setError(`長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。${diagnostic}`);
   }
 
   function archiveActiveTranscriptSegment() {

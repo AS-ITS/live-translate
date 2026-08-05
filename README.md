@@ -42,6 +42,8 @@ Create local environment configuration outside version control. Common settings:
 - `SESSION_RECORDS_FILE`: optional override for saved session records.
 - `SESSION_SNAPSHOT_MAX_BYTES`: optional saved session snapshot JSON request
   limit, defaults to `26214400` bytes.
+- `MEETING_CHECKPOINT_MAX_BYTES`: optional Meeting checkpoint JSON request
+  limit, defaults to `26214400` bytes.
 - `SESSION_AUDIO_MAX_BYTES`: optional per-request WAV upload limit, defaults to
   `52428800` bytes.
 

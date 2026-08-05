@@ -130,7 +130,20 @@ function buildUrl(baseUrl, path) {
 
 async function assertOkResponse(response) {
   if (!response || typeof response !== 'object') throw new Error('Meeting checkpoint API request did not return a response.');
-  if (!response.ok) throw new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  if (response.ok) return;
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    // Keep the HTTP status when the server response is not JSON.
+  }
+
+  const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  error.status = response.status;
+  error.code = body?.error?.code || body?.code;
+  error.requestId = response.headers?.get?.('x-request-id') || body?.requestId || body?.error?.requestId;
+  throw error;
 }
 
 async function parseCreateMeetingResponse(response) {

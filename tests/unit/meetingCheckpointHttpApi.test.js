@@ -175,6 +175,44 @@ test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
   );
 });
 
+test('checkpoint accepts long payloads above the general JSON request limit', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const durableChunks = Array.from({ length: 24 }, (_, index) => chunk({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    sequence: index + 1,
+    text: 'long meeting transcript '.repeat(30)
+  }));
+
+  const response = await request(handler, {
+    method: 'PUT',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
+    body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, durableChunks }))
+  });
+
+  assert.ok(response.body.length > 10_000);
+  assert.equal(response.status, 200);
+  assert.equal(response.json().checkpoint.durableChunks.length, durableChunks.length);
+});
+
+test('checkpoint rejects payloads above the configured Meeting limit', async () => {
+  const handler = createHandler({ meetingCheckpointMaxBytes: 1_000 });
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const response = await request(handler, {
+    method: 'PUT',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
+    body: JSON.stringify(checkpoint({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      durableChunks: [chunk({ meetingId: meeting.id, segmentId: segment.id, text: 'x'.repeat(2_000) })]
+    }))
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.json().error.code, 'request_too_large');
+});
+
 test('checkpoint conflict returns HTTP 409', async () => {
   const handler = createHandler();
   const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
@@ -331,7 +369,7 @@ test('missing meeting or segment returns HTTP 404', async () => {
   assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
 });
 
-function createHandler() {
+function createHandler({ meetingCheckpointMaxBytes } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -351,7 +389,8 @@ function createHandler() {
   return createRequestHandler({
     sessionReadController: sessionReadController(),
     meetingReadController,
-    meetingCheckpointService
+    meetingCheckpointService,
+    ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }
 

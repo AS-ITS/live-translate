@@ -80,6 +80,7 @@ const ERROR_RESPONSES = {
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const DEFAULT_JSON_REQUEST_MAX_BYTES = 10_000;
 const SESSION_SNAPSHOT_MAX_BYTES = parseByteLimit(process.env.SESSION_SNAPSHOT_MAX_BYTES, 25 * 1024 * 1024);
+const MEETING_CHECKPOINT_MAX_BYTES = parseByteLimit(process.env.MEETING_CHECKPOINT_MAX_BYTES, 25 * 1024 * 1024);
 const MAX_AUDIO_ARTIFACT_BYTES = parseByteLimit(process.env.SESSION_AUDIO_MAX_BYTES, 50 * 1024 * 1024);
 
 function safeTranslationProvidersFor(env = process.env) {
@@ -520,6 +521,7 @@ export function createRequestHandler(options = {}) {
     translationExecutionWorkerRuntime,
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
+    meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES
   } = options;
 
@@ -551,6 +553,7 @@ export function createRequestHandler(options = {}) {
       translationExecutionWorkerRuntime,
       liveTokenCreator,
       sessionSnapshotMaxBytes,
+      meetingCheckpointMaxBytes,
       sessionAudioMaxBytes
     });
   };
@@ -563,7 +566,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionSummaryController, sessionRepository, summaryRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionSummaryController, sessionRepository, summaryRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -758,59 +761,65 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'POST' && path === '/api/meetings') {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
-      const result = await meetingCheckpointService.createMeeting(await readJson(req));
+      const result = await meetingCheckpointService.createMeeting(await readJson(req, { maxBytes: meetingCheckpointMaxBytes }));
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }
 
   if (req.method === 'POST' && isMeetingSegmentRolloverPath(path)) {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentRolloverPath(path);
       const result = await meetingCheckpointService.rolloverSegment({
         meetingId,
         segmentId,
-        rollover: await readJson(req)
+        rollover: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
       });
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }
 
   if (req.method === 'POST' && isMeetingSegmentRecoverPath(path)) {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentRecoverPath(path);
       const result = await meetingCheckpointService.recoverSegment({
         meetingId,
         segmentId,
-        recovery: await readJson(req)
+        recovery: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
       });
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }
@@ -833,6 +842,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if ((req.method === 'GET' || req.method === 'PUT') && isMeetingSegmentCheckpointPath(path)) {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentCheckpointPath(path);
@@ -841,16 +851,17 @@ async function handleRequestWithSessionReadController(
         : await meetingCheckpointService.updateCheckpoint({
             meetingId,
             segmentId,
-            checkpoint: await readJson(req)
+            checkpoint: await readJson(req, { maxBytes: meetingCheckpointMaxBytes })
           });
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }

@@ -104,6 +104,11 @@
   Oversized transcript or audio requests now produce clearer, independent UI
   errors without blocking the other persistence path.
 
+- Long Meeting checkpoint synchronization now uses a dedicated configurable
+  `MEETING_CHECKPOINT_MAX_BYTES` limit with a `25MB` default instead of the
+  general 10KB JSON request limit, preventing background saves from failing as
+  checkpoint transcript history grows.
+
 - Translation History audio artifacts: finalized translated audio, and optional
   original speaker recording when enabled, are now uploaded to backend file
   storage when a Session ends. Session and Long Meeting detail views expose

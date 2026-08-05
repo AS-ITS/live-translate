@@ -183,6 +183,22 @@ test('meeting checkpoint API client rejects malformed and failed responses', asy
   );
 });
 
+test('meeting checkpoint API client preserves server error diagnostics', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 413,
+      headers: { get: (name) => name === 'x-request-id' ? 'request-413' : null },
+      json: async () => ({ error: { code: 'request_too_large' } })
+    })
+  });
+
+  await assert.rejects(
+    client.updateCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'checkpoint-1', durableChunks: [] }),
+    (error) => error.status === 413 && error.code === 'request_too_large' && error.requestId === 'request-413'
+  );
+});
+
 function ok(body) {
   return {
     ok: true,

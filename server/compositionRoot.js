@@ -2,6 +2,14 @@ import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createSessionSummaryQueryService } from '../src/application/sessionSummaryQueryService.js';
+import { createMeetingSummaryService } from '../src/application/meetingSummaryService.js';
+import { createMeetingSummaryPersistenceService } from '../src/application/meetingSummaryPersistenceService.js';
+import { createMeetingSummaryJobQueue } from '../src/application/meetingSummaryJobQueue.js';
+import { createMeetingSummaryJobEnqueuer } from '../src/application/meetingSummaryJobEnqueuer.js';
+import { createMeetingSummaryWorker } from '../src/application/meetingSummaryWorker.js';
+import { createMeetingSummaryRecovery } from '../src/application/meetingSummaryRecovery.js';
+import { createMeetingSummaryRetryPolicy, createMeetingSummaryRetryErrorClassifier } from '../src/application/meetingSummaryRetryPolicy.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
@@ -42,6 +50,14 @@ import { createFileSessionRepository } from '../src/infrastructure/fileSessionRe
 import { createFileSessionAudioArtifactRepository } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
 import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
+import { createFileMeetingSummaryRepository } from '../src/infrastructure/fileMeetingSummaryRepository.js';
+import { createMemoryMeetingSummaryRepository } from '../src/infrastructure/meetingSummaryRepositoryAdapter.js';
+import { createMemoryMeetingSummaryJobRepository } from '../src/infrastructure/meetingSummaryJobRepositoryAdapter.js';
+import { createFileMeetingSummaryJobRepository } from '../src/infrastructure/fileMeetingSummaryJobRepository.js';
+import { createMeetingSummaryWorkerRuntime } from '../src/infrastructure/meetingSummaryWorkerRuntime.js';
+import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
+import { createGeminiMeetingSummaryProvider } from '../src/infrastructure/geminiMeetingSummaryProvider.js';
+import { createFakeMeetingSummaryProvider } from '../src/infrastructure/fakeMeetingSummaryProvider.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
   createTranslationProviderConfiguration
@@ -56,6 +72,7 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
+import { createSessionSummaryController } from './sessionSummaryController.js';
 import { createMeetingReadController as createDefaultMeetingReadController } from './meetingReadController.js';
 import { createTranslationCommandController as createDefaultTranslationCommandController } from './translationCommandController.js';
 import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
@@ -68,6 +85,8 @@ export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
+export const DEFAULT_MEETING_SUMMARY_RECORDS_FILE = 'meeting-summaries.json';
+export const DEFAULT_MEETING_SUMMARY_JOBS_FILE = 'meeting-summary-jobs.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -121,6 +140,24 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
     sessionAudioArtifactFileSystem = fileSystem,
     meetingRepository,
+    summaryRepository,
+    summaryRepositoryFactory = createMemoryMeetingSummaryRepository,
+    summaryRepositoryFileSystem = fileSystem,
+    summaryPersistenceService,
+    summaryProvider,
+    summaryService,
+    summaryModel = 'gemini-3.5-flash-lite',
+    finalCueRepository,
+    summaryJobRepository,
+    summaryJobRepositoryFactory = createMemoryMeetingSummaryJobRepository,
+    summaryJobQueue,
+    summaryJobEnqueuer,
+    summaryWorker,
+    summaryWorkerRuntime,
+    summaryJobRetryPolicy = createMeetingSummaryRetryPolicy(),
+    summaryJobRetryErrorClassifier = createMeetingSummaryRetryErrorClassifier(),
+    summaryJobClock = () => new Date().toISOString(),
+    summaryJobLeaseMs = 300000,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
     meetingReadControllerFactory = createDefaultMeetingReadController,
@@ -144,6 +181,11 @@ export function createApplicationDependencies(options = {}) {
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository
     : createMemoryMeetingRepository();
+  const resolvedSummaryRepository = Object.prototype.hasOwnProperty.call(options, 'summaryRepository')
+    ? summaryRepository
+    : summaryRepositoryFactory({ filePath: meetingSummaryRecordsFilePathFor(env), fileSystem: summaryRepositoryFileSystem });
+  const sessionSummaryQueryService = createSessionSummaryQueryService({ summaryRepository: resolvedSummaryRepository });
+  const sessionSummaryController = createSessionSummaryController({ sessionSummaryQueryService });
   const sessionReadDependencies = createSessionReadDependencies({
     ...sessionReadOptions,
     meetingRepository: resolvedMeetingRepository,
@@ -156,6 +198,27 @@ export function createApplicationDependencies(options = {}) {
         }
       : {})
   });
+  const resolvedFinalCueRepository = finalCueRepository ?? (summaryProvider ? createSubtitleCueRepository({ sessionRepository: sessionReadDependencies.sessionRepository, meetingRepository: resolvedMeetingRepository }) : undefined);
+  const resolvedSummaryService = summaryService ?? (summaryProvider && resolvedFinalCueRepository
+    ? createMeetingSummaryService({ finalCueRepository: resolvedFinalCueRepository, sessionRepository: sessionReadDependencies.sessionRepository, summaryProvider })
+    : undefined);
+  const resolvedSummaryPersistenceService = summaryPersistenceService ?? (resolvedSummaryService
+    ? createMeetingSummaryPersistenceService({ summaryRepository: resolvedSummaryRepository, summaryService: resolvedSummaryService, sessionRepository: sessionReadDependencies.sessionRepository, model: summaryModel, idGenerator, clock })
+    : undefined);
+  const resolvedSummaryJobRepository = summaryJobRepository ?? (resolvedSummaryPersistenceService ? summaryJobRepositoryFactory({ filePath: meetingSummaryJobsFilePathFor(env), fileSystem: summaryRepositoryFileSystem }) : undefined);
+  const resolvedSummaryJobQueue = resolvedSummaryJobRepository ? (summaryJobQueue ?? createMeetingSummaryJobQueue()) : undefined;
+  const resolvedSummaryJobEnqueuer = summaryJobEnqueuer ?? (resolvedSummaryJobRepository && resolvedSummaryJobQueue
+    ? createMeetingSummaryJobEnqueuer({ jobRepository: resolvedSummaryJobRepository, activeQueue: resolvedSummaryJobQueue, summaryService: resolvedSummaryService, idGenerator, clock: summaryJobClock })
+    : undefined);
+  const resolvedSummaryWorker = summaryWorker ?? (resolvedSummaryPersistenceService && resolvedSummaryJobRepository && resolvedSummaryJobQueue
+    ? createMeetingSummaryWorker({ activeQueue: resolvedSummaryJobQueue, jobRepository: resolvedSummaryJobRepository, summaryPersistenceService: resolvedSummaryPersistenceService, retryPolicy: summaryJobRetryPolicy, retryErrorClassifier: summaryJobRetryErrorClassifier, clock: summaryJobClock, leaseDurationMs: summaryJobLeaseMs })
+    : undefined);
+  const resolvedSummaryRecovery = resolvedSummaryWorker && resolvedSummaryJobRepository && resolvedSummaryJobQueue
+    ? createMeetingSummaryRecovery({ jobRepository: resolvedSummaryJobRepository, activeQueue: resolvedSummaryJobQueue, clock: summaryJobClock })
+    : undefined;
+  const resolvedSummaryWorkerRuntime = summaryWorkerRuntime ?? (resolvedSummaryWorker && resolvedSummaryJobRepository && resolvedSummaryJobQueue && resolvedSummaryRecovery
+    ? createMeetingSummaryWorkerRuntime({ worker: resolvedSummaryWorker, activeQueue: resolvedSummaryJobQueue, jobRepository: resolvedSummaryJobRepository, recovery: resolvedSummaryRecovery, clock: summaryJobClock })
+    : undefined);
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
       ? translationRepository
@@ -230,7 +293,13 @@ export function createApplicationDependencies(options = {}) {
     meetingRepository: resolvedMeetingRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
     idGenerator,
-    clock
+    clock,
+    onSegmentFinalized: resolvedSummaryJobEnqueuer && resolvedSummaryService
+      ? async ({ sessionId, meetingId, segmentId }) => {
+          const range = (await resolvedSummaryService.listFinalCueRanges({ sessionId, meetingId })).find((item) => item.segmentId === segmentId);
+          if (range) await resolvedSummaryJobEnqueuer.enqueuePartial({ sessionId, meetingId, range });
+        }
+      : undefined
   });
   const meetingReadQueryService = meetingReadQueryServiceFactory({
     meetingRepository: resolvedMeetingRepository,
@@ -247,7 +316,9 @@ export function createApplicationDependencies(options = {}) {
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
+      sessionSummaryController,
       sessionRepository: sessionReadDependencies.sessionRepository,
+      summaryRepository: resolvedSummaryRepository,
       translationRepository: translationCommandDependencies.translationRepository,
       translationCommandController: translationCommandDependencies.translationCommandController,
       executionControlController,
@@ -255,6 +326,7 @@ export function createApplicationDependencies(options = {}) {
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+      ...(resolvedSummaryJobEnqueuer ? { summaryJobEnqueuer: resolvedSummaryJobEnqueuer } : {}),
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
@@ -267,6 +339,16 @@ export function createApplicationDependencies(options = {}) {
 
   return {
     ...sessionReadDependencies,
+    sessionSummaryQueryService,
+    sessionSummaryController,
+    summaryRepository: resolvedSummaryRepository,
+    ...(resolvedSummaryPersistenceService ? { summaryPersistenceService: resolvedSummaryPersistenceService } : {}),
+    ...(resolvedSummaryJobRepository ? { summaryJobRepository: resolvedSummaryJobRepository } : {}),
+    ...(resolvedSummaryJobQueue ? { summaryJobQueue: resolvedSummaryJobQueue } : {}),
+    ...(resolvedSummaryJobEnqueuer ? { summaryJobEnqueuer: resolvedSummaryJobEnqueuer } : {}),
+    ...(resolvedSummaryWorker ? { summaryWorker: resolvedSummaryWorker } : {}),
+    ...(resolvedSummaryRecovery ? { summaryJobRecovery: resolvedSummaryRecovery } : {}),
+    ...(resolvedSummaryWorkerRuntime ? { summaryWorkerRuntime: resolvedSummaryWorkerRuntime } : {}),
     ...translationCommandDependencies,
     translationHistoryQueryService,
     translationHistoryController,
@@ -314,6 +396,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationGlossaryFileSystem = fileSystem,
     sessionRepositoryFileSystem = fileSystem,
     meetingRepositoryFileSystem = fileSystem,
+    summaryRepositoryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
     translationQueueLeaseHeartbeatScheduler = createDefaultLeaseHeartbeatScheduler(),
@@ -357,10 +440,30 @@ export function createProductionApplicationDependencies(options = {}) {
         filePath: meetingRecordsFilePathFor(env),
         fileSystem: meetingRepositoryFileSystem
       });
+  const summaryRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'summaryRepository')
+    ? applicationOptions.summaryRepository
+    : createFileMeetingSummaryRepository({
+        filePath: meetingSummaryRecordsFilePathFor(env),
+        fileSystem: summaryRepositoryFileSystem
+      });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
     : undefined;
+  let meetingSummaryGoogleClient;
+  const meetingSummaryProvider = applicationOptions.summaryProvider ?? (env.NODE_ENV === 'test' && env.MEETING_SUMMARY_PROVIDER === 'fake'
+    ? createFakeMeetingSummaryProvider()
+    : productionEnvironment
+    ? createGeminiMeetingSummaryProvider({
+        client: {
+          generateContent(input) {
+            meetingSummaryGoogleClient ??= googleGenAIClientFactory({ apiKey: productionEnvironment.apiKey });
+            if (!meetingSummaryGoogleClient?.models || typeof meetingSummaryGoogleClient.models.generateContent !== 'function') throw new TypeError('Google GenAI client.models.generateContent is required for meeting summaries.');
+            return meetingSummaryGoogleClient.models.generateContent(input);
+          }
+        }
+      })
+    : undefined);
   const productionProviderConfiguration = needsProductionProviderComposition
     ? translationProviderConfigurationFactory({ environment: env })
     : undefined;
@@ -463,6 +566,9 @@ export function createProductionApplicationDependencies(options = {}) {
     ...applicationOptions,
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
+    summaryRepository,
+    summaryJobRepositoryFactory: createFileMeetingSummaryJobRepository,
+    summaryRepositoryFileSystem,
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -479,6 +585,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
+    ...(meetingSummaryProvider ? { summaryProvider: meetingSummaryProvider } : {}),
     glossaryController,
     liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary }),
     ...resolvedProviderDependencies
@@ -1159,6 +1266,14 @@ function sessionRecordsFilePathFor(env = {}) {
 
 function meetingRecordsFilePathFor(env = {}) {
   return env.MEETING_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_RECORDS_FILE);
+}
+
+function meetingSummaryRecordsFilePathFor(env = {}) {
+  return env.MEETING_SUMMARY_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_SUMMARY_RECORDS_FILE);
+}
+
+function meetingSummaryJobsFilePathFor(env = {}) {
+  return env.MEETING_SUMMARY_JOBS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_SUMMARY_JOBS_FILE);
 }
 
 function sessionAudioArtifactsDirectoryFor(env = {}) {

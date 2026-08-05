@@ -135,6 +135,18 @@ Run Long Meeting file-backed vertical integration tests:
 node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/meetingCheckpointVerticalIntegration.test.js
 ```
 
+Run incremental meeting summary coverage:
+
+```bash
+node --test tests/unit/meetingSummaryIncremental.test.js
+```
+
+Run meeting summary export coverage:
+
+```bash
+node --test tests/unit/meetingSummaryExport.test.js
+```
+
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
@@ -172,6 +184,10 @@ Current integration coverage:
 - `/healthz` and `/readyz`
 - Meeting checkpoint API persistence, Segment recovery, Meeting detail read
   reconstruction, and accelerated 2+ hour Long Meeting reload validation
+- Incremental partial-summary range identity, retry, ordering, missing-range,
+  final-merge, and stable job-key behavior
+- Meeting summary TXT/Markdown formatting, deterministic filenames, and PDF/DOCX
+  document signatures
 
 ## E2E Tests
 
@@ -278,3 +294,26 @@ list, including session-relative timestamps, partial filtering, duplicate and
 timeline validation, and export-time wrapping. A Session with no Cues keeps
 the legacy transcript export fallback. Do not use DOM layout or Cue UI line
 wrapping as export input.
+### Meeting summary pipeline (WP1)
+
+Run the focused summary pipeline tests:
+
+```bash
+node --test tests/unit/meetingSummaryService.test.js
+node --test tests/unit/geminiMeetingSummaryProvider.test.js
+node --test tests/unit/meetingSummarySource.test.js
+```
+
+### Meeting summary persistence (WP2)
+
+```bash
+node --test tests/unit/meetingSummaryPersistenceService.test.js tests/unit/meetingSummaryRepository.test.js
+node --test tests/unit/fileMeetingSummaryRepository.test.js
+```
+
+### Meeting summary API (WP3)
+
+```bash
+node --test tests/unit/sessionSummaryHttpApi.test.js
+node --test tests/unit/sessionReadApiClient.test.js
+```

@@ -1,5 +1,4 @@
 const STREAMS = new Set(['source', 'translation']);
-const DEFAULT_PAUSE_THRESHOLD_MS = 900;
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_MAX_CUE_CHARS = Object.freeze({
@@ -42,15 +41,11 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   }
 
   let eventState = marked;
-  if (shouldFlushBeforeEvent(eventState.currentCue, event, options)) {
-    eventState = finalizeCue(eventState, eventState.currentCue, {
-      nowMs: event.sessionTimeMs,
-      reason: 'pause',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
   eventState = moveClosedCurrentCue(eventState, event);
+  const cumulativeFinalTarget = !eventState.currentCue && eventState.pendingCues.length === 0
+    ? findCumulativeFinalCue(eventState, event)
+    : null;
+  if (cumulativeFinalTarget) return updateFinalCue(eventState, cumulativeFinalTarget, event);
   const target = findPairingCue(eventState, event);
   const next = target
     ? updateCue(eventState, target, event)
@@ -198,19 +193,37 @@ function moveClosedCurrentCue(state, event) {
   });
 }
 
-function shouldFlushBeforeEvent(currentCue, event, options) {
-  if (!isCueSubmittable(currentCue)) return false;
-  const currentText = event.stream === 'source' ? currentCue.sourceText : currentCue.translatedText;
-  if (currentText && event.text.startsWith(currentText)) return false;
-  const threshold = Number.isFinite(options.pauseThresholdMs)
-    ? Math.max(0, options.pauseThresholdMs) : DEFAULT_PAUSE_THRESHOLD_MS;
-  return event.sessionTimeMs - currentCue.updatedTimeMs >= threshold;
-}
-
 function findPairingCue(state, event) {
   if (state.currentCue && cueCanAccept(state.currentCue, event)) return { key: 'current', cue: state.currentCue };
   const index = state.pendingCues.findIndex((cue) => cueCanAccept(cue, event));
   return index >= 0 ? { key: `pending:${index}`, cue: state.pendingCues[index] } : null;
+}
+
+function findCumulativeFinalCue(state, event) {
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
+    const cue = state.finalCues[index];
+    if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
+    const previousText = normalizeText(cue[field]);
+    if (previousText && event.text.length > previousText.length && event.text.startsWith(previousText)) {
+      return { index, cue };
+    }
+  }
+  return null;
+}
+
+function updateFinalCue(state, target, event) {
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  const finalCues = [...state.finalCues];
+  finalCues[target.index] = {
+    ...target.cue,
+    [field]: event.text,
+    ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
+    ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
+    endTimeMs: Math.max(target.cue.endTimeMs, event.sessionTimeMs),
+    updatedTimeMs: event.sessionTimeMs
+  };
+  return { ...state, finalCues };
 }
 
 function cueCanAccept(cue, event) {

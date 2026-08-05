@@ -46,6 +46,10 @@ const ERROR_RESPONSES = {
   glossary_entry_not_found: { status: 404, message: 'Glossary entry not found.' },
   glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
+  meeting_summary_read_unavailable: { status: 503, message: 'Meeting summary read API is not configured.' },
+  meeting_summary_not_found: { status: 404, message: 'Meeting summary not found.' },
+  meeting_summary_retry_unavailable: { status: 503, message: 'Meeting summary retry is not configured.' },
+  meeting_summary_retry_invalid_state: { status: 409, message: 'Meeting summary is not eligible for retry.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
@@ -402,6 +406,25 @@ export function startTranslationExecutionWorkerRuntime({
   };
 }
 
+export function startMeetingSummaryWorkerRuntime({
+  summaryWorkerRuntime = defaultApplicationDependencies.summaryWorkerRuntime,
+  summaryJobRecovery = defaultApplicationDependencies.summaryJobRecovery,
+  logger = logEvent
+} = {}) {
+  if (!summaryWorkerRuntime || typeof summaryWorkerRuntime.start !== 'function') return () => undefined;
+  let stopped = false;
+  Promise.resolve(summaryJobRecovery?.recover?.()).catch((error) => {
+    logWorkerRuntimeError(logger, 'meeting_summary_job_recovery_failed', error);
+  }).then(() => summaryWorkerRuntime.start()).catch((error) => {
+    logWorkerRuntimeError(logger, 'meeting_summary_worker_runtime_start_failed', error);
+  });
+  return function stopMeetingSummaryWorkerRuntime() {
+    if (stopped || typeof summaryWorkerRuntime.stop !== 'function') return undefined;
+    stopped = true;
+    try { return summaryWorkerRuntime.stop(); } catch (error) { logWorkerRuntimeError(logger, 'meeting_summary_worker_runtime_stop_failed', error); return undefined; }
+  };
+}
+
 async function startRuntimeAfterPersistedQueueRecovery({
   translationExecutionWorkerRuntime,
   sessionRepository,
@@ -479,7 +502,9 @@ function logWorkerRuntimeError(logger, event, error) {
 export function createRequestHandler(options = {}) {
   const {
     sessionReadController,
+    sessionSummaryController,
     sessionRepository,
+    summaryRepository,
     translationRepository,
     translationCommandController,
     executionControlController,
@@ -487,6 +512,7 @@ export function createRequestHandler(options = {}) {
     meetingReadController,
     meetingCheckpointService,
     sessionAudioArtifactRepository,
+    summaryJobEnqueuer,
     translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
@@ -507,7 +533,9 @@ export function createRequestHandler(options = {}) {
   return async function handleRequestWithDependencies(req, res) {
     return handleRequestWithSessionReadController(req, res, {
       sessionReadController,
+      sessionSummaryController,
       sessionRepository,
+      summaryRepository,
       translationRepository,
       translationCommandController,
       executionControlController,
@@ -515,6 +543,7 @@ export function createRequestHandler(options = {}) {
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository,
+      ...(summaryJobEnqueuer ? { summaryJobEnqueuer } : {}),
       translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
@@ -534,7 +563,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionSummaryController, sessionRepository, summaryRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, summaryJobEnqueuer, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -600,6 +629,47 @@ async function handleRequestWithSessionReadController(
         clientIp,
         origin
       });
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && path.startsWith('/api/sessions/') && path.endsWith('/summary')) {
+    try {
+      if (!sessionSummaryController) throw createHttpError('meeting_summary_read_unavailable');
+      const encodedSessionId = path.slice('/api/sessions/'.length, -'/summary'.length);
+      if (!encodedSessionId || encodedSessionId.includes('/')) throw createHttpError('invalid_request');
+      let sessionId;
+      try { sessionId = decodeURIComponent(encodedSessionId); } catch { throw createHttpError('invalid_request'); }
+      if (!sessionId.trim()) throw createHttpError('invalid_request');
+      const summary = await sessionSummaryController.getSessionSummary(sessionId);
+      if (!summary) throw createHttpError('meeting_summary_not_found');
+      statusCode = 200;
+      sendJson(res, statusCode, summary, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && path.startsWith('/api/sessions/') && path.endsWith('/summary/retry')) {
+    try {
+      if (!summaryJobEnqueuer?.retryForSession) throw createHttpError('meeting_summary_retry_unavailable');
+      const encodedSessionId = path.slice('/api/sessions/'.length, -'/summary/retry'.length);
+      if (!encodedSessionId || encodedSessionId.includes('/')) throw createHttpError('invalid_request');
+      const sessionId = decodeURIComponent(encodedSessionId);
+      const session = await sessionRepository.getSessionRecord(sessionId);
+      if (!session?.sessionRecord?.meetingId) throw createHttpError('session_not_found');
+      const existingSummary = await summaryRepository?.getSummaryBySessionId?.(sessionId);
+      if (existingSummary && existingSummary.status !== 'failed') throw createHttpError('meeting_summary_retry_invalid_state');
+      const job = await summaryJobEnqueuer.retryForSession({ sessionId, meetingId: session.sessionRecord.meetingId });
+      statusCode = 202;
+      sendJson(res, statusCode, { accepted: true, jobId: job.jobId, sessionId }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -995,7 +1065,12 @@ async function handleRequestWithSessionReadController(
       const sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
       const body = await readJson(req, { maxBytes: sessionSnapshotMaxBytes });
       if (body?.session?.id !== sessionId) throw createHttpError('invalid_request');
-      const result = await createSessionSnapshotSyncService({ sessionRepository }).sync(body);
+      const result = await createSessionSnapshotSyncService({
+        sessionRepository,
+        onSessionFinalized: summaryJobEnqueuer
+          ? (input) => (summaryJobEnqueuer.enqueueForSession ? summaryJobEnqueuer.enqueueForSession(input) : summaryJobEnqueuer.enqueue(input))
+          : undefined
+      }).sync(body);
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -1888,6 +1963,7 @@ function contentTypeFor(filePath) {
 if (IS_MAIN) {
   const server = http.createServer(handleRequest);
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
+  const stopMeetingSummaryWorkerRuntime = startMeetingSummaryWorkerRuntime();
 
   server.listen(PORT, HOST, () => {
     console.log(`Live Translate API listening on http://${HOST}:${PORT}`);
@@ -1896,6 +1972,7 @@ if (IS_MAIN) {
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.once(signal, () => {
       stopTranslationExecutionWorkerRuntime();
+      stopMeetingSummaryWorkerRuntime();
       server.close(() => {
         process.exit(0);
       });

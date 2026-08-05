@@ -47,6 +47,40 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
       return detail;
     },
 
+    async getSessionSummary(sessionId) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}/summary`), {
+        method: 'GET'
+      });
+
+      if (response?.status === 404) {
+        const body = await parseJsonResponse(response);
+
+        if (body?.error?.code === 'meeting_summary_not_found') {
+          return null;
+        }
+
+        throw new Error('Session summary request failed with HTTP 404.');
+      }
+
+      await assertOkResponse(response);
+
+      const summary = await parseJsonResponse(response);
+
+      if (!summary || typeof summary !== 'object' || Array.isArray(summary)) {
+        throw new Error('Session summary response must be an object.');
+      }
+
+      return summary;
+    },
+
+    async retrySessionSummary(sessionId) {
+      const normalizedSessionId = validateSessionId(sessionId);
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}/summary/retry`), { method: 'POST' });
+      await assertOkResponse(response);
+      return parseJsonResponse(response);
+    },
+
     async deleteSessionRecord(sessionId) {
       const normalizedSessionId = validateSessionId(sessionId);
       const response = await fetchImpl(buildUrl(baseUrl, `/api/sessions/${encodeURIComponent(normalizedSessionId)}`), {

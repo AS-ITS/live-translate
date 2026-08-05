@@ -33,6 +33,14 @@ export function createSubtitleCueRepository({ sessionRepository, meetingReposito
         .sort((left, right) => left.sequence - right.sequence);
     },
 
+    async listFinalCuesByMeeting(meetingId) {
+      const segments = await meetingRepository.listMeetingSegments(meetingId);
+      return segments.flatMap((segment) => (segment.checkpoint?.finalCues || [])
+        .filter((cue) => cue.status === 'final')
+        .map((cue) => ({ ...cue, segmentSequence: segment.sequence })))
+        .sort((left, right) => left.segmentSequence - right.segmentSequence || left.startTimeMs - right.startTimeMs || left.sequence - right.sequence);
+    },
+
     async listFinalCuesBySegment(segmentId) {
       const segment = await meetingRepository.getMeetingSegment(segmentId);
       return segment?.checkpoint?.finalCues?.filter((cue) => cue.status === 'final').sort((a, b) => a.sequence - b.sequence) || [];

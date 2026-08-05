@@ -20,6 +20,20 @@ export function sortFinalCues(cues = []) {
     .sort((left, right) => (left.sequence || 0) - (right.sequence || 0));
 }
 
+export function sourceTextForCopy(cues = []) {
+  return sortFinalCues(cues)
+    .map((cue) => String(cue?.sourceText || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function translationTextForCopy(cues = []) {
+  return sortFinalCues(cues)
+    .map((cue) => String(cue?.translatedText || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function upsertFinalCue(cues = [], cue) {
   if (!cue?.cueId || cue.status !== 'final') return sortFinalCues(cues);
   const next = [...cues];
@@ -29,15 +43,18 @@ export function upsertFinalCue(cues = [], cue) {
   return sortFinalCues(next);
 }
 
-export function partialCueForDisplay(state = {}) {
+export function partialCueForDisplay(state = {}, { requireSourceText = false } = {}) {
   const candidates = [state.currentCue, ...(state.pendingCues || [])]
     .filter((cue) => cue && cue.status !== 'final')
     .filter((cue) => hasMeaningfulPartialText(cue.sourceText) || hasMeaningfulPartialText(cue.translatedText))
+    .filter((cue) => !requireSourceText || hasMeaningfulPartialText(cue.sourceText))
     .sort((left, right) => (right.updatedTimeMs || right.endTimeMs || 0) - (left.updatedTimeMs || left.endTimeMs || 0));
   if (candidates.length === 0) return null;
   return candidates.reduce((merged, cue) => ({
     ...merged,
     cueId: merged.cueId || cue.cueId,
+    sessionId: merged.sessionId || cue.sessionId,
+    segmentId: merged.segmentId || cue.segmentId,
     sequence: Math.min(merged.sequence || cue.sequence, cue.sequence || merged.sequence),
     startTimeMs: Math.min(merged.startTimeMs ?? cue.startTimeMs, cue.startTimeMs ?? merged.startTimeMs),
     endTimeMs: Math.max(merged.endTimeMs ?? cue.endTimeMs, cue.endTimeMs ?? merged.endTimeMs),
@@ -52,10 +69,53 @@ function hasMeaningfulPartialText(text) {
   return Boolean(normalized) && !/^[\s\p{P}\p{S}]+$/u.test(normalized);
 }
 
-export function cueListForDisplay(state = {}, { includePartial = true } = {}) {
+export function cueListForDisplay(state = {}, { includePartial = true, requireSourceTextForPartial = false } = {}) {
   const final = sortFinalCues(state.finalCues);
-  const partial = includePartial ? partialCueForDisplay(state) : null;
-  return partial ? [...final, partial] : final;
+  const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
+  const cues = partial ? [...final, partial] : final;
+  return includePartial ? mergeRepeatedLiveCues(cues) : cues;
+}
+
+function mergeRepeatedLiveCues(cues) {
+  const merged = [];
+
+  for (const cue of cues) {
+    const previous = merged.at(-1);
+    if (!previous || !canMergeRepeatedCue(previous, cue)) {
+      merged.push(cue);
+      continue;
+    }
+
+    merged[merged.length - 1] = {
+      ...previous,
+      sourceText: `${previous.sourceText} ${cue.sourceText}`.trim(),
+      translatedText: mergedRepeatedTranslation(previous.translatedText, cue.translatedText),
+      endTimeMs: Math.max(previous.endTimeMs || 0, cue.endTimeMs || 0),
+      updatedTimeMs: Math.max(previous.updatedTimeMs || 0, cue.updatedTimeMs || 0),
+      status: previous.status === 'final' && cue.status === 'final' ? 'final' : 'partial',
+      ...(cue.status === 'final' ? { finalizedReason: cue.finalizedReason } : {})
+    };
+  }
+
+  return merged;
+}
+
+function canMergeRepeatedCue(previous, next) {
+  return previous.status === 'final' &&
+    Boolean(previous.sourceText) &&
+    Boolean(next.sourceText) &&
+    previous.sourceText.trim() === next.sourceText.trim() &&
+    previous.sessionId === next.sessionId &&
+    previous.segmentId === next.segmentId;
+}
+
+function mergedRepeatedTranslation(previousText = '', nextText = '') {
+  const previous = String(previousText || '').trim();
+  const next = String(nextText || '').trim();
+  if (!previous) return next;
+  if (!next) return previous;
+  if (next.startsWith(previous)) return next;
+  return `${previous} ${next}`;
 }
 
 export function distanceFromScrollBottom(element) {

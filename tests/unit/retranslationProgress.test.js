@@ -23,6 +23,23 @@ test('completed output hides a running execution with the same execution id', ()
   assert.deepEqual(progress.executions, []);
 });
 
+test('completed output hides an execution identified by executionId', () => {
+  const progress = retranslationProgressFor({
+    outputs: [{
+      executionId: 'execution-1',
+      outputText: 'Translated result',
+      source: 'formal'
+    }],
+    executions: [{
+      executionId: 'execution-1',
+      status: 'running'
+    }]
+  });
+
+  assert.equal(progress.executions.length, 0);
+  assert.equal(hasPendingRetranslationItems(progress), false);
+});
+
 test('completed output hides matching optimistic tracked retranslation', () => {
   const progress = retranslationProgressFor(
     { outputs: [output({ requestId: 'request-1', executionId: 'execution-1' })], executions: [] },

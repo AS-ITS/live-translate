@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- AI Meeting Summary source contract closeout: summaries now use deterministic
+  final-Cue or legacy-transcript sources with filtering, deduplication,
+  conflict validation, source hashes, source metadata, and manual retry API/UI.
+
+- AI Meeting Summary validation closeout: summary Cues now sort by Segment and
+  sequence, partial Cues are excluded from source construction, and deterministic
+  fake-provider E2E coverage verifies Stop completion, reload, and retry flows.
+
+- 即時字幕不再顯示尚未配對原文的翻譯 partial，避免原文欄卡住空白的「辨識中／翻譯中」；原文到達後會保留並完成配對。
+
+- 即時字幕不再依麥克風靜音猜測句子完成；字幕會保留到 Gemini boundary、句末標點或使用者明確 Pause／Stop，避免晚到翻譯被錯誤拆成孤立 partial。
+
+- Session Detail now refreshes authoritative translation history alongside the
+  session detail API so completed retranslation outputs replace stale pending
+  executions and stop unnecessary polling.
+
+- 即時字幕新增「複製原文」與「複製翻譯」，只會複製對應的已完成字幕；雙欄字幕的手動選取也不再連帶另一欄。
+
+- WP8 Rich Meeting Summary: completed summaries now optionally persist and
+  expose chronologically ordered timeline entries, keywords, risks, open
+  questions, and follow-up suggestions across the summary API, UI, and PDF,
+  Markdown, DOCX, and TXT exports. Legacy summaries remain readable.
+
+- WP7 Meeting Summary Export: completed final summaries now provide PDF,
+  Markdown, DOCX, and TXT downloads with structured sections and deterministic
+  Session/timestamp filenames. Existing translation and subtitle exports are
+  unchanged.
+
+- WP6 Incremental Meeting Summary: finalized Meeting Segments now produce
+  independently persisted, range-keyed partial summaries through the existing
+  durable summary worker. Session finalization merges completed partials in
+  chronological order; failed or missing partials remain retryable, and the
+  existing Session summary API continues to return only the final summary.
+
+- WP5 Summary Background Worker: completed Session finalization now enqueues
+  durable, idempotent MeetingSummaryJobs. A separate worker persists completed
+  or failed terminal job states, retries transient failures with exponential
+  backoff, and recovers queued or expired jobs after restart without duplicating
+  completed summaries.
+
+- WP4 Meeting Summary UI: Session Detail now loads and displays pending,
+  completed, failed, and missing meeting summaries with structured overview,
+  topics, decisions, and action items.
+
+- Added `GET /api/sessions/:sessionId/summary` for deterministic retrieval of
+  completed, pending, and failed persisted meeting summaries.
+
+- Added WP2 AI meeting summary persistence with Session association,
+  immutable completed records, retained failed attempts, retry support, and
+  memory/file-backed repositories.
+
 - WP5A Subtitle Cue Exporter: Session detail TXT, SRT, and VTT downloads now
   use persisted final Cues when available, with deterministic filtering,
   sequence ordering, session-relative timeline validation, and
@@ -1281,3 +1332,8 @@ These items are intentionally deferred:
   list and ignores late partial UI updates.
 - Live subtitle scrolling follows the latest Cue until the user scrolls away;
   `回到最新字幕` restores follow mode.
+## Unreleased
+
+- Added the WP1 meeting summary pipeline for ordered Final Subtitle Cues,
+  configurable chunking, Gemini Flash Lite chunk summaries, and deterministic
+  structured merging.

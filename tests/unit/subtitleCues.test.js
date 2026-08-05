@@ -60,20 +60,26 @@ test('turnComplete control event finalizes the pending cue when text is complete
   assert.equal(state.finalCues[0].endTimeMs, 500);
 });
 
-test('pause before unrelated new speech finalizes the current cue first', () => {
+test('without a provider boundary a Cue stays open for late translation pairing', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'source without punctuation', sessionTimeMs: 100 }));
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.sourceText, 'source without punctuation');
+
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'late translation', sessionTimeMs: 600 }));
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.translatedText, 'late translation');
+});
+
+test('a long transcript gap does not finalize a continuing Cue', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'First thought', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Premiere idee', sessionTimeMs: 150 }));
-  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Second thought', sessionTimeMs: 1200 }), {
-    pauseThresholdMs: 900
-  });
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'First thought continues', sessionTimeMs: 1200 }));
 
-  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText, cue.finalizedReason]), [
-    ['First thought', 'Premiere idee', 'pause']
-  ]);
-  assert.equal(state.currentCue.sourceText, 'Second thought');
-  assert.equal(state.currentCue.translatedText, '');
-  assert.equal(state.currentCue.sequence, 2);
+  assert.deepEqual(state.finalCues, []);
+  assert.equal(state.currentCue.sourceText, 'First thought continues');
+  assert.equal(state.currentCue.translatedText, 'Premiere idee');
 });
 
 test('Stop flush finalizes only paired source and translation cue text', () => {
@@ -137,6 +143,33 @@ test('duplicate transcript events do not append duplicate final cues', () => {
 
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.currentCue, null);
+});
+
+test('cumulative transcript text updates the preceding final cue instead of creating a partial', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: '你好', sessionTimeMs: 100, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Hello', sessionTimeMs: 120, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: '你好,你好。', sessionTimeMs: 300 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Hello, hello.', sessionTimeMs: 320 }));
+
+  assert.equal(state.currentCue, null);
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '你好,你好。');
+  assert.equal(state.finalCues[0].translatedText, 'Hello, hello.');
+});
+
+test('same text from a later turn is retained as a separate cue event', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-1-source', turnIndex: 1, stream: 'source', text: '123', sessionTimeMs: 100, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-1-translation', turnIndex: 1, stream: 'translation', text: '1, 2, 3', sessionTimeMs: 120, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-2-source', turnIndex: 2, stream: 'source', text: '123', sessionTimeMs: 300, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-2-translation', turnIndex: 2, stream: 'translation', text: '1, 2, 3', sessionTimeMs: 320, isFinal: true }));
+
+  assert.equal(state.finalCues.length, 2);
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
+    ['123', '1, 2, 3'],
+    ['123', '1, 2, 3']
+  ]);
 });
 
 test('display cues include final cues followed by the current partial cue', () => {

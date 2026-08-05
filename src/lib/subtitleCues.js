@@ -109,6 +109,9 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
   const cue = candidate.cue;
   if (isCueSubmittable(cue)) {
     return {
+      // Boundary is preferred, but some Live responses omit it after the
+      // paired transcript arrives. The Cue is already aggregated by Turn,
+      // so idle finalization is a safe fallback and will not split fragments.
       state: finalizeCue(state, cue, {
         nowMs: options.sessionTimeMs,
         reason: 'idle',
@@ -223,15 +226,10 @@ function applyBoundary(state, event, options) {
 function moveClosedCurrentCue(state, event) {
   const current = state.currentCue;
   if (!current) return state;
-  const sameTurn = event.turnIndex !== null && current.turnIndex === event.turnIndex;
+  const sameSegment = !event.segmentId || !current.segmentId || event.segmentId === current.segmentId;
+  const sameTurn = event.turnIndex === null || current.turnIndex === null || current.turnIndex === event.turnIndex;
+  if (sameSegment && sameTurn) return state;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const sameStreamContinuation = event.stream === 'source'
-    ? event.text.startsWith(current.sourceText)
-    : event.text.startsWith(current.translatedText);
-  const sameStreamSuffix = event.stream === 'source'
-    ? isRedundantTextUpdate(current.sourceText, event.text)
-    : isRedundantTextUpdate(current.translatedText, event.text);
-  if (sameTurn || sameStreamContinuation || sameStreamSuffix) return state;
   if (!isCueSubmittable(current) && !current[field]) return state;
   if (!isCueSubmittable(current)) {
     return { ...state, currentCue: null, pendingCues: [...state.pendingCues, current] };
@@ -245,9 +243,16 @@ function moveClosedCurrentCue(state, event) {
 }
 
 function findPairingCue(state, event) {
-  if (state.currentCue && cueCanAccept(state.currentCue, event)) return { key: 'current', cue: state.currentCue };
+  if (state.currentCue && cueBelongsToCurrentTurn(state.currentCue, event)) {
+    return { key: 'current', cue: state.currentCue };
+  }
   const index = state.pendingCues.findIndex((cue) => cueCanAccept(cue, event));
   return index >= 0 ? { key: `pending:${index}`, cue: state.pendingCues[index] } : null;
+}
+
+function cueBelongsToCurrentTurn(cue, event) {
+  if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
+  return event.turnIndex === null || cue.turnIndex === null || event.turnIndex === cue.turnIndex;
 }
 
 function findCumulativeFinalCue(state, event) {
@@ -290,6 +295,24 @@ function isRedundantTextUpdate(currentText, incomingText) {
   return incoming.length > 0 && incoming.length < current.length && current.endsWith(incoming);
 }
 
+function mergeCueText(currentText, incomingText) {
+  const current = normalizeText(currentText);
+  const incoming = normalizeText(incomingText);
+  if (!current) return incoming;
+  if (!incoming || current === incoming || current.startsWith(incoming)) return current;
+  if (incoming.startsWith(current)) return incoming;
+  if (isRedundantTextUpdate(current, incoming)) return current;
+  return `${current}${needsTextSeparator(current, incoming) ? ' ' : ''}${incoming}`;
+}
+
+function needsTextSeparator(currentText, incomingText) {
+  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(currentText)
+    && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
+    return false;
+  }
+  return /[\p{L}\p{N}_)]$/u.test(currentText) && /^[\p{L}\p{N}_([@]/u.test(incomingText);
+}
+
 function isCueSubmittable(cue) {
   return Boolean(cue && normalizeText(cue.sourceText) && normalizeText(cue.translatedText));
 }
@@ -323,7 +346,7 @@ function addCue(state, event) {
 function updateCue(state, target, event) {
   const cue = target.cue;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const nextText = event.text.length >= cue[field].length ? event.text : cue[field];
+  const nextText = mergeCueText(cue[field], event.text);
   const updated = {
     ...cue,
     [field]: nextText,

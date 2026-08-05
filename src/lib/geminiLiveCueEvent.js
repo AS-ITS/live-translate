@@ -30,7 +30,7 @@ export function normalizeGeminiLiveCueEvents(message = {}, context = {}) {
       turnIndex,
       sessionTimeMs,
       context,
-      isFinal: Boolean(content.turnComplete || content.generationComplete)
+      isFinal: transcriptIsFinal({ content, context, stream, eventType })
     }));
   }
 
@@ -51,6 +51,13 @@ export function normalizeGeminiLiveCueEvents(message = {}, context = {}) {
   }
 
   return events;
+}
+
+function transcriptIsFinal({ content, context, stream, eventType }) {
+  if (content.turnComplete || content.generationComplete) return true;
+  if (stream === 'source' && eventType === 'input') return Boolean(context.inputTranscriptIsFinal);
+  if (stream === 'translation' && eventType === 'output') return Boolean(context.outputTranscriptIsFinal);
+  return false;
 }
 
 function createEvent({ payload = {}, stream, eventType, text, providerEventId, eventSequence, turnIndex, sessionTimeMs, context, isFinal, turnComplete = false, generationComplete = false }) {

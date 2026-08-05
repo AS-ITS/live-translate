@@ -1254,6 +1254,26 @@ test('cumulative speech updates the preceding final Cue without leaving a partia
   });
 });
 
+test('late transcript after Turn completion does not remain in a partial row', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({ serverContent: { turnComplete: true } });
+    session.emitMessage({ serverContent: { inputTranscription: { text: 'late source' } } });
+    session.emitMessage({ serverContent: { outputTranscription: { text: 'late translation' } } });
+  });
+
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'late source',
+    translatedText: 'late translation'
+  });
+});
+
 test('unpaired cumulative translation stays hidden until its source arrives', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -1323,7 +1343,7 @@ test('manual scroll stops follow-latest until the user returns to the bottom', a
   await expect.poll(() => cueList(page).evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
 });
 
-test('idle pending Cue auto-finalizes after transcript idle debounce', async ({ page }) => {
+test('paired Cue auto-finalizes after idle when a provider boundary is absent', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1337,10 +1357,47 @@ test('idle pending Cue auto-finalizes after transcript idle debounce', async ({ 
   });
 
   await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(partialCueRows(page)).toHaveCount(0);
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: 'idle source finalizes',
     translatedText: 'idle translation finalizes'
+  });
+});
+
+test('incremental word fragments render as one subtitle row after Turn completion', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    const emit = (inputTranscription, outputTranscription) => session.emitMessage({
+      serverContent: {
+        ...(inputTranscription ? { inputTranscription: { text: inputTranscription } } : {}),
+        ...(outputTranscription ? { outputTranscription: { text: outputTranscription } } : {})
+      }
+    });
+    emit("it's a voice");
+    emit('input.');
+    emit(null, '這是語音');
+    emit(null, '輸入。');
+  });
+
+  await expect(partialCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page).first()).toHaveText(/it's a voice input\./);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { turnComplete: true }
+    });
+  });
+
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: "it's a voice input.",
+    translatedText: '這是語音輸入。'
   });
 });
 

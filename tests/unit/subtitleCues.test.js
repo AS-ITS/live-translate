@@ -79,7 +79,7 @@ test('without a provider boundary a Cue stays open for late translation pairing'
   assert.equal(state.currentCue.translatedText, 'late translation');
 });
 
-test('idle finalizes a paired Cue and rejects a stale timer after a new transcript', () => {
+test('idle finalizes an aggregated paired Cue and rejects stale timers', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'bonjour', sessionTimeMs: 120 }));
@@ -87,11 +87,41 @@ test('idle finalizes a paired Cue and rejects a stale timer after a new transcri
   const resolved = resolveIdleSubtitleCue(state, { cueId: state.currentCue.cueId, updatedTimeMs: version, sessionTimeMs: 1320 });
   assert.equal(resolved.action, 'finalized');
   assert.equal(resolved.state.finalCues[0].finalizedReason, 'idle');
+  assert.equal(resolved.state.currentCue, null);
 
   let changed = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello there', sessionTimeMs: 200 }));
   const stale = resolveIdleSubtitleCue(changed, { cueId: changed.currentCue.cueId, updatedTimeMs: version, sessionTimeMs: 1400 });
   assert.equal(stale.action, 'stale');
   assert.equal(stale.state.currentCue.sourceText, 'hello there');
+});
+
+test('merges non-cumulative transcript fragments into one turn without turnIndex', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: "it's a voice", sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'input.', sessionTimeMs: 140 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '這是語音', sessionTimeMs: 180 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '輸入。', sessionTimeMs: 220 }));
+
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.sourceText, "it's a voice input.");
+  assert.equal(state.currentCue.translatedText, '這是語音輸入。');
+
+  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 300 });
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
+    "it's a voice input.",
+    '這是語音輸入。'
+  ]]);
+});
+
+test('replaces cumulative updates instead of appending them', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello world', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '你好', sessionTimeMs: 140 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '你好世界', sessionTimeMs: 160 }));
+
+  assert.equal(state.currentCue.sourceText, 'hello world');
+  assert.equal(state.currentCue.translatedText, '你好世界');
 });
 
 test('idle source-only Cue requests one retranslation, then preserves source-only final on retry timeout', () => {
@@ -261,6 +291,7 @@ test('display cues include final cues followed by the current partial cue', () =
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Final source.', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Final translation.', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 150 });
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Pending source', sessionTimeMs: 300 }));
 
   assert.deepEqual(subtitleCuesForDisplay(state).map((cue) => [cue.status, cue.sourceText]), [
@@ -352,6 +383,27 @@ test('normalizer creates stable stream-specific IDs and control events', () => {
   assert.deepEqual(events.map((event) => event.stream), ['source', 'translation', null]);
   assert.equal(events[2].turnComplete, true);
   assert.equal(events[0].sessionTimeMs, 123);
+});
+
+test('normalizer marks late input and output transcript events as final', () => {
+  const events = normalizeGeminiLiveCueEvents({
+    eventId: 'late-provider-42',
+    serverContent: {
+      inputTranscription: { text: 'late source' },
+      outputTranscription: { text: 'late translation' }
+    }
+  }, {
+    liveSessionId: 'live-1',
+    sessionTimeMs: 123,
+    eventSequence: 8,
+    inputTranscriptIsFinal: true,
+    outputTranscriptIsFinal: true
+  });
+
+  assert.deepEqual(events.map((event) => [event.stream, event.isFinal]), [
+    ['source', true],
+    ['translation', true]
+  ]);
 });
 
 function baseEvent(overrides = {}) {

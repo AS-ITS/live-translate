@@ -209,6 +209,8 @@ export class LiveTranslateSession {
   handleMessage(message) {
     const content = message.serverContent;
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
+    const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
+    const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
     this.eventSequence += 1;
     for (const event of normalizeGeminiLiveCueEvents(message, {
       liveSessionId: this.liveSessionId,
@@ -217,7 +219,9 @@ export class LiveTranslateSession {
       sourceLanguageCode: this.sourceLanguageCode,
       targetLanguageCode: this.targetLanguageCode,
       eventSequence: this.eventSequence,
-      sessionClock: this.sessionClock
+      sessionClock: this.sessionClock,
+      inputTranscriptIsFinal,
+      outputTranscriptIsFinal
     })) {
       this.onCueEvent?.(event);
     }

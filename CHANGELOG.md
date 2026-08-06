@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 強化即時翻譯的數字與標點保真指令，避免翻譯語音與輸出逐字稿漏掉數字序列中的單一數字。
+
 - 修正即時字幕 Cue 合併後沿用相同 `cueId` 導致長會議 checkpoint 衝突；現在只允許來源與翻譯文字單調追加的 `merged` Cue 更新，真正內容衝突仍會拒絕。
 
 - Added an asynchronous transcript polishing pipeline for stable bilingual

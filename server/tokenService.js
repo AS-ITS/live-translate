@@ -133,7 +133,9 @@ function buildSystemInstruction({ sourceLanguageCode, glossaryEntries }) {
       `Primary input language hint: ${sourceLanguageCode}.`,
       'Use this as a soft hint for the main speech context.',
       `The speaker may still mix ${sourceLanguageCode} with English, Taiwanese, or other languages.`,
-      `Do not force all speech to be interpreted as ${sourceLanguageCode}; detect and preserve mixed-language meaning when present.`
+      `Do not force all speech to be interpreted as ${sourceLanguageCode}; detect and preserve mixed-language meaning when present.`,
+      'Preserve every spoken digit, number, and punctuation mark in the translated output.',
+      'Do not skip, merge, reorder, or silently omit any digit in a number sequence; the translated speech audio and output transcription must contain the same complete numeric content.'
     ].join(' ')
   ];
 

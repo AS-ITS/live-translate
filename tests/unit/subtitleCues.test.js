@@ -83,9 +83,11 @@ test('does not merge after sentence punctuation or across the language limit', (
   state = createSubtitleCueState();
   appendFinalPair('現在', 'Now', 300);
   appendFinalPair('是麥克風測試。', 'is a microphone test.', 400);
-  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues.length, 2);
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
-    '現在是麥克風測試。', 'Now is a microphone test.'
+    '現在', 'Now'
+  ], [
+    '是麥克風測試。', 'is a microphone test.'
   ]]);
 
   state = createSubtitleCueState();
@@ -94,6 +96,54 @@ test('does not merge after sentence punctuation or across the language limit', (
   appendFinalPair('second', '第二', 200, options);
   assert.equal(state.finalCues.length, 2);
   assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first,', 'second']);
+});
+
+test('merges adjacent final number fragments within the idle window without loss or duplication', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+  };
+
+  appendFinalPair('1234', '1234', 100);
+  appendFinalPair('567', '567', 500);
+  appendFinalPair('8910', '8910', 900);
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '1234 567 8910');
+  assert.equal(state.finalCues[0].translatedText, '1234 567 8910');
+});
+
+test('does not merge final Cues after sentence punctuation or after a long gap', () => {
+  const appendFinalPair = (state, sourceText, translatedText, time) => {
+    let next = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    return applySubtitleCueEvent(next, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+  };
+
+  let state = createSubtitleCueState();
+  state = appendFinalPair(state, 'first', '第一', 100);
+  state = appendFinalPair(state, 'second.', '第二。', 500);
+  state = appendFinalPair(state, 'third', '第三', 900);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first', 'second.', 'third']);
+
+  state = createSubtitleCueState();
+  state = appendFinalPair(state, '1234', '1234', 100);
+  state = appendFinalPair(state, '5678', '5678', 1800);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['1234', '5678']);
+});
+
+test('does not merge final Cues across sessions, live sessions, or segments', () => {
+  const appendFinalPair = (state, scope, time) => {
+    let next = applySubtitleCueEvent(state, baseEvent({ ...scope, eventId: `source-${time}`, stream: 'source', text: 'part', sessionTimeMs: time, isFinal: true }));
+    return applySubtitleCueEvent(next, baseEvent({ ...scope, eventId: `translation-${time}`, stream: 'translation', text: '片段', sessionTimeMs: time + 10, isFinal: true }));
+  };
+
+  let state = appendFinalPair(createSubtitleCueState(), { sessionId: 'session-1', liveSessionId: 'live-1', segmentId: 'segment-1' }, 100);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-1', segmentId: 'segment-1' }, 200);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-2', segmentId: 'segment-1' }, 300);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-2', segmentId: 'segment-2' }, 400);
+
+  assert.equal(state.finalCues.length, 4);
 });
 
 test('a shorter suffix transcript update does not create an extra cue', () => {
@@ -487,10 +537,10 @@ test('missing session-relative time is ignored without epoch timestamps', () => 
 test('minimum duration and gap normalize final cue timeline', () => {
   let state = createSubtitleCueState();
   const options = { minimumGapMs: 5, minimumCueDurationMs: 300 };
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's1', stream: 'source', text: 'one', sessionTimeMs: 100 }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't1', stream: 'translation', text: 'uno', sessionTimeMs: 110, isFinal: true }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's2', stream: 'source', text: 'two', sessionTimeMs: 111 }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't2', stream: 'translation', text: 'dos', sessionTimeMs: 112, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's1', stream: 'source', text: 'one.', sessionTimeMs: 100 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't1', stream: 'translation', text: 'uno.', sessionTimeMs: 110, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's2', stream: 'source', text: 'two.', sessionTimeMs: 111 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't2', stream: 'translation', text: 'dos.', sessionTimeMs: 112, isFinal: true }), options);
 
   assert.deepEqual(state.finalCues.map((cue) => [cue.startTimeMs, cue.endTimeMs]), [
     [100, 400],

@@ -1,6 +1,7 @@
 const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
+const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
 const DEFAULT_MAX_CUE_CHARS = Object.freeze({
   'zh-Hant': 32, 'zh-Hans': 32, ja: 36, ko: 44,
   en: 80, es: 84, fr: 84, de: 76
@@ -227,9 +228,9 @@ function applyBoundary(state, event, options) {
 function moveClosedCurrentCue(state, event) {
   const current = state.currentCue;
   if (!current) return state;
-  const sameSegment = !event.segmentId || !current.segmentId || event.segmentId === current.segmentId;
+  const sameScope = cueScopeMatchesEvent(current, event);
   const sameTurn = event.turnIndex !== null && current.turnIndex !== null && current.turnIndex === event.turnIndex;
-  if (!sameSegment || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
+  if (!sameScope || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
     return moveCueToNextState(state, current, event);
   }
 
@@ -269,7 +270,7 @@ function findPairingCue(state, event) {
 }
 
 function cueCanAcceptCurrentCue(cue, event) {
-  if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
+  if (!cueScopeMatchesEvent(cue, event)) return false;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   if (!cue[field]) return true;
@@ -296,6 +297,7 @@ function findCumulativeFinalCue(state, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
+    if (!cueScopeMatchesEvent(cue, event)) continue;
     if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
     const previousText = normalizeText(cue[field]);
     if (previousText && event.text.length > previousText.length && event.text.startsWith(previousText)) {
@@ -309,11 +311,17 @@ function findLateSourceOnlyCue(state, event) {
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
     if (cue.translatedText || !cue.sourceText || !cue.retranslationRequested) continue;
-    if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) continue;
+    if (!cueScopeMatchesEvent(cue, event)) continue;
     if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
     return { index, cue };
   }
   return null;
+}
+
+function cueScopeMatchesEvent(cue, event) {
+  return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
+    !event[field] || !cue[field] || event[field] === cue[field]
+  ));
 }
 
 function updateFinalCue(state, target, event) {
@@ -331,7 +339,7 @@ function updateFinalCue(state, target, event) {
 }
 
 function cueCanAccept(cue, event) {
-  if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
+  if (!cueScopeMatchesEvent(cue, event)) return false;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   return !cue[field] || event.text.startsWith(cue[field]) || cue[field].startsWith(event.text) || isRedundantTextUpdate(cue[field], event.text);
@@ -514,21 +522,16 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
   if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
   if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
-  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
-  if (!isLikelyContinuation(previousCue, nextCue)) return false;
+  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)
+    || endsSentence(nextCue.sourceText) || endsSentence(nextCue.translatedText)) return false;
+
+  const gapMs = Math.max(0, nextCue.startTimeMs - previousCue.endTimeMs);
+  if (gapMs > DEFAULT_ADJACENT_CUE_MAX_GAP_MS) return false;
 
   const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
   const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
   return sourceText.length <= languageCueLimit(previousCue.sourceLanguageCode || nextCue.sourceLanguageCode, options)
     && translatedText.length <= languageCueLimit(previousCue.targetLanguageCode || nextCue.targetLanguageCode, options);
-}
-
-function isLikelyContinuation(previousCue, nextCue) {
-  const previousTexts = [previousCue.sourceText, previousCue.translatedText].map(normalizeText);
-  const nextTexts = [nextCue.sourceText, nextCue.translatedText].map(normalizeText);
-  if (previousTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
-  if (nextTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
-  return nextTexts.some(endsSentence);
 }
 
 function containsCjk(text) {

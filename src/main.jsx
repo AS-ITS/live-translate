@@ -62,7 +62,8 @@ import {
   createSubtitleCueState,
   finalizePendingSubtitleCue,
   resetSubtitleCueState,
-  resolveIdleSubtitleCue
+  resolveIdleSubtitleCue,
+  DEFAULT_TURN_COMPLETE_DEBOUNCE_MS
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
@@ -83,10 +84,12 @@ const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'comp
 const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
-const LIVE_CUE_IDLE_FINALIZE_MS = 1200;
+const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
 const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
+const AUDIO_UPLOAD_RETRY_DELAY_MS = 5000;
+const AUDIO_UPLOAD_RETRY_MAX_DELAY_MS = 60000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';
@@ -182,6 +185,8 @@ function App() {
   const translatedAudioUploadChunksRef = useRef([]);
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
+  const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
+  const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
   const transcriptRef = useRef(transcript);
   const subtitleCueStateRef = useRef(subtitleCueState);
   const transcriptTimeOriginRef = useRef(null);
@@ -302,6 +307,7 @@ function App() {
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
     meetingCheckpointSyncCoordinatorRef.current?.cancel();
+    cancelAudioUploadRetries();
     segmentSwitchOrchestratorRef.current?.cancel();
     for (const session of sessions) {
       void session?.stop().catch(() => {});
@@ -332,13 +338,15 @@ function App() {
     ].filter((cue) => cue?.cueId && Number.isFinite(cue.updatedTimeMs));
     const now = sessionTimeForSubtitleCues();
     for (const cue of candidates) {
-      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - cue.updatedTimeMs));
+      const timerOrigin = Number.isFinite(cue.boundaryAtMs) ? cue.boundaryAtMs : cue.updatedTimeMs;
+      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - timerOrigin));
       const timer = setTimeout(() => {
         liveCueIdleTimersRef.current.delete(cue.cueId);
         const result = resolveIdleSubtitleCue(subtitleCueStateRef.current, {
           cueId: cue.cueId,
           updatedTimeMs: cue.updatedTimeMs,
           sessionTimeMs: sessionTimeForSubtitleCues(),
+          debounceMs: LIVE_CUE_IDLE_FINALIZE_MS,
           targetLanguageCode,
           sourceLanguageCode
         });
@@ -1336,6 +1344,11 @@ function App() {
       finalizedCueKeys: state?.finalizedCueKeys || [],
       processedEventIds: state?.processedEventIds || [],
       pendingBoundary: state?.pendingBoundary || { turnComplete: false, generationComplete: false },
+      pendingBoundaryAtMs: state?.pendingBoundaryAtMs ?? null,
+      lastFinalizedCueId: state?.lastFinalizedCueId || null,
+      lastFinalizedAtMs: state?.lastFinalizedAtMs ?? null,
+      lastFinalizedStream: state?.lastFinalizedStream || null,
+      lastFinalizedReason: state?.lastFinalizedReason || null,
       lastCommittedCueSequence: lastCue?.sequence || 0,
       lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
     };
@@ -1390,6 +1403,10 @@ function App() {
         setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響，目前音檔仍可在本頁下載。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
         return;
       }
+      if (isRetryableAudioUploadError(nextError)) {
+        setError('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。');
+        return;
+      }
       setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響，目前音檔仍可在本頁下載。');
     }
   }
@@ -1413,7 +1430,11 @@ function App() {
   async function flushAudioSegmentIfDue(kind) {
     const segment = audioUploadSegmentsRef.current[kind];
     if (!segment || Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return;
-    await flushAudioSegment(kind);
+    try {
+      await flushAudioSegment(kind);
+    } catch (error) {
+      scheduleAudioUploadRetry(kind, audioUploadSessionId(kind));
+    }
   }
 
   async function flushAudioSegment(kind, { force = false, sessionId = activeSessionRecordIdRef.current } = {}) {
@@ -1446,6 +1467,8 @@ function App() {
       });
       segment.nextIndex += 1;
       segment.lastFlushedAt = Date.now();
+      clearAudioUploadRetry(kind);
+      setError((current) => current.startsWith('語音紀錄暫時無法同步') ? '' : current);
       return true;
     })();
     segment.currentPromise = uploadPromise;
@@ -1453,6 +1476,7 @@ function App() {
       return await uploadPromise;
     } catch (nextError) {
       chunksRef.current = uploadChunks.concat(chunksRef.current);
+      if (isRetryableAudioUploadError(nextError)) scheduleAudioUploadRetry(kind, sessionId);
       throw nextError;
     } finally {
       segment.inFlight = false;
@@ -1463,12 +1487,50 @@ function App() {
   }
 
   function resetAudioUploadSegment(kind) {
+    clearAudioUploadRetry(kind);
     audioUploadSegmentsRef.current[kind] = {
       nextIndex: 0,
       lastFlushedAt: Date.now(),
       inFlight: false,
       currentPromise: null
     };
+  }
+
+  function audioUploadSessionId(kind) {
+    return (kind === 'input' ? inputAudioMetadataRef : translatedAudioMetadataRef).current.sessionId
+      || activeSessionRecordIdRef.current;
+  }
+
+  function scheduleAudioUploadRetry(kind, sessionId) {
+    if (!sessionId || audioUploadRetryTimersRef.current[kind]) return;
+    const attempt = audioUploadRetryAttemptsRef.current[kind] + 1;
+    audioUploadRetryAttemptsRef.current[kind] = attempt;
+    const delay = Math.min(
+      AUDIO_UPLOAD_RETRY_DELAY_MS * (2 ** Math.max(0, attempt - 1)),
+      AUDIO_UPLOAD_RETRY_MAX_DELAY_MS
+    );
+    audioUploadRetryTimersRef.current[kind] = window.setTimeout(() => {
+      audioUploadRetryTimersRef.current[kind] = null;
+      void flushAudioSegment(kind, { force: true, sessionId }).catch(() => {});
+    }, delay);
+  }
+
+  function clearAudioUploadRetry(kind) {
+    const timer = audioUploadRetryTimersRef.current[kind];
+    if (timer) window.clearTimeout(timer);
+    audioUploadRetryTimersRef.current[kind] = null;
+    audioUploadRetryAttemptsRef.current[kind] = 0;
+  }
+
+  function cancelAudioUploadRetries() {
+    clearAudioUploadRetry('input');
+    clearAudioUploadRetry('translation');
+  }
+
+  function isRetryableAudioUploadError(error) {
+    const status = Number(error?.status);
+    if (status === 404 || status === 409 || status === 413) return false;
+    return !Number.isFinite(status) || status === 408 || status === 425 || status === 429 || status >= 500;
   }
 
   async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
@@ -1626,7 +1688,12 @@ function App() {
       meetingCheckpointSyncCoordinatorRef.current = createMeetingCheckpointSyncCoordinator({
         updateCheckpoint: (payload) => meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
         delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
-        onStatusChange: setMeetingCheckpointStatus,
+        onStatusChange: (status) => {
+          setMeetingCheckpointStatus(status);
+          if (status === 'synced') {
+            setError((current) => current.startsWith('長會議同步') ? '' : current);
+          }
+        },
         onError: reportMeetingCheckpointSyncError
       });
     }

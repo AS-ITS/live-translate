@@ -4,7 +4,8 @@ import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
-  finalizePendingSubtitleCue
+  finalizePendingSubtitleCue,
+  resolveIdleSubtitleCue
 } from '../../src/lib/subtitleCues.js';
 
 test('Gemini mock event flow produces one final cue from input/output partials', () => {
@@ -25,6 +26,12 @@ test('Gemini mock event flow produces one final cue from input/output partials',
   session.handleMessage({ eventId: 'input-2', serverContent: { inputTranscription: { text: 'hello world' } } });
   session.handleMessage({ eventId: 'output-1', serverContent: { outputTranscription: { text: 'bonjour le monde' } } });
   session.handleMessage({ eventId: 'boundary-1', serverContent: { turnComplete: true } });
+  const firstCandidate = cueState.currentCue || cueState.pendingCues[0];
+  cueState = resolveIdleSubtitleCue(cueState, {
+    cueId: firstCandidate.cueId,
+    updatedTimeMs: firstCandidate.updatedTimeMs,
+    sessionTimeMs: firstCandidate.boundaryAtMs + 700
+  }).state;
 
   assert.equal(cueState.finalCues.length, 1);
   assert.equal(cueState.finalCues[0].sourceText, 'hello world');
@@ -51,11 +58,8 @@ test('Gemini incremental fragments without turnIndex remain one final cue', () =
   session.handleMessage({ eventId: 'translation-1', serverContent: { outputTranscription: { text: '這是語音' } } });
   session.handleMessage({ eventId: 'translation-2', serverContent: { outputTranscription: { text: '輸入。' } } });
 
-  assert.equal(cueState.finalCues.length, 0);
-  assert.equal(cueState.currentCue.sourceText, "it's a voice input.");
-  assert.equal(cueState.currentCue.translatedText, '這是語音輸入。');
-
-  session.handleMessage({ eventId: 'boundary-fragments', serverContent: { turnComplete: true } });
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.currentCue, null);
   assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
     "it's a voice input.",
     '這是語音輸入。'
@@ -78,6 +82,12 @@ test('late transcript after Turn completion finalizes the Cue instead of leaving
   session.handleMessage({ eventId: 'boundary-first', serverContent: { turnComplete: true } });
   session.handleMessage({ eventId: 'late-source', serverContent: { inputTranscription: { text: 'late source' } } });
   session.handleMessage({ eventId: 'late-translation', serverContent: { outputTranscription: { text: 'late translation' } } });
+  const lateCandidate = cueState.currentCue || cueState.pendingCues[0];
+  cueState = resolveIdleSubtitleCue(cueState, {
+    cueId: lateCandidate.cueId,
+    updatedTimeMs: lateCandidate.updatedTimeMs,
+    sessionTimeMs: lateCandidate.boundaryAtMs + 700
+  }).state;
 
   assert.equal(cueState.currentCue, null);
   assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[

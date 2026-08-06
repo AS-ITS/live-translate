@@ -98,6 +98,15 @@ test('wraps each supported subtitle language to at most two configured lines', (
   }
 });
 
+test('keeps a short English phrase together when wrapping a long Cue', () => {
+  const wrapped = wrapSubtitleText(
+    'Microphone test,one,two,three,microphone test,one,two,three,Recording test.',
+    'en'
+  );
+
+  assert.equal(wrapped, 'Microphone test,one,two,three,\nmicrophone test,one,two,three,Recording test.');
+});
+
 test('exports Cue TXT in sequence order and preserves source/translation pairing', () => {
   const cues = [
     cue({ cueId: 'cue-2', sequence: 2, startTimeMs: 5000, endTimeMs: 6000, sourceText: 'source two', translatedText: 'translation two' }),

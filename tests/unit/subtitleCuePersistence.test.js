@@ -46,7 +46,7 @@ test('persists source-only final cues while translation reads remain empty', asy
 test('checkpoint saves and reloads recovery-only cue state', async () => {
   const { sessions, meetings } = await fixture();
   const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
-  const checkpoint = { currentCue: { cueId: 'partial', status: 'partial' }, pendingCues: [], nextSequence: 2, finalizedCueKeys: ['key-1'], processedEventIds: ['event-1'], pendingBoundary: { turnComplete: false, generationComplete: true }, lastCommittedCueSequence: 1, lastCommittedEndTimeMs: 100 };
+  const checkpoint = { currentCue: { cueId: 'partial', status: 'partial' }, pendingCues: [], nextSequence: 2, finalizedCueKeys: ['key-1'], processedEventIds: ['event-1'], pendingBoundary: { turnComplete: false, generationComplete: true }, pendingBoundaryAtMs: null, lastFinalizedCueId: null, lastFinalizedAtMs: null, lastFinalizedStream: null, lastFinalizedReason: null, lastCommittedCueSequence: 1, lastCommittedEndTimeMs: 100 };
   await repository.saveCueCheckpoint('session-1', checkpoint);
   assert.deepEqual(await repository.loadCueCheckpoint('session-1'), checkpoint);
 });

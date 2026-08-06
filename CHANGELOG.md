@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 修正長會議 checkpoint 與分段語音紀錄的暫時性保存失敗；未同步資料會在目前頁面工作階段保留並以退避間隔持續重試，成功後清除錯誤提示。
+
+- 修正 Live Subtitle Cue 過早依 provider fragment finalize 的問題；同一 turn 的片段會先累積，中文短片段需達最小語意長度，turnComplete 以 700ms debounce 完成，並允許最後 1500ms 內的晚到雙語片段安全回併同一 Cue 與 checkpoint。
+
 - 強化即時翻譯的數字與標點保真指令，避免翻譯語音與輸出逐字稿漏掉數字序列中的單一數字。
 
 - 修正即時字幕 Cue 合併後沿用相同 `cueId` 導致長會議 checkpoint 衝突；現在只允許來源與翻譯文字單調追加的 `merged` Cue 更新，真正內容衝突仍會拒絕。
@@ -26,7 +30,7 @@
 
 - 即時字幕會將同一個 Gemini Turn 的非累積來源／翻譯片段合併成單一暫存列，直到 `turnComplete`、`generationComplete` 或 transcript idle fallback 才完成，避免一句話被逐詞拆成多列，也避免缺少 boundary 時永久停留在 partial。
 
-- Live Cue 在最後一個文字事件後閒置 1200ms 時，配對 Cue 會完成；只有原文 Cue 會透過同一 Live session 重翻一次，重翻失敗則保留 source-only final，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
+- Live Cue 在 turnComplete／generationComplete 後閒置 700ms 時，配對且足夠完整的 Cue 會完成；只有原文 Cue 會透過同一 Live session 重翻一次，重翻失敗則保留 partial，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
 
 - 即時字幕 Cue 超過語言字數目標時，會依子句、詞界或安全字元邊界拆成連續的雙語 Cue；短字幕不再因句尾標點提前切碎。Live transcript、Cue checkpoint 與新儲存逐字稿會忽略同一段語音的尾段重複文字（例如 `123` 後的 `3`），但保留 boundary 後真正重複的發話；Live 與歷史字幕 renderer 會依原文／譯文語言各自換行，每個 Cue 最多顯示兩行，儲存與匯出仍保留完整文字。
 

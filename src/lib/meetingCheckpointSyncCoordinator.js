@@ -1,10 +1,12 @@
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
+const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
 
 export function createMeetingCheckpointSyncCoordinator({
   updateCheckpoint,
   onStatusChange,
   onError,
   delayMs = DEFAULT_CHECKPOINT_SYNC_DELAY_MS,
+  retryDelayMs = DEFAULT_CHECKPOINT_RETRY_DELAY_MS,
   setTimeoutFn = globalThis.setTimeout,
   clearTimeoutFn = globalThis.clearTimeout
 } = {}) {
@@ -17,6 +19,7 @@ export function createMeetingCheckpointSyncCoordinator({
   let pendingCueCheckpoint = null;
   let context = null;
   let timer = null;
+  let retryTimer = null;
   let queue = Promise.resolve();
 
   return Object.freeze({
@@ -26,6 +29,7 @@ export function createMeetingCheckpointSyncCoordinator({
       pendingCues.clear();
       pendingCueCheckpoint = null;
       clearTimer();
+      clearRetryTimer();
       onStatusChange?.('ready');
     },
 
@@ -34,7 +38,7 @@ export function createMeetingCheckpointSyncCoordinator({
       for (const chunk of chunks) {
         if (validChunk(chunk)) pendingChunks.set(chunk.idempotencyKey, chunk);
       }
-      if (pendingChunks.size === 0 || timer) return;
+      if (pendingChunks.size === 0 || timer || retryTimer) return;
 
       timer = setTimeoutFn(() => {
         timer = null;
@@ -46,18 +50,20 @@ export function createMeetingCheckpointSyncCoordinator({
       if (!context) return;
       for (const cue of cues) if (cue?.status === 'final' && cue.cueId) pendingCues.set(cue.cueId, cue);
       if (checkpoint) pendingCueCheckpoint = checkpoint;
-      if ((pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) && !timer) {
+      if ((pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) && !timer && !retryTimer) {
         timer = setTimeoutFn(() => { timer = null; void enqueueFlush(); }, Math.max(0, delayMs));
       }
     },
 
     flush() {
       clearTimer();
+      clearRetryTimer();
       return enqueueFlush();
     },
 
     cancel() {
       clearTimer();
+      clearRetryTimer();
       context = null;
       pendingChunks.clear();
       pendingCues.clear();
@@ -98,11 +104,13 @@ export function createMeetingCheckpointSyncCoordinator({
         if (pending && JSON.stringify(pending) === JSON.stringify(cue)) pendingCues.delete(cue.cueId);
       }
       if (pendingCueCheckpoint && JSON.stringify(pendingCueCheckpoint) === JSON.stringify(payloadCheckpoint)) pendingCueCheckpoint = null;
+      retryTimer = null;
       onStatusChange?.(pendingChunks.size > 0 ? 'ready' : 'synced');
       return true;
     } catch (error) {
       onStatusChange?.('error');
       onError?.(error);
+      if (context && isRetryableCheckpointError(error)) scheduleRetry();
       return false;
     }
   }
@@ -112,6 +120,26 @@ export function createMeetingCheckpointSyncCoordinator({
     clearTimeoutFn(timer);
     timer = null;
   }
+
+  function scheduleRetry() {
+    if (retryTimer || !context) return;
+    retryTimer = setTimeoutFn(() => {
+      retryTimer = null;
+      void enqueueFlush();
+    }, Math.max(0, retryDelayMs));
+  }
+
+  function clearRetryTimer() {
+    if (!retryTimer) return;
+    clearTimeoutFn(retryTimer);
+    retryTimer = null;
+  }
+}
+
+function isRetryableCheckpointError(error) {
+  const status = Number(error?.status);
+  if (status === 404 || status === 409 || status === 413) return false;
+  return !Number.isFinite(status) || status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 export function checkpointChunksForTranscriptItems({ meetingId, segmentId, transcriptItems = [] } = {}) {

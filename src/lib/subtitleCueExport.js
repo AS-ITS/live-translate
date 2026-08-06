@@ -88,10 +88,21 @@ export function wrapSubtitleText(text, languageCode, options = {}) {
   const tokens = tokenizeForWrapping(normalized);
   const lines = [''];
 
-  for (const token of tokens) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
     const current = lines.at(-1);
     const separator = needsWordSeparator(current, token) ? ' ' : '';
     const candidate = `${current}${separator}${token}`;
+    const nextToken = tokens[index + 1];
+    if (current && lines.length < 2 && canKeepWordPairTogether(current, token, nextToken)) {
+      const pair = `${token}${needsWordSeparator(token, nextToken) ? ' ' : ''}${nextToken}`;
+      const pairCandidate = `${current}${separator}${pair}`;
+      if (pair.length <= maxChars && pairCandidate.length > maxChars) {
+        lines.push(pair);
+        index += 1;
+        continue;
+      }
+    }
     if (current && !isPunctuationToken(token) && candidate.length > maxChars && lines.length < 2) {
       lines.push(token);
       continue;
@@ -211,6 +222,15 @@ function needsWordSeparator(current, token) {
 
 function isCjkToken(token) { return CJK_TOKEN.test(token); }
 function isPunctuationToken(token) { return /^[\p{P}\p{S}]+$/u.test(token); }
+function canKeepWordPairTogether(current, token, nextToken) {
+  return Boolean(
+    /[,;:!?，、；：]$/u.test(current)
+      && token
+      && nextToken
+      && WORD_TOKEN.test(token)
+      && WORD_TOKEN.test(nextToken)
+  );
+}
 
 function sameCuePayload(left, right) {
   return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);

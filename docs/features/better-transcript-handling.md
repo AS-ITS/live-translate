@@ -101,20 +101,32 @@ If the SDK event does not expose a reliable partial/final flag:
   text.
 - Commit `currentPartial` to final only when the SDK provides an explicit final
   marker, a reliable segment boundary, or a session-end policy is selected.
-- Do not finalize or split a short transcript merely because it ends with
-  punctuation; punctuation remains part of the current segment until an
-  explicit provider boundary, final marker, or session-end policy.
+- Do not finalize a one-sided or short transcript merely because one provider
+  event ends with punctuation; punctuation remains part of the paired Cue until
+  both source and translation are complete enough to submit.
 - When a live provider sends a shorter suffix of the active cumulative text,
   treat it as a duplicate update for the same segment. After a boundary, the
   same text remains valid as a new utterance.
 - If no final signal exists, keep the display behavior conservative and do not
   fabricate precise final timestamps.
-- After 1200ms without a new transcript event, resolve the active Cue by idle
-  policy: paired source/translation text becomes final; source-only text gets
-  one same-session retranslation attempt and then remains source-only final if
-  that attempt produces no translation; translation-only text is discarded.
+- A provider `isFinal` flag does not finalize a Cue by itself. Adjacent
+  fragments for the same speaker/turn stay in one pending buffer until both
+  sides have a strong sentence ending, a turn/generation boundary has remained
+  idle for the 700ms debounce, or the safe language limit requires a natural
+  split.
+- Chinese Cues use a 12-character minimum when deciding whether to finalize
+  immediately, so short fragments are normally merged with following text;
+  once a paired Cue has been idle for the debounce window, it is finalized even
+  when the utterance is short, preventing a completed utterance from remaining
+  permanently partial.
+- Resolve a paired active Cue by idle policy after the 700ms debounce, using the
+  provider boundary when available and the latest Cue text update when no
+  boundary is provided. Translation-only text is discarded.
 - Idle timers are versioned by Cue id and `updatedTimeMs`, and are cancelled by
   new transcript events, Pause, Stop, reconnect, and Segment rollover.
+- The latest finalized Cue remains revisable for 1500ms. A late source or
+  translation fragment may monotonically merge into that same Cue id, sequence,
+  persistence record, and checkpoint.
 - Adjacent short final bilingual Cues in the same Segment are coalesced when
   the previous Cue has not reached sentence punctuation, the next Cue closes a
   sentence or carries a clause marker, and the combined source and translation

@@ -76,6 +76,13 @@ export function normalizeCueCheckpoint(checkpoint = null) {
       turnComplete: Boolean(checkpoint.pendingBoundary?.turnComplete),
       generationComplete: Boolean(checkpoint.pendingBoundary?.generationComplete)
     },
+    pendingBoundaryAtMs: Number.isFinite(checkpoint.pendingBoundaryAtMs) ? checkpoint.pendingBoundaryAtMs : null,
+    lastFinalizedCueId: typeof checkpoint.lastFinalizedCueId === 'string' ? checkpoint.lastFinalizedCueId : null,
+    lastFinalizedAtMs: Number.isFinite(checkpoint.lastFinalizedAtMs) ? checkpoint.lastFinalizedAtMs : null,
+    lastFinalizedStream: checkpoint.lastFinalizedStream === 'source' || checkpoint.lastFinalizedStream === 'translation'
+      ? checkpoint.lastFinalizedStream
+      : null,
+    lastFinalizedReason: typeof checkpoint.lastFinalizedReason === 'string' ? checkpoint.lastFinalizedReason : null,
     lastCommittedCueSequence: Number.isInteger(checkpoint.lastCommittedCueSequence) ? checkpoint.lastCommittedCueSequence : 0,
     lastCommittedEndTimeMs: Number.isFinite(checkpoint.lastCommittedEndTimeMs) ? checkpoint.lastCommittedEndTimeMs : null
   });

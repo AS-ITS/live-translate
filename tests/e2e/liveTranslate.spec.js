@@ -1416,6 +1416,20 @@ test('adjacent short final Cues render as one natural sentence', async ({ page }
   });
 });
 
+test('unfinished prefix Cue joins the following sentence-ending Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, '現在', 'Now');
+  await emitFinalTranscript(page, '是麥克風測試。', 'is a microphone test.');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '現在是麥克風測試。',
+    translatedText: 'Now is a microphone test.'
+  });
+});
+
 test('replaced pending Cue text remains one partial preview', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();

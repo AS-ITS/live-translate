@@ -8,7 +8,7 @@
   displayed separately from raw and live translation content without blocking
   the Live session.
 
-- 修正即時字幕短片段被拆成多列的問題；同一 Segment 的相鄰短雙語 Cue 會在句末標點或語言字數上限前合併，並改為優先依單字邊界換行。
+- 修正即時字幕前綴短片段被拆成多列的問題；同一 Segment 中尚未完成的 Cue 會回併下一個句末片段，並改為優先依單字邊界換行。
 
 - 即時語音輸入關閉瀏覽器的回音消除、降噪與自動增益，保留較原始的麥克風波形以改善語音辨識忠實度；單聲道、16kHz PCM 傳送流程不變。
 

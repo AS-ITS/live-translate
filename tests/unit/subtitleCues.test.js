@@ -81,6 +81,14 @@ test('does not merge after sentence punctuation or across the language limit', (
   assert.equal(state.finalCues.length, 2);
 
   state = createSubtitleCueState();
+  appendFinalPair('現在', 'Now', 300);
+  appendFinalPair('是麥克風測試。', 'is a microphone test.', 400);
+  assert.equal(state.finalCues.length, 1);
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
+    '現在是麥克風測試。', 'Now is a microphone test.'
+  ]]);
+
+  state = createSubtitleCueState();
   const options = { maxCueChars: 12 };
   appendFinalPair('first,', '第一，', 100, options);
   appendFinalPair('second', '第二', 200, options);

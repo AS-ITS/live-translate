@@ -528,7 +528,7 @@ function isLikelyContinuation(previousCue, nextCue) {
   const nextTexts = [nextCue.sourceText, nextCue.translatedText].map(normalizeText);
   if (previousTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
   if (nextTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
-  return false;
+  return nextTexts.some(endsSentence);
 }
 
 function containsCjk(text) {

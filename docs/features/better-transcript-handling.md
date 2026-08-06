@@ -116,10 +116,11 @@ If the SDK event does not expose a reliable partial/final flag:
 - Idle timers are versioned by Cue id and `updatedTimeMs`, and are cancelled by
   new transcript events, Pause, Stop, reconnect, and Segment rollover.
 - Adjacent short final bilingual Cues in the same Segment are coalesced when
-  neither side has reached sentence punctuation and the combined source and
-  translation remain within their language-specific character limits. Cue
-  identity stays anchored to the first Cue, while its end time extends to the
-  latest merged fragment.
+  the previous Cue has not reached sentence punctuation, the next Cue closes a
+  sentence or carries a clause marker, and the combined source and translation
+  remain within their language-specific character limits. Cue identity stays
+  anchored to the first Cue, while its end time extends to the latest merged
+  fragment.
 - Document the unresolved SDK behavior before enabling export/history features
   that depend on final transcript items.
 

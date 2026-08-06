@@ -1,26 +1,25 @@
 import { isTerminalSessionStatus } from '../lib/sessionRecords.js';
 
-export function createSessionSnapshotSyncService({ sessionRepository, onSessionFinalized } = {}) {
+export function createSessionSnapshotSyncService({ sessionRepository } = {}) {
   assertSessionRepository(sessionRepository);
-  if (onSessionFinalized !== undefined && typeof onSessionFinalized !== 'function') throw new TypeError('onSessionFinalized must be a function.');
 
   return Object.freeze({
     sync(snapshot) {
       const { session, transcriptItems } = validateSnapshot(snapshot);
       const existing = sessionRepository.getSessionRecord(session.id);
-      const sync = (detail) => syncSnapshot(sessionRepository, detail, session, transcriptItems, onSessionFinalized);
+      const sync = (detail) => syncSnapshot(sessionRepository, detail, session, transcriptItems);
 
       return isPromiseLike(existing) ? existing.then(sync) : sync(existing);
     }
   });
 }
 
-function syncSnapshot(repository, existing, session, transcriptItems, onSessionFinalized) {
+function syncSnapshot(repository, existing, session, transcriptItems) {
   if (!existing) {
     const created = repository.createSessionRecord(session);
     return isPromiseLike(created)
-      ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems, onSessionFinalized))
-      : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems, onSessionFinalized);
+      ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems))
+      : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems);
   }
 
   const apply = (detail) => {
@@ -30,13 +29,13 @@ function syncSnapshot(repository, existing, session, transcriptItems, onSessionF
       return mapMaybePromise(previous, () => repository.appendTranscriptItem(session.id, item));
     }, undefined);
 
-    return mapMaybePromise(appendResult, () => applySessionPatch(repository, session, onSessionFinalized));
+    return mapMaybePromise(appendResult, () => applySessionPatch(repository, session));
   };
 
   return isPromiseLike(existing) ? existing.then(apply) : apply(existing);
 }
 
-function applySessionPatch(repository, session, onSessionFinalized) {
+function applySessionPatch(repository, session) {
   const detail = repository.getSessionRecord(session.id);
   return mapMaybePromise(detail, (currentDetail) => {
     const current = currentDetail?.sessionRecord;
@@ -48,9 +47,6 @@ function applySessionPatch(repository, session, onSessionFinalized) {
         endedAt: session.endedAt,
         transcriptSummary: session.transcriptSummary
       });
-      if (onSessionFinalized) {
-        Promise.resolve(finalized).then(() => onSessionFinalized({ sessionId: session.id, meetingId: session.meetingId })).catch(() => {});
-      }
       return finalized;
     }
 

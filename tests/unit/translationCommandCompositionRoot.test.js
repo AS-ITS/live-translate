@@ -284,7 +284,6 @@ test('application dependencies assemble translation command graph with injected 
     'sessionAudioArtifactRepository',
     'sessionReadController',
     'sessionRepository',
-    'sessionSummaryController',
     'translationCommandController',
     'translationHistoryController',
     'translationRepository'

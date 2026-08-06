@@ -41,7 +41,6 @@ import {
   exportCuesToVtt,
   wrapSubtitleText
 } from './lib/subtitleCueExport.js';
-import { buildMeetingSummaryFileName, createMeetingSummaryExport, MEETING_SUMMARY_EXPORT_FORMATS } from './lib/meetingSummaryExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
   applyTranscriptEvent,
@@ -128,8 +127,8 @@ function App() {
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
-  // Legacy transcript state remains in the data flow for persistence, summary,
-  // export, and backward-compatible Session detail fallback. Live rendering is
+  // Legacy transcript state remains in the data flow for persistence, export,
+  // and backward-compatible Session detail fallback. Live rendering is
   // owned by the Cue stream until the later transcript migration removes it.
   const [transcript, setTranscript] = useState(createTranscriptState);
   const [subtitleCueState, setSubtitleCueState] = useState(createSubtitleCueState);
@@ -3757,14 +3756,11 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
 }
 
 function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
-  const sessionReadApiClient = useMemo(() => createSessionReadApiClient(), []);
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
   const [trackedRetranslations, setTrackedRetranslations] = useState([]);
-  const [meetingSummary, setMeetingSummary] = useState(undefined);
-  const [meetingSummaryError, setMeetingSummaryError] = useState('');
   const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
@@ -3773,30 +3769,8 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setSavedExportError('');
     setReadingTab('translationArticle');
     setTrackedRetranslations([]);
-    setMeetingSummary(undefined);
-    setMeetingSummaryError('');
   }, [sessionRecordId]);
 
-  useEffect(() => {
-    if (!sessionRecordId) return undefined;
-
-    let cancelled = false;
-
-    async function loadMeetingSummary() {
-      try {
-        const summary = await sessionReadApiClient.getSessionSummary(sessionRecordId);
-        if (!cancelled) setMeetingSummary(summary);
-      } catch {
-        if (!cancelled) {
-          setMeetingSummary(null);
-          setMeetingSummaryError('會議摘要目前無法載入。');
-        }
-      }
-    }
-
-    void loadMeetingSummary();
-    return () => { cancelled = true; };
-  }, [sessionReadApiClient, sessionRecordId]);
 
   const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
@@ -3958,21 +3932,6 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         translationLabel="下載翻譯語音紀錄"
       />
 
-      <MeetingSummarySection
-        summary={meetingSummary}
-        error={meetingSummaryError}
-        sessionId={sessionRecordId}
-        onRetry={async () => {
-          setMeetingSummaryError('');
-          try {
-            await sessionReadApiClient.retrySessionSummary(sessionRecordId);
-            setMeetingSummary({ status: 'pending' });
-          } catch {
-            setMeetingSummaryError('會議摘要重試失敗，請稍後再試。');
-          }
-        }}
-      />
-
       {historyCues.length > 0 ? (
         <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
           <h4>字幕</h4>
@@ -4033,172 +3992,6 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
       </section>
     </section>
   );
-}
-
-function MeetingSummarySection({ summary, error, sessionId, onRetry }) {
-  if (summary === undefined) {
-    return (
-      <section className="meeting-summary" aria-labelledby="meeting-summary-title" aria-busy="true">
-        <div className="meeting-summary-header">
-          <h4 id="meeting-summary-title">Meeting Summary</h4>
-        </div>
-        <p className="history-empty">正在載入會議摘要…</p>
-      </section>
-    );
-  }
-
-  if (error) {
-    return (
-      <section className="meeting-summary" aria-labelledby="meeting-summary-title" role="alert">
-        <div className="meeting-summary-header">
-          <h4 id="meeting-summary-title">Meeting Summary</h4>
-        </div>
-        <p className="summary-error">{error}</p>
-      </section>
-    );
-  }
-
-  if (!summary) {
-    return (
-      <section className="meeting-summary" aria-labelledby="meeting-summary-title">
-        <div className="meeting-summary-header">
-          <h4 id="meeting-summary-title">Meeting Summary</h4>
-        </div>
-        <p className="history-empty">此工作階段尚無會議摘要。</p>
-      </section>
-    );
-  }
-
-  const status = summary.status;
-  const statusLabel = meetingSummaryStatusLabel(status);
-
-  return (
-    <section className="meeting-summary" aria-labelledby="meeting-summary-title">
-      <div className="meeting-summary-header">
-        <h4 id="meeting-summary-title">Meeting Summary</h4>
-        <span className={`history-status history-status-${status}`}>{statusLabel}</span>
-      </div>
-
-      {status === 'pending' ? <p className="history-empty">會議摘要正在產生中，完成後會顯示內容。</p> : null}
-      {status === 'failed' ? (
-        <>
-          <p className="summary-error">會議摘要產生失敗，暫時沒有可顯示的內容。</p>
-          <button className="button detail-button" type="button" onClick={() => void onRetry?.()}>重試會議摘要</button>
-        </>
-      ) : null}
-      {status === 'completed' ? <CompletedMeetingSummary summary={summary} sessionId={sessionId} onRetry={onRetry} /> : null}
-    </section>
-  );
-}
-
-function CompletedMeetingSummary({ summary, sessionId, onRetry }) {
-  const content = summary.summary || {};
-  const topics = summary.topics?.length > 0 ? summary.topics : content.keyPoints || [];
-  const decisions = summary.decisions?.length > 0 ? summary.decisions : content.decisions || [];
-  const actionItems = summary.actionItems?.length > 0 ? summary.actionItems : content.actionItems || [];
-  const timeline = summary.timeline?.length > 0 ? summary.timeline : content.timeline || [];
-  const keywords = summary.keywords?.length > 0 ? summary.keywords : content.keywords || [];
-  const risks = summary.risks?.length > 0 ? summary.risks : content.risks || [];
-  const openQuestions = summary.openQuestions?.length > 0 ? summary.openQuestions : content.openQuestions || [];
-  const followUpSuggestions = summary.followUpSuggestions?.length > 0 ? summary.followUpSuggestions : content.followUpSuggestions || [];
-  const hasContent = Boolean(
-    content.overview
-      || topics.length > 0
-      || decisions.length > 0
-      || actionItems.length > 0
-      || timeline.length > 0
-      || keywords.length > 0
-      || risks.length > 0
-      || openQuestions.length > 0
-      || followUpSuggestions.length > 0
-  );
-  const [format, setFormat] = useState('pdf');
-  const [exportError, setExportError] = useState('');
-
-  if (!hasContent) {
-    return (
-      <div className="meeting-summary-content">
-        <p className="history-empty">摘要沒有可用內容。</p>
-        <button className="button detail-button" type="button" onClick={() => void onRetry?.()}>
-          重試會議摘要
-        </button>
-      </div>
-    );
-  }
-
-  function downloadSummary() {
-    setExportError('');
-    try {
-      const result = createMeetingSummaryExport(summary, format);
-      const fileName = buildMeetingSummaryFileName(sessionId, { format, timestamp: new Date() });
-      downloadBlob(result.blob, fileName);
-    } catch {
-      setExportError('會議摘要匯出失敗，請稍後再試。');
-    }
-  }
-
-  return (
-    <div className="meeting-summary-content">
-      {content.title ? <h5>{content.title}</h5> : null}
-      {content.overview ? <SummaryContentBlock title="Executive Summary" content={content.overview} /> : null}
-      {topics.length > 0 ? <SummaryListBlock title="Key Topics" items={topics} /> : null}
-      {decisions.length > 0 ? <SummaryListBlock title="Decisions" items={decisions} /> : null}
-      {actionItems.length > 0 ? <SummaryListBlock title="Action Items" items={actionItems} /> : null}
-      {timeline.length > 0 ? <SummaryTimelineBlock items={timeline} /> : null}
-      {keywords.length > 0 ? <SummaryListBlock title="Keywords" items={keywords} /> : null}
-      {risks.length > 0 ? <SummaryListBlock title="Risks" items={risks} /> : null}
-      {openQuestions.length > 0 ? <SummaryListBlock title="Open Questions" items={openQuestions} /> : null}
-      {followUpSuggestions.length > 0 ? <SummaryListBlock title="Follow-up Suggestions" items={followUpSuggestions} /> : null}
-      <div className="meeting-summary-export" aria-label="會議摘要匯出">
-        <label className="field">
-          <span>匯出格式</span>
-          <select aria-label="會議摘要匯出格式" value={format} onChange={(event) => setFormat(event.target.value)}>
-            {MEETING_SUMMARY_EXPORT_FORMATS.map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
-          </select>
-        </label>
-        <button className="button detail-button" type="button" onClick={downloadSummary}>
-          <Download size={16} aria-hidden="true" />
-          下載會議摘要
-        </button>
-        {exportError ? <p className="error-message" role="alert">{exportError}</p> : null}
-      </div>
-    </div>
-  );
-}
-
-function SummaryContentBlock({ title, content }) {
-  return (
-    <div className="meeting-summary-block">
-      <h5>{title}</h5>
-      <p>{content || '尚無內容。'}</p>
-    </div>
-  );
-}
-
-function SummaryListBlock({ title, items }) {
-  return (
-    <div className="meeting-summary-block">
-      <h5>{title}</h5>
-      {items.length > 0 ? <ul>{items.map((item, index) => <li key={`${title}-${index}`}>{item}</li>)}</ul> : <p>尚無內容。</p>}
-    </div>
-  );
-}
-
-function SummaryTimelineBlock({ items }) {
-  const ordered = Array.isArray(items) ? items.filter((item) => item && typeof item === 'object').slice().sort((left, right) => timelineTime(left) - timelineTime(right)) : [];
-  return (
-    <div className="meeting-summary-block">
-      <h5>Timeline</h5>
-      {ordered.length > 0 ? <ol>{ordered.map((item, index) => <li key={`timeline-${index}`}><strong>{timelineTimeLabel(item)}</strong>{item.title ? ` ${item.title}` : ''}{item.description ? ` — ${item.description}` : item.text ? ` — ${item.text}` : ''}</li>)}</ol> : <p>尚無內容。</p>}
-    </div>
-  );
-}
-
-function timelineTime(item) { return Number.isFinite(item?.startTimeMs) ? item.startTimeMs : Number.isFinite(item?.timestampMs) ? item.timestampMs : Number.POSITIVE_INFINITY; }
-function timelineTimeLabel(item) { return item?.time || item?.startTimeMs != null ? String(item.time ?? item.startTimeMs) : ''; }
-
-function meetingSummaryStatusLabel(status) {
-  return { pending: '產生中', completed: '已完成', failed: '失敗' }[status] || '未知狀態';
 }
 
 function AudioArtifactDownloads({

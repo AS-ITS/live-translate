@@ -124,7 +124,38 @@ test('replaces cumulative updates instead of appending them', () => {
   assert.equal(state.currentCue.translatedText, '你好世界');
 });
 
-test('idle source-only Cue requests one retranslation, then preserves source-only final on retry timeout', () => {
+test('unrelated source events start a new Cue after a paired Cue without turnIndex', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'first source', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'first translation', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'second source', sessionTimeMs: 300 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'second translation', sessionTimeMs: 320 }));
+
+  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
+    ['first source', 'first translation']
+  ]);
+  assert.deepEqual([state.currentCue.sourceText, state.currentCue.translatedText], [
+    'second source', 'second translation'
+  ]);
+});
+
+test('formal source after an interim paired Cue stays in a new partial Cue', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', eventType: 'input-interim', text: 'interim source', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'translation', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    stream: 'source', eventType: 'input', text: 'formal source', sessionTimeMs: 200, isFinal: true
+  }));
+
+  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
+    ['interim source', 'translation']
+  ]);
+  assert.equal(state.currentCue.sourceText, 'formal source');
+  assert.equal(state.currentCue.translatedText, '');
+  assert.equal(state.currentCue.status, 'partial');
+});
+
+test('idle source-only Cue requests one retranslation, then remains partial on retry timeout', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'source text', sessionTimeMs: 100 }));
   let result = resolveIdleSubtitleCue(state, { cueId: state.currentCue.cueId, updatedTimeMs: 100, sessionTimeMs: 1300 });
@@ -136,13 +167,13 @@ test('idle source-only Cue requests one retranslation, then preserves source-onl
     updatedTimeMs: result.state.currentCue.updatedTimeMs,
     sessionTimeMs: 2500
   });
-  assert.equal(result.action, 'finalized-source-only');
-  assert.equal(result.state.currentCue, null);
-  assert.equal(result.state.finalCues[0].sourceText, 'source text');
-  assert.equal(result.state.finalCues[0].translatedText, '');
+  assert.equal(result.action, 'waiting-for-translation');
+  assert.equal(result.state.currentCue.sourceText, 'source text');
+  assert.equal(result.state.currentCue.status, 'partial');
+  assert.equal(result.state.finalCues.length, 0);
 });
 
-test('late translation fills the most recent source-only final Cue', () => {
+test('late translation fills the most recent source-only Cue and finalizes it', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source', text: 'source text', sessionTimeMs: 100
@@ -168,7 +199,7 @@ test('late translation fills the most recent source-only final Cue', () => {
   ]);
 });
 
-test('late translation does not create a translation-only Cue when source-only final exists', () => {
+test('late translation does not create a translation-only Cue when source-only Cue exists', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source', text: 'first source', sessionTimeMs: 100

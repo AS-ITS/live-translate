@@ -63,7 +63,7 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
     if (split) return split;
   }
   const shouldFinalize = complete && (
-    event.isFinal || cue.turnCompleteSeen || cue.generationCompleteSeen
+    event.isFinal || cue.turnCompleteSeen || cue.generationCompleteSeen || cue.retranslationRequested
   );
   if (shouldFinalize) return finalizeCue(next, cue, {
     nowMs: event.sessionTimeMs,
@@ -128,15 +128,7 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
 
   if (cue.sourceText && !cue.translatedText) {
     if (cue.retranslationRequested || options.retry) {
-      return {
-        state: finalizeSourceOnlyCue(state, cue, {
-          nowMs: options.sessionTimeMs,
-          reason: 'idle-source-only',
-          minimumGapMs: options.minimumGapMs,
-          minimumCueDurationMs: options.minimumCueDurationMs
-        }),
-        action: 'finalized-source-only'
-      };
+      return { state: stateInput, action: 'waiting-for-translation' };
     }
     const requested = updateCandidate(state, candidate, {
       retranslationRequested: true,
@@ -231,10 +223,27 @@ function moveClosedCurrentCue(state, event) {
   const current = state.currentCue;
   if (!current) return state;
   const sameSegment = !event.segmentId || !current.segmentId || event.segmentId === current.segmentId;
-  const sameTurn = event.turnIndex === null || current.turnIndex === null || current.turnIndex === event.turnIndex;
-  if (sameSegment && sameTurn) return state;
+  const sameTurn = event.turnIndex !== null && current.turnIndex !== null && current.turnIndex === event.turnIndex;
+  if (!sameSegment || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
+    return moveCueToNextState(state, current, event);
+  }
+
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  if (!isCueSubmittable(current) && !current[field]) return state;
+  const currentText = normalizeText(current[field]);
+  if (!currentText || canContinueText(currentText, event.text)) return state;
+
+  // An incomplete same-stream transcript can still be a non-cumulative
+  // fragment of the current turn. Once that stream is already paired, or the
+  // provider marks the incoming text final, an unrelated value starts a new
+  // Cue instead of being appended to the previous one.
+  if (!event.isFinal && (
+    !isCueSubmittable(current) ||
+    looksLikeContinuationFragment(event.text)
+  )) return state;
+  return moveCueToNextState(state, current, event);
+}
+
+function moveCueToNextState(state, current, event) {
   if (!isCueSubmittable(current)) {
     return { ...state, currentCue: null, pendingCues: [...state.pendingCues, current] };
   }
@@ -247,16 +256,35 @@ function moveClosedCurrentCue(state, event) {
 }
 
 function findPairingCue(state, event) {
-  if (state.currentCue && cueBelongsToCurrentTurn(state.currentCue, event)) {
+  if (state.currentCue && cueCanAcceptCurrentCue(state.currentCue, event)) {
     return { key: 'current', cue: state.currentCue };
   }
   const index = state.pendingCues.findIndex((cue) => cueCanAccept(cue, event));
   return index >= 0 ? { key: `pending:${index}`, cue: state.pendingCues[index] } : null;
 }
 
-function cueBelongsToCurrentTurn(cue, event) {
+function cueCanAcceptCurrentCue(cue, event) {
   if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
-  return event.turnIndex === null || cue.turnIndex === null || event.turnIndex === cue.turnIndex;
+  if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  if (!cue[field]) return true;
+  if (!event.isFinal && looksLikeContinuationFragment(event.text)) return true;
+  if (!isCueSubmittable(cue) && !event.isFinal) return true;
+  return canContinueText(cue[field], event.text);
+}
+
+function canContinueText(currentText, incomingText) {
+  const current = normalizeText(currentText);
+  const incoming = normalizeText(incomingText);
+  return Boolean(current && incoming) && (
+    incoming.startsWith(current) ||
+    current.startsWith(incoming) ||
+    isRedundantTextUpdate(current, incoming)
+  );
+}
+
+function looksLikeContinuationFragment(text) {
+  return /[.!?。！？]$/u.test(normalizeText(text));
 }
 
 function findCumulativeFinalCue(state, event) {
@@ -444,37 +472,6 @@ function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurati
   next = { ...next, nextSequence: Math.max(next.nextSequence, cue.sequence + 1) };
   if (next.currentCue?.cueId === cue.cueId) return { ...next, currentCue: null };
   return { ...next, pendingCues: next.pendingCues.filter((item) => item.cueId !== cue.cueId) };
-}
-
-function finalizeSourceOnlyCue(state, cue, options) {
-  const previousEnd = state.finalCues.at(-1)?.endTimeMs;
-  const gapMs = Number.isFinite(options.minimumGapMs) ? Math.max(0, options.minimumGapMs) : DEFAULT_MINIMUM_GAP_MS;
-  const minimumDurationMs = Number.isFinite(options.minimumCueDurationMs)
-    ? Math.max(0, options.minimumCueDurationMs) : DEFAULT_MINIMUM_CUE_DURATION_MS;
-  const startTimeMs = Math.max(cue.startTimeMs, Number.isFinite(previousEnd) ? previousEnd + gapMs : cue.startTimeMs);
-  const endTimeMs = Math.max(cue.endTimeMs, Number.isFinite(options.nowMs) ? options.nowMs : cue.endTimeMs, startTimeMs + minimumDurationMs);
-  const finalCue = {
-    ...cue,
-    sourceText: normalizeText(cue.sourceText),
-    translatedText: '',
-    status: 'final',
-    startTimeMs,
-    endTimeMs,
-    finalizedReason: options.reason || 'idle-source-only'
-  };
-  const cueKey = stableCueKey(finalCue);
-  let next = state;
-  if (!state.finalizedCueKeys.includes(cueKey)) {
-    next = {
-      ...next,
-      finalCues: [...next.finalCues, finalCue],
-      finalizedCueKeys: [...next.finalizedCueKeys, cueKey]
-    };
-  }
-  next = { ...next, nextSequence: Math.max(next.nextSequence, cue.sequence + 1) };
-  return next.currentCue?.cueId === cue.cueId
-    ? { ...next, currentCue: null }
-    : { ...next, pendingCues: next.pendingCues.filter((item) => item.cueId !== cue.cueId) };
 }
 
 function resolveSessionTimeMs(input = {}) {

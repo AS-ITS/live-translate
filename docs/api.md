@@ -497,6 +497,11 @@ and exposes the formal output `version`. Legacy sessions without a formal
 output still fall back to server-side projection from persisted final transcript
 items so older history remains readable:
 
+The same Session detail also includes `cues`, containing only final subtitle
+Cues merged from all persisted Segments and sorted by `sequence`. Partial Cue
+checkpoint state is never exposed through this read model; legacy transcript
+fields remain available for backward compatibility.
+
 ```js
 {
   readingContent: {
@@ -811,8 +816,12 @@ Expected app-level payload:
 
 Handling requirements:
 
-- Append or replace partial source transcript text according to SDK payload
-  semantics.
+- Replace cumulative partial updates and append non-cumulative fragments to the
+  open provider Turn, rather than treating each fragment as a new subtitle.
+- Keep one pending bilingual Cue for the Turn until `turnComplete`,
+  `generationComplete`, or the transcript-idle fallback finalizes it.
+- If a transcript arrives after the boundary, preserve the boundary's final
+  status and finalize the Cue once its source/translation counterpart arrives.
 - Preserve final transcript text after the event is marked final.
 - Ignore empty transcript updates.
 
@@ -834,8 +843,12 @@ Expected app-level payload:
 
 Handling requirements:
 
-- Append or replace partial translated transcript text according to SDK payload
-  semantics.
+- Replace cumulative partial updates and append non-cumulative fragments to the
+  open provider Turn, rather than treating each fragment as a new subtitle.
+- Keep one pending bilingual Cue for the Turn until `turnComplete`,
+  `generationComplete`, or the transcript-idle fallback finalizes it.
+- If a transcript arrives after the boundary, preserve the boundary's final
+  status and finalize the Cue once its source/translation counterpart arrives.
 - Preserve final translated transcript text after the event is marked final.
 - Keep source and translated transcript displays independently updateable.
 

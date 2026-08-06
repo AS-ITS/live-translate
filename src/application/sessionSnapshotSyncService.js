@@ -40,13 +40,14 @@ function applySessionPatch(repository, session) {
   return mapMaybePromise(detail, (currentDetail) => {
     const current = currentDetail?.sessionRecord;
     if (isTerminalSessionStatus(session.status) && current?.status === 'active') {
-      return repository.finalizeSessionRecord(session.id, {
+      const finalized = repository.finalizeSessionRecord(session.id, {
         status: session.status,
         failureReason: session.failureReason ?? null,
         failureCategory: session.failureCategory ?? null,
         endedAt: session.endedAt,
         transcriptSummary: session.transcriptSummary
       });
+      return finalized;
     }
 
     if (current?.status === 'active') {

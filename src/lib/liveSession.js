@@ -8,6 +8,7 @@ import {
 } from './audio.js';
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
+import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -31,7 +32,12 @@ export class LiveTranslateSession {
     onError,
     onClose,
     onConnectionFailure,
-    liveGlossaryEntries = []
+    liveGlossaryEntries = [],
+    liveSessionId = null,
+    sessionId = null,
+    segmentId = null,
+    sessionClock = createDefaultSessionClock(),
+    onCueEvent
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
@@ -48,6 +54,12 @@ export class LiveTranslateSession {
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
+    this.liveSessionId = liveSessionId;
+    this.sessionId = sessionId;
+    this.segmentId = segmentId;
+    this.sessionClock = sessionClock;
+    this.onCueEvent = onCueEvent;
+    this.eventSequence = 0;
     this.audioContext = null;
     this.mediaStream = null;
     this.source = null;
@@ -64,6 +76,7 @@ export class LiveTranslateSession {
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
+    this.retranslationCueIds = new Set();
   }
 
   async start() {
@@ -169,41 +182,83 @@ export class LiveTranslateSession {
     }
   }
 
+  retranslateSourceText(sourceText, cueId = '') {
+    const text = String(sourceText || '').trim();
+    const key = String(cueId || text);
+    if (!text || this.closed || !this.session || this.retranslationCueIds.has(key)) return false;
+
+    this.retranslationCueIds.add(key);
+    try {
+      this.session.sendClientContent({
+        turns: [{
+          role: 'user',
+          parts: [{
+            text: `Translate the following source text into ${this.targetLanguageCode}. Return only the translation, without explanation:\n${text}`
+          }]
+        }],
+        turnComplete: true
+      });
+      return true;
+    } catch (error) {
+      this.retranslationCueIds.delete(key);
+      this.logLiveEvent('retranslation.failed', { message: error?.message || 'sendClientContent failed' });
+      return false;
+    }
+  }
+
   handleMessage(message) {
     const content = message.serverContent;
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
+    const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
+    const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
+    this.eventSequence += 1;
+    const transcriptEventId = message?.eventId || message?.event_id || message?.id
+      || `${this.liveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
+    for (const event of normalizeGeminiLiveCueEvents(message, {
+      liveSessionId: this.liveSessionId,
+      sessionId: this.sessionId,
+      segmentId: this.segmentId,
+      sourceLanguageCode: this.sourceLanguageCode,
+      targetLanguageCode: this.targetLanguageCode,
+      eventSequence: this.eventSequence,
+      sessionClock: this.sessionClock,
+      inputTranscriptIsFinal,
+      outputTranscriptIsFinal
+    })) {
+      this.onCueEvent?.(event);
+    }
     this.logLiveEvent('message.received', {
       event: summarizeLiveEvent(message),
       stateBefore: this.transcriptBoundaryState()
     });
 
     if (content?.inputTranscription?.text) {
-      const transcript = {
+      const transcript = withTranscriptEventId({
         text: content.inputTranscription.text,
         isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
-      };
+      }, transcriptEventId);
       this.logLiveEvent('inputTranscription.callback', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
       this.awaitingInputTranscriptAfterTurnComplete = false;
     } else if (content?.interimInputTranscription?.text) {
-      const transcript = {
+      const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
         isFinal: false,
         ...(content.interimInputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
-      };
+      }, transcriptEventId);
       this.logLiveEvent('interimInputTranscription.callback', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
     } else if (isFinal && this.pendingInputTranscript && this.pendingInputTranscriptFinalizableOnTurnComplete) {
-      const transcript = { ...this.pendingInputTranscript, isFinal: true };
+      const transcript = withTranscriptEventId({ ...this.pendingInputTranscript, isFinal: true }, this.pendingInputTranscript.eventId);
       this.logLiveEvent('inputTranscription.flushOnTurnComplete', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = null;
@@ -214,16 +269,16 @@ export class LiveTranslateSession {
     }
 
     if (content?.outputTranscription?.text) {
-      const transcript = {
+      const transcript = withTranscriptEventId({
         text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete
-      };
+      }, transcriptEventId);
       this.logLiveEvent('outputTranscription.callback', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
     } else if (isFinal && this.pendingOutputTranscript) {
-      const transcript = { ...this.pendingOutputTranscript, isFinal: true };
+      const transcript = withTranscriptEventId({ ...this.pendingOutputTranscript, isFinal: true }, this.pendingOutputTranscript.eventId);
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = null;
@@ -330,7 +385,7 @@ export class LiveTranslateSession {
     const pending = this[pendingKey];
 
     if (pending) {
-      const transcript = { ...pending, isFinal: true };
+      const transcript = withTranscriptEventId({ ...pending, isFinal: true }, pending.eventId);
       this.logLiveEvent(`${kind}Transcription.flushPending`, { transcript });
       callback?.(transcript);
       this[pendingKey] = null;
@@ -484,6 +539,16 @@ function withTimeout(promise, timeoutMs, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
+function withTranscriptEventId(transcript, eventId) {
+  if (!eventId) return transcript;
+  Object.defineProperty(transcript, 'eventId', {
+    value: eventId,
+    enumerable: false,
+    configurable: true
+  });
+  return transcript;
+}
+
 function summarizeLiveEvent(message) {
   const content = message?.serverContent;
   const parts = content?.modelTurn?.parts || [];
@@ -507,6 +572,14 @@ function summarizeLiveEvent(message) {
 
 function objectKeys(value) {
   return value && typeof value === 'object' ? Object.keys(value) : [];
+}
+
+function createDefaultSessionClock() {
+  const startedAt = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
+  return () => {
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
+    return Math.max(0, now - startedAt);
+  };
 }
 
 function userMessageForErrorCode(code) {

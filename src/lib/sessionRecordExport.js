@@ -1,4 +1,5 @@
 import { canExportTranscript, formatTranscriptExport } from './transcriptExport.js';
+import { canExportCues, exportCuesToSrt, exportCuesToTxt, exportCuesToVtt } from './subtitleCueExport.js';
 
 const FORMATS = new Set(['txt', 'srt', 'vtt']);
 const STREAMS = new Set(['source', 'translation', 'both']);
@@ -11,6 +12,10 @@ export function canExportSavedSession(sessionDetail, options = {}) {
 
     if ((format === 'srt' || format === 'vtt') && stream === 'both') {
       return false;
+    }
+
+    if (hasPersistedCues(sessionDetail)) {
+      return canExportCues(sessionDetail.cues, { ...options, format, stream });
     }
 
     return canExportTranscript(sessionDetail?.transcriptItems, {
@@ -27,12 +32,23 @@ export function canExportSavedSession(sessionDetail, options = {}) {
 export function formatSavedSessionExport(sessionDetail, options = {}) {
   const { format, stream, timeOrigin } = buildExportOptions(sessionDetail, options);
 
+  if (hasPersistedCues(sessionDetail)) {
+    const cueOptions = { ...options, format, stream };
+    if (format === 'txt') return exportCuesToTxt(sessionDetail.cues, cueOptions);
+    if (format === 'srt') return exportCuesToSrt(sessionDetail.cues, cueOptions);
+    return exportCuesToVtt(sessionDetail.cues, cueOptions);
+  }
+
   return formatTranscriptExport(sessionDetail.transcriptItems, {
     ...options,
     format,
     stream,
     timeOrigin
   });
+}
+
+function hasPersistedCues(sessionDetail) {
+  return Array.isArray(sessionDetail?.cues) && sessionDetail.cues.length > 0;
 }
 
 export function buildSavedSessionFileName(sessionRecord, options = {}) {
@@ -52,7 +68,7 @@ export function buildSavedSessionFileName(sessionRecord, options = {}) {
 }
 
 function buildExportOptions(sessionDetail, options) {
-  if (!sessionDetail?.sessionRecord || !Array.isArray(sessionDetail.transcriptItems)) {
+  if (!sessionDetail?.sessionRecord || (!Array.isArray(sessionDetail.transcriptItems) && !Array.isArray(sessionDetail.cues))) {
     throw new Error('Saved session export requires session detail.');
   }
 
@@ -60,7 +76,7 @@ function buildExportOptions(sessionDetail, options) {
   const stream = normalizeStream(options.stream || DEFAULT_STREAM);
   const timeOrigin = sessionDetail.sessionRecord.startedAt;
 
-  if ((format === 'srt' || format === 'vtt') && !Number.isFinite(timeOrigin)) {
+  if ((format === 'srt' || format === 'vtt') && !hasPersistedCues(sessionDetail) && !Number.isFinite(timeOrigin)) {
     throw new Error('Saved subtitle export requires numeric session startedAt.');
   }
 

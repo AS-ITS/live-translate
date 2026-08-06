@@ -116,6 +116,35 @@ test('partial items are excluded', () => {
   assert.equal(output, 'final\n');
 });
 
+test('persisted final Cues take precedence over legacy transcript items', () => {
+  const sessionDetail = detail({
+    cues: [savedCue({ sequence: 2, translatedText: 'cue two' }), savedCue({ cueId: 'cue-1', sequence: 1, startTimeMs: 1200, endTimeMs: 2000, translatedText: 'cue one' })],
+    transcriptItems: [{ ...translationFinal, text: 'legacy text' }]
+  });
+
+  assert.equal(formatSavedSessionExport(sessionDetail, { format: 'txt', stream: 'translation' }), 'cue one\ncue two\n');
+  assert.equal(formatSavedSessionExport(sessionDetail, { format: 'srt', stream: 'translation' }), [
+    '1',
+    '00:00:01,200 --> 00:00:02,000',
+    'cue one',
+    '',
+    '2',
+    '00:00:02,200 --> 00:00:03,000',
+    'cue two',
+    ''
+  ].join('\n'));
+});
+
+test('Cue export errors do not silently fall back to legacy transcript', () => {
+  const sessionDetail = detail({
+    cues: [savedCue({ startTimeMs: Number.NaN })],
+    transcriptItems: [{ ...translationFinal, text: 'legacy text' }]
+  });
+
+  assert.equal(canExportSavedSession(sessionDetail, { format: 'srt', stream: 'translation' }), false);
+  assert.throws(() => formatSavedSessionExport(sessionDetail, { format: 'srt', stream: 'translation' }), /invalid timeline/);
+});
+
 test('filename includes date, language, stream, and extension', () => {
   assert.equal(
     buildSavedSessionFileName(baseSessionRecord, { format: 'vtt', stream: 'translation' }),
@@ -150,6 +179,25 @@ test('input is not mutated', () => {
 function detail(overrides = {}) {
   return {
     sessionRecord: overrides.sessionRecord || { ...baseSessionRecord },
+    cues: overrides.cues || [],
     transcriptItems: overrides.transcriptItems || [{ ...sourceFinal }, { ...translationFinal }]
+  };
+}
+
+function savedCue(overrides = {}) {
+  return {
+    cueId: 'cue-2',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sequence: 2,
+    startTimeMs: 2200,
+    endTimeMs: 3000,
+    sourceLanguageCode: 'en',
+    targetLanguageCode: 'fr',
+    sourceText: 'cue source',
+    translatedText: 'cue translation',
+    status: 'final',
+    finalizedReason: 'final',
+    ...overrides
   };
 }

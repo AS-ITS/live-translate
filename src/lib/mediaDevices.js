@@ -1,7 +1,7 @@
 const DEFAULT_AUDIO_INPUT_CONSTRAINTS = {
-  echoCancellation: true,
-  noiseSuppression: true,
-  autoGainControl: true,
+  echoCancellation: false,
+  noiseSuppression: false,
+  autoGainControl: false,
   channelCount: 1
 };
 

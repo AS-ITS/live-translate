@@ -36,12 +36,16 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseCheckpointResponse(response);
     },
 
-    async updateCheckpoint({ meetingId, segmentId, idempotencyKey, durableChunks } = {}) {
+    async updateCheckpoint(input = {}) {
+      const { meetingId, segmentId, idempotencyKey, durableChunks } = input;
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
       assertNonEmptyString(idempotencyKey, 'idempotencyKey');
       if (!Array.isArray(durableChunks)) throw new TypeError('durableChunks must be an array.');
 
+      const body = { idempotencyKey, durableChunks, pendingPartial: null };
+      if (Object.hasOwn(input, 'finalCues')) body.finalCues = input.finalCues;
+      if (Object.hasOwn(input, 'cueCheckpoint')) body.cueCheckpoint = input.cueCheckpoint;
       const response = await fetchImpl(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
@@ -49,9 +53,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          idempotencyKey,
-          durableChunks,
-          pendingPartial: null
+          ...body
         })
       });
       await assertOkResponse(response);
@@ -128,7 +130,20 @@ function buildUrl(baseUrl, path) {
 
 async function assertOkResponse(response) {
   if (!response || typeof response !== 'object') throw new Error('Meeting checkpoint API request did not return a response.');
-  if (!response.ok) throw new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  if (response.ok) return;
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    // Keep the HTTP status when the server response is not JSON.
+  }
+
+  const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  error.status = response.status;
+  error.code = body?.error?.code || body?.code;
+  error.requestId = response.headers?.get?.('x-request-id') || body?.requestId || body?.error?.requestId;
+  throw error;
 }
 
 async function parseCreateMeetingResponse(response) {

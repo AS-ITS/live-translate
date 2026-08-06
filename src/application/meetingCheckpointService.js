@@ -1,11 +1,14 @@
 import { isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
+import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
 
 export function createMeetingCheckpointService({
   meetingRepository,
+  sessionRepository,
   idGenerator = defaultIdGenerator,
-  clock = () => Date.now()
+  clock = () => Date.now(),
+  onSegmentFinalized
 } = {}) {
   assertMeetingRepository(meetingRepository);
   if (typeof idGenerator !== 'function') throw new TypeError('idGenerator is required.');
@@ -51,11 +54,14 @@ export function createMeetingCheckpointService({
       }
 
       const now = clock();
+      const incoming = validateCheckpointInput(checkpoint, segment.meetingId, segment.id);
+      await validateCueIntegrity(incoming.finalCues, meetingRepository, sessionRepository, segment.meetingId);
       const nextCheckpoint = mergeCheckpoint({
         existing: segment.checkpoint,
-        incoming: validateCheckpointInput(checkpoint, segment.meetingId, segment.id),
+        incoming,
         meetingId: segment.meetingId,
         segmentId: segment.id,
+        sessionRepository,
         updatedAt: now
       });
       const updated = await meetingRepository.updateMeetingSegment(segment.withCheckpoint(nextCheckpoint, now));
@@ -90,11 +96,14 @@ export function createMeetingCheckpointService({
       }
 
       const now = clock();
+      const incoming = validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id);
+      await validateCueIntegrity(incoming.finalCues, meetingRepository, sessionRepository, currentSegment.meetingId);
       const nextCheckpoint = mergeCheckpoint({
         existing: currentSegment.checkpoint,
-        incoming: validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id),
+        incoming,
         meetingId: currentSegment.meetingId,
         segmentId: currentSegment.id,
+        sessionRepository,
         updatedAt: now
       });
       const rolloverCheckpoint = { ...nextCheckpoint, idempotencyKey: input.idempotencyKey, updatedAt: now };
@@ -110,6 +119,7 @@ export function createMeetingCheckpointService({
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+      await notifySegmentFinalized(onSegmentFinalized, completedSegment);
 
       return { completedSegment, segment: activeNextSegment };
     },
@@ -155,11 +165,14 @@ export function createMeetingCheckpointService({
       }
 
       const now = clock();
+      const incoming = validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id);
+      await validateCueIntegrity(incoming.finalCues, meetingRepository, sessionRepository, currentSegment.meetingId);
       const nextCheckpoint = mergeCheckpoint({
         existing: currentSegment.checkpoint,
-        incoming: validateCheckpointInput(input.checkpoint, currentSegment.meetingId, currentSegment.id),
+        incoming,
         meetingId: currentSegment.meetingId,
         segmentId: currentSegment.id,
+        sessionRepository,
         updatedAt: now
       });
       const recoveryCheckpoint = { ...nextCheckpoint, idempotencyKey: input.idempotencyKey, updatedAt: now };
@@ -170,6 +183,7 @@ export function createMeetingCheckpointService({
           checkpoint: recoveryCheckpoint,
           errorInfo
         }));
+        await notifySegmentFinalized(onSegmentFinalized, failedSegment);
         return { failedSegment };
       }
 
@@ -186,10 +200,17 @@ export function createMeetingCheckpointService({
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
+      await notifySegmentFinalized(onSegmentFinalized, interruptedSegment);
 
       return { interruptedSegment, segment: activeNextSegment };
     }
   });
+}
+
+async function notifySegmentFinalized(callback, segment) {
+  if (typeof callback !== 'function') return;
+  const sessionId = segment?.checkpoint?.finalCues?.find((cue) => cue.sessionId)?.sessionId;
+  if (sessionId) await callback({ sessionId, meetingId: segment.meetingId, segmentId: segment.id, segmentSequence: segment.sequence });
 }
 
 export function validateCheckpointInput(input, meetingId, segmentId) {
@@ -199,14 +220,19 @@ export function validateCheckpointInput(input, meetingId, segmentId) {
   if (!Array.isArray(input.durableChunks)) invalid();
 
   const durableChunks = input.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId));
+  const finalCues = Array.isArray(input.finalCues)
+    ? input.finalCues.map((cue) => validateFinalCue(cue))
+    : [];
   return {
     idempotencyKey,
     durableChunks: sortChunks(durableChunks),
+    finalCues,
+    cueCheckpoint: normalizeCueCheckpoint(input.cueCheckpoint),
     pendingPartial: null
   };
 }
 
-export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, updatedAt } = {}) {
+export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sessionRepository, updatedAt } = {}) {
   const normalizedExisting = normalizeStoredCheckpoint(existing, meetingId, segmentId);
   const chunksByKey = new Map();
   const chunksBySequence = new Map();
@@ -234,9 +260,21 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, upda
     chunksBySequence.set(sequenceKey(chunk), chunk);
   }
 
+  const existingCues = normalizedExisting.finalCues;
+  const mergedCues = [...existingCues];
+  for (const cue of incoming.finalCues) {
+    const result = mergeFinalCue(mergedCues, cue);
+    if (result.appended) mergedCues.push(result.cue);
+  }
+  for (const cue of mergedCues) {
+    if (cue.segmentId !== segmentId) invalid();
+  }
+
   return {
     idempotencyKey: incoming.idempotencyKey,
     durableChunks: sortChunks(Array.from(chunksByKey.values())),
+    finalCues: mergedCues.sort((left, right) => left.sequence - right.sequence),
+    cueCheckpoint: incoming.cueCheckpoint ?? normalizedExisting.cueCheckpoint,
     pendingPartial: null,
     updatedAt
   };
@@ -247,6 +285,8 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
     return {
       idempotencyKey: null,
       durableChunks: [],
+      finalCues: [],
+      cueCheckpoint: null,
       pendingPartial: null,
       updatedAt: null
     };
@@ -259,6 +299,8 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
   return {
     idempotencyKey: checkpoint.idempotencyKey ?? null,
     durableChunks: sortChunks(checkpoint.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId))),
+    finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues.map((cue) => validateFinalCue(cue)) : [],
+    cueCheckpoint: normalizeCueCheckpoint(checkpoint.cueCheckpoint),
     pendingPartial: null,
     updatedAt: checkpoint.updatedAt ?? null
   };
@@ -300,6 +342,20 @@ async function requireSegment({ meetingRepository, meetingId, segmentId }) {
   }
 
   return segment;
+}
+
+async function validateCueIntegrity(cues, meetingRepository, sessionRepository, meetingId) {
+  if (!Array.isArray(cues) || cues.length === 0 || !sessionRepository) return;
+  const segments = await meetingRepository.listMeetingSegments(meetingId);
+  const persisted = segments.flatMap((segment) => segment.checkpoint?.finalCues || []);
+  for (const cue of cues) {
+    const session = await sessionRepository.getSessionRecord(cue.sessionId);
+    if (!session) throw codedError('subtitle_cue_session_not_found', `Session not found: ${cue.sessionId}`);
+    if (session.sessionRecord?.meetingId !== meetingId) {
+      throw codedError('subtitle_cue_segment_session_mismatch', `Cue segment does not belong to session: ${cue.cueId}`);
+    }
+    mergeFinalCue(persisted, cue);
+  }
 }
 
 function validateDurableChunk(chunk, meetingId, segmentId) {

@@ -93,6 +93,9 @@ node --test tests/unit/segmentSwitchOrchestrator.test.js
 
 Current unit coverage:
 
+- Cue UI timecode formatting, sequence sorting, cueId upsert, single partial
+  preview rendering, history final-only filtering, and follow-latest threshold
+
 - PCM16 audio conversion and base64 byte conversion
 - Linear resampling and PCM chunking
 - Transcript update behavior
@@ -135,7 +138,27 @@ node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integratio
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
+Run the Gemini Live normalized Cue flow integration test:
+
+```bash
+node --test tests/integration/liveSubtitleCue.integration.test.js
+```
+
+Run Cue persistence and checkpoint identity tests:
+
+```bash
+node --test tests/unit/subtitleCuePersistence.test.js
+```
+
+This test uses `LiveTranslateSession` with deterministic clock and provider
+message mocks to cover partial pairing, boundary events, Stop flush, segment
+sequence continuity, and replay de-duplication. Cue persistence uses the
+existing Segment checkpoint file and is covered by the Cue persistence tests.
+
 Current integration coverage:
+
+- The live Cue integration path continues to validate normalized partial/final
+  Cue state; UI-level Cue rendering uses deterministic test-mode events.
 
 - Successful `POST /api/live-token`
 - Invalid language
@@ -175,6 +198,18 @@ npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTransl
 ```
 
 The Playwright flow:
+
+- Live Cue rows keep source and translation paired, show session-relative
+  timecodes, keep one partial row at the list tail, protect manual scroll
+  position, and restore persisted final Cues on session detail reload.
+- Stable Cue UI contract selectors include `live-cue-panel`, `cue-list`,
+  `cue-final-row`, `cue-partial-row`, `cue-source-text`,
+  `cue-translated-text`, `cue-timecode`, and `follow-latest-button`.
+- Legacy transcript assertions are retained only for the no-Cue fallback
+  fixture; Sessions with Cues are verified through the final Cue list and do
+  not require the removed article tabs.
+- The complete Playwright suite currently passes 52/52 tests, including the
+  manual-scroll follow-latest regression case.
 
 - Opens the home page
 - Selects a target language
@@ -234,3 +269,12 @@ Optional environment variables:
 
 CI must not set `ENABLE_REAL_GEMINI_TEST=true` unless the job is explicitly
 intended to spend real Gemini API quota.
+
+### Subtitle Cue export (WP5A)
+
+Session detail export tests should use persisted final Cues as the primary
+fixture. Verify TXT, SRT, and VTT content from the same sequence-sorted Cue
+list, including session-relative timestamps, partial filtering, duplicate and
+timeline validation, and export-time wrapping. A Session with no Cues keeps
+the legacy transcript export fallback. Do not use DOM layout or Cue UI line
+wrapping as export input.

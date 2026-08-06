@@ -499,6 +499,28 @@ test('cleanup releases audio resources and handlers idempotently', async () => {
   assert.equal(session.cleaningUp, false);
 });
 
+test('retranslateSourceText sends one client-content turn and respects closed guard', () => {
+  const calls = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en', echoTargetLanguage: true });
+  session.session = {
+    sendClientContent(payload) { calls.push(payload); },
+    close() {}
+  };
+
+  assert.equal(session.retranslateSourceText('你好', 'cue-1'), true);
+  assert.equal(session.retranslateSourceText('你好', 'cue-1'), false);
+  assert.deepEqual(calls, [{
+    turns: [{
+      role: 'user',
+      parts: [{ text: 'Translate the following source text into en. Return only the translation, without explanation:\n你好' }]
+    }],
+    turnComplete: true
+  }]);
+
+  session.closed = true;
+  assert.equal(session.retranslateSourceText('再見', 'cue-2'), false);
+});
+
 function createTestSession({ events = [], onConnectionFailure, onError, onClose } = {}) {
   const session = new LiveTranslateSession({
     targetLanguageCode: 'ja',

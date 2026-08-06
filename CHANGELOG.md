@@ -1,11 +1,113 @@
 # Changelog
 
+## Unreleased
+
+- 即時語音輸入關閉瀏覽器的回音消除、降噪與自動增益，保留較原始的麥克風波形以改善語音辨識忠實度；單聲道、16kHz PCM 傳送流程不變。
+
+- 修正同一段語音重複說出相同文字時被錯誤去重的問題；現在只有同一個 provider event 的重送會去重，不同發話事件即使文字相同也會各自保留。
+
+- 修正即時字幕在原文先完成、翻譯稍後抵達時遺失翻譯的問題；翻譯會回填既有原文 Cue。當只有單側文字能安全切段時，改為保留單一完整雙語 Cue，避免 SRT／VTT 產生漏翻譯或重複翻譯。
+
+- 即時 SRT／VTT 匯出改用雙語 final Cue；原文與翻譯下載會保留完全相同的 Cue 編號與時間軸。沒有 persisted Cue 的舊 Session、Meeting 與重新翻譯則會優先以原文時間窗對齊翻譯文字。
+
+- 修正 boundary 先於原文或翻譯文字抵達時的即時字幕狀態；晚到的 transcript 會沿用已完成狀態，配對完成後不再停留在「辨識中／翻譯中」。
+
+- 即時字幕會將同一個 Gemini Turn 的非累積來源／翻譯片段合併成單一暫存列，直到 `turnComplete`、`generationComplete` 或 transcript idle fallback 才完成，避免一句話被逐詞拆成多列，也避免缺少 boundary 時永久停留在 partial。
+
+- Live Cue 在最後一個文字事件後閒置 1200ms 時，配對 Cue 會完成；只有原文 Cue 會透過同一 Live session 重翻一次，重翻失敗則保留 source-only final，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
+
+- 即時字幕 Cue 超過語言字數目標時，會依子句、詞界或安全字元邊界拆成連續的雙語 Cue；短字幕不再因句尾標點提前切碎。Live transcript、Cue checkpoint 與新儲存逐字稿會忽略同一段語音的尾段重複文字（例如 `123` 後的 `3`），但保留 boundary 後真正重複的發話；Live 與歷史字幕 renderer 會依原文／譯文語言各自換行，每個 Cue 最多顯示兩行，儲存與匯出仍保留完整文字。
+
+- AI Meeting Summary source contract closeout: summaries now use deterministic
+  final-Cue or legacy-transcript sources with filtering, deduplication,
+  conflict validation, source hashes, source metadata, and manual retry API/UI.
+
+- AI Meeting Summary validation closeout: summary Cues now sort by Segment and
+  sequence, partial Cues are excluded from source construction, and deterministic
+  fake-provider E2E coverage verifies Stop completion, reload, and retry flows.
+
+- 即時字幕不再顯示尚未配對原文的翻譯 partial，避免原文欄卡住空白的「辨識中／翻譯中」；原文到達後會保留並完成配對。
+
+- 即時字幕不再依麥克風靜音猜測句子完成；字幕會保留到 Gemini boundary、句末標點或使用者明確 Pause／Stop，避免晚到翻譯被錯誤拆成孤立 partial。
+
+- Session Detail now refreshes authoritative translation history alongside the
+  session detail API so completed retranslation outputs replace stale pending
+  executions and stop unnecessary polling.
+
+- 即時字幕新增「複製原文」與「複製翻譯」，只會複製對應的已完成字幕；雙欄字幕的手動選取也不再連帶另一欄。
+
+- WP8 Rich Meeting Summary: completed summaries now optionally persist and
+  expose chronologically ordered timeline entries, keywords, risks, open
+  questions, and follow-up suggestions across the summary API, UI, and PDF,
+  Markdown, DOCX, and TXT exports. Legacy summaries remain readable.
+
+- WP7 Meeting Summary Export: completed final summaries now provide PDF,
+  Markdown, DOCX, and TXT downloads with structured sections and deterministic
+  Session/timestamp filenames. Existing translation and subtitle exports are
+  unchanged.
+
+- WP6 Incremental Meeting Summary: finalized Meeting Segments now produce
+  independently persisted, range-keyed partial summaries through the existing
+  durable summary worker. Session finalization merges completed partials in
+  chronological order; failed or missing partials remain retryable, and the
+  existing Session summary API continues to return only the final summary.
+
+- WP5 Summary Background Worker: completed Session finalization now enqueues
+  durable, idempotent MeetingSummaryJobs. A separate worker persists completed
+  or failed terminal job states, retries transient failures with exponential
+  backoff, and recovers queued or expired jobs after restart without duplicating
+  completed summaries.
+
+- WP4 Meeting Summary UI: Session Detail now loads and displays pending,
+  completed, failed, and missing meeting summaries with structured overview,
+  topics, decisions, and action items.
+
+- Added `GET /api/sessions/:sessionId/summary` for deterministic retrieval of
+  completed, pending, and failed persisted meeting summaries.
+
+- Added WP2 AI meeting summary persistence with Session association,
+  immutable completed records, retained failed attempts, retry support, and
+  memory/file-backed repositories.
+
+- WP5A Subtitle Cue Exporter: Session detail TXT, SRT, and VTT downloads now
+  use persisted final Cues when available, with deterministic filtering,
+  sequence ordering, session-relative timeline validation, and
+  language-aware export wrapping. Partial Cues never export; Sessions without
+  Cues retain the legacy transcript fallback, while invalid Cue data fails
+  explicitly instead of falling back.
+
+- WP4 Closeout: migrated legacy live/history E2E assertions to the Cue UI
+  contract. Coverage now verifies paired source/translation rows, final-only
+  history Cues, reload fallback behavior, partial/final transitions, Stop
+  flush, and follow-latest scroll protection. Existing live glossary replacement
+  behavior is also applied to Cue translation display. The complete E2E suite
+  passes 52/52 without restoring the legacy article tab.
+
+- Live subtitle cue WP3: final Cues and recovery-only Cue checkpoints now use
+  the existing file-backed Meeting/Segment checkpoint storage. Session detail
+  reads expose merged, sequence-sorted final Cues while legacy transcript fields
+  remain compatible; append and checkpoint writes are replay-safe across stop,
+  rollover, reconnect, and reload recovery.
+
+- Live subtitle cue WP1.5/WP2: strengthened the in-memory bilingual Cue
+  engine with deterministic event identity, replay-safe snapshots, normalized
+  session-relative timelines, out-of-order source/translation pairing, and
+  atomic length fallback. Gemini Live messages now pass through a dedicated
+  normalized-event adapter into Cue state while the existing transcript UI and
+  persistence paths remain unchanged. Cue persistence, history APIs, and Cue
+  UI remain deferred.
+
 - Long recording history persistence: session snapshot JSON uploads now use a
   configurable `SESSION_SNAPSHOT_MAX_BYTES` limit with a `25MB` default, live
   transcript history sync sends only newly finalized items, and saved WAV audio
   can persist as ordered segments while history downloads still return one WAV.
   Oversized transcript or audio requests now produce clearer, independent UI
   errors without blocking the other persistence path.
+
+- Long Meeting checkpoint synchronization now uses a dedicated configurable
+  `MEETING_CHECKPOINT_MAX_BYTES` limit with a `25MB` default instead of the
+  general 10KB JSON request limit, preventing background saves from failing as
+  checkpoint transcript history grows.
 
 - Translation History audio artifacts: finalized translated audio, and optional
   original speaker recording when enabled, are now uploaded to backend file
@@ -1241,3 +1343,18 @@ These items are intentionally deferred:
 - Output device selection remains future/browser-limited
 - Auto Reconnect and Token Refresh are not implemented yet
 - SRT/VTT timing is approximate frontend observation timing
+## WP4 Subtitle Cue UI
+
+- Live translation now renders one bilingual row per final Cue with
+  session-relative timecodes and a single trailing partial preview.
+- History and reload prefer persisted final Cues and retain the legacy transcript
+  reading view when no Cues are available.
+- Pause and Resume preserve the Cue list; Stop preserves the flushed final Cue
+  list and ignores late partial UI updates.
+- Live subtitle scrolling follows the latest Cue until the user scrolls away;
+  `回到最新字幕` restores follow mode.
+## Unreleased
+
+- Added the WP1 meeting summary pipeline for ordered Final Subtitle Cues,
+  configurable chunking, Gemini Flash Lite chunk summaries, and deterministic
+  structured merging.

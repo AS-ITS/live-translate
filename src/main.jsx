@@ -20,6 +20,7 @@ import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
+import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import {
   appendNewFinalTranscriptItems,
@@ -34,6 +35,12 @@ import {
   formatSavedSessionExport
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import {
+  canExportCues,
+  exportCuesToSrt,
+  exportCuesToVtt,
+  wrapSubtitleText
+} from './lib/subtitleCueExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
 import {
   applyTranscriptEvent,
@@ -49,6 +56,18 @@ import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
+  applySubtitleCueEvent,
+  createSubtitleCueState,
+  finalizePendingSubtitleCue,
+  resetSubtitleCueState,
+  resolveIdleSubtitleCue
+} from './lib/subtitleCues.js';
+import {
+  cueListForDisplay,
+  sourceTextForCopy,
+  translationTextForCopy
+} from './lib/cueUi.js';
+import {
   INPUT_SAMPLE_RATE,
   buildInputAudioFileName,
   buildTranslatedAudioFileName,
@@ -62,6 +81,7 @@ const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'comp
 const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
+const LIVE_CUE_IDLE_FINALIZE_MS = 1200;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
 const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
@@ -107,7 +127,11 @@ function App() {
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
+  // Legacy transcript state remains in the data flow for persistence, export,
+  // and backward-compatible Session detail fallback. Live rendering is
+  // owned by the Cue stream until the later transcript migration removes it.
   const [transcript, setTranscript] = useState(createTranscriptState);
+  const [subtitleCueState, setSubtitleCueState] = useState(createSubtitleCueState);
   const [archivedTranscript, setArchivedTranscript] = useState(createTranscriptState);
   const [transcriptTimeOrigin, setTranscriptTimeOrigin] = useState(null);
   const [copiedArticleStream, setCopiedArticleStream] = useState('');
@@ -152,6 +176,8 @@ function App() {
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const transcriptRef = useRef(transcript);
+  const subtitleCueStateRef = useRef(subtitleCueState);
+  const transcriptTimeOriginRef = useRef(null);
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
   const reconnectControllerRef = useRef(null);
@@ -179,6 +205,8 @@ function App() {
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
   const meetingResumeDraftRequestIdRef = useRef(0);
+  const liveCueUpdatesAllowedRef = useRef(false);
+  const liveCueIdleTimersRef = useRef(new Map());
 
   const isActive =
     status === 'requesting-permission' ||
@@ -264,6 +292,40 @@ function App() {
     transcript.translation.currentPartial?.text
   ]);
 
+  useEffect(() => {
+    cancelLiveCueIdleTimers();
+    if (!liveCueUpdatesAllowedRef.current || status !== 'listening') return undefined;
+    const candidates = [
+      subtitleCueState.currentCue,
+      ...(subtitleCueState.pendingCues || [])
+    ].filter((cue) => cue?.cueId && Number.isFinite(cue.updatedTimeMs));
+    const now = sessionTimeForSubtitleCues();
+    for (const cue of candidates) {
+      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - cue.updatedTimeMs));
+      const timer = setTimeout(() => {
+        liveCueIdleTimersRef.current.delete(cue.cueId);
+        const result = resolveIdleSubtitleCue(subtitleCueStateRef.current, {
+          cueId: cue.cueId,
+          updatedTimeMs: cue.updatedTimeMs,
+          sessionTimeMs: sessionTimeForSubtitleCues(),
+          targetLanguageCode,
+          sourceLanguageCode
+        });
+        if (result.state !== subtitleCueStateRef.current) {
+          const previous = subtitleCueStateRef.current;
+          subtitleCueStateRef.current = result.state;
+          setSubtitleCueState(result.state);
+          enqueueCuePersistence(previous, result.state);
+        }
+        if (result.action === 'needs-retranslation') {
+          sessionRef.current?.retranslateSourceText(result.cue?.sourceText, result.cue?.cueId);
+        }
+      }, remaining);
+      liveCueIdleTimersRef.current.set(cue.cueId, timer);
+    }
+    return cancelLiveCueIdleTimers;
+  }, [subtitleCueState, status, targetLanguageCode, sourceLanguageCode]);
+
   async function refreshInputDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
       return;
@@ -285,12 +347,19 @@ function App() {
     }
   }
 
+  function cancelLiveCueIdleTimers() {
+    for (const timer of liveCueIdleTimersRef.current.values()) clearTimeout(timer);
+    liveCueIdleTimersRef.current.clear();
+  }
+
   async function startSession() {
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     let session;
 
@@ -301,7 +370,7 @@ function App() {
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
-      session = await createSession({ preserveTranscript: false });
+      session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
       await session.start();
@@ -324,6 +393,8 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = false;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -332,6 +403,7 @@ function App() {
     await sessionRef.current?.stop();
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('pause');
     await flushMeetingCheckpointSync();
     pendingMicrophoneStreamRef.current = null;
     setStatus('paused');
@@ -344,13 +416,15 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     setError('');
     pendingMicrophoneStreamRef.current = null;
 
     let session;
     try {
-      session = await createSession({ preserveTranscript: true });
+      session = await createSession({ preserveTranscript: true, liveSessionId: generateLiveSessionId() });
       sessionRef.current = session;
       await session.start();
       await resumeRawAudioRecording();
@@ -385,6 +459,8 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = false;
+    cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
     reconnectSessionRef.current = null;
@@ -393,6 +469,7 @@ function App() {
     await sessionRef.current?.stop().catch(() => {});
     sessionRef.current = null;
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('stop');
     await flushMeetingCheckpointSync();
     pendingMicrophoneStreamRef.current = null;
     setResumeDraft(null);
@@ -405,14 +482,20 @@ function App() {
     setStatus('stopped');
   }
 
-  async function createSession({ preserveTranscript }) {
+  async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId() }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
-      setTranscriptTimeOrigin(Date.now());
+      const sessionStartedAt = Date.now();
+      setTranscriptTimeOrigin(sessionStartedAt);
+      transcriptTimeOriginRef.current = sessionStartedAt;
       const resetTranscript = resetTranscriptState();
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
+      const resetCues = resetSubtitleCueState();
+      cancelLiveCueIdleTimers();
+      subtitleCueStateRef.current = resetCues;
+      setSubtitleCueState(resetCues);
       const resetArchivedTranscript = resetTranscriptState();
       archivedTranscriptSegmentsRef.current = [];
       archivedTranscriptRef.current = resetArchivedTranscript;
@@ -429,6 +512,10 @@ function App() {
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
 
     return new LiveTranslateSession({
+      liveSessionId,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      sessionClock: () => sessionTimeForSubtitleCues(),
       targetLanguageCode,
       sourceLanguageCode,
       echoTargetLanguage,
@@ -448,8 +535,17 @@ function App() {
         ));
       },
       onInputAudioChunk: handleInputAudioChunk,
-      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'source' }),
-      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, stream: 'translation' }),
+      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' }),
+      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' }),
+      onCueEvent: (event) => {
+        if (!liveCueUpdatesAllowedRef.current) return;
+        const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
+          || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
+        const cueEvent = event?.stream === 'translation'
+          ? { ...event, text: applyGlossaryReplacements(event.text, activeGlossaryEntries) }
+          : event;
+        applyLiveSubtitleCueEvent(cueEvent);
+      },
       onOutputAudioChunk: handleTranslatedAudioChunk,
       onError: (nextError) => {
         if (suppressReconnectErrorRef.current) {
@@ -780,7 +876,7 @@ function App() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const nextLiveSessionId = generateLiveSessionId();
     let recovery;
-    const session = await createSession({ preserveTranscript: true });
+    const session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     reconnectSessionRef.current = session;
 
     try {
@@ -790,6 +886,7 @@ function App() {
 
       await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
+      flushSubtitleCues('reconnect');
       if (generationId !== reconnectController().currentGeneration()) {
         await session.stop().catch(() => {});
         return;
@@ -868,6 +965,7 @@ function App() {
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = true;
     setStatusLabelOverride('');
     setError('');
     setResumeDraft(null);
@@ -899,7 +997,7 @@ function App() {
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
       await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
       resetActiveTranscriptForNextSegment(resumeDraft.transcriptState.nextSequence);
-      session = await createSession({ preserveTranscript: true });
+      session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
       setStatus('listening');
@@ -925,6 +1023,7 @@ function App() {
     setStatus('switching-segment');
 
     await finalizePendingTranscriptItemsForStop();
+    flushSubtitleCues('segment-rollover');
     if (segmentSwitchCancelledRef.current) return;
 
     const flushed = await flushMeetingCheckpointSync();
@@ -949,11 +1048,12 @@ function App() {
 
     await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
+    flushSubtitleCues('segment-rollover');
     if (sessionRef.current === previousSession) {
       sessionRef.current = null;
     }
 
-    const nextSession = await createSession({ preserveTranscript: true });
+    const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
       await resumeRawAudioRecording();
@@ -1104,6 +1204,62 @@ function App() {
     }
   }
 
+  function applyLiveSubtitleCueEvent(event) {
+    const current = subtitleCueStateRef.current;
+    const next = applySubtitleCueEvent(current, event, {
+      targetLanguageCode,
+      sourceLanguageCode,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      sessionClock: () => sessionTimeForSubtitleCues()
+    });
+    if (next === current) return;
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
+  function flushSubtitleCues(reason) {
+    const current = subtitleCueStateRef.current;
+    const next = finalizePendingSubtitleCue(current, {
+      sessionTimeMs: sessionTimeForSubtitleCues(),
+      reason
+    });
+    if (next === current) return;
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
+  function enqueueCuePersistence(previous, next) {
+    const previousCues = new Map((previous?.finalCues || []).map((cue) => [cue.cueId, cue]));
+    const changedCues = (next?.finalCues || []).filter((cue) => {
+      const previousCue = previousCues.get(cue.cueId);
+      return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
+    });
+    const checkpoint = cueCheckpointForState(next);
+    meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
+  }
+
+  function cueCheckpointForState(state) {
+    const lastCue = state?.finalCues?.at(-1);
+    return {
+      currentCue: state?.currentCue || null,
+      pendingCues: state?.pendingCues || [],
+      nextSequence: state?.nextSequence || 1,
+      finalizedCueKeys: state?.finalizedCueKeys || [],
+      processedEventIds: state?.processedEventIds || [],
+      pendingBoundary: state?.pendingBoundary || { turnComplete: false, generationComplete: false },
+      lastCommittedCueSequence: lastCue?.sequence || 0,
+      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
+    };
+  }
+
+  function sessionTimeForSubtitleCues() {
+    const origin = transcriptTimeOriginRef.current;
+    return Number.isFinite(origin) ? Math.max(0, Date.now() - origin) : null;
+  }
+
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
     const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
@@ -1111,7 +1267,10 @@ function App() {
     const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
     try {
-      await flushMeetingCheckpointSync();
+      const checkpointFlushed = await flushMeetingCheckpointSync();
+      if (!checkpointFlushed) {
+        setError('長會議同步尚未完成，但目前逐字稿仍會保存；未同步片段會保留以便重試。');
+      }
       const finalized = finalizeActiveSessionRecord(sessionRepositoryRef.current, sessionId, buildFinalizePatch(options));
 
       if (finalized) {
@@ -1405,7 +1564,20 @@ function App() {
 
   function reportMeetingCheckpointSyncError(error) {
     console.error('Meeting checkpoint persistence failed.', error);
-    setError('長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。');
+    const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
+    if (error?.status === 413 || error?.code === 'request_too_large') {
+      setError(`長會議同步內容超過伺服器保存上限，未同步片段會保留並重試；請調高 MEETING_CHECKPOINT_MAX_BYTES。${diagnostic}`);
+      return;
+    }
+    if (error?.status === 409 || error?.code === 'checkpoint_conflict') {
+      setError(`長會議同步發生 checkpoint 衝突，未同步片段會保留；請重新載入會議後再繼續。${diagnostic}`);
+      return;
+    }
+    if (error?.status === 404 || error?.code === 'meeting_not_found' || error?.code === 'meeting_segment_not_found') {
+      setError(`長會議同步找不到目前的會議段落，未同步片段已保留。${diagnostic}`);
+      return;
+    }
+    setError(`長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。${diagnostic}`);
   }
 
   function archiveActiveTranscriptSegment() {
@@ -1499,6 +1671,19 @@ function App() {
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
       ));
+      const persistedCues = checkpoints.flatMap((checkpointResult) => (
+        checkpointResult?.checkpoint?.finalCues || []
+      )).filter((cue) => cue?.status === 'final').sort((left, right) => left.sequence - right.sequence);
+      const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
+      if (persistedCues.length > 0 || latestCueCheckpoint) {
+        const restoredCueState = createSubtitleCueState({
+          ...(latestCueCheckpoint || {}),
+          finalCues: persistedCues,
+          nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
+        });
+        subtitleCueStateRef.current = restoredCueState;
+        setSubtitleCueState(restoredCueState);
+      }
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
       const archivedSegments = transcriptSegmentsFromCheckpoints({ segments, checkpoints });
       archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments(archivedSegments);
@@ -1571,12 +1756,8 @@ function App() {
     const cachedDetail = sessionDetailCacheRef.current.get(id);
     setSelectedHistoryDetail(cachedDetail || undefined);
 
-    if (cachedDetail) {
-      return;
-    }
-
     try {
-      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+      const detail = await getSessionDetailWithTranslationHistory(id);
 
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return;
@@ -1607,7 +1788,7 @@ function App() {
     detailRequestIdRef.current = requestId;
 
     try {
-      const detail = await sessionReadApiClientRef.current.getSessionDetail(id);
+      const detail = await getSessionDetailWithTranslationHistory(id);
 
       if (detailRequestIdRef.current !== requestId || selectedHistoryRecordIdRef.current !== id) {
         return false;
@@ -1627,6 +1808,15 @@ function App() {
 
       return false;
     }
+  }
+
+  async function getSessionDetailWithTranslationHistory(sessionId) {
+    const [sessionDetail, translationHistory] = await Promise.all([
+      sessionReadApiClientRef.current.getSessionDetail(sessionId),
+      sessionReadApiClientRef.current.getSessionTranslations(sessionId)
+    ]);
+
+    return mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory);
   }
 
   function closeHistoryRecordDetail() {
@@ -1773,15 +1963,45 @@ function App() {
     setError('');
 
     try {
-      const content = formatTranscriptExport(transcriptItems, {
-        format: exportFormat,
-        stream: exportStream,
-        timeOrigin: transcriptTimeOrigin
-      });
+      const content = exportFormat === 'srt' && subtitleCueState.finalCues.length > 0
+        ? exportCuesToSrt(subtitleCueState.finalCues, { stream: exportStream })
+        : exportFormat === 'vtt' && subtitleCueState.finalCues.length > 0
+          ? exportCuesToVtt(subtitleCueState.finalCues, { stream: exportStream })
+          : formatTranscriptExport(transcriptItems, {
+            format: exportFormat,
+            stream: exportStream,
+            timeOrigin: transcriptTimeOrigin
+          });
       const fileName = buildTranscriptFileName({ format: exportFormat });
       downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
       setError('所選選項無法匯出逐字稿。');
+    }
+  }
+
+  async function copyLiveSource() {
+    const sourceText = sourceTextForCopy(subtitleCueState.finalCues);
+    if (!sourceText) return;
+
+    try {
+      await navigator.clipboard.writeText(sourceText);
+      setCopiedArticleStream('source');
+      window.setTimeout(() => setCopiedArticleStream((current) => current === 'source' ? '' : current), 1500);
+    } catch {
+      setError('無法複製原文。');
+    }
+  }
+
+  async function copyLiveTranslation() {
+    const translationText = translationTextForCopy(subtitleCueState.finalCues);
+    if (!translationText) return;
+
+    try {
+      await navigator.clipboard.writeText(translationText);
+      setCopiedArticleStream('translation');
+      window.setTimeout(() => setCopiedArticleStream((current) => current === 'translation' ? '' : current), 1500);
+    } catch {
+      setError('無法複製翻譯。');
     }
   }
 
@@ -1822,11 +2042,13 @@ function App() {
   ];
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
-  const canDownloadTranscript = canExportTranscript(transcriptItems, {
-    format: exportFormat,
-    stream: exportStream,
-    timeOrigin: transcriptTimeOrigin
-  });
+  const canDownloadTranscript = exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
+    ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream })
+    : canExportTranscript(transcriptItems, {
+      format: exportFormat,
+      stream: exportStream,
+      timeOrigin: transcriptTimeOrigin
+    });
   const exportUnavailableReason =
     exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
   const selectedHistoryRecord = selectedHistoryRecordId
@@ -2060,30 +2282,15 @@ function App() {
           {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         </section>
 
-        <section className="transcript-grid" aria-label="文章版閱讀區">
-          <ArticlePanel
-            title="原文逐字稿"
-            stream="source"
-            paragraphs={sourceArticleParagraphs}
-            currentPartial={traditionalChineseTranscriptItem(transcript.source.currentPartial)}
-            currentLabel="辨識中…"
-            emptyText="尚無原文內容。"
-            copied={copiedArticleStream === 'source'}
-            onCopy={() => copyArticle('source')}
-            onExport={() => downloadArticle('source')}
-          />
-          <ArticlePanel
-            title="翻譯逐字稿"
-            stream="translation"
-            paragraphs={translationArticleParagraphs}
-            currentPartial={transcript.translation.currentPartial}
-            currentLabel="翻譯中…"
-            emptyText="尚無翻譯內容。"
-            copied={copiedArticleStream === 'translation'}
-            onCopy={() => copyArticle('translation')}
-            onExport={() => downloadArticle('translation')}
-          />
-        </section>
+        <LiveCuePanel
+          cueState={subtitleCueState}
+          isPaused={status === 'paused'}
+          isStopped={status === 'stopped'}
+          copiedSource={copiedArticleStream === 'source'}
+          copiedTranslation={copiedArticleStream === 'translation'}
+          onCopySource={copyLiveSource}
+          onCopyTranslation={copyLiveTranslation}
+        />
       </section>
 
       <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
@@ -2275,6 +2482,141 @@ function traditionalChineseTranscriptItem(item) {
 function buildArticleFileName(stream) {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
   return `live-translate-article-${stream}-${stamp}.txt`;
+}
+
+const CUE_PAGE_FOLLOW_THRESHOLD_PX = 80;
+
+function isPageAtLatestCuePosition(panel) {
+  if (!panel || typeof window === 'undefined') return false;
+  const distanceFromViewportBottom = window.innerHeight - panel.getBoundingClientRect().bottom;
+  return Math.abs(distanceFromViewportBottom) <= CUE_PAGE_FOLLOW_THRESHOLD_PX;
+}
+
+function LiveCuePanel({
+  cueState,
+  isPaused,
+  isStopped,
+  copiedSource,
+  copiedTranslation,
+  onCopySource,
+  onCopyTranslation
+}) {
+  const panelRef = useRef(null);
+  const [isFollowingLatest, setIsFollowingLatest] = useState(false);
+  const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) return undefined;
+
+    const updateFollowState = () => {
+      setIsFollowingLatest(isPageAtLatestCuePosition(panel));
+    };
+
+    updateFollowState();
+    window.addEventListener('scroll', updateFollowState, { passive: true });
+    window.addEventListener('resize', updateFollowState);
+    return () => {
+      window.removeEventListener('scroll', updateFollowState);
+      window.removeEventListener('resize', updateFollowState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel || !isFollowingLatest || cues.length === 0) return;
+    panel.scrollIntoView({ block: 'end', behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
+  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
+
+  function returnToLatest() {
+    const panel = panelRef.current;
+    if (panel) panel.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    setIsFollowingLatest(true);
+  }
+
+  return (
+    <section className="cue-panel" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
+      <div className="cue-panel-header">
+        <div>
+          <h2>即時字幕</h2>
+          <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
+        </div>
+        <div className="cue-panel-actions">
+          {!isFollowingLatest ? (
+            <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
+          ) : null}
+        </div>
+      </div>
+      <div className="cue-list" data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
+        <section className="cue-language-section" aria-label="即時字幕原文">
+          <div className="cue-section-header">
+            <h3>輸入／原文</h3>
+            <button className="button detail-button" type="button" onClick={onCopySource} disabled={!sourceTextForCopy(cueState.finalCues)}>
+              <Copy size={14} aria-hidden="true" />
+              {copiedSource ? '已複製' : '複製原文'}
+            </button>
+          </div>
+          <div className="cue-section-list" data-testid="cue-source-list">
+            {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
+            {cues.map((cue) => cue.status === 'final'
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="source" />)}
+          </div>
+        </section>
+        <section className="cue-language-section" aria-label="即時字幕翻譯">
+          <div className="cue-section-header">
+            <h3>翻譯</h3>
+            <button className="button detail-button" type="button" onClick={onCopyTranslation} disabled={!translationTextForCopy(cueState.finalCues)}>
+              <Copy size={14} aria-hidden="true" />
+              {copiedTranslation ? '已複製' : '複製翻譯'}
+            </button>
+          </div>
+          <div className="cue-section-list" data-testid="cue-translation-list">
+            {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
+            {cues.map((cue) => cue.status === 'final'
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function FinalCueRow({ cue, stream }) {
+  return <CueRow cue={cue} stream={stream} />;
+}
+
+function PartialCueRow({ cue, stream }) {
+  return <CueRow cue={cue} partial stream={stream} />;
+}
+
+function CueRow({ cue, partial = false, stream }) {
+  const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
+  const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
+  const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
+  const languageCode = stream === 'translation' ? cue.targetLanguageCode : cue.sourceLanguageCode;
+  const wrappedText = wrapSubtitleText(text, languageCode);
+  return (
+    <article
+      className={`cue-row${partial ? ' cue-row-partial' : ''}`}
+      data-testid={partial ? 'cue-partial-row' : 'cue-final-row'}
+      data-cue-id={cue.cueId || undefined}
+      aria-label={label}
+    >
+      {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
+      <div className="cue-text-toggle">
+        {stream ? (
+          <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{wrappedText || '—'}</span>
+        ) : (
+          <>
+            <span className="cue-source" data-testid="cue-source-text">{wrapSubtitleText(cue.sourceText, cue.sourceLanguageCode) || '—'}</span>
+            <span className="cue-translation" data-testid="cue-translated-text">{wrapSubtitleText(cue.translatedText, cue.targetLanguageCode) || '—'}</span>
+          </>
+        )}
+      </div>
+    </article>
+  );
 }
 
 function ArticlePanel({
@@ -3429,6 +3771,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
 
+
   const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
@@ -3443,6 +3786,10 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   const translationItems = useMemo(
     () => finalTranscriptItemsForStream(detail?.selectedTranslationOutput?.items, 'translation'),
     [detail?.selectedTranslationOutput?.items]
+  );
+  const historyCues = useMemo(
+    () => cueListForDisplay({ finalCues: detail?.cues || [] }, { includePartial: false }),
+    [detail?.cues]
   );
   const readingContent = useMemo(
     () => readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }),
@@ -3585,11 +3932,24 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         translationLabel="下載翻譯語音紀錄"
       />
 
-      <ReadingContentTabs
-        content={readingContent}
-        selectedTab={readingTab}
-        onSelectTab={setReadingTab}
-      />
+      {historyCues.length > 0 ? (
+        <section className="session-cue-section" aria-label="已儲存字幕" data-testid="session-cue-list">
+          <h4>字幕</h4>
+          <div className="cue-history-columns" data-testid="history-cue-columns" aria-hidden="true">
+            <span>原文</span>
+            <span>翻譯</span>
+          </div>
+          <div className="cue-list cue-list-history">
+            {historyCues.map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}
+          </div>
+        </section>
+      ) : (
+        <ReadingContentTabs
+          content={readingContent}
+          selectedTab={readingTab}
+          onSelectTab={setReadingTab}
+        />
+      )}
 
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>
@@ -3737,7 +4097,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
   const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '文章版翻譯';
 
   return (
-    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容">
+    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback">
       <div className="reading-tabs" role="tablist" aria-label="歷史紀錄內容切換">
         <button
           className={`reading-tab${selectedTab === 'translationArticle' ? ' active' : ''}`}
@@ -4161,7 +4521,14 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
 
   const detailHistory = compactTranslationHistoryForDetail(detail);
   const translationsHistory = compactTranslationHistoryForDetail(translations);
-  if (translationsHistory.outputs.length === 0 && translationsHistory.executions.length === 0) {
+  const hasAuthoritativeTranslationHistory = Boolean(
+    translations && typeof translations === 'object' && (
+      (translations.translationHistory && typeof translations.translationHistory === 'object') ||
+      Array.isArray(translations.outputs) ||
+      Array.isArray(translations.executions)
+    )
+  );
+  if (!hasAuthoritativeTranslationHistory) {
     return detail;
   }
 
@@ -4169,7 +4536,7 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     ...detail,
     translationHistory: {
       outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
-      executions: mergeHistoryItemsById(detailHistory.executions, translationsHistory.executions)
+      executions: translationsHistory.executions
     }
   };
 }
@@ -4271,6 +4638,7 @@ function sourceSessionIdForRetranslation(sessionRecord, fallbackSessionId) {
 function exportDetailForSessionDetailDTO(detail, historyRecord) {
   return {
     sessionRecord: sessionRecordForDetailDTO(detail, historyRecord),
+    cues: Array.isArray(detail?.cues) ? detail.cues : [],
     transcriptItems: [
       ...(detail?.sourceTranscript?.items || []),
       ...translationExportItemsForDetail(detail)
@@ -4594,6 +4962,18 @@ function contentTypeForFormat(format) {
 
 function downloadTextFile(content, fileName, type) {
   const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.style.display = 'none';
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

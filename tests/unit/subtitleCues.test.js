@@ -45,6 +45,49 @@ test('sentence punctuation does not finalize a short cue before provider complet
   }]);
 });
 
+test('merges adjacent short bilingual cues until sentence punctuation', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+  };
+
+  appendFinalPair('Actually,', '其實，', 100);
+  appendFinalPair("it's very", '很', 200);
+  appendFinalPair('Right now,', '現在，', 300);
+
+  assert.equal(state.finalCues.length, 1);
+  assert.deepEqual(state.finalCues[0], {
+    ...state.finalCues[0],
+    sourceText: "Actually, it's very Right now,",
+    translatedText: '其實，很現在，',
+    finalizedReason: 'merged'
+  });
+  assert.equal(state.finalCues[0].sequence, 1);
+  assert.equal(state.finalCues[0].startTimeMs, 100);
+  assert.equal(state.finalCues[0].endTimeMs, 1002);
+  assert.equal(state.nextSequence, 4);
+});
+
+test('does not merge after sentence punctuation or across the language limit', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time, options = {}) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }), options);
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }), options);
+  };
+
+  appendFinalPair('Hello.', '你好。', 100);
+  appendFinalPair('Next', '下一句', 200);
+  assert.equal(state.finalCues.length, 2);
+
+  state = createSubtitleCueState();
+  const options = { maxCueChars: 12 };
+  appendFinalPair('first,', '第一，', 100, options);
+  appendFinalPair('second', '第二', 200, options);
+  assert.equal(state.finalCues.length, 2);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first,', 'second']);
+});
+
 test('a shorter suffix transcript update does not create an extra cue', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: '123', sessionTimeMs: 100 }));

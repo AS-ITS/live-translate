@@ -66,6 +66,7 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
     event.isFinal || cue.turnCompleteSeen || cue.generationCompleteSeen || cue.retranslationRequested
   );
   if (shouldFinalize) return finalizeCue(next, cue, {
+    ...options,
     nowMs: event.sessionTimeMs,
     reason: finalizeReason(event, cue, options),
     minimumGapMs: options.minimumGapMs,
@@ -75,6 +76,7 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   if (complete && exceedsLanguageCueLimit(cue, options)) {
     // Keep the bilingual pair atomic when no safe, aligned split exists.
     return finalizeCue(next, cue, {
+      ...options,
       nowMs: event.sessionTimeMs,
       reason: 'length',
       minimumGapMs: options.minimumGapMs,
@@ -93,6 +95,7 @@ export function finalizePendingSubtitleCue(stateInput, options = {}) {
   let next = state;
   for (const cue of candidates) {
     next = finalizeCue(next, cueForState(next, cue.key || stablePendingKey(cue)), {
+      ...options,
       nowMs,
       reason: options.reason || 'flush',
       minimumGapMs: options.minimumGapMs,
@@ -117,6 +120,7 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
       // paired transcript arrives. The Cue is already aggregated by Turn,
       // so idle finalization is a safe fallback and will not split fragments.
       state: finalizeCue(state, cue, {
+        ...options,
         nowMs: options.sessionTimeMs,
         reason: 'idle',
         minimumGapMs: options.minimumGapMs,
@@ -210,6 +214,7 @@ function applyBoundary(state, event, options) {
     .filter((cue) => cue.turnCompleteSeen || cue.generationCompleteSeen);
   for (const cue of candidates) {
     next = finalizeCue(next, cueForState(next, cue.key || stablePendingKey(cue)), {
+      ...options,
       nowMs,
       reason: event.turnComplete ? 'turnComplete' : 'generationComplete',
       minimumGapMs: options.minimumGapMs,
@@ -349,11 +354,12 @@ function mergeCueText(currentText, incomingText) {
 }
 
 function needsTextSeparator(currentText, incomingText) {
-  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(currentText)
+  if (containsCjk(currentText)
     && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
     return false;
   }
-  return /[\p{L}\p{N}_)]$/u.test(currentText) && /^[\p{L}\p{N}_([@]/u.test(incomingText);
+  if (/^[\s\p{P}\p{S}]/u.test(incomingText)) return false;
+  return /\S$/u.test(currentText);
 }
 
 function isCueSubmittable(cue) {
@@ -445,8 +451,9 @@ function removeCandidate(state, candidate) {
 
 function currentKey(state) { return state.currentCue ? 'current' : null; }
 
-function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurationMs }) {
+function finalizeCue(state, cue, options = {}) {
   if (!cue || !isCueSubmittable(cue)) return state;
+  const { nowMs, reason, minimumGapMs, minimumCueDurationMs } = options;
   const previousEnd = state.finalCues.at(-1)?.endTimeMs;
   const gapMs = Number.isFinite(minimumGapMs) ? Math.max(0, minimumGapMs) : DEFAULT_MINIMUM_GAP_MS;
   const minimumDurationMs = Number.isFinite(minimumCueDurationMs)
@@ -460,6 +467,20 @@ function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurati
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };
+  const previousCue = state.finalCues.at(-1);
+  const mergedCue = mergeAdjacentFinalCues(previousCue, finalCue, options);
+  if (mergedCue) {
+    const previousKey = stableCueKey(previousCue);
+    const mergedKey = stableCueKey(mergedCue);
+    return {
+      ...state,
+      finalCues: [...state.finalCues.slice(0, -1), mergedCue],
+      finalizedCueKeys: [...new Set([...state.finalizedCueKeys, previousKey, stableCueKey(finalCue), mergedKey])],
+      nextSequence: Math.max(state.nextSequence, cue.sequence + 1),
+      currentCue: state.currentCue?.cueId === cue.cueId ? null : state.currentCue,
+      pendingCues: state.pendingCues.filter((item) => item.cueId !== cue.cueId)
+    };
+  }
   const cueKey = stableCueKey(finalCue);
   let next = state;
   if (!state.finalizedCueKeys.includes(cueKey)) {
@@ -472,6 +493,50 @@ function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurati
   next = { ...next, nextSequence: Math.max(next.nextSequence, cue.sequence + 1) };
   if (next.currentCue?.cueId === cue.cueId) return { ...next, currentCue: null };
   return { ...next, pendingCues: next.pendingCues.filter((item) => item.cueId !== cue.cueId) };
+}
+
+function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
+  if (!previousCue || !canMergeAdjacentFinalCues(previousCue, nextCue, options)) return null;
+  return {
+    ...previousCue,
+    sourceText: mergeCueText(previousCue.sourceText, nextCue.sourceText),
+    translatedText: mergeCueText(previousCue.translatedText, nextCue.translatedText),
+    endTimeMs: Math.max(previousCue.endTimeMs, nextCue.endTimeMs),
+    updatedTimeMs: Math.max(previousCue.updatedTimeMs || 0, nextCue.updatedTimeMs || 0),
+    finalizedReason: nextCue.finalizedReason === 'length' ? 'length' : 'merged'
+  };
+}
+
+function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
+  if (previousCue.status !== 'final' || nextCue.status !== 'final') return false;
+  if (previousCue.finalizedReason === 'length' || nextCue.finalizedReason === 'length') return false;
+  if (previousCue.sessionId && nextCue.sessionId && previousCue.sessionId !== nextCue.sessionId) return false;
+  if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
+  if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
+  if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
+  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
+  if (!isLikelyContinuation(previousCue, nextCue)) return false;
+
+  const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
+  const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
+  return sourceText.length <= languageCueLimit(previousCue.sourceLanguageCode || nextCue.sourceLanguageCode, options)
+    && translatedText.length <= languageCueLimit(previousCue.targetLanguageCode || nextCue.targetLanguageCode, options);
+}
+
+function isLikelyContinuation(previousCue, nextCue) {
+  const previousTexts = [previousCue.sourceText, previousCue.translatedText].map(normalizeText);
+  const nextTexts = [nextCue.sourceText, nextCue.translatedText].map(normalizeText);
+  if (previousTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
+  if (nextTexts.some((text) => /[,，、:：;；]$/u.test(text))) return true;
+  return false;
+}
+
+function containsCjk(text) {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
+}
+
+function endsSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(normalizeText(text));
 }
 
 function resolveSessionTimeMs(input = {}) {
@@ -538,6 +603,7 @@ function splitCompleteCue(state, cue, event, options) {
       status: 'partial'
     };
     next = finalizeCue(next, partCue, {
+      ...options,
       nowMs: event.sessionTimeMs,
       reason: 'length',
       minimumGapMs: options.minimumGapMs,

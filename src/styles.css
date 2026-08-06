@@ -504,7 +504,8 @@ input:disabled {
 .cue-source,
 .cue-translation {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
   -webkit-box-orient: vertical;
   line-height: 1.6;
   white-space: pre-wrap;

@@ -1400,6 +1400,22 @@ test('incremental word fragments render as one subtitle row after Turn completio
   });
 });
 
+test('adjacent short final Cues render as one natural sentence', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, '其實，', 'Actually,');
+  await emitFinalTranscript(page, '很', "it's very");
+  await emitFinalTranscript(page, '現在，', 'Right now,');
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '其實，很現在，',
+    translatedText: "Actually, it's very Right now,"
+  });
+});
+
 test('replaced pending Cue text remains one partial preview', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();

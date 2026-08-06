@@ -1025,7 +1025,7 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
 
   await expect(page.getByText('長會議同步：同步失敗，等待重試')).toBeVisible({ timeout: 6500 });
   await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
-  await expect(page.getByRole('alert')).toContainText('長會議同步暫時失敗');
+  await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
 });
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {

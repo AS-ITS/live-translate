@@ -62,7 +62,7 @@ export function createTranslationExecutionRunner({
         sourceLanguageMetadata: payload.sourceLanguageMetadata,
         sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
         detectedSourceLanguageCode: providerAttemptExecution.providerResult.detectedSourceLanguageCode,
-        providerMetadata: { model: payload.model, operation: payload.operation, segmentRange: payload.segmentRange, inputHash: payload.inputHash },
+        providerMetadata: providerMetadataForPayload(payload),
         operation: payload.operation,
         segmentRange: payload.segmentRange,
         inputHash: payload.inputHash,
@@ -121,7 +121,7 @@ export function createTranslationExecutionRunner({
         sourceLanguageMetadata: payload.sourceLanguageMetadata,
         sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
         detectedSourceLanguageCode: execution.providerResult.detectedSourceLanguageCode,
-        providerMetadata: { model: payload.model, operation: payload.operation, segmentRange: payload.segmentRange, inputHash: payload.inputHash },
+        providerMetadata: providerMetadataForPayload(payload),
         operation: payload.operation,
         segmentRange: payload.segmentRange,
         inputHash: payload.inputHash,
@@ -162,6 +162,14 @@ async function assertWritable(executionFenceGuard, execution, executionFence) {
       fenceToken: executionFence.fenceToken
     }
   });
+}
+
+function providerMetadataForPayload(payload = {}) {
+  const metadata = {};
+  for (const field of ['model', 'operation', 'segmentRange', 'inputHash']) {
+    if (payload[field] !== undefined) metadata[field] = payload[field];
+  }
+  return Object.keys(metadata).length > 0 ? metadata : null;
 }
 
 async function executeProviderWithRetry({

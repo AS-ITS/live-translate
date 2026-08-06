@@ -43,6 +43,10 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   if (existingById) {
     const incoming = validateFinalCue(input);
     if (sameCue(existingById, incoming)) return { cue: clone(existingById), appended: false, cues: normalizedExisting };
+    if (isMonotonicMergedCue(existingById, incoming)) {
+      const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
+      return { cue: clone(incoming), appended: false, updated: true, cues };
+    }
     return conflict(`Cue ${incoming.cueId} has conflicting payload.`);
   }
 
@@ -83,6 +87,24 @@ function previousCueFor(cues, sequence) {
 
 function sameCue(left, right) {
   return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);
+}
+
+function isMonotonicMergedCue(existing, incoming) {
+  return incoming.finalizedReason === 'merged' &&
+    incoming.sessionId === existing.sessionId &&
+    incoming.segmentId === existing.segmentId &&
+    incoming.sequence === existing.sequence &&
+    incoming.startTimeMs === existing.startTimeMs &&
+    incoming.endTimeMs >= existing.endTimeMs &&
+    isTextExtension(existing.sourceText, incoming.sourceText) &&
+    isTextExtension(existing.translatedText, incoming.translatedText) &&
+    (incoming.sourceText !== existing.sourceText ||
+      incoming.translatedText !== existing.translatedText ||
+      incoming.endTimeMs > existing.endTimeMs);
+}
+
+function isTextExtension(existingText, incomingText) {
+  return existingText === incomingText || existingText === '' || incomingText.startsWith(existingText);
 }
 
 function requiredString(value, field) {

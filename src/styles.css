@@ -582,6 +582,16 @@ input:disabled {
   background: #ffffff;
 }
 
+.polished-transcript-panel {
+  border-left: 3px solid var(--accent-color, #4f46e5);
+}
+
+.transcript-status {
+  margin: 0.25rem 0 0;
+  color: var(--muted-text, #64748b);
+  font-size: 0.875rem;
+}
+
 .transcript-panel h2 {
   margin: 0 0 16px;
   color: #314152;

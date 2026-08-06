@@ -62,6 +62,11 @@ export function createTranslationExecutionRunner({
         sourceLanguageMetadata: payload.sourceLanguageMetadata,
         sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
         detectedSourceLanguageCode: providerAttemptExecution.providerResult.detectedSourceLanguageCode,
+        providerMetadata: { model: payload.model, operation: payload.operation, segmentRange: payload.segmentRange, inputHash: payload.inputHash },
+        operation: payload.operation,
+        segmentRange: payload.segmentRange,
+        inputHash: payload.inputHash,
+        model: payload.model,
         completedAt: payload.completedAt ?? execution.startedAt
       });
       await assertWritable(executionFenceGuard, execution, executionFence);
@@ -116,6 +121,11 @@ export function createTranslationExecutionRunner({
         sourceLanguageMetadata: payload.sourceLanguageMetadata,
         sourceTranscriptMetadata: payload.sourceTranscriptMetadata,
         detectedSourceLanguageCode: execution.providerResult.detectedSourceLanguageCode,
+        providerMetadata: { model: payload.model, operation: payload.operation, segmentRange: payload.segmentRange, inputHash: payload.inputHash },
+        operation: payload.operation,
+        segmentRange: payload.segmentRange,
+        inputHash: payload.inputHash,
+        model: payload.model,
         completedAt: payload.completedAt ?? execution.startedAt
       });
       await assertWritable(executionFenceGuard, execution, executionFence);
@@ -176,6 +186,9 @@ async function executeProviderWithRetry({
     try {
       providerResult = await translationExecutionProvider.execute({
         sourceText: payload.sourceText,
+        ...(payload.operation === undefined ? {} : { operation: payload.operation }),
+        ...(payload.polishingItems === undefined ? {} : { polishingItems: payload.polishingItems }),
+        ...(payload.model === undefined ? {} : { model: payload.model }),
         sourceLanguageCode: payload.sourceLanguageCode,
         targetLanguageCode: payload.targetLanguageCode,
         providerKey: payload.providerKey,

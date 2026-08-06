@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added an asynchronous transcript polishing pipeline for stable bilingual
+  Cues. Gemini Flash Lite polishing runs through the existing queued translation
+  execution infrastructure, persists versioned range/hash metadata, and is
+  displayed separately from raw and live translation content without blocking
+  the Live session.
+
 - 即時語音輸入關閉瀏覽器的回音消除、降噪與自動增益，保留較原始的麥克風波形以改善語音辨識忠實度；單聲道、16kHz PCM 傳送流程不變。
 
 - 修正同一段語音重複說出相同文字時被錯誤去重的問題；現在只有同一個 provider event 的重送會去重，不同發話事件即使文字相同也會各自保留。

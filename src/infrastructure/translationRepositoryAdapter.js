@@ -20,8 +20,12 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
         const sessionRecord = requireSessionDetail(sessionDetail, translationRequest.sessionId).sessionRecord;
         const state = translationCommandStateFor(sessionRecord);
 
-        if (state.requests.some((storedRequest) => storedRequest.id === translationRequest.id)) {
-          throw new Error(`TranslationRequest already exists: ${translationRequest.id}`);
+        const existingRequest = state.requests.find((storedRequest) => storedRequest.id === translationRequest.id);
+        if (existingRequest) {
+          if (translationRequest.operation !== 'transcript_polishing' || existingRequest.inputHash !== translationRequest.inputHash) {
+            throw new Error(`TranslationRequest already exists: ${translationRequest.id}`);
+          }
+          return toTranslationRequest(existingRequest);
         }
 
         return saveTranslationState(sessionRepository, sessionRecord.id, {
@@ -94,8 +98,13 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
 
           const state = translationCommandStateFor(result.sessionRecord);
 
-          if (state.executions.some((storedExecution) => storedExecution.id === translationExecution.id)) {
-            throw new Error(`TranslationExecution already exists: ${translationExecution.id}`);
+          const existingExecution = state.executions.find((storedExecution) => storedExecution.id === translationExecution.id);
+          if (existingExecution) {
+            const request = state.requests.find((item) => item.id === translationExecution.translationRequestId);
+            if (request?.operation !== 'transcript_polishing' || existingExecution.translationRequestId !== translationExecution.translationRequestId) {
+              throw new Error(`TranslationExecution already exists: ${translationExecution.id}`);
+            }
+            return toTranslationExecution(existingExecution);
           }
 
           return saveTranslationState(sessionRepository, result.sessionRecord.id, {
@@ -355,6 +364,10 @@ function serializeTranslationRequest(request) {
     sourceTranscriptRevisionId: request.sourceTranscriptRevisionId,
     sourceTranscriptSnapshot: clonePlain(request.sourceTranscriptSnapshot),
     targetLanguageCode: request.targetLanguageCode,
+    operation: request.operation,
+    segmentRange: clonePlain(request.segmentRange),
+    ...(request.inputHash === undefined ? {} : { inputHash: request.inputHash }),
+    ...(request.model === undefined ? {} : { model: request.model }),
     createdAt: request.createdAt
   };
 }
@@ -383,6 +396,10 @@ function serializeTranslationOutput(output) {
     sequence: output.sequence,
     translatedText: output.translatedText,
     targetLanguageCode: output.targetLanguageCode,
+    operation: output.operation,
+    segmentRange: clonePlain(output.segmentRange),
+    ...(output.inputHash === undefined ? {} : { inputHash: output.inputHash }),
+    ...(output.model === undefined ? {} : { model: output.model }),
     providerMetadata: clonePlain(output.providerMetadata),
     createdAt: output.createdAt,
     ...(output.sessionId === undefined ? {} : { sessionId: output.sessionId }),
@@ -420,6 +437,10 @@ function enrichOutputForPersistence(output, request, existingOutputs) {
     sourceTranscriptMetadata: output.sourceTranscriptMetadata ?? { revisionId: request.sourceTranscriptRevisionId, snapshot },
     detectedSourceLanguageCode: output.detectedSourceLanguageCode ?? output.providerMetadata?.detectedSourceLanguageCode,
     version
+    , operation: output.operation ?? request.operation
+    , segmentRange: output.segmentRange ?? request.segmentRange
+    , inputHash: output.inputHash ?? request.inputHash
+    , model: output.model ?? request.model
   });
 }
 

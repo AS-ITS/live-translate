@@ -37,6 +37,13 @@ export class TranslationRequest {
       'sourceTranscriptRevisionId'
     );
     this.targetLanguageCode = assertRequiredString(input.targetLanguageCode, 'targetLanguageCode');
+    if (input.operation !== undefined) {
+      this.operation = input.operation;
+      if (typeof this.operation !== 'string' || this.operation.trim() === '') throw new TypeError('operation must be a non-empty string.');
+    }
+    if (input.segmentRange !== undefined) this.segmentRange = deepClone(input.segmentRange);
+    if (input.inputHash !== undefined) this.inputHash = assertOptionalString(input.inputHash, 'inputHash');
+    if (input.model !== undefined) this.model = assertOptionalString(input.model, 'model');
     this.sourceTranscriptSnapshot = deepClone(input.sourceTranscriptSnapshot ?? null);
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
 
@@ -223,6 +230,10 @@ export class TranslationOutput {
     this.sourceTranscriptMetadata = deepClone(input.sourceTranscriptMetadata ?? null);
     this.detectedSourceLanguageCode = assertOptionalString(input.detectedSourceLanguageCode, 'detectedSourceLanguageCode');
     this.version = input.version === undefined ? undefined : assertPositiveInteger(input.version, 'version');
+    if (input.operation !== undefined) this.operation = input.operation;
+    if (input.segmentRange !== undefined) this.segmentRange = deepClone(input.segmentRange);
+    if (input.inputHash !== undefined) this.inputHash = assertOptionalString(input.inputHash, 'inputHash');
+    if (input.model !== undefined) this.model = assertOptionalString(input.model, 'model');
     this.completedAt = input.completedAt === undefined ? this.createdAt : assertTimestamp(input.completedAt, 'completedAt');
 
     deepFreeze(this);

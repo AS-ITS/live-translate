@@ -1070,7 +1070,10 @@ async function handleRequestWithSessionReadController(
           const historyOutputs = Array.isArray(formalHistory?.outputs) ? formalHistory.outputs : [];
           const primaryOutputs = historyOutputs.filter(isLiveSessionTranslationOutput);
           session.translationHistory = {
-            outputs: legacyTranslationFallback(session.translationOutputs),
+            outputs: [
+              ...legacyTranslationFallback(session.translationOutputs),
+              ...historyOutputs.filter((output) => output?.operation === 'transcript_polishing')
+            ],
             executions: formalHistory?.executions || []
           };
           applyFormalOutputReadModel(session, primaryOutputs);

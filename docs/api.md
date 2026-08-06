@@ -922,3 +922,16 @@ Handling requirements:
 - Move frontend state to `error` when the end is unexpected.
 
 TODO: Confirm exact SDK session close/end event names.
+
+## Transcript Polishing Translation Commands
+
+Transcript polishing reuses `POST /api/translation-requests` and
+`POST /api/translation-executions`. A polishing request sets
+`operation: "transcript_polishing"` and includes `segmentRange`, `inputHash`,
+`model`, and a `sourceTranscriptSnapshot.polishingItems` array containing only
+paired final Cue data. The execution remains asynchronous and returns `202`.
+
+The existing `POST /api/translation-executions/:executionId/retry` endpoint is
+used for failed polishing executions. Session detail translation history
+includes completed polishing outputs with `operation`, `segmentRange`,
+`inputHash`, `model`, `version`, and completion timestamps.

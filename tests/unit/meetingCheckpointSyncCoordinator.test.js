@@ -122,6 +122,57 @@ test('meeting checkpoint sync coordinator flushes immediately on stop', async ()
   assert.equal(calls.length, 1);
 });
 
+test('queued flush from an old segment is ignored after a new segment starts', async () => {
+  const calls = [];
+  let resolveFirstUpdate;
+  const firstUpdate = new Promise((resolve) => { resolveFirstUpdate = resolve; });
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (calls.length === 1) await firstUpdate;
+    },
+    delayMs: 0,
+    setTimeoutFn: (callback) => callback,
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'old', segmentId: 'segment-1' })]);
+  const oldFlush = coordinator.flush();
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'new', segmentId: 'segment-2', text: 'new' })]);
+  resolveFirstUpdate();
+  await oldFlush;
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].segmentId, 'segment-2');
+  assert.deepEqual(calls[0].durableChunks.map((item) => item.idempotencyKey), ['new']);
+});
+
+test('segment filtering keeps old chunks and cues out of the current payload', async () => {
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'old', segmentId: 'segment-1' })]);
+  coordinator.enqueueCues([{ cueId: 'old-cue', segmentId: 'segment-1', status: 'final', sequence: 0 }], { nextSequence: 1 });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'new', segmentId: 'segment-2', text: 'new' })]);
+  coordinator.enqueueCues([{ cueId: 'new-cue', segmentId: 'segment-2', status: 'final', sequence: 0 }], { nextSequence: 2 });
+
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].durableChunks.map((item) => item.segmentId), ['segment-2']);
+  assert.deepEqual(calls[0].finalCues.map((item) => item.segmentId), ['segment-2']);
+  assert.deepEqual(calls[0].cueCheckpoint, { nextSequence: 2 });
+});
+
 test('checkpointChunksForTranscriptItems maps final transcript items only', () => {
   const chunks = checkpointChunksForTranscriptItems({
     meetingId: 'meeting-1',
@@ -158,8 +209,8 @@ test('checkpointChunksForTranscriptItems maps final transcript items only', () =
 function chunk(overrides = {}) {
   return {
     idempotencyKey: overrides.idempotencyKey ?? 'chunk-source-0',
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
+    meetingId: overrides.meetingId ?? 'meeting-1',
+    segmentId: overrides.segmentId ?? 'segment-1',
     stream: overrides.stream ?? 'source',
     sequence: overrides.sequence ?? 0,
     text: overrides.text ?? 'hello',

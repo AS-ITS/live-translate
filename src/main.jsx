@@ -22,6 +22,7 @@ import { createSessionRetranslationApiClient } from './lib/sessionRetranslationA
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
+import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
 import {
@@ -178,11 +179,10 @@ function App() {
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
   const pendingMicrophoneStreamRef = useRef(null);
+  const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const recordingControllerRef = useRef(null);
-  const inputAudioChunksRef = useRef([]);
   const inputAudioUploadChunksRef = useRef([]);
   const inputAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
-  const translatedAudioChunksRef = useRef([]);
   const translatedAudioUploadChunksRef = useRef([]);
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
@@ -356,6 +356,7 @@ function App() {
   }, [page, status]);
 
   useEffect(() => () => {
+    invalidateLiveSessionCallbacks();
     reconnectControllerRef.current?.cancel();
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
     sessionRef.current = null;
@@ -447,6 +448,7 @@ function App() {
   }
 
   async function startSession() {
+    invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
@@ -468,6 +470,7 @@ function App() {
       sessionRef.current = session;
 
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       const record = await createCurrentSessionRecord(meetingCheckpoint);
       await startRecordingForSession(record);
       setStatus('listening');
@@ -483,6 +486,7 @@ function App() {
   }
 
   async function pauseSession() {
+    invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -506,6 +510,7 @@ function App() {
   async function continuePausedSession() {
     if (status !== 'paused') return;
 
+    invalidateLiveSessionCallbacks();
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
@@ -521,6 +526,7 @@ function App() {
       session = await createSession({ preserveTranscript: true, liveSessionId: generateLiveSessionId() });
       sessionRef.current = session;
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
       setStatus('listening');
       segmentSwitchOrchestrator().start();
@@ -549,6 +555,7 @@ function App() {
   }
 
   async function endCurrentSession() {
+    invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -607,8 +614,13 @@ function App() {
       : '';
 
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
+    const callbackGeneration = {
+      generation: liveSessionCallbackGenerationRef.current.generation + 1,
+      active: false
+    };
+    liveSessionCallbackGenerationRef.current = callbackGeneration;
 
-    return new LiveTranslateSession({
+    const session = new LiveTranslateSession({
       liveSessionId,
       sessionId: activeSessionRecordIdRef.current,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
@@ -623,19 +635,27 @@ function App() {
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
       },
       onMicrophoneReady: ({ mediaStream } = {}) => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         pendingMicrophoneStreamRef.current = mediaStream || null;
         void refreshInputDevices();
       },
       onConnecting: () => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         setStatus((current) => (
           current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
         ));
       },
-      onInputAudioChunk: handleInputAudioChunk,
-      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' }),
-      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' }),
+      onInputAudioChunk: (chunk) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) handleInputAudioChunk(chunk);
+      },
+      onInputTranscript: (update) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' });
+      },
+      onOutputTranscript: (update) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' });
+      },
       onCueEvent: (event) => {
-        if (!liveCueUpdatesAllowedRef.current) return;
+        if (!isCurrentLiveSessionCallback(callbackGeneration) || !liveCueUpdatesAllowedRef.current) return;
         const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
           || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
         const cueEvent = event?.stream === 'translation'
@@ -643,8 +663,11 @@ function App() {
           : event;
         applyLiveSubtitleCueEvent(cueEvent);
       },
-      onOutputAudioChunk: handleTranslatedAudioChunk,
+      onOutputAudioChunk: (chunk) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) handleTranslatedAudioChunk(chunk);
+      },
       onError: (nextError) => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
           return;
@@ -660,10 +683,12 @@ function App() {
         });
       },
       onClose: () => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         setStatus((current) => (current === 'listening' ? 'stopped' : current));
         sessionRef.current = null;
       },
       onConnectionFailure: (failure) => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         const classification = classifyFailureSignal(failure);
         const failureUiState = failureUiStateForClassification(classification);
 
@@ -704,12 +729,36 @@ function App() {
           });
       }
     });
+    session.callbackGeneration = callbackGeneration;
+    return session;
+  }
+
+  function invalidateLiveSessionCallbacks() {
+    liveSessionCallbackGenerationRef.current = {
+      generation: liveSessionCallbackGenerationRef.current.generation + 1,
+      active: false
+    };
+  }
+
+  function activateLiveSessionCallbacks(callbackGeneration) {
+    if (liveSessionCallbackGenerationRef.current !== callbackGeneration) return false;
+    callbackGeneration.active = true;
+    return true;
+  }
+
+  function isCurrentLiveSessionCallback(callbackGeneration) {
+    return liveSessionCallbackGenerationRef.current === callbackGeneration && callbackGeneration.active;
+  }
+
+  function isCurrentLiveSessionInstance(callbackGeneration) {
+    return liveSessionCallbackGenerationRef.current === callbackGeneration;
   }
 
   function recordingController() {
     if (!recordingControllerRef.current) {
       recordingControllerRef.current = createMicrophoneRecordingController({
-        onStateChange: setRecordingState
+        onStateChange: setRecordingState,
+        collectChunks: false
       });
     }
 
@@ -746,7 +795,6 @@ function App() {
   }
 
   function resetInputAudioDownload() {
-    inputAudioChunksRef.current = [];
     inputAudioUploadChunksRef.current = [];
     inputAudioMetadataRef.current = { sessionId: '', startedAt: null };
     resetAudioUploadSegment('input');
@@ -761,14 +809,12 @@ function App() {
       return;
     }
 
-    inputAudioChunksRef.current.push(new Uint8Array(bytes));
     inputAudioUploadChunksRef.current.push(new Uint8Array(bytes));
     void flushAudioSegmentIfDue('input');
   }
 
   async function pauseRawAudioRecording() {
     if (!shouldRecordInputAudio) {
-      inputAudioChunksRef.current = [];
       setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
       return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
     }
@@ -805,12 +851,13 @@ function App() {
 
   async function finalizeRawAudioRecording() {
     if (!shouldRecordInputAudio) {
-      inputAudioChunksRef.current = [];
       setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
       return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
     }
 
-    const state = await recordingController().finalize().catch((nextError) => ({
+    const inputUploadSegment = audioUploadSegmentsRef.current.input;
+    const hasAudio = inputAudioUploadChunksRef.current.length > 0 || inputUploadSegment.nextIndex > 0;
+    const state = await recordingController().cleanup({ discard: true }).catch((nextError) => ({
       status: 'error',
       blob: null,
       mimeType: '',
@@ -819,38 +866,17 @@ function App() {
       errorMessage: nextError?.message || '原始語音音檔無法建立。'
     }));
 
-    if (inputAudioChunksRef.current.length === 0) {
-      setRecordingState(state);
-      return state;
-    }
-
-    try {
-      const metadata = inputAudioMetadataRef.current;
-      const wavState = {
-        status: 'ready',
-        blob: pcm16ChunksToWavBlob(inputAudioChunksRef.current, {
-          sampleRate: INPUT_SAMPLE_RATE,
-          normalizePeak: true
-        }),
-        mimeType: 'audio/wav',
-        extension: 'wav',
-        fileName: buildInputAudioFileName(metadata),
-        errorMessage: ''
-      };
-      setRecordingState(wavState);
-      return wavState;
-    } catch (nextError) {
-      const errorState = {
-        status: 'error',
-        blob: null,
-        mimeType: '',
-        extension: '',
-        fileName: '',
-        errorMessage: nextError?.message || '原始語音音檔無法建立。'
-      };
-      setRecordingState(errorState);
-      return errorState;
-    }
+    const savedState = {
+      ...state,
+      status: hasAudio ? 'saved' : 'idle',
+      blob: null,
+      mimeType: 'audio/wav',
+      extension: 'wav',
+      fileName: '',
+      errorMessage: ''
+    };
+    setRecordingState(savedState);
+    return savedState;
   }
 
   function prepareTranslatedAudioDownload(record) {
@@ -863,7 +889,6 @@ function App() {
   }
 
   function resetTranslatedAudioDownload() {
-    translatedAudioChunksRef.current = [];
     translatedAudioUploadChunksRef.current = [];
     translatedAudioMetadataRef.current = { sessionId: '', startedAt: null };
     resetAudioUploadSegment('translation');
@@ -875,7 +900,6 @@ function App() {
       return;
     }
 
-    translatedAudioChunksRef.current.push(new Uint8Array(bytes));
     translatedAudioUploadChunksRef.current.push(new Uint8Array(bytes));
     void flushAudioSegmentIfDue('translation');
     setTranslatedAudioState((current) => (
@@ -886,8 +910,9 @@ function App() {
   }
 
   function finalizeTranslatedAudioDownload(sessionId) {
-    const chunks = translatedAudioChunksRef.current;
-    if (chunks.length === 0) {
+    const translationUploadSegment = audioUploadSegmentsRef.current.translation;
+    const hasAudio = translatedAudioUploadChunksRef.current.length > 0 || translationUploadSegment.nextIndex > 0;
+    if (!hasAudio) {
       let nextState = null;
       setTranslatedAudioState((current) => (
         current.status === 'recording' ? (nextState = TRANSLATED_AUDIO_IDLE_STATE) : (nextState = current)
@@ -895,58 +920,9 @@ function App() {
       return nextState || TRANSLATED_AUDIO_IDLE_STATE;
     }
 
-    try {
-      const metadata = translatedAudioMetadataRef.current;
-      const blob = pcm16ChunksToWavBlob(chunks, { normalizePeak: true });
-      const nextState = {
-        status: 'ready',
-        blob,
-        fileName: buildTranslatedAudioFileName({
-          sessionId: metadata.sessionId || sessionId,
-          startedAt: metadata.startedAt
-        }),
-        errorMessage: ''
-      };
-      setTranslatedAudioState(nextState);
-      return nextState;
-    } catch (nextError) {
-      const errorState = {
-        status: 'error',
-        blob: null,
-        fileName: '',
-        errorMessage: nextError?.message || '翻譯語音音檔無法建立。'
-      };
-      setTranslatedAudioState(errorState);
-      return errorState;
-    }
-  }
-
-  function downloadRawAudio() {
-    const blob = recordingState.blob;
-    if (!blob || recordingState.status !== 'ready') return;
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = recordingState.fileName || 'live-translate-input-audio.webm';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  function downloadTranslatedAudio() {
-    const blob = translatedAudioState.blob;
-    if (!blob || translatedAudioState.status !== 'ready') return;
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = translatedAudioState.fileName || 'live-translate-translated-audio.wav';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const nextState = { status: 'saved', blob: null, fileName: '', errorMessage: '' };
+    setTranslatedAudioState(nextState);
+    return nextState;
   }
 
   function updateActiveSessionGlossaryEntries(entries) {
@@ -966,6 +942,7 @@ function App() {
     }
 
     setError('');
+    invalidateLiveSessionCallbacks();
     setStatusLabelOverride('');
     setStatus('reconnecting');
     segmentSwitchOrchestrator().cancel();
@@ -1016,6 +993,7 @@ function App() {
       }
 
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (nextError) {
       if (generationId !== reconnectController().currentGeneration()) {
@@ -1059,6 +1037,7 @@ function App() {
     if (!resumeDraft || isActive) return;
 
     reconnectController().reset();
+    invalidateLiveSessionCallbacks();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
@@ -1097,6 +1076,7 @@ function App() {
       session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -1115,6 +1095,7 @@ function App() {
     const previousSession = sessionRef.current;
     if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current) return;
 
+    invalidateLiveSessionCallbacks();
     setError('');
     setStatusLabelOverride('切換下一段中');
     setStatus('switching-segment');
@@ -1153,6 +1134,7 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
+      activateLiveSessionCallbacks(nextSession.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (error) {
       await nextSession.stop().catch(() => {});
@@ -1450,21 +1432,21 @@ function App() {
   async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}, options = {}) {
     try {
       await Promise.all([
-        states.input?.status === 'ready' ? flushAudioSegment('input', { force: true, sessionId }) : null,
-        states.translation?.status === 'ready' ? flushAudioSegment('translation', { force: true, sessionId }) : null
-      ].filter(Boolean));
+        flushAudioSegment('input', { force: true, sessionId }),
+        flushAudioSegment('translation', { force: true, sessionId })
+      ]);
       await refreshAudioArtifactDetails(sessionId, options);
     } catch (nextError) {
       console.error('Session audio artifact persistence failed.', nextError);
       if (nextError?.status === 413) {
-        setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響，目前音檔仍可在本頁下載。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
+        setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
         return;
       }
       if (isRetryableAudioUploadError(nextError)) {
         setError('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。');
         return;
       }
-      setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響，目前音檔仍可在本頁下載。');
+      setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響。');
     }
   }
 
@@ -1942,9 +1924,9 @@ function App() {
     return translationCommandLifecycleRef.current;
   }
 
-  function reportTranslationCommandError(error) {
+  function reportTranslationCommandError(error, context) {
     console.error('Translation command persistence failed.', error);
-    setError('無法儲存翻譯紀錄，但即時翻譯仍可繼續。');
+    setError(formatTranslationCommandPersistenceError(error, context));
   }
 
   async function openHistoryRecordDetail(id) {
@@ -2376,8 +2358,25 @@ function App() {
                 </p>
               ) : null}
               {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
-                {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              <p
+                className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}
+                role={hasAudioStatusError({
+                  shouldRecordInputAudio,
+                  recordingState,
+                  translatedAudioState
+                }) ? 'alert' : undefined}
+              >
+                {composeCheckpointStatusMessage({
+                  meetingCheckpointStatus,
+                  shouldRecordInputAudio,
+                  recordingState,
+                  translatedAudioState
+                }).map((message, index) => (
+                  <React.Fragment key={`${message}-${index}`}>
+                    {index > 0 ? <br /> : null}
+                    {message}
+                  </React.Fragment>
+                ))}
               </p>
               {meetingViewStats.archivedSegmentCount > 0 ? (
                 <p className="checkpoint-note">
@@ -2430,36 +2429,6 @@ function App() {
                 )}
               </div>
             </div>
-          </div>
-        </section>
-
-        <section className="recording-panel" aria-label="音檔下載">
-          <div>
-            <h2>音檔下載</h2>
-            <p className="recording-note">原始語音：{recordingStatusLabel(recordingState.status)}</p>
-            <p className="recording-note">翻譯語音：{translatedAudioStatusLabel(translatedAudioState.status)}</p>
-            {recordingState.errorMessage ? <p className="recording-error" role="alert">{recordingState.errorMessage}</p> : null}
-            {translatedAudioState.errorMessage ? <p className="recording-error" role="alert">{translatedAudioState.errorMessage}</p> : null}
-          </div>
-          <div className="recording-downloads">
-            <button
-              className="button secondary"
-              type="button"
-              onClick={downloadRawAudio}
-              disabled={recordingState.status !== 'ready' || !recordingState.blob}
-            >
-              <Download size={18} aria-hidden="true" />
-              下載原始語音
-            </button>
-            <button
-              className="button secondary"
-              type="button"
-              onClick={downloadTranslatedAudio}
-              disabled={translatedAudioState.status !== 'ready' || !translatedAudioState.blob}
-            >
-              <Download size={18} aria-hidden="true" />
-              下載翻譯語音
-            </button>
           </div>
         </section>
 
@@ -5189,6 +5158,7 @@ function recordingStatusLabel(status) {
     paused: '錄音已暫停，已保留目前片段。',
     finalizing: '正在完成錄音檔。',
     ready: '原始語音已可下載。',
+    saved: '音檔已保存，請到翻譯紀錄下載。',
     error: '原始語音錄音無法使用。'
   };
 
@@ -5200,10 +5170,38 @@ function translatedAudioStatusLabel(status) {
     idle: '尚無可下載的翻譯語音。',
     recording: '正在保留即時翻譯輸出。',
     ready: '翻譯語音已可下載。',
+    saved: '音檔已保存，請到翻譯紀錄下載。',
     error: '翻譯語音音檔無法使用。'
   };
 
   return labels[status] || labels.idle;
+}
+
+function composeCheckpointStatusMessage({
+  meetingCheckpointStatus,
+  shouldRecordInputAudio,
+  recordingState,
+  translatedAudioState
+}) {
+  const messages = [meetingCheckpointStatusLabel(meetingCheckpointStatus)];
+  const inputAudioIsActive = shouldRecordInputAudio && ['recording', 'paused', 'finalizing', 'ready', 'saved', 'error'].includes(recordingState?.status);
+  const translationAudioIsActive = ['recording', 'ready', 'saved', 'error'].includes(translatedAudioState?.status);
+
+  if (inputAudioIsActive) {
+    messages.push(`原始語音：${recordingStatusLabel(recordingState.status)}`);
+    if (recordingState.errorMessage) messages.push(`原始語音錯誤：${recordingState.errorMessage}`);
+  }
+
+  if (translationAudioIsActive) {
+    messages.push(`翻譯語音：${translatedAudioStatusLabel(translatedAudioState.status)}`);
+    if (translatedAudioState.errorMessage) messages.push(`翻譯語音錯誤：${translatedAudioState.errorMessage}`);
+  }
+
+  return messages;
+}
+
+function hasAudioStatusError({ shouldRecordInputAudio, recordingState, translatedAudioState }) {
+  return (shouldRecordInputAudio && recordingState?.status === 'error') || translatedAudioState?.status === 'error';
 }
 
 function createAudioUploadSegmentState() {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 修正長會議分段切換、重連、暫停／繼續與停止期間的 stale Live callback 與 checkpoint context 汙染；舊 generation 不再寫入目前段落，未成功同步資料仍會保留。
+
+- 翻譯紀錄保存失敗時補充顯示失敗階段、HTTP 狀態與安全錯誤代碼，方便診斷而不暴露內部錯誤細節。
+
+- 合併長會議同步與音檔狀態訊息；未產生音檔時只顯示同步狀態，有音檔活動時在同一個訊息欄位顯示錄音狀態，音檔下載仍保留於翻譯紀錄詳細資料。
+
+- 修正長時間錄音結束時的記憶體峰值：瀏覽器不再保留完整音檔或於 Stop 一次性組裝 WAV，音檔改由分段保存；畫面會引導使用者到翻譯紀錄下載。後端下載分段音檔時改為逐段串流，避免載入整個錄音。
+
 - 字幕潤飾改為使用 Gemini Flash-Lite 純文字回應，移除 structured-output 設定；空白／純標點輸入會略過 provider，400 錯誤會安全保存 HTTP status、provider code、message、model 與 config 欄位摘要。
 
 - 即時字幕不再依語言字數上限硬拆 Cue；完整句子會以 Gemini turn、句末、idle 或 Stop 作為邊界，潤飾失敗時保留原始翻譯並提供重試。

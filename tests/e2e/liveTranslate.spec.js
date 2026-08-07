@@ -757,6 +757,8 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
+  await expect(page.getByText('長會議同步：尚未開始', { exact: true })).toBeVisible();
+  await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
   const sourceLanguage = page.getByRole('combobox', { name: '主要輸入語言' });
   const targetLanguage = page.getByRole('combobox', { name: '目標語言' });
@@ -805,17 +807,11 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
-  await expect(page.getByText('未錄製講者原音。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeEnabled();
+  await expect(page.getByText('未錄製講者原音。')).toHaveCount(0);
+  await expect(page.getByText('翻譯語音：音檔已保存，請到翻譯紀錄下載。')).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockMediaRecorders.length)).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
-
-  const translatedDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載翻譯語音' }).click();
-  const translatedDownload = await translatedDownloadPromise;
-  expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
@@ -874,8 +870,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
   await expect(page.getByText('before pause source')).toBeVisible();
   await expect(page.getByText('before pause translation')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeDisabled();
+  await expect(page.getByText('原始語音：錄音已暫停，已保留目前片段。')).toBeVisible();
   await openHistoryPage(page);
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 
@@ -890,12 +885,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByText('after continue source')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeEnabled();
-
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載原始語音' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+  await expect(page.getByText('原始語音：音檔已保存，請到翻譯紀錄下載。')).toBeVisible();
 
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();

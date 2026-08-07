@@ -87,6 +87,28 @@ export function createFileSessionAudioArtifactRepository({ directory, fileSystem
       };
     },
 
+    async *stream(metadata) {
+      const sanitized = sanitizeMetadata(metadata);
+      if (sanitized?.storageMode !== SEGMENTED_STORAGE_MODE) {
+        const artifact = await this.read(metadata);
+        yield artifact.bytes;
+        return;
+      }
+
+      const dataByteLength = segmentedAudioDataByteLength(sanitized.segments);
+      let headerSent = false;
+      for (const segment of sanitized.segments) {
+        const bytes = await readBytes(segment.storagePath);
+        const parsed = parseWavSegment(bytes);
+        if (!headerSent) {
+          yield createPcm16WavHeader({ sampleRate: parsed.sampleRate, dataByteLength });
+          headerSent = true;
+        }
+        yield parsed.pcmBytes;
+      }
+      if (!headerSent) yield createPcm16WavHeader({ dataByteLength: 0 });
+    },
+
     async deleteMany(artifacts = {}) {
       const targets = Object.values(artifacts || {}).flatMap((metadata) => {
         const sanitized = sanitizeMetadata(metadata);
@@ -127,6 +149,12 @@ export function audioArtifactDownloadUrl({ sessionId, kind, meetingId } = {}) {
     return `/api/meetings/${encodeURIComponent(validateIdPart(meetingId, 'meetingId'))}/audio/${normalizedKind}`;
   }
   return `/api/sessions/${encodeURIComponent(validateIdPart(sessionId, 'sessionId'))}/audio/${normalizedKind}`;
+}
+
+export function audioArtifactDownloadByteLength(metadata) {
+  const sanitized = sanitizeMetadata(metadata);
+  if (sanitized?.storageMode !== SEGMENTED_STORAGE_MODE) return sanitized?.byteLength || 0;
+  return 44 + segmentedAudioDataByteLength(sanitized.segments);
 }
 
 export function sanitizeAudioArtifactsForDTO(artifacts = {}, { sessionId, meetingId } = {}) {
@@ -193,6 +221,39 @@ function sanitizeSegments(segments = []) {
     })
     .filter(Boolean)
     .sort((left, right) => left.index - right.index);
+}
+
+function segmentedAudioDataByteLength(segments = []) {
+  return segments.reduce((total, segment) => total + Math.max(0, segment.byteLength - 44), 0);
+}
+
+function parseWavSegment(bytes) {
+  const source = Buffer.from(bytes);
+  if (source.length < 44 || source.toString('ascii', 0, 4) !== 'RIFF' || source.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new TypeError('WAV segment is invalid.');
+  }
+  const dataByteLength = source.readUInt32LE(40);
+  const end = 44 + dataByteLength;
+  if (end > source.length) throw new TypeError('WAV segment is invalid.');
+  return { sampleRate: source.readUInt32LE(24), pcmBytes: source.subarray(44, end) };
+}
+
+function createPcm16WavHeader({ sampleRate = 24000, dataByteLength = 0 } = {}) {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0, 'ascii');
+  header.writeUInt32LE(36 + dataByteLength, 4);
+  header.write('WAVE', 8, 'ascii');
+  header.write('fmt ', 12, 'ascii');
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * 2, 28);
+  header.writeUInt16LE(2, 32);
+  header.writeUInt16LE(16, 34);
+  header.write('data', 36, 'ascii');
+  header.writeUInt32LE(dataByteLength, 40);
+  return header;
 }
 
 function validateKind(kind) {

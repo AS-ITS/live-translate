@@ -10,6 +10,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import {
+  audioArtifactDownloadByteLength,
   sanitizeAudioArtifactsForDTO,
   validateAudioArtifactKind
 } from '../src/infrastructure/sessionAudioArtifacts.js';
@@ -123,6 +124,30 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     ...(requestId ? { 'X-Request-Id': requestId } : {})
   });
   res.end(buffer);
+}
+
+function writeBinaryHeaders(res, status, { contentType = 'application/octet-stream', contentLength, fileName = 'download.bin', requestId } = {}) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    ...(Number.isFinite(contentLength) ? { 'Content-Length': contentLength } : {}),
+    'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'X-Frame-Options': 'DENY',
+    ...(requestId ? { 'X-Request-Id': requestId } : {})
+  });
+}
+
+async function sendBinaryStream(res, status, stream, options = {}) {
+  writeBinaryHeaders(res, status, options);
+  for await (const chunk of stream) {
+    if (!res.write(chunk)) await new Promise((resolve) => res.once('drain', resolve));
+  }
+  res.end();
 }
 
 async function readJson(req, { maxBytes = DEFAULT_JSON_REQUEST_MAX_BYTES } = {}) {
@@ -667,19 +692,29 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && isMeetingAudioPath(path)) {
     try {
       const { meetingId, kind } = parseMeetingAudioPath(path);
-      const artifact = await readMeetingAudioArtifact({ sessionRepository, sessionAudioArtifactRepository, meetingId, kind });
-      if (!artifact) {
+      const metadata = await readMeetingAudioArtifact({ sessionRepository, meetingId, kind });
+      if (!metadata) {
         statusCode = 404;
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
         return;
       }
 
       statusCode = 200;
-      sendBinary(res, statusCode, artifact.bytes, {
-        contentType: artifact.metadata.mimeType,
-        fileName: artifact.metadata.fileName,
-        requestId
-      });
+      if (metadata.storageMode === 'segmented' && typeof sessionAudioArtifactRepository.stream === 'function') {
+        await sendBinaryStream(res, statusCode, sessionAudioArtifactRepository.stream(metadata), {
+          contentType: 'audio/wav',
+          contentLength: audioArtifactDownloadByteLength(metadata),
+          fileName: metadata.fileName,
+          requestId
+        });
+      } else {
+        const artifact = await sessionAudioArtifactRepository.read(metadata);
+        sendBinary(res, statusCode, artifact.bytes, {
+          contentType: artifact.metadata.mimeType,
+          fileName: artifact.metadata.fileName,
+          requestId
+        });
+      }
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -930,13 +965,22 @@ async function handleRequestWithSessionReadController(
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
         return;
       }
-      const artifact = await sessionAudioArtifactRepository.read(metadata);
       statusCode = 200;
-      sendBinary(res, statusCode, artifact.bytes, {
-        contentType: artifact.metadata.mimeType,
-        fileName: artifact.metadata.fileName,
-        requestId
-      });
+      if (metadata.storageMode === 'segmented' && typeof sessionAudioArtifactRepository.stream === 'function') {
+        await sendBinaryStream(res, statusCode, sessionAudioArtifactRepository.stream(metadata), {
+          contentType: 'audio/wav',
+          contentLength: audioArtifactDownloadByteLength(metadata),
+          fileName: metadata.fileName,
+          requestId
+        });
+      } else {
+        const artifact = await sessionAudioArtifactRepository.read(metadata);
+        sendBinary(res, statusCode, artifact.bytes, {
+          contentType: artifact.metadata.mimeType,
+          fileName: artifact.metadata.fileName,
+          requestId
+        });
+      }
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1357,14 +1401,14 @@ function isMeetingDetailPath(path) {
   return !path.slice(prefix.length).includes('/');
 }
 
-async function readMeetingAudioArtifact({ sessionRepository, sessionAudioArtifactRepository, meetingId, kind }) {
+async function readMeetingAudioArtifact({ sessionRepository, meetingId, kind }) {
   const records = await sessionRepository.listSessionRecords();
   const record = [...records]
     .filter((sessionRecord) => sessionRecord?.meetingId === meetingId && sessionRecord.audioArtifacts?.[kind])
     .sort((left, right) => timestampValue(left.startedAt) - timestampValue(right.startedAt))[0];
   const metadata = record?.audioArtifacts?.[kind];
   if (!metadata) return null;
-  return sessionAudioArtifactRepository.read(metadata);
+  return metadata;
 }
 
 function timestampValue(value) {

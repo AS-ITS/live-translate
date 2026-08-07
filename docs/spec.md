@@ -90,11 +90,9 @@ The MVP includes:
 - Stopping a session closes microphone tracks and ends the Gemini Live session.
 - Before starting a session, the user can choose whether to locally record the
   speaker's original microphone audio.
-- After stopping a session, the user can download the original microphone audio
-  as a browser-generated WAV file only when local speaker recording was enabled
-  and local audio chunks are available.
-- After stopping a session, the user can download translated audio received from
-  Gemini as a browser-generated WAV file when output audio was produced.
+- After stopping a session, the user can download saved original microphone and
+  translated audio from the Translation History detail view when the audio
+  artifacts were produced and successfully stored.
 - Saved translation history details can download persisted original and
   translated WAV audio artifacts when those artifacts were produced and
   successfully stored.

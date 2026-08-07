@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTranslationCommandLifecycle } from '../../src/lib/translationCommandLifecycle.js';
+import { formatTranslationCommandPersistenceError } from '../../src/lib/translationCommandError.js';
+
+test('formats translation command persistence errors with operation, status, and safe code', () => {
+  assert.equal(
+    formatTranslationCommandPersistenceError(
+      { status: 409, code: 'translation_execution_conflict' },
+      { operation: 'createTranslationOutput' }
+    ),
+    '翻譯紀錄保存失敗：儲存最終翻譯結果（HTTP 409，錯誤代碼：translation_execution_conflict）。即時翻譯仍可繼續。'
+  );
+});
 
 test('records session start through translation request, execution creation, and execution start update', async () => {
   const calls = [];

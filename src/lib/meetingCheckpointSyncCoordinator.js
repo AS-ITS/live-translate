@@ -18,16 +18,15 @@ export function createMeetingCheckpointSyncCoordinator({
   const pendingCues = new Map();
   let pendingCueCheckpoint = null;
   let context = null;
+  let contextGeneration = 0;
   let timer = null;
   let retryTimer = null;
   let queue = Promise.resolve();
 
   return Object.freeze({
     start(nextContext = {}) {
-      context = normalizeContext(nextContext);
-      pendingChunks.clear();
-      pendingCues.clear();
-      pendingCueCheckpoint = null;
+      contextGeneration += 1;
+      context = { ...normalizeContext(nextContext), generation: contextGeneration };
       clearTimer();
       clearRetryTimer();
       onStatusChange?.('ready');
@@ -40,56 +39,65 @@ export function createMeetingCheckpointSyncCoordinator({
       }
       if (pendingChunks.size === 0 || timer || retryTimer) return;
 
+      const scheduledGeneration = context.generation;
       timer = setTimeoutFn(() => {
         timer = null;
-        void enqueueFlush();
+        void enqueueFlush(scheduledGeneration);
       }, Math.max(0, delayMs));
     },
 
     enqueueCues(cues = [], checkpoint = null) {
       if (!context) return;
       for (const cue of cues) if (cue?.status === 'final' && cue.cueId) pendingCues.set(cue.cueId, cue);
-      if (checkpoint) pendingCueCheckpoint = checkpoint;
+      if (checkpoint) pendingCueCheckpoint = { checkpoint, generation: context.generation };
       if ((pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) && !timer && !retryTimer) {
-        timer = setTimeoutFn(() => { timer = null; void enqueueFlush(); }, Math.max(0, delayMs));
+        const scheduledGeneration = context.generation;
+        timer = setTimeoutFn(() => { timer = null; void enqueueFlush(scheduledGeneration); }, Math.max(0, delayMs));
       }
     },
 
     flush() {
       clearTimer();
       clearRetryTimer();
-      return enqueueFlush();
+      return enqueueFlush(context?.generation);
     },
 
     cancel() {
       clearTimer();
       clearRetryTimer();
+      contextGeneration += 1;
       context = null;
-      pendingChunks.clear();
-      pendingCues.clear();
-      pendingCueCheckpoint = null;
       onStatusChange?.('idle');
     }
   });
 
-  function enqueueFlush() {
-    queue = queue.then(flushPending);
+  function enqueueFlush(expectedGeneration = context?.generation) {
+    queue = queue.then(() => flushPending(expectedGeneration));
     return queue;
   }
 
-  async function flushPending() {
-    if (!context || (pendingChunks.size === 0 && pendingCues.size === 0 && !pendingCueCheckpoint)) return true;
+  async function flushPending(expectedGeneration) {
+    if (!context || context.generation !== expectedGeneration) return true;
 
-    const chunks = sortedChunks(Array.from(pendingChunks.values()));
-    const cues = [...pendingCues.values()].sort((left, right) => left.sequence - right.sequence);
-    const payloadCheckpoint = pendingCueCheckpoint;
+    const flushContext = context;
+    const chunks = sortedChunks(Array.from(pendingChunks.values()).filter((chunk) => (
+      chunk.meetingId === flushContext.meetingId && chunk.segmentId === flushContext.segmentId
+    )));
+    const cues = [...pendingCues.values()]
+      .filter((cue) => cue.segmentId === flushContext.segmentId)
+      .sort((left, right) => left.sequence - right.sequence);
+    const payloadCheckpoint = pendingCueCheckpoint?.generation === flushContext.generation
+      ? pendingCueCheckpoint.checkpoint
+      : null;
+    if (chunks.length === 0 && cues.length === 0 && !payloadCheckpoint) return true;
+
     onStatusChange?.('syncing');
 
     try {
       await updateCheckpoint({
-        meetingId: context.meetingId,
-        segmentId: context.segmentId,
-        idempotencyKey: checkpointIdempotencyKey(context.segmentId, chunks),
+        meetingId: flushContext.meetingId,
+        segmentId: flushContext.segmentId,
+        idempotencyKey: checkpointIdempotencyKey(flushContext.segmentId, chunks),
         durableChunks: chunks,
         finalCues: cues,
         cueCheckpoint: payloadCheckpoint
@@ -103,14 +111,20 @@ export function createMeetingCheckpointSyncCoordinator({
         const pending = pendingCues.get(cue.cueId);
         if (pending && JSON.stringify(pending) === JSON.stringify(cue)) pendingCues.delete(cue.cueId);
       }
-      if (pendingCueCheckpoint && JSON.stringify(pendingCueCheckpoint) === JSON.stringify(payloadCheckpoint)) pendingCueCheckpoint = null;
+      if (
+        pendingCueCheckpoint?.generation === flushContext.generation &&
+        JSON.stringify(pendingCueCheckpoint.checkpoint) === JSON.stringify(payloadCheckpoint)
+      ) pendingCueCheckpoint = null;
       retryTimer = null;
-      onStatusChange?.(pendingChunks.size > 0 ? 'ready' : 'synced');
+      if (context?.generation === flushContext.generation) {
+        onStatusChange?.(pendingChunks.size > 0 ? 'ready' : 'synced');
+      }
       return true;
     } catch (error) {
+      if (context?.generation !== flushContext.generation) return false;
       onStatusChange?.('error');
       onError?.(error);
-      if (context && isRetryableCheckpointError(error)) scheduleRetry();
+      if (context?.generation === flushContext.generation && isRetryableCheckpointError(error)) scheduleRetry(flushContext.generation);
       return false;
     }
   }
@@ -121,11 +135,11 @@ export function createMeetingCheckpointSyncCoordinator({
     timer = null;
   }
 
-  function scheduleRetry() {
-    if (retryTimer || !context) return;
+  function scheduleRetry(generation) {
+    if (retryTimer || !context || context.generation !== generation) return;
     retryTimer = setTimeoutFn(() => {
       retryTimer = null;
-      void enqueueFlush();
+      void enqueueFlush(generation);
     }, Math.max(0, retryDelayMs));
   }
 

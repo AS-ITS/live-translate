@@ -83,7 +83,8 @@ export function normalizeCueTimeline(cues = [], options = {}) {
 export function wrapSubtitleText(text, languageCode, options = {}) {
   const normalized = normalizeExportText(text);
   if (!normalized) return '';
-  const maxChars = options.maxChars ?? options.maxCharsByLanguage?.[languageCode] ?? DEFAULT_MAX_CHARS_BY_LANGUAGE[languageCode] ?? 40;
+  const effectiveLanguageCode = languageCodeForText(normalized, languageCode);
+  const maxChars = options.maxChars ?? options.maxCharsByLanguage?.[effectiveLanguageCode] ?? DEFAULT_MAX_CHARS_BY_LANGUAGE[effectiveLanguageCode] ?? 40;
   if (normalized.length <= maxChars) return normalized;
   const tokens = tokenizeForWrapping(normalized);
   const lines = [''];
@@ -111,6 +112,13 @@ export function wrapSubtitleText(text, languageCode, options = {}) {
   }
 
   return lines.filter(Boolean).join('\n');
+}
+
+function languageCodeForText(text, languageCode) {
+  const cjkLanguage = ['zh-Hant', 'zh-Hans', 'ja', 'ko'].includes(languageCode);
+  const hasCjkScript = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
+  if (cjkLanguage && !hasCjkScript) return 'en';
+  return languageCode;
 }
 
 export function formatSrtTimestamp(milliseconds) {

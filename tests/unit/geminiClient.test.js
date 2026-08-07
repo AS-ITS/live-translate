@@ -439,6 +439,87 @@ test('normalize accepts alternate Gemini response shapes', () => {
   );
 });
 
+test('normalize maps polishing response text to one refined result', () => {
+  assert.deepEqual(
+    normalizeGeminiExecutionResponse(
+      { text: () => '  Hello, everyone.  ' },
+      { polishing: true }
+    ),
+    {
+      translatedText: 'Hello, everyone.'
+    }
+  );
+});
+
+test('polishing REST request uses plain text and no structured output fields', () => {
+  const request = buildGeminiExecutionRequest({
+    input: executionInput({
+      operation: 'transcript_polishing',
+      polishingItems: [{ cueId: 'cue-1', sequence: 1, sourceText: '原文', translationText: 'Hello' }]
+    }),
+    model: 'gemini-model'
+  });
+  assert.equal(Object.hasOwn(request.body, 'generationConfig'), false);
+  assert.equal(Object.hasOwn(request.body, 'config'), false);
+});
+
+test('HTTP 400 polishing error preserves safe provider diagnostics without exposing the API key', async () => {
+  const client = createClient({
+    httpClient: {
+      post(request) {
+        assert.equal(Object.hasOwn(request.body, 'generationConfig'), false);
+        return httpResponse({
+          ok: false,
+          status: 400,
+          body: {
+            error: {
+              code: 400,
+              status: 'INVALID_ARGUMENT',
+              message: 'Invalid request for model gemini-3.5-flash-lite and API key AIza12345678901234567890.',
+              details: [{
+                '@type': 'type.googleapis.com/google.rpc.BadRequest',
+                fieldViolations: [{ field: 'contents' }],
+                metadata: { service: 'generativelanguage.googleapis.com', secret: 'do-not-store' }
+              }]
+            }
+          }
+        });
+      }
+    }
+  });
+
+  await assert.rejects(
+    client.execute(executionInput({
+      operation: 'transcript_polishing',
+      polishingItems: [{ cueId: 'cue-1', sequence: 1, sourceText: '原文', translationText: 'Hello' }]
+    })),
+    (error) => {
+      assert.equal(error instanceof GeminiHttpError, true);
+      assert.equal(error.status, 400);
+      assert.equal(error.code, 'bad_request');
+      assert.equal(error.providerCode, 400);
+      assert.equal(error.providerStatus, 'INVALID_ARGUMENT');
+      assert.equal(error.model, 'gemini-test-model');
+      assert.deepEqual(error.requestConfig, { fields: [] });
+      assert.equal(error.providerMessage.includes('[redacted-api-key]'), true);
+      assert.equal(JSON.stringify(error.providerDetails).includes('do-not-store'), false);
+      assert.equal(JSON.stringify(error).includes('AIza'), false);
+      return true;
+    }
+  );
+});
+
+test('polishing normalization trims plain text and rejects structured output', () => {
+  assert.deepEqual(
+    normalizeGeminiExecutionResponse({ text: '  Hello, everyone.  ' }, { polishing: true }),
+    { translatedText: 'Hello, everyone.' }
+  );
+  assert.throws(
+    () => normalizeGeminiExecutionResponse({ text: '{"polishedText":"wrong"}' }, { polishing: true }),
+    /provider_invalid_response/
+  );
+});
+
 test('uses injected HTTP client without touching global fetch', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = () => {

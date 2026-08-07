@@ -2,13 +2,8 @@ const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
-export const DEFAULT_CJK_MINIMUM_CUE_CHARS = 12;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
-const DEFAULT_MAX_CUE_CHARS = Object.freeze({
-  'zh-Hant': 32, 'zh-Hans': 32, ja: 36, ko: 44,
-  en: 80, es: 84, fr: 84, de: 76
-});
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
@@ -36,6 +31,22 @@ export function createSubtitleCueState(input = {}) {
 
 export function resetSubtitleCueState() {
   return createSubtitleCueState();
+}
+
+export function applyPolishedCueTranslations(stateInput, polishedItems = []) {
+  const state = createSubtitleCueState(stateInput);
+  const replacements = new Map((Array.isArray(polishedItems) ? polishedItems : [])
+    .filter((item) => item?.cueId && typeof item.polishedText === 'string' && item.polishedText.trim())
+    .map((item) => [item.cueId, item.polishedText.trim()]));
+  if (replacements.size === 0) return stateInput;
+  let changed = false;
+  const finalCues = state.finalCues.map((cue) => {
+    const text = replacements.get(cue.cueId);
+    if (!text || text === cue.translatedText) return cue;
+    changed = true;
+    return { ...cue, translatedText: text, updatedTimeMs: Date.now() };
+  });
+  return changed ? { ...state, finalCues } : stateInput;
 }
 
 export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {}) {
@@ -66,31 +77,9 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   const cue = cueForState(next, target?.key || currentKey(next));
   if (!cue) return next;
 
-  const complete = isCueSubmittable(cue);
-  if (complete && hasMinimumCueLength(cue, minimumCueCharacters(cue, options)) && exceedsLanguageCueLimit(cue, options)) {
-    const split = splitCompleteCue(next, cue, event, options);
-    if (split) return split;
-  }
-  const shouldFinalize = complete && isStrongSentenceCue(cue, options);
-  if (shouldFinalize) return finalizeCue(next, cue, {
-    ...options,
-    nowMs: event.sessionTimeMs,
-    reason: 'punctuation',
-    stream: event.stream,
-    minimumGapMs: options.minimumGapMs,
-    minimumCueDurationMs: options.minimumCueDurationMs
-  });
-
-  if (complete && hasMinimumCueLength(cue, minimumCueCharacters(cue, options)) && exceedsLanguageCueLimit(cue, options)) {
-    // Keep the bilingual pair atomic when no safe, aligned split exists.
-    return finalizeCue(next, cue, {
-      ...options,
-      nowMs: event.sessionTimeMs,
-      reason: 'length',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
+  // Transcript events, including provider-final events and punctuation, only
+  // update the pending bilingual pair. A boundary/idle/stop caller owns the
+  // decision to commit a complete Cue.
   return next;
 }
 
@@ -104,7 +93,8 @@ export function finalizePendingSubtitleCue(stateInput, options = {}) {
   if (candidates.length === 0) return stateInput;
   let next = state;
   for (const cue of candidates) {
-    next = finalizeCue(next, cueForState(next, cue.key || stablePendingKey(cue)), {
+    const candidate = cueForState(next, cue.key || stablePendingKey(cue));
+    next = finalizeCue(next, candidate, {
       ...options,
       nowMs: cue.endTimeMs,
       reason: options.reason || 'flush',
@@ -170,11 +160,26 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
 
 export function subtitleCuesForDisplay(stateInput) {
   const state = createSubtitleCueState(stateInput);
-  return [
-    ...state.finalCues,
-    ...state.pendingCues,
-    ...(state.currentCue ? [state.currentCue] : [])
-  ];
+  const preview = pendingCuePreview(state);
+  return preview ? [...state.finalCues, preview] : [...state.finalCues];
+}
+
+function pendingCuePreview(state) {
+  const candidates = [state.currentCue, ...state.pendingCues]
+    .filter((cue) => cue && cue.status !== 'final')
+    .filter((cue) => normalizeText(cue.sourceText) || normalizeText(cue.translatedText))
+    .sort((left, right) => (right.updatedTimeMs || right.endTimeMs || 0) - (left.updatedTimeMs || left.endTimeMs || 0));
+  if (candidates.length === 0) return null;
+  return candidates.reduce((preview, cue) => ({
+    ...preview,
+    cueId: preview.cueId || cue.cueId,
+    sequence: Math.min(preview.sequence || cue.sequence, cue.sequence || preview.sequence),
+    startTimeMs: Math.min(preview.startTimeMs ?? cue.startTimeMs, cue.startTimeMs ?? preview.startTimeMs),
+    endTimeMs: Math.max(preview.endTimeMs ?? cue.endTimeMs, cue.endTimeMs ?? preview.endTimeMs),
+    sourceText: preview.sourceText || cue.sourceText || '',
+    translatedText: preview.translatedText || cue.translatedText || '',
+    status: 'partial'
+  }), {});
 }
 
 function normalizeEvent(event, options) {
@@ -247,14 +252,16 @@ function moveClosedCurrentCue(state, event) {
   }
 
   if (Number.isFinite(current.boundaryAtMs) && event.sessionTimeMs > current.boundaryAtMs) {
-    return moveCueToNextState(state, current, event);
-  }
-
-  // A formal input transcript can arrive after an interim source transcript
-  // for the same provider turn. Keep the interim bilingual Cue intact and
-  // place the formal source in the next partial Cue.
-  if (event.isFinal && event.stream === 'source' && current.sourceText) {
-    return moveCueToNextState(state, current, event);
+    const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+    const existing = normalizeText(current[field]);
+    const incoming = normalizeText(event.text);
+    const isSameUpdate = !existing || existing === incoming || existing.startsWith(incoming) || incoming.startsWith(existing);
+    // A late counterpart or cumulative revision remains paired with the
+    // boundary-marked Cue. A genuinely new stream value starts a new pending
+    // pair, without finalizing the old one.
+    if (!isSameUpdate && existing && event.stream === (current.sourceText ? 'source' : 'translation')) {
+      return moveCueToNextState(state, current, event);
+    }
   }
 
   return state;
@@ -329,7 +336,7 @@ function cueScopeMatchesEvent(cue, event) {
 function updateFinalCue(state, target, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const finalCues = [...state.finalCues];
-  const nextText = mergeCueText(target.cue[field], event.text);
+  const nextText = mergeCueText(target.cue[field], event.text, event);
   finalCues[target.index] = {
     ...target.cue,
     [field]: nextText,
@@ -362,22 +369,26 @@ function isRedundantTextUpdate(currentText, incomingText) {
   return incoming.length > 0 && incoming.length < current.length && current.endsWith(incoming);
 }
 
-function mergeCueText(currentText, incomingText) {
+function mergeCueText(currentText, incomingText, context = {}) {
   const current = normalizeText(currentText);
   const incoming = normalizeText(incomingText);
   if (!current) return incoming;
   if (!incoming || current === incoming || current.startsWith(incoming)) return current;
   if (incoming.startsWith(current)) return incoming;
   if (isRedundantTextUpdate(current, incoming)) return current;
-  return `${current}${needsTextSeparator(current, incoming) ? ' ' : ''}${incoming}`;
+  return `${current}${needsTextSeparator(current, incoming, context) ? ' ' : ''}${incoming}`;
 }
 
-function needsTextSeparator(currentText, incomingText) {
+function needsTextSeparator(currentText, incomingText, context = {}) {
   if (containsCjk(currentText)
     && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
     return false;
   }
   if (/^[\s\p{P}\p{S}]/u.test(incomingText)) return false;
+  if (/(?:interim|fragment)/iu.test(String(context.eventType || ''))
+    || (/^[A-Za-z]+$/u.test(currentText) && /^[a-z]+$/u.test(incomingText) && currentText.length <= 4)) {
+    return false;
+  }
   return /\S$/u.test(currentText);
 }
 
@@ -420,7 +431,7 @@ function addCue(state, event) {
 function updateCue(state, target, event) {
   const cue = target.cue;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const nextText = mergeCueText(cue[field], event.text);
+  const nextText = mergeCueText(cue[field], event.text, event);
   const updated = {
     ...cue,
     [field]: nextText,
@@ -577,8 +588,10 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
 
   const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
   const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
-  return sourceText.length <= languageCueLimit(previousCue.sourceLanguageCode || nextCue.sourceLanguageCode, options)
-    && translatedText.length <= languageCueLimit(previousCue.targetLanguageCode || nextCue.targetLanguageCode, options);
+  // Cue boundaries come from the provider turn/sentence lifecycle. Do not
+  // invent a second boundary merely because a language-specific character
+  // budget was reached.
+  return Boolean(sourceText && translatedText);
 }
 
 function containsCjk(text) {
@@ -601,176 +614,17 @@ function resolveSessionTimeMs(input = {}) {
 
 function deltaAfterFinalCues(event, options) {
   const text = String(event.text || '');
+  // Final transcript events close a provider turn. A later turn may legally
+  // repeat the same number or phrase as the completed history, so treating a
+  // final event as a cumulative history update would discard real speech.
+  // History-prefix removal is only safe for non-final cumulative updates.
+  if (event.isFinal) return text;
   const finalCues = Array.isArray(options.finalCues) ? options.finalCues : [];
   const values = event.stream === 'source' ? finalCues.map((cue) => cue.sourceText) : finalCues.map((cue) => cue.translatedText);
   if (values.length < 2) return text;
   const prefixes = [values.join(' '), values.join('')].filter(Boolean);
   const prefix = prefixes.find((candidate) => text.length > candidate.length && text.startsWith(candidate));
   return prefix ? text.slice(prefix.length) : text;
-}
-
-function isStrongSentenceCue(cue, options = {}) {
-  return hasMinimumCueLength(cue, minimumCueCharacters(cue, options)) &&
-    endsSentence(cue.sourceText) && endsSentence(cue.translatedText);
-}
-
-function minimumCueCharacters(cue, options = {}) {
-  if (Number.isInteger(options.minimumCjkCueChars)) return options.minimumCjkCueChars;
-  const languageCode = cue?.sourceLanguageCode || options.sourceLanguageCode;
-  return (languageCode === 'zh-Hant' || languageCode === 'zh-Hans') && containsCjk(cue?.sourceText)
-    ? DEFAULT_CJK_MINIMUM_CUE_CHARS
-    : 1;
-}
-
-function hasMinimumCueLength(cue, minimumChars) {
-  const sourceText = normalizeText(cue?.sourceText);
-  const translatedText = normalizeText(cue?.translatedText);
-  if (!sourceText || !translatedText) return false;
-  if (minimumChars <= 1) return true;
-  if (Number.isFinite(cue?.providerEventSequence) && Number.isFinite(cue?.boundaryAtMs)) return true;
-  if (countCjkCharacters(sourceText) >= minimumChars || countCjkCharacters(translatedText) >= minimumChars) return true;
-  // Spaced CJK utterances are often short in code-point count but complete at
-  // the word level (for example, three named items). Preserve the minimum for
-  // fragment-like text while accepting these clearly segmented utterances.
-  return containsCjk(sourceText) && sourceText.split(/\s+/u).filter(Boolean).length >= 3;
-}
-
-function countCjkCharacters(text) {
-  return Array.from(normalizeText(text)).filter(isCjkCharacter).length;
-}
-
-function exceedsLanguageCueLimit(cue, options) {
-  const sourceLimit = languageCueLimit(cue?.sourceLanguageCode || options.sourceLanguageCode, options);
-  const translationLimit = languageCueLimit(cue?.targetLanguageCode || options.targetLanguageCode, options);
-  return normalizeText(cue?.sourceText).length > sourceLimit || normalizeText(cue?.translatedText).length > translationLimit;
-}
-
-function splitCompleteCue(state, cue, event, options) {
-  const sourceLimit = languageCueLimit(cue.sourceLanguageCode || options.sourceLanguageCode, options);
-  const translationLimit = languageCueLimit(cue.targetLanguageCode || options.targetLanguageCode, options);
-  const sourceParts = splitCueText(cue.sourceText, sourceLimit);
-  const translationParts = splitCueText(cue.translatedText, translationLimit);
-  // Keep the bilingual Cue atomic when only one side has a safe split. This
-  // prevents a source fragment from becoming a source-only export Cue, or a
-  // short translation from being duplicated across multiple source Cues.
-  if (sourceParts.length < 2 || translationParts.length < 2) return null;
-  const partCount = Math.max(sourceParts.length, translationParts.length);
-  if (partCount < 2) return null;
-
-  const alignedSource = alignParts(sourceParts, partCount);
-  const alignedTranslation = alignParts(translationParts, partCount);
-  if (!alignedSource || !alignedTranslation || alignedSource.length !== alignedTranslation.length) return null;
-
-  let next = {
-    ...state,
-    currentCue: state.currentCue?.cueId === cue.cueId ? null : state.currentCue,
-    pendingCues: state.pendingCues.filter((item) => item.cueId !== cue.cueId),
-    nextSequence: cue.sequence
-  };
-  for (let index = 0; index < alignedSource.length; index += 1) {
-    const sequence = next.nextSequence;
-    const partCue = {
-      ...cue,
-      cueId: cueIdFor({ sessionId: cue.sessionId || cue.liveSessionId, segmentId: cue.segmentId, sequence }),
-      sequence,
-      sourceText: alignedSource[index],
-      translatedText: alignedTranslation[index],
-      startTimeMs: cue.startTimeMs,
-      endTimeMs: Math.max(cue.endTimeMs, event.sessionTimeMs),
-      status: 'partial'
-    };
-    next = finalizeCue(next, partCue, {
-      ...options,
-      nowMs: event.sessionTimeMs,
-      reason: 'length',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
-  return next;
-}
-
-function languageCueLimit(languageCode, options) {
-  if (Number.isInteger(options.maxCueChars)) return options.maxCueChars;
-  return DEFAULT_MAX_CUE_CHARS[languageCode] || DEFAULT_MAX_CUE_CHARS.en;
-}
-
-function splitCueText(text, maxChars) {
-  const normalized = normalizeText(text);
-  if (!normalized || normalized.length <= maxChars) return [normalized];
-
-  const parts = [];
-  let remaining = normalized;
-  while (remaining.length > maxChars) {
-    const boundary = safeBoundaryBefore(remaining, maxChars);
-    if (!boundary) return [normalized];
-    parts.push(remaining.slice(0, boundary).trim());
-    remaining = remaining.slice(boundary).trim();
-  }
-  if (remaining) parts.push(remaining);
-  return parts.filter(Boolean);
-}
-
-function safeBoundaryBefore(text, maxChars) {
-  const protectedRanges = protectedTokenRanges(text);
-  const isSafe = (position) => position > 0 && !protectedRanges.some(([start, end]) => position > start && position < end);
-  const candidates = { sentence: [], clause: [], word: [], character: [] };
-  const characters = Array.from(text);
-  let offset = 0;
-  for (const character of characters) {
-    offset += character.length;
-    if (offset > maxChars) break;
-    if (!isSafe(offset)) continue;
-    if (/[。！？.!?]/u.test(character)) candidates.sentence.push(offset);
-    else if (/[，,、；;：:]/u.test(character)) candidates.clause.push(offset);
-    else if (/\s/u.test(character)) candidates.word.push(offset);
-    else if (isCjkCharacter(character)) candidates.character.push(offset);
-  }
-  for (const kind of ['sentence', 'clause', 'word', 'character']) {
-    if (candidates[kind].length) return candidates[kind].at(-1);
-  }
-
-  const tokenEnd = protectedRanges.find(([, end]) => end > maxChars)?.[1];
-  return tokenEnd && tokenEnd < text.length ? tokenEnd : null;
-}
-
-function protectedTokenRanges(text) {
-  const ranges = [];
-  const pattern = /https?:\/\/[^\s]+|www\.[^\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\d+(?:[.,]\d+)+(?:\s*[A-Za-z%°]+)?|\d{1,4}[./-]\d{1,4}(?:[./-]\d{1,4})?|\d+(?:\.\d+)?\s*[A-Za-z%°]+/giu;
-  for (const match of text.matchAll(pattern)) ranges.push([match.index, match.index + match[0].length]);
-  return ranges;
-}
-
-function isCjkCharacter(character) {
-  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
-}
-
-function alignParts(parts, count) {
-  if (!Array.isArray(parts) || parts.length === 0) return null;
-  const aligned = [...parts];
-  while (aligned.length < count) {
-    const splitIndex = aligned.reduce((longest, part, index) => (
-      part.length > aligned[longest].length ? index : longest
-    ), 0);
-    const part = aligned[splitIndex];
-    const pieces = splitCueText(part, Math.max(1, Math.ceil(part.length / (count - aligned.length + 1))));
-    if (pieces.length < 2) return null;
-    const separator = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(pieces[0]) ? '' : ' ';
-    aligned.splice(splitIndex, 1, pieces[0], pieces.slice(1).join(separator));
-  }
-  while (aligned.length > count) {
-    let mergeIndex = 0;
-    let shortest = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < aligned.length - 1; index += 1) {
-      const length = aligned[index].length + aligned[index + 1].length;
-      if (length < shortest) {
-        shortest = length;
-        mergeIndex = index;
-      }
-    }
-    aligned.splice(mergeIndex, 2, `${aligned[mergeIndex]}${aligned[mergeIndex + 1]}`.trim());
-  }
-  return aligned.length === count ? aligned : null;
 }
 
 function isPunctuationOnly(text) { return /^[\s。！？.!?，,、；;：:]+$/u.test(text); }

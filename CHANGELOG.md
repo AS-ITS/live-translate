@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- 字幕潤飾改為使用 Gemini Flash-Lite 純文字回應，移除 structured-output 設定；空白／純標點輸入會略過 provider，400 錯誤會安全保存 HTTP status、provider code、message、model 與 config 欄位摘要。
+
+- 即時字幕不再依語言字數上限硬拆 Cue；完整句子會以 Gemini turn、句末、idle 或 Stop 作為邊界，潤飾失敗時保留原始翻譯並提供重試。
+
+- Gemini 翻譯潤飾請求現在使用結構化 `polishedItems` schema，並安全正規化序號與 Cue 對應；無法完整可靠對應時整批失敗並保留原翻譯。
+
+- 翻譯潤飾狀態改為顯示在即時字幕標題列的 Badge，不再於頁面底部新增獨立狀態面板；失敗時可直接在同列重試。
+
+- 補齊翻譯潤飾狀態與重試 UI；歷史載入與即時更新現在會合併所有批次的潤飾結果，避免較早 Cue 在 reload 後遺失。
+
+- 修正即時字幕與逐字稿在新的 final turn 重複數字或片段時，誤套用歷史前綴去重而漏字、漏翻譯；歷史前綴剝除現在只套用於非 final 的累積更新。
+
+- 翻譯潤飾改為以整批翻譯 Cue 作為上下文、逐句回傳結果，並直接回寫原有翻譯句；即時字幕、歷史紀錄與匯出不再新增獨立的文章版欄位。
+
 - 修正長會議 checkpoint 與分段語音紀錄的暫時性保存失敗；未同步資料會在目前頁面工作階段保留並以退避間隔持續重試，成功後清除錯誤提示。
 
 - 修正 Live Subtitle Cue 過早依 provider fragment finalize 的問題；同一 turn 的片段會先累積，中文短片段需達最小語意長度，turnComplete 以 700ms debounce 完成，並允許最後 1500ms 內的晚到雙語片段安全回併同一 Cue 與 checkpoint。

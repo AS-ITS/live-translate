@@ -127,12 +127,11 @@ If the SDK event does not expose a reliable partial/final flag:
 - The latest finalized Cue remains revisable for 1500ms. A late source or
   translation fragment may monotonically merge into that same Cue id, sequence,
   persistence record, and checkpoint.
-- Adjacent short final bilingual Cues in the same Segment are coalesced when
-  the previous Cue has not reached sentence punctuation, the next Cue closes a
-  sentence or carries a clause marker, and the combined source and translation
-  remain within their language-specific character limits. Cue identity stays
-  anchored to the first Cue, while its end time extends to the latest merged
-  fragment.
+- Adjacent final bilingual Cues in the same Segment are coalesced when neither
+  Cue has reached sentence punctuation and they arrive within the adjacent
+  fragment window. Cue identity stays anchored to the first Cue, while its end
+  time extends to the latest merged fragment. The engine does not split a Cue
+  solely because it exceeds a language-specific character limit.
 - Document the unresolved SDK behavior before enabling export/history features
   that depend on final transcript items.
 
@@ -177,6 +176,9 @@ If the SDK event does not expose a reliable partial/final flag:
 - Cumulative transcript updates must not append suffix fragments such as `3`
   after an active `123` item; independent post-boundary repeated speech remains
   a separate item.
+- History-prefix removal applies only to non-final cumulative updates. A final
+  provider event is treated as a complete turn, even when its text begins with
+  the same numbers or phrases as earlier final items.
 
 ### Matching Partial to Final
 

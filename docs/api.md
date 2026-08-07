@@ -934,4 +934,14 @@ paired final Cue data. The execution remains asynchronous and returns `202`.
 The existing `POST /api/translation-executions/:executionId/retry` endpoint is
 used for failed polishing executions. Session detail translation history
 includes completed polishing outputs with `operation`, `segmentRange`,
-`inputHash`, `model`, `version`, and completion timestamps.
+`inputHash`, `model`, `version`, completion timestamps, and `polishedItems`.
+Each item contains `cueId`, `sequence`, and `polishedText`; clients merge these
+items into the existing translation Cues rather than rendering a separate
+polished-article field. Legacy outputs containing only one article text are
+ignored for Cue replacement.
+
+Current transcript polishing uses one plain-text provider result. The result is
+returned through the existing `translatedText` output field and does not use
+structured-output configuration. Failed executions retain safe provider
+diagnostics (`status`, provider code/status/message, model, and config field
+names) without prompt text, transcript content, API keys, or tokens.

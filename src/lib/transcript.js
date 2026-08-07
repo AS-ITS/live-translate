@@ -282,7 +282,7 @@ function decideTranscriptEvent(state, event) {
     return { action: 'duplicate', reason: 'matches-last-final', text: event.text };
   }
 
-  const cumulativeDelta = deltaFromFinalTranscript(streamState, event.text);
+  const cumulativeDelta = deltaFromFinalTranscript(streamState, event);
   if (cumulativeDelta) {
     if (!cumulativeDelta.text) {
       if (isDuplicateTranscriptItem(lastFinal, event)) {
@@ -356,7 +356,13 @@ function decideTranscriptEvent(state, event) {
   };
 }
 
-function deltaFromFinalTranscript(streamState, incomingText) {
+function deltaFromFinalTranscript(streamState, event) {
+  // Final events represent a completed provider turn. Repeated text in a new
+  // turn must remain visible instead of being mistaken for the cumulative
+  // prefix of earlier final items.
+  if (event.isFinal) return null;
+
+  const incomingText = event.text;
   const candidates = finalTranscriptTextCandidates(streamState);
   for (const candidate of candidates) {
     if (!incomingText.startsWith(candidate)) {

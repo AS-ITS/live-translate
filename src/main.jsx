@@ -23,7 +23,7 @@ import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
-import { createTranscriptPolishingCoordinator } from './lib/transcriptPolishing.js';
+import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -59,6 +59,7 @@ import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/re
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
   applySubtitleCueEvent,
+  applyPolishedCueTranslations,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
   resetSubtitleCueState,
@@ -213,6 +214,7 @@ function App() {
   const transcriptPolishingLifecycleRef = useRef(null);
   const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
+  const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
   const selectedHistoryRecordIdRef = useRef(null);
@@ -270,17 +272,37 @@ function App() {
   }, [page]);
 
   useEffect(() => {
-    if (!activeSessionRecordIdRef.current || status === 'idle') return undefined;
+    if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
     const poll = async () => {
       try {
-        const detail = await getSessionDetailWithTranslationHistory(activeSessionRecordIdRef.current);
+        const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
+        const detail = await getSessionDetailWithTranslationHistory(sessionId);
+        const outputs = completedPolishingOutputs(detail);
         const output = latestPolishingOutput(detail);
-        if (!cancelled && output) {
+        const latestExecution = latestPolishingExecution(detail);
+        const pendingExecution = latestExecution && ['queued', 'processing', 'running'].includes(latestExecution.status)
+          ? latestExecution
+          : null;
+        if (!cancelled && pendingExecution) {
+          setPolishingState({
+            status: pendingExecution.status,
+            version: null,
+            updatedAt: pendingExecution.startedAt || pendingExecution.createdAt || null,
+            error: '',
+            executionId: pendingExecution.id
+          });
+        } else if (!cancelled && outputs.length > 0) {
+          applyPolishedOutput(output);
           setPolishingState({ status: 'completed', text: output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
         } else {
-          const failed = latestPolishingExecution(detail);
-          if (!cancelled && failed) setPolishingState({ status: failed.status, text: '', version: null, updatedAt: failed.completedAt || null, error: failed.failureInfo?.message || '文章版潤飾失敗。', executionId: failed.id });
+          if (!cancelled && latestExecution) setPolishingState({
+            status: latestExecution.status,
+            version: null,
+            updatedAt: latestExecution.completedAt || latestExecution.startedAt || null,
+            error: latestExecution.status === 'failed' ? translationFailureReasonLabel(latestExecution.failureInfo) : '',
+            executionId: latestExecution.id
+          });
         }
       } catch {
         // Polishing read failures are isolated from the Live session.
@@ -290,6 +312,39 @@ function App() {
     const timer = window.setInterval(poll, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [status]);
+
+  function applyPolishedOutput(output) {
+    const polishedItems = Array.isArray(output?.polishedItems) ? output.polishedItems : [];
+    if (typeof output?.translatedText === 'string' && output.translatedText.trim()) {
+      setPolishingState((current) => ({ ...current, text: output.translatedText.trim() }));
+    }
+    if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || polishedItems.length === 0) return;
+    const previousCues = subtitleCueStateRef.current;
+    const nextCues = applyPolishedCueTranslations(previousCues, polishedItems);
+    if (nextCues !== previousCues) {
+      subtitleCueStateRef.current = nextCues;
+      setSubtitleCueState(nextCues);
+      enqueueCuePersistence(previousCues, nextCues);
+    }
+
+    const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
+    const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
+    const cueById = new Map(previousCues.finalCues.map((cue) => [cue.cueId, cue]));
+    for (const item of polishedItems) {
+      const cue = cueById.get(item.cueId);
+      if (!cue || typeof item.polishedText !== 'string') continue;
+      const matching = (detail?.transcriptItems || []).filter((transcriptItem) => (
+        transcriptItem.stream === 'translation' && transcriptItem.status === 'final' &&
+        transcriptItem.text !== item.polishedText &&
+        (transcriptItem.sequence === cue.sequence || transcriptItem.text === cue.translatedText)
+      ));
+      for (const transcriptItem of matching) {
+        const updated = sessionRepositoryRef.current.updateTranscriptItem(sessionId, transcriptItem.id, { text: item.polishedText });
+        if (updated) markPendingSessionSnapshotItems(sessionId, [updated]);
+      }
+    }
+    scheduleSessionSnapshotSync(sessionId);
+  }
 
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
@@ -1201,6 +1256,7 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    polishingSessionIdRef.current = record.id;
     prepareInputAudioDownload(record);
     prepareTranslatedAudioDownload(record);
     const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
@@ -1311,7 +1367,7 @@ function App() {
       .map((cue) => ({ ...cue, translationText: cue.translatedText }));
     if (!activeSessionRecordIdRef.current || cues.length === 0) return;
     void transcriptPolishingCoordinator().add(cues, { force }).catch((nextError) => {
-      setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '文章版潤飾失敗。' }));
+      setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
     });
   }
 
@@ -1321,7 +1377,7 @@ function App() {
       await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
       setPolishingState((current) => ({ ...current, status: 'queued', error: '' }));
     } catch {
-      setPolishingState((current) => ({ ...current, status: 'failed', error: '文章版重試失敗，請稍後再試。' }));
+      setPolishingState((current) => ({ ...current, status: 'failed', error: '翻譯潤飾重試失敗，請稍後再試。' }));
     }
   }
 
@@ -1362,6 +1418,7 @@ function App() {
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
     const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
+    polishingSessionIdRef.current = sessionId;
     activeSessionRecordIdRef.current = null;
     const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
@@ -2116,11 +2173,6 @@ function App() {
     setError('');
 
     try {
-      if (exportStream === 'polished') {
-        if (exportFormat !== 'txt' || !polishingState.text) throw new Error('polished_export_unavailable');
-        downloadTextFile(polishingState.text, `live-translate-polished-${Date.now()}.txt`, 'text/plain;charset=utf-8');
-        return;
-      }
       const content = exportFormat === 'srt' && subtitleCueState.finalCues.length > 0
         ? exportCuesToSrt(subtitleCueState.finalCues, { stream: exportStream })
         : exportFormat === 'vtt' && subtitleCueState.finalCues.length > 0
@@ -2200,19 +2252,14 @@ function App() {
   ];
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
-  const canDownloadTranscript = exportStream === 'polished'
-    ? exportFormat === 'txt' && Boolean(polishingState.text)
-    : exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
+  const canDownloadTranscript = exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
     ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream })
     : canExportTranscript(transcriptItems, {
       format: exportFormat,
       stream: exportStream,
       timeOrigin: transcriptTimeOrigin
     });
-  const exportUnavailableReason =
-    exportStream === 'polished' && exportFormat !== 'txt'
-      ? '文章版目前只能匯出 TXT。'
-      : exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
+  const exportUnavailableReason = exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
   const selectedHistoryRecord = selectedHistoryRecordId
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
@@ -2432,7 +2479,6 @@ function App() {
             <select value={exportStream} onChange={(event) => setExportStream(event.target.value)}>
               <option value="translation">翻譯</option>
               <option value="source">原文</option>
-              <option value="polished">文章版</option>
               <option value="both">兩者</option>
             </select>
           </label>
@@ -2449,12 +2495,13 @@ function App() {
           cueState={subtitleCueState}
           isPaused={status === 'paused'}
           isStopped={status === 'stopped'}
+          polishingState={polishingState}
+          onPolishingRetry={retryPolishingExecution}
           copiedSource={copiedArticleStream === 'source'}
           copiedTranslation={copiedArticleStream === 'translation'}
           onCopySource={copyLiveSource}
           onCopyTranslation={copyLiveTranslation}
         />
-        <PolishedTranscriptPanel polishingState={polishingState} onRetry={retryPolishingExecution} />
       </section>
 
       <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
@@ -2661,6 +2708,8 @@ function LiveCuePanel({
   cueState,
   isPaused,
   isStopped,
+  polishingState,
+  onPolishingRetry,
   copiedSource,
   copiedTranslation,
   onCopySource,
@@ -2707,6 +2756,7 @@ function LiveCuePanel({
           <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
         </div>
         <div className="cue-panel-actions">
+          <TranscriptPolishingStatus polishingState={polishingState} onRetry={onPolishingRetry} />
           {!isFollowingLatest ? (
             <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
           ) : null}
@@ -2756,6 +2806,44 @@ function PartialCueRow({ cue, stream }) {
   return <CueRow cue={cue} partial stream={stream} />;
 }
 
+function TranscriptPolishingStatus({ polishingState, onRetry }) {
+  const status = polishingState?.status || 'idle';
+  if (status === 'idle') return null;
+  const statusLabel = status === 'running' || status === 'dirty'
+    ? '潤飾中'
+    : status === 'processing'
+      ? '潤飾中'
+    : status === 'queued'
+      ? '等待潤飾'
+      : status === 'failed'
+        ? '潤飾失敗'
+        : status === 'completed'
+          ? '潤飾完成'
+          : '尚未開始潤飾';
+  const timestamp = polishingState?.updatedAt ? formatPolishingTimestamp(polishingState.updatedAt) : '';
+  const errorText = polishingState?.error || '';
+
+  return (
+    <span
+      className={`transcript-polishing-badge transcript-polishing-badge-${status}`}
+      aria-live="polite"
+      aria-label={`${statusLabel}${errorText ? `：${errorText}` : ''}`}
+      data-testid="transcript-polishing-status"
+      title={errorText || undefined}
+    >
+      {statusLabel}{status === 'completed' && polishingState.version ? ` · v${polishingState.version}` : ''}{timestamp ? ` · ${timestamp}` : ''}{status === 'failed' && errorText ? `：${errorText}` : ''}
+      {status === 'failed' && polishingState.executionId ? (
+        <button className="button detail-button polishing-retry-button" type="button" onClick={() => onRetry?.(polishingState.executionId)}>重試</button>
+      ) : null}
+    </span>
+  );
+}
+
+function formatPolishingTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
+}
+
 function CueRow({ cue, partial = false, stream }) {
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
   const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
@@ -2784,50 +2872,23 @@ function CueRow({ cue, partial = false, stream }) {
   );
 }
 
-function PolishedTranscriptPanel({ polishingState, onRetry }) {
-  const hasText = typeof polishingState?.text === 'string' && polishingState.text.trim().length > 0;
-  if (polishingState?.hideWhenEmpty && !hasText) return null;
-  const statusLabel = polishingState?.status === 'running' || polishingState?.status === 'dirty'
-    ? '潤飾中'
-    : polishingState?.status === 'queued'
-      ? '等待潤飾'
-      : polishingState?.status === 'failed'
-        ? '潤飾失敗'
-        : hasText
-          ? `文章版 · v${polishingState.version || 1}`
-          : '尚未產生文章版';
-
-  return (
-    <article className="transcript-panel polished-transcript-panel" aria-live="polite">
-      <div className="article-panel-header">
-        <div>
-          <h2>文章版翻譯</h2>
-          <p className="transcript-status">{statusLabel}{polishingState?.updatedAt ? ` · ${formatPolishingTimestamp(polishingState.updatedAt)}` : ''}</p>
-        </div>
-      </div>
-      {hasText ? <div className="article-content" aria-label="文章版翻譯內容">{polishingState.text.split(/\n\n+/).map((paragraph, index) => <p key={`polished-${index}`}>{paragraph}</p>)}</div> : null}
-      {!hasText && polishingState?.status === 'failed' ? <p className="recording-error" role="alert">{polishingState.error || '文章版潤飾失敗，Live 翻譯仍可繼續。'}</p> : null}
-      {!hasText && polishingState?.status === 'failed' && polishingState.executionId && onRetry ? <button className="button detail-button" type="button" onClick={() => onRetry(polishingState.executionId)}>重試文章版潤飾</button> : null}
-      {!hasText && polishingState?.status !== 'failed' ? <p className="transcript-text empty">文章版會在累積穩定片段後更新。</p> : null}
-    </article>
-  );
-}
-
-function formatPolishingTimestamp(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
-}
-
 function latestPolishingOutput(detail) {
-  return (detail?.translationHistory?.outputs || [])
-    .filter((output) => output.operation === 'transcript_polishing')
+  return completedPolishingOutputs(detail)
     .sort((left, right) => (right.version || 0) - (left.version || 0) || String(right.completedAt || '').localeCompare(String(left.completedAt || '')))[0] || null;
+}
+
+function completedPolishingOutputs(detail) {
+  return (detail?.translationHistory?.outputs || [])
+    .filter((output) => output.operation === 'transcript_polishing' && typeof output.translatedText === 'string' && output.translatedText.trim().length > 0);
 }
 
 function latestPolishingExecution(detail) {
   return (detail?.translationHistory?.executions || [])
-    .filter((execution) => execution.operation === 'transcript_polishing' && execution.status === 'failed')
-    .sort((left, right) => String(right.completedAt || '').localeCompare(String(left.completedAt || '')))[0] || null;
+    .filter((execution) => execution.operation === 'transcript_polishing')
+    .sort((left, right) => (
+      timestampMs(right.startedAt || right.completedAt || right.createdAt) - timestampMs(left.startedAt || left.completedAt || left.createdAt)
+      || String(right.id || '').localeCompare(String(left.id || ''))
+    ))[0] || null;
 }
 
 function ArticlePanel({
@@ -3039,7 +3100,7 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
       <div className="history-header">
         <div>
           <h3 id={titleId}>翻譯紀錄</h3>
-          <p className="history-description">查看已儲存翻譯的分段時間軸、整場原文與文章版翻譯。</p>
+          <p className="history-description">查看已儲存翻譯的分段時間軸、原文與翻譯內容。</p>
         </div>
       </div>
 
@@ -4014,7 +4075,6 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     () => exportDetailForSessionDetailDTO(detail, historyRecord),
     [detail, historyRecord]
   );
-  const polishedHistoryOutput = latestPolishingOutput(detail);
 
   useEffect(() => {
     if (!sessionRecordId || !hasPendingRetranslationProgress) {
@@ -4051,22 +4111,13 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   }
 
   const retranslationSourceSessionId = sourceSessionIdForRetranslation(sessionRecord, sessionRecordId);
-  const canDownloadSavedTranscript = savedExportStream === 'polished'
-    ? savedExportFormat === 'txt' && Boolean(polishedHistoryOutput?.translatedText)
-    : canExportSavedSession(exportDetail, { format: savedExportFormat, stream: savedExportStream });
-  const savedExportUnavailableReason = savedExportStream === 'polished'
-    ? (savedExportFormat !== 'txt' ? '文章版目前只能匯出 TXT。' : '')
-    : savedSessionExportUnavailableReason(exportDetail, { format: savedExportFormat, stream: savedExportStream });
+  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, { format: savedExportFormat, stream: savedExportStream });
+  const savedExportUnavailableReason = savedSessionExportUnavailableReason(exportDetail, { format: savedExportFormat, stream: savedExportStream });
 
   function downloadSavedTranscript() {
     setSavedExportError('');
 
     try {
-      if (savedExportStream === 'polished') {
-        if (!polishedHistoryOutput?.translatedText) throw new Error('polished_export_unavailable');
-        downloadTextFile(polishedHistoryOutput.translatedText, `live-translate-polished-${Date.now()}.txt`, 'text/plain;charset=utf-8');
-        return;
-      }
       const content = formatSavedSessionExport(exportDetail, {
         format: savedExportFormat,
         stream: savedExportStream
@@ -4169,19 +4220,6 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           onSelectTab={setReadingTab}
         />
       )}
-      <PolishedTranscriptPanel
-        polishingState={(() => {
-          const output = latestPolishingOutput(detail);
-          const failed = latestPolishingExecution(detail);
-          return output
-            ? { status: 'completed', text: output.translatedText, version: output.version, updatedAt: output.completedAt || output.createdAt, error: '', executionId: output.executionId }
-            : failed
-              ? { status: 'failed', text: '', version: null, updatedAt: failed.completedAt, error: failed.failureInfo?.message || '文章版潤飾失敗。', executionId: failed.id }
-              : { status: 'idle', text: '', version: null, updatedAt: null, error: '', hideWhenEmpty: true };
-        })()}
-        onRetry={onPolishingRetry}
-      />
-
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>
         <RetranslationProgress progress={retranslationProgress} />
@@ -4201,10 +4239,9 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           <label className="field">
             <span>已儲存逐字稿匯出內容</span>
             <select value={savedExportStream} onChange={(event) => setSavedExportStream(event.target.value)}>
-              <option value="translation">翻譯</option>
-              <option value="source">原文</option>
-              <option value="polished">文章版</option>
-              <option value="both">兩者</option>
+            <option value="translation">翻譯</option>
+            <option value="source">原文</option>
+            <option value="both">兩者</option>
             </select>
           </label>
 
@@ -4326,7 +4363,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
   const selectedContent = selectedTab === 'sourceTranscript'
     ? content.sourceTranscript
     : content.translationArticle;
-  const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '文章版翻譯';
+  const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '翻譯內容';
 
   return (
     <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback">
@@ -4338,7 +4375,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
           aria-selected={selectedTab === 'translationArticle'}
           onClick={() => onSelectTab('translationArticle')}
         >
-          文章版翻譯
+          翻譯內容
         </button>
         <button
           className={`reading-tab${selectedTab === 'sourceTranscript' ? ' active' : ''}`}
@@ -4564,7 +4601,7 @@ function readingContentEmptyText(content) {
   }
 
   return content.kind === 'translationArticle'
-    ? '尚無文章版翻譯。'
+    ? '尚無翻譯內容。'
     : '尚無原始逐字稿。';
 }
 
@@ -4647,7 +4684,7 @@ function translationFailureReasonLabel(failureInfo = {}) {
   }
 
   if (code === 'bad_request' || status === 400) {
-    return 'Gemini 拒絕此翻譯請求，請確認模型與翻譯內容格式。';
+    return `Gemini 拒絕此翻譯請求（${providerDiagnosticText(failureInfo)}），請確認模型與翻譯內容格式。`;
   }
 
   if (code === 'rate_limited' || status === 429) {
@@ -4662,7 +4699,25 @@ function translationFailureReasonLabel(failureInfo = {}) {
     return failureInfo.message.trim();
   }
 
+  const reason = typeof failureInfo?.reason === 'string' && failureInfo.reason.trim() ? failureInfo.reason.trim() : '';
+  if (reason === 'provider_execution_failed' || failureInfo?.category === 'provider') {
+    return 'Gemini 翻譯提供者執行失敗，請稍後重試。';
+  }
+  if (reason) {
+    return `翻譯失敗（${reason}），請稍後重試。`;
+  }
+
   return '翻譯提供者執行失敗，請稍後重試。';
+}
+
+function providerDiagnosticText(failureInfo = {}) {
+  const status = Number.isInteger(failureInfo.status) ? `HTTP ${failureInfo.status}` : '';
+  const code = failureInfo.providerCode ?? failureInfo.providerStatus ?? failureInfo.code;
+  const message = typeof failureInfo.providerMessage === 'string' && failureInfo.providerMessage.trim()
+    ? failureInfo.providerMessage.trim()
+    : '';
+  const model = typeof failureInfo.model === 'string' && failureInfo.model.trim() ? `model=${failureInfo.model.trim()}` : '';
+  return [status, code ? `code=${code}` : '', message, model].filter(Boolean).join('；') || 'provider error';
 }
 
 function isProviderTimeoutFailure(failureInfo = {}) {
@@ -4764,13 +4819,30 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     return detail;
   }
 
+  const mergedOutputs = mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs);
+  const polishedItems = mergePolishedItemsFromOutputs(mergedOutputs);
+  const polishedCues = applyPolishedItemsToCues(detail?.cues, polishedItems);
   return {
     ...detail,
+    ...(polishedCues ? { cues: polishedCues } : {}),
     translationHistory: {
-      outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
+      outputs: mergedOutputs,
       executions: translationsHistory.executions
     }
   };
+}
+
+function applyPolishedItemsToCues(cues, polishedItems) {
+  if (!Array.isArray(cues) || !Array.isArray(polishedItems) || polishedItems.length === 0) return null;
+  const replacements = new Map(polishedItems.map((item) => [item.cueId, item.polishedText]));
+  let changed = false;
+  const next = cues.map((cue) => {
+    const text = replacements.get(cue?.cueId);
+    if (!text || text === cue.translatedText) return cue;
+    changed = true;
+    return { ...cue, translatedText: text };
+  });
+  return changed ? next : null;
 }
 
 function removeRetranslationOutputFromDetail(detail, outputId) {

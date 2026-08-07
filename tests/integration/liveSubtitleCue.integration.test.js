@@ -57,6 +57,7 @@ test('Gemini incremental fragments without turnIndex remain one final cue', () =
   session.handleMessage({ eventId: 'source-2', serverContent: { inputTranscription: { text: 'input.' } } });
   session.handleMessage({ eventId: 'translation-1', serverContent: { outputTranscription: { text: '這是語音' } } });
   session.handleMessage({ eventId: 'translation-2', serverContent: { outputTranscription: { text: '輸入。' } } });
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 300, reason: 'turnComplete' });
 
   assert.equal(cueState.finalCues.length, 1);
   assert.equal(cueState.currentCue, null);

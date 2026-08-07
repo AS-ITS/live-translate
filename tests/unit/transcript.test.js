@@ -298,6 +298,23 @@ test('keeps identical final text from a later provider event as a new segment', 
   assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.eventId), ['turn-1', 'turn-2']);
 });
 
+test('does not strip repeated cumulative-looking text from a final later turn', () => {
+  let state = createTranscriptState();
+  for (const [text, now] of [['123.', 100], ['123.', 1800]]) {
+    state = applyTranscriptEvent(state, {
+      stream: 'source', text, isFinal: true, eventId: `turn-${now}`, now
+    });
+  }
+
+  state = applyTranscriptEvent(state, {
+    stream: 'source', text: '123.123.456', isFinal: true, eventId: 'turn-3600', now: 3600
+  });
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.text), [
+    '123.', '123.', '123.123.456'
+  ]);
+});
+
 test('deduplicates identical final text from the same provider event', () => {
   let state = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source', text: '一二三', isFinal: true, eventId: 'turn-1', now: 100

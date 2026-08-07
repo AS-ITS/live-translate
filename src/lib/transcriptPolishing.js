@@ -108,10 +108,14 @@ export function thresholdReached(cues, lastSubmittedAt, currentTime, intervalMs,
 export function mergeStableCues(existing = [], incoming = []) {
   const byId = new Map();
   for (const cue of [...existing, ...incoming]) {
-    if (cue?.status !== 'final' || !cue.cueId || typeof cue.translationText !== 'string' || cue.translationText.trim() === '') continue;
+    if (cue?.status !== 'final' || !cue.cueId || typeof cue.translationText !== 'string' || !hasMeaningfulText(cue.translationText)) continue;
     byId.set(cue.cueId, { ...cue, sourceText: String(cue.sourceText || ''), translationText: cue.translationText });
   }
   return [...byId.values()].sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
+}
+
+function hasMeaningfulText(value) {
+  return /[^\s\p{P}\p{S}]/u.test(String(value));
 }
 
 export function transcriptPolishingInputHash(cues = []) {
@@ -124,6 +128,29 @@ export function transcriptPolishingInputHash(cues = []) {
   return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
+export function mergePolishedItemsFromOutputs(outputs = []) {
+  const replacements = new Map();
+  const orderedOutputs = (Array.isArray(outputs) ? outputs : [])
+    .filter((output) => output?.operation === 'transcript_polishing' && Array.isArray(output.polishedItems))
+    .sort(comparePolishingOutputs);
+
+  for (const output of orderedOutputs) {
+    for (const item of output.polishedItems) {
+      if (!item?.cueId || typeof item.polishedText !== 'string' || item.polishedText.trim() === '') continue;
+      replacements.set(item.cueId, {
+        cueId: item.cueId,
+        sequence: item.sequence,
+        polishedText: item.polishedText.trim()
+      });
+    }
+  }
+
+  return [...replacements.values()].sort((left, right) => (
+    (left.sequence ?? Number.MAX_SAFE_INTEGER) - (right.sequence ?? Number.MAX_SAFE_INTEGER)
+    || left.cueId.localeCompare(right.cueId)
+  ));
+}
+
 export function segmentRangeFor(cues = []) {
   return {
     fromSequence: cues[0]?.sequence ?? null,
@@ -134,4 +161,11 @@ export function segmentRangeFor(cues = []) {
 
 function cueSignature(cue) {
   return `${cue?.cueId || ''}:${cue?.sequence || ''}:${cue?.sourceText || ''}:${cue?.translationText || ''}`;
+}
+
+function comparePolishingOutputs(left, right) {
+  const versionDifference = (left?.version ?? 0) - (right?.version ?? 0);
+  if (versionDifference !== 0) return versionDifference;
+  const completedDifference = String(left?.completedAt || left?.createdAt || '').localeCompare(String(right?.completedAt || right?.createdAt || ''));
+  return completedDifference || String(left?.id || '').localeCompare(String(right?.id || ''));
 }

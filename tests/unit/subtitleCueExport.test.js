@@ -79,6 +79,13 @@ test('wraps language-aware subtitle lines without splitting protected tokens', (
   assert.ok(wrapped.includes('12.50 kg'));
 });
 
+test('does not apply CJK line limits to Latin text with a CJK language hint', () => {
+  assert.equal(
+    wrapSubtitleText("Actually,it's very right now.", 'zh-Hant'),
+    "Actually,it's very right now."
+  );
+});
+
 test('wraps each supported subtitle language to at most two configured lines', () => {
   const cases = [
     ['zh-Hant', '這是一段很長的繁體中文字幕，用兩行顯示。', 16],

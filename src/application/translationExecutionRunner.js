@@ -7,12 +7,14 @@ export function createTranslationExecutionRunner({
   translationExecutionProvider,
   retryPolicy = createRetryPolicy(),
   executionFenceGuard,
+  logger = (event) => console.error(JSON.stringify(event)),
   clock = () => new Date().toISOString()
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
   assertRetryPolicy(retryPolicy);
   assertOptionalExecutionFenceGuard(executionFenceGuard);
+  if (typeof logger !== 'function') throw new TypeError('logger must be a function.');
   assertClock(clock);
 
   return Object.freeze({
@@ -37,6 +39,14 @@ export function createTranslationExecutionRunner({
         }));
       } catch (error) {
         if (error.providerExecutionError !== true) throw error;
+        if (payload.operation === 'transcript_polishing') {
+          logger({
+            level: 'error',
+            event: 'transcript_polishing_provider_failed',
+            operation: payload.operation,
+            ...providerDiagnosticsFor(error)
+          });
+        }
         if (deferProviderFailure) throw error;
         await assertWritable(executionFenceGuard, execution, executionFence);
         await failExecutionAfterProviderError(
@@ -53,6 +63,7 @@ export function createTranslationExecutionRunner({
         executionId: execution.id,
         sequence: payload.outputSequence ?? 0,
         translatedText: providerAttemptExecution.providerResult.translatedText,
+        polishedItems: providerAttemptExecution.providerResult.polishedItems,
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
         sessionId: payload.sessionId,
@@ -112,6 +123,7 @@ export function createTranslationExecutionRunner({
         executionId: execution.id,
         sequence: payload.outputSequence ?? 0,
         translatedText: execution.providerResult.translatedText,
+        polishedItems: execution.providerResult.polishedItems,
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
         sessionId: payload.sessionId,
@@ -249,11 +261,27 @@ function failureInfoForProviderError(error) {
     reason: 'provider_execution_failed',
     errorName: error?.name || 'Error',
     ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    ...(typeof error?.providerCode === 'string' || typeof error?.providerCode === 'number' ? { providerCode: error.providerCode } : {}),
     ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+    ...(typeof error?.model === 'string' ? { model: safeFailureText(error.model) } : {}),
     ...(typeof error?.providerStatus === 'string' ? { providerStatus: safeFailureText(error.providerStatus) } : {}),
     ...(typeof error?.providerMessage === 'string' ? { providerMessage: safeFailureText(error.providerMessage) } : {}),
     ...(Array.isArray(error?.providerDetails) ? { providerDetails: safeFailureDetails(error.providerDetails) } : {}),
+    ...(error?.requestConfig ? { requestConfig: safeFailureDetails(error.requestConfig) } : {}),
     message: safeFailureMessage(error)
+  };
+}
+
+function providerDiagnosticsFor(error) {
+  return {
+    errorName: error?.name || 'Error',
+    ...(typeof error?.code === 'string' ? { code: error.code } : {}),
+    ...(typeof error?.providerCode === 'string' || typeof error?.providerCode === 'number' ? { providerCode: error.providerCode } : {}),
+    ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+    ...(typeof error?.model === 'string' ? { model: safeFailureText(error.model) } : {}),
+    ...(typeof error?.providerStatus === 'string' ? { providerStatus: safeFailureText(error.providerStatus) } : {}),
+    ...(typeof error?.providerMessage === 'string' ? { providerMessage: safeFailureText(error.providerMessage) } : {}),
+    ...(error?.requestConfig ? { requestConfig: safeFailureDetails(error.requestConfig) } : {})
   };
 }
 

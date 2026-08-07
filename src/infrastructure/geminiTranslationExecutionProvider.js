@@ -9,6 +9,7 @@ export function createGeminiTranslationExecutionProvider({ client } = {}) {
 
       return Object.freeze({
         translatedText: result?.translatedText,
+        ...(result?.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
         detectedSourceLanguageCode: result?.detectedSourceLanguageCode
       });
     }

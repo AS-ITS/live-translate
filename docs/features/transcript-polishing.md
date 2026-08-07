@@ -2,9 +2,10 @@
 
 ## Purpose
 
-Transcript polishing creates a readable article version while Gemini Live
+Transcript polishing improves finalized translation sentences while Gemini Live
 Translate continues to produce the raw transcript and low-latency translation.
-Polished content is derived data and never replaces either Live stream.
+The polished result replaces the corresponding translation Cue; it is not a
+separate article field or display.
 
 ## Runtime Contract
 
@@ -18,9 +19,13 @@ submitted after the current execution finishes.
 
 Requests use the existing TranslationRequest/TranslationExecution queue with
 `operation: "transcript_polishing"`. The immutable input snapshot contains the
-Cue range, bilingual text, and deterministic input hash. The resulting
-TranslationOutput stores the polished text, model, version, range, hash, and
-timestamps. Repeated requests with the same polishing identity are idempotent.
+Cue range, bilingual text, and deterministic input hash. The provider receives
+the whole batch as context and returns one polished sentence per `cueId` and
+`sequence`. The resulting TranslationOutput stores the per-Cue replacements,
+model, version, range, hash, and timestamps. Repeated requests with the same
+polishing identity are idempotent. When several batches exist, completed
+outputs are merged by `cueId`; the newest version wins for the same Cue while
+older batches remain applied to their own Cues.
 
 Provider failures, timeouts, rate limits, and retries are isolated from the
 Gemini Live session. Queue retry, backoff, durable recovery, and failure
@@ -38,8 +43,16 @@ TRANSCRIPT_POLISHING_TIMEOUT_MS=30000
 ```
 
 The provider receives text only. Its prompt requires preservation of meaning,
-numbers, dates, names, terminology, and glossary rules, and requires a
-structured `polishedText` response.
+numbers, dates, names, terminology, and glossary rules, and returns one plain
+text refined result for the batch. The result is stored through the existing
+`translatedText` output field; no new formal translation schema field is added.
+A provider failure leaves the original translation unchanged and remains
+retryable through the existing execution flow.
+
+Polishing requests do not send structured-output configuration. Provider
+failures retain safe diagnostics including HTTP status, provider code/status,
+provider message, model, and config field names. Prompts and transcript content
+are never included in those diagnostics.
 
 Frontend builds may override the interval, character threshold, RPM limit, or
 feature gate with the corresponding `VITE_TRANSCRIPT_POLISHING_*` variables;
@@ -47,12 +60,14 @@ the provider model remains server-controlled by `TRANSCRIPT_POLISHING_MODEL`.
 
 ## Read and UI Model
 
-Live and history views keep three separate content types:
+Live and history views keep the existing content types:
 
 - Raw transcript
 - Live translation
-- Polished article translation
+- Translation with completed Cue-level polishing applied
 
-The article view updates only after a completed output is persisted. Failed
-polishing displays a retryable failure state without changing Live controls,
-audio downloads, or transcript history.
+The translation Cue, history view, and exports update only after a completed
+output is persisted. Failed polishing leaves the original Live translation
+unchanged and does not affect Live controls, audio downloads, or source text.
+The Live view also shows queued, running, completed, and failed polishing
+states, with a retry action for failed executions.

@@ -14,6 +14,7 @@ Backend environment variables:
   limit. Defaults to `26214400`.
 - `SESSION_AUDIO_MAX_BYTES`: Optional per-request WAV upload limit. Defaults to
   `52428800`.
+- `SESSION_SHARES_FILE`: Optional override for persisted session share tokens.
 - `ALLOWED_ORIGIN`: Optional CORS origin for the frontend. Defaults to
   `http://127.0.0.1:5173`.
 

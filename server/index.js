@@ -671,7 +671,7 @@ async function handleRequestWithSessionReadController(
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord) throw createHttpError('session_not_found');
       const body = await readJson(req);
-      const share = sessionShareService.createShare(sessionId, { expiresAt: body?.expiresAt ?? null });
+      const share = await sessionShareService.createShare(sessionId, { expiresAt: body?.expiresAt ?? null });
       statusCode = 201;
       sendJson(res, statusCode, { share, url: `/watch?token=${encodeURIComponent(share.token)}` }, requestId);
     } catch (error) {
@@ -685,7 +685,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'DELETE' && isSessionSharePath(path)) {
     try {
       const { sessionId, shareId } = parseSessionSharePath(path);
-      if (!sessionShareService.revokeShare(sessionId, shareId)) throw createHttpError('session_not_found');
+      if (!await sessionShareService.revokeShare(sessionId, shareId)) throw createHttpError('session_not_found');
       statusCode = 200;
       sendJson(res, statusCode, { deleted: true, sessionId, shareId }, requestId);
     } catch (error) {
@@ -698,7 +698,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'GET' && isSharedSessionDetailPath(path)) {
     const token = decodeURIComponent(path.slice('/api/shared-sessions/'.length));
-    const share = sessionShareService.resolveShare(token);
+    const share = await sessionShareService.resolveShare(token);
     if (!share) {
       sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
       return;
@@ -714,7 +714,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'GET' && isSharedSessionEventsPath(path)) {
     const token = decodeURIComponent(path.slice('/api/shared-sessions/'.length, -'/events'.length));
-    const share = sessionShareService.resolveShare(token);
+    const share = await sessionShareService.resolveShare(token);
     if (!share) {
       sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
       return;

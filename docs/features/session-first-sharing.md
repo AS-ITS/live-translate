@@ -14,7 +14,10 @@ viewing.
   same Session with a new segment identifier.
 - Transcript items retain both `sessionId` and `segmentId`.
 - Share tokens are opaque, high-entropy values; only their SHA-256 hashes are
-  retained by the current in-process share service.
+  retained by the file-backed share service.
+- Share records are persisted under `DATA_DIR/session-shares.json` by default;
+  `SESSION_SHARES_FILE` can override the exact path, so links remain valid after
+  a backend restart.
 - Viewer reads omit audio artifacts and browser device identifiers.
 - Viewer updates use SSE and are scoped by `sessionId` with monotonic event IDs.
 

@@ -1410,3 +1410,6 @@ These items are intentionally deferred:
 - Added the WP1 meeting summary pipeline for ordered Final Subtitle Cues,
   configurable chunking, Gemini Flash Lite chunk summaries, and deterministic
   structured merging.
+- Session share tokens are now persisted to `DATA_DIR/session-shares.json` by
+  default, with `SESSION_SHARES_FILE` as an override, so existing share links
+  remain valid after backend restart.

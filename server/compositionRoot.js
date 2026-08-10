@@ -41,6 +41,7 @@ import { createTranslationGlossary } from '../src/infrastructure/translationGlos
 import { createFileSessionRepository } from '../src/infrastructure/fileSessionRepository.js';
 import { createFileSessionAudioArtifactRepository } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
+import { createFileSessionShareService } from '../src/infrastructure/fileSessionShareService.js';
 import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
@@ -68,6 +69,7 @@ export const DEFAULT_PRODUCTION_DATA_DIR = '/var/data';
 export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
+export const DEFAULT_SESSION_SHARES_FILE = 'session-shares.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -120,6 +122,7 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepository,
     sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
     sessionAudioArtifactFileSystem = fileSystem,
+    sessionShareService,
     meetingRepository,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
@@ -255,6 +258,7 @@ export function createApplicationDependencies(options = {}) {
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+      ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
@@ -313,6 +317,8 @@ export function createProductionApplicationDependencies(options = {}) {
     durableQueueFileSystem = fileSystem,
     translationGlossaryFileSystem = fileSystem,
     sessionRepositoryFileSystem = fileSystem,
+    sessionShareServiceFileSystem = fileSystem,
+    sessionShareServiceFactory = createFileSessionShareService,
     meetingRepositoryFileSystem = fileSystem,
     translationQueueClock = createSystemClock(),
     translationQueueLeaseIdFactory = randomUUID,
@@ -356,6 +362,12 @@ export function createProductionApplicationDependencies(options = {}) {
     : fileMeetingRepositoryFactory({
         filePath: meetingRecordsFilePathFor(env),
         fileSystem: meetingRepositoryFileSystem
+      });
+  const sessionShareService = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionShareService')
+    ? applicationOptions.sessionShareService
+    : sessionShareServiceFactory({
+        filePath: sessionSharesFilePathFor(env),
+        fileSystem: sessionShareServiceFileSystem
       });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
@@ -463,6 +475,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...applicationOptions,
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
+    sessionShareService,
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -1175,6 +1188,10 @@ function sessionRecordsFilePathFor(env = {}) {
 
 function meetingRecordsFilePathFor(env = {}) {
   return env.MEETING_RECORDS_FILE ?? join(dataDirFor(env), DEFAULT_MEETING_RECORDS_FILE);
+}
+
+function sessionSharesFilePathFor(env = {}) {
+  return env.SESSION_SHARES_FILE ?? join(dataDirFor(env), DEFAULT_SESSION_SHARES_FILE);
 }
 
 function sessionAudioArtifactsDirectoryFor(env = {}) {

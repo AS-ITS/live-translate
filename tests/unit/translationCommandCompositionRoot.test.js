@@ -303,6 +303,7 @@ test('application dependencies assemble translation command graph with injected 
     'liveTokenCreator',
     'meetingCheckpointService',
     'meetingReadController',
+    'sessionApplicationService',
     'sessionAudioArtifactRepository',
     'sessionReadController',
     'sessionRepository',

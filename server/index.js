@@ -515,6 +515,7 @@ export function createRequestHandler(options = {}) {
     meetingReadController,
     meetingCheckpointService,
     sessionAudioArtifactRepository,
+    sessionApplicationService,
     translationProviderOptionsController,
     glossaryController,
     savedTranscriptRetranslationController,
@@ -546,6 +547,7 @@ export function createRequestHandler(options = {}) {
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository,
+      ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
       glossaryController,
       savedTranscriptRetranslationController,
@@ -568,7 +570,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -615,7 +617,9 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'GET' && path === '/api/sessions') {
     try {
-      const sessions = await sessionReadController.listSessions();
+      const sessions = sessionApplicationService
+        ? await sessionApplicationService.listSessions()
+        : await sessionReadController.listSessions();
       statusCode = 200;
       sendJson(res, statusCode, sessions, requestId);
     } catch (error) {
@@ -644,7 +648,7 @@ async function handleRequestWithSessionReadController(
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
       }
-      const session = await sessionRepository.createSessionRecord({
+      const sessionInput = {
         id: body?.id,
         name: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null,
         targetLanguageCode: body?.targetLanguageCode || 'en',
@@ -654,7 +658,10 @@ async function handleRequestWithSessionReadController(
         inputDeviceLabelSnapshot: body?.inputDeviceLabelSnapshot || null,
         status: 'created',
         startedAt: null
-      });
+      };
+      const session = sessionApplicationService
+        ? await sessionApplicationService.createSession(sessionInput)
+        : await sessionRepository.createSessionRecord(sessionInput);
       statusCode = 201;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
@@ -1185,7 +1192,9 @@ async function handleRequestWithSessionReadController(
       if (patch.targetLanguageCode && !isSupportedLanguage(patch.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
       }
-      const session = await sessionRepository.updateSessionRecord(sessionId, patch);
+      const session = sessionApplicationService
+        ? await sessionApplicationService.updateSession(sessionId, patch)
+        : await sessionRepository.updateSessionRecord(sessionId, patch);
       statusCode = 200;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
@@ -1230,7 +1239,9 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
     try {
       const sessionId = path.slice('/api/sessions/'.length);
-      const session = await sessionReadController.getSession(sessionId);
+      const session = sessionApplicationService
+        ? await sessionApplicationService.getSessionDetail(sessionId)
+        : await sessionReadController.getSession(sessionId);
 
       if (!session) {
         statusCode = 404;

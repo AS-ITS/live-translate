@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Phase 2B-2 Session foundation now exposes a `SessionApplicationService` for
+  Session create/update/finalize commands and history/detail read models while
+  preserving existing HTTP contracts and storage adapters.
+
 - 建立 Session-first 垂直切片：即時翻譯會在 Gemini Live 啟動前先保存 `created` Session，Pause/Resume 會同步 Session 狀態並為逐字稿保留 `sessionId`/`segmentId`；新增 opaque share token、撤銷分享、Viewer-safe detail 與依 Session 隔離的 SSE snapshot stream。
 
 - 改善操作管理者 UI：即時翻譯的錄音與播放設定改用直白命名，所有翻譯工作階段統一顯示在單一翻譯紀錄清單，並補充來源語言、目標語言與表單操作提示，改善手機版操作間距。

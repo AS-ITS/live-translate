@@ -2,6 +2,7 @@ import { promises as fileSystem } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
+import { createSessionApplicationService } from '../src/application/sessionApplicationService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
@@ -123,6 +124,8 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
     sessionAudioArtifactFileSystem = fileSystem,
     sessionShareService,
+    sessionApplicationService,
+    sessionApplicationServiceFactory = createSessionApplicationService,
     meetingRepository,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
@@ -159,6 +162,14 @@ export function createApplicationDependencies(options = {}) {
         }
       : {})
   });
+  const resolvedSessionApplicationService = sessionApplicationService ?? (
+    hasSessionApplicationCommandContract(sessionReadDependencies.sessionRepository)
+      ? sessionApplicationServiceFactory({
+          sessionRepository: sessionReadDependencies.sessionRepository,
+          sessionReadRepository: sessionReadDependencies.sessionReadRepository
+        })
+      : undefined
+  );
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
       ? translationRepository
@@ -259,6 +270,9 @@ export function createApplicationDependencies(options = {}) {
       meetingCheckpointService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
+      ...(resolvedSessionApplicationService !== undefined
+        ? { sessionApplicationService: resolvedSessionApplicationService }
+        : {}),
       glossaryController: resolvedGlossaryController,
       liveTokenCreator: resolvedLiveTokenCreator,
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
@@ -284,6 +298,9 @@ export function createApplicationDependencies(options = {}) {
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
     sessionRetranslationCommandService,
+    ...(resolvedSessionApplicationService !== undefined
+      ? { sessionApplicationService: resolvedSessionApplicationService }
+      : {}),
     sessionRetranslationCommandController,
     ...(requestHandler ? { requestHandler } : {})
   };
@@ -1216,6 +1233,11 @@ function shouldUseDefaultFileSessionRepository({ requestHandlerFactory, sessionR
   return Boolean(requestHandlerFactory) &&
     !Object.prototype.hasOwnProperty.call(sessionReadOptions, 'sessionRepository') &&
     !Object.prototype.hasOwnProperty.call(sessionReadOptions, 'sessionReadRepository');
+}
+
+function hasSessionApplicationCommandContract(repository) {
+  return repository && ['createSessionRecord', 'updateSessionRecord', 'finalizeSessionRecord']
+    .every((method) => typeof repository[method] === 'function');
 }
 
 function assertExecutionProviderMap(providers) {

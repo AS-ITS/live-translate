@@ -5,9 +5,9 @@
 This document defines the Phase 2B Architecture Foundation for the
 Session-oriented Real-time Multilingual Translation Platform.
 
-Phase 2B-1 is architecture and specification documentation only. It establishes
-contracts, terminology, boundaries, and deferred scope. It does not modify
-production code.
+Phase 2B-1 established contracts, terminology, boundaries, and deferred scope.
+Phase 2B-2 implementation is now being delivered incrementally, beginning with
+the Session Application Service boundary.
 
 ## 2. Current Implementation Constraints
 
@@ -55,6 +55,15 @@ Scope:
 - Add read-model wrappers.
 - Preserve existing helpers by wrapping them where practical.
 - Preserve current single-output UI behavior.
+
+Current implementation slice:
+
+- `SessionApplicationService` wraps Session command persistence and Session
+  read-model access.
+- Existing repository and read-model adapters remain the compatibility
+  boundary for memory and file-backed storage.
+- Session HTTP list/create/detail/update routes use the application service
+  when composed.
 
 ### Phase 2C: Product Capability Implementation
 

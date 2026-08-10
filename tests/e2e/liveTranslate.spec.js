@@ -1940,6 +1940,27 @@ test('stopped session can be deleted from history', async ({ page }) => {
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 });
 
+test('advanced settings overlay does not stretch desktop layout or overflow mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto('/');
+
+  const controlPanel = page.locator('.live-page .control-panel');
+  const before = await controlPanel.boundingBox();
+  await page.locator('.advanced-settings summary').click();
+
+  await expect(page.locator('.advanced-settings-content')).toBeVisible();
+  const after = await controlPanel.boundingBox();
+  expect(after?.height).toBe(before?.height);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.locator('.advanced-settings summary').click();
+
+  await expect(page.locator('.advanced-settings-content')).toBeVisible();
+  const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  expect(hasHorizontalOverflow).toBe(false);
+});
+
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
   await page.goto('/');
 

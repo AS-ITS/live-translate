@@ -257,9 +257,59 @@ input:disabled {
 }
 
 .secondary {
-  border-color: #bf2f2f;
+  border-color: #b9c4d1;
   background: #ffffff;
-  color: #a51f1f;
+  color: #314152;
+}
+
+.advanced-settings {
+  position: relative;
+  min-width: 0;
+  align-self: end;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.advanced-settings[open] {
+  z-index: 20;
+}
+
+.advanced-settings summary {
+  min-height: 48px;
+  padding: 13px 14px;
+  color: #314152;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advanced-settings-content {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 360px;
+  max-width: calc(100vw - 48px);
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(23, 32, 42, 0.14);
+}
+
+.advanced-settings-content .toggle {
+  min-height: 0;
+}
+
+.inline-retry {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
 .error-message {
@@ -729,6 +779,32 @@ input:disabled {
   border-radius: 8px;
   padding: 20px;
   background: #ffffff;
+}
+
+.history-search-field {
+  max-width: 520px;
+  margin-bottom: 20px;
+}
+
+.history-groups {
+  display: grid;
+  gap: 24px;
+}
+
+.history-group-title {
+  margin: 0 0 10px;
+  color: #314152;
+  font-size: 1rem;
+}
+
+.history-more-button {
+  justify-self: start;
+}
+
+.empty-state {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
 }
 
 .history-header {
@@ -1394,6 +1470,17 @@ input:disabled {
     align-items: start;
   }
 
+  .feature-navigation {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .feature-navigation a {
+    justify-content: center;
+    padding: 0 8px;
+    text-align: center;
+  }
+
   .control-panel,
   .controls,
   .language-controls,
@@ -1404,6 +1491,19 @@ input:disabled {
   .glossary-controls,
   .glossary-list li {
     grid-template-columns: 1fr;
+  }
+
+  .advanced-settings {
+    position: static;
+  }
+
+  .advanced-settings-content {
+    position: static;
+    width: auto;
+    border: 0;
+    border-radius: 0;
+    padding: 0 12px 10px;
+    box-shadow: none;
   }
 
   .history-item-header,

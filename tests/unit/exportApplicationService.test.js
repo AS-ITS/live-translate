@@ -46,6 +46,36 @@ test('combined export preserves an explicitly selected stream', () => {
   assert.deepEqual(options, { format: 'vtt', stream: 'translation' });
 });
 
+test('generic transcript export delegates Cue SRT/VTT and transcript fallback paths', () => {
+  const calls = [];
+  const service = createExportApplicationService({
+    formatTranscriptExport(items, options) {
+      calls.push(['transcript', items, options]);
+      return 'transcript-result';
+    },
+    formatSavedSessionExport() {},
+    exportCuesToSrt(cues, options) {
+      calls.push(['srt', cues, options]);
+      return 'srt-result';
+    },
+    exportCuesToVtt(cues, options) {
+      calls.push(['vtt', cues, options]);
+      return 'vtt-result';
+    }
+  });
+  const cues = [{ cueId: 'cue-1' }];
+  const items = [{ id: 'item-1' }];
+
+  assert.equal(service.exportTranscript({ items, cues, options: { format: 'srt', stream: 'source' } }), 'srt-result');
+  assert.equal(service.exportTranscript({ items, cues, options: { format: 'vtt', stream: 'translation' } }), 'vtt-result');
+  assert.equal(service.exportTranscript({ items, cues, options: { format: 'txt', stream: 'both' } }), 'transcript-result');
+  assert.deepEqual(calls, [
+    ['srt', cues, { format: 'srt', stream: 'source' }],
+    ['vtt', cues, { format: 'vtt', stream: 'translation' }],
+    ['transcript', items, { format: 'txt', stream: 'both' }]
+  ]);
+});
+
 test('export application service propagates helper results and errors unchanged', () => {
   const error = new Error('export failed');
   const service = createExportApplicationService({
@@ -61,4 +91,6 @@ test('export application service propagates helper results and errors unchanged'
 test('factory rejects missing or invalid export helpers deterministically', () => {
   assert.throws(() => createExportApplicationService({ formatTranscriptExport: null }), /formatTranscriptExport must be a function/);
   assert.throws(() => createExportApplicationService({ formatSavedSessionExport: null }), /formatSavedSessionExport must be a function/);
+  assert.throws(() => createExportApplicationService({ exportCuesToSrt: null }), /exportCuesToSrt must be a function/);
+  assert.throws(() => createExportApplicationService({ exportCuesToVtt: null }), /exportCuesToVtt must be a function/);
 });

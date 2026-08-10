@@ -39,11 +39,9 @@ import {
   buildSavedSessionFileName,
   canExportSavedSession
 } from './lib/sessionRecordExport.js';
-import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import { buildTranscriptFileName, canExportTranscript } from './lib/transcriptExport.js';
 import {
   canExportCues,
-  exportCuesToSrt,
-  exportCuesToVtt,
   wrapSubtitleText
 } from './lib/subtitleCueExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
@@ -2219,15 +2217,15 @@ function App() {
     setError('');
 
     try {
-      const content = exportFormat === 'srt' && subtitleCueState.finalCues.length > 0
-        ? exportCuesToSrt(subtitleCueState.finalCues, { stream: exportStream })
-        : exportFormat === 'vtt' && subtitleCueState.finalCues.length > 0
-          ? exportCuesToVtt(subtitleCueState.finalCues, { stream: exportStream })
-          : formatTranscriptExport(transcriptItems, {
-            format: exportFormat,
-            stream: exportStream,
-            timeOrigin: transcriptTimeOrigin
-          });
+      const content = exportApplicationService.exportTranscript({
+        items: transcriptItems,
+        cues: subtitleCueState.finalCues,
+        options: {
+          format: exportFormat,
+          stream: exportStream,
+          timeOrigin: transcriptTimeOrigin
+        }
+      });
       const fileName = buildTranscriptFileName({ format: exportFormat });
       downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
@@ -3374,10 +3372,13 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     setMeetingExportError('');
 
     try {
-      const content = formatTranscriptExport(transcriptItems, {
-        format: meetingExportFormat,
-        stream: meetingExportStream,
-        timeOrigin
+      const content = exportApplicationService.exportTranscript({
+        items: transcriptItems,
+        options: {
+          format: meetingExportFormat,
+          stream: meetingExportStream,
+          timeOrigin
+        }
       });
       downloadTextFile(
         content,
@@ -3722,10 +3723,13 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     setOperationError('');
 
     try {
-      const content = formatTranscriptExport(retranslationExportItems, {
-        format: retranslationExportFormat,
-        stream: retranslationExportStream,
-        timeOrigin: detail?.session?.startedAt
+      const content = exportApplicationService.exportTranscript({
+        items: retranslationExportItems,
+        options: {
+          format: retranslationExportFormat,
+          stream: retranslationExportStream,
+          timeOrigin: detail?.session?.startedAt
+        }
       });
       downloadTextFile(
         content,

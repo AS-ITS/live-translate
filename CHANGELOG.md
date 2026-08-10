@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 改善操作管理者 UI：即時翻譯的錄音與播放設定改用直白命名，所有翻譯工作階段統一顯示在單一翻譯紀錄清單，並補充來源語言、目標語言與表單操作提示，改善手機版操作間距。
+
 - 修正語音潤飾資料流：Flash Lite 只讀取已 finalized 的 Cue snapshot，結果獨立保存為 polished article；不再回寫 Raw Transcript、Live Translation、Cue、Session record 或 Gemini Live prompt。潤飾啟用與停用時送往 Gemini Live 的 PCM chunk 保持一致。
 
 - 即時字幕潤飾會以已 finalized 的雙語 Cue 作為上下文，結果獨立保存為文章版翻譯；Raw Transcript、Live Translation、字幕與匯出內容保持原始結果。

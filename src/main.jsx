@@ -2328,7 +2328,7 @@ function App() {
             </div>
 
             <details className="advanced-settings" open={false}>
-              <summary>進階設定</summary>
+              <summary>錄音與播放設定</summary>
               <div className="advanced-settings-content">
                 <label className="field">
                   <span>麥克風</span>
@@ -2352,7 +2352,7 @@ function App() {
                 </label>
                 <label className="toggle">
                   <input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={controlsLocked} />
-                  <span>保存講者原音錄音</span>
+                  <span>錄下原始聲音</span>
                 </label>
               </div>
             </details>
@@ -2469,7 +2469,7 @@ function App() {
             下載
           </button>
           </div>
-          {!canDownloadTranscript && !exportUnavailableReason ? <p className="export-note">完成翻譯後即可下載。</p> : null}
+          {!canDownloadTranscript && !exportUnavailableReason ? <p className="export-note">完成至少一句翻譯後，才可下載檔案。</p> : null}
           {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         </section>
 
@@ -2491,13 +2491,13 @@ function App() {
         <div className="history-header">
           <div>
             <h2 id="history-page-title">翻譯紀錄</h2>
-            <p className="history-description">查看已儲存的翻譯內容、正式輸出與匯出資料。</p>
+            <p className="history-description">查看已完成的翻譯工作階段；選取紀錄可閱讀、下載或重新翻譯。</p>
           </div>
         </div>
         <div className="history-load-status">
           {isLoadingHistory ? <p className="history-empty">正在載入 Session 紀錄…</p> : null}
-          {historyLoadError ? <p className="error-message" role="alert">{meetingRecords.length > 0 ? '部分紀錄載入失敗：Session 紀錄載入失敗。' : historyLoadError} <button className="inline-retry" type="button" onClick={refreshHistoryRecords}>重試</button></p> : null}
-          {meetingLoadError ? <p className="error-message" role="alert">{historyRecords.length > 0 ? '部分紀錄載入失敗：長會議紀錄載入失敗。' : meetingLoadError} <button className="inline-retry" type="button" onClick={refreshMeetingRecords}>重試</button></p> : null}
+          {historyLoadError ? <p className="error-message" role="alert">{historyRecords.length > 0 || meetingRecords.length > 0 ? '部分翻譯紀錄載入失敗。' : historyLoadError} <button className="inline-retry" type="button" onClick={refreshHistoryRecords}>重試</button></p> : null}
+          {meetingLoadError ? <p className="error-message" role="alert">{historyRecords.length > 0 || meetingRecords.length > 0 ? '部分翻譯紀錄載入失敗。' : meetingLoadError} <button className="inline-retry" type="button" onClick={refreshMeetingRecords}>重試</button></p> : null}
         </div>
         <HistoryPanel
           titleId="session-history-title"
@@ -2967,15 +2967,13 @@ function HistoryPanel({
   const entries = useMemo(() => combinedHistoryEntries(records, meetingRecords), [records, meetingRecords]);
   const filteredEntries = useMemo(() => entries.filter((entry) => historyEntryMatches(entry, query)), [entries, query]);
   const visibleEntries = filteredEntries.slice(0, visibleCount);
-  const sessionEntries = visibleEntries.filter((entry) => entry.kind === 'session');
-  const meetingEntries = visibleEntries.filter((entry) => entry.kind === 'meeting');
 
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <h3 id={titleId} className="sr-only">紀錄清單</h3>
       <label className="field history-search-field">
         <span>搜尋紀錄</span>
-        <input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(12); }} placeholder="日期、語言或用途" />
+        <input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(12); }} placeholder="搜尋日期、語言或狀態" />
       </label>
 
       {entries.length === 0 ? (
@@ -2988,35 +2986,26 @@ function HistoryPanel({
         <p className="history-empty">找不到符合條件的紀錄。</p>
       ) : (
         <div className="history-groups">
-          {sessionEntries.length > 0 ? <section aria-labelledby={`${titleId}-sessions`}>
-            <h4 id={`${titleId}-sessions`} className="history-group-title">一般翻譯</h4>
-            <ol className="history-list">
-              {sessionEntries.map((entry) => (
-            <SessionHistoryItem
-              key={`session-${entry.record.id}`}
-              record={entry.record}
-              selectedRecordId={selectedRecordId}
-              selectedDetail={selectedDetail}
-              selectedRecord={selectedRecord}
-              onViewDetails={onViewDetails}
-              onDeleteRecord={onDeleteRecord}
-              onRetranslationSubmitted={onRetranslationSubmitted}
-              onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
-              onPolishingRetry={onPolishingRetry}
-              detailError={historyDetailError}
-              onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)}
-            />
-              ))}
-            </ol>
-          </section> : null}
-          {meetingEntries.length > 0 ? <section aria-labelledby={`${titleId}-meetings`}>
-            <h4 id={`${titleId}-meetings`} className="history-group-title">長會議紀錄</h4>
-            <ol className="history-list">
-              {meetingEntries.map((entry) => (
-                <MeetingHistoryItem key={`meeting-${entry.record.id}`} record={entry.record} selectedMeetingId={selectedMeetingId} selectedDetail={selectedMeetingDetail} onViewDetails={onViewMeetingDetails} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} />
-              ))}
-            </ol>
-          </section> : null}
+          <ol className="history-list" aria-label="翻譯紀錄列表">
+            {visibleEntries.map((entry) => entry.kind === 'meeting' ? (
+              <MeetingHistoryItem key={`meeting-${entry.record.id}`} record={entry.record} selectedMeetingId={selectedMeetingId} selectedDetail={selectedMeetingDetail} onViewDetails={onViewMeetingDetails} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} />
+            ) : (
+              <SessionHistoryItem
+                key={`session-${entry.record.id}`}
+                record={entry.record}
+                selectedRecordId={selectedRecordId}
+                selectedDetail={selectedDetail}
+                selectedRecord={selectedRecord}
+                onViewDetails={onViewDetails}
+                onDeleteRecord={onDeleteRecord}
+                onRetranslationSubmitted={onRetranslationSubmitted}
+                onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
+                onPolishingRetry={onPolishingRetry}
+                detailError={historyDetailError}
+                onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)}
+              />
+            ))}
+          </ol>
           {filteredEntries.length > visibleCount ? <button className="button detail-button history-more-button" type="button" onClick={() => setVisibleCount((count) => count + 12)}>顯示更多紀錄</button> : null}
         </div>
       )}
@@ -3068,10 +3057,11 @@ function SessionHistoryItem({
             <button
               className="button detail-button"
               type="button"
+              aria-label={selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'}
               aria-expanded={selectedRecordId === record.id}
               onClick={() => onViewDetails(record.id)}
             >
-              {selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'}
+              {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
             </button>
             <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}>
               <Trash2 size={16} aria-hidden="true" />
@@ -3135,10 +3125,11 @@ function MeetingHistoryItem({ record, selectedMeetingId, selectedDetail, onViewD
             <button
               className="button detail-button"
               type="button"
+              aria-label={selectedMeetingId === record.id ? '關閉詳細資料' : '查看詳細資料'}
               aria-expanded={selectedMeetingId === record.id}
               onClick={() => onViewDetails(record.id)}
             >
-              {selectedMeetingId === record.id ? '關閉詳細資料' : '查看詳細資料'}
+              {selectedMeetingId === record.id ? '關閉內容' : '查看內容'}
             </button>
           </div>
         </div>
@@ -3721,8 +3712,8 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
         <section className="history-panel" aria-label="選擇歷史紀錄">
           <div className="controls retranslation-picker-controls">
             <label className="field">
-              <span>搜尋 Session</span>
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="日期、語言或摘要" />
+              <span>搜尋翻譯紀錄</span>
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
             </label>
           </div>
           {selectableRecords.length === 0 ? <div className="empty-state"><p className="history-empty">尚無可重新翻譯的原始逐字稿。先完成一次即時翻譯，再回到這裡選擇目標語言。</p><a className="button primary" href="#live">開始即時翻譯</a></div> : null}
@@ -3736,7 +3727,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                       <h3>{historyLanguageLabel(record)}</h3>
                       <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
                     </div>
-                    <button className="button detail-button" type="button" onClick={() => onSelectSession(record.id)}>選擇</button>
+                    <button className="button detail-button" type="button" aria-label="選擇" onClick={() => onSelectSession(record.id)}>重新翻譯此紀錄</button>
                   </div>
                   <dl className="history-metadata">
                     <div><dt>開始時間</dt><dd>{formatRecordTime(record.startedAt)}</dd></div>
@@ -4073,6 +4064,7 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
         {editingEntry ? <button className="button detail-button" type="button" onClick={resetForm}>取消編輯</button> : null}
       </div>
       {error ? <p className="error-message glossary-form-message" role="alert">{error}</p> : null}
+      {!canSave && !isSaving && !editingEntry ? <p className="form-hint">請填寫詞條與替換內容後，才能新增。</p> : null}
       {status ? <p className="success-message" role="status">{status}</p> : null}
       {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
       {!isLoading && entries.length === 0 ? <div className="empty-state"><p className="history-empty">尚無字典詞條。</p><p className="history-empty">新增常用名稱或專有名詞後，翻譯會更一致。</p></div> : null}
@@ -4244,7 +4236,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         {sessionRecord.failureCategory ? (
           <div>
             <dt>失敗類別</dt>
-            <dd>{sessionRecord.failureCategory}</dd>
+            <dd>{failureCategoryLabel(sessionRecord.failureCategory)}</dd>
           </div>
         ) : null}
         {sessionRecord.inputDeviceLabelSnapshot ? (
@@ -4287,7 +4279,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         />
       )}
       <section className="saved-export-panel" aria-label="重新翻譯">
-        <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>
+        <button className="button primary detail-button" type="button" aria-label="以此原文重新翻譯" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>用這份原文重新翻譯</button>
         <RetranslationProgress progress={retranslationProgress} />
       </section>
 
@@ -4676,9 +4668,22 @@ function historyLanguageLabel(record) {
 }
 
 function sessionDisplayName(record = {}) {
-  const language = targetLanguageLabelFor(record.targetLanguageCode) || record.targetLanguageLabel || record.targetLanguageCode || '未知語言';
+  const sourceLanguage = targetLanguageLabelFor(record.sourceLanguageCode) || record.sourceLanguageLabel || record.sourceLanguageCode || targetLanguageLabelFor(DEFAULT_SOURCE_LANGUAGE_CODE) || '來源語言未標記';
+  const targetLanguage = targetLanguageLabelFor(record.targetLanguageCode) || record.targetLanguageLabel || record.targetLanguageCode || '未知語言';
   const purpose = record.recordKind === 'retranslation' ? '重新翻譯' : '即時翻譯';
-  return `${formatRecordTime(record.startedAt)} · ${purpose} · ${language}`;
+  return `${formatRecordTime(record.startedAt)} · ${sourceLanguage} → ${targetLanguage} · ${purpose}`;
+}
+
+function failureCategoryLabel(category) {
+  const labels = {
+    user_intent: '使用者手動停止',
+    microphone_capture: '麥克風無法使用',
+    connection: '連線中斷',
+    token: '工作階段授權失敗',
+    provider: '翻譯服務暫時失敗'
+  };
+
+  return labels[category] || category;
 }
 
 function historyStatusLabel(status) {
@@ -5323,13 +5328,13 @@ function createAudioUploadSegmentState() {
 
 function meetingCheckpointStatusLabel(status) {
   const labels = {
-    idle: '長會議同步：尚未開始',
-    ready: '長會議同步：準備同步',
-    syncing: '長會議同步：同步中',
-    synced: '長會議同步：已同步',
-    switching: '長會議同步：切換下一段中',
-    switched: '長會議同步：下一段已開始',
-    error: '長會議同步：同步失敗，等待重試'
+    idle: '會議模式：尚未啟用',
+    ready: '會議模式：準備中',
+    syncing: '會議模式：保存中',
+    synced: '會議模式：已保存',
+    switching: '會議模式：切換段落中',
+    switched: '會議模式：下一段已開始',
+    error: '會議模式：保存失敗，等待重試'
   };
 
   return labels[status] || labels.idle;

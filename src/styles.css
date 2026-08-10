@@ -828,6 +828,13 @@ input:disabled {
   line-height: 1.5;
 }
 
+.form-hint {
+  margin: 0;
+  color: #6b7886;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
 .history-list {
   display: grid;
   gap: 12px;
@@ -923,6 +930,7 @@ input:disabled {
   color: #17202a;
   font-size: 1rem;
   letter-spacing: 0;
+  line-height: 1.4;
 }
 
 .history-status {
@@ -1007,6 +1015,17 @@ input:disabled {
   background: #ffffff;
   color: #314152;
   font-size: 0.875rem;
+}
+
+.detail-button.primary {
+  border-color: #156b59;
+  background: #156b59;
+  color: #ffffff;
+}
+
+.detail-button.primary:hover:not(:disabled) {
+  border-color: #0e594a;
+  background: #0e594a;
 }
 
 .danger-button {
@@ -1473,6 +1492,7 @@ input:disabled {
   .feature-navigation {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .feature-navigation a {
@@ -1504,6 +1524,10 @@ input:disabled {
     border-radius: 0;
     padding: 0 12px 10px;
     box-shadow: none;
+  }
+
+  .advanced-settings summary {
+    min-height: 52px;
   }
 
   .history-item-header,

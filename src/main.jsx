@@ -21,6 +21,7 @@ import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
+import { authenticatedFetch } from './lib/accessToken.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
@@ -1620,7 +1621,7 @@ function App() {
   }
 
   async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
+    const response = await authenticatedFetch(fetch)(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'audio/wav',

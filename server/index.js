@@ -6,6 +6,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
+import { createAccessControl } from './accessControl.js';
 import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
@@ -222,32 +223,10 @@ function isAllowedOrigin(req) {
   return !origin || origin === ALLOWED_ORIGIN;
 }
 
+const accessControl = createAccessControl();
+
 function isAuthConfigured() {
-  return Boolean(process.env.DEMO_ACCESS_TOKEN);
-}
-
-function validateAccessToken(req) {
-  if (!isAuthConfigured()) {
-    if (process.env.NODE_ENV === 'production') {
-      throw createHttpError('auth_not_configured');
-    }
-    return;
-  }
-
-  const authorization = req.headers?.authorization || '';
-  const bearerToken = authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
-  const headerToken = req.headers?.['x-demo-access-token'] || '';
-  const candidate = bearerToken || headerToken;
-
-  if (!candidate) {
-    throw createHttpError('auth_required');
-  }
-
-  const candidateBuffer = Buffer.from(candidate);
-  const expectedBuffer = Buffer.from(process.env.DEMO_ACCESS_TOKEN);
-  if (candidateBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(candidateBuffer, expectedBuffer)) {
-    throw createHttpError('auth_invalid');
-  }
+  return accessControl.isConfigured();
 }
 
 function enforceRateLimit(clientIp) {
@@ -613,6 +592,18 @@ async function handleRequestWithSessionReadController(
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
+  }
+
+  if (path.startsWith('/api/') && !isPublicApiPath(req.method, path)) {
+    try {
+      if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
+      accessControl.validateRequest(req);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      return;
+    }
   }
 
   if (req.method === 'GET' && path === '/api/sessions') {
@@ -1383,10 +1374,6 @@ async function handleRequestWithSessionReadController(
   }
 
   try {
-    if (!isAllowedOrigin(req)) {
-      throw createHttpError('invalid_origin');
-    }
-    validateAccessToken(req);
     enforceRateLimit(clientIp);
 
     const body = await readJson(req);
@@ -1468,6 +1455,13 @@ function isExecutionControlRoute(method, path) {
   return method === 'POST'
     && path.startsWith('/api/translation-executions/')
     && (path.endsWith('/cancel') || path.endsWith('/retry'));
+}
+
+function isPublicApiPath(method, path) {
+  return method === 'GET' && (
+    isSharedSessionDetailPath(path) ||
+    isSharedSessionEventsPath(path)
+  );
 }
 
 function isSavedTranscriptRetranslationRoute(method, path) {

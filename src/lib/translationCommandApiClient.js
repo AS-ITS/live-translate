@@ -1,3 +1,5 @@
+import { authenticatedFetch } from './accessToken.js';
+
 const JSON_HEADERS = Object.freeze({
   'Content-Type': 'application/json'
 });
@@ -6,6 +8,7 @@ export function createTranslationCommandApiClient({ fetchImpl = globalThis.fetch
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('translation command API client requires fetchImpl to be a function.');
   }
+  fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
     createTranslationRequest(command) {

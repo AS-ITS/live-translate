@@ -210,7 +210,8 @@ Foundation is current.
 
 ### Candidate Features
 
-- Basic login / access control
+- Shared Access Token v1 completed; per-user login/authorization remains
+  deferred.
 - Translation history. Deferred beyond the foundation milestone.
 - Export transcript as TXT / SRT / VTT. Completed.
 - Audio input device selection. Completed.

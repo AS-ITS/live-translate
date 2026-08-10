@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added shared Access Token v1 for private `/api/*` routes. Production now
+  requires `DEMO_ACCESS_TOKEN`; the browser uses the matching
+  `VITE_DEMO_ACCESS_TOKEN`. Health/readiness and anonymous share Viewer routes
+  remain public, while per-user identity and RBAC remain deferred.
+
 - Phase 2B-2 frontend translation history/detail reads now centralize legacy and
   formal output merging, selected-output projections, and polished article
   derivation in a focused helper while preserving existing HTTP payloads and

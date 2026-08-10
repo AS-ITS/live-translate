@@ -660,6 +660,20 @@ Successful deletion returns:
 Missing records and non-finalized records return `404 session_not_found`.
 Malformed session identifiers return `400 invalid_request`.
 
+## Access control
+
+Private `/api/*` routes require `Authorization: Bearer <DEMO_ACCESS_TOKEN>`.
+The legacy `X-Demo-Access-Token` header remains accepted for compatibility.
+Production returns `503 auth_not_configured` when `DEMO_ACCESS_TOKEN` is absent;
+development and test remain permissive when it is absent. Health/readiness and
+Viewer share routes (`GET /api/shared-sessions/:token` and `/events`) remain
+anonymous. Private requests also retain the configured origin check.
+
+The browser uses the build-time `VITE_DEMO_ACCESS_TOKEN`. It must match the
+server token and is visible in the frontend bundle; this v1 design does not
+provide per-user security. All authenticated users share the same private API
+permissions.
+
 ## Session-first commands
 
 ### `POST /api/sessions`

@@ -1,5 +1,8 @@
+import { authenticatedFetch } from './accessToken.js';
+
 export function createSessionCommandApiClient({ fetchImpl = globalThis.fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('session command API client requires fetchImpl to be a function.');
+  fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
     async create(input = {}) {

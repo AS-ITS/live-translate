@@ -9,10 +9,10 @@ import {
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
+import { authenticatedFetch } from './accessToken.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
-const DEMO_ACCESS_TOKEN = import.meta.env?.VITE_DEMO_ACCESS_TOKEN;
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
@@ -90,10 +90,7 @@ export class LiveTranslateSession {
 
     const tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(DEMO_ACCESS_TOKEN ? { 'X-Demo-Access-Token': DEMO_ACCESS_TOKEN } : {})
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
@@ -559,7 +556,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await authenticatedFetch(fetch)(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error.name === 'AbortError') {
       throw new Error('即時翻譯服務回應逾時。請再試一次。');
@@ -626,7 +623,7 @@ function userMessageForErrorCode(code) {
   const messages = {
     auth_required: '此示範尚未設定存取權限。請聯絡管理員。',
     auth_invalid: '此示範尚未設定存取權限。請聯絡管理員。',
-    auth_not_configured: '正式環境尚未設定即時翻譯。',
+    auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
     invalid_origin: '此網站不允許請求即時翻譯。',
     provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
     rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',

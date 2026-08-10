@@ -5,6 +5,10 @@
 Backend environment variables:
 
 - `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
+- `DEMO_ACCESS_TOKEN`: Shared access token required by production private APIs.
+- `VITE_DEMO_ACCESS_TOKEN`: Browser build-time copy of `DEMO_ACCESS_TOKEN`; both
+  values must match. The token is included in the browser bundle, so this is
+  shared-token access control, not per-user security.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `PORT`: Optional backend port. Defaults to `3000`.
@@ -28,10 +32,17 @@ DATA_DIR=./data
 SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 ALLOWED_ORIGIN=http://127.0.0.1:5173
+DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
+VITE_DEMO_ACCESS_TOKEN=replace_with_the_same_demo_token_for_browser_demo
 ```
 
 Secrets must be kept out of git. Use `.env` locally and keep `.env.example` as a
 non-secret template.
+
+Production requires `DEMO_ACCESS_TOKEN`. Development and test remain
+permissive when it is unset. All authenticated browser users share the same
+read/write access to private Session, Meeting, Translation, and Glossary APIs;
+per-user identity, ownership, RBAC, audit actors, and SSO are deferred.
 
 ## Local Development Setup
 

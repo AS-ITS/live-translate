@@ -56,6 +56,12 @@ The backend only issues short-lived ephemeral tokens and enforces the access
 gate, origin validation, rate limit, and structured error handling around
 `POST /api/live-token`.
 
+Access Control v1 applies the shared `DEMO_ACCESS_TOKEN` gate to private
+`/api/*` routes. Browsers send the matching build-time `VITE_DEMO_ACCESS_TOKEN`
+as a Bearer token. Health/readiness and opaque share Viewer routes remain
+anonymous; the browser token is visible in its bundle and does not represent a
+per-user identity or permission system.
+
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
@@ -992,7 +998,6 @@ Intentionally deferred:
 - Usage Metrics
 - Diagnostics dashboard
 - Token refresh
-- Multi-language re-translation
 - Broader reconnect reasons
 - Audio output selection
 - AudioWorklet migration
@@ -1004,10 +1009,6 @@ Intentionally deferred:
 - Billing
 - Multi-tenancy
 - Production deployment concerns
-- Provider selection UI
-- Multi-output UI
-- Retry/cancel/delete behavior
-- Output version UI
 
 ## 20. Terminology
 

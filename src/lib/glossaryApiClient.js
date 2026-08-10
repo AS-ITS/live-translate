@@ -1,5 +1,8 @@
+import { authenticatedFetch } from './accessToken.js';
+
 export function createGlossaryApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('glossary API client requires fetchImpl to be a function.');
+  fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
     async listEntries() {

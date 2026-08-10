@@ -92,6 +92,15 @@ export function createPcmChunker({ sourceRate, targetRate = INPUT_SAMPLE_RATE, c
       pending = combined.subarray(offset);
       return chunks;
     },
+    flush() {
+      if (pending.length === 0) {
+        return [];
+      }
+
+      const chunk = floatToPcm16(pending);
+      pending = new Float32Array(0);
+      return [chunk];
+    },
     reset() {
       pending = new Float32Array(0);
     }

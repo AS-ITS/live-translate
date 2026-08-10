@@ -159,6 +159,74 @@ test('interim input transcription emits a non-final source transcript without tu
   ]);
 });
 
+test('a standalone turn boundary flushes a pending input transcript', () => {
+  const inputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'ja',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'pending source text' }
+    }
+  });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
+    { text: 'pending source text', isFinal: false },
+    { text: 'pending source text', isFinal: true }
+  ]);
+});
+
+test('late input transcription is marked for cumulative transcript repair', () => {
+  const inputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  session.handleMessage({ serverContent: { turnComplete: true } });
+  session.handleMessage({ serverContent: { inputTranscription: { text: '12345678' } } });
+
+  assert.equal(inputEvents[0].isLateTranscript, true);
+});
+
+test('stop flushes buffered input audio before ending the realtime stream', async () => {
+  const calls = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en', echoTargetLanguage: true });
+  session.session = {
+    sendRealtimeInput(payload) { calls.push(payload); },
+    close() {}
+  };
+  session.chunker = {
+    flush() { return [new Uint8Array([1, 2])]; },
+    reset() {}
+  };
+
+  await session.stop();
+
+  assert.equal(calls.length, 2);
+  assert.ok(calls[0].audio?.data);
+  assert.deepEqual(calls[1], { audioStreamEnd: true });
+});
+
+test('polishing configuration cannot change PCM chunks sent to Gemini Live', () => {
+  const createSession = () => {
+    const calls = [];
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en', echoTargetLanguage: true });
+    session.session = { sendRealtimeInput(payload) { calls.push(payload); } };
+    session.chunker = { flush() { return [new Uint8Array([1, 2, 3, 4])]; } };
+    session.onInputAudioChunk = () => {};
+    session.flushInputAudio();
+    return calls;
+  };
+
+  assert.deepEqual(createSession(), createSession());
+});
+
 test('final input transcription replaces interim source while preserving translation transcript', () => {
   const inputEvents = [];
   const outputEvents = [];
@@ -338,8 +406,8 @@ test('turn completion received before transcripts finalizes the next source and 
     }
   });
 
-  assert.deepEqual(inputEvents, [{ text: 'late source sentence', isFinal: true }]);
-  assert.deepEqual(outputEvents, [{ text: 'late translated sentence', isFinal: true }]);
+  assert.deepEqual(inputEvents, [{ text: 'late source sentence', isFinal: true, isLateTranscript: true }]);
+  assert.deepEqual(outputEvents, [{ text: 'late translated sentence', isFinal: true, isLateTranscript: true }]);
 });
 
 test('session stop flushes pending source and translation transcripts once', async () => {
@@ -512,13 +580,37 @@ test('retranslateSourceText sends one client-content turn and respects closed gu
   assert.deepEqual(calls, [{
     turns: [{
       role: 'user',
-      parts: [{ text: 'Translate the following source text into en. Return only the translation, without explanation:\n你好' }]
+      parts: [{ text: 'Translate the following source text into en. Preserve every digit exactly and return only the translation, without explanation:\n你好' }]
     }],
     turnComplete: true
   }]);
 
   session.closed = true;
   assert.equal(session.retranslateSourceText('再見', 'cue-2'), false);
+});
+
+test('numeric correction output is tagged with its Cue and does not request playback audio', () => {
+  const outputEvents = [];
+  const audioEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    onOutputTranscript: (event) => outputEvents.push(event),
+    onOutputAudioChunk: (chunk) => audioEvents.push(chunk)
+  });
+  session.session = { sendClientContent() {}, close() {} };
+  session.retranslateSourceText('現在是下午4點50分。', 'cue-1');
+
+  session.handleMessage({
+    serverContent: {
+      outputTranscription: { text: "Right now it's 4:50 PM." },
+      turnComplete: true,
+      modelTurn: { parts: [{ inlineData: { data: 'AQID' } }] }
+    }
+  });
+
+  assert.equal(outputEvents[0].retranslationCueId, 'cue-1');
+  assert.deepEqual(audioEvents, []);
 });
 
 function createTestSession({ events = [], onConnectionFailure, onError, onClose } = {}) {

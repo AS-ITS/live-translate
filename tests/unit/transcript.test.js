@@ -12,6 +12,15 @@ import {
   transcriptTextForStream
 } from '../../src/lib/transcript.js';
 
+test('polishing does not mutate raw transcript or live translation', () => {
+  let state = createTranscriptState();
+  state = applyTranscriptEvent(state, { stream: 'source', text: '常會議', isFinal: true, now: 100 });
+  state = applyTranscriptEvent(state, { stream: 'translation', text: 'The regular meeting.', isFinal: true, now: 100 });
+
+  assert.equal(state.source.finalItems[0].text, '常會議');
+  assert.equal(state.translation.finalItems[0].text, 'The regular meeting.');
+});
+
 test('append final transcript', () => {
   const state = applyTranscriptEvent(createTranscriptState(), {
     stream: 'source',
@@ -121,6 +130,29 @@ test('partial followed by final', () => {
     }
   ]);
   assert.equal(final.nextSequence, 2);
+});
+
+test('late cumulative final transcript extends the previous final item', () => {
+  let state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text: '123456',
+    isFinal: true,
+    eventId: 'turn-complete',
+    now: 100
+  });
+
+  state = applyTranscriptEvent(state, {
+    stream: 'source',
+    text: '12345678',
+    isFinal: true,
+    isLateTranscript: true,
+    eventId: 'late-source',
+    now: 200
+  });
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => [item.id, item.text]), [
+    ['source-1', '12345678']
+  ]);
 });
 
 test('finalizes pending transcript items when a session stops', () => {

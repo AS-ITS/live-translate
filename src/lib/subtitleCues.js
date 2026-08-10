@@ -33,22 +33,6 @@ export function resetSubtitleCueState() {
   return createSubtitleCueState();
 }
 
-export function applyPolishedCueTranslations(stateInput, polishedItems = []) {
-  const state = createSubtitleCueState(stateInput);
-  const replacements = new Map((Array.isArray(polishedItems) ? polishedItems : [])
-    .filter((item) => item?.cueId && typeof item.polishedText === 'string' && item.polishedText.trim())
-    .map((item) => [item.cueId, item.polishedText.trim()]));
-  if (replacements.size === 0) return stateInput;
-  let changed = false;
-  const finalCues = state.finalCues.map((cue) => {
-    const text = replacements.get(cue.cueId);
-    if (!text || text === cue.translatedText) return cue;
-    changed = true;
-    return { ...cue, translatedText: text, updatedTimeMs: Date.now() };
-  });
-  return changed ? { ...state, finalCues } : stateInput;
-}
-
 export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {}) {
   const state = createSubtitleCueState(stateInput);
   const event = normalizeEvent(eventInput, { ...options, finalCues: state.finalCues });
@@ -162,6 +146,15 @@ export function subtitleCuesForDisplay(stateInput) {
   const state = createSubtitleCueState(stateInput);
   const preview = pendingCuePreview(state);
   return preview ? [...state.finalCues, preview] : [...state.finalCues];
+}
+
+export function markNumericCorrectionRequested(stateInput, cueId) {
+  const state = createSubtitleCueState(stateInput);
+  const index = state.finalCues.findIndex((cue) => cue.cueId === cueId);
+  if (index < 0 || state.finalCues[index].numericCorrectionRequested) return stateInput;
+  const finalCues = [...state.finalCues];
+  finalCues[index] = { ...finalCues[index], numericCorrectionRequested: true };
+  return { ...state, finalCues };
 }
 
 function pendingCuePreview(state) {
@@ -292,9 +285,11 @@ function cueCanAcceptCurrentCue(cue, event) {
 }
 
 function findFinalRevisionCue(state, event, options = {}) {
+  const correctionTarget = findNumericCorrectionCue(state, event);
+  if (correctionTarget) return correctionTarget;
   const index = state.finalCues.length - 1;
   const cue = state.finalCues[index];
-  if ((event.isFinal && Number.isFinite(event.eventSequence)) || !cue
+  if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
     || !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason)
     || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
@@ -302,6 +297,12 @@ function findFinalRevisionCue(state, event, options = {}) {
   if (endsSentence(cue[field])) return null;
   if (state.lastFinalizedStream === event.stream && endsSentence(event.text)) return null;
   return { index, cue };
+}
+
+function findNumericCorrectionCue(state, event) {
+  if (!event.retranslationCueId || event.stream !== 'translation') return null;
+  const index = state.finalCues.findIndex((cue) => cue.cueId === event.retranslationCueId);
+  return index >= 0 ? { index, cue: state.finalCues[index], replace: true } : null;
 }
 
 function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
@@ -336,7 +337,9 @@ function cueScopeMatchesEvent(cue, event) {
 function updateFinalCue(state, target, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const finalCues = [...state.finalCues];
-  const nextText = mergeCueText(target.cue[field], event.text, event);
+  const nextText = target.replace
+    ? normalizeText(event.text)
+    : mergeCueText(target.cue[field], event.text, event);
   finalCues[target.index] = {
     ...target.cue,
     [field]: nextText,
@@ -344,7 +347,8 @@ function updateFinalCue(state, target, event) {
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(target.cue.endTimeMs, event.sessionTimeMs),
     updatedTimeMs: event.sessionTimeMs,
-    finalizedReason: 'merged'
+    finalizedReason: target.replace ? 'numeric-correction' : 'merged',
+    ...(target.replace ? { numericCorrectionRequested: false } : {})
   };
   return {
     ...state,
@@ -572,10 +576,6 @@ function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
 function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.status !== 'final' || nextCue.status !== 'final') return false;
   if (previousCue.finalizedReason === 'length' || nextCue.finalizedReason === 'length') return false;
-  // A provider turn boundary is authoritative: separate completed turns must
-  // remain separate display/export Cues even when their text is short and
-  // arrives within the adjacent-fragment window.
-  if (previousCue.finalizedReason === 'turnComplete' || nextCue.finalizedReason === 'turnComplete') return false;
   if (previousCue.sessionId && nextCue.sessionId && previousCue.sessionId !== nextCue.sessionId) return false;
   if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
   if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;

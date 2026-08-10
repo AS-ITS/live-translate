@@ -451,6 +451,24 @@ test('normalize maps polishing response text to one refined result', () => {
   );
 });
 
+test('normalize maps addressable polishing source and translation items', () => {
+  assert.deepEqual(
+    normalizeGeminiExecutionResponse(
+      { text: JSON.stringify({ polishedItems: [
+      { cueId: 'cue-1', sequence: 1, polishedText: 'Long meeting.' }
+      ] }) },
+      {
+        polishing: true,
+        inputItems: [{ cueId: 'cue-1', sequence: 1, sourceText: '常會議', translationText: 'Long meeting.' }]
+      }
+    ),
+    {
+      translatedText: 'Long meeting.',
+    polishedItems: [{ cueId: 'cue-1', sequence: 1, polishedText: 'Long meeting.' }]
+    }
+  );
+});
+
 test('polishing REST request uses plain text and no structured output fields', () => {
   const request = buildGeminiExecutionRequest({
     input: executionInput({

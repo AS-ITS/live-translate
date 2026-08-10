@@ -12,13 +12,13 @@ const input = {
   polishingItems: [{ cueId: 'cue-1', sourceText: '你好', translationText: 'Hello', sequence: 1 }]
 };
 
-test('polishing request requires one plain-text refined result without structured output config', () => {
+test('polishing request requires addressable source and translation results', () => {
   const request = buildTranscriptPolishingRequest({ input, model: 'gemini-3.5-flash-lite' });
   assert.equal(request.model, 'gemini-3.5-flash-lite');
   assert.equal(Object.hasOwn(request, 'generationConfig'), false);
   assert.match(request.contents[0].parts[0].text, /Do not add facts/);
-  assert.match(request.contents[0].parts[0].text, /Output only the polished text/);
-  assert.match(request.contents[0].parts[0].text, /Do not translate/);
+  assert.match(request.contents[0].parts[0].text, /polishedText/);
+  assert.match(request.contents[0].parts[0].text, /Polish the existing translation only/);
   assert.match(request.contents[0].parts[0].text, /cue-1/);
   assert.match(request.contents[0].parts[0].text, /Hello/);
 });
@@ -33,6 +33,22 @@ test('provider stores trimmed plain text as refinedText and invokes client once'
     detectedSourceLanguageCode: undefined
   });
   assert.equal(calls.length, 1);
+});
+
+test('provider normalizes source and translation corrections from JSON', async () => {
+  const provider = createGeminiTranscriptPolishingProvider({
+    client: { generateContent() { return { text: JSON.stringify({ polishedItems: [
+      { cueId: 'cue-1', sequence: 1, polishedText: 'Long meeting.' }
+    ] }) }; } }
+  });
+
+  assert.deepEqual(await provider.execute({ ...input, polishingItems: [
+    { cueId: 'cue-1', sequence: 1, sourceText: '常會議', translationText: 'Long meeting.' }
+  ] }), {
+    translatedText: 'Long meeting.',
+    polishedItems: [{ cueId: 'cue-1', sequence: 1, polishedText: 'Long meeting.' }],
+    detectedSourceLanguageCode: undefined
+  });
 });
 
 test('invalid polishing response is rejected', () => {

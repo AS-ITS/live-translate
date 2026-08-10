@@ -280,6 +280,15 @@ test('transcript item preserves sequence/stream/status/timing', () => {
   });
 });
 
+test('transcript item preserves raw text used before polishing', () => {
+  const item = createTranscriptItemForSession('session-1', {
+    id: 'source-1', stream: 'source', status: 'final', text: '長會議', rawText: '常會議', sequence: 1
+  });
+
+  assert.equal(item.text, '長會議');
+  assert.equal(item.rawText, '常會議');
+});
+
 test('summarize transcript items counts source/translation final/partial', () => {
   const summary = summarizeTranscriptItems([
     { stream: 'source', status: 'final', text: 'hello' },

@@ -49,7 +49,11 @@ export function normalizeGeminiTranscriptPolishingItems(items, inputItems = [], 
     }
     seenCueIds.add(cueId);
     seenSequences.add(sequence);
-    return Object.freeze({ cueId, sequence, polishedText: item.polishedText.trim() });
+    return Object.freeze({
+      cueId,
+      sequence,
+      polishedText: item.polishedText.trim()
+    });
   });
   if (inputItems.length > 0 && (normalized.length !== expectedByCueId.size
     || [...expectedByCueId.keys()].some((cueId) => !seenCueIds.has(cueId)))) {

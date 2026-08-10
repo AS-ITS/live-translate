@@ -25,6 +25,11 @@ export function applyTranscriptEvent(state, event = {}) {
     return state;
   }
 
+  if (event.isFinal && event.isLateTranscript) {
+    const revised = applyLateFinalTranscriptEvent(state, { ...event, stream, text });
+    if (revised) return revised;
+  }
+
   const decision = decideTranscriptEvent(state, { ...event, stream, text });
   if (decision.action === 'duplicate') {
     return state;
@@ -40,6 +45,33 @@ export function applyTranscriptEvent(state, event = {}) {
   return event.isFinal
     ? applyFinalEvent(state, segmentedEvent)
     : applyPartialEvent(state, segmentedEvent);
+}
+
+function applyLateFinalTranscriptEvent(state, event) {
+  const streamState = state[event.stream];
+  if (streamState.currentPartial) return null;
+
+  const lastFinal = streamState.finalItems.at(-1);
+  if (!lastFinal || !event.text.startsWith(lastFinal.text) || event.text.length <= lastFinal.text.length) {
+    return null;
+  }
+
+  const finalizedAt = eventTime(event);
+  const updatedFinal = {
+    ...lastFinal,
+    text: event.text,
+    finalizedAt,
+    ...(event.eventId ? { eventId: event.eventId } : {}),
+    ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
+  };
+  return {
+    ...state,
+    [event.stream]: {
+      ...streamState,
+      finalItems: [...streamState.finalItems.slice(0, -1), updatedFinal]
+    }
+  };
 }
 
 export function describeTranscriptSegmentDecision(state, event = {}) {

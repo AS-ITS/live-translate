@@ -61,6 +61,33 @@ test('createPcmChunker emits 100ms 16kHz PCM frames and buffers remainders', () 
   assert.equal(chunks[0].byteLength, 3200);
 });
 
+test('createPcmChunker flushes the final partial PCM frame', () => {
+  const chunker = createPcmChunker({ sourceRate: 16000 });
+
+  chunker.push(new Float32Array([0.25, -0.25, 0.5]));
+
+  const flushed = chunker.flush();
+  assert.equal(flushed.length, 1);
+  assert.equal(flushed[0].byteLength, 6);
+  assert.ok(Math.abs(pcm16ToFloat(flushed[0])[0] - 0.25) < 0.0001);
+  assert.ok(Math.abs(pcm16ToFloat(flushed[0])[1] + 0.25) < 0.0001);
+  assert.ok(Math.abs(pcm16ToFloat(flushed[0])[2] - 0.5) < 0.0001);
+  assert.deepEqual(chunker.flush(), []);
+});
+
+test('createPcmChunker preserves raw input samples without gain processing', () => {
+  const chunker = createPcmChunker({ sourceRate: 16000 });
+  const input = new Float32Array(1600);
+  input[0] = 0.02;
+  input[1] = -0.02;
+
+  const [chunk] = chunker.push(input);
+  const samples = pcm16ToFloat(chunk);
+
+  assert.ok(Math.abs(samples[0] - 0.02) < 0.0001);
+  assert.ok(Math.abs(samples[1] + 0.02) < 0.0001);
+});
+
 test('pcm16ChunksToWavBlob wraps PCM chunks as mono 24kHz WAV', async () => {
   const blob = pcm16ChunksToWavBlob([
     new Uint8Array([1, 2, 3, 4]),

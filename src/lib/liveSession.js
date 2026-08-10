@@ -77,6 +77,7 @@ export class LiveTranslateSession {
     this.closeExpected = false;
     this.cleaningUp = false;
     this.retranslationCueIds = new Set();
+    this.activeRetranslationCueId = null;
   }
 
   async start() {
@@ -188,12 +189,13 @@ export class LiveTranslateSession {
     if (!text || this.closed || !this.session || this.retranslationCueIds.has(key)) return false;
 
     this.retranslationCueIds.add(key);
+    this.activeRetranslationCueId = key;
     try {
       this.session.sendClientContent({
         turns: [{
           role: 'user',
           parts: [{
-            text: `Translate the following source text into ${this.targetLanguageCode}. Return only the translation, without explanation:\n${text}`
+            text: `Translate the following source text into ${this.targetLanguageCode}. Preserve every digit exactly and return only the translation, without explanation:\n${text}`
           }]
         }],
         turnComplete: true
@@ -201,6 +203,7 @@ export class LiveTranslateSession {
       return true;
     } catch (error) {
       this.retranslationCueIds.delete(key);
+      this.activeRetranslationCueId = null;
       this.logLiveEvent('retranslation.failed', { message: error?.message || 'sendClientContent failed' });
       return false;
     }
@@ -209,6 +212,13 @@ export class LiveTranslateSession {
   handleMessage(message) {
     const content = message.serverContent;
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
+    const retranslationCueId = this.activeRetranslationCueId;
+    const isRetranslationResponse = Boolean(retranslationCueId && (
+      content?.outputTranscription?.text
+      || content?.modelTurn?.parts?.some((part) => part.inlineData?.data)
+    ));
+    const inputTranscriptArrivedAfterBoundary = this.awaitingInputTranscriptAfterTurnComplete;
+    const outputTranscriptArrivedAfterBoundary = this.awaitingOutputTranscriptAfterTurnComplete;
     const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
     this.eventSequence += 1;
@@ -223,19 +233,25 @@ export class LiveTranslateSession {
       eventSequence: this.eventSequence,
       sessionClock: this.sessionClock,
       inputTranscriptIsFinal,
-      outputTranscriptIsFinal
+      outputTranscriptIsFinal,
+      inputTranscriptArrivedAfterBoundary,
+      outputTranscriptArrivedAfterBoundary,
+      retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     })) {
-      this.onCueEvent?.(event);
+      if (!(isRetranslationResponse && event.stream === 'source')) {
+        this.onCueEvent?.(event);
+      }
     }
     this.logLiveEvent('message.received', {
       event: summarizeLiveEvent(message),
       stateBefore: this.transcriptBoundaryState()
     });
 
-    if (content?.inputTranscription?.text) {
+    if (content?.inputTranscription?.text && !isRetranslationResponse) {
       const transcript = withTranscriptEventId({
         text: content.inputTranscription.text,
         isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
+        ...(inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
@@ -263,6 +279,7 @@ export class LiveTranslateSession {
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
+      this.awaitingInputTranscriptAfterTurnComplete = true;
     } else if (isFinal) {
       this.logLiveEvent('inputTranscription.awaitingLateText');
       this.awaitingInputTranscriptAfterTurnComplete = true;
@@ -271,7 +288,9 @@ export class LiveTranslateSession {
     if (content?.outputTranscription?.text) {
       const transcript = withTranscriptEventId({
         text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
-        isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete
+        isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
+        ...(outputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
+        ...(isRetranslationResponse ? { retranslationCueId } : {})
       }, transcriptEventId);
       this.logLiveEvent('outputTranscription.callback', { transcript });
       this.onOutputTranscript?.(transcript);
@@ -282,6 +301,7 @@ export class LiveTranslateSession {
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = null;
+      this.awaitingOutputTranscriptAfterTurnComplete = true;
     } else if (isFinal) {
       this.logLiveEvent('outputTranscription.awaitingLateText');
       this.awaitingOutputTranscriptAfterTurnComplete = true;
@@ -294,8 +314,12 @@ export class LiveTranslateSession {
     const parts = content?.modelTurn?.parts || [];
     for (const part of parts) {
       if (part.inlineData?.data) {
-        this.playPcmAudio(part.inlineData.data);
+        this.playPcmAudio(part.inlineData.data, { suppressOutput: isRetranslationResponse });
       }
+    }
+
+    if (isFinal && isRetranslationResponse && retranslationCueId === this.activeRetranslationCueId) {
+      this.activeRetranslationCueId = null;
     }
 
     this.logLiveEvent('message.processed', {
@@ -303,12 +327,13 @@ export class LiveTranslateSession {
     });
   }
 
-  playPcmAudio(base64Audio) {
+  playPcmAudio(base64Audio, { suppressOutput = false } = {}) {
     if (!this.audioContext) {
       return;
     }
 
     const bytes = base64ToBytes(base64Audio);
+    if (suppressOutput) return;
     this.onOutputAudioChunk?.(new Uint8Array(bytes));
     const samples = pcm16ToFloat(bytes);
     const buffer = this.audioContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
@@ -330,6 +355,7 @@ export class LiveTranslateSession {
 
   async stop() {
     this.closeExpected = true;
+    this.flushInputAudio();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true, signalAudioEnd: true });
     this.onClose?.({ reason: 'user-stopped' });
@@ -373,6 +399,20 @@ export class LiveTranslateSession {
   flushPendingTranscripts() {
     this.flushPendingTranscript('input');
     this.flushPendingTranscript('output');
+  }
+
+  flushInputAudio() {
+    if (this.closed || !this.session || !this.chunker) return;
+
+    for (const chunk of this.chunker.flush()) {
+      this.onInputAudioChunk?.(new Uint8Array(chunk));
+      this.session.sendRealtimeInput({
+        audio: {
+          data: bytesToBase64(chunk),
+          mimeType: 'audio/pcm;rate=16000'
+        }
+      });
+    }
   }
 
   flushPendingTranscript(kind) {

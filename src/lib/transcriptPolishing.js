@@ -19,7 +19,8 @@ export function createTranscriptPolishingCoordinator({
   let inFlight = false;
   let dirty = false;
   let lastHash = null;
-  const processedCueIds = new Set();
+  const submittedHashes = new Set();
+  const processedCueSignatures = new Map();
   const submissionTimes = [];
 
   function add(cues = [], { force = false } = {}) {
@@ -54,7 +55,7 @@ export function createTranscriptPolishingCoordinator({
       return Promise.resolve(null);
     }
     const inputHash = transcriptPolishingInputHash(snapshot);
-    if (inputHash === lastHash) return Promise.resolve(null);
+    if (submittedHashes.has(inputHash)) return Promise.resolve(null);
     inFlight = true;
     dirty = false;
     emit('running');
@@ -64,8 +65,9 @@ export function createTranscriptPolishingCoordinator({
       segmentRange: segmentRangeFor(snapshot)
     })).then((result) => {
       lastHash = inputHash;
+      submittedHashes.add(inputHash);
       submissionTimes.push(now());
-      snapshot.forEach((cue) => processedCueIds.add(cue.cueId));
+      snapshot.forEach((cue) => processedCueSignatures.set(cue.cueId, cueSignature(cue)));
       lastSubmittedAt = now();
       inFlight = false;
       emit('queued');
@@ -84,7 +86,8 @@ export function createTranscriptPolishingCoordinator({
     inFlight = false;
     dirty = false;
     lastHash = null;
-    processedCueIds.clear();
+    submittedHashes.clear();
+    processedCueSignatures.clear();
     emit('idle');
   }
 
@@ -95,7 +98,7 @@ export function createTranscriptPolishingCoordinator({
   }
 
   function pendingCues() {
-    return stableCues.filter((cue) => !processedCueIds.has(cue.cueId));
+    return stableCues.filter((cue) => processedCueSignatures.get(cue.cueId) !== cueSignature(cue));
   }
 }
 

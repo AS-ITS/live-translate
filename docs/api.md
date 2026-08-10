@@ -935,10 +935,11 @@ The existing `POST /api/translation-executions/:executionId/retry` endpoint is
 used for failed polishing executions. Session detail translation history
 includes completed polishing outputs with `operation`, `segmentRange`,
 `inputHash`, `model`, `version`, completion timestamps, and `polishedItems`.
-Each item contains `cueId`, `sequence`, and `polishedText`; clients merge these
-items into the existing translation Cues rather than rendering a separate
-polished-article field. Legacy outputs containing only one article text are
-ignored for Cue replacement.
+Each item contains `cueId`, `sequence`, and `polishedText`. Clients render these
+items through an independent `polishedArticle` field; they must not merge them
+into `cues`, `sourceTranscript`, `translationArticle`, session transcript
+items, or the Live prompt. Legacy outputs containing source-polishing fields
+are ignored for canonical field replacement.
 
 Current transcript polishing uses one plain-text provider result. The result is
 returned through the existing `translatedText` output field and does not use

@@ -1,4 +1,5 @@
 import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
+import { normalizeGeminiTranscriptPolishingItems } from '../lib/geminiTranscriptPolishing.js';
 
 
 export const TRANSCRIPT_POLISHING_OPERATION = 'transcript_polishing';
@@ -17,9 +18,10 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
         : undefined;
       const request = buildTranscriptPolishingRequest({ input, model, glossaryEntries });
       const response = await withTimeout(Promise.resolve().then(() => client.generateContent(request)), timeoutMs);
-      const result = normalizeTranscriptPolishingResponse(response);
+      const result = normalizeTranscriptPolishingResponse(response, input.polishingItems);
       return Object.freeze({
         translatedText: applyGlossaryReplacements(result.refinedText, glossaryEntries),
+        ...(result.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
         detectedSourceLanguageCode: input.sourceLanguageCode
       });
     }
@@ -31,13 +33,13 @@ export function buildTranscriptPolishingRequest({ input, model, glossaryEntries 
   const items = Array.isArray(input.polishingItems) ? input.polishingItems : [];
   const prompt = [
     `Target language: ${input.targetLanguageCode}`,
-    'Polish the translated transcript as one continuous text.',
+    'Polish each translation item using the source transcript as context.',
     'Do not add facts that are not present in the source or translation.',
     'Preserve meaning, numbers, dates, names, and proper nouns.',
-    'Only fix sentence boundaries, punctuation, filler words, and spoken repetition.',
-    'Output only the polished text: no JSON, Markdown, headings, explanations, or quotation marks.',
-    'Do not translate, add facts, or remove meaning.',
-    'For mixed Chinese and English input, preserve the original languages and proper nouns.',
+    'Only improve sentence boundaries, punctuation, filler words, and spoken repetition in the translation.',
+    'Return JSON: {"polishedItems":[{"cueId":"...","sequence":1,"polishedText":"..."}]} and no other text.',
+    'Polish the existing translation only; never rewrite or return source transcript text.',
+    'Do not add facts or remove meaning.',
     ...(Array.isArray(glossaryEntries) ? glossaryEntries.map((entry) => `Glossary: ${entry.source} => ${entry.target}`) : []),
     JSON.stringify(items.map((item) => ({ cueId: item.cueId, sequence: item.sequence, source: item.sourceText, translation: item.translationText })))
   ].join('\n');
@@ -54,15 +56,26 @@ export function buildTranscriptPolishingRequest({ input, model, glossaryEntries 
   });
 }
 
-export function normalizeTranscriptPolishingResponse(response) {
+export function normalizeTranscriptPolishingResponse(response, inputItems = []) {
   const value = typeof response?.text === 'string'
     ? response.text
     : response?.candidates?.[0]?.content?.parts?.find((part) => typeof part?.text === 'string')?.text;
   if (typeof value !== 'string' || value.trim() === '') throw providerInvalidResponse('missing text');
   const fenced = value.trim().match(/^```(?:text|txt|plaintext)?\s*\n?([\s\S]*?)\n?```$/i);
   const refinedText = (fenced ? fenced[1] : value).trim();
-  if (!refinedText || /^[\[{]/.test(refinedText)) throw providerInvalidResponse('structured response');
-  return Object.freeze({ refinedText });
+  if (!refinedText) throw providerInvalidResponse('empty text');
+  let parsed;
+  try {
+    parsed = JSON.parse(refinedText);
+  } catch {
+    return Object.freeze({ refinedText });
+  }
+  if (!Array.isArray(parsed?.polishedItems)) throw providerInvalidResponse('structured response');
+  const polishedItems = normalizeGeminiTranscriptPolishingItems(parsed.polishedItems, inputItems);
+  return Object.freeze({
+    refinedText: polishedItems.map((item) => item.polishedText).join('\n'),
+    polishedItems
+  });
 }
 
 function providerInvalidResponse(detail) {

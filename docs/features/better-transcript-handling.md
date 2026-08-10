@@ -110,10 +110,11 @@ If the SDK event does not expose a reliable partial/final flag:
 - If no final signal exists, keep the display behavior conservative and do not
   fabricate precise final timestamps.
 - A provider `isFinal` flag does not finalize a Cue by itself. Adjacent
-  fragments for the same speaker/turn stay in one pending buffer until both
-  sides have a strong sentence ending, a turn/generation boundary has remained
-  idle for the 700ms debounce, or the safe language limit requires a natural
-  split.
+  fragments stay in one pending buffer until both sides have a strong sentence
+  ending, a turn/generation boundary has remained idle for the 700ms debounce,
+  or the safe language limit requires a natural split. Short bilingual Cues
+  without sentence punctuation may also merge across consecutive provider
+  turns when they are within the adjacent-fragment time window.
 - Chinese Cues use a 12-character minimum when deciding whether to finalize
   immediately, so short fragments are normally merged with following text;
   once a paired Cue has been idle for the debounce window, it is finalized even
@@ -124,14 +125,23 @@ If the SDK event does not expose a reliable partial/final flag:
   boundary is provided. Translation-only text is discarded.
 - Idle timers are versioned by Cue id and `updatedTimeMs`, and are cancelled by
   new transcript events, Pause, Stop, reconnect, and Segment rollover.
+- Transcript events that arrive after a provider turn boundary may revise the
+  same active/finalized Cue when they are cumulative extensions within the
+  existing revision window; unrelated later turns remain separate.
 - The latest finalized Cue remains revisable for 1500ms. A late source or
   translation fragment may monotonically merge into that same Cue id, sequence,
   persistence record, and checkpoint.
 - Adjacent final bilingual Cues in the same Segment are coalesced when neither
   Cue has reached sentence punctuation and they arrive within the adjacent
-  fragment window. Cue identity stays anchored to the first Cue, while its end
-  time extends to the latest merged fragment. The engine does not split a Cue
-  solely because it exceeds a language-specific character limit.
+  fragment window, including when one or both Cues were finalized after a
+  provider turn boundary. Cue identity stays anchored to the first Cue, while
+  its end time extends to the latest merged fragment. The engine does not split
+  a Cue solely because it exceeds a language-specific character limit.
+- Final Cues with Arabic-digit content are checked by comparing the ordered
+  digit sequence in the source and translation. A mismatch such as source
+  `4點50分` and translation `4:00 PM` schedules one same-session correction;
+  the correction replaces the translation on the original Cue and its audio is
+  not played a second time.
 - Document the unresolved SDK behavior before enabling export/history features
   that depend on final transcript items.
 

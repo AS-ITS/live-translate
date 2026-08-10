@@ -1192,7 +1192,7 @@ test('navigation keeps an active translation session and its article reading sta
   await expect(page.getByText('逐字稿 / 文章版')).toBeHidden();
 });
 
-test('transcript polishing status and completed Cue replacement are visible', async ({ page }) => {
+test('transcript polishing status and independent article output are visible', async ({ page }) => {
   let polishingOutput = null;
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
@@ -1218,7 +1218,7 @@ test('transcript polishing status and completed Cue replacement are visible', as
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'polishing source', 'raw translation');
+  await emitFinalTranscript(page, '常會議', 'The regular meeting.');
   const cueId = await finalCueRows(page).first().getAttribute('data-cue-id');
   expect(cueId).toBeTruthy();
 
@@ -1229,14 +1229,21 @@ test('transcript polishing status and completed Cue replacement are visible', as
     operation: 'transcript_polishing',
     version: 1,
     completedAt: '2026-08-07T00:00:10.000Z',
-    polishedItems: [{ cueId, sequence: 1, polishedText: 'polished translation' }]
+    translatedText: 'The long meeting.',
+    polishedItems: [{
+      cueId,
+      sequence: 1,
+      polishedText: 'The long meeting.'
+    }]
   };
 
   const polishingStatus = liveCuePanel(page).getByTestId('transcript-polishing-status');
   await expect(polishingStatus.getByText('潤飾完成')).toBeVisible({ timeout: 5000 });
   await expect(polishingStatus).toHaveText(/潤飾完成.*v1/);
   await expect(page.locator('.live-page > [data-testid="transcript-polishing-status"]')).toHaveCount(0);
-  await expect(translationCueList(page).getByText('polished translation')).toBeVisible();
+  await expect(page.getByTestId('polished-article').getByText('The long meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The regular meeting.')).toBeVisible();
+  await expect(finalCueRows(page).first().getByTestId('cue-source-text')).toHaveText('常會議');
 });
 
 test('transcript polishing retry shows the new queued execution and failure reason inline', async ({ page }) => {
@@ -1592,6 +1599,28 @@ test('short paired Chinese Cue does not remain in recognition after turn complet
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: '測試,123',
     translatedText: 'Microphone test,123'
+  });
+});
+
+test('late end-of-turn source transcription extends the existing Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitPartialTranscript(page, '現在下午時間4', 'The time is now');
+  await emitTurnComplete(page);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { inputTranscription: { text: '現在下午時間4點30分' } }
+    });
+  });
+
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '現在下午時間4點30分',
+    translatedText: 'The time is now'
   });
 });
 

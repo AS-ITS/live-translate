@@ -137,6 +137,8 @@ function buildSystemInstruction({ sourceLanguageCode, glossaryEntries }) {
       'Translate faithfully without summarizing, shortening, merging, or omitting any spoken word.',
       'Preserve every spoken digit, number, and punctuation mark in the translated output.',
       'Do not skip, merge, reorder, or silently omit any digit in a number sequence.',
+      'Preserve times exactly: spoken 4:50 or 下午4點50分 must not become 4:00, 4:05, or any guessed time.',
+      'Do not round, normalize, infer, or replace a time or number with a different value.',
       'Speak the complete translation aloud exactly once; the translated speech audio and output transcription must contain the same complete content.'
     ].join(' ')
   ];

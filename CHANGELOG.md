@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- 修正語音潤飾資料流：Flash Lite 只讀取已 finalized 的 Cue snapshot，結果獨立保存為 polished article；不再回寫 Raw Transcript、Live Translation、Cue、Session record 或 Gemini Live prompt。潤飾啟用與停用時送往 Gemini Live 的 PCM chunk 保持一致。
+
+- 即時字幕潤飾會以已 finalized 的雙語 Cue 作為上下文，結果獨立保存為文章版翻譯；Raw Transcript、Live Translation、字幕與匯出內容保持原始結果。
+
+- 修正即時字幕過度依 Gemini turn 切成短列：沒有句末標點的雙語片段可跨 turn 合併；若來源時間或數字在譯文中遺失，會在同一 Live session 觸發一次不重播音訊的校正翻譯，並回填原 Cue。
+
+- 修正 turn boundary 時 pending 原文未被 flush 的漏字風險。
+
+- 修正停止或段落切換時未送出的尾端 PCM，以及晚於 turn boundary 到達的累積式原文；句末數字與時間不再因音訊或事件排序而被截斷。
+
 - 修正長會議分段切換、重連、暫停／繼續與停止期間的 stale Live callback 與 checkpoint context 汙染；舊 generation 不再寫入目前段落，未成功同步資料仍會保留。
 
 - 翻譯紀錄保存失敗時補充顯示失敗階段、HTTP 狀態與安全錯誤代碼，方便診斷而不暴露內部錯誤細節。
@@ -22,7 +32,7 @@
 
 - 修正即時字幕與逐字稿在新的 final turn 重複數字或片段時，誤套用歷史前綴去重而漏字、漏翻譯；歷史前綴剝除現在只套用於非 final 的累積更新。
 
-- 翻譯潤飾改為以整批翻譯 Cue 作為上下文、逐句回傳結果，並直接回寫原有翻譯句；即時字幕、歷史紀錄與匯出不再新增獨立的文章版欄位。
+- 翻譯潤飾以整批 finalized 翻譯 Cue 作為上下文、逐句回傳 `polishedText`，並保留獨立文章版欄位；不回寫即時字幕、Raw Transcript 或 Live Translation。
 
 - 修正長會議 checkpoint 與分段語音紀錄的暫時性保存失敗；未同步資料會在目前頁面工作階段保留並以退避間隔持續重試，成功後清除錯誤提示。
 

@@ -21,6 +21,7 @@ import { createTranslationCommandApiClient } from './lib/translationCommandApiCl
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
+import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
@@ -60,11 +61,11 @@ import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/re
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
   applySubtitleCueEvent,
-  applyPolishedCueTranslations,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
   resetSubtitleCueState,
   resolveIdleSubtitleCue,
+  markNumericCorrectionRequested,
   DEFAULT_TURN_COMPLETE_DEBOUNCE_MS
 } from './lib/subtitleCues.js';
 import {
@@ -176,6 +177,7 @@ function App() {
     loadedSegmentCount: 0
   });
   const [polishingState, setPolishingState] = useState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
+  const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
   const pendingMicrophoneStreamRef = useRef(null);
@@ -293,7 +295,12 @@ function App() {
             executionId: pendingExecution.id
           });
         } else if (!cancelled && outputs.length > 0) {
-          applyPolishedOutput(output);
+          const polishedItems = mergePolishedItemsFromOutputs(outputs);
+          applyPolishedOutput({
+            ...output,
+            polishedItems,
+            translatedText: polishedItems.map((item) => item.polishedText).join('\n')
+          });
           setPolishingState({ status: 'completed', text: output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
         } else {
           if (!cancelled && latestExecution) setPolishingState({
@@ -315,35 +322,15 @@ function App() {
 
   function applyPolishedOutput(output) {
     const polishedItems = Array.isArray(output?.polishedItems) ? output.polishedItems : [];
-    if (typeof output?.translatedText === 'string' && output.translatedText.trim()) {
-      setPolishingState((current) => ({ ...current, text: output.translatedText.trim() }));
-    }
-    if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || polishedItems.length === 0) return;
-    const previousCues = subtitleCueStateRef.current;
-    const nextCues = applyPolishedCueTranslations(previousCues, polishedItems);
-    if (nextCues !== previousCues) {
-      subtitleCueStateRef.current = nextCues;
-      setSubtitleCueState(nextCues);
-      enqueueCuePersistence(previousCues, nextCues);
-    }
-
-    const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
-    const detail = sessionRepositoryRef.current.getSessionRecord(sessionId);
-    const cueById = new Map(previousCues.finalCues.map((cue) => [cue.cueId, cue]));
-    for (const item of polishedItems) {
-      const cue = cueById.get(item.cueId);
-      if (!cue || typeof item.polishedText !== 'string') continue;
-      const matching = (detail?.transcriptItems || []).filter((transcriptItem) => (
-        transcriptItem.stream === 'translation' && transcriptItem.status === 'final' &&
-        transcriptItem.text !== item.polishedText &&
-        (transcriptItem.sequence === cue.sequence || transcriptItem.text === cue.translatedText)
-      ));
-      for (const transcriptItem of matching) {
-        const updated = sessionRepositoryRef.current.updateTranscriptItem(sessionId, transcriptItem.id, { text: item.polishedText });
-        if (updated) markPendingSessionSnapshotItems(sessionId, [updated]);
-      }
-    }
-    scheduleSessionSnapshotSync(sessionId);
+    const text = typeof output?.translatedText === 'string' ? output.translatedText.trim() : '';
+    if (!text && polishedItems.length === 0) return;
+    setPolishedArticle({
+      text,
+      items: polishedItems.map((item) => ({ cueId: item.cueId, sequence: item.sequence, polishedText: item.polishedText })),
+      version: output.version ?? null,
+      updatedAt: output.completedAt || output.createdAt || null
+    });
+    setPolishingState((current) => ({ ...current, text, version: output.version ?? current.version, updatedAt: output.completedAt || output.createdAt || current.updatedAt }));
   }
 
   useEffect(() => {
@@ -415,6 +402,7 @@ function App() {
         if (result.action === 'needs-retranslation') {
           sessionRef.current?.retranslateSourceText(result.cue?.sourceText, result.cue?.cueId);
         }
+        requestNumericCorrection(result.state);
       }, remaining);
       liveCueIdleTimersRef.current.set(cue.cueId, timer);
     }
@@ -597,6 +585,7 @@ function App() {
       transcriptPolishingLifecycleRef.current?.reset(activeSessionRecordIdRef.current);
       transcriptPolishingCoordinatorRef.current?.reset();
       setPolishingState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
+      setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
       cancelLiveCueIdleTimers();
       subtitleCueStateRef.current = resetCues;
       setSubtitleCueState(resetCues);
@@ -1298,6 +1287,23 @@ function App() {
     setSubtitleCueState(next);
     enqueueCuePersistence(current, next);
     scheduleTranscriptPolishing(next.finalCues);
+    requestNumericCorrection(next);
+  }
+
+  function requestNumericCorrection(state) {
+    const cue = [...(state.finalCues || [])].reverse().find((candidate) => (
+      candidate.status === 'final' &&
+      candidate.sourceText && candidate.translatedText &&
+      !candidate.numericCorrectionRequested &&
+      missingNumericIntegrity(candidate.sourceText, candidate.translatedText)
+    ));
+    if (!cue) return;
+
+    const next = markNumericCorrectionRequested(state, cue.cueId);
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(state, next);
+    sessionRef.current?.retranslateSourceText(cue.sourceText, cue.cueId);
   }
 
   function flushSubtitleCues(reason) {
@@ -2465,6 +2471,7 @@ function App() {
           isPaused={status === 'paused'}
           isStopped={status === 'stopped'}
           polishingState={polishingState}
+          polishedArticle={polishedArticle}
           onPolishingRetry={retryPolishingExecution}
           copiedSource={copiedArticleStream === 'source'}
           copiedTranslation={copiedArticleStream === 'translation'}
@@ -2678,6 +2685,7 @@ function LiveCuePanel({
   isPaused,
   isStopped,
   polishingState,
+  polishedArticle,
   onPolishingRetry,
   copiedSource,
   copiedTranslation,
@@ -2763,6 +2771,12 @@ function LiveCuePanel({
           </div>
         </section>
       </div>
+      {polishedArticle?.text ? (
+        <section className="transcript-panel" data-testid="polished-article" aria-label="潤飾文章版">
+          <div className="article-panel-header"><h3>潤飾文章版</h3></div>
+          <div className="article-content"><p>{polishedArticle.text}</p></div>
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -4790,10 +4804,9 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
 
   const mergedOutputs = mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs);
   const polishedItems = mergePolishedItemsFromOutputs(mergedOutputs);
-  const polishedCues = applyPolishedItemsToCues(detail?.cues, polishedItems);
   return {
     ...detail,
-    ...(polishedCues ? { cues: polishedCues } : {}),
+    polishedArticle: polishedArticleContentFromItems(polishedItems, mergedOutputs),
     translationHistory: {
       outputs: mergedOutputs,
       executions: translationsHistory.executions
@@ -4801,17 +4814,23 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
   };
 }
 
-function applyPolishedItemsToCues(cues, polishedItems) {
-  if (!Array.isArray(cues) || !Array.isArray(polishedItems) || polishedItems.length === 0) return null;
-  const replacements = new Map(polishedItems.map((item) => [item.cueId, item.polishedText]));
-  let changed = false;
-  const next = cues.map((cue) => {
-    const text = replacements.get(cue?.cueId);
-    if (!text || text === cue.translatedText) return cue;
-    changed = true;
-    return { ...cue, translatedText: text };
-  });
-  return changed ? next : null;
+function polishedArticleContentFromItems(items = [], outputs = []) {
+  const latest = [...(Array.isArray(outputs) ? outputs : [])].sort((left, right) => (
+    (right?.version ?? 0) - (left?.version ?? 0)
+    || String(right?.completedAt || '').localeCompare(String(left?.completedAt || ''))
+  ))[0];
+  const text = items.map((item) => item.polishedText).filter(Boolean).join('\n');
+  return {
+    kind: 'polishedArticle',
+    status: text ? 'available' : 'empty',
+    text,
+    paragraphs: text ? text.split(/\n+/).filter(Boolean) : [],
+    items,
+    version: latest?.version ?? null,
+    createdAt: latest?.createdAt ?? null,
+    completedAt: latest?.completedAt ?? null,
+    emptyReason: text ? null : 'no_content'
+  };
 }
 
 function removeRetranslationOutputFromDetail(detail, outputId) {

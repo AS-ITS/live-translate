@@ -92,6 +92,7 @@ export function createTranscriptItemForSession(sessionId, transcriptItem = {}) {
     stream: transcriptItem.stream,
     status: transcriptItem.status,
     text: transcriptItem.text,
+    ...(transcriptItem.rawText === undefined ? {} : { rawText: transcriptItem.rawText }),
     sequence: transcriptItem.sequence,
     startedAt: transcriptItem.startedAt,
     finalizedAt: transcriptItem.finalizedAt

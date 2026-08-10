@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a hash-only DLQ management page at `#dead-letter-queue`. It lists the
+  complete FIFO queue, safely exposes saved failure metadata, confirms and
+  replays one item at a time, retains the original item, and supports refresh
+  and recoverable error states without adding navigation or changing queue
+  behavior.
+
 - Added authenticated DLQ listing and single-item replay APIs. Replay retains
   the original failed execution and DLQ item and creates a new queued execution.
 

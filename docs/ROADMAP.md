@@ -22,6 +22,11 @@ DLQ inspection and single-item replay API is completed as a backend-only
 follow-up. Authenticated operators can list the full file-backed DLQ and create
 new queued executions without changing original failed records.
 
+DLQ management UI is completed as a direct `#dead-letter-queue` page. It uses
+the existing shared Access Token, lists the complete FIFO DLQ, supports
+confirmed single-item replay with original-item retention, and does not add a
+main-navigation entry or change queue/worker behavior.
+
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
@@ -103,8 +108,7 @@ Phase 4B is completed:
 4. WP4 History UI, polling, and selected-output export.
 5. WP5 Documentation and release closeout.
 
-Follow-up backlog, not Phase 4B delivery: manual retry/cancel, DLQ
-inspection/replay UI, cross-Session history search, output retention/deletion
+Follow-up backlog, not Phase 4B delivery: manual retry/cancel, cross-Session history search, output retention/deletion
 policy, provider-side idempotency guarantees, and push-based execution-status
 updates in place of polling.
 

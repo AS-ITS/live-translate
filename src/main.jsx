@@ -10,6 +10,7 @@ import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
 import { createMeetingReadApiClient } from './lib/meetingReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
+import { createSessionCommandApiClient } from './lib/sessionCommandApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
 import {
@@ -84,7 +85,7 @@ import './styles.css';
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary', 'watch']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
@@ -128,7 +129,8 @@ function pageInfoFromLocation() {
   return {
     page,
     sessionId: params.get('sessionId') || '',
-    meetingId: params.get('meetingId') || ''
+    meetingId: params.get('meetingId') || '',
+    shareToken: params.get('token') || ''
   };
 }
 
@@ -205,6 +207,7 @@ function App() {
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
+  const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
@@ -452,6 +455,7 @@ function App() {
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     let session;
+    let record = null;
 
     try {
       await recordingController().cleanup({ discard: true });
@@ -460,18 +464,32 @@ function App() {
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
+      record = await createCurrentSessionRecord(meetingCheckpoint);
       session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
-      const record = await createCurrentSessionRecord(meetingCheckpoint);
-      await startRecordingForSession(record);
+      const activeRecord = sessionRepositoryRef.current.updateSessionRecord(record.id, {
+        status: 'active',
+        startedAt: record.startedAt || Date.now(),
+        lastLifecycleState: 'listening'
+      });
+      await flushSessionSnapshot(record.id);
+      await startRecordingForSession(activeRecord);
       setStatus('listening');
       updateLiveMeetingUrl(meetingCheckpoint.meetingId);
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (record?.id) {
+        sessionRepositoryRef.current.updateSessionRecord(record.id, {
+          status: 'failed',
+          failureReason: 'live_connect_failed',
+          failureCategory: 'provider'
+        });
+        await flushSessionSnapshot(record.id).catch(() => {});
+      }
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
       segmentSwitchOrchestratorRef.current?.cancel();
@@ -497,6 +515,7 @@ function App() {
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('pause');
     await flushMeetingCheckpointSync();
+    await updateCurrentSessionStatus('paused');
     pendingMicrophoneStreamRef.current = null;
     setStatus('paused');
   }
@@ -522,6 +541,7 @@ function App() {
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
+      await updateCurrentSessionStatus('active', { lastLifecycleState: 'listening' });
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -618,7 +638,7 @@ function App() {
     const session = new LiveTranslateSession({
       liveSessionId,
       sessionId: activeSessionRecordIdRef.current,
-      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
       sessionClock: () => sessionTimeForSubtitleCues(),
       targetLanguageCode,
       sourceLanguageCode,
@@ -1220,15 +1240,26 @@ function App() {
   }
 
   async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null) {
+    const persisted = await sessionCommandApiClientRef.current.create({
+      name: `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
+      targetLanguageCode,
+      targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
+      sourceLanguageCode,
+      selectedInputDeviceId: selectedInputDeviceId || null,
+      inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
+    });
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
-        startedAt: Date.now(),
+        id: persisted?.session?.id,
+        startedAt: null,
+        status: 'created',
+        name: persisted?.session?.name,
         targetLanguageCode,
         targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
         sourceLanguageCode,
         meetingId: meetingCheckpoint?.meetingId,
-        segmentId: meetingCheckpoint?.segmentId,
+        segmentId: meetingCheckpoint?.segmentId || liveSessionId,
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -1723,6 +1754,17 @@ function App() {
 
   function flushSessionSnapshot(sessionId) {
     return sessionSnapshotSyncCoordinator().flush(sessionId);
+  }
+
+  async function updateCurrentSessionStatus(nextStatus, patch = {}) {
+    const sessionId = activeSessionRecordIdRef.current;
+    if (!sessionId) return null;
+    const updated = sessionRepositoryRef.current.updateSessionRecord(sessionId, {
+      status: nextStatus,
+      ...patch
+    });
+    await flushSessionSnapshot(sessionId);
+    return updated;
   }
 
   function reportSessionSnapshotSyncError(error) {
@@ -2267,6 +2309,10 @@ function App() {
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
 
+  if (page === 'watch') {
+    return <WatchPage token={pageInfoFromLocation().shareToken} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -2549,6 +2595,68 @@ function App() {
       <section className="feature-page glossary-page" aria-labelledby="glossary-page-title" hidden={page !== 'glossary'}>
         <GlossaryPanel titleId="glossary-page-title" onEntriesChange={setGlossaryEntries} />
       </section>
+    </main>
+  );
+}
+
+function WatchPage({ token }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!token) {
+      setError('分享連結無效或已撤銷。');
+      return undefined;
+    }
+    let cancelled = false;
+    const controller = new AbortController();
+    fetch(`/api/shared-sessions/${encodeURIComponent(token)}`, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('分享連結無效或已過期。');
+        return response.json();
+      })
+      .then((nextDetail) => { if (!cancelled) setDetail(nextDetail); })
+      .catch((nextError) => { if (!cancelled && nextError.name !== 'AbortError') setError(nextError.message); });
+
+    const events = new EventSource(`/api/shared-sessions/${encodeURIComponent(token)}/events`);
+    events.addEventListener('session.snapshot', (event) => {
+      try {
+        if (!cancelled) setDetail(JSON.parse(event.data));
+      } catch {
+        if (!cancelled) setError('無法讀取分享內容。');
+      }
+    });
+    events.onerror = () => {
+      if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+    };
+    return () => {
+      cancelled = true;
+      controller.abort();
+      events.close();
+    };
+  }, [token]);
+
+  const sourceItems = detail?.sourceTranscript?.items || [];
+  const translationItems = detail?.selectedTranslationOutput?.items || [];
+  return (
+    <main className="app-shell watch-page">
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>即時翻譯觀看</h1>
+          <p>唯讀分享內容</p>
+        </div>
+        <span className="status-pill">{detail?.session?.status || '載入中'}</span>
+      </header>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {!detail && !error ? <p className="history-empty">正在載入分享內容…</p> : null}
+      {detail ? (
+        <section className="transcript-panel" aria-label="分享翻譯內容">
+          <div className="transcript-columns">
+            <div><h2>原文</h2>{sourceItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
+            <div><h2>翻譯</h2>{translationItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }

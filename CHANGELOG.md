@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 建立 Session-first 垂直切片：即時翻譯會在 Gemini Live 啟動前先保存 `created` Session，Pause/Resume 會同步 Session 狀態並為逐字稿保留 `sessionId`/`segmentId`；新增 opaque share token、撤銷分享、Viewer-safe detail 與依 Session 隔離的 SSE snapshot stream。
+
 - 改善操作管理者 UI：即時翻譯的錄音與播放設定改用直白命名，所有翻譯工作階段統一顯示在單一翻譯紀錄清單，並補充來源語言、目標語言與表單操作提示，改善手機版操作間距。
 
 - 修正語音潤飾資料流：Flash Lite 只讀取已 finalized 的 Cue snapshot，結果獨立保存為 polished article；不再回寫 Raw Transcript、Live Translation、Cue、Session record 或 Gemini Live prompt。潤飾啟用與停用時送往 Gemini Live 的 PCM chunk 保持一致。

@@ -47,7 +47,10 @@ export function createFileSessionRepository({ filePath, fileSystem, now, idFacto
       return mutate(async (storage) => {
         const recordIndex = requireRecordIndex(storage.records, sessionId);
         const existingItems = storage.transcriptItems[sessionId] || [];
-        const sessionItem = createTranscriptItemForSession(sessionId, item);
+        const sessionItem = createTranscriptItemForSession(sessionId, {
+          ...item,
+          ...(item.segmentId || !storage.records[recordIndex].segmentId ? {} : { segmentId: storage.records[recordIndex].segmentId })
+        });
         const nextItems = [...existingItems, clonePlain(sessionItem)];
         const updatedRecord = updateSessionRecordModel(
           storage.records[recordIndex],

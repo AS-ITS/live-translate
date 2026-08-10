@@ -660,6 +660,31 @@ Successful deletion returns:
 Missing records and non-finalized records return `404 session_not_found`.
 Malformed session identifiers return `400 invalid_request`.
 
+## Session-first commands
+
+### `POST /api/sessions`
+
+Creates a persisted Session before a Gemini Live connection is opened. The
+initial status is `created`. The request may include `name`,
+`targetLanguageCode`, `sourceLanguageCode`, and input-device metadata.
+
+### `PATCH /api/sessions/:sessionId`
+
+Updates Session metadata or lifecycle status. Supported statuses are `created`,
+`active`, `paused`, `stopped`, `failed`, and `expired`; invalid transitions are
+rejected.
+
+### Sharing
+
+- `POST /api/sessions/:sessionId/shares` creates an opaque share token.
+- `DELETE /api/sessions/:sessionId/shares/:shareId` revokes a share.
+- `GET /api/shared-sessions/:token` returns Viewer-safe Session detail.
+- `GET /api/shared-sessions/:token/events` opens a read-only SSE stream.
+
+Viewer detail excludes audio artifacts and browser input-device identifiers.
+SSE event IDs are monotonic per Session and each event contains the latest
+snapshot, allowing reconnect clients to render the latest known state.
+
 ## `POST /api/live-token`
 
 Creates a short-lived Gemini ephemeral token for one browser Live Translate

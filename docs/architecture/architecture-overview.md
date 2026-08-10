@@ -62,6 +62,13 @@ stream-based source/translation `TranscriptItem` records, a memory repository,
 `main.jsx` application orchestration, and a Gemini/browser-specific
 `LiveTranslateSession`.
 
+Session-first implementation now creates a persisted `created` Session before
+opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
+`sessionId` and `segmentId`, and exposes a read-only Viewer path through opaque
+share tokens and per-Session SSE events. The current broadcaster is
+process-local; durable share storage and multi-process event distribution remain
+later work.
+
 Phase 2B target architecture introduces an explicit Application Layer,
 repository and provider ports, TranslationRequest / TranslationExecution /
 TranslationOutput contracts, read-model contracts, and Compatibility Adapter

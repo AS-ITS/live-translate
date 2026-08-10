@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Phase 2B-2 translation history mapping now uses dedicated translation
+  read-model wrappers for request, execution, and output DTOs without changing
+  existing history/API response shapes or safe failure filtering.
+
 - Phase 2B-2 export foundation now exposes an `ExportApplicationService`
   boundary over the existing transcript and saved-session export helpers;
   live, meeting, retranslation, and saved-session export generation now use

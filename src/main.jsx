@@ -21,7 +21,11 @@ import { createTranslationCommandApiClient } from './lib/translationCommandApiCl
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
+import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
+import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
+import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
+import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -60,7 +64,9 @@ import {
   createSubtitleCueState,
   finalizePendingSubtitleCue,
   resetSubtitleCueState,
-  resolveIdleSubtitleCue
+  resolveIdleSubtitleCue,
+  markNumericCorrectionRequested,
+  DEFAULT_TURN_COMPLETE_DEBOUNCE_MS
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
@@ -81,12 +87,18 @@ const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'comp
 const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
-const LIVE_CUE_IDLE_FINALIZE_MS = 1200;
+const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
 const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
+const AUDIO_UPLOAD_RETRY_DELAY_MS = 5000;
+const AUDIO_UPLOAD_RETRY_MAX_DELAY_MS = 60000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
+const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';
+const TRANSCRIPT_POLISHING_INTERVAL_MS = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_INTERVAL_MS || '30000', 10);
+const TRANSCRIPT_POLISHING_MIN_CHARS = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MIN_CHARS || '200', 10);
+const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
 const TRANSLATED_AUDIO_IDLE_STATE = {
@@ -164,17 +176,20 @@ function App() {
     archivedSegmentCount: 0,
     loadedSegmentCount: 0
   });
+  const [polishingState, setPolishingState] = useState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
+  const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
   const sessionRef = useRef(null);
   const pendingMicrophoneStreamRef = useRef(null);
+  const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const recordingControllerRef = useRef(null);
-  const inputAudioChunksRef = useRef([]);
   const inputAudioUploadChunksRef = useRef([]);
   const inputAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
-  const translatedAudioChunksRef = useRef([]);
   const translatedAudioUploadChunksRef = useRef([]);
   const translatedAudioMetadataRef = useRef({ sessionId: '', startedAt: null });
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
+  const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
+  const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
   const transcriptRef = useRef(transcript);
   const subtitleCueStateRef = useRef(subtitleCueState);
   const transcriptTimeOriginRef = useRef(null);
@@ -198,7 +213,10 @@ function App() {
   const sessionDetailCacheRef = useRef(new Map());
   const meetingDetailCacheRef = useRef(new Map());
   const translationCommandLifecycleRef = useRef(null);
+  const transcriptPolishingLifecycleRef = useRef(null);
+  const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
+  const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
   const selectedHistoryRecordIdRef = useRef(null);
@@ -256,6 +274,66 @@ function App() {
   }, [page]);
 
   useEffect(() => {
+    if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
+        const detail = await getSessionDetailWithTranslationHistory(sessionId);
+        const outputs = completedPolishingOutputs(detail);
+        const output = latestPolishingOutput(detail);
+        const latestExecution = latestPolishingExecution(detail);
+        const pendingExecution = latestExecution && ['queued', 'processing', 'running'].includes(latestExecution.status)
+          ? latestExecution
+          : null;
+        if (!cancelled && pendingExecution) {
+          setPolishingState({
+            status: pendingExecution.status,
+            version: null,
+            updatedAt: pendingExecution.startedAt || pendingExecution.createdAt || null,
+            error: '',
+            executionId: pendingExecution.id
+          });
+        } else if (!cancelled && outputs.length > 0) {
+          const polishedItems = mergePolishedItemsFromOutputs(outputs);
+          applyPolishedOutput({
+            ...output,
+            polishedItems,
+            translatedText: polishedItems.map((item) => item.polishedText).join('\n')
+          });
+          setPolishingState({ status: 'completed', text: output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
+        } else {
+          if (!cancelled && latestExecution) setPolishingState({
+            status: latestExecution.status,
+            version: null,
+            updatedAt: latestExecution.completedAt || latestExecution.startedAt || null,
+            error: latestExecution.status === 'failed' ? translationFailureReasonLabel(latestExecution.failureInfo) : '',
+            executionId: latestExecution.id
+          });
+        }
+      } catch {
+        // Polishing read failures are isolated from the Live session.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [status]);
+
+  function applyPolishedOutput(output) {
+    const polishedItems = Array.isArray(output?.polishedItems) ? output.polishedItems : [];
+    const text = typeof output?.translatedText === 'string' ? output.translatedText.trim() : '';
+    if (!text && polishedItems.length === 0) return;
+    setPolishedArticle({
+      text,
+      items: polishedItems.map((item) => ({ cueId: item.cueId, sequence: item.sequence, polishedText: item.polishedText })),
+      version: output.version ?? null,
+      updatedAt: output.completedAt || output.createdAt || null
+    });
+    setPolishingState((current) => ({ ...current, text, version: output.version ?? current.version, updatedAt: output.completedAt || output.createdAt || current.updatedAt }));
+  }
+
+  useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
     if (currentPage !== 'live' || !meetingId || status !== 'idle') {
       return;
@@ -265,12 +343,14 @@ function App() {
   }, [page, status]);
 
   useEffect(() => () => {
+    invalidateLiveSessionCallbacks();
     reconnectControllerRef.current?.cancel();
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
     sessionRef.current = null;
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
     meetingCheckpointSyncCoordinatorRef.current?.cancel();
+    cancelAudioUploadRetries();
     segmentSwitchOrchestratorRef.current?.cancel();
     for (const session of sessions) {
       void session?.stop().catch(() => {});
@@ -301,13 +381,15 @@ function App() {
     ].filter((cue) => cue?.cueId && Number.isFinite(cue.updatedTimeMs));
     const now = sessionTimeForSubtitleCues();
     for (const cue of candidates) {
-      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - cue.updatedTimeMs));
+      const timerOrigin = Number.isFinite(cue.boundaryAtMs) ? cue.boundaryAtMs : cue.updatedTimeMs;
+      const remaining = Math.max(0, LIVE_CUE_IDLE_FINALIZE_MS - Math.max(0, now - timerOrigin));
       const timer = setTimeout(() => {
         liveCueIdleTimersRef.current.delete(cue.cueId);
         const result = resolveIdleSubtitleCue(subtitleCueStateRef.current, {
           cueId: cue.cueId,
           updatedTimeMs: cue.updatedTimeMs,
           sessionTimeMs: sessionTimeForSubtitleCues(),
+          debounceMs: LIVE_CUE_IDLE_FINALIZE_MS,
           targetLanguageCode,
           sourceLanguageCode
         });
@@ -320,6 +402,7 @@ function App() {
         if (result.action === 'needs-retranslation') {
           sessionRef.current?.retranslateSourceText(result.cue?.sourceText, result.cue?.cueId);
         }
+        requestNumericCorrection(result.state);
       }, remaining);
       liveCueIdleTimersRef.current.set(cue.cueId, timer);
     }
@@ -353,6 +436,7 @@ function App() {
   }
 
   async function startSession() {
+    invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
@@ -374,6 +458,7 @@ function App() {
       sessionRef.current = session;
 
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       const record = await createCurrentSessionRecord(meetingCheckpoint);
       await startRecordingForSession(record);
       setStatus('listening');
@@ -389,6 +474,7 @@ function App() {
   }
 
   async function pauseSession() {
+    invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -412,6 +498,7 @@ function App() {
   async function continuePausedSession() {
     if (status !== 'paused') return;
 
+    invalidateLiveSessionCallbacks();
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
@@ -427,6 +514,7 @@ function App() {
       session = await createSession({ preserveTranscript: true, liveSessionId: generateLiveSessionId() });
       sessionRef.current = session;
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
       setStatus('listening');
       segmentSwitchOrchestrator().start();
@@ -455,6 +543,7 @@ function App() {
   }
 
   async function endCurrentSession() {
+    invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
@@ -493,6 +582,10 @@ function App() {
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
       const resetCues = resetSubtitleCueState();
+      transcriptPolishingLifecycleRef.current?.reset(activeSessionRecordIdRef.current);
+      transcriptPolishingCoordinatorRef.current?.reset();
+      setPolishingState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
+      setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
       cancelLiveCueIdleTimers();
       subtitleCueStateRef.current = resetCues;
       setSubtitleCueState(resetCues);
@@ -510,8 +603,13 @@ function App() {
       : '';
 
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
+    const callbackGeneration = {
+      generation: liveSessionCallbackGenerationRef.current.generation + 1,
+      active: false
+    };
+    liveSessionCallbackGenerationRef.current = callbackGeneration;
 
-    return new LiveTranslateSession({
+    const session = new LiveTranslateSession({
       liveSessionId,
       sessionId: activeSessionRecordIdRef.current,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
@@ -526,19 +624,27 @@ function App() {
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
       },
       onMicrophoneReady: ({ mediaStream } = {}) => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         pendingMicrophoneStreamRef.current = mediaStream || null;
         void refreshInputDevices();
       },
       onConnecting: () => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         setStatus((current) => (
           current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
         ));
       },
-      onInputAudioChunk: handleInputAudioChunk,
-      onInputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' }),
-      onOutputTranscript: (update) => applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' }),
+      onInputAudioChunk: (chunk) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) handleInputAudioChunk(chunk);
+      },
+      onInputTranscript: (update) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' });
+      },
+      onOutputTranscript: (update) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' });
+      },
       onCueEvent: (event) => {
-        if (!liveCueUpdatesAllowedRef.current) return;
+        if (!isCurrentLiveSessionCallback(callbackGeneration) || !liveCueUpdatesAllowedRef.current) return;
         const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
           || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
         const cueEvent = event?.stream === 'translation'
@@ -546,8 +652,11 @@ function App() {
           : event;
         applyLiveSubtitleCueEvent(cueEvent);
       },
-      onOutputAudioChunk: handleTranslatedAudioChunk,
+      onOutputAudioChunk: (chunk) => {
+        if (isCurrentLiveSessionCallback(callbackGeneration)) handleTranslatedAudioChunk(chunk);
+      },
       onError: (nextError) => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
           return;
@@ -563,10 +672,12 @@ function App() {
         });
       },
       onClose: () => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         setStatus((current) => (current === 'listening' ? 'stopped' : current));
         sessionRef.current = null;
       },
       onConnectionFailure: (failure) => {
+        if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
         const classification = classifyFailureSignal(failure);
         const failureUiState = failureUiStateForClassification(classification);
 
@@ -607,12 +718,36 @@ function App() {
           });
       }
     });
+    session.callbackGeneration = callbackGeneration;
+    return session;
+  }
+
+  function invalidateLiveSessionCallbacks() {
+    liveSessionCallbackGenerationRef.current = {
+      generation: liveSessionCallbackGenerationRef.current.generation + 1,
+      active: false
+    };
+  }
+
+  function activateLiveSessionCallbacks(callbackGeneration) {
+    if (liveSessionCallbackGenerationRef.current !== callbackGeneration) return false;
+    callbackGeneration.active = true;
+    return true;
+  }
+
+  function isCurrentLiveSessionCallback(callbackGeneration) {
+    return liveSessionCallbackGenerationRef.current === callbackGeneration && callbackGeneration.active;
+  }
+
+  function isCurrentLiveSessionInstance(callbackGeneration) {
+    return liveSessionCallbackGenerationRef.current === callbackGeneration;
   }
 
   function recordingController() {
     if (!recordingControllerRef.current) {
       recordingControllerRef.current = createMicrophoneRecordingController({
-        onStateChange: setRecordingState
+        onStateChange: setRecordingState,
+        collectChunks: false
       });
     }
 
@@ -649,7 +784,6 @@ function App() {
   }
 
   function resetInputAudioDownload() {
-    inputAudioChunksRef.current = [];
     inputAudioUploadChunksRef.current = [];
     inputAudioMetadataRef.current = { sessionId: '', startedAt: null };
     resetAudioUploadSegment('input');
@@ -664,14 +798,12 @@ function App() {
       return;
     }
 
-    inputAudioChunksRef.current.push(new Uint8Array(bytes));
     inputAudioUploadChunksRef.current.push(new Uint8Array(bytes));
     void flushAudioSegmentIfDue('input');
   }
 
   async function pauseRawAudioRecording() {
     if (!shouldRecordInputAudio) {
-      inputAudioChunksRef.current = [];
       setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
       return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
     }
@@ -708,12 +840,13 @@ function App() {
 
   async function finalizeRawAudioRecording() {
     if (!shouldRecordInputAudio) {
-      inputAudioChunksRef.current = [];
       setRecordingState(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
       return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
     }
 
-    const state = await recordingController().finalize().catch((nextError) => ({
+    const inputUploadSegment = audioUploadSegmentsRef.current.input;
+    const hasAudio = inputAudioUploadChunksRef.current.length > 0 || inputUploadSegment.nextIndex > 0;
+    const state = await recordingController().cleanup({ discard: true }).catch((nextError) => ({
       status: 'error',
       blob: null,
       mimeType: '',
@@ -722,38 +855,17 @@ function App() {
       errorMessage: nextError?.message || '原始語音音檔無法建立。'
     }));
 
-    if (inputAudioChunksRef.current.length === 0) {
-      setRecordingState(state);
-      return state;
-    }
-
-    try {
-      const metadata = inputAudioMetadataRef.current;
-      const wavState = {
-        status: 'ready',
-        blob: pcm16ChunksToWavBlob(inputAudioChunksRef.current, {
-          sampleRate: INPUT_SAMPLE_RATE,
-          normalizePeak: true
-        }),
-        mimeType: 'audio/wav',
-        extension: 'wav',
-        fileName: buildInputAudioFileName(metadata),
-        errorMessage: ''
-      };
-      setRecordingState(wavState);
-      return wavState;
-    } catch (nextError) {
-      const errorState = {
-        status: 'error',
-        blob: null,
-        mimeType: '',
-        extension: '',
-        fileName: '',
-        errorMessage: nextError?.message || '原始語音音檔無法建立。'
-      };
-      setRecordingState(errorState);
-      return errorState;
-    }
+    const savedState = {
+      ...state,
+      status: hasAudio ? 'saved' : 'idle',
+      blob: null,
+      mimeType: 'audio/wav',
+      extension: 'wav',
+      fileName: '',
+      errorMessage: ''
+    };
+    setRecordingState(savedState);
+    return savedState;
   }
 
   function prepareTranslatedAudioDownload(record) {
@@ -766,7 +878,6 @@ function App() {
   }
 
   function resetTranslatedAudioDownload() {
-    translatedAudioChunksRef.current = [];
     translatedAudioUploadChunksRef.current = [];
     translatedAudioMetadataRef.current = { sessionId: '', startedAt: null };
     resetAudioUploadSegment('translation');
@@ -778,7 +889,6 @@ function App() {
       return;
     }
 
-    translatedAudioChunksRef.current.push(new Uint8Array(bytes));
     translatedAudioUploadChunksRef.current.push(new Uint8Array(bytes));
     void flushAudioSegmentIfDue('translation');
     setTranslatedAudioState((current) => (
@@ -789,8 +899,9 @@ function App() {
   }
 
   function finalizeTranslatedAudioDownload(sessionId) {
-    const chunks = translatedAudioChunksRef.current;
-    if (chunks.length === 0) {
+    const translationUploadSegment = audioUploadSegmentsRef.current.translation;
+    const hasAudio = translatedAudioUploadChunksRef.current.length > 0 || translationUploadSegment.nextIndex > 0;
+    if (!hasAudio) {
       let nextState = null;
       setTranslatedAudioState((current) => (
         current.status === 'recording' ? (nextState = TRANSLATED_AUDIO_IDLE_STATE) : (nextState = current)
@@ -798,58 +909,9 @@ function App() {
       return nextState || TRANSLATED_AUDIO_IDLE_STATE;
     }
 
-    try {
-      const metadata = translatedAudioMetadataRef.current;
-      const blob = pcm16ChunksToWavBlob(chunks, { normalizePeak: true });
-      const nextState = {
-        status: 'ready',
-        blob,
-        fileName: buildTranslatedAudioFileName({
-          sessionId: metadata.sessionId || sessionId,
-          startedAt: metadata.startedAt
-        }),
-        errorMessage: ''
-      };
-      setTranslatedAudioState(nextState);
-      return nextState;
-    } catch (nextError) {
-      const errorState = {
-        status: 'error',
-        blob: null,
-        fileName: '',
-        errorMessage: nextError?.message || '翻譯語音音檔無法建立。'
-      };
-      setTranslatedAudioState(errorState);
-      return errorState;
-    }
-  }
-
-  function downloadRawAudio() {
-    const blob = recordingState.blob;
-    if (!blob || recordingState.status !== 'ready') return;
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = recordingState.fileName || 'live-translate-input-audio.webm';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
-
-  function downloadTranslatedAudio() {
-    const blob = translatedAudioState.blob;
-    if (!blob || translatedAudioState.status !== 'ready') return;
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = translatedAudioState.fileName || 'live-translate-translated-audio.wav';
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    const nextState = { status: 'saved', blob: null, fileName: '', errorMessage: '' };
+    setTranslatedAudioState(nextState);
+    return nextState;
   }
 
   function updateActiveSessionGlossaryEntries(entries) {
@@ -869,6 +931,7 @@ function App() {
     }
 
     setError('');
+    invalidateLiveSessionCallbacks();
     setStatusLabelOverride('');
     setStatus('reconnecting');
     segmentSwitchOrchestrator().cancel();
@@ -919,6 +982,7 @@ function App() {
       }
 
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (nextError) {
       if (generationId !== reconnectController().currentGeneration()) {
@@ -962,6 +1026,7 @@ function App() {
     if (!resumeDraft || isActive) return;
 
     reconnectController().reset();
+    invalidateLiveSessionCallbacks();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
@@ -1000,6 +1065,7 @@ function App() {
       session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
+      activateLiveSessionCallbacks(session.callbackGeneration);
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -1018,6 +1084,7 @@ function App() {
     const previousSession = sessionRef.current;
     if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current) return;
 
+    invalidateLiveSessionCallbacks();
     setError('');
     setStatusLabelOverride('切換下一段中');
     setStatus('switching-segment');
@@ -1056,6 +1123,7 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
+      activateLiveSessionCallbacks(nextSession.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (error) {
       await nextSession.stop().catch(() => {});
@@ -1159,6 +1227,7 @@ function App() {
       })
     );
     activeSessionRecordIdRef.current = record.id;
+    polishingSessionIdRef.current = record.id;
     prepareInputAudioDownload(record);
     prepareTranslatedAudioDownload(record);
     const initialItems = appendInitialTranscriptItems(record.id, initialTranscript);
@@ -1217,6 +1286,24 @@ function App() {
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
     enqueueCuePersistence(current, next);
+    scheduleTranscriptPolishing(next.finalCues);
+    requestNumericCorrection(next);
+  }
+
+  function requestNumericCorrection(state) {
+    const cue = [...(state.finalCues || [])].reverse().find((candidate) => (
+      candidate.status === 'final' &&
+      candidate.sourceText && candidate.translatedText &&
+      !candidate.numericCorrectionRequested &&
+      missingNumericIntegrity(candidate.sourceText, candidate.translatedText)
+    ));
+    if (!cue) return;
+
+    const next = markNumericCorrectionRequested(state, cue.cueId);
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(state, next);
+    sessionRef.current?.retranslateSourceText(cue.sourceText, cue.cueId);
   }
 
   function flushSubtitleCues(reason) {
@@ -1229,6 +1316,57 @@ function App() {
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
     enqueueCuePersistence(current, next);
+    scheduleTranscriptPolishing(next.finalCues, { force: true });
+    return next;
+  }
+
+  function transcriptPolishingLifecycle() {
+    if (!transcriptPolishingLifecycleRef.current) {
+      transcriptPolishingLifecycleRef.current = createTranscriptPolishingLifecycle({
+        apiClient: createTranslationCommandApiClient(),
+        onStateChange: (next) => setPolishingState((current) => ({ ...current, status: next.status, error: next.error?.message || '' }))
+      });
+    }
+    return transcriptPolishingLifecycleRef.current;
+  }
+
+  function transcriptPolishingCoordinator() {
+    if (!transcriptPolishingCoordinatorRef.current) {
+      transcriptPolishingCoordinatorRef.current = createTranscriptPolishingCoordinator({
+        intervalMs: Number.isInteger(TRANSCRIPT_POLISHING_INTERVAL_MS) && TRANSCRIPT_POLISHING_INTERVAL_MS > 0 ? TRANSCRIPT_POLISHING_INTERVAL_MS : 30000,
+        minChars: Number.isInteger(TRANSCRIPT_POLISHING_MIN_CHARS) && TRANSCRIPT_POLISHING_MIN_CHARS > 0 ? TRANSCRIPT_POLISHING_MIN_CHARS : 200,
+        maxRequestsPerMinute: Number.isInteger(TRANSCRIPT_POLISHING_MAX_RPM) && TRANSCRIPT_POLISHING_MAX_RPM > 0 ? TRANSCRIPT_POLISHING_MAX_RPM : 15,
+        submit: (input) => transcriptPolishingLifecycle().submit({
+          sessionId: activeSessionRecordIdRef.current,
+          targetLanguageCode,
+          sourceLanguageCode,
+          ...input
+        }),
+        onStateChange: (next) => setPolishingState((current) => ({ ...current, status: next.status, error: next.error?.message || '' }))
+      });
+    }
+    return transcriptPolishingCoordinatorRef.current;
+  }
+
+  function scheduleTranscriptPolishing(finalCues = [], { force = false } = {}) {
+    if (!TRANSCRIPT_POLISHING_ENABLED) return;
+    const cues = finalCues
+      .filter((cue) => cue?.status === 'final' && cue?.sourceText && cue?.translatedText)
+      .map((cue) => ({ ...cue, translationText: cue.translatedText }));
+    if (!activeSessionRecordIdRef.current || cues.length === 0) return;
+    void transcriptPolishingCoordinator().add(cues, { force }).catch((nextError) => {
+      setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
+    });
+  }
+
+  async function retryPolishingExecution(executionId) {
+    if (!executionId) return;
+    try {
+      await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
+      setPolishingState((current) => ({ ...current, status: 'queued', error: '' }));
+    } catch {
+      setPolishingState((current) => ({ ...current, status: 'failed', error: '翻譯潤飾重試失敗，請稍後再試。' }));
+    }
   }
 
   function enqueueCuePersistence(previous, next) {
@@ -1250,6 +1388,11 @@ function App() {
       finalizedCueKeys: state?.finalizedCueKeys || [],
       processedEventIds: state?.processedEventIds || [],
       pendingBoundary: state?.pendingBoundary || { turnComplete: false, generationComplete: false },
+      pendingBoundaryAtMs: state?.pendingBoundaryAtMs ?? null,
+      lastFinalizedCueId: state?.lastFinalizedCueId || null,
+      lastFinalizedAtMs: state?.lastFinalizedAtMs ?? null,
+      lastFinalizedStream: state?.lastFinalizedStream || null,
+      lastFinalizedReason: state?.lastFinalizedReason || null,
       lastCommittedCueSequence: lastCue?.sequence || 0,
       lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
     };
@@ -1263,6 +1406,7 @@ function App() {
   async function finalizeCurrentSessionRecord(options) {
     const sessionId = activeSessionRecordIdRef.current;
     const translatedAudioFinalState = finalizeTranslatedAudioDownload(sessionId);
+    polishingSessionIdRef.current = sessionId;
     activeSessionRecordIdRef.current = null;
     const meetingId = activeMeetingCheckpointRef.current?.meetingId || null;
 
@@ -1294,17 +1438,21 @@ function App() {
   async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}, options = {}) {
     try {
       await Promise.all([
-        states.input?.status === 'ready' ? flushAudioSegment('input', { force: true, sessionId }) : null,
-        states.translation?.status === 'ready' ? flushAudioSegment('translation', { force: true, sessionId }) : null
-      ].filter(Boolean));
+        flushAudioSegment('input', { force: true, sessionId }),
+        flushAudioSegment('translation', { force: true, sessionId })
+      ]);
       await refreshAudioArtifactDetails(sessionId, options);
     } catch (nextError) {
       console.error('Session audio artifact persistence failed.', nextError);
       if (nextError?.status === 413) {
-        setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響，目前音檔仍可在本頁下載。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
+        setError('語音紀錄分段超過伺服器保存上限，但逐字稿保存不受影響。請調高 SESSION_AUDIO_MAX_BYTES 或縮短分段時間。');
         return;
       }
-      setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響，目前音檔仍可在本頁下載。');
+      if (isRetryableAudioUploadError(nextError)) {
+        setError('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。');
+        return;
+      }
+      setError('語音紀錄無法儲存到翻譯紀錄，但逐字稿保存不受影響。');
     }
   }
 
@@ -1327,7 +1475,11 @@ function App() {
   async function flushAudioSegmentIfDue(kind) {
     const segment = audioUploadSegmentsRef.current[kind];
     if (!segment || Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return;
-    await flushAudioSegment(kind);
+    try {
+      await flushAudioSegment(kind);
+    } catch (error) {
+      scheduleAudioUploadRetry(kind, audioUploadSessionId(kind));
+    }
   }
 
   async function flushAudioSegment(kind, { force = false, sessionId = activeSessionRecordIdRef.current } = {}) {
@@ -1360,6 +1512,8 @@ function App() {
       });
       segment.nextIndex += 1;
       segment.lastFlushedAt = Date.now();
+      clearAudioUploadRetry(kind);
+      setError((current) => current.startsWith('語音紀錄暫時無法同步') ? '' : current);
       return true;
     })();
     segment.currentPromise = uploadPromise;
@@ -1367,6 +1521,7 @@ function App() {
       return await uploadPromise;
     } catch (nextError) {
       chunksRef.current = uploadChunks.concat(chunksRef.current);
+      if (isRetryableAudioUploadError(nextError)) scheduleAudioUploadRetry(kind, sessionId);
       throw nextError;
     } finally {
       segment.inFlight = false;
@@ -1377,12 +1532,50 @@ function App() {
   }
 
   function resetAudioUploadSegment(kind) {
+    clearAudioUploadRetry(kind);
     audioUploadSegmentsRef.current[kind] = {
       nextIndex: 0,
       lastFlushedAt: Date.now(),
       inFlight: false,
       currentPromise: null
     };
+  }
+
+  function audioUploadSessionId(kind) {
+    return (kind === 'input' ? inputAudioMetadataRef : translatedAudioMetadataRef).current.sessionId
+      || activeSessionRecordIdRef.current;
+  }
+
+  function scheduleAudioUploadRetry(kind, sessionId) {
+    if (!sessionId || audioUploadRetryTimersRef.current[kind]) return;
+    const attempt = audioUploadRetryAttemptsRef.current[kind] + 1;
+    audioUploadRetryAttemptsRef.current[kind] = attempt;
+    const delay = Math.min(
+      AUDIO_UPLOAD_RETRY_DELAY_MS * (2 ** Math.max(0, attempt - 1)),
+      AUDIO_UPLOAD_RETRY_MAX_DELAY_MS
+    );
+    audioUploadRetryTimersRef.current[kind] = window.setTimeout(() => {
+      audioUploadRetryTimersRef.current[kind] = null;
+      void flushAudioSegment(kind, { force: true, sessionId }).catch(() => {});
+    }, delay);
+  }
+
+  function clearAudioUploadRetry(kind) {
+    const timer = audioUploadRetryTimersRef.current[kind];
+    if (timer) window.clearTimeout(timer);
+    audioUploadRetryTimersRef.current[kind] = null;
+    audioUploadRetryAttemptsRef.current[kind] = 0;
+  }
+
+  function cancelAudioUploadRetries() {
+    clearAudioUploadRetry('input');
+    clearAudioUploadRetry('translation');
+  }
+
+  function isRetryableAudioUploadError(error) {
+    const status = Number(error?.status);
+    if (status === 404 || status === 409 || status === 413) return false;
+    return !Number.isFinite(status) || status === 408 || status === 425 || status === 429 || status >= 500;
   }
 
   async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
@@ -1540,7 +1733,12 @@ function App() {
       meetingCheckpointSyncCoordinatorRef.current = createMeetingCheckpointSyncCoordinator({
         updateCheckpoint: (payload) => meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
         delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
-        onStatusChange: setMeetingCheckpointStatus,
+        onStatusChange: (status) => {
+          setMeetingCheckpointStatus(status);
+          if (status === 'synced') {
+            setError((current) => current.startsWith('長會議同步') ? '' : current);
+          }
+        },
         onError: reportMeetingCheckpointSyncError
       });
     }
@@ -1732,9 +1930,9 @@ function App() {
     return translationCommandLifecycleRef.current;
   }
 
-  function reportTranslationCommandError(error) {
+  function reportTranslationCommandError(error, context) {
     console.error('Translation command persistence failed.', error);
-    setError('無法儲存翻譯紀錄，但即時翻譯仍可繼續。');
+    setError(formatTranslationCommandPersistenceError(error, context));
   }
 
   async function openHistoryRecordDetail(id) {
@@ -2049,8 +2247,7 @@ function App() {
       stream: exportStream,
       timeOrigin: transcriptTimeOrigin
     });
-  const exportUnavailableReason =
-    exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
+  const exportUnavailableReason = exportFormat !== 'txt' && exportStream === 'both' ? 'SRT 與 VTT 一次只能匯出一個內容。' : '';
   const selectedHistoryRecord = selectedHistoryRecordId
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
@@ -2167,8 +2364,25 @@ function App() {
                 </p>
               ) : null}
               {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>
-                {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              <p
+                className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}
+                role={hasAudioStatusError({
+                  shouldRecordInputAudio,
+                  recordingState,
+                  translatedAudioState
+                }) ? 'alert' : undefined}
+              >
+                {composeCheckpointStatusMessage({
+                  meetingCheckpointStatus,
+                  shouldRecordInputAudio,
+                  recordingState,
+                  translatedAudioState
+                }).map((message, index) => (
+                  <React.Fragment key={`${message}-${index}`}>
+                    {index > 0 ? <br /> : null}
+                    {message}
+                  </React.Fragment>
+                ))}
               </p>
               {meetingViewStats.archivedSegmentCount > 0 ? (
                 <p className="checkpoint-note">
@@ -2224,36 +2438,6 @@ function App() {
           </div>
         </section>
 
-        <section className="recording-panel" aria-label="音檔下載">
-          <div>
-            <h2>音檔下載</h2>
-            <p className="recording-note">原始語音：{recordingStatusLabel(recordingState.status)}</p>
-            <p className="recording-note">翻譯語音：{translatedAudioStatusLabel(translatedAudioState.status)}</p>
-            {recordingState.errorMessage ? <p className="recording-error" role="alert">{recordingState.errorMessage}</p> : null}
-            {translatedAudioState.errorMessage ? <p className="recording-error" role="alert">{translatedAudioState.errorMessage}</p> : null}
-          </div>
-          <div className="recording-downloads">
-            <button
-              className="button secondary"
-              type="button"
-              onClick={downloadRawAudio}
-              disabled={recordingState.status !== 'ready' || !recordingState.blob}
-            >
-              <Download size={18} aria-hidden="true" />
-              下載原始語音
-            </button>
-            <button
-              className="button secondary"
-              type="button"
-              onClick={downloadTranslatedAudio}
-              disabled={translatedAudioState.status !== 'ready' || !translatedAudioState.blob}
-            >
-              <Download size={18} aria-hidden="true" />
-              下載翻譯語音
-            </button>
-          </div>
-        </section>
-
         <section className="export-panel" aria-label="逐字稿匯出">
           <div className="controls export-controls">
           <label className="field">
@@ -2286,6 +2470,9 @@ function App() {
           cueState={subtitleCueState}
           isPaused={status === 'paused'}
           isStopped={status === 'stopped'}
+          polishingState={polishingState}
+          polishedArticle={polishedArticle}
+          onPolishingRetry={retryPolishingExecution}
           copiedSource={copiedArticleStream === 'source'}
           copiedTranslation={copiedArticleStream === 'translation'}
           onCopySource={copyLiveSource}
@@ -2311,6 +2498,7 @@ function App() {
           onDeleteRecord={deleteHistoryRecord}
           onRetranslationSubmitted={refreshSelectedHistoryRecordDetail}
           onOpenRetranslationWorkflow={openRetranslationWorkflow}
+          onPolishingRetry={retryPolishingExecution}
           selectedMeetingId={selectedMeetingId}
           selectedMeetingDetail={selectedMeetingDetail}
           onViewMeetingDetails={openMeetingDetail}
@@ -2496,6 +2684,9 @@ function LiveCuePanel({
   cueState,
   isPaused,
   isStopped,
+  polishingState,
+  polishedArticle,
+  onPolishingRetry,
   copiedSource,
   copiedTranslation,
   onCopySource,
@@ -2542,6 +2733,7 @@ function LiveCuePanel({
           <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
         </div>
         <div className="cue-panel-actions">
+          <TranscriptPolishingStatus polishingState={polishingState} onRetry={onPolishingRetry} />
           {!isFollowingLatest ? (
             <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
           ) : null}
@@ -2579,6 +2771,12 @@ function LiveCuePanel({
           </div>
         </section>
       </div>
+      {polishedArticle?.text ? (
+        <section className="transcript-panel" data-testid="polished-article" aria-label="潤飾文章版">
+          <div className="article-panel-header"><h3>潤飾文章版</h3></div>
+          <div className="article-content"><p>{polishedArticle.text}</p></div>
+        </section>
+      ) : null}
     </section>
   );
 }
@@ -2589,6 +2787,44 @@ function FinalCueRow({ cue, stream }) {
 
 function PartialCueRow({ cue, stream }) {
   return <CueRow cue={cue} partial stream={stream} />;
+}
+
+function TranscriptPolishingStatus({ polishingState, onRetry }) {
+  const status = polishingState?.status || 'idle';
+  if (status === 'idle') return null;
+  const statusLabel = status === 'running' || status === 'dirty'
+    ? '潤飾中'
+    : status === 'processing'
+      ? '潤飾中'
+    : status === 'queued'
+      ? '等待潤飾'
+      : status === 'failed'
+        ? '潤飾失敗'
+        : status === 'completed'
+          ? '潤飾完成'
+          : '尚未開始潤飾';
+  const timestamp = polishingState?.updatedAt ? formatPolishingTimestamp(polishingState.updatedAt) : '';
+  const errorText = polishingState?.error || '';
+
+  return (
+    <span
+      className={`transcript-polishing-badge transcript-polishing-badge-${status}`}
+      aria-live="polite"
+      aria-label={`${statusLabel}${errorText ? `：${errorText}` : ''}`}
+      data-testid="transcript-polishing-status"
+      title={errorText || undefined}
+    >
+      {statusLabel}{status === 'completed' && polishingState.version ? ` · v${polishingState.version}` : ''}{timestamp ? ` · ${timestamp}` : ''}{status === 'failed' && errorText ? `：${errorText}` : ''}
+      {status === 'failed' && polishingState.executionId ? (
+        <button className="button detail-button polishing-retry-button" type="button" onClick={() => onRetry?.(polishingState.executionId)}>重試</button>
+      ) : null}
+    </span>
+  );
+}
+
+function formatPolishingTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
 }
 
 function CueRow({ cue, partial = false, stream }) {
@@ -2617,6 +2853,25 @@ function CueRow({ cue, partial = false, stream }) {
       </div>
     </article>
   );
+}
+
+function latestPolishingOutput(detail) {
+  return completedPolishingOutputs(detail)
+    .sort((left, right) => (right.version || 0) - (left.version || 0) || String(right.completedAt || '').localeCompare(String(left.completedAt || '')))[0] || null;
+}
+
+function completedPolishingOutputs(detail) {
+  return (detail?.translationHistory?.outputs || [])
+    .filter((output) => output.operation === 'transcript_polishing' && typeof output.translatedText === 'string' && output.translatedText.trim().length > 0);
+}
+
+function latestPolishingExecution(detail) {
+  return (detail?.translationHistory?.executions || [])
+    .filter((execution) => execution.operation === 'transcript_polishing')
+    .sort((left, right) => (
+      timestampMs(right.startedAt || right.completedAt || right.createdAt) - timestampMs(left.startedAt || left.completedAt || left.createdAt)
+      || String(right.id || '').localeCompare(String(left.id || ''))
+    ))[0] || null;
 }
 
 function ArticlePanel({
@@ -2675,6 +2930,7 @@ function HistoryPanel({
   onDeleteRecord,
   onRetranslationSubmitted,
   onOpenRetranslationWorkflow,
+  onPolishingRetry,
   selectedMeetingId,
   selectedMeetingDetail,
   onViewMeetingDetails
@@ -2708,6 +2964,7 @@ function HistoryPanel({
               onDeleteRecord={onDeleteRecord}
               onRetranslationSubmitted={onRetranslationSubmitted}
               onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
+              onPolishingRetry={onPolishingRetry}
             />
           ))}
         </ol>
@@ -2724,7 +2981,8 @@ function SessionHistoryItem({
   onViewDetails,
   onDeleteRecord,
   onRetranslationSubmitted,
-  onOpenRetranslationWorkflow
+  onOpenRetranslationWorkflow,
+  onPolishingRetry
 }) {
   return (
     <li className="history-item" key={record.id}>
@@ -2777,6 +3035,7 @@ function SessionHistoryItem({
           historyRecord={selectedRecord}
           onRetranslationSubmitted={onRetranslationSubmitted}
           onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
+          onPolishingRetry={onPolishingRetry}
         />
       ) : null}
     </li>
@@ -2824,7 +3083,7 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
       <div className="history-header">
         <div>
           <h3 id={titleId}>翻譯紀錄</h3>
-          <p className="history-description">查看已儲存翻譯的分段時間軸、整場原文與文章版翻譯。</p>
+          <p className="history-description">查看已儲存翻譯的分段時間軸、原文與翻譯內容。</p>
         </div>
       </div>
 
@@ -3755,7 +4014,7 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow }) {
+function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
@@ -3835,14 +4094,8 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   }
 
   const retranslationSourceSessionId = sourceSessionIdForRetranslation(sessionRecord, sessionRecordId);
-  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, {
-    format: savedExportFormat,
-    stream: savedExportStream
-  });
-  const savedExportUnavailableReason = savedSessionExportUnavailableReason(exportDetail, {
-    format: savedExportFormat,
-    stream: savedExportStream
-  });
+  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, { format: savedExportFormat, stream: savedExportStream });
+  const savedExportUnavailableReason = savedSessionExportUnavailableReason(exportDetail, { format: savedExportFormat, stream: savedExportStream });
 
   function downloadSavedTranscript() {
     setSavedExportError('');
@@ -3950,7 +4203,6 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           onSelectTab={setReadingTab}
         />
       )}
-
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button detail-button" type="button" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>以此原文重新翻譯</button>
         <RetranslationProgress progress={retranslationProgress} />
@@ -3970,9 +4222,9 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           <label className="field">
             <span>已儲存逐字稿匯出內容</span>
             <select value={savedExportStream} onChange={(event) => setSavedExportStream(event.target.value)}>
-              <option value="translation">翻譯</option>
-              <option value="source">原文</option>
-              <option value="both">兩者</option>
+            <option value="translation">翻譯</option>
+            <option value="source">原文</option>
+            <option value="both">兩者</option>
             </select>
           </label>
 
@@ -4094,7 +4346,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
   const selectedContent = selectedTab === 'sourceTranscript'
     ? content.sourceTranscript
     : content.translationArticle;
-  const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '文章版翻譯';
+  const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '翻譯內容';
 
   return (
     <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback">
@@ -4106,7 +4358,7 @@ function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
           aria-selected={selectedTab === 'translationArticle'}
           onClick={() => onSelectTab('translationArticle')}
         >
-          文章版翻譯
+          翻譯內容
         </button>
         <button
           className={`reading-tab${selectedTab === 'sourceTranscript' ? ' active' : ''}`}
@@ -4332,7 +4584,7 @@ function readingContentEmptyText(content) {
   }
 
   return content.kind === 'translationArticle'
-    ? '尚無文章版翻譯。'
+    ? '尚無翻譯內容。'
     : '尚無原始逐字稿。';
 }
 
@@ -4415,7 +4667,7 @@ function translationFailureReasonLabel(failureInfo = {}) {
   }
 
   if (code === 'bad_request' || status === 400) {
-    return 'Gemini 拒絕此翻譯請求，請確認模型與翻譯內容格式。';
+    return `Gemini 拒絕此翻譯請求（${providerDiagnosticText(failureInfo)}），請確認模型與翻譯內容格式。`;
   }
 
   if (code === 'rate_limited' || status === 429) {
@@ -4430,7 +4682,25 @@ function translationFailureReasonLabel(failureInfo = {}) {
     return failureInfo.message.trim();
   }
 
+  const reason = typeof failureInfo?.reason === 'string' && failureInfo.reason.trim() ? failureInfo.reason.trim() : '';
+  if (reason === 'provider_execution_failed' || failureInfo?.category === 'provider') {
+    return 'Gemini 翻譯提供者執行失敗，請稍後重試。';
+  }
+  if (reason) {
+    return `翻譯失敗（${reason}），請稍後重試。`;
+  }
+
   return '翻譯提供者執行失敗，請稍後重試。';
+}
+
+function providerDiagnosticText(failureInfo = {}) {
+  const status = Number.isInteger(failureInfo.status) ? `HTTP ${failureInfo.status}` : '';
+  const code = failureInfo.providerCode ?? failureInfo.providerStatus ?? failureInfo.code;
+  const message = typeof failureInfo.providerMessage === 'string' && failureInfo.providerMessage.trim()
+    ? failureInfo.providerMessage.trim()
+    : '';
+  const model = typeof failureInfo.model === 'string' && failureInfo.model.trim() ? `model=${failureInfo.model.trim()}` : '';
+  return [status, code ? `code=${code}` : '', message, model].filter(Boolean).join('；') || 'provider error';
 }
 
 function isProviderTimeoutFailure(failureInfo = {}) {
@@ -4532,12 +4802,34 @@ function mergeRetranslationHistoryIntoDetail(detail, translations) {
     return detail;
   }
 
+  const mergedOutputs = mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs);
+  const polishedItems = mergePolishedItemsFromOutputs(mergedOutputs);
   return {
     ...detail,
+    polishedArticle: polishedArticleContentFromItems(polishedItems, mergedOutputs),
     translationHistory: {
-      outputs: mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs),
+      outputs: mergedOutputs,
       executions: translationsHistory.executions
     }
+  };
+}
+
+function polishedArticleContentFromItems(items = [], outputs = []) {
+  const latest = [...(Array.isArray(outputs) ? outputs : [])].sort((left, right) => (
+    (right?.version ?? 0) - (left?.version ?? 0)
+    || String(right?.completedAt || '').localeCompare(String(left?.completedAt || ''))
+  ))[0];
+  const text = items.map((item) => item.polishedText).filter(Boolean).join('\n');
+  return {
+    kind: 'polishedArticle',
+    status: text ? 'available' : 'empty',
+    text,
+    paragraphs: text ? text.split(/\n+/).filter(Boolean) : [],
+    items,
+    version: latest?.version ?? null,
+    createdAt: latest?.createdAt ?? null,
+    completedAt: latest?.completedAt ?? null,
+    emptyReason: text ? null : 'no_content'
   };
 }
 
@@ -4885,6 +5177,7 @@ function recordingStatusLabel(status) {
     paused: '錄音已暫停，已保留目前片段。',
     finalizing: '正在完成錄音檔。',
     ready: '原始語音已可下載。',
+    saved: '音檔已保存，請到翻譯紀錄下載。',
     error: '原始語音錄音無法使用。'
   };
 
@@ -4896,10 +5189,38 @@ function translatedAudioStatusLabel(status) {
     idle: '尚無可下載的翻譯語音。',
     recording: '正在保留即時翻譯輸出。',
     ready: '翻譯語音已可下載。',
+    saved: '音檔已保存，請到翻譯紀錄下載。',
     error: '翻譯語音音檔無法使用。'
   };
 
   return labels[status] || labels.idle;
+}
+
+function composeCheckpointStatusMessage({
+  meetingCheckpointStatus,
+  shouldRecordInputAudio,
+  recordingState,
+  translatedAudioState
+}) {
+  const messages = [meetingCheckpointStatusLabel(meetingCheckpointStatus)];
+  const inputAudioIsActive = shouldRecordInputAudio && ['recording', 'paused', 'finalizing', 'ready', 'saved', 'error'].includes(recordingState?.status);
+  const translationAudioIsActive = ['recording', 'ready', 'saved', 'error'].includes(translatedAudioState?.status);
+
+  if (inputAudioIsActive) {
+    messages.push(`原始語音：${recordingStatusLabel(recordingState.status)}`);
+    if (recordingState.errorMessage) messages.push(`原始語音錯誤：${recordingState.errorMessage}`);
+  }
+
+  if (translationAudioIsActive) {
+    messages.push(`翻譯語音：${translatedAudioStatusLabel(translatedAudioState.status)}`);
+    if (translatedAudioState.errorMessage) messages.push(`翻譯語音錯誤：${translatedAudioState.errorMessage}`);
+  }
+
+  return messages;
+}
+
+function hasAudioStatusError({ shouldRecordInputAudio, recordingState, translatedAudioState }) {
+  return (shouldRecordInputAudio && recordingState?.status === 'error') || translatedAudioState?.status === 'error';
 }
 
 function createAudioUploadSegmentState() {

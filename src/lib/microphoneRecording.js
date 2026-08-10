@@ -17,6 +17,7 @@ const IDLE_STATE = {
 export function createMicrophoneRecordingController(options = {}) {
   const MediaRecorderImpl = options.MediaRecorderImpl || globalThis.MediaRecorder;
   const BlobImpl = options.BlobImpl || globalThis.Blob;
+  const collectChunks = options.collectChunks !== false;
   const now = options.now || (() => Date.now());
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
 
@@ -158,7 +159,7 @@ export function createMicrophoneRecordingController(options = {}) {
     const recorderMimeType = recorder.mimeType || selectedMimeType;
     selectedMimeType = recorderMimeType;
     recorder.ondataavailable = (event) => {
-      if (event?.data && dataHasContent(event.data)) {
+      if (collectChunks && event?.data && dataHasContent(event.data)) {
         chunks.push(event.data);
       }
     };

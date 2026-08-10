@@ -62,6 +62,36 @@ test('file meeting repository writes deterministic schema wrapper', async () => 
   assert.deepEqual(stored.segments['meeting-1'].map((segment) => segment.id), ['segment-1']);
 });
 
+test('parallel reads share one parsed storage snapshot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-meeting-repo-'));
+  const filePath = join(directory, 'meetings.json');
+  const fs = await import('node:fs/promises');
+  await fs.writeFile(filePath, JSON.stringify({
+    schemaVersion: 1,
+    meetings: [{ id: 'meeting-1', status: 'created', createdAt: 1000, updatedAt: 1000 }],
+    segments: { 'meeting-1': [] }
+  }), 'utf8');
+
+  let readCount = 0;
+  const fileSystem = {
+    ...fs,
+    async readFile(...args) {
+      readCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return fs.readFile(...args);
+    }
+  };
+  const repository = createFileMeetingRepository({ filePath, fileSystem });
+
+  await Promise.all([
+    repository.listMeetings(),
+    repository.listMeetingSegments('meeting-1'),
+    repository.getMeeting('meeting-1')
+  ]);
+
+  assert.equal(readCount, 1);
+});
+
 test('file meeting repository preserves duplicate and missing behavior', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-meeting-repo-'));
   const filePath = join(directory, 'meetings.json');

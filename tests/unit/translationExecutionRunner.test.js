@@ -145,10 +145,13 @@ test('Gemini provider failure persists safe quota diagnostics', async () => {
   const calls = [];
   const error = new GeminiHttpError({
     status: 429,
+    providerCode: 429,
     code: 'rate_limited',
     message: 'Gemini HTTP request failed: rate_limited (429).',
     providerStatus: 'RESOURCE_EXHAUSTED',
     providerMessage: 'Quota exceeded for API key AIza12345678901234567890.',
+    model: 'gemini-3.5-flash-lite',
+    requestConfig: { fields: [] },
     providerDetails: [
       {
         '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
@@ -162,8 +165,10 @@ test('Gemini provider failure persists safe quota diagnostics', async () => {
       }
     ]
   });
+  const diagnostics = [];
   const runner = createTranslationExecutionRunner({
     translationRepository: translationRepository({ calls }),
+    logger: (event) => diagnostics.push(event),
     translationExecutionProvider: {
       async execute() {
         throw error;
@@ -171,7 +176,9 @@ test('Gemini provider failure persists safe quota diagnostics', async () => {
     }
   });
 
-  await assert.rejects(runner.execute(runnerInput()), error);
+  await assert.rejects(runner.execute(runnerInput({
+    payload: { ...executionPayload(), operation: 'transcript_polishing' }
+  })), error);
 
   const failedExecution = calls
     .filter((call) => call[0] === 'updateTranslationExecution')
@@ -181,9 +188,12 @@ test('Gemini provider failure persists safe quota diagnostics', async () => {
     reason: 'provider_execution_failed',
     errorName: 'GeminiHttpError',
     code: 'rate_limited',
+    providerCode: 429,
     status: 429,
+    model: 'gemini-3.5-flash-lite',
     providerStatus: 'RESOURCE_EXHAUSTED',
     providerMessage: 'Quota exceeded for API key [redacted-api-key].',
+    requestConfig: { fields: [] },
     providerDetails: [
       {
         '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
@@ -198,6 +208,19 @@ test('Gemini provider failure persists safe quota diagnostics', async () => {
     ],
     message: 'Gemini HTTP request failed: rate_limited (429).'
   });
+  assert.deepEqual(diagnostics, [{
+    level: 'error',
+    event: 'transcript_polishing_provider_failed',
+    operation: 'transcript_polishing',
+    errorName: 'GeminiHttpError',
+    code: 'rate_limited',
+    providerCode: 429,
+    status: 429,
+    model: 'gemini-3.5-flash-lite',
+    providerStatus: 'RESOURCE_EXHAUSTED',
+    providerMessage: 'Quota exceeded for API key [redacted-api-key].',
+    requestConfig: { fields: [] }
+  }]);
 });
 
 test('provider is not called when persisting in_flight intent fails', async () => {

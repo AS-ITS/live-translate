@@ -15,7 +15,7 @@ export function createSubtitleCueRepository({ sessionRepository, meetingReposito
       }
       const existing = segment.checkpoint?.finalCues || [];
       const merged = mergeFinalCue(existing, normalized);
-      if (!merged.appended) return { cue: merged.cue, appended: false };
+      if (!merged.appended && !merged.updated) return { cue: merged.cue, appended: false };
       const updated = await meetingRepository.updateMeetingSegment(segment.withCheckpoint({
         ...(segment.checkpoint || {}),
         finalCues: merged.cues,

@@ -61,6 +61,25 @@ export function createFileSessionRepository({ filePath, fileSystem, now, idFacto
       });
     },
 
+    async updateTranscriptItem(sessionId, itemId, patch = {}) {
+      return mutate(async (storage) => {
+        const recordIndex = requireRecordIndex(storage.records, sessionId);
+        const items = storage.transcriptItems[sessionId] || [];
+        const itemIndex = items.findIndex((item) => item.id === itemId);
+        if (itemIndex < 0) return null;
+        const updatedItem = clonePlain({ ...items[itemIndex], ...patch, id: itemId, sessionId });
+        const nextItems = [...items];
+        nextItems[itemIndex] = updatedItem;
+        storage.transcriptItems[sessionId] = nextItems;
+        storage.records[recordIndex] = clonePlain(updateSessionRecordModel(
+          storage.records[recordIndex],
+          { transcriptSummary: summarizeTranscriptItems(nextItems) },
+          { now }
+        ));
+        return clonePlain(updatedItem);
+      });
+    },
+
     async finalizeSessionRecord(id, patch = {}) {
       return mutate(async (storage) => {
         const index = requireRecordIndex(storage.records, id);

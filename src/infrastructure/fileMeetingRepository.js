@@ -13,6 +13,8 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
   assertFileSystem(fileSystem);
 
   let mutationQueue = Promise.resolve();
+  let cachedStorage = null;
+  let storageReadPromise = null;
 
   const repository = {
     async createMeeting(meeting) {
@@ -29,7 +31,7 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
     },
 
     async getMeeting(meetingId) {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       const meeting = storage.meetings.find((stored) => stored.id === meetingId);
       return meeting ? new Meeting(meeting) : null;
     },
@@ -46,7 +48,7 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
     },
 
     async listMeetings() {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       return storage.meetings.map((meeting) => new Meeting(meeting));
     },
 
@@ -69,13 +71,13 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
     },
 
     async getMeetingSegment(segmentId) {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       const result = findSegmentById(storage, segmentId);
       return result ? new MeetingSegment(result.segment) : null;
     },
 
     async listMeetingSegments(meetingId) {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readCachedStorage();
       requireMeeting(storage, meetingId);
       return (storage.segments[meetingId] || []).map((segment) => new MeetingSegment(segment)).sort(compareSegments);
     },
@@ -109,14 +111,32 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
 
   function mutate(operation) {
     const nextMutation = mutationQueue.then(async () => {
-      const storage = await readStorage({ filePath, fileSystem });
+      const storage = await readMutableStorage();
       const result = await operation(storage);
       await writeStorage({ filePath, fileSystem, storage });
+      cachedStorage = storage;
       return result;
     });
 
     mutationQueue = nextMutation.catch(() => {});
     return nextMutation;
+  }
+
+  async function readCachedStorage() {
+    if (cachedStorage) return cachedStorage;
+    if (!storageReadPromise) {
+      storageReadPromise = readStorage({ filePath, fileSystem });
+    }
+    try {
+      cachedStorage = await storageReadPromise;
+      return cachedStorage;
+    } finally {
+      storageReadPromise = null;
+    }
+  }
+
+  async function readMutableStorage() {
+    return clonePlain(await readCachedStorage());
   }
 }
 

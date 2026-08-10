@@ -75,6 +75,22 @@ test('controller records start, pause, resume, and finalize chunks into one blob
   assert.equal(await finalized.blob.text(), 'firstsecond');
 });
 
+test('controller can track recording state without retaining MediaRecorder chunks', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    collectChunks: false
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-no-buffer' });
+  recorderInstances[0].emitChunk(new Blob(['discarded'], { type: 'audio/webm' }));
+  const state = await controller.cleanup({ discard: true });
+
+  assert.equal(state.status, 'idle');
+  assert.equal(state.blob, null);
+});
+
 test('controller methods are idempotent around empty pause, finalize, and cleanup', async () => {
   const controller = createMicrophoneRecordingController({
     MediaRecorderImpl: mockMediaRecorderClass(),

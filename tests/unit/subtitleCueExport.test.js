@@ -79,6 +79,13 @@ test('wraps language-aware subtitle lines without splitting protected tokens', (
   assert.ok(wrapped.includes('12.50 kg'));
 });
 
+test('does not apply CJK line limits to Latin text with a CJK language hint', () => {
+  assert.equal(
+    wrapSubtitleText("Actually,it's very right now.", 'zh-Hant'),
+    "Actually,it's very right now."
+  );
+});
+
 test('wraps each supported subtitle language to at most two configured lines', () => {
   const cases = [
     ['zh-Hant', '這是一段很長的繁體中文字幕，用兩行顯示。', 16],
@@ -96,6 +103,15 @@ test('wraps each supported subtitle language to at most two configured lines', (
     assert.ok(lines.every((line) => line.length <= maxChars), `${language} exceeded its line limit`);
     assert.equal(wrapped.replace(/\s/gu, ''), text.replace(/\s/gu, ''));
   }
+});
+
+test('keeps a short English phrase together when wrapping a long Cue', () => {
+  const wrapped = wrapSubtitleText(
+    'Microphone test,one,two,three,microphone test,one,two,three,Recording test.',
+    'en'
+  );
+
+  assert.equal(wrapped, 'Microphone test,one,two,three,\nmicrophone test,one,two,three,Recording test.');
 });
 
 test('exports Cue TXT in sequence order and preserves source/translation pairing', () => {

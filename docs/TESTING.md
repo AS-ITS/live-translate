@@ -24,6 +24,12 @@ Run transcript export unit tests:
 node --test tests/unit/transcriptExport.test.js
 ```
 
+Run transcript polishing unit tests:
+
+```bash
+node --test tests/unit/transcriptPolishing.test.js tests/unit/geminiTranscriptPolishingProvider.test.js
+```
+
 Run media device utility unit tests:
 
 ```bash

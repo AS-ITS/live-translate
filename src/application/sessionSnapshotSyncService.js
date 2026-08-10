@@ -25,7 +25,10 @@ function syncSnapshot(repository, existing, session, transcriptItems) {
   const apply = (detail) => {
     const knownItemIds = new Set((detail?.transcriptItems ?? []).map((item) => item.id));
     const appendResult = transcriptItems.reduce((previous, item) => {
-      if (knownItemIds.has(item.id)) return previous;
+      if (knownItemIds.has(item.id)) {
+        if (typeof repository.updateTranscriptItem !== 'function') return previous;
+        return mapMaybePromise(previous, () => repository.updateTranscriptItem(session.id, item.id, item));
+      }
       return mapMaybePromise(previous, () => repository.appendTranscriptItem(session.id, item));
     }, undefined);
 

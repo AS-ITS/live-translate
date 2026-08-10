@@ -81,7 +81,12 @@ function createEvent({ payload = {}, stream, eventType, text, providerEventId, e
     targetLanguageCode: payload.targetLanguageCode || context.targetLanguageCode || null,
     turnIndex: turnIndex ?? null,
     eventSequence: eventSequence ?? null,
-    sessionTimeMs
+    sessionTimeMs,
+    ...((stream === 'source' && context.inputTranscriptArrivedAfterBoundary)
+      || (stream === 'translation' && context.outputTranscriptArrivedAfterBoundary)
+      ? { isLateTranscript: true }
+      : {}),
+    ...(context.retranslationCueId ? { retranslationCueId: context.retranslationCueId } : {})
   };
 }
 

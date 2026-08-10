@@ -83,15 +83,27 @@ export function normalizeCueTimeline(cues = [], options = {}) {
 export function wrapSubtitleText(text, languageCode, options = {}) {
   const normalized = normalizeExportText(text);
   if (!normalized) return '';
-  const maxChars = options.maxChars ?? options.maxCharsByLanguage?.[languageCode] ?? DEFAULT_MAX_CHARS_BY_LANGUAGE[languageCode] ?? 40;
+  const effectiveLanguageCode = languageCodeForText(normalized, languageCode);
+  const maxChars = options.maxChars ?? options.maxCharsByLanguage?.[effectiveLanguageCode] ?? DEFAULT_MAX_CHARS_BY_LANGUAGE[effectiveLanguageCode] ?? 40;
   if (normalized.length <= maxChars) return normalized;
   const tokens = tokenizeForWrapping(normalized);
   const lines = [''];
 
-  for (const token of tokens) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
     const current = lines.at(-1);
     const separator = needsWordSeparator(current, token) ? ' ' : '';
     const candidate = `${current}${separator}${token}`;
+    const nextToken = tokens[index + 1];
+    if (current && lines.length < 2 && canKeepWordPairTogether(current, token, nextToken)) {
+      const pair = `${token}${needsWordSeparator(token, nextToken) ? ' ' : ''}${nextToken}`;
+      const pairCandidate = `${current}${separator}${pair}`;
+      if (pair.length <= maxChars && pairCandidate.length > maxChars) {
+        lines.push(pair);
+        index += 1;
+        continue;
+      }
+    }
     if (current && !isPunctuationToken(token) && candidate.length > maxChars && lines.length < 2) {
       lines.push(token);
       continue;
@@ -100,6 +112,13 @@ export function wrapSubtitleText(text, languageCode, options = {}) {
   }
 
   return lines.filter(Boolean).join('\n');
+}
+
+function languageCodeForText(text, languageCode) {
+  const cjkLanguage = ['zh-Hant', 'zh-Hans', 'ja', 'ko'].includes(languageCode);
+  const hasCjkScript = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
+  if (cjkLanguage && !hasCjkScript) return 'en';
+  return languageCode;
 }
 
 export function formatSrtTimestamp(milliseconds) {
@@ -211,6 +230,15 @@ function needsWordSeparator(current, token) {
 
 function isCjkToken(token) { return CJK_TOKEN.test(token); }
 function isPunctuationToken(token) { return /^[\p{P}\p{S}]+$/u.test(token); }
+function canKeepWordPairTogether(current, token, nextToken) {
+  return Boolean(
+    /[,;:!?，、；：]$/u.test(current)
+      && token
+      && nextToken
+      && WORD_TOKEN.test(token)
+      && WORD_TOKEN.test(nextToken)
+  );
+}
 
 function sameCuePayload(left, right) {
   return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);

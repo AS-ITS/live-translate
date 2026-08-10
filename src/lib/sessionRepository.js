@@ -60,6 +60,19 @@ export function createMemorySessionRepository(options = {}) {
       return cloneTranscriptItem(sessionItem);
     },
 
+    updateTranscriptItem(sessionId, itemId, patch = {}) {
+      const record = requireRecord(records, sessionId);
+      const items = transcriptItems.get(sessionId) || [];
+      const index = items.findIndex((item) => item.id === itemId);
+      if (index < 0) return null;
+      const updatedItem = cloneTranscriptItem({ ...items[index], ...patch, id: itemId, sessionId });
+      const nextItems = [...items];
+      nextItems[index] = updatedItem;
+      transcriptItems.set(sessionId, nextItems);
+      records.set(sessionId, cloneRecord(updateSessionRecordModel(record, { transcriptSummary: summarizeTranscriptItems(nextItems) }, options)));
+      return cloneTranscriptItem(updatedItem);
+    },
+
     finalizeSessionRecord(id, patch = {}) {
       const record = requireRecord(records, id);
       const items = transcriptItems.get(id) || [];

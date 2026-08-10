@@ -65,6 +65,20 @@ test('duplicate checkpoint chunks are idempotent', async () => {
   assert.equal(result.checkpoint.durableChunks.length, 1);
 });
 
+test('checkpoint updates an existing cue when a later merged payload only extends it', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting();
+  const baseCue = finalCue({ segmentId: segment.id, sourceText: '你好', translatedText: 'hello' });
+  const mergedCue = { ...baseCue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' };
+
+  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [baseCue] }) });
+  await service.updateCheckpoint({ meetingId: meeting.id, segmentId: segment.id, checkpoint: checkpoint({ finalCues: [mergedCue] }) });
+
+  const result = await service.getCheckpoint({ meetingId: meeting.id, segmentId: segment.id });
+  assert.deepEqual(result.checkpoint.finalCues, [mergedCue]);
+});
+
 test('checkpoint rejects conflicting idempotency keys and duplicate stream sequences', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);
@@ -423,6 +437,7 @@ function checkpoint(overrides = {}) {
   return {
     idempotencyKey: overrides.idempotencyKey ?? 'checkpoint-1',
     durableChunks: overrides.durableChunks ?? [],
+    ...(overrides.finalCues ? { finalCues: overrides.finalCues } : {}),
     pendingPartial: null
   };
 }
@@ -456,5 +471,23 @@ function chunk(overrides = {}) {
     sequence,
     text: overrides.text ?? 'text',
     timestamp: overrides.timestamp ?? 1000
+  };
+}
+
+function finalCue(overrides = {}) {
+  return {
+    cueId: 'cue:session-1:segment-1:1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sequence: 1,
+    startTimeMs: 0,
+    endTimeMs: 100,
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    sourceText: '你好',
+    translatedText: 'hello',
+    status: 'final',
+    finalizedReason: 'final',
+    ...overrides
   };
 }

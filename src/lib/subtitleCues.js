@@ -1,10 +1,9 @@
 const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
-const DEFAULT_MAX_CUE_CHARS = Object.freeze({
-  'zh-Hant': 32, 'zh-Hans': 32, ja: 36, ko: 44,
-  en: 80, es: 84, fr: 84, de: 76
-});
+const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
+export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
+export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
@@ -17,6 +16,11 @@ export function createSubtitleCueState(input = {}) {
       turnComplete: Boolean(input.pendingBoundary?.turnComplete),
       generationComplete: Boolean(input.pendingBoundary?.generationComplete)
     },
+    pendingBoundaryAtMs: Number.isFinite(input.pendingBoundaryAtMs) ? input.pendingBoundaryAtMs : null,
+    lastFinalizedCueId: input.lastFinalizedCueId || null,
+    lastFinalizedAtMs: Number.isFinite(input.lastFinalizedAtMs) ? input.lastFinalizedAtMs : null,
+    lastFinalizedStream: input.lastFinalizedStream || null,
+    lastFinalizedReason: input.lastFinalizedReason || null,
     nextSequence: Number.isInteger(input.nextSequence) && input.nextSequence > 0 ? input.nextSequence : 1,
     finalizedCueKeys: Array.isArray(input.finalizedCueKeys)
       ? [...input.finalizedCueKeys]
@@ -42,10 +46,10 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
 
   let eventState = marked;
   eventState = moveClosedCurrentCue(eventState, event);
-  const cumulativeFinalTarget = !eventState.currentCue && eventState.pendingCues.length === 0
-    ? findCumulativeFinalCue(eventState, event)
+  const revisionFinalTarget = !eventState.currentCue && eventState.pendingCues.length === 0
+    ? findFinalRevisionCue(eventState, event, options)
     : null;
-  if (cumulativeFinalTarget) return updateFinalCue(eventState, cumulativeFinalTarget, event);
+  if (revisionFinalTarget) return updateFinalCue(eventState, revisionFinalTarget, event);
   const lateSourceOnlyTarget = !eventState.currentCue && eventState.pendingCues.length === 0 && event.stream === 'translation'
     ? findLateSourceOnlyCue(eventState, event)
     : null;
@@ -57,30 +61,9 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   const cue = cueForState(next, target?.key || currentKey(next));
   if (!cue) return next;
 
-  const complete = isCueSubmittable(cue);
-  if (complete && exceedsLanguageCueLimit(cue, options)) {
-    const split = splitCompleteCue(next, cue, event, options);
-    if (split) return split;
-  }
-  const shouldFinalize = complete && (
-    event.isFinal || cue.turnCompleteSeen || cue.generationCompleteSeen || cue.retranslationRequested
-  );
-  if (shouldFinalize) return finalizeCue(next, cue, {
-    nowMs: event.sessionTimeMs,
-    reason: finalizeReason(event, cue, options),
-    minimumGapMs: options.minimumGapMs,
-    minimumCueDurationMs: options.minimumCueDurationMs
-  });
-
-  if (complete && exceedsLanguageCueLimit(cue, options)) {
-    // Keep the bilingual pair atomic when no safe, aligned split exists.
-    return finalizeCue(next, cue, {
-      nowMs: event.sessionTimeMs,
-      reason: 'length',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
+  // Transcript events, including provider-final events and punctuation, only
+  // update the pending bilingual pair. A boundary/idle/stop caller owns the
+  // decision to commit a complete Cue.
   return next;
 }
 
@@ -88,12 +71,16 @@ export function finalizePendingSubtitleCue(stateInput, options = {}) {
   const state = createSubtitleCueState(stateInput);
   const nowMs = resolveSessionTimeMs(options);
   if (!Number.isFinite(nowMs)) return stateInput;
-  const candidates = [state.currentCue, ...state.pendingCues].filter(isCueSubmittable);
+  const candidates = [state.currentCue, ...state.pendingCues]
+    .filter(isCueSubmittable)
+    .sort((left, right) => left.startTimeMs - right.startTimeMs);
   if (candidates.length === 0) return stateInput;
   let next = state;
   for (const cue of candidates) {
-    next = finalizeCue(next, cueForState(next, cue.key || stablePendingKey(cue)), {
-      nowMs,
+    const candidate = cueForState(next, cue.key || stablePendingKey(cue));
+    next = finalizeCue(next, candidate, {
+      ...options,
+      nowMs: cue.endTimeMs,
       reason: options.reason || 'flush',
       minimumGapMs: options.minimumGapMs,
       minimumCueDurationMs: options.minimumCueDurationMs
@@ -112,13 +99,26 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
 
   const cue = candidate.cue;
   if (isCueSubmittable(cue)) {
+    const boundaryAtMs = Number.isFinite(cue.boundaryAtMs)
+      ? cue.boundaryAtMs
+      : state.pendingBoundaryAtMs;
+    const idleOriginMs = Number.isFinite(boundaryAtMs) ? boundaryAtMs : cue.updatedTimeMs;
+    const debounceMs = Number.isFinite(options.debounceMs)
+      ? options.debounceMs
+      : DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
+    const boundaryReady = Boolean(options.force) || (
+      Number.isFinite(idleOriginMs) &&
+      Number.isFinite(options.sessionTimeMs) &&
+      options.sessionTimeMs >= idleOriginMs + debounceMs
+    );
+    if (!boundaryReady) {
+      return { state: stateInput, action: 'waiting-for-more-text' };
+    }
     return {
-      // Boundary is preferred, but some Live responses omit it after the
-      // paired transcript arrives. The Cue is already aggregated by Turn,
-      // so idle finalization is a safe fallback and will not split fragments.
       state: finalizeCue(state, cue, {
+        ...options,
         nowMs: options.sessionTimeMs,
-        reason: 'idle',
+        reason: cue.turnCompleteSeen ? 'turnComplete' : cue.generationCompleteSeen ? 'generationComplete' : 'idle',
         minimumGapMs: options.minimumGapMs,
         minimumCueDurationMs: options.minimumCueDurationMs
       }),
@@ -144,11 +144,35 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
 
 export function subtitleCuesForDisplay(stateInput) {
   const state = createSubtitleCueState(stateInput);
-  return [
-    ...state.finalCues,
-    ...state.pendingCues,
-    ...(state.currentCue ? [state.currentCue] : [])
-  ];
+  const preview = pendingCuePreview(state);
+  return preview ? [...state.finalCues, preview] : [...state.finalCues];
+}
+
+export function markNumericCorrectionRequested(stateInput, cueId) {
+  const state = createSubtitleCueState(stateInput);
+  const index = state.finalCues.findIndex((cue) => cue.cueId === cueId);
+  if (index < 0 || state.finalCues[index].numericCorrectionRequested) return stateInput;
+  const finalCues = [...state.finalCues];
+  finalCues[index] = { ...finalCues[index], numericCorrectionRequested: true };
+  return { ...state, finalCues };
+}
+
+function pendingCuePreview(state) {
+  const candidates = [state.currentCue, ...state.pendingCues]
+    .filter((cue) => cue && cue.status !== 'final')
+    .filter((cue) => normalizeText(cue.sourceText) || normalizeText(cue.translatedText))
+    .sort((left, right) => (right.updatedTimeMs || right.endTimeMs || 0) - (left.updatedTimeMs || left.endTimeMs || 0));
+  if (candidates.length === 0) return null;
+  return candidates.reduce((preview, cue) => ({
+    ...preview,
+    cueId: preview.cueId || cue.cueId,
+    sequence: Math.min(preview.sequence || cue.sequence, cue.sequence || preview.sequence),
+    startTimeMs: Math.min(preview.startTimeMs ?? cue.startTimeMs, cue.startTimeMs ?? preview.startTimeMs),
+    endTimeMs: Math.max(preview.endTimeMs ?? cue.endTimeMs, cue.endTimeMs ?? preview.endTimeMs),
+    sourceText: preview.sourceText || cue.sourceText || '',
+    translatedText: preview.translatedText || cue.translatedText || '',
+    status: 'partial'
+  }), {});
 }
 
 function normalizeEvent(event, options) {
@@ -188,10 +212,12 @@ function markEventProcessed(state, eventId) {
 }
 
 function applyBoundary(state, event, options) {
+  const nowMs = event.sessionTimeMs;
   const update = (cue) => cue ? {
     ...cue,
     turnCompleteSeen: cue.turnCompleteSeen || event.turnComplete,
-    generationCompleteSeen: cue.generationCompleteSeen || event.generationComplete
+    generationCompleteSeen: cue.generationCompleteSeen || event.generationComplete,
+    boundaryAtMs: nowMs
   } : cue;
   const hasExistingCue = Boolean(state.currentCue || state.pendingCues.length > 0);
   let next = {
@@ -203,56 +229,43 @@ function applyBoundary(state, event, options) {
       : {
         turnComplete: state.pendingBoundary.turnComplete || event.turnComplete,
         generationComplete: state.pendingBoundary.generationComplete || event.generationComplete
-      }
+      },
+    pendingBoundaryAtMs: hasExistingCue ? state.pendingBoundaryAtMs : nowMs
   };
-  const nowMs = event.sessionTimeMs;
-  const candidates = [next.currentCue, ...next.pendingCues].filter(isCueSubmittable)
-    .filter((cue) => cue.turnCompleteSeen || cue.generationCompleteSeen);
-  for (const cue of candidates) {
-    next = finalizeCue(next, cueForState(next, cue.key || stablePendingKey(cue)), {
-      nowMs,
-      reason: event.turnComplete ? 'turnComplete' : 'generationComplete',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
   return next;
 }
 
 function moveClosedCurrentCue(state, event) {
   const current = state.currentCue;
   if (!current) return state;
-  const sameSegment = !event.segmentId || !current.segmentId || event.segmentId === current.segmentId;
+  const sameScope = cueScopeMatchesEvent(current, event);
   const sameTurn = event.turnIndex !== null && current.turnIndex !== null && current.turnIndex === event.turnIndex;
-  if (!sameSegment || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
+  if (!sameScope || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
     return moveCueToNextState(state, current, event);
   }
 
-  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const currentText = normalizeText(current[field]);
-  if (!currentText || canContinueText(currentText, event.text)) return state;
+  if (Number.isFinite(current.boundaryAtMs) && event.sessionTimeMs > current.boundaryAtMs) {
+    const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+    const existing = normalizeText(current[field]);
+    const incoming = normalizeText(event.text);
+    const isSameUpdate = !existing || existing === incoming || existing.startsWith(incoming) || incoming.startsWith(existing);
+    // A late counterpart or cumulative revision remains paired with the
+    // boundary-marked Cue. A genuinely new stream value starts a new pending
+    // pair, without finalizing the old one.
+    if (!isSameUpdate && existing && event.stream === (current.sourceText ? 'source' : 'translation')) {
+      return moveCueToNextState(state, current, event);
+    }
+  }
 
-  // An incomplete same-stream transcript can still be a non-cumulative
-  // fragment of the current turn. Once that stream is already paired, or the
-  // provider marks the incoming text final, an unrelated value starts a new
-  // Cue instead of being appended to the previous one.
-  if (!event.isFinal && (
-    !isCueSubmittable(current) ||
-    looksLikeContinuationFragment(event.text)
-  )) return state;
-  return moveCueToNextState(state, current, event);
+  return state;
 }
 
 function moveCueToNextState(state, current, event) {
-  if (!isCueSubmittable(current)) {
-    return { ...state, currentCue: null, pendingCues: [...state.pendingCues, current] };
-  }
-  return finalizeCue(state, current, {
-    nowMs: event.sessionTimeMs,
-    reason: 'next',
-    minimumGapMs: DEFAULT_MINIMUM_GAP_MS,
-    minimumCueDurationMs: DEFAULT_MINIMUM_CUE_DURATION_MS
-  });
+  return {
+    ...state,
+    currentCue: null,
+    pendingCues: [...state.pendingCues, current]
+  };
 }
 
 function findPairingCue(state, event) {
@@ -264,69 +277,91 @@ function findPairingCue(state, event) {
 }
 
 function cueCanAcceptCurrentCue(cue, event) {
-  if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
+  if (!cueScopeMatchesEvent(cue, event)) return false;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   if (!cue[field]) return true;
-  if (!event.isFinal && looksLikeContinuationFragment(event.text)) return true;
-  if (!isCueSubmittable(cue) && !event.isFinal) return true;
-  return canContinueText(cue[field], event.text);
+  return true;
 }
 
-function canContinueText(currentText, incomingText) {
-  const current = normalizeText(currentText);
-  const incoming = normalizeText(incomingText);
-  return Boolean(current && incoming) && (
-    incoming.startsWith(current) ||
-    current.startsWith(incoming) ||
-    isRedundantTextUpdate(current, incoming)
-  );
-}
-
-function looksLikeContinuationFragment(text) {
-  return /[.!?。！？]$/u.test(normalizeText(text));
-}
-
-function findCumulativeFinalCue(state, event) {
+function findFinalRevisionCue(state, event, options = {}) {
+  const correctionTarget = findNumericCorrectionCue(state, event);
+  if (correctionTarget) return correctionTarget;
+  const index = state.finalCues.length - 1;
+  const cue = state.finalCues[index];
+  if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
+    || !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason)
+    || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
-    const cue = state.finalCues[index];
-    if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
-    const previousText = normalizeText(cue[field]);
-    if (previousText && event.text.length > previousText.length && event.text.startsWith(previousText)) {
-      return { index, cue };
-    }
-  }
-  return null;
+  if (normalizeText(cue[field]) === normalizeText(event.text)) return null;
+  if (endsSentence(cue[field])) return null;
+  if (state.lastFinalizedStream === event.stream && endsSentence(event.text)) return null;
+  return { index, cue };
+}
+
+function findNumericCorrectionCue(state, event) {
+  if (!event.retranslationCueId || event.stream !== 'translation') return null;
+  const index = state.finalCues.findIndex((cue) => cue.cueId === event.retranslationCueId);
+  return index >= 0 ? { index, cue: state.finalCues[index], replace: true } : null;
+}
+
+function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
+  if (state.lastFinalizedCueId && state.lastFinalizedCueId !== cue.cueId) return false;
+  if (state.lastFinalizedStream && state.lastFinalizedStream !== 'source' && state.lastFinalizedStream !== 'translation') return false;
+  if (!cueScopeMatchesEvent(cue, event)) return false;
+  if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
+  const windowMs = Number.isFinite(options.finalCueRevisionWindowMs)
+    ? options.finalCueRevisionWindowMs
+    : DEFAULT_FINAL_CUE_REVISION_WINDOW_MS;
+  const finalizedAtMs = Number.isFinite(state.lastFinalizedAtMs) ? state.lastFinalizedAtMs : cue.endTimeMs;
+  return Number.isFinite(event.sessionTimeMs) && event.sessionTimeMs >= finalizedAtMs && event.sessionTimeMs <= finalizedAtMs + windowMs;
 }
 
 function findLateSourceOnlyCue(state, event) {
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
     if (cue.translatedText || !cue.sourceText || !cue.retranslationRequested) continue;
-    if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) continue;
+    if (!cueScopeMatchesEvent(cue, event)) continue;
     if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
     return { index, cue };
   }
   return null;
 }
 
+function cueScopeMatchesEvent(cue, event) {
+  return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
+    !event[field] || !cue[field] || event[field] === cue[field]
+  ));
+}
+
 function updateFinalCue(state, target, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const finalCues = [...state.finalCues];
+  const nextText = target.replace
+    ? normalizeText(event.text)
+    : mergeCueText(target.cue[field], event.text, event);
   finalCues[target.index] = {
     ...target.cue,
-    [field]: event.text,
+    [field]: nextText,
     ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(target.cue.endTimeMs, event.sessionTimeMs),
-    updatedTimeMs: event.sessionTimeMs
+    updatedTimeMs: event.sessionTimeMs,
+    finalizedReason: target.replace ? 'numeric-correction' : 'merged',
+    ...(target.replace ? { numericCorrectionRequested: false } : {})
   };
-  return { ...state, finalCues };
+  return {
+    ...state,
+    finalCues,
+    lastFinalizedCueId: target.cue.cueId,
+    lastFinalizedAtMs: event.sessionTimeMs,
+    lastFinalizedStream: event.stream,
+    lastFinalizedReason: 'merged'
+  };
 }
 
 function cueCanAccept(cue, event) {
-  if (event.segmentId && cue.segmentId && event.segmentId !== cue.segmentId) return false;
+  if (!cueScopeMatchesEvent(cue, event)) return false;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   return !cue[field] || event.text.startsWith(cue[field]) || cue[field].startsWith(event.text) || isRedundantTextUpdate(cue[field], event.text);
@@ -338,22 +373,27 @@ function isRedundantTextUpdate(currentText, incomingText) {
   return incoming.length > 0 && incoming.length < current.length && current.endsWith(incoming);
 }
 
-function mergeCueText(currentText, incomingText) {
+function mergeCueText(currentText, incomingText, context = {}) {
   const current = normalizeText(currentText);
   const incoming = normalizeText(incomingText);
   if (!current) return incoming;
   if (!incoming || current === incoming || current.startsWith(incoming)) return current;
   if (incoming.startsWith(current)) return incoming;
   if (isRedundantTextUpdate(current, incoming)) return current;
-  return `${current}${needsTextSeparator(current, incoming) ? ' ' : ''}${incoming}`;
+  return `${current}${needsTextSeparator(current, incoming, context) ? ' ' : ''}${incoming}`;
 }
 
-function needsTextSeparator(currentText, incomingText) {
-  if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(currentText)
+function needsTextSeparator(currentText, incomingText, context = {}) {
+  if (containsCjk(currentText)
     && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
     return false;
   }
-  return /[\p{L}\p{N}_)]$/u.test(currentText) && /^[\p{L}\p{N}_([@]/u.test(incomingText);
+  if (/^[\s\p{P}\p{S}]/u.test(incomingText)) return false;
+  if (/(?:interim|fragment)/iu.test(String(context.eventType || ''))
+    || (/^[A-Za-z]+$/u.test(currentText) && /^[a-z]+$/u.test(incomingText) && currentText.length <= 4)) {
+    return false;
+  }
+  return /\S$/u.test(currentText);
 }
 
 function isCueSubmittable(cue) {
@@ -376,20 +416,26 @@ function addCue(state, event) {
     translatedText: event.stream === 'translation' ? event.text : '',
     status: 'partial',
     updatedTimeMs: event.sessionTimeMs,
+    providerEventSequence: Number.isFinite(event.eventSequence) ? event.eventSequence : null,
+    boundaryAtMs: event.turnComplete || event.generationComplete
+      ? event.sessionTimeMs
+      : state.pendingBoundaryAtMs,
     turnCompleteSeen: event.turnComplete || state.pendingBoundary.turnComplete,
     generationCompleteSeen: event.generationComplete || state.pendingBoundary.generationComplete
   };
   return {
     ...state,
     currentCue: cue,
-    pendingBoundary: { turnComplete: false, generationComplete: false }
+    nextSequence: Math.max(state.nextSequence, cue.sequence + 1),
+    pendingBoundary: { turnComplete: false, generationComplete: false },
+    pendingBoundaryAtMs: null
   };
 }
 
 function updateCue(state, target, event) {
   const cue = target.cue;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const nextText = mergeCueText(cue[field], event.text);
+  const nextText = mergeCueText(cue[field], event.text, event);
   const updated = {
     ...cue,
     [field]: nextText,
@@ -397,7 +443,13 @@ function updateCue(state, target, event) {
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(cue.endTimeMs, event.sessionTimeMs),
     updatedTimeMs: event.sessionTimeMs,
+    providerEventSequence: Number.isFinite(event.eventSequence)
+      ? event.eventSequence
+      : cue.providerEventSequence,
     status: 'partial',
+    boundaryAtMs: event.turnComplete || event.generationComplete
+      ? event.sessionTimeMs
+      : cue.boundaryAtMs,
     turnCompleteSeen: cue.turnCompleteSeen || event.turnComplete,
     generationCompleteSeen: cue.generationCompleteSeen || event.generationComplete
   };
@@ -445,14 +497,16 @@ function removeCandidate(state, candidate) {
 
 function currentKey(state) { return state.currentCue ? 'current' : null; }
 
-function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurationMs }) {
+function finalizeCue(state, cue, options = {}) {
   if (!cue || !isCueSubmittable(cue)) return state;
+  const { nowMs, reason, minimumGapMs, minimumCueDurationMs } = options;
   const previousEnd = state.finalCues.at(-1)?.endTimeMs;
   const gapMs = Number.isFinite(minimumGapMs) ? Math.max(0, minimumGapMs) : DEFAULT_MINIMUM_GAP_MS;
   const minimumDurationMs = Number.isFinite(minimumCueDurationMs)
     ? Math.max(0, minimumCueDurationMs) : DEFAULT_MINIMUM_CUE_DURATION_MS;
+  const observedEndTimeMs = Math.max(cue.endTimeMs, Number.isFinite(nowMs) ? nowMs : cue.endTimeMs);
   const startTimeMs = Math.max(cue.startTimeMs, Number.isFinite(previousEnd) ? previousEnd + gapMs : cue.startTimeMs);
-  const endTimeMs = Math.max(cue.endTimeMs, Number.isFinite(nowMs) ? nowMs : cue.endTimeMs, startTimeMs + minimumDurationMs);
+  const endTimeMs = Math.max(observedEndTimeMs, startTimeMs + minimumDurationMs);
   const finalCue = {
     ...cue,
     sourceText: normalizeText(cue.sourceText),
@@ -460,8 +514,34 @@ function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurati
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };
+  const previousCue = state.finalCues.at(-1);
+  const mergedCue = mergeAdjacentFinalCues(previousCue, finalCue, {
+    ...options,
+    observedEndTimeMs
+  });
+  if (mergedCue) {
+    const previousKey = stableCueKey(previousCue);
+    const mergedKey = stableCueKey(mergedCue);
+    return {
+      ...state,
+      finalCues: [...state.finalCues.slice(0, -1), mergedCue],
+      finalizedCueKeys: [...new Set([...state.finalizedCueKeys, previousKey, stableCueKey(finalCue), mergedKey])],
+      nextSequence: Math.max(state.nextSequence, cue.sequence + 1),
+      lastFinalizedCueId: mergedCue.cueId,
+      lastFinalizedAtMs: Number.isFinite(nowMs) ? nowMs : mergedCue.endTimeMs,
+      lastFinalizedStream: options.stream || null,
+      lastFinalizedReason: mergedCue.finalizedReason,
+      currentCue: state.currentCue?.cueId === cue.cueId ? null : state.currentCue,
+      pendingCues: state.pendingCues.filter((item) => item.cueId !== cue.cueId)
+    };
+  }
   const cueKey = stableCueKey(finalCue);
-  let next = state;
+  let next = {
+    ...state,
+    currentCue: state.currentCue?.cueId === cue.cueId ? null : state.currentCue,
+    pendingCues: state.pendingCues.filter((item) => item.cueId !== cue.cueId),
+    nextSequence: cue.sequence
+  };
   if (!state.finalizedCueKeys.includes(cueKey)) {
     next = {
       ...next,
@@ -470,8 +550,56 @@ function finalizeCue(state, cue, { nowMs, reason, minimumGapMs, minimumCueDurati
     };
   }
   next = { ...next, nextSequence: Math.max(next.nextSequence, cue.sequence + 1) };
+  next = {
+    ...next,
+    lastFinalizedCueId: finalCue.cueId,
+    lastFinalizedAtMs: Number.isFinite(nowMs) ? nowMs : finalCue.endTimeMs,
+    lastFinalizedStream: options.stream || null,
+    lastFinalizedReason: finalCue.finalizedReason
+  };
   if (next.currentCue?.cueId === cue.cueId) return { ...next, currentCue: null };
   return { ...next, pendingCues: next.pendingCues.filter((item) => item.cueId !== cue.cueId) };
+}
+
+function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
+  if (!previousCue || !canMergeAdjacentFinalCues(previousCue, nextCue, options)) return null;
+  return {
+    ...previousCue,
+    sourceText: mergeCueText(previousCue.sourceText, nextCue.sourceText),
+    translatedText: mergeCueText(previousCue.translatedText, nextCue.translatedText),
+    endTimeMs: Math.max(previousCue.endTimeMs, options.observedEndTimeMs || nextCue.endTimeMs),
+    updatedTimeMs: Math.max(previousCue.updatedTimeMs || 0, nextCue.updatedTimeMs || 0),
+    finalizedReason: nextCue.finalizedReason === 'length' ? 'length' : 'merged'
+  };
+}
+
+function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
+  if (previousCue.status !== 'final' || nextCue.status !== 'final') return false;
+  if (previousCue.finalizedReason === 'length' || nextCue.finalizedReason === 'length') return false;
+  if (previousCue.sessionId && nextCue.sessionId && previousCue.sessionId !== nextCue.sessionId) return false;
+  if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
+  if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
+  if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
+  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)
+    || endsSentence(nextCue.sourceText) || endsSentence(nextCue.translatedText)) return false;
+
+  const gapMs = Math.max(0, nextCue.startTimeMs - previousCue.endTimeMs);
+  if (gapMs > DEFAULT_ADJACENT_CUE_MAX_GAP_MS) return false;
+
+  const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
+  const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
+  // Cue boundaries come from the provider turn/sentence lifecycle. Do not
+  // invent a second boundary merely because a language-specific character
+  // budget was reached.
+  return Boolean(sourceText && translatedText);
+}
+
+function containsCjk(text) {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
+}
+
+function endsSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(normalizeText(text));
 }
 
 function resolveSessionTimeMs(input = {}) {
@@ -486,148 +614,17 @@ function resolveSessionTimeMs(input = {}) {
 
 function deltaAfterFinalCues(event, options) {
   const text = String(event.text || '');
+  // Final transcript events close a provider turn. A later turn may legally
+  // repeat the same number or phrase as the completed history, so treating a
+  // final event as a cumulative history update would discard real speech.
+  // History-prefix removal is only safe for non-final cumulative updates.
+  if (event.isFinal) return text;
   const finalCues = Array.isArray(options.finalCues) ? options.finalCues : [];
   const values = event.stream === 'source' ? finalCues.map((cue) => cue.sourceText) : finalCues.map((cue) => cue.translatedText);
   if (values.length < 2) return text;
   const prefixes = [values.join(' '), values.join('')].filter(Boolean);
   const prefix = prefixes.find((candidate) => text.length > candidate.length && text.startsWith(candidate));
   return prefix ? text.slice(prefix.length) : text;
-}
-
-function finalizeReason(event, cue, options) {
-  if (event.isFinal) return 'final';
-  if (event.turnComplete || cue.turnCompleteSeen) return 'turnComplete';
-  if (event.generationComplete || cue.generationCompleteSeen) return 'generationComplete';
-  if (exceedsLanguageCueLimit(cue, options)) return 'length';
-  return 'final';
-}
-
-function exceedsLanguageCueLimit(cue, options) {
-  const sourceLimit = languageCueLimit(cue?.sourceLanguageCode || options.sourceLanguageCode, options);
-  const translationLimit = languageCueLimit(cue?.targetLanguageCode || options.targetLanguageCode, options);
-  return normalizeText(cue?.sourceText).length > sourceLimit || normalizeText(cue?.translatedText).length > translationLimit;
-}
-
-function splitCompleteCue(state, cue, event, options) {
-  const sourceLimit = languageCueLimit(cue.sourceLanguageCode || options.sourceLanguageCode, options);
-  const translationLimit = languageCueLimit(cue.targetLanguageCode || options.targetLanguageCode, options);
-  const sourceParts = splitCueText(cue.sourceText, sourceLimit);
-  const translationParts = splitCueText(cue.translatedText, translationLimit);
-  // Keep the bilingual Cue atomic when only one side has a safe split. This
-  // prevents a source fragment from becoming a source-only export Cue, or a
-  // short translation from being duplicated across multiple source Cues.
-  if (sourceParts.length < 2 || translationParts.length < 2) return null;
-  const partCount = Math.max(sourceParts.length, translationParts.length);
-  if (partCount < 2) return null;
-
-  const alignedSource = alignParts(sourceParts, partCount);
-  const alignedTranslation = alignParts(translationParts, partCount);
-  if (!alignedSource || !alignedTranslation || alignedSource.length !== alignedTranslation.length) return null;
-
-  let next = state;
-  for (let index = 0; index < alignedSource.length; index += 1) {
-    const sequence = next.nextSequence;
-    const partCue = {
-      ...cue,
-      cueId: cueIdFor({ sessionId: cue.sessionId || cue.liveSessionId, segmentId: cue.segmentId, sequence }),
-      sequence,
-      sourceText: alignedSource[index],
-      translatedText: alignedTranslation[index],
-      startTimeMs: cue.startTimeMs,
-      endTimeMs: Math.max(cue.endTimeMs, event.sessionTimeMs),
-      status: 'partial'
-    };
-    next = finalizeCue(next, partCue, {
-      nowMs: event.sessionTimeMs,
-      reason: 'length',
-      minimumGapMs: options.minimumGapMs,
-      minimumCueDurationMs: options.minimumCueDurationMs
-    });
-  }
-  return next;
-}
-
-function languageCueLimit(languageCode, options) {
-  if (Number.isInteger(options.maxCueChars)) return options.maxCueChars;
-  return DEFAULT_MAX_CUE_CHARS[languageCode] || DEFAULT_MAX_CUE_CHARS.en;
-}
-
-function splitCueText(text, maxChars) {
-  const normalized = normalizeText(text);
-  if (!normalized || normalized.length <= maxChars) return [normalized];
-
-  const parts = [];
-  let remaining = normalized;
-  while (remaining.length > maxChars) {
-    const boundary = safeBoundaryBefore(remaining, maxChars);
-    if (!boundary) return [normalized];
-    parts.push(remaining.slice(0, boundary).trim());
-    remaining = remaining.slice(boundary).trim();
-  }
-  if (remaining) parts.push(remaining);
-  return parts.filter(Boolean);
-}
-
-function safeBoundaryBefore(text, maxChars) {
-  const protectedRanges = protectedTokenRanges(text);
-  const isSafe = (position) => position > 0 && !protectedRanges.some(([start, end]) => position > start && position < end);
-  const candidates = { sentence: [], clause: [], word: [], character: [] };
-  const characters = Array.from(text);
-  let offset = 0;
-  for (const character of characters) {
-    offset += character.length;
-    if (offset > maxChars) break;
-    if (!isSafe(offset)) continue;
-    if (/[。！？.!?]/u.test(character)) candidates.sentence.push(offset);
-    else if (/[，,、；;：:]/u.test(character)) candidates.clause.push(offset);
-    else if (/\s/u.test(character)) candidates.word.push(offset);
-    else if (isCjkCharacter(character)) candidates.character.push(offset);
-  }
-  for (const kind of ['sentence', 'clause', 'word', 'character']) {
-    if (candidates[kind].length) return candidates[kind].at(-1);
-  }
-
-  const tokenEnd = protectedRanges.find(([, end]) => end > maxChars)?.[1];
-  return tokenEnd && tokenEnd < text.length ? tokenEnd : null;
-}
-
-function protectedTokenRanges(text) {
-  const ranges = [];
-  const pattern = /https?:\/\/[^\s]+|www\.[^\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\d+(?:[.,]\d+)+(?:\s*[A-Za-z%°]+)?|\d{1,4}[./-]\d{1,4}(?:[./-]\d{1,4})?|\d+(?:\.\d+)?\s*[A-Za-z%°]+/giu;
-  for (const match of text.matchAll(pattern)) ranges.push([match.index, match.index + match[0].length]);
-  return ranges;
-}
-
-function isCjkCharacter(character) {
-  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(character);
-}
-
-function alignParts(parts, count) {
-  if (!Array.isArray(parts) || parts.length === 0) return null;
-  const aligned = [...parts];
-  while (aligned.length < count) {
-    const splitIndex = aligned.reduce((longest, part, index) => (
-      part.length > aligned[longest].length ? index : longest
-    ), 0);
-    const part = aligned[splitIndex];
-    const pieces = splitCueText(part, Math.max(1, Math.ceil(part.length / (count - aligned.length + 1))));
-    if (pieces.length < 2) return null;
-    const separator = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(pieces[0]) ? '' : ' ';
-    aligned.splice(splitIndex, 1, pieces[0], pieces.slice(1).join(separator));
-  }
-  while (aligned.length > count) {
-    let mergeIndex = 0;
-    let shortest = Number.POSITIVE_INFINITY;
-    for (let index = 0; index < aligned.length - 1; index += 1) {
-      const length = aligned[index].length + aligned[index + 1].length;
-      if (length < shortest) {
-        shortest = length;
-        mergeIndex = index;
-      }
-    }
-    aligned.splice(mergeIndex, 2, `${aligned[mergeIndex]}${aligned[mergeIndex + 1]}`.trim());
-  }
-  return aligned.length === count ? aligned : null;
 }
 
 function isPunctuationOnly(text) { return /^[\s。！？.!?，,、；;：:]+$/u.test(text); }

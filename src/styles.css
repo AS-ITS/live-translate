@@ -504,7 +504,8 @@ input:disabled {
 .cue-source,
 .cue-translation {
   display: block;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
+  word-break: normal;
   -webkit-box-orient: vertical;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -580,6 +581,59 @@ input:disabled {
   border-radius: 8px;
   padding: 20px;
   background: #ffffff;
+}
+
+.transcript-polishing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  color: #475569;
+  background: #f8fafc;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.transcript-polishing-badge-running,
+.transcript-polishing-badge-dirty {
+  border-color: #c4b5fd;
+  color: #5b21b6;
+  background: #f5f3ff;
+}
+
+.transcript-polishing-badge-completed {
+  border-color: #a7f3d0;
+  color: #047857;
+  background: #ecfdf5;
+}
+
+.transcript-polishing-badge-failed {
+  border-color: #fecaca;
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.polishing-retry-button {
+  min-height: 0;
+  padding: 2px 6px;
+  border-color: currentColor;
+  color: inherit;
+  background: transparent;
+  font-size: 0.75rem;
+}
+
+.transcript-polishing-badge[title] {
+  cursor: help;
+}
+
+.transcript-status {
+  margin: 0.25rem 0 0;
+  color: var(--muted-text, #64748b);
+  font-size: 0.875rem;
 }
 
 .transcript-panel h2 {

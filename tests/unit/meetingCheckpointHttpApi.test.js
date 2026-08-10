@@ -233,6 +233,27 @@ test('checkpoint conflict returns HTTP 409', async () => {
   assert.equal(response.json().error.code, 'checkpoint_conflict');
 });
 
+test('checkpoint accepts a monotonic merged Cue update', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const url = `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`;
+  const cue = finalCue({ segmentId: segment.id });
+
+  await request(handler, { method: 'PUT', url, body: JSON.stringify(checkpoint({ meetingId: meeting.id, segmentId: segment.id, finalCues: [cue] })) });
+  const response = await request(handler, {
+    method: 'PUT',
+    url,
+    body: JSON.stringify(checkpoint({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      finalCues: [{ ...cue, sourceText: '你好世界', translatedText: 'hello world', endTimeMs: 200, finalizedReason: 'merged' }]
+    }))
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().checkpoint.finalCues[0].sourceText, '你好世界');
+});
+
 test('POST /api/meetings/:meetingId/segments/:segmentId/rollover creates next segment', async () => {
   const handler = createHandler();
   const { meeting, segment } = (await request(handler, {
@@ -405,13 +426,32 @@ function sessionReadController() {
   };
 }
 
-function checkpoint({ meetingId, segmentId, durableChunks = [] }) {
+function checkpoint({ meetingId, segmentId, durableChunks = [], finalCues = [] }) {
   return {
     idempotencyKey: 'checkpoint-1',
     durableChunks,
+    ...(finalCues.length > 0 ? { finalCues } : {}),
     pendingPartial: null,
     meetingId,
     segmentId
+  };
+}
+
+function finalCue(overrides = {}) {
+  return {
+    cueId: 'cue:session-1:segment-1:1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sequence: 1,
+    startTimeMs: 0,
+    endTimeMs: 100,
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    sourceText: '你好',
+    translatedText: 'hello',
+    status: 'final',
+    finalizedReason: 'final',
+    ...overrides
   };
 }
 

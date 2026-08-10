@@ -65,6 +65,45 @@ test('meeting checkpoint sync coordinator retains chunks after failure and retri
   assert.deepEqual(errors, ['checkpoint failed']);
 });
 
+test('meeting checkpoint sync coordinator retries transient failures in the background', async () => {
+  const calls = [];
+  const timers = [];
+  let failuresRemaining = 1;
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (failuresRemaining > 0) {
+        failuresRemaining -= 1;
+        const error = new Error('temporarily unavailable');
+        error.status = 503;
+        throw error;
+      }
+    },
+    delayMs: 0,
+    retryDelayMs: 10,
+    setTimeoutFn: (callback) => {
+      timers.push(callback);
+      return callback;
+    },
+    clearTimeoutFn: (timer) => {
+      const index = timers.indexOf(timer);
+      if (index >= 0) timers.splice(index, 1);
+    }
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk()]);
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.equal(timers.length, 1);
+  timers.shift()();
+  await coordinator.flush();
+
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0].durableChunks, calls[1].durableChunks);
+});
+
 test('meeting checkpoint sync coordinator flushes immediately on stop', async () => {
   const calls = [];
   const clearedTimers = [];
@@ -81,6 +120,57 @@ test('meeting checkpoint sync coordinator flushes immediately on stop', async ()
 
   assert.equal(clearedTimers.length, 1);
   assert.equal(calls.length, 1);
+});
+
+test('queued flush from an old segment is ignored after a new segment starts', async () => {
+  const calls = [];
+  let resolveFirstUpdate;
+  const firstUpdate = new Promise((resolve) => { resolveFirstUpdate = resolve; });
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (calls.length === 1) await firstUpdate;
+    },
+    delayMs: 0,
+    setTimeoutFn: (callback) => callback,
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'old', segmentId: 'segment-1' })]);
+  const oldFlush = coordinator.flush();
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'new', segmentId: 'segment-2', text: 'new' })]);
+  resolveFirstUpdate();
+  await oldFlush;
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].segmentId, 'segment-2');
+  assert.deepEqual(calls[0].durableChunks.map((item) => item.idempotencyKey), ['new']);
+});
+
+test('segment filtering keeps old chunks and cues out of the current payload', async () => {
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'old', segmentId: 'segment-1' })]);
+  coordinator.enqueueCues([{ cueId: 'old-cue', segmentId: 'segment-1', status: 'final', sequence: 0 }], { nextSequence: 1 });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-2' });
+  coordinator.enqueue([chunk({ idempotencyKey: 'new', segmentId: 'segment-2', text: 'new' })]);
+  coordinator.enqueueCues([{ cueId: 'new-cue', segmentId: 'segment-2', status: 'final', sequence: 0 }], { nextSequence: 2 });
+
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].durableChunks.map((item) => item.segmentId), ['segment-2']);
+  assert.deepEqual(calls[0].finalCues.map((item) => item.segmentId), ['segment-2']);
+  assert.deepEqual(calls[0].cueCheckpoint, { nextSequence: 2 });
 });
 
 test('checkpointChunksForTranscriptItems maps final transcript items only', () => {
@@ -119,8 +209,8 @@ test('checkpointChunksForTranscriptItems maps final transcript items only', () =
 function chunk(overrides = {}) {
   return {
     idempotencyKey: overrides.idempotencyKey ?? 'chunk-source-0',
-    meetingId: 'meeting-1',
-    segmentId: 'segment-1',
+    meetingId: overrides.meetingId ?? 'meeting-1',
+    segmentId: overrides.segmentId ?? 'segment-1',
     stream: overrides.stream ?? 'source',
     sequence: overrides.sequence ?? 0,
     text: overrides.text ?? 'hello',

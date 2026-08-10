@@ -264,7 +264,12 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
   const mergedCues = [...existingCues];
   for (const cue of incoming.finalCues) {
     const result = mergeFinalCue(mergedCues, cue);
-    if (result.appended) mergedCues.push(result.cue);
+    if (result.updated) {
+      const index = mergedCues.findIndex((existingCue) => existingCue.cueId === result.cue.cueId);
+      if (index >= 0) mergedCues[index] = result.cue;
+    } else if (result.appended) {
+      mergedCues.push(result.cue);
+    }
   }
   for (const cue of mergedCues) {
     if (cue.segmentId !== segmentId) invalid();

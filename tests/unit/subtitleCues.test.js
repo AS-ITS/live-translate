@@ -8,6 +8,7 @@ import {
   resetSubtitleCueState,
   subtitleCuesForDisplay
 } from '../../src/lib/subtitleCues.js';
+import { missingNumericIntegrity } from '../../src/lib/numericIntegrity.js';
 import { normalizeGeminiLiveCueEvents } from '../../src/lib/geminiLiveCueEvent.js';
 
 test('aggregates source and translation partials into one pending cue', () => {
@@ -21,21 +22,60 @@ test('aggregates source and translation partials into one pending cue', () => {
   assert.equal(state.currentCue.translatedText, 'bonjour le monde');
   assert.equal(state.currentCue.status, 'partial');
   assert.equal(state.currentCue.sequence, 1);
-  assert.equal(state.nextSequence, 1);
+  assert.equal(state.nextSequence, 2);
 });
 
-test('sentence punctuation does not finalize a short cue before provider completion', () => {
+test('polishing data cannot mutate canonical Cue source or translation', () => {
+  const state = {
+    ...createSubtitleCueState(),
+    finalCues: [{
+      cueId: 'cue-1', sequence: 1, status: 'final', sourceText: '常會議',
+      translatedText: 'The regular meeting.'
+    }]
+  };
+
+  assert.equal(state.finalCues[0].sourceText, '常會議');
+  assert.equal(state.finalCues[0].translatedText, 'The regular meeting.');
+});
+
+test('keeps fragmented words and CJK fragments in one pending pair', () => {
+  let state = createSubtitleCueState();
+  for (const event of [
+    baseEvent({ stream: 'source', text: '因為我6', sessionTimeMs: 100, isFinal: true }),
+    baseEvent({ stream: 'source', text: '點多才會回來。', sessionTimeMs: 120, isFinal: true }),
+    baseEvent({ stream: 'translation', text: 'because I will return.', sessionTimeMs: 140, isFinal: true })
+  ]) state = applySubtitleCueEvent(state, event);
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.sourceText, '因為我6點多才會回來。');
+
+  state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'tomo', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'rrow', sessionTimeMs: 110 }));
+  assert.equal(state.currentCue.sourceText, 'tomorrow');
+});
+
+test('does not finalize or slice a paired cue at max length without a safe boundary', () => {
+  let state = createSubtitleCueState();
+  const options = { maxCueChars: 5 };
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'one two three four', sessionTimeMs: 100, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '一二三四五六', sessionTimeMs: 110, isFinal: true }), options);
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.sourceText, 'one two three four');
+  state = finalizePendingSubtitleCue(state, { ...options, sessionTimeMs: 200, reason: 'stop' });
+  assert.equal(state.finalCues[0].sourceText, 'one two three four');
+});
+
+test('sentence punctuation stays pending until an explicit flush', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Hello', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Hello world.', sessionTimeMs: 200 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Bonjour le monde.', sessionTimeMs: 260 }));
 
   assert.equal(state.finalCues.length, 0);
-  assert.equal(state.currentCue.sourceText, 'Hello world.');
-  assert.equal(state.currentCue.translatedText, 'Bonjour le monde.');
-
-  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 400 });
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'turnComplete' });
+  assert.equal(state.finalCues.length, 1);
   assert.equal(state.currentCue, null);
+
   assert.deepEqual(state.finalCues.map(({ sourceText, translatedText, finalizedReason }) => ({
     sourceText, translatedText, finalizedReason
   })), [{
@@ -43,6 +83,256 @@ test('sentence punctuation does not finalize a short cue before provider complet
     translatedText: 'Bonjour le monde.',
     finalizedReason: 'turnComplete'
   }]);
+});
+
+test('buffers short Chinese fragments until a complete paired sentence is available', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-1', stream: 'source', text: '資料，今天才', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-1', stream: 'translation', text: 'Data, only today', sessionTimeMs: 110 }));
+  assert.equal(state.finalCues.length, 0);
+
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-2', stream: 'source', text: '有資料才給他的。', sessionTimeMs: 200 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-2', stream: 'translation', text: 'will be given to him.', sessionTimeMs: 210 }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'turnComplete' });
+
+  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => ({ sourceText, translatedText })), [{
+    sourceText: '資料，今天才有資料才給他的。',
+    translatedText: 'Data, only today will be given to him.'
+  }]);
+});
+
+test('turnComplete uses debounce and finalizes a short Chinese fragment after idle', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: '資料，今天才', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Data, only today', sessionTimeMs: 110 }));
+  state = applySubtitleCueEvent(state, { eventId: 'boundary', turnComplete: true, sessionTimeMs: 200 });
+  const candidate = state.currentCue || state.pendingCues[0];
+
+  assert.equal(resolveIdleSubtitleCue(state, {
+    cueId: candidate.cueId,
+    updatedTimeMs: candidate.updatedTimeMs,
+    sessionTimeMs: 899
+  }).action, 'waiting-for-more-text');
+  assert.equal(resolveIdleSubtitleCue(state, {
+    cueId: candidate.cueId,
+    updatedTimeMs: candidate.updatedTimeMs,
+    sessionTimeMs: 900
+  }).action, 'finalized');
+
+  let completeState = createSubtitleCueState();
+  completeState = applySubtitleCueEvent(completeState, baseEvent({ stream: 'source', text: 'this is complete', sessionTimeMs: 100 }));
+  completeState = applySubtitleCueEvent(completeState, baseEvent({ stream: 'translation', text: '這是一個完整句子', sessionTimeMs: 110 }));
+  completeState = applySubtitleCueEvent(completeState, { eventId: 'complete-boundary', turnComplete: true, sessionTimeMs: 200 });
+  const completeCandidate = completeState.currentCue || completeState.pendingCues[0];
+  assert.equal(resolveIdleSubtitleCue(completeState, {
+    cueId: completeCandidate.cueId,
+    updatedTimeMs: completeCandidate.updatedTimeMs,
+    sessionTimeMs: 899
+  }).action, 'waiting-for-more-text');
+  assert.equal(resolveIdleSubtitleCue(completeState, {
+    cueId: completeCandidate.cueId,
+    updatedTimeMs: completeCandidate.updatedTimeMs,
+    sessionTimeMs: 900
+  }).action, 'finalized');
+});
+
+test('merges short fragments across turnComplete boundaries until punctuation', () => {
+  let state = createSubtitleCueState();
+  const appendTurn = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+    state = applySubtitleCueEvent(state, { eventId: `boundary-${time}`, turnComplete: true, sessionTimeMs: time + 20 });
+    state = finalizePendingSubtitleCue(state, { sessionTimeMs: time + 700, reason: 'turnComplete' });
+  };
+
+  appendTurn('First,', 'First,', 100);
+  appendTurn('two, three, four.', 'two, three, four.', 500);
+
+  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => ({ sourceText, translatedText })), [
+    { sourceText: 'First, two, three, four.', translatedText: 'First, two, three, four.' }
+  ]);
+});
+
+test('numeric integrity detects a dropped minute without rejecting punctuation formatting', () => {
+  assert.deepEqual(missingNumericIntegrity('現在是下午4點50分。', "Right now it's 4:00 PM."), {
+    expectedDigits: '450',
+    actualDigits: '400'
+  });
+  assert.equal(missingNumericIntegrity('現在是下午4點50分。', "Right now it's 4:50 PM."), null);
+  assert.equal(missingNumericIntegrity('序號1234。', 'Number 1,234.'), null);
+});
+
+test('numeric correction output replaces the targeted final translation Cue', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source', stream: 'source', text: '現在是下午4點50分。', sessionTimeMs: 100, isFinal: true }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation', stream: 'translation', text: "Right now it's 4:00 PM.", sessionTimeMs: 110, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 200, reason: 'turnComplete' });
+  const cueId = state.finalCues[0].cueId;
+
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'correction',
+    stream: 'translation',
+    text: "Right now it's 4:50 PM.",
+    sessionTimeMs: 300,
+    isFinal: true,
+    retranslationCueId: cueId
+  }));
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].translatedText, "Right now it's 4:50 PM.");
+  assert.equal(state.finalCues[0].finalizedReason, 'numeric-correction');
+});
+
+test('late final source transcript extends the same finalized Cue', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'source-short', stream: 'source', text: '現在下午時間4', sessionTimeMs: 100, isFinal: true
+  }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'translation-short', stream: 'translation', text: 'The time is now', sessionTimeMs: 110, isFinal: true
+  }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 200, reason: 'turnComplete' });
+
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'source-late',
+    stream: 'source',
+    text: '現在下午時間4點30分',
+    sessionTimeMs: 300,
+    isFinal: true,
+    isLateTranscript: true
+  }));
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '現在下午時間4點30分');
+  assert.equal(state.finalCues[0].translatedText, 'The time is now');
+});
+
+test('late events revise the last debounced cue without changing its identity', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-1', stream: 'source', text: '資料，今天才這個資料內容目前', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-1', stream: 'translation', text: 'Data, only today so far', sessionTimeMs: 110 }));
+  state = applySubtitleCueEvent(state, { eventId: 'boundary', turnComplete: true, sessionTimeMs: 200 });
+  const candidate = state.currentCue || state.pendingCues[0];
+  state = resolveIdleSubtitleCue(state, {
+    cueId: candidate.cueId,
+    updatedTimeMs: candidate.updatedTimeMs,
+    sessionTimeMs: 900
+  }).state;
+  const cueId = state.finalCues[0].cueId;
+
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-2', stream: 'source', text: '有資料才給他的。', sessionTimeMs: 1000 }));
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-2', stream: 'translation', text: 'will be given to him.', sessionTimeMs: 1010 }));
+
+  assert.equal(state.finalCues[0].cueId, cueId);
+  assert.equal(state.finalCues[0].finalizedReason, 'merged');
+  assert.equal(state.finalCues[0].sourceText, '資料，今天才這個資料內容目前有資料才給他的。');
+  assert.equal(state.currentCue, null);
+});
+
+test('merges adjacent short bilingual cues until sentence punctuation', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+    state = finalizePendingSubtitleCue(state, { sessionTimeMs: time + 20, reason: 'test' });
+  };
+
+  appendFinalPair('Actually,', '其實，', 100);
+  appendFinalPair("it's very", '很', 200);
+  appendFinalPair('Right now,', '現在，', 300);
+
+  assert.equal(state.finalCues.length, 1);
+  assert.deepEqual(state.finalCues[0], {
+    ...state.finalCues[0],
+    sourceText: "Actually, it's very Right now,",
+    translatedText: '其實，很現在，',
+    finalizedReason: 'merged'
+  });
+  assert.equal(state.finalCues[0].sequence, 1);
+  assert.equal(state.finalCues[0].startTimeMs, 100);
+  assert.equal(state.finalCues[0].endTimeMs, 400);
+  assert.equal(state.nextSequence, 3);
+});
+
+test('does not merge after sentence punctuation', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time, options = {}) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }), options);
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }), options);
+    state = finalizePendingSubtitleCue(state, { ...options, sessionTimeMs: time + 20, reason: 'test' });
+  };
+
+  appendFinalPair('Hello.', '你好。', 100);
+  appendFinalPair('Next', '下一句', 200);
+  assert.equal(state.finalCues.length, 2);
+
+  state = createSubtitleCueState();
+  appendFinalPair('現在', 'Now', 300);
+  appendFinalPair('是麥克風測試。', 'is a microphone test.', 400);
+  assert.equal(state.finalCues.length, 2);
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
+    '現在', 'Now'
+  ], [
+    '是麥克風測試。', 'is a microphone test.'
+  ]]);
+
+  state = createSubtitleCueState();
+  const options = { maxCueChars: 12 };
+  appendFinalPair('first,', '第一，', 100, options);
+  appendFinalPair('second', '第二', 200, options);
+  assert.equal(state.finalCues.length, 1);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first, second']);
+});
+
+test('merges adjacent final number fragments within the idle window without loss or duplication', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+    state = finalizePendingSubtitleCue(state, { sessionTimeMs: time + 20, reason: 'test' });
+  };
+
+  appendFinalPair('1234', '1234', 100);
+  appendFinalPair('567', '567', 500);
+  appendFinalPair('8910', '8910', 900);
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '1234 567 8910');
+  assert.equal(state.finalCues[0].translatedText, '1234 567 8910');
+});
+
+test('does not merge final Cues after sentence punctuation or after a long gap', () => {
+  const appendFinalPair = (state, sourceText, translatedText, time) => {
+    let next = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true }));
+    next = applySubtitleCueEvent(next, baseEvent({ stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true }));
+    return finalizePendingSubtitleCue(next, { sessionTimeMs: time + 20, reason: 'test' });
+  };
+
+  let state = createSubtitleCueState();
+  state = appendFinalPair(state, 'first', '第一', 100);
+  state = appendFinalPair(state, 'second.', '第二。', 500);
+  state = appendFinalPair(state, 'third', '第三', 900);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['first', 'second.', 'third']);
+
+  state = createSubtitleCueState();
+  state = appendFinalPair(state, '1234', '1234', 100);
+  state = appendFinalPair(state, '5678', '5678', 1800);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['1234', '5678']);
+});
+
+test('does not merge final Cues across sessions, live sessions, or segments', () => {
+  const appendFinalPair = (state, scope, time) => {
+    let next = applySubtitleCueEvent(state, baseEvent({ ...scope, eventId: `source-${time}`, stream: 'source', text: 'part', sessionTimeMs: time, isFinal: true }));
+    next = applySubtitleCueEvent(next, baseEvent({ ...scope, eventId: `translation-${time}`, stream: 'translation', text: '片段', sessionTimeMs: time + 10, isFinal: true }));
+    return finalizePendingSubtitleCue(next, { sessionTimeMs: time + 20, reason: 'test' });
+  };
+
+  let state = appendFinalPair(createSubtitleCueState(), { sessionId: 'session-1', liveSessionId: 'live-1', segmentId: 'segment-1' }, 100);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-1', segmentId: 'segment-1' }, 200);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-2', segmentId: 'segment-1' }, 300);
+  state = appendFinalPair(state, { sessionId: 'session-2', liveSessionId: 'live-2', segmentId: 'segment-2' }, 400);
+
+  assert.equal(state.finalCues.length, 4);
 });
 
 test('a shorter suffix transcript update does not create an extra cue', () => {
@@ -61,11 +351,16 @@ test('turnComplete control event finalizes the pending cue when text is complete
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'source without punctuation', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'translation without punctuation', sessionTimeMs: 120 }));
   state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 500 });
+  state = resolveIdleSubtitleCue(state, {
+    cueId: state.currentCue.cueId,
+    updatedTimeMs: state.currentCue.updatedTimeMs,
+    sessionTimeMs: 1200
+  }).state;
 
   assert.equal(state.currentCue, null);
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.finalCues[0].finalizedReason, 'turnComplete');
-  assert.equal(state.finalCues[0].endTimeMs, 500);
+  assert.equal(state.finalCues[0].endTimeMs, 1200);
 });
 
 test('without a provider boundary a Cue stays open for late translation pairing', () => {
@@ -79,14 +374,39 @@ test('without a provider boundary a Cue stays open for late translation pairing'
   assert.equal(state.currentCue.translatedText, 'late translation');
 });
 
+test('idle finalizes a paired Cue when the provider sends no boundary', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'source without boundary', sessionTimeMs: 100 }));
+  state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'translation without boundary', sessionTimeMs: 120 }));
+
+  const candidate = state.currentCue;
+  const beforeDebounce = resolveIdleSubtitleCue(state, {
+    cueId: candidate.cueId,
+    updatedTimeMs: candidate.updatedTimeMs,
+    sessionTimeMs: candidate.updatedTimeMs + 699
+  });
+  assert.equal(beforeDebounce.action, 'waiting-for-more-text');
+  assert.equal(beforeDebounce.state.currentCue.cueId, candidate.cueId);
+
+  const resolved = resolveIdleSubtitleCue(state, {
+    cueId: candidate.cueId,
+    updatedTimeMs: candidate.updatedTimeMs,
+    sessionTimeMs: candidate.updatedTimeMs + 700
+  });
+  assert.equal(resolved.action, 'finalized');
+  assert.equal(resolved.state.currentCue, null);
+  assert.equal(resolved.state.finalCues[0].finalizedReason, 'idle');
+});
+
 test('idle finalizes an aggregated paired Cue and rejects stale timers', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'bonjour', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 500 });
   const version = state.currentCue.updatedTimeMs;
   const resolved = resolveIdleSubtitleCue(state, { cueId: state.currentCue.cueId, updatedTimeMs: version, sessionTimeMs: 1320 });
   assert.equal(resolved.action, 'finalized');
-  assert.equal(resolved.state.finalCues[0].finalizedReason, 'idle');
+  assert.equal(resolved.state.finalCues[0].finalizedReason, 'turnComplete');
   assert.equal(resolved.state.currentCue, null);
 
   let changed = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'hello there', sessionTimeMs: 200 }));
@@ -101,10 +421,10 @@ test('merges non-cumulative transcript fragments into one turn without turnIndex
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'input.', sessionTimeMs: 140 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '這是語音', sessionTimeMs: 180 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: '輸入。', sessionTimeMs: 220 }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'turnComplete' });
 
-  assert.equal(state.finalCues.length, 0);
-  assert.equal(state.currentCue.sourceText, "it's a voice input.");
-  assert.equal(state.currentCue.translatedText, '這是語音輸入。');
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.currentCue, null);
 
   state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 300 });
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
@@ -128,8 +448,14 @@ test('unrelated source events start a new Cue after a paired Cue without turnInd
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'first source', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'first translation', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 200 });
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'second source', sessionTimeMs: 300 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'second translation', sessionTimeMs: 320 }));
+  state = resolveIdleSubtitleCue(state, {
+    cueId: state.pendingCues[0].cueId,
+    updatedTimeMs: state.pendingCues[0].updatedTimeMs,
+    sessionTimeMs: 1000
+  }).state;
 
   assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
     ['first source', 'first translation']
@@ -143,9 +469,15 @@ test('formal source after an interim paired Cue stays in a new partial Cue', () 
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', eventType: 'input-interim', text: 'interim source', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'translation', sessionTimeMs: 120 }));
+  state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 150 });
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source', eventType: 'input', text: 'formal source', sessionTimeMs: 200, isFinal: true
   }));
+  state = resolveIdleSubtitleCue(state, {
+    cueId: state.pendingCues[0].cueId,
+    updatedTimeMs: state.pendingCues[0].updatedTimeMs,
+    sessionTimeMs: 1000
+  }).state;
 
   assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
     ['interim source', 'translation']
@@ -173,7 +505,7 @@ test('idle source-only Cue requests one retranslation, then remains partial on r
   assert.equal(result.state.finalCues.length, 0);
 });
 
-test('late translation fills the most recent source-only Cue and finalizes it', () => {
+test('late translation fills the most recent source-only Cue without finalizing without a boundary', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source', text: 'source text', sessionTimeMs: 100
@@ -193,10 +525,8 @@ test('late translation fills the most recent source-only Cue and finalizes it', 
     stream: 'translation', text: 'translated text', sessionTimeMs: 1500
   }));
 
-  assert.equal(state.currentCue, null);
-  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [
-    ['source text', 'translated text']
-  ]);
+  assert.equal(state.finalCues.length, 0);
+  assert.deepEqual([state.currentCue.sourceText, state.currentCue.translatedText], ['source text', 'translated text']);
 });
 
 test('late translation does not create a translation-only Cue when source-only Cue exists', () => {
@@ -218,9 +548,8 @@ test('late translation does not create a translation-only Cue when source-only C
     stream: 'translation', text: 'first translation', sessionTimeMs: 1500
   }));
 
-  assert.equal(state.finalCues.length, 1);
-  assert.equal(state.finalCues[0].translatedText, 'first translation');
-  assert.equal(state.currentCue, null);
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.translatedText, 'first translation');
 });
 
 test('idle translation-only Cue is discarded without a final Cue', () => {
@@ -257,7 +586,7 @@ test('Stop flush finalizes only paired source and translation cue text', () => {
   assert.equal(paired.finalCues[0].finalizedReason, 'stop');
 });
 
-test('length overflow splits an aligned bilingual cue at word boundaries', () => {
+test('length overflow stays whole without an explicit safe boundary', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({
     stream: 'source',
@@ -270,12 +599,12 @@ test('length overflow splits an aligned bilingual cue at word boundaries', () =>
     sessionTimeMs: 150
   }), { maxCueChars: 12 });
 
-  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText, cue.finalizedReason]), [
-    ['alpha beta', 'un deux', 'length'],
-    ['gamma delta', 'trois quatre', 'length']
+  assert.equal(state.finalCues.length, 0);
+  assert.equal(state.currentCue.sourceText, 'alpha beta gamma delta');
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 200, reason: 'stop' });
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
+    ['alpha beta gamma delta', 'un deux trois quatre']
   ]);
-  assert.equal(state.currentCue, null);
-  assert.equal(state.nextSequence, 3);
 });
 
 test('length overflow stays in one Cue when only the source can be safely split', () => {
@@ -288,15 +617,16 @@ test('length overflow stays in one Cue when only the source can be safely split'
     stream: 'translation', text: '短翻譯', sessionTimeMs: 150
   }), options);
 
-  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues.length, 0);
   state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 200 });
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'turnComplete' });
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
     ['alpha beta gamma delta', '短翻譯']
   ]);
   assert.equal(state.nextSequence, 2);
 });
 
-test('language limits split CJK cues while preserving protected tokens and session time', () => {
+test('long CJK cues remain one bilingual sentence without a language limit split', () => {
   let state = createSubtitleCueState();
   const options = { minimumCueDurationMs: 20 };
   state = applySubtitleCueEvent(state, baseEvent({
@@ -307,12 +637,14 @@ test('language limits split CJK cues while preserving protected tokens and sessi
     sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', stream: 'translation',
     text: 'これは長い日本語字幕です、句読点に沿って自然に分割し、URL https://example.com/a を保ちます。', sessionTimeMs: 180
   }), options);
+  state = finalizePendingSubtitleCue(state, { ...options, sessionTimeMs: 240, reason: 'stop' });
 
-  assert.ok(state.finalCues.length > 1);
-  assert.deepEqual(state.finalCues.map((cue) => cue.sequence), [1, 2, 3]);
-  assert.ok(state.finalCues.every((cue, index) => index === 0 || cue.startTimeMs > state.finalCues[index - 1].endTimeMs));
-  assert.equal(state.finalCues.map((cue) => cue.sourceText).join(''), '這是一段很長的中文字幕，應該依照子句自然分段並保留網址https://example.com/a。');
-  assert.ok(state.finalCues.map((cue) => cue.translatedText).join(' ').includes('https://example.com/a'));
+  assert.equal(state.finalCues.length, 1);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sequence), [1]);
+  assert.equal(state.finalCues[0].startTimeMs, 120);
+  assert.equal(state.finalCues[0].endTimeMs, 180);
+  assert.equal(state.finalCues[0].sourceText, '這是一段很長的中文字幕，應該依照子句自然分段並保留網址https://example.com/a。');
+  assert.equal(state.finalCues[0].translatedText, 'これは長い日本語字幕です、句読点に沿って自然に分割し、URL https://example.com/a を保ちます。');
 });
 
 test('split cumulative transcript events do not duplicate already committed cues', () => {
@@ -322,9 +654,10 @@ test('split cumulative transcript events do not duplicate already committed cues
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'un deux trois quatre', sessionTimeMs: 120 }), options);
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'alpha beta gamma delta epsilon', sessionTimeMs: 200 }), options);
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'un deux trois quatre cinq', sessionTimeMs: 220, isFinal: true }), options);
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 240, reason: 'test' });
 
-  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['alpha beta', 'gamma delta', 'epsilon']);
-  assert.deepEqual(state.finalCues.map((cue) => cue.sequence), [1, 2, 3]);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['alpha beta gamma delta epsilon']);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sequence), [1]);
 });
 
 test('sequence stays stable across segment rollover and does not reset timestamps', () => {
@@ -335,6 +668,7 @@ test('sequence stays stable across segment rollover and does not reset timestamp
   state = applySubtitleCueEvent(state, baseEvent({ segmentId: 'segment-2', stream: 'source', text: '第二句。', sessionTimeMs: 70000 }));
   state = applySubtitleCueEvent(state, baseEvent({ segmentId: 'segment-2', stream: 'translation', text: 'Second sentence.', sessionTimeMs: 70100 }));
   state = applySubtitleCueEvent(state, { turnComplete: true, segmentId: 'segment-2', sessionTimeMs: 70200 });
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 71000, reason: 'test' });
 
   assert.deepEqual(state.finalCues.map((cue) => ({
     cueId: cue.cueId,
@@ -354,6 +688,7 @@ test('duplicate transcript events do not append duplicate final cues', () => {
   state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 150 });
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Done.', sessionTimeMs: 200 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Termine.', sessionTimeMs: 220 }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 300, reason: 'turnComplete' });
 
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.currentCue, null);
@@ -365,6 +700,7 @@ test('cumulative transcript text updates the preceding final cue instead of crea
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Hello', sessionTimeMs: 120, isFinal: true }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: '你好,你好。', sessionTimeMs: 300 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Hello, hello.', sessionTimeMs: 320 }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 500, reason: 'test' });
 
   assert.equal(state.currentCue, null);
   assert.equal(state.finalCues.length, 1);
@@ -376,8 +712,10 @@ test('same text from a later turn is retained as a separate cue event', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-1-source', turnIndex: 1, stream: 'source', text: '123', sessionTimeMs: 100, isFinal: true }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-1-translation', turnIndex: 1, stream: 'translation', text: '1, 2, 3', sessionTimeMs: 120, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 140, reason: 'test' });
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-2-source', turnIndex: 2, stream: 'source', text: '123', sessionTimeMs: 300, isFinal: true }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn-2-translation', turnIndex: 2, stream: 'translation', text: '1, 2, 3', sessionTimeMs: 320, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 340, reason: 'test' });
 
   assert.equal(state.finalCues.length, 2);
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
@@ -390,12 +728,37 @@ test('same text from later events remains separate when turnIndex is unavailable
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'event-1-source', stream: 'source', text: '一二三', sessionTimeMs: 100, isFinal: true }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'event-1-translation', stream: 'translation', text: 'one two three', sessionTimeMs: 120, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 140, reason: 'test' });
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'event-2-source', stream: 'source', text: '一二三', sessionTimeMs: 300, isFinal: true }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'event-2-translation', stream: 'translation', text: 'one two three', sessionTimeMs: 320, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 340, reason: 'test' });
 
   assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
     ['一二三', 'one two three'],
     ['一二三', 'one two three']
+  ]);
+});
+
+test('final cumulative-looking number text is not stripped from a later turn', () => {
+  let state = createSubtitleCueState();
+  const appendFinalPair = (sourceText, translatedText, time) => {
+    state = applySubtitleCueEvent(state, baseEvent({
+      eventId: `source-${time}`, stream: 'source', text: sourceText, sessionTimeMs: time, isFinal: true
+    }));
+    state = applySubtitleCueEvent(state, baseEvent({
+      eventId: `translation-${time}`, stream: 'translation', text: translatedText, sessionTimeMs: time + 10, isFinal: true
+    }));
+    state = finalizePendingSubtitleCue(state, { sessionTimeMs: time + 20, reason: 'turnComplete' });
+  };
+
+  appendFinalPair('123.', '123.', 100);
+  appendFinalPair('123.', '123.', 1800);
+  appendFinalPair('123.123.456', '123.123.456', 3600);
+
+  assert.deepEqual(state.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
+    ['123.', '123.'],
+    ['123.', '123.'],
+    ['123.123.456', '123.123.456']
   ]);
 });
 
@@ -404,6 +767,7 @@ test('display cues include final cues followed by the current partial cue', () =
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Final source.', sessionTimeMs: 100 }));
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'translation', text: 'Final translation.', sessionTimeMs: 120 }));
   state = applySubtitleCueEvent(state, { turnComplete: true, sessionTimeMs: 150 });
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 200, reason: 'turnComplete' });
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'Pending source', sessionTimeMs: 300 }));
 
   assert.deepEqual(subtitleCuesForDisplay(state).map((cue) => [cue.status, cue.sourceText]), [
@@ -427,6 +791,38 @@ test('replayed eventId is a no-op and survives snapshot restore', () => {
   assert.equal(replayed.currentCue.sourceText, 'hello');
 });
 
+test('checkpoint reload preserves debounce and late Cue revision behavior', () => {
+  const initialEvents = [
+    baseEvent({ eventId: 'checkpoint-source', stream: 'source', text: '資料，今天才這個資料內容目前', sessionTimeMs: 100 }),
+    baseEvent({ eventId: 'checkpoint-translation', stream: 'translation', text: 'Data, only today so far', sessionTimeMs: 110 }),
+    { eventId: 'checkpoint-boundary', turnComplete: true, sessionTimeMs: 200 }
+  ];
+  const lateEvents = [
+    baseEvent({ eventId: 'checkpoint-late-source', stream: 'source', text: '有資料才給他的。', sessionTimeMs: 1000 }),
+    baseEvent({ eventId: 'checkpoint-late-translation', stream: 'translation', text: 'will be given to him.', sessionTimeMs: 1010 })
+  ];
+  const prepare = (events, state = createSubtitleCueState()) => events.reduce(
+    (next, event) => applySubtitleCueEvent(next, event), state
+  );
+  const resolve = (state) => {
+    const candidate = state.currentCue || state.pendingCues[0];
+    return resolveIdleSubtitleCue(state, {
+      cueId: candidate.cueId,
+      updatedTimeMs: candidate.updatedTimeMs,
+      sessionTimeMs: 900
+    }).state;
+  };
+  let withoutReload = resolve(prepare(initialEvents));
+  withoutReload = prepare(lateEvents, withoutReload);
+
+  let withReload = resolve(prepare(initialEvents));
+  withReload = createSubtitleCueState(withReload);
+  withReload = prepare(lateEvents, withReload);
+
+  assert.deepEqual(withReload.finalCues, withoutReload.finalCues);
+  assert.deepEqual(withReload.pendingCues, withoutReload.pendingCues);
+});
+
 test('missing session-relative time is ignored without epoch timestamps', () => {
   const state = createSubtitleCueState();
   assert.equal(applySubtitleCueEvent(state, { ...baseEvent(), text: 'no clock' }), state);
@@ -436,10 +832,12 @@ test('missing session-relative time is ignored without epoch timestamps', () => 
 test('minimum duration and gap normalize final cue timeline', () => {
   let state = createSubtitleCueState();
   const options = { minimumGapMs: 5, minimumCueDurationMs: 300 };
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's1', stream: 'source', text: 'one', sessionTimeMs: 100 }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't1', stream: 'translation', text: 'uno', sessionTimeMs: 110, isFinal: true }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's2', stream: 'source', text: 'two', sessionTimeMs: 111 }), options);
-  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't2', stream: 'translation', text: 'dos', sessionTimeMs: 112, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's1', stream: 'source', text: 'one.', sessionTimeMs: 100 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't1', stream: 'translation', text: 'uno.', sessionTimeMs: 110, isFinal: true }), options);
+  state = applySubtitleCueEvent(state, { eventId: 'boundary-1', turnComplete: true, sessionTimeMs: 120 });
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 's2', stream: 'source', text: 'two.', sessionTimeMs: 130 }), options);
+  state = applySubtitleCueEvent(state, baseEvent({ eventId: 't2', stream: 'translation', text: 'dos.', sessionTimeMs: 132, isFinal: true }), options);
+  state = finalizePendingSubtitleCue(state, { ...options, sessionTimeMs: 400, reason: 'turnComplete' });
 
   assert.deepEqual(state.finalCues.map((cue) => [cue.startTimeMs, cue.endTimeMs]), [
     [100, 400],
@@ -467,6 +865,12 @@ test('turnComplete and generationComplete may arrive before their counterpart tr
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source', stream: 'source', text: 'late source', sessionTimeMs: 10 }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'turn', turnComplete: true, sessionTimeMs: 20 }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation', stream: 'translation', text: 'late translation', sessionTimeMs: 30 }));
+  const firstCandidate = state.currentCue || state.pendingCues[0];
+  state = resolveIdleSubtitleCue(state, {
+    cueId: firstCandidate.cueId,
+    updatedTimeMs: firstCandidate.updatedTimeMs,
+    sessionTimeMs: 800
+  }).state;
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.finalCues[0].finalizedReason, 'turnComplete');
 
@@ -474,6 +878,12 @@ test('turnComplete and generationComplete may arrive before their counterpart tr
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'generation', generationComplete: true, sessionTimeMs: 5 }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'source-2', stream: 'source', text: 'source', sessionTimeMs: 10 }));
   state = applySubtitleCueEvent(state, baseEvent({ eventId: 'translation-2', stream: 'translation', text: 'translation', sessionTimeMs: 12 }));
+  const secondCandidate = state.currentCue || state.pendingCues[0];
+  state = resolveIdleSubtitleCue(state, {
+    cueId: secondCandidate.cueId,
+    updatedTimeMs: secondCandidate.updatedTimeMs,
+    sessionTimeMs: 800
+  }).state;
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.finalCues[0].finalizedReason, 'generationComplete');
 });
@@ -509,13 +919,17 @@ test('normalizer marks late input and output transcript events as final', () => 
     sessionTimeMs: 123,
     eventSequence: 8,
     inputTranscriptIsFinal: true,
-    outputTranscriptIsFinal: true
+    outputTranscriptIsFinal: true,
+    inputTranscriptArrivedAfterBoundary: true,
+    outputTranscriptArrivedAfterBoundary: true
   });
 
   assert.deepEqual(events.map((event) => [event.stream, event.isFinal]), [
     ['source', true],
     ['translation', true]
   ]);
+  assert.equal(events[0].isLateTranscript, true);
+  assert.equal(events[1].isLateTranscript, true);
 });
 
 function baseEvent(overrides = {}) {

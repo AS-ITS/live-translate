@@ -234,12 +234,13 @@ function retranslationPage(page) {
   return page.locator('.retranslation-workflow');
 }
 
-async function mockMeetingCheckpointApi(page, { failCheckpoint = false, waitForSegmentList = null } = {}) {
+async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failCheckpointAttempts = 0, waitForSegmentList = null } = {}) {
   const checkpointRequests = [];
   const rolloverRequests = [];
   const recoverRequests = [];
   const checkpoints = new Map();
   let latestSegmentNumber = 1;
+  let checkpointFailuresRemaining = failCheckpointAttempts;
 
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
@@ -270,7 +271,8 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, waitForS
       const body = JSON.parse(request.postData() || '{}');
       checkpointRequests.push(body);
 
-      if (failCheckpoint) {
+      if (failCheckpoint || checkpointFailuresRemaining > 0) {
+        checkpointFailuresRemaining = Math.max(0, checkpointFailuresRemaining - 1);
         await route.fulfill({
           status: 503,
           contentType: 'application/json',
@@ -454,7 +456,7 @@ async function openLivePage(page) {
   await expect(page).toHaveURL(/#live$/);
 }
 
-async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation') {
+async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation', { waitMs = 750 } = {}) {
   await page.evaluate(
     ({ sourceText, translationText }) => {
       window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
@@ -467,6 +469,7 @@ async function emitFinalTranscript(page, sourceText = 'history source', translat
     },
     { sourceText, translationText }
   );
+  await page.waitForTimeout(waitMs);
 }
 
 async function emitPartialTranscript(page, sourceText = 'partial source', translationText = 'partial translation') {
@@ -754,6 +757,8 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
+  await expect(page.getByText('長會議同步：尚未開始', { exact: true })).toBeVisible();
+  await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
   const sourceLanguage = page.getByRole('combobox', { name: '主要輸入語言' });
   const targetLanguage = page.getByRole('combobox', { name: '目標語言' });
@@ -802,17 +807,11 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
-  await expect(page.getByText('未錄製講者原音。')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeEnabled();
+  await expect(page.getByText('未錄製講者原音。')).toHaveCount(0);
+  await expect(page.getByText('翻譯語音：音檔已保存，請到翻譯紀錄下載。')).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__mockMediaRecorders.length)).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
-
-  const translatedDownloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載翻譯語音' }).click();
-  const translatedDownload = await translatedDownloadPromise;
-  expect(translatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
@@ -833,6 +832,32 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   expect(savedTranslatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
+test('audio segment upload retries a temporary failure and preserves the saved artifact', async ({ page }) => {
+  let uploadAttempts = 0;
+  await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
+    if (route.request().method() === 'POST' && uploadAttempts++ === 0) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'session_audio_unavailable' } })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitOutputAudio(page);
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+
+  await expect(page.getByText('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。')).toBeVisible();
+  await expect.poll(() => uploadAttempts, { timeout: 12000 }).toBe(2);
+  await expect(page.locator('.error-message')).toBeHidden();
+});
+
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
   await page.goto('/');
 
@@ -845,8 +870,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
   await expect(page.getByText('before pause source')).toBeVisible();
   await expect(page.getByText('before pause translation')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeDisabled();
-  await expect(page.getByRole('button', { name: '下載翻譯語音' })).toBeDisabled();
+  await expect(page.getByText('原始語音：錄音已暫停，已保留目前片段。')).toBeVisible();
   await openHistoryPage(page);
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 
@@ -861,12 +885,7 @@ test('pause keeps the session content and end exposes microphone recording downl
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect(page.getByText('after continue source')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載原始語音' })).toBeEnabled();
-
-  const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載原始語音' }).click();
-  const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+  await expect(page.getByText('原始語音：音檔已保存，請到翻譯紀錄下載。')).toBeVisible();
 
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -930,18 +949,18 @@ test('long meeting proactively switches through three segments and preserves con
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
-  await emitFinalTranscript(page, 'segment one source', 'segment one translation');
+  await emitFinalTranscript(page, 'segment one source', 'segment one translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
   await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
   await expect(page.getByText('長會議段落：已封存 1 段 · 已載入 1 段 · 目前段落 0 筆')).toBeVisible();
 
-  await emitFinalTranscript(page, 'segment two source', 'segment two translation');
+  await emitFinalTranscript(page, 'segment two source', 'segment two translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
   await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 0 筆')).toBeVisible();
 
-  await emitFinalTranscript(page, 'segment three source', 'segment three translation');
+  await emitFinalTranscript(page, 'segment three source', 'segment three translation', { waitMs: 100 });
   await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 2 筆')).toBeVisible();
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
@@ -985,12 +1004,12 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   for (let index = 0; index < 12; index += 1) {
-    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`);
+    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 100 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
   }
 
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
-  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation');
+  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation', { waitMs: 100 });
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 
@@ -1025,7 +1044,20 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
 
   await expect(page.getByText('長會議同步：同步失敗，等待重試')).toBeVisible({ timeout: 6500 });
   await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
-  await expect(page.getByRole('alert')).toContainText('長會議同步暫時失敗');
+  await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
+});
+
+test('checkpoint sync retries a temporary failure and clears the error after success', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page, { failCheckpointAttempts: 1 });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'retry source', 'retry translation');
+
+  await expect.poll(() => checkpointRequests.length, { timeout: 12000 }).toBe(2);
+  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+  await expect(page.locator('.error-message')).toBeHidden();
 });
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {
@@ -1160,6 +1192,132 @@ test('navigation keeps an active translation session and its article reading sta
   await expect(page.getByText('逐字稿 / 文章版')).toBeHidden();
 });
 
+test('transcript polishing status and independent article output are visible', async ({ page }) => {
+  let polishingOutput = null;
+  await page.route('**/api/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname) && polishingOutput) {
+      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-1');
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          sessionId,
+          translations: [],
+          translationHistory: {
+            outputs: [polishingOutput],
+            executions: []
+          }
+        })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, '常會議', 'The regular meeting.');
+  const cueId = await finalCueRows(page).first().getAttribute('data-cue-id');
+  expect(cueId).toBeTruthy();
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  polishingOutput = {
+    id: 'polishing-output-1',
+    executionId: 'polishing-execution-1',
+    operation: 'transcript_polishing',
+    version: 1,
+    completedAt: '2026-08-07T00:00:10.000Z',
+    translatedText: 'The long meeting.',
+    polishedItems: [{
+      cueId,
+      sequence: 1,
+      polishedText: 'The long meeting.'
+    }]
+  };
+
+  const polishingStatus = liveCuePanel(page).getByTestId('transcript-polishing-status');
+  await expect(polishingStatus.getByText('潤飾完成')).toBeVisible({ timeout: 5000 });
+  await expect(polishingStatus).toHaveText(/潤飾完成.*v1/);
+  await expect(page.locator('.live-page > [data-testid="transcript-polishing-status"]')).toHaveCount(0);
+  await expect(page.getByTestId('polished-article').getByText('The long meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The regular meeting.')).toBeVisible();
+  await expect(finalCueRows(page).first().getByTestId('cue-source-text')).toHaveText('常會議');
+});
+
+test('transcript polishing retry shows the new queued execution and failure reason inline', async ({ page }) => {
+  let polishingPhase = 'failed';
+  let retryCalls = 0;
+  await page.route('**/api/sessions/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname)) {
+      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-1');
+      const executions = polishingPhase === 'failed'
+        ? [{
+          id: 'polishing-execution-old',
+          operation: 'transcript_polishing',
+          status: 'failed',
+          startedAt: '2026-08-07T00:00:01.000Z',
+          completedAt: '2026-08-07T00:00:02.000Z',
+          failureInfo: {
+            reason: 'provider_execution_failed', code: 'bad_request', providerCode: 400, status: 400,
+            providerStatus: 'INVALID_ARGUMENT', providerMessage: 'Invalid request for model gemini-3.5-flash-lite.',
+            model: 'gemini-3.5-flash-lite', requestConfig: { fields: [] }
+          }
+        }]
+        : [
+          {
+            id: 'polishing-execution-old',
+            operation: 'transcript_polishing',
+            status: 'failed',
+            startedAt: '2026-08-07T00:00:01.000Z',
+            completedAt: '2026-08-07T00:00:02.000Z',
+            failureInfo: {
+              reason: 'provider_execution_failed', code: 'bad_request', providerCode: 400, status: 400,
+              providerStatus: 'INVALID_ARGUMENT', providerMessage: 'Invalid request for model gemini-3.5-flash-lite.',
+              model: 'gemini-3.5-flash-lite', requestConfig: { fields: [] }
+            }
+          },
+          {
+            id: 'polishing-execution-retry',
+            operation: 'transcript_polishing',
+            status: 'queued',
+            startedAt: '2026-08-07T00:00:03.000Z',
+            completedAt: null,
+            failureInfo: null
+          }
+        ];
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ sessionId, translations: [], translationHistory: { outputs: [], executions } })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.route('**/api/translation-executions/*/retry', async (route) => {
+    retryCalls += 1;
+    polishingPhase = 'queued';
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({}) });
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'polishing retry source', 'polishing retry translation');
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+
+  const polishingStatus = liveCuePanel(page).getByTestId('transcript-polishing-status');
+  await expect(polishingStatus).toContainText('潤飾失敗', { timeout: 5000 });
+  await expect(polishingStatus).toContainText('Gemini 拒絕此翻譯請求');
+  await polishingStatus.getByRole('button', { name: '重試' }).click();
+  await expect.poll(() => retryCalls).toBe(1);
+  await expect(polishingStatus).toContainText('等待潤飾');
+  await expect(polishingStatus).not.toContainText('潤飾失敗');
+});
+
 test('final Cues stay paired and one partial Cue remains at the tail', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -1168,9 +1326,9 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
   await page.evaluate(() => {
     const session = window.__mockGoogleGenAI.liveSessions.at(-1);
     for (const [sourceText, translationText] of [
-      ['第一句', '第一句翻譯'],
-      ['第二句', '第二句翻譯'],
-      ['第三句', '第三句翻譯']
+      ['First sentence.', '第一句翻譯。'],
+      ['Second sentence.', '第二句翻譯。'],
+      ['Third sentence.', '第三句翻譯。']
     ]) {
       session.emitMessage({
         serverContent: {
@@ -1178,8 +1336,13 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
           outputTranscription: { text: translationText }
         }
       });
+      session.emitMessage({ serverContent: { turnComplete: true } });
     }
-    session.emitMessage({
+  });
+
+  await page.waitForTimeout(800);
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
       serverContent: {
         inputTranscription: { text: '第四句辨識中' },
         outputTranscription: { text: '第四句翻譯中' }
@@ -1187,12 +1350,12 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
     });
   });
 
-  await expect(finalCueRows(page)).toHaveCount(3);
   await expect(partialCueRows(page)).toHaveCount(1);
   await expectCueRow(partialCueRows(page).first(), {
     sourceText: '第四句辨識中',
     translatedText: '第四句翻譯中'
   });
+  await expect(finalCueRows(page)).toHaveCount(2);
 });
 
 test('repeated speech merges into one live Cue with cumulative translation', async ({ page }) => {
@@ -1209,9 +1372,13 @@ test('repeated speech merges into one live Cue with cumulative translation', asy
         turnComplete: true
       }
     });
+  });
+  await page.waitForTimeout(750);
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
     session.emitMessage({
       serverContent: {
-        inputTranscription: { text: '123' },
+        inputTranscription: { text: '123 123' },
         outputTranscription: { text: '1, 2, 3, 1, 2' }
       }
     });
@@ -1224,6 +1391,52 @@ test('repeated speech merges into one live Cue with cumulative translation', asy
   });
 });
 
+test('final repeated number turn keeps its complete source and translation', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: {
+        inputTranscription: { text: '123.' },
+        outputTranscription: { text: '123.' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await page.waitForTimeout(800);
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: '456.' },
+        outputTranscription: { text: '456.' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await page.waitForTimeout(800);
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: '123.456.789.' },
+        outputTranscription: { text: '123.456.789.' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await page.waitForTimeout(800);
+  await expect(finalCueRows(page)).toHaveCount(3);
+  await expectCueRow(finalCueRows(page).nth(2), {
+    sourceText: '123.456.789.',
+    translatedText: '123.456.789.'
+  });
+});
+
 test('cumulative speech updates the preceding final Cue without leaving a partial row', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -1233,14 +1446,18 @@ test('cumulative speech updates the preceding final Cue without leaving a partia
     const session = window.__mockGoogleGenAI.liveSessions.at(-1);
     session.emitMessage({
       serverContent: {
-        inputTranscription: { text: '你好' },
+        inputTranscription: { text: '這是一段完整的原文內容文字' },
         outputTranscription: { text: 'Hello' },
         turnComplete: true
       }
     });
+  });
+  await page.waitForTimeout(750);
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
     session.emitMessage({
       serverContent: {
-        inputTranscription: { text: '你好,你好。' },
+        inputTranscription: { text: '這是一段完整的原文內容文字,這是一段完整的原文內容文字。' },
         outputTranscription: { text: 'Hello, hello.' }
       }
     });
@@ -1249,7 +1466,7 @@ test('cumulative speech updates the preceding final Cue without leaving a partia
   await expect(finalCueRows(page)).toHaveCount(1);
   await expect(partialCueRows(page)).toHaveCount(0);
   await expectCueRow(finalCueRows(page).first(), {
-    sourceText: '你好,你好。',
+    sourceText: /這是一段完整的原文內容文字,這是\s+一段完整的原文內容文字。/,
     translatedText: 'Hello, hello.'
   });
 });
@@ -1265,6 +1482,7 @@ test('late transcript after Turn completion does not remain in a partial row', a
     session.emitMessage({ serverContent: { inputTranscription: { text: 'late source' } } });
     session.emitMessage({ serverContent: { outputTranscription: { text: 'late translation' } } });
   });
+  await page.waitForTimeout(750);
 
   await expect(partialCueRows(page)).toHaveCount(0);
   await expect(finalCueRows(page)).toHaveCount(1);
@@ -1304,7 +1522,8 @@ test('unpaired cumulative translation stays hidden until its source arrives', as
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
       serverContent: {
-        inputTranscription: { text: '這是一個完整句末。' }
+        inputTranscription: { text: '這是一個完整句末內容文字。' },
+        outputTranscription: { text: '這是一個完整句末內容文字。' }
       }
     });
   });
@@ -1312,8 +1531,8 @@ test('unpaired cumulative translation stays hidden until its source arrives', as
   await expect(finalCueRows(page)).toHaveCount(1);
   await expect(partialCueRows(page)).toHaveCount(0);
   await expectCueRow(finalCueRows(page).first(), {
-    sourceText: '這是一個完整句末。',
-    translatedText: '這是一個完整句末'
+    sourceText: '這是一個完整句末內容文字。',
+    translatedText: '這是一個完整句末內容文字。'
   });
 });
 
@@ -1355,12 +1574,53 @@ test('paired Cue auto-finalizes after idle when a provider boundary is absent', 
     translatedText: 'idle translation finalizes'
   });
 
+  await emitTurnComplete(page);
+
   await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
   await expect(partialCueRows(page)).toHaveCount(0);
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: 'idle source finalizes',
     translatedText: 'idle translation finalizes'
+  });
+});
+
+test('short paired Chinese Cue does not remain in recognition after turn completion', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitPartialTranscript(page, '測試,123', 'Microphone test,123');
+  await expect(partialCueRows(page)).toHaveCount(1);
+  await emitTurnComplete(page);
+
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '測試,123',
+    translatedText: 'Microphone test,123'
+  });
+});
+
+test('late end-of-turn source transcription extends the existing Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitPartialTranscript(page, '現在下午時間4', 'The time is now');
+  await emitTurnComplete(page);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { inputTranscription: { text: '現在下午時間4點30分' } }
+    });
+  });
+
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '現在下午時間4點30分',
+    translatedText: 'The time is now'
   });
 });
 
@@ -1383,8 +1643,8 @@ test('incremental word fragments render as one subtitle row after Turn completio
     emit(null, '輸入。');
   });
 
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page).first()).toHaveText(/it's a voice input\./);
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page)).toHaveCount(0);
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
@@ -1392,11 +1652,83 @@ test('incremental word fragments render as one subtitle row after Turn completio
     });
   });
 
+  await page.waitForTimeout(750);
   await expect(partialCueRows(page)).toHaveCount(0);
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: "it's a voice input.",
     translatedText: '這是語音輸入。'
+  });
+});
+
+test('adjacent short final Cues render as one natural sentence', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (const [sourceText, translationText] of [
+      ['Actually,', '其實，'],
+      ["it's very", '很'],
+      ['right now.', '現在。']
+    ]) {
+      session.emitMessage({
+        serverContent: {
+          inputTranscription: { text: sourceText },
+          outputTranscription: { text: translationText }
+        }
+      });
+    }
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: "Actually, it's very right now.",
+    translatedText: '其實，很現在。'
+  });
+});
+
+test('a long sentence remains one live Cue instead of being split by character limits', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const sourceText = '這是一段很長的即時字幕內容，應該完整顯示成一句話，不要因為字數上限而被拆成多列。';
+  const translationText = 'This is a long live subtitle sentence that should remain together instead of being split into several rows.';
+  await emitFinalTranscript(page, sourceText, translationText);
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  const row = finalCueRows(page).first();
+  const displayedSourceText = await row.getByTestId('cue-source-text').textContent();
+  const displayedTranslationText = await translationCueList(page).getByTestId('cue-final-row').first().getByTestId('cue-translated-text').textContent();
+  expect(displayedSourceText.replace(/\s+/gu, '').trim()).toBe(sourceText);
+  expect(displayedTranslationText.replace(/\s+/gu, ' ').trim()).toBe(translationText);
+});
+
+test('unfinished prefix Cue joins the following sentence-ending Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (const [sourceText, translationText] of [
+      ['The microphone', '麥克風'],
+      ['test is working.', '測試正常。']
+    ]) {
+      session.emitMessage({
+        serverContent: {
+          inputTranscription: { text: sourceText },
+          outputTranscription: { text: translationText }
+        }
+      });
+    }
+  });
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'The microphone test is working.',
+    translatedText: '麥克風測試正常。'
   });
 });
 
@@ -1531,7 +1863,7 @@ test('Stop finalizes visible partial transcripts for export and history', async 
   await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-translated-text')).toHaveText('partial translation on stop');
 });
 
-test('interim input transcription keeps source visible before formal input finalizes it', async ({ page }) => {
+test('interim input transcription stays in the same pending pair as formal input', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1555,18 +1887,16 @@ test('interim input transcription keeps source visible before formal input final
 
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
-    sourceText: 'interim source before final',
+    sourceText: 'interim source before final formal source after interim',
     translatedText: 'translation already available'
   });
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page).first().getByTestId('cue-source-text')).toHaveText('formal source after interim');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
   await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-final-row')).toHaveCount(1);
   await expectCueRow(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-final-row').first(), {
-    sourceText: 'interim source before final',
+    sourceText: 'interim source before final formal source after interim',
     translatedText: 'translation already available'
   });
 });
@@ -1619,6 +1949,11 @@ test('stopped session can open and close inline detail with metadata and final t
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
       serverContent: { inputTranscription: { text: 'partial should not save' } }
+    });
+  });
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { turnComplete: true }
     });
   });
   await emitFinalTranscript(page, 'saved source detail', 'saved translation detail');
@@ -1720,7 +2055,7 @@ test('session detail queues retranslation and displays pending status', async ({
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = sessionDetail(page);
-  await expect(detail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: '翻譯內容' })).toBeVisible();
   await detail.getByRole('tab', { name: '原始逐字稿' }).click();
   await expect(detail.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
   await expect(detail.getByLabel('重新翻譯進度')).toHaveCount(0);
@@ -1959,8 +2294,8 @@ test('completed retranslation stays out of translation history records', async (
   }
 
   const originalDetail = sessionDetail(page);
-  await expect(originalDetail.getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
-  await expect(originalDetail.getByLabel('文章版翻譯').getByText('live output')).toBeVisible();
+  await expect(originalDetail.getByRole('heading', { name: '翻譯內容' })).toBeVisible();
+  await expect(originalDetail.getByLabel('翻譯內容').getByText('live output')).toBeVisible();
   await expect(originalDetail.getByText('Bonjour terminé')).toHaveCount(0);
 });
 
@@ -2269,8 +2604,8 @@ test('no transcript detail shows empty state', async ({ page }) => {
 
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
-  await expect(sessionDetail(page).getByRole('heading', { name: '文章版翻譯' })).toBeVisible();
-  await expect(sessionDetail(page).getByText('尚無文章版翻譯。')).toBeVisible();
+  await expect(sessionDetail(page).getByRole('heading', { name: '翻譯內容' })).toBeVisible();
+  await expect(sessionDetail(page).getByText('尚無翻譯內容。')).toBeVisible();
   await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
   await expect(sessionDetail(page).getByText('尚無原始逐字稿。')).toBeVisible();
   await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeDisabled();

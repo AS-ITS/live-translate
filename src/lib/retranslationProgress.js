@@ -41,6 +41,9 @@ export function hasPendingRetranslationItems(progress = {}) {
 }
 
 function isFormalRetranslationOutput(output) {
+  if (output?.operation === 'transcript_polishing') {
+    return false;
+  }
   if (typeof output?.id === 'string' && output.id.startsWith('live-output:')) {
     return false;
   }
@@ -53,6 +56,9 @@ function isFormalRetranslationOutput(output) {
 }
 
 function isRetranslationExecution(execution) {
+  if (execution?.operation === 'transcript_polishing') {
+    return false;
+  }
   const executionId = execution?.id || execution?.executionId || '';
   const requestId = execution?.requestId || execution?.translationRequestId || '';
   if (typeof executionId === 'string' && executionId.startsWith('legacy-execution:')) return false;

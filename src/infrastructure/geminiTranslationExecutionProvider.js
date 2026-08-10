@@ -9,6 +9,7 @@ export function createGeminiTranslationExecutionProvider({ client } = {}) {
 
       return Object.freeze({
         translatedText: result?.translatedText,
+        ...(result?.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
         detectedSourceLanguageCode: result?.detectedSourceLanguageCode
       });
     }
@@ -32,6 +33,9 @@ function resolveTranslate(client) {
 function mapProviderInputToGeminiRequest(input) {
   return Object.freeze({
     sourceText: input?.sourceText,
+    ...(input?.operation === undefined ? {} : { operation: input.operation }),
+    ...(input?.polishingItems === undefined ? {} : { polishingItems: input.polishingItems }),
+    ...(input?.model === undefined ? {} : { model: input.model }),
     ...(input?.sourceLanguageCode === undefined ? {} : { sourceLanguageCode: input.sourceLanguageCode }),
     targetLanguageCode: input?.targetLanguageCode,
     ...(input?.requestId === undefined ? {} : { requestId: input.requestId }),

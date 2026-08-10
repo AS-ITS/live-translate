@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+- 修正語音潤飾資料流：Flash Lite 只讀取已 finalized 的 Cue snapshot，結果獨立保存為 polished article；不再回寫 Raw Transcript、Live Translation、Cue、Session record 或 Gemini Live prompt。潤飾啟用與停用時送往 Gemini Live 的 PCM chunk 保持一致。
+
+- 即時字幕潤飾會以已 finalized 的雙語 Cue 作為上下文，結果獨立保存為文章版翻譯；Raw Transcript、Live Translation、字幕與匯出內容保持原始結果。
+
+- 修正即時字幕過度依 Gemini turn 切成短列：沒有句末標點的雙語片段可跨 turn 合併；若來源時間或數字在譯文中遺失，會在同一 Live session 觸發一次不重播音訊的校正翻譯，並回填原 Cue。
+
+- 修正 turn boundary 時 pending 原文未被 flush 的漏字風險。
+
+- 修正停止或段落切換時未送出的尾端 PCM，以及晚於 turn boundary 到達的累積式原文；句末數字與時間不再因音訊或事件排序而被截斷。
+
+- 修正長會議分段切換、重連、暫停／繼續與停止期間的 stale Live callback 與 checkpoint context 汙染；舊 generation 不再寫入目前段落，未成功同步資料仍會保留。
+
+- 翻譯紀錄保存失敗時補充顯示失敗階段、HTTP 狀態與安全錯誤代碼，方便診斷而不暴露內部錯誤細節。
+
+- 合併長會議同步與音檔狀態訊息；未產生音檔時只顯示同步狀態，有音檔活動時在同一個訊息欄位顯示錄音狀態，音檔下載仍保留於翻譯紀錄詳細資料。
+
+- 修正長時間錄音結束時的記憶體峰值：瀏覽器不再保留完整音檔或於 Stop 一次性組裝 WAV，音檔改由分段保存；畫面會引導使用者到翻譯紀錄下載。後端下載分段音檔時改為逐段串流，避免載入整個錄音。
+
+- 字幕潤飾改為使用 Gemini Flash-Lite 純文字回應，移除 structured-output 設定；空白／純標點輸入會略過 provider，400 錯誤會安全保存 HTTP status、provider code、message、model 與 config 欄位摘要。
+
+- 即時字幕不再依語言字數上限硬拆 Cue；完整句子會以 Gemini turn、句末、idle 或 Stop 作為邊界，潤飾失敗時保留原始翻譯並提供重試。
+
+- Gemini 翻譯潤飾請求現在使用結構化 `polishedItems` schema，並安全正規化序號與 Cue 對應；無法完整可靠對應時整批失敗並保留原翻譯。
+
+- 翻譯潤飾狀態改為顯示在即時字幕標題列的 Badge，不再於頁面底部新增獨立狀態面板；失敗時可直接在同列重試。
+
+- 補齊翻譯潤飾狀態與重試 UI；歷史載入與即時更新現在會合併所有批次的潤飾結果，避免較早 Cue 在 reload 後遺失。
+
+- 修正即時字幕與逐字稿在新的 final turn 重複數字或片段時，誤套用歷史前綴去重而漏字、漏翻譯；歷史前綴剝除現在只套用於非 final 的累積更新。
+
+- 翻譯潤飾以整批 finalized 翻譯 Cue 作為上下文、逐句回傳 `polishedText`，並保留獨立文章版欄位；不回寫即時字幕、Raw Transcript 或 Live Translation。
+
+- 修正長會議 checkpoint 與分段語音紀錄的暫時性保存失敗；未同步資料會在目前頁面工作階段保留並以退避間隔持續重試，成功後清除錯誤提示。
+
+- 修正 Live Subtitle Cue 過早依 provider fragment finalize 的問題；同一 turn 的片段會先累積，中文短片段需達最小語意長度，turnComplete 以 700ms debounce 完成，並允許最後 1500ms 內的晚到雙語片段安全回併同一 Cue 與 checkpoint。
+
+- 強化即時翻譯的數字與標點保真指令，避免翻譯語音與輸出逐字稿漏掉數字序列中的單一數字。
+
+- 修正即時字幕 Cue 合併後沿用相同 `cueId` 導致長會議 checkpoint 衝突；現在只允許來源與翻譯文字單調追加的 `merged` Cue 更新，真正內容衝突仍會拒絕。
+
+- Added an asynchronous transcript polishing pipeline for stable bilingual
+  Cues. Gemini Flash Lite polishing runs through the existing queued translation
+  execution infrastructure, persists versioned range/hash metadata, and is
+  displayed separately from raw and live translation content without blocking
+  the Live session.
+
+- 修正即時字幕前綴短片段被拆成多列的問題；同一 Segment 中尚未完成的 Cue 會回併下一個句末片段，並改為優先依單字邊界換行。
+
 - 即時語音輸入關閉瀏覽器的回音消除、降噪與自動增益，保留較原始的麥克風波形以改善語音辨識忠實度；單聲道、16kHz PCM 傳送流程不變。
 
 - 修正同一段語音重複說出相同文字時被錯誤去重的問題；現在只有同一個 provider event 的重送會去重，不同發話事件即使文字相同也會各自保留。
@@ -14,7 +62,7 @@
 
 - 即時字幕會將同一個 Gemini Turn 的非累積來源／翻譯片段合併成單一暫存列，直到 `turnComplete`、`generationComplete` 或 transcript idle fallback 才完成，避免一句話被逐詞拆成多列，也避免缺少 boundary 時永久停留在 partial。
 
-- Live Cue 在最後一個文字事件後閒置 1200ms 時，配對 Cue 會完成；只有原文 Cue 會透過同一 Live session 重翻一次，重翻失敗則保留 source-only final，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
+- Live Cue 在 turnComplete／generationComplete 後閒置 700ms 時，配對且足夠完整的 Cue 會完成；只有原文 Cue 會透過同一 Live session 重翻一次，重翻失敗則保留 partial，只有翻譯的幻聽片段不會保存。此機制不重開 session、不重送麥克風音訊，也不改變 token API。
 
 - 即時字幕 Cue 超過語言字數目標時，會依子句、詞界或安全字元邊界拆成連續的雙語 Cue；短字幕不再因句尾標點提前切碎。Live transcript、Cue checkpoint 與新儲存逐字稿會忽略同一段語音的尾段重複文字（例如 `123` 後的 `3`），但保留 boundary 後真正重複的發話；Live 與歷史字幕 renderer 會依原文／譯文語言各自換行，每個 Cue 最多顯示兩行，儲存與匯出仍保留完整文字。
 

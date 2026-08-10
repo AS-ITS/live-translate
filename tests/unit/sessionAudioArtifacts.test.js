@@ -109,3 +109,41 @@ test('audio artifact DTO hides segmented storage paths', () => {
   assert.equal(dto.translation.downloadUrl, '/api/sessions/session-1/audio/translation');
   assert.equal(dto.translation.segments[0].storagePath, undefined);
 });
+
+test('streamed segmented WAV emits one header and ordered segment payloads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-audio-'));
+  try {
+    const repository = createFileSessionAudioArtifactRepository({
+      directory,
+      fileSystem: await import('node:fs/promises'),
+      clock: () => 1234
+    });
+    const first = await repository.saveSegment({
+      sessionId: 'session-1',
+      kind: 'translation',
+      segmentIndex: 0,
+      bytes: createPcm16WavBytes(new Uint8Array([1, 0, 2, 0]), { sampleRate: 24000 })
+    });
+    const second = await repository.saveSegment({
+      sessionId: 'session-1',
+      kind: 'translation',
+      segmentIndex: 1,
+      bytes: createPcm16WavBytes(new Uint8Array([3, 0, 4, 0]), { sampleRate: 24000 })
+    });
+    const chunks = [];
+    for await (const chunk of repository.stream({
+      kind: 'translation',
+      storageMode: 'segmented',
+      byteLength: first.byteLength + second.byteLength,
+      fileName: 'translated.wav',
+      segments: [first, second]
+    })) chunks.push(Buffer.from(chunk));
+
+    const bytes = Buffer.concat(chunks);
+    assert.equal(bytes.toString('ascii', 0, 4), 'RIFF');
+    assert.equal(bytes.readUInt32LE(40), 8);
+    assert.deepEqual([...bytes.subarray(44)], [1, 0, 2, 0, 3, 0, 4, 0]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

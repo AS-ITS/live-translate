@@ -270,6 +270,10 @@ async function enqueueExecutionPublishEventsAndReturnResult(
 ) {
   await publishEventAndReturnResult(domainEventPublisher, createEvent(), repositoryResult);
 
+  if (repositoryResult?.status && repositoryResult.status !== 'created') {
+    return repositoryResult;
+  }
+
   const queuedExecution = execution.queue();
   const queuedRepositoryResult = await translationRepository.updateTranslationExecution(queuedExecution);
   await publishTranslationExecutionUpdatedEvent(domainEventPublisher, queuedExecution, queuedRepositoryResult);

@@ -62,6 +62,10 @@ test('buildTokenConfig locks live translate model and audio settings', () => {
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.echoTargetLanguage, false);
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.sourceLanguageCode, undefined);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Translate faithfully without summarizing, shortening, merging, or omitting any spoken word/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Preserve every spoken digit, number, and punctuation mark/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Do not skip, merge, reorder, or silently omit any digit in a number sequence/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Speak the complete translation aloud exactly once/);
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
 });
 

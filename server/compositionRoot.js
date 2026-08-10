@@ -967,6 +967,11 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     sessionId: request.sessionId,
     executionId: execution.id,
     sourceText: sourceTextFromSnapshot(sourceTranscriptSnapshot),
+    operation: request.operation,
+    polishingItems: sourceTranscriptSnapshot.polishingItems,
+    segmentRange: request.segmentRange,
+    inputHash: request.inputHash,
+    model: request.model ?? (request.operation === 'transcript_polishing' ? transcriptPolishingModelFor(process.env) : undefined),
     sourceLanguageCode: sourceTranscriptSnapshot.sourceLanguageCode,
     sourceLanguageMetadata: sourceTranscriptSnapshot.sourceLanguageDetection,
     sourceTranscriptMetadata: {
@@ -980,6 +985,12 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
 }
 
 function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
+  if (Array.isArray(sourceTranscriptSnapshot.polishingItems)) {
+    return sourceTranscriptSnapshot.polishingItems
+      .map((item) => item?.translationText || item?.text)
+      .filter((text) => typeof text === 'string' && text.length > 0)
+      .join('\n');
+  }
   if (typeof sourceTranscriptSnapshot.sourceText === 'string') {
     return sourceTranscriptSnapshot.sourceText;
   }
@@ -996,6 +1007,11 @@ function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
   }
 
   return undefined;
+}
+
+function transcriptPolishingModelFor(env = process.env) {
+  const value = env.TRANSCRIPT_POLISHING_MODEL;
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'gemini-3.5-flash-lite';
 }
 
 function resolveSavedTranscriptProviderDependencies({

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Added process-local queue reliability metrics with a protected
+  `GET /api/metrics` snapshot. Worker success/skip/cancel/retry/failure,
+  recovery, DLQ transfer, lease, acknowledgement, queue depth, and last-success
+  state are tracked without exposing execution or provider identifiers; metric
+  failures do not affect translation behavior.
+
+- Reliability closeout verified the Phase 3J queue retry and dead-letter path:
+  deterministic retry classification, capped backoff scheduling, durable
+  retry metadata, lease-owned DLQ transfer, restart recovery, and stale-lease
+  fencing are covered by the focused unit and integration test set. Remaining
+  reliability work is limited to multi-worker coordination, cross-process
+  atomicity, event deduplication, and metrics/observability.
+
 - Connection resilience now pauses reconnect while the browser is offline and
   resumes the same recovery generation after `online`. Microphone track loss
   cleans up before recovery and falls back to the browser default microphone

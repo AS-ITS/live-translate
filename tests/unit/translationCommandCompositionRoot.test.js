@@ -308,6 +308,7 @@ test('application dependencies assemble translation command graph with injected 
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',
+    'translationExecutionMetrics',
     'translationHistoryController',
     'translationRepository'
   ]);

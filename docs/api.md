@@ -674,6 +674,36 @@ server token and is visible in the frontend bundle; this v1 design does not
 provide per-user security. All authenticated users share the same private API
 permissions.
 
+## `GET /api/metrics`
+
+Returns the process-local translation queue reliability snapshot. The route is
+private and requires the same access token and origin checks as other private
+`/api/*` routes. Metrics reset when the server process restarts.
+
+```json
+{
+  "metrics": {
+    "translation_queue_depth": 0,
+    "translation_queue_processed_total": 0,
+    "translation_queue_skipped_total": 0,
+    "translation_queue_cancelled_total": 0,
+    "translation_queue_retry_total": 0,
+    "translation_queue_failed_total": 0,
+    "translation_queue_dlq_transfer_total": 0,
+    "translation_queue_recovery_total": 0,
+    "translation_queue_lease_error_total": 0,
+    "translation_queue_acknowledgement_error_total": 0,
+    "translation_queue_last_success_at": null
+  },
+  "generatedAt": "2026-08-10T00:00:00.000Z",
+  "requestId": "request-id"
+}
+```
+
+The endpoint is read-only and does not wake or process the translation worker.
+It does not expose execution IDs, request IDs, provider keys, or provider error
+messages.
+
 ## Session-first commands
 
 ### `POST /api/sessions`

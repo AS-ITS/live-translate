@@ -538,11 +538,16 @@ Current limitations:
   success for missing-output or mismatched execution/durable state.
 - Failed reconciliation requires no output and leaves output-bearing failed
   executions durable.
-- No lease renewal/heartbeat or execution fencing after lease expiry.
 - No multi-worker locking or cross-process deduplication policy.
 - These layers do not provide multi-process exactly-once delivery.
 - Provider-level external idempotency keys and event-publishing deduplication
   remain out of scope.
+
+Queue observability is process-local. The shared metrics registry is injected
+into the Worker, Worker Runtime, and startup recovery and is read through the
+authenticated `GET /api/metrics` endpoint. It intentionally uses fixed
+low-cardinality names and does not persist or expose execution/provider
+identifiers.
 
 ## 5. Authentication and Token Flow
 

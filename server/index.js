@@ -11,6 +11,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
+import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import {
   audioArtifactDownloadByteLength,
@@ -505,7 +506,8 @@ export function createRequestHandler(options = {}) {
     sessionShareService = createSessionShareService(),
     sessionEventBroadcaster = createSessionEventBroadcaster(),
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
-    sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES
+    sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
+    translationExecutionMetrics = createTranslationExecutionMetrics()
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -537,7 +539,8 @@ export function createRequestHandler(options = {}) {
       sessionEventBroadcaster,
       sessionSnapshotMaxBytes,
       meetingCheckpointMaxBytes,
-      sessionAudioMaxBytes
+      sessionAudioMaxBytes,
+      translationExecutionMetrics
     });
   };
 }
@@ -549,7 +552,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -575,6 +578,17 @@ async function handleRequestWithSessionReadController(
     const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured());
     statusCode = ready ? 200 : 503;
     sendJson(res, statusCode, { ok: ready, requestId }, requestId);
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/metrics') {
+    try {
+      statusCode = 200;
+      sendJson(res, statusCode, { ...translationExecutionMetrics.snapshot(), requestId }, requestId);
+    } catch (error) {
+      statusCode = 500;
+      sendJson(res, statusCode, errorPayload('internal_error', requestId), requestId);
+    }
     return;
   }
 

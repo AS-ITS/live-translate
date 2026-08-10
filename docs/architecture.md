@@ -309,6 +309,12 @@ Current limitations:
 - Provider external idempotency keys and event-publishing deduplication remain
   out of scope.
 
+Queue reliability metrics are process-local and are exposed through the
+authenticated `GET /api/metrics` read model. The registry records queue depth,
+worker outcomes, retry/DLQ activity, recovery, lease errors, acknowledgement
+errors, and the last successful processing timestamp. Metrics are best-effort;
+metric update failures never change queue or translation behavior.
+
 ## Gemini Live Session Flow
 
 1. User starts a session in the browser.

@@ -45,9 +45,17 @@ Integration, and WP5 Documentation Closeout are completed.
 Phase 3I Lease Renewal & Execution Fencing is completed: lease renewal,
 heartbeat orchestration, monotonic fence tokens, fenced execution persistence,
 token-aware acknowledgement, and production vertical integration are covered.
-Remaining reliability work: retry scheduling/backoff, dead-letter queues,
-provider-level idempotency, event publishing deduplication, multi-worker and
-distributed locking, cross-process atomicity, and metrics/observability.
+Phase 3J Queue Retry & Dead-Letter Handling is completed: retryable provider
+failures use durable capped backoff scheduling, retry metadata survives restart,
+and exhausted or non-retryable failures transfer to an idempotent file-backed
+dead-letter queue with ownership checks. Remaining reliability work:
+multi-worker/distributed locking, cross-process atomicity, event publishing
+deduplication.
+Phase 3L Queue Metrics & Observability v1 is completed: a process-local shared
+metrics registry, protected `GET /api/metrics` snapshot, and deterministic
+queue/retry/DLQ/recovery instrumentation are covered. Remaining reliability
+work is multi-worker/distributed locking, cross-process atomicity, and event
+publishing deduplication.
 
 Phase 4A WP1 Target Language Selection is completed. The existing target-language
 allowlist and `en` default now apply at live-token, translation-command,

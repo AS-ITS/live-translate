@@ -3,8 +3,10 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 import { buildTokenConfig, normalizeTokenRequest } from '../../server/tokenService.js';
+import { createTranslationExecutionMetrics } from '../../src/application/translation/translationExecutionMetrics.js';
 
 let requestHandler;
+let metrics;
 
 function resetMock() {
   globalThis.__mockGoogleGenAI = {
@@ -52,7 +54,9 @@ async function postJson(body) {
 
 test.beforeEach(() => {
   resetMock();
+  metrics = createTranslationExecutionMetrics({ clock: () => '2026-08-10T00:00:00.000Z' });
   requestHandler = createRequestHandler({
+    translationExecutionMetrics: metrics,
     async liveTokenCreator(body) {
       if (!process.env.GEMINI_API_KEY) {
         throw new Error('GEMINI_API_KEY is not configured');
@@ -250,4 +254,30 @@ test('GET /healthz and /readyz report service status', async () => {
   process.env.GEMINI_API_KEY = 'test-api-key';
   const readyResponse = await request({ method: 'GET', url: '/readyz' });
   assert.equal(readyResponse.status, 200);
+});
+
+test('GET /api/metrics returns the protected process-local queue snapshot', async () => {
+  metrics.increment('translation_queue_processed_total', 2);
+  metrics.setGauge('translation_queue_depth', 3);
+
+  const response = await request({ method: 'GET', url: '/api/metrics' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json(), {
+    metrics: {
+      translation_queue_depth: 3,
+      translation_queue_processed_total: 2,
+      translation_queue_skipped_total: 0,
+      translation_queue_cancelled_total: 0,
+      translation_queue_retry_total: 0,
+      translation_queue_failed_total: 0,
+      translation_queue_dlq_transfer_total: 0,
+      translation_queue_recovery_total: 0,
+      translation_queue_lease_error_total: 0,
+      translation_queue_acknowledgement_error_total: 0,
+      translation_queue_last_success_at: null
+    },
+    generatedAt: '2026-08-10T00:00:00.000Z',
+    requestId: response.json().requestId
+  });
 });

@@ -21,6 +21,7 @@ import { assertTranslationExecutionQueue } from '../src/application/translation/
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
 import { createTranslationExecutionRetryPolicy } from '../src/application/translation/translationExecutionRetryPolicy.js';
 import { createTranslationExecutionRetryErrorClassifier } from '../src/application/translation/translationExecutionRetryErrorClassifier.js';
+import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
@@ -95,6 +96,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionProviderResolver,
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
+    translationExecutionMetrics,
     translationDomainEventHandlers,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
@@ -136,6 +138,7 @@ export function createApplicationDependencies(options = {}) {
     liveTokenCreator,
     ...sessionReadOptions
   } = options;
+  const resolvedTranslationExecutionMetrics = translationExecutionMetrics ?? createTranslationExecutionMetrics();
   const translationGlossary = glossaryController === undefined
     ? translationGlossaryFactory({
         filePath: translationGlossaryFilePathFor(env),
@@ -195,6 +198,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionProviderResolver,
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
+    translationExecutionMetrics: resolvedTranslationExecutionMetrics,
     translationDomainEventHandlers,
     idGenerator,
     clock,
@@ -291,6 +295,7 @@ export function createApplicationDependencies(options = {}) {
       ...(translationCommandDependencies.translationExecutionWorkerRuntime
         ? { translationExecutionWorkerRuntime: translationCommandDependencies.translationExecutionWorkerRuntime }
         : {}),
+      translationExecutionMetrics: resolvedTranslationExecutionMetrics,
       ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
       ...(includeSessionRetranslationCommandController ? { sessionRetranslationCommandController } : {})
       })
@@ -299,6 +304,7 @@ export function createApplicationDependencies(options = {}) {
   return {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
+    translationExecutionMetrics: resolvedTranslationExecutionMetrics,
     translationApplicationService: resolvedTranslationApplicationService,
     translationCommandController,
     translationHistoryQueryService,
@@ -360,6 +366,9 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionRetryErrorClassifierFactory = createTranslationExecutionRetryErrorClassifier,
     ...applicationOptions
   } = options;
+
+  const translationExecutionMetrics = applicationOptions.translationExecutionMetrics
+    ?? createTranslationExecutionMetrics({ clock: translationQueueClock.now.bind(translationQueueClock) });
 
   const hasTranslationExecutionProvider = Object.prototype.hasOwnProperty.call(options, 'translationExecutionProvider');
   const hasTranslationExecutionProviderResolver = Object.prototype.hasOwnProperty.call(
@@ -524,6 +533,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
+    translationExecutionMetrics,
     glossaryController,
     liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary }),
     ...resolvedProviderDependencies
@@ -541,7 +551,8 @@ export function createProductionApplicationDependencies(options = {}) {
           },
           clock: translationQueueClock.now.bind(translationQueueClock),
           leaseDurationMs: queueConfiguration.leaseMs,
-          leaseIdFactory: translationQueueLeaseIdFactory
+          leaseIdFactory: translationQueueLeaseIdFactory,
+          metrics: translationExecutionMetrics
         })
       : undefined;
   const translationExecutionWorkerRuntime =
@@ -717,6 +728,7 @@ export function createTranslationCommandDependencies({
   translationExecutionProviderResolver,
   translationExecutionRetryPolicy,
   translationExecutionRetryErrorClassifier,
+  translationExecutionMetrics,
   translationDomainEventHandlers,
   idGenerator = createDefaultIdGenerator(),
   clock = () => Date.now(),
@@ -809,7 +821,8 @@ export function createTranslationCommandDependencies({
                 translationExecutionRetryPolicy,
                 translationExecutionRetryErrorClassifier
               }
-            : {})
+            : {}),
+          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {})
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =
@@ -823,7 +836,8 @@ export function createTranslationCommandDependencies({
                 durableRepository: durableTranslationExecutionQueueRepository,
                 ...(translationQueueClock !== undefined ? { clock: translationQueueClock.now.bind(translationQueueClock) } : {})
               }
-            : {})
+            : {}),
+          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {})
         })
       : undefined);
   const translationCommandService = translationCommandServiceFactory({

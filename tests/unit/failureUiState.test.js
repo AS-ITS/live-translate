@@ -45,6 +45,15 @@ test('maps unexpected_close to controlled reconnect state', () => {
   assert.equal(uiState.stopVisible, true);
 });
 
+test('maps network offline to paused reconnect state with an explicit label', () => {
+  const uiState = failureUiStateForClassification(classifyConnectionFailure('network_offline'));
+
+  assert.equal(uiState.status, 'reconnecting');
+  assert.equal(uiState.statusLabel, '網路離線');
+  assert.equal(uiState.shouldReconnect, true);
+  assert.equal(uiState.stopVisible, true);
+});
+
 test('maps provider_error to controlled reconnect state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('provider_error'));
 
@@ -82,11 +91,11 @@ test('does not allow reconnect for manual recovery token failures', () => {
 });
 
 test('allows reconnect for recoverable live and token failures among covered reasons', () => {
-  const reasons = ['token_expired', 'auth_failed', 'rate_limited', 'unexpected_close', 'provider_error', 'unknown_error'];
+  const reasons = ['token_expired', 'network_offline', 'auth_failed', 'rate_limited', 'unexpected_close', 'provider_error', 'unknown_error'];
   const reconnectReasons = reasons.filter((reason) => {
     const uiState = failureUiStateForClassification(classifyConnectionFailure(reason));
     return uiState.shouldReconnect;
   });
 
-  assert.deepEqual(reconnectReasons, ['token_expired', 'unexpected_close', 'provider_error']);
+  assert.deepEqual(reconnectReasons, ['token_expired', 'network_offline', 'unexpected_close', 'provider_error']);
 });

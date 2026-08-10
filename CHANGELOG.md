@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Connection resilience now pauses reconnect while the browser is offline and
+  resumes the same recovery generation after `online`. Microphone track loss
+  cleans up before recovery and falls back to the browser default microphone
+  when the selected device is unavailable, with deterministic unit and E2E
+  coverage.
+
 - Added shared Access Token v1 for private `/api/*` routes. Production now
   requires `DEMO_ACCESS_TOKEN`; the browser uses the matching
   `VITE_DEMO_ACCESS_TOKEN`. Health/readiness and anonymous share Viewer routes

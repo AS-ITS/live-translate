@@ -15,6 +15,7 @@ export function createReconnectController(options = {}) {
   let pendingClassification = null;
   let lastScheduleResult = null;
   let needsNewLifecycle = true;
+  let connectivity = 'online';
 
   function start() {
     clearPendingTimer();
@@ -35,6 +36,7 @@ export function createReconnectController(options = {}) {
     pendingClassification = null;
     lastScheduleResult = null;
     needsNewLifecycle = true;
+    connectivity = 'online';
     if (state !== 'cancelled') {
       state = 'completed';
     }
@@ -63,7 +65,10 @@ export function createReconnectController(options = {}) {
       return ignoredResult(callbackGeneration);
     }
 
-    const decision = nextRetryDecision(retryState, classification, {
+    const decisionClassification = classification?.reason === 'network_offline'
+      ? { ...classification, reason: 'network_interrupted' }
+      : classification;
+    const decision = nextRetryDecision(retryState, decisionClassification, {
       ...retryOptions,
       now: now()
     });
@@ -85,6 +90,17 @@ export function createReconnectController(options = {}) {
     retryState = recordRetryAttempt(retryState, decision, now());
     pendingDecision = decision;
     pendingClassification = classification;
+    if (connectivity === 'offline') {
+      state = 'paused';
+      lastScheduleResult = {
+        scheduled: false,
+        paused: true,
+        generationId: callbackGeneration,
+        decision,
+        state
+      };
+      return lastScheduleResult;
+    }
     state = 'scheduled';
 
     pendingTimer = timer.set(
@@ -112,6 +128,7 @@ export function createReconnectController(options = {}) {
     pendingClassification = null;
     lastScheduleResult = null;
     needsNewLifecycle = true;
+    connectivity = 'online';
     state = 'cancelled';
     return snapshot();
   }
@@ -124,6 +141,7 @@ export function createReconnectController(options = {}) {
     pendingClassification = null;
     lastScheduleResult = null;
     needsNewLifecycle = true;
+    connectivity = 'online';
     state = 'idle';
     return snapshot();
   }
@@ -134,6 +152,34 @@ export function createReconnectController(options = {}) {
 
   function currentGeneration() {
     return generationId;
+  }
+
+  function setConnectivity(isOnline) {
+    connectivity = isOnline ? 'online' : 'offline';
+
+    if (!isOnline) {
+      if (pendingTimer) {
+        clearPendingTimer();
+        state = 'paused';
+      }
+      return snapshot();
+    }
+
+    if (state !== 'paused' || !pendingDecision || !pendingClassification) {
+      return snapshot();
+    }
+
+    state = 'scheduled';
+    const callbackGeneration = generationId;
+    pendingTimer = timer.set(
+      () => executeScheduledReconnect({
+        classification: pendingClassification,
+        decision: pendingDecision,
+        generationId: callbackGeneration
+      }),
+      pendingDecision.delayMs
+    );
+    return snapshot();
   }
 
   function isCurrent(callbackGeneration) {
@@ -197,6 +243,7 @@ export function createReconnectController(options = {}) {
     scheduleReconnect,
     cancel,
     reset,
+    setConnectivity,
     currentState,
     currentGeneration
   };

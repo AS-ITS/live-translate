@@ -76,12 +76,15 @@ export class LiveTranslateSession {
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
+    this.microphoneTrackListeners = [];
+    this.microphoneFailureSignaled = false;
     this.retranslationCueIds = new Set();
     this.activeRetranslationCueId = null;
   }
 
   async start() {
     this.mediaStream = await this.openInputStream();
+    this.attachMicrophoneTrackListeners();
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
     this.audioContext = new AudioContext();
@@ -178,6 +181,44 @@ export class LiveTranslateSession {
       this.onInputDeviceFallback?.();
       return navigator.mediaDevices.getUserMedia(buildAudioInputConstraints());
     }
+  }
+
+  attachMicrophoneTrackListeners() {
+    for (const track of this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.() || []) {
+      if (typeof track?.addEventListener !== 'function') continue;
+      const onEnded = () => {
+        void this.handleMicrophoneDisconnected();
+      };
+      track.addEventListener('ended', onEnded);
+      this.microphoneTrackListeners.push({ track, onEnded });
+    }
+  }
+
+  async handleMicrophoneDisconnected() {
+    if (this.closeExpected || this.closed || this.microphoneFailureSignaled) return;
+    this.microphoneFailureSignaled = true;
+    this.flushPendingTranscripts();
+    await this.cleanup({ closeSession: true });
+    this.onConnectionFailure?.({
+      source: 'microphone_disconnected',
+      rawError: new Error('Microphone track ended.'),
+      reasonHint: this.inputDeviceId ? 'selected_device_missing' : 'microphone_disconnected',
+      afterCleanup: true
+    });
+    this.onError?.(new Error('Microphone track ended.'));
+  }
+
+  async handleNetworkOffline() {
+    if (this.closeExpected || this.closed) return;
+    this.flushPendingTranscripts();
+    await this.cleanup({ closeSession: true });
+    this.onConnectionFailure?.({
+      source: 'network_offline',
+      rawError: new Error('Browser went offline.'),
+      reasonHint: 'network_offline',
+      afterCleanup: true
+    });
+    this.onError?.(new Error('Browser went offline.'));
   }
 
   retranslateSourceText(sourceText, cueId = '') {
@@ -463,6 +504,10 @@ export class LiveTranslateSession {
     this.cleaningUp = true;
     try {
       this.closed = true;
+      for (const { track, onEnded } of this.microphoneTrackListeners) {
+        track.removeEventListener?.('ended', onEnded);
+      }
+      this.microphoneTrackListeners = [];
       this.chunker?.reset();
       this.clearPlaybackQueue();
 

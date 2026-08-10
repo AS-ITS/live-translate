@@ -21,8 +21,18 @@ test.beforeEach(async ({ page }) => {
           const track = {
             kind: 'audio',
             stopped: false,
+            listeners: new Map(),
             stop() {
               this.stopped = true;
+            },
+            addEventListener(event, handler) {
+              this.listeners.set(event, handler);
+            },
+            removeEventListener(event, handler) {
+              if (this.listeners.get(event) === handler) this.listeners.delete(event);
+            },
+            emit(event) {
+              this.listeners.get(event)?.();
             }
           };
           window.__mockMicTracks.push(track);
@@ -2823,6 +2833,54 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+});
+
+test('offline pauses reconnect and online resumes one replacement session', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'before offline', 'after online');
+
+  await page.context().setOffline(true);
+  await expect(page.getByText('網路離線', { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
+
+  await page.context().setOffline(false);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('network_offline');
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('before offline')).toBeVisible();
+  await expect(page.getByText('after online')).toBeVisible();
+});
+
+test('selected microphone disconnect falls back on reconnect', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await page.addInitScript(() => {
+    navigator.mediaDevices.enumerateDevices = async () => [{
+      kind: 'audioinput',
+      deviceId: 'mic-1',
+      groupId: 'group-1',
+      label: 'Desk Mic'
+    }];
+  });
+  await page.goto('/');
+
+  await page.locator('details.advanced-settings').locator('summary').click();
+  await page.getByLabel('麥克風').selectOption('mic-1');
+  await page.locator('details.advanced-settings').locator('summary').click();
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => window.__mockMicTracks[0].emit('ended'));
+
+  await expect(page.getByText('所選麥克風已中斷，重新連線時會改用瀏覽器預設麥克風。')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('selected_device_missing');
+  await expect(page.getByText('聆聽中')).toBeVisible();
 });
 
 test('token expired recovers with a fresh token and preserves transcript', async ({ page }) => {

@@ -140,8 +140,8 @@ persistence reload, full transcript reconstruction, duplicate/order checks, and
 failed-Segment readable checkpoint coverage. E2E coverage verifies
 browser-suspended wake recovery and explicit resource diagnostics after
 long-meeting Stop.
-Offline pause/resume and device-disconnect recovery remain deferred resilience
-extensions.
+Offline pause/resume and device-disconnect recovery are completed resilience
+extensions. Proactive token refresh remains deferred.
 
 Completed Phase 1 capabilities include:
 

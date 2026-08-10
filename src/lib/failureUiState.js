@@ -5,7 +5,8 @@ const MANUAL_RECOVERY_MESSAGES = {
 
 const STATUS_LABELS = {
   auth_failed: '存取失敗',
-  rate_limited: '請求受限'
+  rate_limited: '請求受限',
+  network_offline: '網路離線'
 };
 
 export function failureUiStateForClassification(classification = {}) {
@@ -33,6 +34,19 @@ export function failureUiStateForClassification(classification = {}) {
     };
   }
 
+  if (reason === 'network_offline') {
+    return {
+      ...baseState,
+      status: 'reconnecting',
+      statusLabel: STATUS_LABELS[reason],
+      message: '',
+      shouldReconnect: true,
+      clearSession: false,
+      startEnabled: false,
+      stopVisible: true
+    };
+  }
+
   if (shouldReconnect(reason)) {
     return {
       ...baseState,
@@ -51,6 +65,7 @@ export function failureUiStateForClassification(classification = {}) {
 function shouldReconnect(reason) {
   return [
     'unexpected_close',
+    'network_offline',
     'token_expired',
     'token_request_failed',
     'live_connect_failed',

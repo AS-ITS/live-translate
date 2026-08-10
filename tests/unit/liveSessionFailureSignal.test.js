@@ -80,6 +80,34 @@ test('connection failure payload includes afterCleanup true', async () => {
   assert.equal(failurePayload.afterCleanup, true);
 });
 
+test('microphone track ending emits selected-device failure after cleanup', async () => {
+  const failures = [];
+  const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
+  session.inputDeviceId = 'mic-1';
+  const track = { addEventListener: (_event, handler) => { track.handler = handler; }, removeEventListener() {} };
+  session.mediaStream = { getTracks: () => [track] };
+  session.attachMicrophoneTrackListeners();
+
+  await track.handler();
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].source, 'microphone_disconnected');
+  assert.equal(failures[0].reasonHint, 'selected_device_missing');
+  assert.equal(failures[0].afterCleanup, true);
+});
+
+test('offline signal emits a recoverable failure after cleanup', async () => {
+  const failures = [];
+  const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
+
+  await session.handleNetworkOffline();
+
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].source, 'network_offline');
+  assert.equal(failures[0].reasonHint, 'network_offline');
+  assert.equal(failures[0].afterCleanup, true);
+});
+
 test('user stop cancels reconnect controller schedule', async () => {
   const timer = createFakeTimer();
   const controller = createReconnectController({ timer });

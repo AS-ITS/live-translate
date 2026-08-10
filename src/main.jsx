@@ -209,6 +209,8 @@ function App() {
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
   const reconnectControllerRef = useRef(null);
+  const inputDevicesRef = useRef(inputDevices);
+  const selectedInputDeviceIdRef = useRef(selectedInputDeviceId);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
@@ -248,6 +250,9 @@ function App() {
     status === 'switching-segment';
   const controlsLocked = isActive || status === 'paused';
 
+  inputDevicesRef.current = inputDevices;
+  selectedInputDeviceIdRef.current = selectedInputDeviceId;
+
   useEffect(() => {
     void refreshInputDevices();
 
@@ -261,6 +266,28 @@ function App() {
 
     navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
     return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  useEffect(() => {
+    const handleOffline = () => {
+      reconnectController().setConnectivity(false);
+      setStatusLabelOverride('網路離線');
+      setError('網路已中斷，等待恢復後重新連線。');
+      if (sessionRef.current) {
+        void sessionRef.current.handleNetworkOffline();
+      }
+    };
+    const handleOnline = () => {
+      reconnectController().setConnectivity(true);
+      setStatusLabelOverride('重新連線中');
+      setError('');
+    };
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
   }, []);
 
   useEffect(() => {
@@ -437,6 +464,7 @@ function App() {
         }
 
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
+        selectedInputDeviceIdRef.current = '';
         return '';
       });
     } catch {
@@ -629,8 +657,8 @@ function App() {
       setStatus('requesting-permission');
     }
 
-    const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
-      ? selectedInputDeviceId
+    const inputDeviceIdForSession = inputDevicesRef.current.some((device) => device.deviceId === selectedInputDeviceIdRef.current)
+      ? selectedInputDeviceIdRef.current
       : '';
 
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
@@ -709,6 +737,11 @@ function App() {
       },
       onConnectionFailure: (failure) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        if (failure.source === 'microphone_disconnected' && failure.reasonHint === 'selected_device_missing') {
+          selectedInputDeviceIdRef.current = '';
+          setSelectedInputDeviceId('');
+          setDeviceMessage('所選麥克風已中斷，重新連線時會改用瀏覽器預設麥克風。');
+        }
         const classification = classifyFailureSignal(failure);
         const failureUiState = failureUiStateForClassification(classification);
 
@@ -735,7 +768,7 @@ function App() {
         void reconnectController()
           .scheduleReconnect(classification)
           .then((result) => {
-            if (!result.scheduled && !result.ignored) {
+            if (!result.scheduled && !result.ignored && !result.paused) {
               suppressReconnectErrorRef.current = false;
               setStatusLabelOverride('');
               setError(reconnectErrorMessage(result));

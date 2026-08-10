@@ -27,6 +27,11 @@ the existing shared Access Token, lists the complete FIFO DLQ, supports
 confirmed single-item replay with original-item retention, and does not add a
 main-navigation entry or change queue/worker behavior.
 
+Retry lineage UI is completed in History detail. Executions are grouped by
+their existing translation request identity and shown chronologically with
+the existing failed-execution retry action; no new lineage schema or API was
+introduced.
+
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E

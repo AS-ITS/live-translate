@@ -1515,6 +1515,47 @@ input:disabled {
   white-space: pre-wrap;
 }
 
+.retry-lineage-list {
+  display: grid;
+  gap: 12px;
+}
+
+.retry-lineage {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.retry-lineage-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #314152;
+}
+
+.retry-lineage-header span {
+  color: #6b7886;
+  font-size: 0.8125rem;
+}
+
+.retry-lineage-timeline {
+  gap: 12px;
+}
+
+.retry-lineage-timeline li {
+  border-left: 3px solid #d8dee6;
+  padding-left: 10px;
+}
+
+.retry-lineage-execution-id {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+}
+
 @media (max-width: 900px) {
   .controls,
   .control-status-row {

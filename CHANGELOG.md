@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added retry lineage visibility to History detail. Executions sharing the
+  same translation request are grouped into a chronological timeline, with
+  existing failed-execution retry controls preserved and no API contract or
+  queue behavior changes.
+
 - Added a hash-only DLQ management page at `#dead-letter-queue`. It lists the
   complete FIFO queue, safely exposes saved failure metadata, confirms and
   replays one item at a time, retains the original item, and supports refresh

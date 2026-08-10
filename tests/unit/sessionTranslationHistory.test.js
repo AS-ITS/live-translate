@@ -3,7 +3,8 @@ import test from 'node:test';
 import {
   compactTranslationHistoryForDetail,
   mergeRetranslationHistoryIntoDetail,
-  removeRetranslationOutputFromDetail
+  removeRetranslationOutputFromDetail,
+  retryLineagesForExecutions
 } from '../../src/lib/sessionTranslationHistory.js';
 
 test('compacts missing and malformed translation history into stable arrays', () => {
@@ -12,6 +13,21 @@ test('compacts missing and malformed translation history into stable arrays', ()
     outputs: [],
     executions: [{ id: 'execution-1' }]
   });
+});
+
+test('groups retry executions by request ID and sorts each lineage chronologically', () => {
+  const lineages = retryLineagesForExecutions([
+    { id: 'retry-1', requestId: 'request-1', createdAt: '2026-08-10T02:00:00.000Z' },
+    { id: 'request-2-execution', requestId: 'request-2', createdAt: '2026-08-10T01:00:00.000Z' },
+    { id: 'original-1', translationRequestId: 'request-1', createdAt: '2026-08-10T01:00:00.000Z' },
+    { id: 'legacy-execution', createdAt: '2026-08-10T03:00:00.000Z' }
+  ]);
+
+  assert.deepEqual(lineages.map(({ requestId, executions }) => [requestId, executions.map(({ id }) => id)]), [
+    ['request-1', ['original-1', 'retry-1']],
+    ['request-2', ['request-2-execution']],
+    [null, ['legacy-execution']]
+  ]);
 });
 
 test('merges authoritative history while formal data replaces the same legacy output', () => {

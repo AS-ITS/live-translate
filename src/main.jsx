@@ -32,7 +32,8 @@ import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } f
 import {
   compactTranslationHistoryForDetail,
   mergeRetranslationHistoryIntoDetail,
-  removeRetranslationOutputFromDetail
+  removeRetranslationOutputFromDetail,
+  retryLineagesForExecutions
 } from './lib/sessionTranslationHistory.js';
 import { createExportApplicationService } from './application/exportApplicationService.js';
 import {
@@ -174,6 +175,7 @@ function App() {
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
   const [historyDetailError, setHistoryDetailError] = useState('');
+  const [retryingHistoryExecutionId, setRetryingHistoryExecutionId] = useState('');
   const [meetingRecords, setMeetingRecords] = useState([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState(null);
   const [selectedMeetingDetail, setSelectedMeetingDetail] = useState(null);
@@ -231,6 +233,7 @@ function App() {
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
   const deadLetterQueueApiClientRef = useRef(createDeadLetterQueueApiClient());
   const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
   const sessionDetailCacheRef = useRef(new Map());
@@ -1938,6 +1941,19 @@ function App() {
     }
   }
 
+  async function retryHistoryExecution(execution) {
+    if (!execution?.id) return;
+    setRetryingHistoryExecutionId(execution.id);
+    try {
+      await translationCommandApiClientRef.current.retryFailedTranslationExecution(execution.id);
+      await refreshSelectedHistoryRecordDetail();
+    } catch {
+      setHistoryDetailError('無法重試此重新翻譯工作。請稍後再試。');
+    } finally {
+      setRetryingHistoryExecutionId('');
+    }
+  }
+
   async function refreshDeadLetterQueue() {
     setIsLoadingDeadLetterQueue(true);
     setDeadLetterQueueLoadError(null);
@@ -2643,6 +2659,8 @@ function App() {
           onRetryHistory={refreshHistoryRecords}
           onRetryMeetingHistory={refreshMeetingRecords}
           onRetryHistoryDetail={refreshSelectedHistoryRecordDetail}
+          onRetryExecution={retryHistoryExecution}
+          retryingExecutionId={retryingHistoryExecutionId}
         />
       </section>
 
@@ -3234,7 +3252,9 @@ function HistoryPanel({
   meetingDetailError = '',
   onRetryHistory,
   onRetryMeetingHistory,
-  onRetryHistoryDetail
+  onRetryHistoryDetail,
+  onRetryExecution,
+  retryingExecutionId = ''
 }) {
   const [query, setQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(12);
@@ -3275,6 +3295,8 @@ function HistoryPanel({
                 onRetranslationSubmitted={onRetranslationSubmitted}
                 onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
                 onPolishingRetry={onPolishingRetry}
+                onRetryExecution={onRetryExecution}
+                retryingExecutionId={retryingExecutionId}
                 detailError={historyDetailError}
                 onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)}
               />
@@ -3310,6 +3332,8 @@ function SessionHistoryItem({
   onRetranslationSubmitted,
   onOpenRetranslationWorkflow,
   onPolishingRetry,
+  onRetryExecution,
+  retryingExecutionId = '',
   detailError = '',
   onRetryDetail
 }) {
@@ -3372,6 +3396,8 @@ function SessionHistoryItem({
           onRetranslationSubmitted={onRetranslationSubmitted}
           onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
           onPolishingRetry={onPolishingRetry}
+          onRetryExecution={onRetryExecution}
+          retryingExecutionId={retryingExecutionId}
           detailError={detailError}
           onRetryDetail={onRetryDetail}
         />
@@ -4369,7 +4395,7 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, detailError = '', onRetryDetail }) {
+function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, onRetryExecution, retryingExecutionId = '', detailError = '', onRetryDetail }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
@@ -4387,6 +4413,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
 
 
   const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
+  const retryLineages = useMemo(() => retryLineagesForExecutions(translationHistory.executions), [translationHistory.executions]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
   const sessionRecord = useMemo(
@@ -4563,7 +4590,12 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
       )}
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button primary detail-button" type="button" aria-label="以此原文重新翻譯" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>用這份原文重新翻譯</button>
-        <RetranslationProgress progress={retranslationProgress} />
+        <RetranslationProgress
+          progress={retranslationProgress}
+          lineages={retryLineages}
+          onRetry={onRetryExecution}
+          retryingExecutionId={retryingExecutionId}
+        />
       </section>
 
       <section className="saved-export-panel" aria-label="已儲存逐字稿匯出">
@@ -4649,7 +4681,7 @@ function AudioArtifactDownloads({
   );
 }
 
-function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) {
+function RetranslationProgress({ progress, lineages = null, onRetry, retryingExecutionId = '' }) {
   const hasTimedProgress = progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -4670,21 +4702,25 @@ function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) 
     <section className="translation-history-summary" aria-label="重新翻譯進度">
       <h4>重新翻譯進度</h4>
       {progress.executions.length > 0 ? (
-        <ol className="translation-history-list">
-          {progress.executions.map((execution) => (
-            <li key={execution.id}>
-              <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
-              <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
-              {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
-              {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
-              {execution.status === 'failed' && onRetry ? (
-                <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
-                  {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
-                </button>
-              ) : null}
-            </li>
-          ))}
-        </ol>
+        lineages ? (
+          <div className="retry-lineage-list">
+            {lineages.map((lineage, index) => (
+              <section className="retry-lineage" key={lineage.requestId || `legacy-lineage-${index}`} aria-label={`重新翻譯 lineage ${lineage.requestId || 'legacy'}`}>
+                <div className="retry-lineage-header">
+                  <strong>{lineage.requestId ? `Request ${lineage.requestId}` : 'Legacy execution'}</strong>
+                  <span>{lineage.executions.length} 次 execution</span>
+                </div>
+                <ol className="translation-history-list retry-lineage-timeline">
+                  {lineage.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
+                </ol>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <ol className="translation-history-list">
+            {progress.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
+          </ol>
+        )
       ) : null}
       {progress.outputs.length > 0 ? (
         <ol className="translation-history-list">
@@ -4697,6 +4733,23 @@ function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) 
         </ol>
       ) : null}
     </section>
+  );
+}
+
+function RetranslationExecutionItem({ execution, nowMs, onRetry, retryingExecutionId }) {
+  return (
+    <li>
+      <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
+      <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
+      <p className="retry-lineage-execution-id">Execution：{execution.id}</p>
+      {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
+      {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
+      {execution.status === 'failed' && onRetry ? (
+        <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
+          {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
+        </button>
+      ) : null}
+    </li>
   );
 }
 

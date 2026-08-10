@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Phase 2B-2 translation foundation now exposes a `TranslationApplicationService`
+  boundary for translation commands and history reads. Existing HTTP payloads,
+  queue lifecycle, provider resolution, and translation persistence behavior are
+  unchanged.
+
 - Phase 2B-2 Session foundation now exposes a `SessionApplicationService` for
   Session create/update/finalize commands and history/detail read models while
   preserving existing HTTP contracts and storage adapters.

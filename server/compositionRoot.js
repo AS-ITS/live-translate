@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSessionApplicationService } from '../src/application/sessionApplicationService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
+import { createTranslationApplicationService } from '../src/application/translationApplicationService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
@@ -114,6 +115,8 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
     translationHistoryQueryServiceFactory = createTranslationHistoryQueryService,
     translationHistoryControllerFactory = createDefaultTranslationHistoryController,
+    translationApplicationService,
+    translationApplicationServiceFactory = createTranslationApplicationService,
     glossaryController,
     glossaryControllerFactory = createDefaultGlossaryController,
     translationGlossaryFactory = createTranslationGlossary,
@@ -235,7 +238,17 @@ export function createApplicationDependencies(options = {}) {
     sessionRepository: sessionReadDependencies.sessionRepository,
     translationRepository: translationCommandDependencies.translationRepository
   });
-  const translationHistoryController = translationHistoryControllerFactory({ translationHistoryQueryService });
+  const resolvedTranslationApplicationService = translationApplicationService ?? translationApplicationServiceFactory({
+    translationCommandService: translationCommandDependencies.translationCommandService,
+    translationHistoryQueryService,
+    translationRepository: translationCommandDependencies.translationRepository
+  });
+  const translationCommandController = translationCommandControllerFactory === createDefaultTranslationCommandController
+    ? translationCommandControllerFactory({ translationApplicationService: resolvedTranslationApplicationService })
+    : translationCommandDependencies.translationCommandController;
+  const translationHistoryController = translationHistoryControllerFactory === createDefaultTranslationHistoryController
+    ? translationHistoryControllerFactory({ translationApplicationService: resolvedTranslationApplicationService })
+    : translationHistoryControllerFactory({ translationHistoryQueryService });
   const executionControlController = executionControlControllerFactory({
     cancelQueuedTranslationExecutionService: translationCommandDependencies.cancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
@@ -263,7 +276,7 @@ export function createApplicationDependencies(options = {}) {
       sessionReadController: sessionReadDependencies.sessionReadController,
       sessionRepository: sessionReadDependencies.sessionRepository,
       translationRepository: translationCommandDependencies.translationRepository,
-      translationCommandController: translationCommandDependencies.translationCommandController,
+      translationCommandController,
       executionControlController,
       translationHistoryController,
       meetingReadController,
@@ -286,6 +299,8 @@ export function createApplicationDependencies(options = {}) {
   return {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
+    translationApplicationService: resolvedTranslationApplicationService,
+    translationCommandController,
     translationHistoryQueryService,
     translationHistoryController,
     executionControlController,

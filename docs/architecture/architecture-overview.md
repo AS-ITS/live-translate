@@ -81,6 +81,11 @@ TranslationOutput contracts, read-model contracts, and Compatibility Adapter
 mapping. Phase 2C adds saved transcript re-translation, multiple outputs,
 retry/cancel/delete, provider selection, and output version UI.
 
+The DLQ administration capability is backend-only: when durable queue storage is
+enabled, a protected application service lists the full file-backed DLQ and
+creates new queued executions for single-item replay while retaining original
+failure records.
+
 The first Phase 2B-2 implementation slice adds `SessionApplicationService` as
 the boundary for Session commands and Session read models. Existing repository
 and read-model adapters remain responsible for legacy `SessionRecord`

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added authenticated DLQ listing and single-item replay APIs. Replay retains
+  the original failed execution and DLQ item and creates a new queued execution.
+
 - Added process-local queue reliability metrics with a protected
   `GET /api/metrics` snapshot. Worker success/skip/cancel/retry/failure,
   recovery, DLQ transfer, lease, acknowledgement, queue depth, and last-success

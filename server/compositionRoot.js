@@ -11,6 +11,7 @@ import { createSavedTranscriptRetranslationService as createDefaultSavedTranscri
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
 import { createCancelQueuedTranslationExecutionService as createDefaultCancelQueuedTranslationExecutionService } from '../src/application/translation/cancelQueuedTranslationExecutionService.js';
 import { createManualRetryFailedTranslationExecutionService as createDefaultManualRetryFailedTranslationExecutionService } from '../src/application/translation/manualRetryFailedTranslationExecutionService.js';
+import { createDeadLetterQueueApplicationService as createDefaultDeadLetterQueueApplicationService } from '../src/application/translation/deadLetterQueueApplicationService.js';
 import { createRetranslationSessionMaterializer as createDefaultRetranslationSessionMaterializer } from '../src/application/translation/retranslationSessionMaterializer.js';
 import { createStartupTranslationExecutionQueueRecovery as createDefaultStartupTranslationExecutionQueueRecovery } from '../src/application/translation/startupTranslationExecutionQueueRecovery.js';
 import { createTranslationCommandService as createDefaultTranslationCommandService } from '../src/application/translationCommandService.js';
@@ -65,6 +66,7 @@ import { createTranslationCommandController as createDefaultTranslationCommandCo
 import { createExecutionControlController as createDefaultExecutionControlController } from './executionControlController.js';
 import { createTranslationHistoryController as createDefaultTranslationHistoryController } from './translationHistoryController.js';
 import { createGlossaryController as createDefaultGlossaryController } from './glossaryController.js';
+import { createDeadLetterQueueController as createDefaultDeadLetterQueueController } from './deadLetterQueueController.js';
 import { createLiveToken } from './tokenService.js';
 
 export const DEFAULT_DATA_DIR = 'data';
@@ -109,6 +111,10 @@ export function createApplicationDependencies(options = {}) {
     clock = () => Date.now(),
     cancelQueuedTranslationExecutionServiceFactory = createDefaultCancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionServiceFactory = createDefaultManualRetryFailedTranslationExecutionService,
+    deadLetterQueueRepository,
+    deadLetterQueueApplicationService,
+    deadLetterQueueApplicationServiceFactory = createDefaultDeadLetterQueueApplicationService,
+    deadLetterQueueControllerFactory = createDefaultDeadLetterQueueController,
     executionControlControllerFactory = createDefaultExecutionControlController,
     translationCommandServiceFactory = createDefaultTranslationCommandService,
     translationCommandControllerFactory = createDefaultTranslationCommandController,
@@ -257,6 +263,17 @@ export function createApplicationDependencies(options = {}) {
     cancelQueuedTranslationExecutionService: translationCommandDependencies.cancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
   });
+  const resolvedDeadLetterQueueApplicationService = deadLetterQueueApplicationService ?? (
+    deadLetterQueueRepository === undefined
+      ? undefined
+      : deadLetterQueueApplicationServiceFactory({
+          deadLetterQueueRepository,
+          manualRetryFailedTranslationExecutionService: translationCommandDependencies.manualRetryFailedTranslationExecutionService
+        })
+  );
+  const deadLetterQueueController = resolvedDeadLetterQueueApplicationService
+    ? deadLetterQueueControllerFactory({ deadLetterQueueApplicationService: resolvedDeadLetterQueueApplicationService })
+    : undefined;
   const meetingCheckpointService = meetingCheckpointServiceFactory({
     meetingRepository: resolvedMeetingRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
@@ -282,6 +299,7 @@ export function createApplicationDependencies(options = {}) {
       translationRepository: translationCommandDependencies.translationRepository,
       translationCommandController,
       executionControlController,
+      ...(deadLetterQueueController ? { deadLetterQueueController } : {}),
       translationHistoryController,
       meetingReadController,
       meetingCheckpointService,
@@ -310,6 +328,9 @@ export function createApplicationDependencies(options = {}) {
     translationHistoryQueryService,
     translationHistoryController,
     executionControlController,
+    ...(deadLetterQueueRepository !== undefined ? { deadLetterQueueRepository } : {}),
+    ...(resolvedDeadLetterQueueApplicationService ? { deadLetterQueueApplicationService: resolvedDeadLetterQueueApplicationService } : {}),
+    ...(deadLetterQueueController ? { deadLetterQueueController } : {}),
     meetingReadQueryService,
     meetingReadController,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
@@ -482,14 +503,17 @@ export function createProductionApplicationDependencies(options = {}) {
   });
   const translationExecutionRetryPolicy = translationExecutionRetryPolicyFactory();
   const translationExecutionRetryErrorClassifier = translationExecutionRetryErrorClassifierFactory();
+  const deadLetterQueueRepository = queueConfiguration.durableQueueEnabled
+    ? fileDeadLetterQueueRepositoryFactory({
+        fileSystem: durableQueueFileSystem,
+        filePath: queueConfiguration.deadLetterQueueFilePath
+      })
+    : undefined;
   const durableTranslationExecutionQueueRepository = queueConfiguration.durableQueueEnabled
     ? fileDurableTranslationExecutionQueueRepositoryFactory({
         fileSystem: durableQueueFileSystem,
         filePath: queueConfiguration.durableQueueFilePath,
-        deadLetterQueueRepository: fileDeadLetterQueueRepositoryFactory({
-          fileSystem: durableQueueFileSystem,
-          filePath: queueConfiguration.deadLetterQueueFilePath
-        })
+        deadLetterQueueRepository
       })
     : undefined;
   const primaryTranslationExecutionQueue =
@@ -523,6 +547,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }
       : {}),
+    ...(deadLetterQueueRepository !== undefined ? { deadLetterQueueRepository } : {}),
     ...(translationExecutionFenceGuard !== undefined ? { translationExecutionFenceGuard } : {}),
     translationQueueLeaseMs: queueConfiguration.leaseMs,
     translationQueueLeaseRenewalMs: queueConfiguration.leaseRenewalMs,

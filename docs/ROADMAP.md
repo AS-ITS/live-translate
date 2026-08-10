@@ -18,6 +18,10 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
+DLQ inspection and single-item replay API is completed as a backend-only
+follow-up. Authenticated operators can list the full file-backed DLQ and create
+new queued executions without changing original failed records.
+
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E

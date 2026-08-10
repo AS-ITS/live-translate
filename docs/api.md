@@ -1,5 +1,14 @@
 # Live Translate API and Events
 
+## Dead-letter queue administration
+
+When durable translation queue storage is enabled, the shared Access Token
+protects `GET /api/translation-dead-letter-queue` (full `{ items, size }`) and
+`POST /api/translation-dead-letter-queue/:executionId/replay` (new queued
+execution). The original failed execution and DLQ item are retained. Disabled
+storage returns `503 dead_letter_queue_unavailable`; an unknown item returns
+`404 dead_letter_item_not_found`.
+
 ## Long Meeting Checkpoints
 
 ## `GET /api/meetings`

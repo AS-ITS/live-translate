@@ -83,6 +83,12 @@ history downloads.
 
 ## Translation Execution Durable Queue
 
+When durable storage is enabled, the file-backed DLQ has a protected
+administration path. Its application service reads items in repository order
+and delegates single-item replay to the existing manual retry service. Replay
+creates a new queued execution and never edits or removes the failed source or
+DLQ item; worker leases, retry policy, fencing, and metrics are unchanged.
+
 ### Phase 4C Execution Control
 
 `TranslationExecution` has terminal states `completed`, `failed`, and

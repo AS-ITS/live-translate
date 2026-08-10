@@ -70,6 +70,8 @@ const ERROR_RESPONSES = {
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
+  dead_letter_queue_unavailable: { status: 503, message: 'Dead-letter queue is not configured.' },
+  dead_letter_item_not_found: { status: 404, message: 'Dead-letter queue item not found.' },
   subtitle_cue_invalid: { status: 400, message: 'Subtitle cue is invalid.' },
   subtitle_cue_conflict: { status: 409, message: 'Subtitle cue conflicts with previously persisted content.' },
   subtitle_cue_sequence_conflict: { status: 409, message: 'Subtitle cue sequence conflicts with previously persisted content.' },
@@ -491,6 +493,7 @@ export function createRequestHandler(options = {}) {
     translationRepository,
     translationCommandController,
     executionControlController,
+    deadLetterQueueController,
     translationHistoryController,
     meetingReadController,
     meetingCheckpointService,
@@ -524,6 +527,7 @@ export function createRequestHandler(options = {}) {
       translationRepository,
       translationCommandController,
       executionControlController,
+      deadLetterQueueController,
       translationHistoryController,
       meetingReadController,
       meetingCheckpointService,
@@ -552,7 +556,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -588,6 +592,27 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       statusCode = 500;
       sendJson(res, statusCode, errorPayload('internal_error', requestId), requestId);
+    }
+    return;
+  }
+
+  if (isDeadLetterQueueRoute(req.method, path)) {
+    try {
+      if (!deadLetterQueueController) throw createHttpError('dead_letter_queue_unavailable');
+      if (req.method === 'GET') {
+        statusCode = 200;
+        sendJson(res, statusCode, await deadLetterQueueController.listItems(), requestId);
+      } else {
+        const executionId = extractDeadLetterExecutionId(path);
+        statusCode = 202;
+        sendJson(res, statusCode, serializeDeadLetterReplayResponse(await deadLetterQueueController.replayItem({ executionId })), requestId);
+      }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
   }
@@ -1471,6 +1496,11 @@ function isExecutionControlRoute(method, path) {
     && (path.endsWith('/cancel') || path.endsWith('/retry'));
 }
 
+function isDeadLetterQueueRoute(method, path) {
+  return (method === 'GET' && path === '/api/translation-dead-letter-queue') ||
+    (method === 'POST' && path.startsWith('/api/translation-dead-letter-queue/') && path.endsWith('/replay'));
+}
+
 function isPublicApiPath(method, path) {
   return method === 'GET' && (
     isSharedSessionDetailPath(path) ||
@@ -1993,6 +2023,29 @@ function extractExecutionControlExecutionId(path, operation) {
     if (error?.code === 'invalid_request') throw error;
     throw createHttpError('invalid_request');
   }
+}
+
+function extractDeadLetterExecutionId(path) {
+  const prefix = '/api/translation-dead-letter-queue/';
+  const suffix = '/replay';
+  const encodedExecutionId = path.slice(prefix.length, -suffix.length);
+  try {
+    return validateRequiredString(decodeURIComponent(encodedExecutionId));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function serializeDeadLetterReplayResponse(result) {
+  return {
+    sourceExecutionId: result.sourceExecutionId,
+    execution: {
+      id: result.execution.id,
+      status: result.execution.status,
+      translationRequestId: result.execution.translationRequestId
+    }
+  };
 }
 
 function serializeExecutionControlResponse(execution) {

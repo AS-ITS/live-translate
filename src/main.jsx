@@ -27,6 +27,7 @@ import { createTranslationCommandLifecycle } from './lib/translationCommandLifec
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { createExportApplicationService } from './application/exportApplicationService.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -36,8 +37,7 @@ import {
 } from './lib/sessionRecordLifecycle.js';
 import {
   buildSavedSessionFileName,
-  canExportSavedSession,
-  formatSavedSessionExport
+  canExportSavedSession
 } from './lib/sessionRecordExport.js';
 import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
 import {
@@ -102,6 +102,7 @@ const TRANSCRIPT_POLISHING_MIN_CHARS = Number.parseInt(import.meta.env?.VITE_TRA
 const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
+const exportApplicationService = createExportApplicationService();
 const TRANSLATED_AUDIO_IDLE_STATE = {
   status: 'idle',
   blob: null,
@@ -4284,9 +4285,12 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setSavedExportError('');
 
     try {
-      const content = formatSavedSessionExport(exportDetail, {
-        format: savedExportFormat,
-        stream: savedExportStream
+      const content = exportApplicationService.exportCombinedSessionView({
+        sessionDetail: exportDetail,
+        options: {
+          format: savedExportFormat,
+          stream: savedExportStream
+        }
       });
       const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
         format: savedExportFormat,

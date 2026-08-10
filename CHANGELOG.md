@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Phase 2B-2 export foundation now exposes an `ExportApplicationService`
+  boundary over the existing transcript and saved-session export helpers;
+  TXT/SRT/VTT output behavior remains unchanged.
+
 - Phase 2B-2 translation foundation now exposes a `TranslationApplicationService`
   boundary for translation commands and history reads. Existing HTTP payloads,
   queue lifecycle, provider resolution, and translation persistence behavior are

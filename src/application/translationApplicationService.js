@@ -1,3 +1,8 @@
+import {
+  mapTranslationOutputToDetailDTO,
+  mapTranslationRequestToDTO
+} from '../readModels/translationReadModels.js';
+
 const COMMAND_METHODS = Object.freeze([
   'createTranslationRequest',
   'createTranslationExecution',
@@ -43,14 +48,17 @@ export function createTranslationApplicationService({
     },
 
     getTranslationRequest(input) {
-      return translationRepository.getTranslationRequest(translationId(input, 'requestId'));
+      return mapResult(
+        translationRepository.getTranslationRequest(translationId(input, 'requestId')),
+        mapTranslationRequestToDTO
+      );
     },
 
     listTranslationOutputs(input = {}) {
       const { sessionId, requestId, executionId } = input;
-      if (executionId !== undefined) return translationRepository.listTranslationOutputsByExecution(executionId);
-      if (requestId !== undefined) return translationRepository.listTranslationOutputsByRequest(requestId);
-      if (sessionId !== undefined) return translationRepository.listTranslationOutputsBySession(sessionId);
+      if (executionId !== undefined) return mapOutputList(translationRepository.listTranslationOutputsByExecution(executionId));
+      if (requestId !== undefined) return mapOutputList(translationRepository.listTranslationOutputsByRequest(requestId));
+      if (sessionId !== undefined) return mapOutputList(translationRepository.listTranslationOutputsBySession(sessionId));
       throw new TypeError('listTranslationOutputs requires sessionId, requestId, or executionId.');
     },
 
@@ -58,6 +66,20 @@ export function createTranslationApplicationService({
       return translationHistoryQueryService.listSessionTranslations(input);
     }
   });
+}
+
+function mapResult(value, mapper) {
+  if (isPromiseLike(value)) return value.then((resolved) => mapResult(resolved, mapper));
+  return value == null ? value : mapper(value);
+}
+
+function mapOutputList(value) {
+  if (isPromiseLike(value)) return value.then(mapOutputList);
+  return value == null || value.length === 0 ? value : value.map(mapTranslationOutputToDetailDTO);
+}
+
+function isPromiseLike(value) {
+  return value !== null && (typeof value === 'object' || typeof value === 'function') && typeof value.then === 'function';
 }
 
 function translationId(input, name) {

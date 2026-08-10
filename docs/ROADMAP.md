@@ -571,7 +571,8 @@ phase.
 
 ### Phase 2B-2 - Foundation Implementation
 
-Status: In Progress (WP4 durable queue deduplication implemented).
+Status: In Progress (Session, Translation, and Export application boundaries
+implemented; frontend translation history read-model assembly centralized).
 
 Scope:
 
@@ -587,6 +588,9 @@ Scope:
   - `SavedTranscriptTranslationPort`
 - Compatibility Adapter implementation in repository implementation or
   read-model mapper.
+- Frontend translation history/detail reads use a focused read-model helper for
+  legacy/formal output merging, selected output projections, and polished
+  article derivation without changing HTTP payloads.
 - Read-model wrappers:
   - `SessionHistoryListItem`
   - `SessionDetailDTO`

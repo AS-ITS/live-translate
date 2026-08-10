@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Phase 2B-2 frontend translation history/detail reads now centralize legacy and
+  formal output merging, selected-output projections, and polished article
+  derivation in a focused helper while preserving existing HTTP payloads and
+  history behavior.
+
 - Phase 2B-2 translation history mapping now uses dedicated translation
   read-model wrappers for request, execution, and output DTOs without changing
   existing history/API response shapes or safe failure filtering.

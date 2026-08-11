@@ -1,5 +1,16 @@
 # Live Translate API and Events
 
+## Session sharing
+
+Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
+and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a
+one-time plaintext token and short code, plus SPA hash URLs (`#watch?token=...`
+and `#watch?code=...`); stored share metadata contains only hashes. Anonymous
+Viewer reads and SSE streams resolve through either `/api/shared-sessions/:token`
+or `/api/shared-sessions/code/:code` and their `/events` variants. Viewer detail
+and SSE snapshots share the same sanitized DTO and never include audio or input
+device metadata.
+
 ## Authenticated execution WebSocket
 
 `WS /api/sessions/:sessionId/execution-events` streams execution status for one

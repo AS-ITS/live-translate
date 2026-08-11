@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 export function createSessionShareService({ clock = () => Date.now() } = {}) {
   const shares = new Map();
 
@@ -10,15 +12,17 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
         throw new RangeError('Share expiry must be in the future.');
       }
       const token = randomBytes(32).toString('base64url');
+      const shortCode = createShortCode();
       const share = {
         id: `share-${randomBytes(12).toString('hex')}`,
         sessionId,
         tokenHash: hashToken(token),
+        shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
         expiresAt
       };
       shares.set(share.id, share);
-      return { ...publicShare(share), token };
+      return { ...publicShare(share), token, shortCode };
     },
 
     resolveShare(token) {
@@ -26,6 +30,17 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       const tokenHash = hashToken(token);
       for (const share of shares.values()) {
         if (share.tokenHash !== tokenHash) continue;
+        if (share.expiresAt !== null && share.expiresAt <= clock()) return null;
+        return publicShare(share);
+      }
+      return null;
+    },
+
+    resolveCode(code) {
+      if (!isValidShortCode(code)) return null;
+      const shortCodeHash = hashShortCode(code);
+      for (const share of shares.values()) {
+        if (share.shortCodeHash !== shortCodeHash) continue;
         if (share.expiresAt !== null && share.expiresAt <= clock()) return null;
         return publicShare(share);
       }
@@ -49,6 +64,19 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function hashShortCode(code) {
+  return createHash('sha256').update(code.toUpperCase()).digest('hex');
+}
+
+function createShortCode() {
+  const bytes = randomBytes(8);
+  return Array.from(bytes, (byte) => SHORT_CODE_ALPHABET[byte % SHORT_CODE_ALPHABET.length]).join('').slice(0, 8);
+}
+
+function isValidShortCode(code) {
+  return typeof code === 'string' && /^[A-HJ-NP-Z2-9]{8}$/i.test(code);
 }
 
 function publicShare(share) {

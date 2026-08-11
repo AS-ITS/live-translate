@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { dirname } from 'node:path';
 
+const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
 const INITIAL_STORAGE = Object.freeze({
-  schemaVersion: 1,
+  schemaVersion: 2,
   shares: Object.freeze([])
 });
 
@@ -22,10 +24,12 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       }
 
       const token = randomBytes(32).toString('base64url');
+      const shortCode = createShortCode();
       const share = {
         id: `share-${randomBytes(12).toString('hex')}`,
         sessionId,
         tokenHash: hashToken(token),
+        shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
         expiresAt
       };
@@ -33,7 +37,7 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       await mutate((storage) => {
         storage.shares.push(share);
       });
-      return { ...publicShare(share), token };
+      return { ...publicShare(share), token, shortCode };
     },
 
     async resolveShare(token) {
@@ -41,6 +45,14 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       const tokenHash = hashToken(token);
       const storage = await readCachedStorage();
       const share = storage.shares.find((stored) => stored.tokenHash === tokenHash);
+      if (!share || (share.expiresAt !== null && share.expiresAt <= clock())) return null;
+      return publicShare(share);
+    },
+
+    async resolveCode(code) {
+      if (!isValidShortCode(code)) return null;
+      const storage = await readCachedStorage();
+      const share = storage.shares.find((stored) => stored.shortCodeHash === hashShortCode(code));
       if (!share || (share.expiresAt !== null && share.expiresAt <= clock())) return null;
       return publicShare(share);
     },
@@ -116,7 +128,7 @@ async function writeStorage({ filePath, fileSystem, storage }) {
 }
 
 function normalizeStorage(value) {
-  if (!isRecord(value) || value.schemaVersion !== 1 || !Array.isArray(value.shares)) {
+  if (!isRecord(value) || ![1, 2].includes(value.schemaVersion) || !Array.isArray(value.shares)) {
     throw storageError('Session share storage shape is invalid.');
   }
 
@@ -126,11 +138,12 @@ function normalizeStorage(value) {
       if (!isRecord(share) || typeof share.id !== 'string' || share.id.trim().length === 0 ||
           typeof share.sessionId !== 'string' || share.sessionId.trim().length === 0 ||
           typeof share.tokenHash !== 'string' || share.tokenHash.length !== 64 ||
+          (share.shortCodeHash !== undefined && share.shortCodeHash !== null && (typeof share.shortCodeHash !== 'string' || share.shortCodeHash.length !== 64)) ||
           typeof share.createdAt !== 'number' || !Number.isFinite(share.createdAt) ||
           (share.expiresAt !== null && (typeof share.expiresAt !== 'number' || !Number.isFinite(share.expiresAt)))) {
         throw storageError(`Session share ${index} is invalid.`);
       }
-      return clonePlain(share);
+      return clonePlain({ ...share, shortCodeHash: share.shortCodeHash || null });
     })
   };
 }
@@ -146,6 +159,19 @@ function publicShare(share) {
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function hashShortCode(code) {
+  return createHash('sha256').update(code.toUpperCase()).digest('hex');
+}
+
+function createShortCode() {
+  const bytes = randomBytes(8);
+  return Array.from(bytes, (byte) => SHORT_CODE_ALPHABET[byte % SHORT_CODE_ALPHABET.length]).join('').slice(0, 8);
+}
+
+function isValidShortCode(code) {
+  return typeof code === 'string' && /^[A-HJ-NP-Z2-9]{8}$/i.test(code);
 }
 
 function clonePlain(value) {

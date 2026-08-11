@@ -171,6 +171,16 @@ message mocks to cover partial pairing, boundary events, Stop flush, segment
 sequence continuity, and replay de-duplication. Cue persistence uses the
 existing Segment checkpoint file and is covered by the Cue persistence tests.
 
+Run Session sharing unit and integration tests:
+
+```bash
+node --test tests/unit/sessionShareService.test.js tests/unit/fileSessionShareService.test.js tests/integration/sessionSharing.integration.test.js
+```
+
+These tests cover opaque token expiry and revocation, file-backed token
+persistence, Viewer-safe payloads, per-Session SSE isolation, monotonic event
+IDs, terminal snapshots, and reconnecting to the latest snapshot.
+
 Current integration coverage:
 
 - The live Cue integration path continues to validate normalized partial/final
@@ -212,6 +222,15 @@ Run the Live Translate E2E flow only:
 ```bash
 npx playwright test --config tests/e2e/playwright.config.js tests/e2e/liveTranslate.spec.js
 ```
+
+Run the Session sharing Viewer E2E flow only:
+
+```bash
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/sessionSharing.spec.js
+```
+
+This flow verifies read-only Viewer rendering, cross-Session content isolation,
+and recoverable invalid or expired share-link errors.
 
 The Playwright flow:
 

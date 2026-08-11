@@ -1482,3 +1482,11 @@ These items are intentionally deferred:
 - Session share tokens are now persisted to `DATA_DIR/session-shares.json` by
   default, with `SESSION_SHARES_FILE` as an override, so existing share links
   remain valid after backend restart.
+# Unreleased
+
+- Completed Session sharing handoff: Viewer SSE snapshots now use the same
+  sanitized read model as detail reads, share URLs use SPA hash routes, and
+  token/code viewers support reconnect-safe updates.
+- Added owner share management with expiry, local QR generation, short codes,
+  listing, and revocation.
+- Added named Session creation and explicit single-instance start blocking.

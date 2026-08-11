@@ -8,6 +8,7 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createSessionShareApiClient } from './lib/sessionShareApiClient.js';
 import { createMeetingReadApiClient } from './lib/meetingReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from './lib/sessionCommandApiClient.js';
@@ -88,6 +89,7 @@ import {
   pcm16ChunksToWavBlob
 } from './lib/audio.js';
 import './styles.css';
+import QRCode from 'qrcode';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
@@ -138,7 +140,8 @@ function pageInfoFromLocation() {
     page,
     sessionId: params.get('sessionId') || '',
     meetingId: params.get('meetingId') || '',
-    shareToken: params.get('token') || ''
+    shareToken: params.get('token') || '',
+    shareCode: params.get('code') || ''
   };
 }
 
@@ -148,6 +151,7 @@ function App() {
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
+  const [sessionName, setSessionName] = useState('');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   // Legacy transcript state remains in the data flow for persistence, export,
   // and backward-compatible Session detail fallback. Live rendering is
@@ -234,6 +238,7 @@ function App() {
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const sessionShareApiClientRef = useRef(createSessionShareApiClient());
   const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
   const deadLetterQueueApiClientRef = useRef(createDeadLetterQueueApiClient());
   const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
@@ -493,6 +498,10 @@ function App() {
   }
 
   async function startSession() {
+    if (status === 'active' || status === 'paused' || isActive || sessionRef.current || activeSessionRecordIdRef.current) {
+      setError('目前已有工作階段正在進行或暫停中，請先暫停或結束目前工作階段。');
+      return;
+    }
     invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -1294,7 +1303,7 @@ function App() {
 
   async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null) {
     const persisted = await sessionCommandApiClientRef.current.create({
-      name: `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
+      name: sessionName.trim() || `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
       targetLanguageCode,
       targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
       sourceLanguageCode,
@@ -2405,7 +2414,8 @@ function App() {
     : null;
 
   if (page === 'watch') {
-    return <WatchPage token={pageInfoFromLocation().shareToken} />;
+    const watchInfo = pageInfoFromLocation();
+    return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
   }
 
   return (
@@ -2436,6 +2446,10 @@ function App() {
           </div>
 
           <div className="controls" aria-label="翻譯控制項">
+            <label className="field">
+              <span>工作階段名稱</span>
+              <input value={sessionName} onChange={(event) => setSessionName(event.target.value)} placeholder="例如：產品會議" disabled={controlsLocked} maxLength={120} />
+            </label>
             <div className="language-controls">
               <label className="field">
                 <span>我主要說的語言</span>
@@ -2583,6 +2597,7 @@ function App() {
               </div>
             </div>
           </div>
+          {activeSessionRecordIdRef.current ? <SessionSharePanel sessionId={activeSessionRecordIdRef.current} /> : null}
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -2784,18 +2799,20 @@ function deadLetterQueueErrorMessage(error) {
   return 'DLQ 載入或操作失敗，請檢查連線後重試。';
 }
 
-function WatchPage({ token }) {
+function WatchPage({ token, code }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (!token) {
+    const identifier = token || code;
+    if (!identifier) {
       setError('分享連結無效或已撤銷。');
       return undefined;
     }
+    const basePath = token ? `/api/shared-sessions/${encodeURIComponent(token)}` : `/api/shared-sessions/code/${encodeURIComponent(code)}`;
     let cancelled = false;
     const controller = new AbortController();
-    fetch(`/api/shared-sessions/${encodeURIComponent(token)}`, { signal: controller.signal })
+    fetch(basePath, { signal: controller.signal })
       .then((response) => {
         if (!response.ok) throw new Error('分享連結無效或已過期。');
         return response.json();
@@ -2803,7 +2820,7 @@ function WatchPage({ token }) {
       .then((nextDetail) => { if (!cancelled) setDetail(nextDetail); })
       .catch((nextError) => { if (!cancelled && nextError.name !== 'AbortError') setError(nextError.message); });
 
-    const events = new EventSource(`/api/shared-sessions/${encodeURIComponent(token)}/events`);
+    const events = new EventSource(`${basePath}/events`);
     events.addEventListener('session.snapshot', (event) => {
       try {
         if (!cancelled) setDetail(JSON.parse(event.data));
@@ -2812,14 +2829,14 @@ function WatchPage({ token }) {
       }
     });
     events.onerror = () => {
-      if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+      if (!cancelled) setError((current) => current.includes('無效') || current.includes('過期') || current.includes('撤銷') ? current : '分享連線中斷，瀏覽器會自動嘗試重新連線。');
     };
     return () => {
       cancelled = true;
       controller.abort();
       events.close();
     };
-  }, [token]);
+  }, [token, code]);
 
   const sourceItems = detail?.sourceTranscript?.items || [];
   const translationItems = detail?.selectedTranslationOutput?.items || [];
@@ -3347,10 +3364,10 @@ function SessionHistoryItem({
             <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
           </div>
           <div className="history-actions">
-            {record.status === 'active' || record.status === 'interrupted' ? (
-              <a className="button detail-button" href={record.meetingId ? `#live?meetingId=${encodeURIComponent(record.meetingId)}` : '#live'}>
+            {record.status === 'active' || record.status === 'paused' || record.status === 'interrupted' ? (
+              <a className="button detail-button" href={record.meetingId ? `#live?meetingId=${encodeURIComponent(record.meetingId)}` : `#live?sessionId=${encodeURIComponent(record.id)}`}>
                 <Play size={16} aria-hidden="true" />
-                {record.status === 'active' ? '繼續翻譯' : '繼續處理'}
+                {record.status === 'paused' ? '繼續翻譯' : record.status === 'active' ? '繼續翻譯' : '繼續處理'}
               </a>
             ) : null}
             <button
@@ -3608,6 +3625,8 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         inputLabel="下載整場原始語音"
         translationLabel="下載整場翻譯語音"
       />
+
+      <SessionSharePanel sessionId={sessionRecordId} />
 
       <section className="meeting-timeline" aria-label="會議段落時間軸">
         <h4>段落時間軸</h4>
@@ -4041,7 +4060,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                 <li className="history-item" key={record.id}>
                   <div className="history-item-header">
                     <div>
-                      <h3>{historyLanguageLabel(record)}</h3>
+            <h3>{record.name || historyLanguageLabel(record)}</h3>
                       <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
                     </div>
                     <button className="button detail-button" type="button" aria-label="選擇" onClick={() => onSelectSession(record.id)}>重新翻譯此紀錄</button>
@@ -4660,6 +4679,82 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
         {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
       </section>
+    </section>
+  );
+}
+
+function SessionSharePanel({ sessionId }) {
+  const clientRef = useRef(createSessionShareApiClient());
+  const [shares, setShares] = useState([]);
+  const [createdShare, setCreatedShare] = useState(null);
+  const [expiry, setExpiry] = useState('');
+  const [error, setError] = useState('');
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setCreatedShare(null);
+    setQrDataUrl('');
+    if (!sessionId) return undefined;
+    clientRef.current.list(sessionId).then((result) => {
+      if (!cancelled) setShares(result);
+    }).catch(() => { if (!cancelled) setError('無法載入分享資訊。'); });
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!createdShare?.url) return undefined;
+    const absoluteUrl = new URL(createdShare.url, window.location.href).href;
+    QRCode.toDataURL(absoluteUrl, { width: 180, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
+    return undefined;
+  }, [createdShare]);
+
+  async function createShare() {
+    setError('');
+    try {
+      const expiresAt = expiry ? Date.now() + Number(expiry) : null;
+      const result = await clientRef.current.create(sessionId, expiresAt);
+      setCreatedShare(result);
+      setShares((current) => [...current, result.share]);
+    } catch {
+      setError('無法建立分享連結。');
+    }
+  }
+
+  async function revokeShare(shareId) {
+    try {
+      await clientRef.current.revoke(sessionId, shareId);
+      setShares((current) => current.filter((share) => share.id !== shareId));
+      if (createdShare?.share?.id === shareId) setCreatedShare(null);
+    } catch {
+      setError('無法撤銷分享連結。');
+    }
+  }
+
+  function copy(value) {
+    if (value && navigator.clipboard) void navigator.clipboard.writeText(new URL(value, window.location.href).href);
+  }
+
+  if (!sessionId) return null;
+  return (
+    <section className="saved-export-panel session-share-panel" aria-label="分享工作階段">
+      <h4>分享唯讀觀看頁</h4>
+      <div className="controls saved-export-controls">
+        <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}>
+          <option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option>
+        </select></label>
+        <button className="button detail-button" type="button" onClick={createShare}>建立分享連結</button>
+      </div>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {createdShare ? (
+        <div className="share-created">
+          {qrDataUrl ? <img src={qrDataUrl} alt="分享連結 QR Code" width="180" height="180" /> : null}
+          <p><strong>短碼：</strong><code>{createdShare.share.shortCode}</code></p>
+          <p className="share-url"><a href={createdShare.url}>{createdShare.url}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.url)}><Copy size={15} aria-hidden="true" />複製</button></p>
+          <p className="share-url"><a href={createdShare.codeUrl}>{createdShare.codeUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.codeUrl)}><Copy size={15} aria-hidden="true" />複製短碼連結</button></p>
+        </div>
+      ) : null}
+      {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : <p className="export-note">重新整理後只顯示仍有效的分享 metadata；既有 plaintext token 不會再次顯示。</p>}
     </section>
   );
 }

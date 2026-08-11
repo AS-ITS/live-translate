@@ -15,6 +15,7 @@ import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEven
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
+import { mapSessionRecordDetailToDTO } from '../src/readModels/sessionReadModels.js';
 import {
   audioArtifactDownloadByteLength,
   sanitizeAudioArtifactsForDTO,
@@ -713,7 +714,26 @@ async function handleRequestWithSessionReadController(
       const body = await readJson(req);
       const share = await sessionShareService.createShare(sessionId, { expiresAt: body?.expiresAt ?? null });
       statusCode = 201;
-      sendJson(res, statusCode, { share, url: `/watch?token=${encodeURIComponent(share.token)}` }, requestId);
+      sendJson(res, statusCode, {
+        share,
+        url: `#watch?token=${encodeURIComponent(share.token)}`,
+        codeUrl: `#watch?code=${encodeURIComponent(share.shortCode)}`
+      }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isSessionShareCollectionPath(path)) {
+    try {
+      const sessionId = decodeSessionPath(path, '/api/sessions/', '/shares');
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+      if (!existing?.sessionRecord) throw createHttpError('session_not_found');
+      statusCode = 200;
+      sendJson(res, statusCode, { shares: await sessionShareService.listShares(sessionId) }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -752,6 +772,22 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'GET' && isSharedSessionCodeDetailPath(path)) {
+    const code = decodeURIComponent(path.slice('/api/shared-sessions/code/'.length));
+    const share = await sessionShareService.resolveCode(code);
+    if (!share) {
+      sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
+      return;
+    }
+    const detail = await sessionReadController.getSession(share.sessionId);
+    if (!detail) {
+      sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
+      return;
+    }
+    sendJson(res, 200, publicViewerDetail(detail), requestId);
+    return;
+  }
+
   if (req.method === 'GET' && isSharedSessionEventsPath(path)) {
     const token = decodeURIComponent(path.slice('/api/shared-sessions/'.length, -'/events'.length));
     const share = await sessionShareService.resolveShare(token);
@@ -759,20 +795,18 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
       return;
     }
-    const snapshot = sessionEventBroadcaster.snapshot(share.sessionId);
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-      'X-Content-Type-Options': 'nosniff'
-    });
-    if (snapshot) writeSseEvent(res, { id: snapshot.sequence, type: 'session.snapshot', data: publicViewerDetail(snapshot.payload) });
-    const unsubscribe = sessionEventBroadcaster.subscribe(share.sessionId, (event) => {
-      res.write(`id: ${event.id}\nevent: ${event.type}\ndata: ${JSON.stringify(publicViewerDetail(event.data))}\n\n`);
-    });
-    req.on('close', unsubscribe);
+    openSharedSessionEvents(res, req, share, sessionEventBroadcaster);
     return;
+  }
+
+  if (req.method === 'GET' && isSharedSessionCodeEventsPath(path)) {
+    const code = decodeURIComponent(path.slice('/api/shared-sessions/code/'.length, -'/events'.length));
+    const share = await sessionShareService.resolveCode(code);
+    if (!share) {
+      sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
+      return;
+    }
+    return openSharedSessionEvents(res, req, share, sessionEventBroadcaster);
   }
 
   if (req.method === 'GET' && path === '/api/translation-providers') {
@@ -2155,6 +2189,14 @@ function isSessionShareCollectionPath(path) {
   return path.startsWith('/api/sessions/') && path.endsWith('/shares') && path.split('/').length === 5;
 }
 
+function isSharedSessionCodeDetailPath(path) {
+  return path.startsWith('/api/shared-sessions/code/') && !path.endsWith('/events') && path.split('/').length === 5;
+}
+
+function isSharedSessionCodeEventsPath(path) {
+  return path.startsWith('/api/shared-sessions/code/') && path.endsWith('/events') && path.split('/').length === 6;
+}
+
 function isSessionSharePath(path) {
   return path.startsWith('/api/sessions/') && path.includes('/shares/') && path.split('/').length === 6;
 }
@@ -2187,8 +2229,31 @@ function writeSseEvent(res, { id, type, data }) {
   res.write(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
+  const snapshot = sessionEventBroadcaster.snapshot(share.sessionId);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'X-Content-Type-Options': 'nosniff'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (snapshot) {
+    writeSseEvent(res, { id: snapshot.sequence, type: 'session.snapshot', data: publicViewerDetail(snapshot.payload) });
+  } else {
+    res.write(': keep-alive\n\n');
+  }
+  const unsubscribe = sessionEventBroadcaster.subscribe(share.sessionId, (event) => {
+    writeSseEvent(res, { id: event.id, type: event.type, data: publicViewerDetail(event.data) });
+  });
+  req.on('close', unsubscribe);
+}
+
 function publicViewerDetail(detail) {
-  const clone = JSON.parse(JSON.stringify(detail));
+  const clone = detail?.sessionRecord
+    ? mapSessionRecordDetailToDTO(detail)
+    : JSON.parse(JSON.stringify(detail));
   if (clone?.session) {
     delete clone.session.audioArtifacts;
     delete clone.session.selectedInputDeviceId;

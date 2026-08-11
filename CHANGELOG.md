@@ -1,5 +1,9 @@
 # Changelog
 
+- Completed the Recorder persistence path: finalized transcript updates,
+  segmented input/translation audio, checkpoint writes, metadata protection,
+  Recorder QR/short-code URLs, lease expiry cleanup, and unload release.
+
 - #21 Recorder flow now issues short-lived hash-only grants after lease claim,
   authorizes Recorder live-token, snapshot, and audio writes with lease/fence
   checks, supports heartbeat/stop lifecycle in the Recorder page, and keeps

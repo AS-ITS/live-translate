@@ -1,6 +1,6 @@
 import { authenticatedFetch } from './accessToken.js';
 
-export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
+export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch, baseUrl = '', authorizationHeaders = {} } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting checkpoint API client requires fetchImpl to be a function.');
   fetchImpl = authenticatedFetch(fetchImpl);
 
@@ -13,6 +13,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         options.body = JSON.stringify({ liveSessionId });
       }
 
+      options.headers = { ...authorizationHeadersFor(authorizationHeaders), ...(options.headers || {}) };
       const response = await fetchImpl(buildUrl(baseUrl, '/api/meetings'), options);
       await assertOkResponse(response);
       return parseCreateMeetingResponse(response);
@@ -34,7 +35,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       const response = await fetchImpl(buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
-      ), { method: 'GET' });
+      ), { method: 'GET', headers: authorizationHeadersFor(authorizationHeaders) });
       await assertOkResponse(response);
       return parseCheckpointResponse(response);
     },
@@ -54,7 +55,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
       ), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify({
           ...body
         })
@@ -75,7 +76,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/rollover`
       ), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify({
           idempotencyKey,
           checkpoint,
@@ -110,7 +111,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/recover`
       ), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify({
           idempotencyKey,
           checkpoint,
@@ -129,6 +130,10 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
 function buildUrl(baseUrl, path) {
   const normalizedBaseUrl = String(baseUrl || '').replace(/\/+$/, '');
   return normalizedBaseUrl ? `${normalizedBaseUrl}${path}` : path;
+}
+
+function authorizationHeadersFor(value) {
+  return typeof value === 'function' ? (value() || {}) : (value || {});
 }
 
 async function assertOkResponse(response) {

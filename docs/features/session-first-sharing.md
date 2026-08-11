@@ -18,8 +18,9 @@ Recorders cannot renew or write through a newer lease.
 Implemented: Session creation before Gemini startup, Session lifecycle
 snapshot syncing, opaque share tokens, read-only SSE viewing, and read-only
 Session viewing across browser tabs. The Recorder page can claim a lease,
-request the existing direct Gemini Live connection, sync snapshots, heartbeat,
-and stop with a terminal snapshot.
+request the existing direct Gemini Live connection, sync snapshots, segmented
+audio and checkpoints, heartbeat, and stop with a terminal snapshot. Recorder
+snapshot writes cannot change Session name or language settings.
 
 ## Current Contract
 

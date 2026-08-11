@@ -13,8 +13,10 @@ Recorder shares always have a finite expiry (30 minutes by default when the
 owner omits `expiresAt`). A successful claim returns `recorderGrant` and
 `grantExpiresAt`. Recorder live-token, Session snapshot, and audio upload
 requests use `X-Recorder-Token`, `X-Recorder-Grant`, `X-Recorder-Lease-Id`,
-and `X-Recorder-Fence-Token`; invalid, expired, revoked, mismatched, or stale
-credentials are rejected. Recorder clients cannot download Session audio.
+and `X-Recorder-Fence-Token`; checkpoint writes additionally use
+`X-Recorder-Session-Id`. Invalid, expired, revoked, mismatched, or stale
+credentials are rejected. Recorder snapshots cannot change Session metadata,
+and Recorder clients cannot download Session audio.
 
 Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
 and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a

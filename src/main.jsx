@@ -3000,6 +3000,13 @@ function RecorderPage({ token }) {
   const [loading, setLoading] = useState(true);
   const liveSessionRef = useRef(null);
   const heartbeatRef = useRef(null);
+  const transcriptRef = useRef({ source: [], translation: [] });
+  const transcriptSyncTimerRef = useRef(null);
+  const audioChunksRef = useRef({ input: [], translation: [] });
+  const audioSegmentIndexRef = useRef({ input: 0, translation: 0 });
+  const audioFlushPromiseRef = useRef({ input: null, translation: null });
+  const leaseRef = useRef(null);
+  const grantRef = useRef('');
   useEffect(() => {
     if (!token) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
     fetch(`/api/shared-sessions/${encodeURIComponent(token)}`).then(async (response) => {
@@ -3016,31 +3023,109 @@ function RecorderPage({ token }) {
       if (!response.ok) throw new Error(body?.error?.message || '無法取得錄音控制權。');
       setLease(body.lease);
       setRecorderGrant(body.recorderGrant || '');
+      leaseRef.current = body.lease;
+      grantRef.current = body.recorderGrant || '';
     } catch (value) { setError(value.message); }
   }
   const recorderHeaders = () => ({
     'X-Recorder-Token': token,
     'X-Recorder-Grant': recorderGrant,
     'X-Recorder-Lease-Id': lease?.leaseId || '',
-    'X-Recorder-Fence-Token': String(lease?.fenceToken || '')
+    'X-Recorder-Fence-Token': String(lease?.fenceToken || ''),
+    'X-Recorder-Session-Id': detail?.session?.id || ''
   });
   async function syncSnapshot(status = detail?.session?.status || 'active') {
     if (!detail?.session?.id || !lease) return;
-    const items = ['source', 'translation'].flatMap((stream) => transcript[stream].map((text, index) => ({
-      id: `${detail.session.id}:recorder:${stream}:${index + 1}`,
+    const items = ['source', 'translation'].flatMap((stream) => transcriptRef.current[stream].map((item, index) => ({
+      id: item.id || `${detail.session.id}:recorder:${stream}:${index + 1}`,
       sessionId: detail.session.id,
       stream,
       status: 'final',
-      text,
-      sequence: index + 1,
-      startedAt: Date.now(),
-      finalizedAt: Date.now()
+      text: item.text,
+      sequence: item.sequence || index + 1,
+      startedAt: item.startedAt || Date.now(),
+      finalizedAt: item.finalizedAt || Date.now(),
+      segmentId: item.segmentId || detail.session.segmentId || null
     })));
     const response = await fetch(`/api/sessions/${encodeURIComponent(detail.session.id)}`, {
       method: 'PUT', headers: { 'Content-Type': 'application/json', ...recorderHeaders() },
       body: JSON.stringify({ session: { ...detail.session, id: detail.session.id, status, sourceLanguageCode: detail.session.sourceLanguageCode, targetLanguageCode: detail.session.targetLanguageCode }, transcriptItems: items })
     });
     if (!response.ok) throw new Error((await response.json().catch(() => null))?.error?.message || '同步錄音內容失敗。');
+    if (detail.session.meetingId && detail.session.segmentId && items.length > 0) {
+      const durableChunks = items.map((item) => ({
+        idempotencyKey: `checkpoint:${item.segmentId || detail.session.segmentId}:${item.id}`,
+        meetingId: detail.session.meetingId,
+        segmentId: item.segmentId || detail.session.segmentId,
+        stream: item.stream,
+        sequence: item.sequence,
+        text: item.text,
+        timestamp: item.finalizedAt
+      }));
+      const checkpointResponse = await fetch(`/api/meetings/${encodeURIComponent(detail.session.meetingId)}/segments/${encodeURIComponent(detail.session.segmentId)}/checkpoint`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...recorderHeaders() },
+        body: JSON.stringify({
+          idempotencyKey: `recorder:${detail.session.segmentId}:${items.at(-1).id}`,
+          durableChunks,
+          pendingPartial: null
+        })
+      });
+      if (!checkpointResponse.ok) throw new Error((await checkpointResponse.json().catch(() => null))?.error?.message || '同步字幕 checkpoint 失敗。');
+    }
+  }
+  async function flushRecorderAudio(kind, force = false) {
+    if (audioFlushPromiseRef.current[kind]) {
+      await audioFlushPromiseRef.current[kind];
+    }
+    const chunks = audioChunksRef.current[kind];
+    if (!chunks.length || !detail?.session?.id || !lease) return;
+    if (!force && chunks.length < 20) return;
+    audioChunksRef.current[kind] = [];
+    const blob = pcm16ChunksToWavBlob(chunks, {
+      sampleRate: kind === 'input' ? INPUT_SAMPLE_RATE : undefined,
+      normalizePeak: true
+    });
+    const segmentIndex = audioSegmentIndexRef.current[kind];
+    const fileName = kind === 'input'
+      ? buildInputAudioFileName({ sessionId: detail.session.id, startedAt: detail.session.startedAt })
+      : buildTranslatedAudioFileName({ sessionId: detail.session.id, startedAt: detail.session.startedAt });
+    const upload = (async () => {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(detail.session.id)}/audio/${kind}/segments/${segmentIndex}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav', 'X-File-Name': fileName, ...recorderHeaders() },
+        body: blob
+      });
+      if (!response.ok) {
+        audioChunksRef.current[kind] = chunks.concat(audioChunksRef.current[kind]);
+        throw new Error(`音訊同步失敗（${response.status}）。`);
+      }
+      audioSegmentIndexRef.current[kind] += 1;
+    })();
+    audioFlushPromiseRef.current[kind] = upload;
+    try {
+      await upload;
+    } finally {
+      if (audioFlushPromiseRef.current[kind] === upload) audioFlushPromiseRef.current[kind] = null;
+    }
+  }
+  function queueRecorderTranscript(update, stream) {
+    if (!update?.isFinal || typeof update.text !== 'string' || update.text.trim() === '') return;
+    const next = { ...transcriptRef.current };
+    const id = update.eventId || `${stream}:${next[stream].length + 1}:${update.text}`;
+    if (next[stream].some((item) => item.id === id)) return;
+    next[stream] = [...next[stream], {
+      id,
+      text: update.text,
+      sequence: next[stream].length + 1,
+      startedAt: update.startedAt || Date.now(),
+      finalizedAt: Date.now(),
+      segmentId: detail?.session?.segmentId || null
+    }];
+    transcriptRef.current = next;
+    setTranscript(next);
+    if (transcriptSyncTimerRef.current) window.clearTimeout(transcriptSyncTimerRef.current);
+    transcriptSyncTimerRef.current = window.setTimeout(() => { void syncSnapshot('active'); }, 250);
   }
   async function startRecording() {
     setError('');
@@ -3052,8 +3137,16 @@ function RecorderPage({ token }) {
         sourceLanguageCode: detail.session.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE,
         echoTargetLanguage: true,
         authorizationHeaders: recorderHeaders(),
-        onInputTranscript: (item) => setTranscript((current) => ({ ...current, source: [...current.source, item.text] })),
-        onOutputTranscript: (item) => setTranscript((current) => ({ ...current, translation: [...current.translation, item.text] }))
+        onInputAudioChunk: (chunk) => {
+          audioChunksRef.current.input.push(new Uint8Array(chunk));
+          void flushRecorderAudio('input');
+        },
+        onOutputAudioChunk: (chunk) => {
+          audioChunksRef.current.translation.push(new Uint8Array(chunk));
+          void flushRecorderAudio('translation');
+        },
+        onInputTranscript: (item) => queueRecorderTranscript(item, 'source'),
+        onOutputTranscript: (item) => queueRecorderTranscript(item, 'translation')
       });
       liveSessionRef.current = session;
       await session.start();
@@ -3066,23 +3159,51 @@ function RecorderPage({ token }) {
     try {
       await liveSessionRef.current?.cleanup?.({ closeSession: true });
       liveSessionRef.current = null;
+      await Promise.all([flushRecorderAudio('input', true), flushRecorderAudio('translation', true)]);
       setRecording(false);
       await syncSnapshot('stopped');
       await fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken }) });
       setLease(null);
+      setRecorderGrant('');
+      leaseRef.current = null;
+      grantRef.current = '';
     } catch (value) { setError(value.message || '停止錄音時同步失敗。'); }
   }
   useEffect(() => {
     if (!lease || !recorderGrant) return undefined;
     heartbeatRef.current = window.setInterval(async () => {
       const response = await fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease/heartbeat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken, recorderGrant }) });
-      if (!response.ok) { setError('錄音控制權已失效，請重新取得錄音控制權。'); await liveSessionRef.current?.cleanup?.({ closeSession: true }); setRecording(false); return; }
+      if (!response.ok) {
+        setError('錄音控制權已失效，請重新取得錄音控制權。');
+        await liveSessionRef.current?.cleanup?.({ closeSession: true });
+        setRecording(false);
+        setLease(null);
+        setRecorderGrant('');
+        leaseRef.current = null;
+        grantRef.current = '';
+        return;
+      }
       const body = await response.json();
       setLease(body.lease); setRecorderGrant(body.recorderGrant || recorderGrant);
+      leaseRef.current = body.lease; grantRef.current = body.recorderGrant || recorderGrant;
     }, 3000);
     return () => window.clearInterval(heartbeatRef.current);
   }, [lease?.leaseId, lease?.fenceToken, recorderGrant, token]);
-  useEffect(() => () => { void liveSessionRef.current?.cleanup?.({ closeSession: true }); }, []);
+  useEffect(() => {
+    leaseRef.current = lease;
+    grantRef.current = recorderGrant;
+  }, [lease, recorderGrant]);
+  useEffect(() => () => {
+    if (transcriptSyncTimerRef.current) window.clearTimeout(transcriptSyncTimerRef.current);
+    void liveSessionRef.current?.cleanup?.({ closeSession: true });
+    const currentLease = leaseRef.current;
+    if (currentLease && grantRef.current) {
+      void fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease`, {
+        method: 'DELETE', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leaseId: currentLease.leaseId, fenceToken: currentLease.fenceToken })
+      });
+    }
+  }, [token]);
   return <main className="app-shell watch-page">
     <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
     {loading ? <p className="history-empty">正在載入會議…</p> : null}
@@ -4936,7 +5057,8 @@ function SessionSharePanel({ sessionId }) {
 
   useEffect(() => {
     if (!createdShare?.url) return undefined;
-    const absoluteUrl = new URL(createdShare.url, window.location.href).href;
+    const shareUrl = createdShare.share?.role === 'recorder' ? createdShare.recorderUrl : createdShare.url;
+    const absoluteUrl = new URL(shareUrl || createdShare.url, window.location.href).href;
     QRCode.toDataURL(absoluteUrl, { width: 180, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
     return undefined;
   }, [createdShare]);
@@ -4985,7 +5107,7 @@ function SessionSharePanel({ sessionId }) {
           <p><strong>{createdShare.share.role === 'recorder' ? '錄音連結' : '觀看連結'}</strong> · <strong>短碼：</strong><code>{createdShare.share.shortCode}</code></p>
           <p className="share-url"><a href={createdShare.url}>{createdShare.url}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.url)}><Copy size={15} aria-hidden="true" />複製</button></p>
           {createdShare.recorderUrl ? <p className="share-url"><a href={createdShare.recorderUrl}>{createdShare.recorderUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.recorderUrl)}><Copy size={15} aria-hidden="true" />複製錄音連結</button></p> : null}
-          <p className="share-url"><a href={createdShare.codeUrl}>{createdShare.codeUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.codeUrl)}><Copy size={15} aria-hidden="true" />複製短碼連結</button></p>
+          <p className="share-url"><a href={createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl}>{createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl)}><Copy size={15} aria-hidden="true" />複製短碼連結</button></p>
         </div>
       ) : null}
       {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : <p className="export-note">重新整理後只顯示仍有效的分享 metadata；既有 plaintext token 不會再次顯示。</p>}

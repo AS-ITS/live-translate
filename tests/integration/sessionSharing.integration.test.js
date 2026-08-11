@@ -44,6 +44,45 @@ test('Recorder share claims one backend lease while Viewer remains read-only', a
   }
 });
 
+test('Recorder writes require the current grant and cannot change Session metadata', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-recorder-write-api-'));
+  const fileSystem = await import('node:fs/promises');
+  const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });
+  const sessionReadRepository = createSessionReadRepository({ sessionRepository });
+  const sessionReadController = createSessionReadController({ sessionQueryService: createSessionQueryService({ sessionReadRepository }) });
+  const handler = createRequestHandler({
+    sessionRepository,
+    sessionReadController,
+    sessionShareService: createSessionShareService({ clock: () => 1000 }),
+    recorderLeaseService: createFileRecorderLeaseService({ filePath: join(directory, 'leases.json'), fileSystem, clock: () => 1000 })
+  });
+  const server = http.createServer(handler);
+  await listen(server);
+  try {
+    const created = await request(server, 'POST', '/api/sessions', { targetLanguageCode: 'en', name: 'Protected' });
+    const share = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, { role: 'recorder', expiresAt: 100000 });
+    const claim = await request(server, 'POST', `/api/shared-sessions/${share.body.share.token}/recorder-lease`, {});
+    const headers = {
+      'X-Recorder-Token': share.body.share.token,
+      'X-Recorder-Grant': claim.body.recorderGrant,
+      'X-Recorder-Lease-Id': claim.body.lease.leaseId,
+      'X-Recorder-Fence-Token': String(claim.body.lease.fenceToken)
+    };
+
+    const forbidden = await request(server, 'PUT', `/api/sessions/${created.body.session.id}`, {
+      ...snapshotFor(created.body.session.id, 'source', 'translation'),
+      session: { ...snapshotFor(created.body.session.id, 'source', 'translation').session, name: 'mutated' }
+    }, headers);
+    assert.equal(forbidden.status, 403);
+    assert.equal(forbidden.body.error.code, 'recorder_forbidden');
+
+    const accepted = await request(server, 'PUT', `/api/sessions/${created.body.session.id}`, snapshotFor(created.body.session.id, 'source', 'translation'), headers);
+    assert.equal(accepted.status, 200);
+  } finally {
+    await close(server);
+  }
+});
+
 test('Session share API returns a read-only SSE stream scoped to the Session', async () => {
   const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });
   const sessionReadRepository = createSessionReadRepository({ sessionRepository });
@@ -245,9 +284,9 @@ function snapshotFor(sessionId, sourceText, translatedText, status = 'active') {
   };
 }
 
-function request(server, method, path, body) {
+function request(server, method, path, body, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    const request = http.request({ port: server.address().port, method, path, headers: { 'Content-Type': 'application/json' } }, (response) => {
+    const request = http.request({ port: server.address().port, method, path, headers: { 'Content-Type': 'application/json', ...extraHeaders } }, (response) => {
       let text = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => { text += chunk; });

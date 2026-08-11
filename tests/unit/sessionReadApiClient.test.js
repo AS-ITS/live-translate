@@ -16,7 +16,7 @@ test('GET /api/sessions uses the correct URL and method', async () => {
   assert.deepEqual(calls, [
     {
       url: '/api/sessions',
-      options: { method: 'GET' }
+      options: { method: 'GET', headers: {} }
     }
   ]);
 });
@@ -48,7 +48,7 @@ test('GET /api/sessions/:sessionId URL-encodes the ID', async () => {
   assert.deepEqual(calls, [
     {
       url: '/api/sessions/session%201%2Fzh-Hant',
-      options: { method: 'GET' }
+      options: { method: 'GET', headers: {} }
     }
   ]);
 });
@@ -67,7 +67,7 @@ test('DELETE /api/sessions/:sessionId URL-encodes the ID and returns confirmatio
   assert.deepEqual(calls, [
     {
       url: '/api/sessions/session%201%2Fzh-Hant',
-      options: { method: 'DELETE' }
+      options: { method: 'DELETE', headers: {} }
     }
   ]);
   assert.deepEqual(result, { deleted: true, sessionId: 'session 1/zh-Hant' });
@@ -97,7 +97,7 @@ test('DELETE /api/sessions/:sessionId/translations/:outputId URL-encodes IDs and
   assert.deepEqual(calls, [
     {
       url: '/api/sessions/session%201%2Fzh-Hant/translations/output%201%2Ffr',
-      options: { method: 'DELETE' }
+      options: { method: 'DELETE', headers: {} }
     }
   ]);
   assert.deepEqual(result, { deleted: true, sessionId: 'session 1/zh-Hant', outputId: 'output 1/fr' });

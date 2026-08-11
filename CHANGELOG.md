@@ -1,5 +1,9 @@
 # Changelog
 
+- #21 Session sharing acceptance coverage now verifies read-only Viewer routes,
+  Session isolation, terminal snapshots, reconnect behavior, share expiry and
+  revocation, and single-tab microphone control.
+
 - Session read-only recovery and control isolation: `#live?sessionId=...` now
   opens a live or completed Session as a read-only view when the current tab
   does not own its microphone control. Browser tabs coordinate a short-lived

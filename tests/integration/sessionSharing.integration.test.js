@@ -170,6 +170,30 @@ test('Session share API rejects expired links', async () => {
   }
 });
 
+test('shared Viewer routes remain read-only for non-GET methods', async () => {
+  const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });
+  const sessionReadRepository = createSessionReadRepository({ sessionRepository });
+  const sessionReadController = createSessionReadController({
+    sessionQueryService: createSessionQueryService({ sessionReadRepository })
+  });
+  const handler = createRequestHandler({ sessionRepository, sessionReadController });
+  const server = http.createServer(handler);
+  await listen(server);
+
+  try {
+    const created = await request(server, 'POST', '/api/sessions', { targetLanguageCode: 'en', name: 'Read-only' });
+    const share = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, {});
+
+    const updateAttempt = await request(server, 'POST', `/api/shared-sessions/${share.body.share.token}`, {});
+    const eventMutationAttempt = await request(server, 'POST', `/api/shared-sessions/${share.body.share.token}/events`, {});
+
+    assert.equal(updateAttempt.status, 404);
+    assert.equal(eventMutationAttempt.status, 404);
+  } finally {
+    await close(server);
+  }
+});
+
 function snapshotFor(sessionId, sourceText, translatedText, status = 'active') {
   return {
     session: {

@@ -449,8 +449,8 @@ export function createProductionApplicationDependencies(options = {}) {
         filePath: sessionSharesFilePathFor(env),
         fileSystem: sessionShareServiceFileSystem
       });
-  recorderLeaseService = Object.prototype.hasOwnProperty.call(applicationOptions, 'recorderLeaseService')
-    ? recorderLeaseService
+  const recorderLeaseService = Object.prototype.hasOwnProperty.call(applicationOptions, 'recorderLeaseService')
+    ? applicationOptions.recorderLeaseService
     : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition

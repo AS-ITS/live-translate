@@ -303,6 +303,7 @@ test('application dependencies assemble translation command graph with injected 
     'liveTokenCreator',
     'meetingCheckpointService',
     'meetingReadController',
+    'recorderLeaseService',
     'sessionApplicationService',
     'sessionAudioArtifactRepository',
     'sessionReadController',
@@ -660,7 +661,11 @@ test('production composition creates durable queue repository when feature flag 
     access() {},
     mkdir() {},
     readFile() {},
-    writeFile() {}
+    writeFile() {},
+    rename() {},
+    unlink() {},
+    rmdir() {},
+    stat() {}
   });
   const calls = [];
   const dependencies = createProductionApplicationDependencies({
@@ -723,6 +728,18 @@ test('production composition uses file-backed durable repository factory when en
       },
       writeFile() {
         throw new Error('durable repository storage should not be written during composition');
+      },
+      rename() {
+        throw new Error('durable repository storage should not be renamed during composition');
+      },
+      unlink() {
+        throw new Error('durable repository storage should not be unlinked during composition');
+      },
+      rmdir() {
+        throw new Error('durable repository storage should not remove directories during composition');
+      },
+      stat() {
+        throw new Error('durable repository storage should not stat during composition');
       }
     },
     geminiEnvironmentFactory() {

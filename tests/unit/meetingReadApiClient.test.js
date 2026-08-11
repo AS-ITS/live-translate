@@ -13,7 +13,7 @@ test('GET /api/meetings uses the correct URL and method', async () => {
 
   await client.listMeetingHistory();
 
-  assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'GET' } }]);
+  assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'GET', headers: {} } }]);
 });
 
 test('GET /api/meetings/:meetingId URL-encodes the ID', async () => {
@@ -28,7 +28,7 @@ test('GET /api/meetings/:meetingId URL-encodes the ID', async () => {
   await client.getMeetingDetail('meeting 1/long');
 
   assert.deepEqual(calls, [
-    { url: '/api/meetings/meeting%201%2Flong', options: { method: 'GET' } }
+    { url: '/api/meetings/meeting%201%2Flong', options: { method: 'GET', headers: {} } }
   ]);
 });
 

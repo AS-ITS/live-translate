@@ -14,7 +14,7 @@ test('session retranslation client lists safe provider options', async () => {
   const client = createSessionRetranslationApiClient({
     fetchImpl: async (url, options) => {
       assert.equal(url, '/api/translation-providers');
-      assert.deepEqual(options, { method: 'GET' });
+      assert.deepEqual(options, { method: 'GET', headers: {} });
       return { status: 200, json: async () => ({ providers: [{ key: 'gemini', label: 'Gemini' }] }) };
     }
   });

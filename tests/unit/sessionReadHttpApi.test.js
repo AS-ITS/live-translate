@@ -259,7 +259,8 @@ test('PUT /api/sessions/:sessionId accepts large snapshots under the configured 
     ['get', 'session-large'],
     ['append', 'session-large', 'item-large'],
     ['get', 'session-large'],
-    ['update', 'session-large']
+    ['update', 'session-large'],
+    ['get', 'session-large']
   ]);
 });
 

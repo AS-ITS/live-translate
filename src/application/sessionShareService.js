@@ -6,8 +6,9 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
   const shares = new Map();
 
   return Object.freeze({
-    createShare(sessionId, { expiresAt = null } = {}) {
+    createShare(sessionId, { role = 'viewer', expiresAt = null } = {}) {
       assertSessionId(sessionId);
+      assertRole(role);
       if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= clock())) {
         throw new RangeError('Share expiry must be in the future.');
       }
@@ -16,6 +17,7 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       const share = {
         id: `share-${randomBytes(12).toString('hex')}`,
         sessionId,
+        role,
         tokenHash: hashToken(token),
         shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
@@ -83,9 +85,14 @@ function publicShare(share) {
   return {
     id: share.id,
     sessionId: share.sessionId,
+    role: share.role || 'viewer',
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
   };
+}
+
+function assertRole(value) {
+  if (value !== 'viewer' && value !== 'recorder') throw new RangeError('Share role must be viewer or recorder.');
 }
 
 function assertSessionId(value) {

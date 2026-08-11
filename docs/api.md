@@ -2,6 +2,13 @@
 
 ## Session sharing
 
+Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.
+Recorder creation also returns a `recorderUrl`. Recorder lease claim,
+heartbeat, and release are exposed at
+`/api/shared-sessions/:token/recorder-lease` and its `/heartbeat` child route.
+Only one active lease is allowed per Session; a duplicate claim returns
+`409 recorder_already_active`.
+
 Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
 and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a
 one-time plaintext token and short code, plus SPA hash URLs (`#watch?token=...`

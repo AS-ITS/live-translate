@@ -46,6 +46,7 @@ import { createFileSessionRepository } from '../src/infrastructure/fileSessionRe
 import { createFileSessionAudioArtifactRepository } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { createFileMeetingRepository } from '../src/infrastructure/fileMeetingRepository.js';
 import { createFileSessionShareService } from '../src/infrastructure/fileSessionShareService.js';
+import { createFileRecorderLeaseService } from '../src/infrastructure/fileRecorderLeaseService.js';
 import { createMemoryMeetingRepository } from '../src/infrastructure/meetingRepositoryAdapter.js';
 import {
   DEFAULT_TRANSLATION_PROVIDER,
@@ -76,6 +77,7 @@ export const DEFAULT_TRANSLATION_GLOSSARY_FILE = 'translation-glossary.json';
 export const DEFAULT_SESSION_RECORDS_FILE = 'data/session-records.json';
 export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
 export const DEFAULT_SESSION_SHARES_FILE = 'session-shares.json';
+export const DEFAULT_RECORDER_LEASES_FILE = 'recorder-leases.json';
 
 export function createApplicationDependencies(options = {}) {
   const {
@@ -137,6 +139,7 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepositoryFactory = createFileSessionAudioArtifactRepository,
     sessionAudioArtifactFileSystem = fileSystem,
     sessionShareService,
+    recorderLeaseService,
     sessionApplicationService,
     sessionApplicationServiceFactory = createSessionApplicationService,
     meetingRepository,
@@ -317,6 +320,7 @@ export function createApplicationDependencies(options = {}) {
       meetingCheckpointService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
+      recorderLeaseService,
       ...(resolvedSessionApplicationService !== undefined
         ? { sessionApplicationService: resolvedSessionApplicationService }
         : {}),
@@ -347,6 +351,7 @@ export function createApplicationDependencies(options = {}) {
     meetingReadQueryService,
     meetingReadController,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     glossaryController: resolvedGlossaryController,
@@ -444,6 +449,9 @@ export function createProductionApplicationDependencies(options = {}) {
         filePath: sessionSharesFilePathFor(env),
         fileSystem: sessionShareServiceFileSystem
       });
+  recorderLeaseService = Object.prototype.hasOwnProperty.call(applicationOptions, 'recorderLeaseService')
+    ? recorderLeaseService
+    : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = needsProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -554,6 +562,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
     sessionShareService,
+    recorderLeaseService,
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -1276,6 +1285,10 @@ function meetingRecordsFilePathFor(env = {}) {
 
 function sessionSharesFilePathFor(env = {}) {
   return env.SESSION_SHARES_FILE ?? join(dataDirFor(env), DEFAULT_SESSION_SHARES_FILE);
+}
+
+function recorderLeasesFilePathFor(env = {}) {
+  return env.RECORDER_LEASES_FILE ?? join(dataDirFor(env), DEFAULT_RECORDER_LEASES_FILE);
 }
 
 function sessionAudioArtifactsDirectoryFor(env = {}) {

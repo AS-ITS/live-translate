@@ -17,8 +17,9 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
   let storageReadPromise = null;
 
   return Object.freeze({
-    async createShare(sessionId, { expiresAt = null } = {}) {
+    async createShare(sessionId, { role = 'viewer', expiresAt = null } = {}) {
       assertSessionId(sessionId);
+      assertRole(role);
       if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= clock())) {
         throw new RangeError('Share expiry must be in the future.');
       }
@@ -28,6 +29,7 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       const share = {
         id: `share-${randomBytes(12).toString('hex')}`,
         sessionId,
+        role,
         tokenHash: hashToken(token),
         shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
@@ -140,10 +142,11 @@ function normalizeStorage(value) {
           typeof share.tokenHash !== 'string' || share.tokenHash.length !== 64 ||
           (share.shortCodeHash !== undefined && share.shortCodeHash !== null && (typeof share.shortCodeHash !== 'string' || share.shortCodeHash.length !== 64)) ||
           typeof share.createdAt !== 'number' || !Number.isFinite(share.createdAt) ||
-          (share.expiresAt !== null && (typeof share.expiresAt !== 'number' || !Number.isFinite(share.expiresAt)))) {
+          (share.expiresAt !== null && (typeof share.expiresAt !== 'number' || !Number.isFinite(share.expiresAt))) ||
+          (share.role !== undefined && share.role !== 'viewer' && share.role !== 'recorder')) {
         throw storageError(`Session share ${index} is invalid.`);
       }
-      return clonePlain({ ...share, shortCodeHash: share.shortCodeHash || null });
+      return clonePlain({ ...share, role: share.role || 'viewer', shortCodeHash: share.shortCodeHash || null });
     })
   };
 }
@@ -152,9 +155,14 @@ function publicShare(share) {
   return {
     id: share.id,
     sessionId: share.sessionId,
+    role: share.role || 'viewer',
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
   };
+}
+
+function assertRole(value) {
+  if (value !== 'viewer' && value !== 'recorder') throw new RangeError('Share role must be viewer or recorder.');
 }
 
 function hashToken(token) {

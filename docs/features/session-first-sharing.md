@@ -1,5 +1,15 @@
 # Session-first Sessions and Shared Viewing
 
+## Recorder capability
+
+Share records support `viewer` and `recorder` roles. Missing roles in older
+records remain Viewer shares. Recorder shares claim a backend-managed,
+file-backed lease and cannot modify Session settings or manage shares.
+
+Recorder operations use the opaque token at `/recorder-lease` and
+`/recorder-lease/heartbeat`; release uses `DELETE /recorder-lease`. Lease
+responses include a `fenceToken` so stale Recorders cannot renew a newer lease.
+
 ## Status
 
 Implemented: Session creation before Gemini startup, Session lifecycle

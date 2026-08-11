@@ -12,6 +12,37 @@ import { createRequestHandler } from '../../server/index.js';
 import { createSessionShareService } from '../../src/application/sessionShareService.js';
 import { createFileSessionShareService } from '../../src/infrastructure/fileSessionShareService.js';
 import { createSessionEventBroadcaster } from '../../src/infrastructure/sessionEventBroadcaster.js';
+import { createFileRecorderLeaseService } from '../../src/infrastructure/fileRecorderLeaseService.js';
+
+test('Recorder share claims one backend lease while Viewer remains read-only', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-recorder-api-'));
+  const fileSystem = await import('node:fs/promises');
+  const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });
+  const sessionReadRepository = createSessionReadRepository({ sessionRepository });
+  const sessionReadController = createSessionReadController({ sessionQueryService: createSessionQueryService({ sessionReadRepository }) });
+  const handler = createRequestHandler({
+    sessionRepository,
+    sessionReadController,
+    sessionShareService: createSessionShareService({ clock: () => 1000 }),
+    recorderLeaseService: createFileRecorderLeaseService({ filePath: join(directory, 'leases.json'), fileSystem, clock: () => 1000 })
+  });
+  const server = http.createServer(handler);
+  await listen(server);
+  try {
+    const created = await request(server, 'POST', '/api/sessions', { targetLanguageCode: 'en' });
+    const viewer = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, {});
+    const recorder = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, { role: 'recorder' });
+    assert.equal(recorder.body.share.role, 'recorder');
+    const denied = await request(server, 'POST', `/api/shared-sessions/${viewer.body.share.token}/recorder-lease`, {});
+    assert.equal(denied.status, 403);
+    const lease = await request(server, 'POST', `/api/shared-sessions/${recorder.body.share.token}/recorder-lease`, {});
+    assert.equal(lease.status, 200);
+    const duplicate = await request(server, 'POST', `/api/shared-sessions/${recorder.body.share.token}/recorder-lease`, {});
+    assert.equal(duplicate.status, 409);
+  } finally {
+    await close(server);
+  }
+});
 
 test('Session share API returns a read-only SSE stream scoped to the Session', async () => {
   const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });

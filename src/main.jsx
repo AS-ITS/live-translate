@@ -95,7 +95,7 @@ import QRCode from 'qrcode';
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary', 'watch', 'dead-letter-queue']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
@@ -2453,6 +2453,11 @@ function App() {
     return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
   }
 
+  if (page === 'record') {
+    const recordInfo = pageInfoFromLocation();
+    return <RecorderPage token={recordInfo.shareToken} />;
+  }
+
   if (isReadOnlyControlView) {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
@@ -2983,6 +2988,37 @@ function WatchPage({ token, code }) {
       ) : null}
     </main>
   );
+}
+
+function RecorderPage({ token }) {
+  const [detail, setDetail] = useState(null);
+  const [lease, setLease] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    if (!token) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
+    fetch(`/api/shared-sessions/${encodeURIComponent(token)}`).then(async (response) => {
+      if (!response.ok) throw new Error('錄音連結無效或已過期。');
+      return response.json();
+    }).then((value) => { setDetail(value); setLoading(false); }).catch((value) => { setError(value.message); setLoading(false); });
+    return undefined;
+  }, [token]);
+  async function claim() {
+    setError('');
+    try {
+      const response = await fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease`, { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error?.message || '無法取得錄音控制權。');
+      setLease(body.lease);
+    } catch (value) { setError(value.message); }
+  }
+  return <main className="app-shell watch-page">
+    <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
+    {loading ? <p className="history-empty">正在載入會議…</p> : null}
+    {error ? <p className="error-message" role="alert">{error}</p> : null}
+    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>開始錄音</button> : null}
+    {lease ? <p className="device-note">已取得本 Session 的錄音 lease。Live 錄音串流整合將沿用此 lease 與 fence token。</p> : null}
+  </main>;
 }
 
 function logTranscriptSegmentDecision(update, decision, previous, next) {
@@ -4831,11 +4867,11 @@ function SessionSharePanel({ sessionId }) {
     return undefined;
   }, [createdShare]);
 
-  async function createShare() {
+  async function createShare(role = 'viewer') {
     setError('');
     try {
       const expiresAt = expiry ? Date.now() + Number(expiry) : null;
-      const result = await clientRef.current.create(sessionId, expiresAt);
+      const result = await clientRef.current.create(sessionId, expiresAt, role);
       setCreatedShare(result);
       setShares((current) => [...current, result.share]);
     } catch {
@@ -4865,14 +4901,16 @@ function SessionSharePanel({ sessionId }) {
         <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}>
           <option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option>
         </select></label>
-        <button className="button detail-button" type="button" onClick={createShare}>建立分享連結</button>
+        <button className="button detail-button" type="button" onClick={() => createShare('viewer')}>建立觀看連結</button>
+        <button className="button detail-button" type="button" onClick={() => createShare('recorder')}>建立錄音連結</button>
       </div>
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {createdShare ? (
         <div className="share-created">
           {qrDataUrl ? <img src={qrDataUrl} alt="分享連結 QR Code" width="180" height="180" /> : null}
-          <p><strong>短碼：</strong><code>{createdShare.share.shortCode}</code></p>
+          <p><strong>{createdShare.share.role === 'recorder' ? '錄音連結' : '觀看連結'}</strong> · <strong>短碼：</strong><code>{createdShare.share.shortCode}</code></p>
           <p className="share-url"><a href={createdShare.url}>{createdShare.url}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.url)}><Copy size={15} aria-hidden="true" />複製</button></p>
+          {createdShare.recorderUrl ? <p className="share-url"><a href={createdShare.recorderUrl}>{createdShare.recorderUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.recorderUrl)}><Copy size={15} aria-hidden="true" />複製錄音連結</button></p> : null}
           <p className="share-url"><a href={createdShare.codeUrl}>{createdShare.codeUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.codeUrl)}><Copy size={15} aria-hidden="true" />複製短碼連結</button></p>
         </div>
       ) : null}

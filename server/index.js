@@ -59,6 +59,9 @@ const ERROR_RESPONSES = {
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
   session_not_found: { status: 404, message: 'Session not found.' },
+  recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
+  recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
+  recorder_forbidden: { status: 403, message: 'Recorder capability is required.' },
   saved_transcript_retranslation_unavailable: {
     status: 503,
     message: 'Saved transcript re-translation is not configured.'
@@ -510,6 +513,7 @@ export function createRequestHandler(options = {}) {
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
     sessionShareService = createSessionShareService(),
+    recorderLeaseService,
     sessionEventBroadcaster = createSessionEventBroadcaster(),
     executionEventBroadcaster,
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
@@ -544,6 +548,7 @@ export function createRequestHandler(options = {}) {
       translationExecutionWorkerRuntime,
       liveTokenCreator,
       sessionShareService,
+      recorderLeaseService,
       sessionEventBroadcaster,
       sessionSnapshotMaxBytes,
       meetingCheckpointMaxBytes,
@@ -560,7 +565,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -712,12 +717,13 @@ async function handleRequestWithSessionReadController(
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord) throw createHttpError('session_not_found');
       const body = await readJson(req);
-      const share = await sessionShareService.createShare(sessionId, { expiresAt: body?.expiresAt ?? null });
+      const share = await sessionShareService.createShare(sessionId, { role: body?.role || 'viewer', expiresAt: body?.expiresAt ?? null });
       statusCode = 201;
       sendJson(res, statusCode, {
         share,
         url: `#watch?token=${encodeURIComponent(share.token)}`,
-        codeUrl: `#watch?code=${encodeURIComponent(share.shortCode)}`
+        codeUrl: `#watch?code=${encodeURIComponent(share.shortCode)}`,
+        ...(share.role === 'recorder' ? { recorderUrl: `#record?token=${encodeURIComponent(share.token)}` } : {})
       }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
@@ -768,7 +774,32 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('session_not_found', requestId), requestId);
       return;
     }
-    sendJson(res, 200, publicViewerDetail(detail), requestId);
+    sendJson(res, 200, { ...publicViewerDetail(detail), capability: { role: share.role || 'viewer', sessionId: share.sessionId, expiresAt: share.expiresAt } }, requestId);
+    return;
+  }
+
+  if (isRecorderLeasePath(req.method, path)) {
+    try {
+      if (!recorderLeaseService) throw createHttpError('recorder_lease_invalid');
+      const token = decodeRecorderToken(path);
+      const share = await sessionShareService.resolveShare(token);
+      if (!share || share.role !== 'recorder') throw createHttpError('recorder_forbidden');
+      const body = req.method === 'POST' ? await readJson(req) : {};
+      let lease;
+      if (path.endsWith('/recorder-lease') && req.method === 'POST') {
+        lease = await recorderLeaseService.claim(share.sessionId);
+      } else if (path.endsWith('/heartbeat')) {
+        lease = await recorderLeaseService.heartbeat(share.sessionId, body.leaseId, body.fenceToken);
+      } else {
+        await recorderLeaseService.release(share.sessionId, body.leaseId, body.fenceToken);
+        lease = null;
+      }
+      const detail = await sessionReadController.getSession(share.sessionId);
+      sendJson(res, req.method === 'DELETE' ? 200 : 200, { session: publicViewerDetail(detail), capability: { role: 'recorder', sessionId: share.sessionId, expiresAt: share.expiresAt }, lease }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error); statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
     return;
   }
 
@@ -1539,10 +1570,21 @@ function isDeadLetterQueueRoute(method, path) {
 }
 
 function isPublicApiPath(method, path) {
-  return method === 'GET' && (
+  return (method === 'GET' && (
     isSharedSessionDetailPath(path) ||
     isSharedSessionEventsPath(path)
-  );
+  )) || isRecorderLeasePath(method, path);
+}
+
+function isRecorderLeasePath(method, path) {
+  return (method === 'POST' && /^\/api\/shared-sessions\/[^/]+\/recorder-lease(?:\/heartbeat)?$/.test(path)) ||
+    (method === 'DELETE' && /^\/api\/shared-sessions\/[^/]+\/recorder-lease$/.test(path));
+}
+
+function decodeRecorderToken(path) {
+  const match = path.match(/^\/api\/shared-sessions\/([^/]+)\/recorder-lease/);
+  if (!match) throw createHttpError('invalid_request');
+  return decodeURIComponent(match[1]);
 }
 
 function isSavedTranscriptRetranslationRoute(method, path) {

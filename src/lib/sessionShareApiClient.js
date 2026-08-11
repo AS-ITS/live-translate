@@ -8,9 +8,9 @@ export function createSessionShareApiClient({ fetchImpl = globalThis.fetch } = {
       const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/shares`);
       return parseOk(response, 'shares');
     },
-    async create(sessionId, expiresAt = null) {
+    async create(sessionId, expiresAt = null, role = 'viewer') {
       const response = await request(`/api/sessions/${encodeURIComponent(sessionId)}/shares`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt, role })
       });
       return parseOk(response);
     },

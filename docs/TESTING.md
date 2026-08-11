@@ -313,3 +313,8 @@ list, including session-relative timestamps, partial filtering, duplicate and
 timeline validation, and export-time wrapping. A Session with no Cues keeps
 the legacy transcript export fallback. Do not use DOM layout or Cue UI line
 wrapping as export input.
+# Recorder sharing validation
+
+Use mocked request contexts to verify Recorder share role migration, lease
+claim/heartbeat/release, duplicate claim (`409 recorder_already_active`),
+expiry, and fence-token rejection. Do not call Gemini or run a full benchmark.

@@ -1,5 +1,8 @@
 # Changelog
 
+- Added Viewer/Recorder share capability roles and a file-backed, fenced
+  recorder lease API for independent Session recording.
+
 - #21 Session sharing acceptance coverage now verifies read-only Viewer routes,
   Session isolation, terminal snapshots, reconnect behavior, share expiry and
   revocation, and single-tab microphone control.

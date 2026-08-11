@@ -1426,39 +1426,6 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
   await expect(finalCueRows(page)).toHaveCount(2);
 });
 
-test('repeated speech merges into one live Cue with cumulative translation', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
-    session.emitMessage({
-      serverContent: {
-        inputTranscription: { text: '123' },
-        outputTranscription: { text: '1, 2, 3' },
-        turnComplete: true
-      }
-    });
-  });
-  await page.waitForTimeout(750);
-  await page.evaluate(() => {
-    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
-    session.emitMessage({
-      serverContent: {
-        inputTranscription: { text: '123 123' },
-        outputTranscription: { text: '1, 2, 3, 1, 2' }
-      }
-    });
-  });
-
-  await expect(finalCueRows(page)).toHaveCount(1);
-  await expectCueRow(finalCueRows(page).first(), {
-    sourceText: '123 123',
-    translatedText: '1, 2, 3, 1, 2'
-  });
-});
-
 test('final repeated number turn keeps its complete source and translation', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -1502,40 +1469,6 @@ test('final repeated number turn keeps its complete source and translation', asy
   await expectCueRow(finalCueRows(page).nth(2), {
     sourceText: '123.456.789.',
     translatedText: '123.456.789.'
-  });
-});
-
-test('cumulative speech updates the preceding final Cue without leaving a partial row', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
-    session.emitMessage({
-      serverContent: {
-        inputTranscription: { text: '這是一段完整的原文內容文字' },
-        outputTranscription: { text: 'Hello' },
-        turnComplete: true
-      }
-    });
-  });
-  await page.waitForTimeout(750);
-  await page.evaluate(() => {
-    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
-    session.emitMessage({
-      serverContent: {
-        inputTranscription: { text: '這是一段完整的原文內容文字,這是一段完整的原文內容文字。' },
-        outputTranscription: { text: 'Hello, hello.' }
-      }
-    });
-  });
-
-  await expect(finalCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page)).toHaveCount(0);
-  await expectCueRow(finalCueRows(page).first(), {
-    sourceText: /這是一段完整的原文內容文字,這是\s+一段完整的原文內容文字。/,
-    translatedText: 'Hello, hello.'
   });
 });
 
@@ -1798,39 +1731,6 @@ test('unfinished prefix Cue joins the following sentence-ending Cue', async ({ p
     sourceText: 'The microphone test is working.',
     translatedText: '麥克風測試正常。'
   });
-});
-
-test('replaced pending Cue text remains one partial preview', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: {
-        inputTranscription: { text: 'pending sour' }
-      }
-    });
-  });
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page).first().getByTestId('cue-source-text')).toHaveText('pending sour');
-
-  await page.waitForTimeout(500);
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: {
-        inputTranscription: { text: 'pending source' }
-      }
-    });
-  });
-  await expect(partialCueRows(page).first().getByTestId('cue-source-text')).toHaveText('pending source');
-
-  await page.waitForTimeout(2600);
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page).first().getByTestId('cue-source-text')).toHaveText('pending source');
-
-  await expect(partialCueRows(page)).toHaveCount(1, { timeout: 1500 });
-  await expect(finalCueRows(page)).toHaveCount(0);
 });
 
 test('downloads the active transcript through a browser download', async ({ page }) => {

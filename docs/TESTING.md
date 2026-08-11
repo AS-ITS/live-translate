@@ -4,6 +4,21 @@ This project separates deterministic tests from real Gemini API validation. Unit
 integration, and E2E tests must not call the real Gemini API. The live smoke test
 is opt-in only.
 
+## Test Responsibility Boundaries
+
+- Unit tests own pure rules, state transitions, input matrices, and failure
+  classification.
+- Integration tests own HTTP, composition, persistence, and provider adapter
+  boundaries.
+- E2E tests keep representative browser journeys and browser-only wiring; pure
+  Cue merge and display matrices belong in unit tests.
+- The live smoke test only checks an explicitly enabled real Gemini connection.
+
+`npm test` is the canonical unit-test entry point and is equivalent to
+`npm run test:unit`. Legacy top-level audio and token tests were consolidated
+into the unit suite; provider-specific token behavior remains in
+`tests/unit/tokenService.test.js`.
+
 ## Unit Tests
 
 Run the file-backed queue concurrency and persistence tests:
@@ -243,8 +258,8 @@ The Playwright flow:
 - Legacy transcript assertions are retained only for the no-Cue fallback
   fixture; Sessions with Cues are verified through the final Cue list and do
   not require the removed article tabs.
-- The complete Playwright suite currently passes 52/52 tests, including the
-  manual-scroll follow-latest regression case.
+- The Playwright suite includes the manual-scroll follow-latest regression case;
+  run the targeted spec after changing live Cue behavior.
 
 - Opens the home page
 - Selects a target language

@@ -9,7 +9,7 @@
     "server": "node server/index.js",
     "start": "node server/index.js --production",
     "start:production": "node server/index.js --production",
-    "test": "node --test tests/*.test.js",
+    "test": "npm run test:unit",
     "test:unit": "node --test tests/unit/*.test.js",
     "test:integration": "node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/*.test.js",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",

@@ -155,6 +155,58 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
+  await page.route('**/api/translation-requests', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    const body = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ request: { ...body, status: 'queued' } })
+    });
+  });
+
+  await page.route('**/api/translation-executions', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    const body = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify({ execution: { ...body, status: 'queued' } })
+    });
+  });
+
+  await page.route('**/api/translation-executions/*', async (route) => {
+    if (route.request().method() !== 'PATCH') {
+      await route.fallback();
+      return;
+    }
+    const body = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ execution: body })
+    });
+  });
+
+  await page.route('**/api/translation-outputs', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    const body = JSON.parse(route.request().postData() || '{}');
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ output: body })
+    });
+  });
+
   await page.route('**/api/meetings', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -1021,10 +1073,11 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
   for (let index = 0; index < 12; index += 1) {
     await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 250 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
+    await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(index + 2);
   }
 
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
-  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation', { waitMs: 250 });
+  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation', { waitMs: 100 });
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 

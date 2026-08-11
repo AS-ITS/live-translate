@@ -1,5 +1,11 @@
 # Changelog
 
+- Session read-only recovery and control isolation: `#live?sessionId=...` now
+  opens a live or completed Session as a read-only view when the current tab
+  does not own its microphone control. Browser tabs coordinate a short-lived
+  local control lease so a second tab cannot start or take over another active
+  Session.
+
 ## Unreleased
 
 - Added single-host multi-process safety for file-backed translation queue and

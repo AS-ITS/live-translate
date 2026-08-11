@@ -8,6 +8,7 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createSessionControlLease } from './lib/sessionControlLease.js';
 import { createSessionShareApiClient } from './lib/sessionShareApiClient.js';
 import { createMeetingReadApiClient } from './lib/meetingReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
@@ -148,6 +149,8 @@ function pageInfoFromLocation() {
 function App() {
   const [page, setPage] = useState(pageFromLocation);
   const [status, setStatus] = useState('idle');
+  const [hasSessionControl, setHasSessionControl] = useState(false);
+  const [controlLeaseSnapshot, setControlLeaseSnapshot] = useState(null);
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
@@ -248,6 +251,7 @@ function App() {
   const transcriptPolishingLifecycleRef = useRef(null);
   const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
+  const sessionControlLeaseRef = useRef(null);
   const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
@@ -258,13 +262,31 @@ function App() {
   const liveCueUpdatesAllowedRef = useRef(false);
   const liveCueIdleTimersRef = useRef(new Map());
 
+  const routeSessionId = pageInfoFromLocation().sessionId;
+  const isViewingReadOnlySession = page === 'live' && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
+  const isReadOnlyControlView = isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl);
+
   const isActive =
     status === 'requesting-permission' ||
     status === 'connecting' ||
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment';
-  const controlsLocked = isActive || status === 'paused';
+  const controlsLocked = isActive || status === 'paused' || Boolean(controlLeaseSnapshot && !hasSessionControl);
+
+  useEffect(() => {
+    const lease = createSessionControlLease();
+    sessionControlLeaseRef.current = lease;
+    const unsubscribe = lease.subscribe((current) => {
+      setControlLeaseSnapshot(current);
+      setHasSessionControl(Boolean(activeSessionRecordIdRef.current && lease.owns(activeSessionRecordIdRef.current)));
+    });
+    return () => {
+      unsubscribe();
+      lease.destroy();
+      sessionControlLeaseRef.current = null;
+    };
+  }, []);
 
   inputDevicesRef.current = inputDevices;
   selectedInputDeviceIdRef.current = selectedInputDeviceId;
@@ -502,6 +524,10 @@ function App() {
       setError('目前已有工作階段正在進行或暫停中，請先暫停或結束目前工作階段。');
       return;
     }
+    if (sessionControlLeaseRef.current?.current()) {
+      setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
+      return;
+    }
     invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -522,6 +548,10 @@ function App() {
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
       record = await createCurrentSessionRecord(meetingCheckpoint);
+      if (!sessionControlLeaseRef.current?.tryAcquire(record.id)) {
+        throw new Error('目前已有工作階段由其他頁籤控制。');
+      }
+      setHasSessionControl(true);
       session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
@@ -540,12 +570,15 @@ function App() {
     } catch (nextError) {
       await session?.stop().catch(() => {});
       if (record?.id) {
+        sessionControlLeaseRef.current?.release(record.id);
+        setHasSessionControl(false);
         sessionRepositoryRef.current.updateSessionRecord(record.id, {
           status: 'failed',
           failureReason: 'live_connect_failed',
           failureCategory: 'provider'
         });
         await flushSessionSnapshot(record.id).catch(() => {});
+        activeSessionRecordIdRef.current = null;
       }
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
@@ -1530,6 +1563,8 @@ function App() {
     } catch {
       return null;
     } finally {
+      sessionControlLeaseRef.current?.release(sessionId);
+      setHasSessionControl(false);
       activeMeetingCheckpointRef.current = null;
     }
   }
@@ -2418,6 +2453,10 @@ function App() {
     return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
   }
 
+  if (isReadOnlyControlView) {
+    return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -2515,6 +2554,9 @@ function App() {
 
           <div className="control-status-row">
             <div className="control-status-messages">
+              {controlLeaseSnapshot && !hasSessionControl ? (
+                <p className="device-note">目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p>
+              ) : null}
               {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
               {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
               {status === 'paused' ? (
@@ -2589,7 +2631,7 @@ function App() {
                     </button>
                   </>
                 ) : (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}>
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {isActive ? '正在開始' : '開始'}
                   </button>
@@ -2797,6 +2839,86 @@ function deadLetterQueueErrorMessage(error) {
   if (error?.status === 401 || error?.status === 403) return '你沒有權限查看 DLQ，請確認 Access Token 後重試。';
   if (error?.status === 404 || error?.code === 'dead_letter_item_not_found') return '找不到這筆 DLQ 項目，請重新整理清單。';
   return 'DLQ 載入或操作失敗，請檢查連線後重試。';
+}
+
+function ReadOnlySessionPage({ sessionId }) {
+  const clientRef = useRef(createSessionReadApiClient());
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    async function load() {
+      try {
+        const [sessionDetail, translationHistory] = await Promise.all([
+          clientRef.current.getSessionDetail(sessionId),
+          clientRef.current.getSessionTranslations(sessionId)
+        ]);
+        if (cancelled) return;
+        if (!sessionDetail) {
+          setDetail(null);
+          setError('找不到此工作階段。');
+          if (timer !== null) clearInterval(timer);
+          return;
+        }
+        setDetail(mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory));
+        setError('');
+        setIsLoading(false);
+        if (TERMINAL_HISTORY_STATUSES.has(sessionDetail?.session?.status) && timer !== null) {
+          clearInterval(timer);
+        }
+      } catch {
+        if (!cancelled) {
+          setIsLoading(false);
+          setError('工作階段內容載入失敗，請稍後重試。');
+        }
+      }
+    }
+
+    void load();
+    timer = window.setInterval(load, 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearInterval(timer);
+    };
+  }, [sessionId]);
+
+  const sourceItems = detail?.sourceTranscript?.items || [];
+  const translationItems = detail?.selectedTranslationOutput?.items || [];
+  const session = detail?.session;
+
+  return (
+    <main className="app-shell watch-page session-read-only-page">
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>{session?.name || '即時翻譯工作階段'}</h1>
+          <p>唯讀查看 · 目前不持有錄音控制權</p>
+        </div>
+        <span className="status-pill">{session ? historyStatusLabel(session.status) : '載入中'}</span>
+      </header>
+      <p className="device-note">此頁面可以查看內容，但不會取得麥克風，也不能暫停、繼續或結束工作階段。</p>
+      {isLoading && !detail ? <p className="history-empty">正在載入工作階段內容…</p> : null}
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {detail ? (
+        <section className="transcript-panel" aria-label="工作階段唯讀內容">
+          <div className="transcript-columns">
+            <div>
+              <h2>原文</h2>
+              {sourceItems.length > 0 ? sourceItems.map((item) => <p key={item.id}>{item.text}</p>) : <p className="history-empty">尚無原文內容。</p>}
+            </div>
+            <div>
+              <h2>翻譯</h2>
+              {translationItems.length > 0 ? translationItems.map((item) => <p key={item.id}>{item.text}</p>) : <p className="history-empty">尚無翻譯內容。</p>}
+            </div>
+          </div>
+        </section>
+      ) : null}
+      <p><a className="button detail-button" href="#history">返回翻譯紀錄</a></p>
+    </main>
+  );
 }
 
 function WatchPage({ token, code }) {

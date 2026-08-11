@@ -2,9 +2,9 @@
 
 ## Status
 
-Initial vertical slice implemented: Session creation before Gemini startup,
-Session lifecycle snapshot syncing, opaque share tokens, and read-only SSE
-viewing.
+Implemented: Session creation before Gemini startup, Session lifecycle
+snapshot syncing, opaque share tokens, read-only SSE viewing, and read-only
+Session viewing across browser tabs.
 
 ## Current Contract
 
@@ -20,10 +20,15 @@ viewing.
   a backend restart.
 - Viewer reads omit audio artifacts and browser device identifiers.
 - Viewer updates use SSE and are scoped by `sessionId` with monotonic event IDs.
+- A browser tab may hold control of at most one microphone Session at a time.
+- Other tabs can load an active or paused Session as read-only without acquiring
+  the microphone or controlling the Gemini Live connection.
+- Reloading a Session does not automatically reclaim control; the existing tab
+  must continue to own the local control lease.
 
 ## Boundaries
 
 The browser still connects directly to Gemini Live API. The backend does not
 proxy audio, expose Gemini credentials, or give Viewer access to Session
-commands. Multi-language Viewer outputs, account ownership, and multi-process
-event brokers remain later slices.
+commands. Multi-language Viewer outputs, account ownership, control takeover,
+and multi-process event brokers remain later slices.

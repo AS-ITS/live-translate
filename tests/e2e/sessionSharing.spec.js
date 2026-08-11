@@ -51,3 +51,33 @@ test('shared Viewer shows an error for an invalid or expired link', async ({ pag
 
   await expect(page.getByRole('alert')).toContainText(/分享連結無效或已過期|分享連線中斷/);
 });
+
+test('Session URL opens an authenticated read-only view without owner controls', async ({ page }) => {
+  const detail = {
+    session: {
+      id: 'session-read-only',
+      name: '正在錄製的會議',
+      status: 'active',
+      targetLanguageCode: 'en'
+    },
+    sourceTranscript: {
+      items: [{ id: 'source-1', text: 'Read-only source', status: 'final' }]
+    },
+    selectedTranslationOutput: {
+      items: [{ id: 'translation-1', text: 'Read-only translation', status: 'final' }]
+    }
+  };
+
+  await page.route('**/api/sessions/session-read-only', async (route) => route.fulfill({ json: detail }));
+  await page.route('**/api/sessions/session-read-only/translations', async (route) => route.fulfill({
+    json: { translations: [], executions: [] }
+  }));
+
+  await page.goto('/#live?sessionId=session-read-only');
+
+  await expect(page.getByRole('heading', { name: '正在錄製的會議' })).toBeVisible();
+  await expect(page.getByText('Read-only source')).toBeVisible();
+  await expect(page.getByText('Read-only translation')).toBeVisible();
+  await expect(page.getByText(/不會取得麥克風/)).toBeVisible();
+  await expect(page.getByRole('button')).toHaveCount(0);
+});

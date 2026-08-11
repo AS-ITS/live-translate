@@ -52,6 +52,12 @@ per-user identity, ownership, RBAC, audit actors, and SSO are deferred.
 4. Start the frontend development server.
 5. Open the frontend in a browser that supports the required Web Audio APIs.
 
+When the Vite dev server is running, enter `o` followed by Enter in the same
+terminal to open the actual Vite URL in the default browser. If the terminal
+does not provide interactive keyboard input, or the operating-system browser
+launcher is unavailable, use the URL printed by Vite manually. When port 5173
+is already occupied, use the replacement port shown in that output.
+
 Do not use real Gemini API calls for automated tests. Use real API calls only for
 manual smoke testing with explicit approval.
 

@@ -28,6 +28,41 @@ test('schedule reconnect runs cleanup then creates pending schedule', async () =
   assert.equal(timer.pendingCount(), 1);
 });
 
+test('offline pauses a pending reconnect and online resumes it once', async () => {
+  const timer = createFakeTimer();
+  let executionCount = 0;
+  const controller = createReconnectController({
+    timer,
+    executeReconnect: () => { executionCount += 1; }
+  });
+
+  controller.setConnectivity(false);
+  const paused = await controller.scheduleReconnect(classifyConnectionFailure('network_offline'));
+
+  assert.equal(paused.paused, true);
+  assert.equal(controller.currentState(), 'paused');
+  assert.equal(timer.pendingCount(), 0);
+
+  controller.setConnectivity(true);
+  assert.equal(controller.currentState(), 'scheduled');
+  assert.equal(timer.pendingCount(), 1);
+  await timer.run();
+  assert.equal(executionCount, 1);
+});
+
+test('offline clears an already scheduled timer without losing its decision', async () => {
+  const timer = createFakeTimer();
+  const controller = createReconnectController({ timer });
+
+  await controller.scheduleReconnect(classifyConnectionFailure('unexpected_close'));
+  controller.setConnectivity(false);
+  assert.equal(controller.currentState(), 'paused');
+  assert.equal(timer.pendingCount(), 0);
+
+  controller.setConnectivity(true);
+  assert.equal(timer.pendingCount(), 1);
+});
+
 test('retry decision is respected for non-retryable failures', async () => {
   const timer = createFakeTimer();
   const controller = createReconnectController({ timer });

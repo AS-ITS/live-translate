@@ -1,4 +1,9 @@
 import { assertTranslationExecutionQueue } from '../application/translation/translationExecutionQueue.js';
+import {
+  assertTranslationExecutionMetrics,
+  createNoopTranslationExecutionMetrics,
+  TRANSLATION_EXECUTION_METRIC_NAMES
+} from '../application/translation/translationExecutionMetrics.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const PENDING_SCHEDULE = Symbol('pending_schedule');
@@ -20,7 +25,8 @@ export function createTranslationExecutionWorkerRuntime({
   clock = () => new Date().toISOString(),
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   scheduler = DEFAULT_SCHEDULER,
-  logger
+  logger,
+  metrics = createNoopTranslationExecutionMetrics()
 } = {}) {
   assertTranslationExecutionWorker(translationExecutionWorker);
   assertTranslationExecutionQueue(translationExecutionQueue);
@@ -29,6 +35,7 @@ export function createTranslationExecutionWorkerRuntime({
   assertPollIntervalMs(pollIntervalMs);
   assertScheduler(scheduler);
   assertLogger(logger);
+  assertTranslationExecutionMetrics(metrics);
 
   let isStarted = false;
   let isProcessing = false;
@@ -114,6 +121,7 @@ export function createTranslationExecutionWorkerRuntime({
       if (translationExecutionQueue.size() > 0) {
         await translationExecutionWorker.processNext();
       }
+      safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
     } catch (error) {
       logRuntimeError(error);
     } finally {
@@ -140,6 +148,14 @@ export function createTranslationExecutionWorkerRuntime({
     isRunning,
     wake
   });
+}
+
+function safeSetGauge(metrics, name, value) {
+  try {
+    metrics.setGauge(name, value);
+  } catch {
+    // Metrics must never break worker polling.
+  }
 }
 
 function assertTranslationExecutionWorker(translationExecutionWorker) {

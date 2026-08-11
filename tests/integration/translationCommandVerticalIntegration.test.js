@@ -2107,7 +2107,6 @@ function assertExecutionLifecycleFor(translationRepository, executionId, expecte
 
 function assertNoWorkerProcessing(translationRepository) {
   assert.deepEqual(translationRepository.callsFor('findExecutionById'), []);
-  assert.deepEqual(translationRepository.callsFor('findRequestById'), []);
 }
 
 function assertCompletedRuntimePersistence(

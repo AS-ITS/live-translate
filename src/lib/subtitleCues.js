@@ -293,7 +293,11 @@ function findFinalRevisionCue(state, event, options = {}) {
     || !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason)
     || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  if (normalizeText(cue[field]) === normalizeText(event.text)) return null;
+  const existingText = normalizeText(cue[field]);
+  const incomingText = normalizeText(event.text);
+  if (existingText === incomingText || !existingText) return null;
+  const isCumulative = incomingText.startsWith(existingText) || existingText.startsWith(incomingText);
+  if (!isCumulative && event.isFinal && !event.isLateTranscript && !endsFragment(existingText)) return null;
   if (endsSentence(cue[field])) return null;
   if (state.lastFinalizedStream === event.stream && endsSentence(event.text)) return null;
   return { index, cue };
@@ -582,6 +586,8 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
   if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)
     || endsSentence(nextCue.sourceText) || endsSentence(nextCue.translatedText)) return false;
+  const adjacentTexts = [previousCue.sourceText, previousCue.translatedText, nextCue.sourceText, nextCue.translatedText];
+  if (!adjacentTexts.some(endsFragment) && !adjacentTexts.some(isNumericFragment)) return false;
 
   const gapMs = Math.max(0, nextCue.startTimeMs - previousCue.endTimeMs);
   if (gapMs > DEFAULT_ADJACENT_CUE_MAX_GAP_MS) return false;
@@ -596,6 +602,14 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
 
 function containsCjk(text) {
   return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text);
+}
+
+function endsFragment(text) {
+  return /[,，、:：;；]/u.test(normalizeText(text));
+}
+
+function isNumericFragment(text) {
+  return /^\d[\d\s]*$/u.test(normalizeText(text));
 }
 
 function endsSentence(text) {

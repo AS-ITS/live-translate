@@ -1,7 +1,10 @@
+import { authenticatedFetch } from './accessToken.js';
+
 export function createMeetingReadApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('meeting read API client requires fetchImpl to be a function.');
   }
+  fetchImpl = authenticatedFetch(fetchImpl);
 
   return {
     async listMeetingHistory() {

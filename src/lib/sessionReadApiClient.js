@@ -1,7 +1,10 @@
+import { authenticatedFetch } from './accessToken.js';
+
 export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('session read API client requires fetchImpl to be a function.');
   }
+  fetchImpl = authenticatedFetch(fetchImpl);
 
   return {
     async listSessionHistory() {

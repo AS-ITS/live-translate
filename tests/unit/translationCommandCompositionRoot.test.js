@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   DEFAULT_MEETING_RECORDS_FILE,
+  DEFAULT_SESSION_SHARES_FILE,
   DEFAULT_SESSION_RECORDS_FILE,
   createApplicationDependencies,
   createProductionApplicationDependencies,
@@ -95,6 +96,27 @@ test('production composition uses DATA_DIR for default session records path', ()
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].filePath, '/tmp/live-translate-data/session-records.json');
+});
+
+test('production composition uses DATA_DIR for default session share path', () => {
+  const calls = [];
+  const shareService = { createShare() {}, resolveShare() {}, revokeShare() {}, listShares() {} };
+
+  createProductionApplicationDependencies({
+    env: { DATA_DIR: '/tmp/live-translate-data' },
+    translationRepository: repository(),
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    sessionShareServiceFactory(options) {
+      calls.push(options);
+      return shareService;
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].filePath, '/tmp/live-translate-data/' + DEFAULT_SESSION_SHARES_FILE);
+  assert.equal(typeof calls[0].fileSystem.readFile, 'function');
 });
 
 test('production composition wires file-backed meeting records with default DATA_DIR path', () => {
@@ -281,10 +303,13 @@ test('application dependencies assemble translation command graph with injected 
     'liveTokenCreator',
     'meetingCheckpointService',
     'meetingReadController',
+    'recorderLeaseService',
+    'sessionApplicationService',
     'sessionAudioArtifactRepository',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',
+    'translationExecutionMetrics',
     'translationHistoryController',
     'translationRepository'
   ]);
@@ -636,7 +661,11 @@ test('production composition creates durable queue repository when feature flag 
     access() {},
     mkdir() {},
     readFile() {},
-    writeFile() {}
+    writeFile() {},
+    rename() {},
+    unlink() {},
+    rmdir() {},
+    stat() {}
   });
   const calls = [];
   const dependencies = createProductionApplicationDependencies({
@@ -699,6 +728,18 @@ test('production composition uses file-backed durable repository factory when en
       },
       writeFile() {
         throw new Error('durable repository storage should not be written during composition');
+      },
+      rename() {
+        throw new Error('durable repository storage should not be renamed during composition');
+      },
+      unlink() {
+        throw new Error('durable repository storage should not be unlinked during composition');
+      },
+      rmdir() {
+        throw new Error('durable repository storage should not remove directories during composition');
+      },
+      stat() {
+        throw new Error('durable repository storage should not stat during composition');
       }
     },
     geminiEnvironmentFactory() {

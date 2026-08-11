@@ -1,5 +1,60 @@
 # Live Translate API and Events
 
+## Session sharing
+
+Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.
+Recorder creation also returns a `recorderUrl`. Recorder lease claim,
+heartbeat, and release are exposed at
+`/api/shared-sessions/:token/recorder-lease` and its `/heartbeat` child route.
+Only one active lease is allowed per Session; a duplicate claim returns
+`409 recorder_already_active`.
+
+Recorder shares always have a finite expiry (30 minutes by default when the
+owner omits `expiresAt`). A successful claim returns `recorderGrant` and
+`grantExpiresAt`. Recorder live-token, Session snapshot, and audio upload
+requests use `X-Recorder-Token`, `X-Recorder-Grant`, `X-Recorder-Lease-Id`,
+and `X-Recorder-Fence-Token`; checkpoint writes additionally use
+`X-Recorder-Session-Id`. Invalid, expired, revoked, mismatched, or stale
+credentials are rejected. Recorder snapshots cannot change Session metadata,
+and Recorder clients cannot download Session audio.
+
+Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
+and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a
+one-time plaintext token and short code, plus SPA hash URLs (`#watch?token=...`
+and `#watch?code=...`); stored share metadata contains only hashes. Anonymous
+Viewer reads and SSE streams resolve through either `/api/shared-sessions/:token`
+or `/api/shared-sessions/code/:code` and their `/events` variants. Viewer detail
+and SSE snapshots share the same sanitized DTO and never include audio or input
+device metadata.
+
+## Authenticated execution WebSocket
+
+`WS /api/sessions/:sessionId/execution-events` streams execution status for one
+Session. The first message must be
+`{"type":"auth","token":"<DEMO_ACCESS_TOKEN>"}`; invalid or missing
+authentication closes the connection. The token is never placed in the URL.
+
+Messages are safe snapshots containing no stack traces, API keys, ephemeral
+tokens, or unsaved provider data. Each Session has a monotonically increasing
+`sequence` in the current process:
+
+```json
+{"type":"execution.snapshot","sequence":12,"sessionId":"session-1","execution":{"id":"execution-2","requestId":"request-1","translationRequestId":"request-1","status":"queued","targetLanguageCode":"ja","startedAt":null,"createdAt":"2026-08-10T00:00:00.000Z","providerAttemptStatus":"not_started","providerAttemptedAt":null,"providerCompletedAt":null,"completedAt":null,"failureInfo":null}}
+```
+
+Events are not replayed after reconnect. Clients refetch the authenticated REST
+read model, then subscribe again. The frontend reconnects with backoff and
+falls back to the existing two-second polling interval after repeated failures.
+
+## Dead-letter queue administration
+
+When durable translation queue storage is enabled, the shared Access Token
+protects `GET /api/translation-dead-letter-queue` (full `{ items, size }`) and
+`POST /api/translation-dead-letter-queue/:executionId/replay` (new queued
+execution). The original failed execution and DLQ item are retained. Disabled
+storage returns `503 dead_letter_queue_unavailable`; an unknown item returns
+`404 dead_letter_item_not_found`.
+
 ## Long Meeting Checkpoints
 
 ## `GET /api/meetings`
@@ -659,6 +714,75 @@ Successful deletion returns:
 
 Missing records and non-finalized records return `404 session_not_found`.
 Malformed session identifiers return `400 invalid_request`.
+
+## Access control
+
+Private `/api/*` routes require `Authorization: Bearer <DEMO_ACCESS_TOKEN>`.
+The legacy `X-Demo-Access-Token` header remains accepted for compatibility.
+Production returns `503 auth_not_configured` when `DEMO_ACCESS_TOKEN` is absent;
+development and test remain permissive when it is absent. Health/readiness and
+Viewer share routes (`GET /api/shared-sessions/:token` and `/events`) remain
+anonymous. Private requests also retain the configured origin check.
+
+The browser uses the build-time `VITE_DEMO_ACCESS_TOKEN`. It must match the
+server token and is visible in the frontend bundle; this v1 design does not
+provide per-user security. All authenticated users share the same private API
+permissions.
+
+## `GET /api/metrics`
+
+Returns the process-local translation queue reliability snapshot. The route is
+private and requires the same access token and origin checks as other private
+`/api/*` routes. Metrics reset when the server process restarts.
+
+```json
+{
+  "metrics": {
+    "translation_queue_depth": 0,
+    "translation_queue_processed_total": 0,
+    "translation_queue_skipped_total": 0,
+    "translation_queue_cancelled_total": 0,
+    "translation_queue_retry_total": 0,
+    "translation_queue_failed_total": 0,
+    "translation_queue_dlq_transfer_total": 0,
+    "translation_queue_recovery_total": 0,
+    "translation_queue_lease_error_total": 0,
+    "translation_queue_acknowledgement_error_total": 0,
+    "translation_queue_last_success_at": null
+  },
+  "generatedAt": "2026-08-10T00:00:00.000Z",
+  "requestId": "request-id"
+}
+```
+
+The endpoint is read-only and does not wake or process the translation worker.
+It does not expose execution IDs, request IDs, provider keys, or provider error
+messages.
+
+## Session-first commands
+
+### `POST /api/sessions`
+
+Creates a persisted Session before a Gemini Live connection is opened. The
+initial status is `created`. The request may include `name`,
+`targetLanguageCode`, `sourceLanguageCode`, and input-device metadata.
+
+### `PATCH /api/sessions/:sessionId`
+
+Updates Session metadata or lifecycle status. Supported statuses are `created`,
+`active`, `paused`, `stopped`, `failed`, and `expired`; invalid transitions are
+rejected.
+
+### Sharing
+
+- `POST /api/sessions/:sessionId/shares` creates an opaque share token.
+- `DELETE /api/sessions/:sessionId/shares/:shareId` revokes a share.
+- `GET /api/shared-sessions/:token` returns Viewer-safe Session detail.
+- `GET /api/shared-sessions/:token/events` opens a read-only SSE stream.
+
+Viewer detail excludes audio artifacts and browser input-device identifiers.
+SSE event IDs are monotonic per Session and each event contains the latest
+snapshot, allowing reconnect clients to render the latest known state.
 
 ## `POST /api/live-token`
 

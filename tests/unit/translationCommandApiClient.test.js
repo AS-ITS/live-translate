@@ -177,7 +177,7 @@ for (const [methodName, operation, status] of [
     assert.strictEqual(result, responseBody);
     assert.deepEqual(calls, [{
       url: `/api/translation-executions/execution%2F%E6%97%A5%E6%9C%AC%E8%AA%9E/${operation}`,
-      options: { method: 'POST' }
+      options: { method: 'POST', headers: {} }
     }]);
   });
 }

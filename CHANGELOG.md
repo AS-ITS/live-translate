@@ -1,6 +1,99 @@
 # Changelog
 
+- Completed the Recorder persistence path: finalized transcript updates,
+  segmented input/translation audio, checkpoint writes, metadata protection,
+  Recorder QR/short-code URLs, lease expiry cleanup, and unload release.
+
+- #21 Recorder flow now issues short-lived hash-only grants after lease claim,
+  authorizes Recorder live-token, snapshot, and audio writes with lease/fence
+  checks, supports heartbeat/stop lifecycle in the Recorder page, and keeps
+  Recorder audio downloads restricted.
+
+- Added Viewer/Recorder share capability roles and a file-backed, fenced
+  recorder lease API for independent Session recording.
+
+- #21 Session sharing acceptance coverage now verifies read-only Viewer routes,
+  Session isolation, terminal snapshots, reconnect behavior, share expiry and
+  revocation, and single-tab microphone control.
+
+- Session read-only recovery and control isolation: `#live?sessionId=...` now
+  opens a live or completed Session as a read-only view when the current tab
+  does not own its microphone control. Browser tabs coordinate a short-lived
+  local control lease so a second tab cannot start or take over another active
+  Session.
+
 ## Unreleased
+
+- Added single-host multi-process safety for file-backed translation queue and
+  dead-letter queue operations. Sidecar locks serialize claims, enqueue,
+  retry, renewal, acknowledgement, and transfer operations; writes use unique
+  temporary files and atomic rename with bounded stale-lock recovery.
+
+- Added authenticated per-Session WebSocket execution status snapshots with
+  reconnect, REST refetch, and polling fallback behavior.
+
+- Added retry lineage visibility to History detail. Executions sharing the
+  same translation request are grouped into a chronological timeline, with
+  existing failed-execution retry controls preserved and no API contract or
+  queue behavior changes.
+
+- Added a hash-only DLQ management page at `#dead-letter-queue`. It lists the
+  complete FIFO queue, safely exposes saved failure metadata, confirms and
+  replays one item at a time, retains the original item, and supports refresh
+  and recoverable error states without adding navigation or changing queue
+  behavior.
+
+- Added authenticated DLQ listing and single-item replay APIs. Replay retains
+  the original failed execution and DLQ item and creates a new queued execution.
+
+- Added process-local queue reliability metrics with a protected
+  `GET /api/metrics` snapshot. Worker success/skip/cancel/retry/failure,
+  recovery, DLQ transfer, lease, acknowledgement, queue depth, and last-success
+  state are tracked without exposing execution or provider identifiers; metric
+  failures do not affect translation behavior.
+
+- Reliability closeout verified the Phase 3J queue retry and dead-letter path:
+  deterministic retry classification, capped backoff scheduling, durable
+  retry metadata, lease-owned DLQ transfer, restart recovery, and stale-lease
+  fencing are covered by the focused unit and integration test set. Remaining
+  reliability work is limited to multi-worker coordination, cross-process
+  atomicity, event deduplication, and metrics/observability.
+
+- Connection resilience now pauses reconnect while the browser is offline and
+  resumes the same recovery generation after `online`. Microphone track loss
+  cleans up before recovery and falls back to the browser default microphone
+  when the selected device is unavailable, with deterministic unit and E2E
+  coverage.
+
+- Added shared Access Token v1 for private `/api/*` routes. Production now
+  requires `DEMO_ACCESS_TOKEN`; the browser uses the matching
+  `VITE_DEMO_ACCESS_TOKEN`. Health/readiness and anonymous share Viewer routes
+  remain public, while per-user identity and RBAC remain deferred.
+
+- Phase 2B-2 frontend translation history/detail reads now centralize legacy and
+  formal output merging, selected-output projections, and polished article
+  derivation in a focused helper while preserving existing HTTP payloads and
+  history behavior.
+
+- Phase 2B-2 translation history mapping now uses dedicated translation
+  read-model wrappers for request, execution, and output DTOs without changing
+  existing history/API response shapes or safe failure filtering.
+
+- Phase 2B-2 export foundation now exposes an `ExportApplicationService`
+  boundary over the existing transcript and saved-session export helpers;
+  live, meeting, retranslation, and saved-session export generation now use
+  the boundary while TXT/SRT/VTT output behavior remains unchanged.
+
+- Phase 2B-2 translation foundation now exposes a `TranslationApplicationService`
+  boundary for translation commands and history reads. Existing HTTP payloads,
+  queue lifecycle, provider resolution, and translation persistence behavior are
+  unchanged.
+
+- Phase 2B-2 Session foundation now exposes a `SessionApplicationService` for
+  Session create/update/finalize commands and history/detail read models while
+  preserving existing HTTP contracts and storage adapters.
+
+- 建立 Session-first 垂直切片：即時翻譯會在 Gemini Live 啟動前先保存 `created` Session，Pause/Resume 會同步 Session 狀態並為逐字稿保留 `sessionId`/`segmentId`；新增 opaque share token、撤銷分享、Viewer-safe detail 與依 Session 隔離的 SSE snapshot stream。
 
 - 改善操作管理者 UI：即時翻譯的錄音與播放設定改用直白命名，所有翻譯工作階段統一顯示在單一翻譯紀錄清單，並補充來源語言、目標語言與表單操作提示，改善手機版操作間距。
 
@@ -1408,3 +1501,14 @@ These items are intentionally deferred:
 - Added the WP1 meeting summary pipeline for ordered Final Subtitle Cues,
   configurable chunking, Gemini Flash Lite chunk summaries, and deterministic
   structured merging.
+- Session share tokens are now persisted to `DATA_DIR/session-shares.json` by
+  default, with `SESSION_SHARES_FILE` as an override, so existing share links
+  remain valid after backend restart.
+# Unreleased
+
+- Completed Session sharing handoff: Viewer SSE snapshots now use the same
+  sanitized read model as detail reads, share URLs use SPA hash routes, and
+  token/code viewers support reconnect-safe updates.
+- Added owner share management with expiry, local QR generation, short codes,
+  listing, and revocation.
+- Added named Session creation and explicit single-instance start blocking.

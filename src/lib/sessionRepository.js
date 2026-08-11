@@ -46,7 +46,10 @@ export function createMemorySessionRepository(options = {}) {
     appendTranscriptItem(sessionId, item = {}) {
       const record = requireRecord(records, sessionId);
       const existingItems = transcriptItems.get(sessionId) || [];
-      const sessionItem = createTranscriptItemForSession(sessionId, item);
+      const sessionItem = createTranscriptItemForSession(sessionId, {
+        ...item,
+        ...(item.segmentId || !record.segmentId ? {} : { segmentId: record.segmentId })
+      });
       const nextItems = [...existingItems, cloneTranscriptItem(sessionItem)];
       const updatedRecord = updateSessionRecordModel(
         record,

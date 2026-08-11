@@ -1,7 +1,7 @@
 # Audio Device Selection
 
-Status: v1 implemented for input device selection / output device selection is
-future browser-limited work
+Status: v1 implemented for input device selection and reconnect fallback /
+output device selection is future browser-limited work
 
 ## 1. Feature Overview
 
@@ -73,11 +73,13 @@ Output device routing remains future work.
 7. The user starts a live translation session.
 8. The session captures audio from the selected input device.
 9. Translated audio plays through the browser default output path.
-10. If a selected input device is unavailable, the app falls back to the browser
-    default device and shows a recoverable message.
+10. If a selected input device is unavailable before startup or during
+    reconnect, the app falls back to the browser default device and shows a
+    recoverable message.
 11. The user can stop the session normally.
 
-Changing devices during an active session should be a later explicit decision.
+Changing devices during an active session remains a later explicit decision;
+only failure recovery can rebuild the session with the browser default device.
 The initial implementation should prefer applying device changes to the next
 session to avoid disrupting the latency-sensitive audio path.
 

@@ -56,17 +56,47 @@ The backend only issues short-lived ephemeral tokens and enforces the access
 gate, origin validation, rate limit, and structured error handling around
 `POST /api/live-token`.
 
+Access Control v1 applies the shared `DEMO_ACCESS_TOKEN` gate to private
+`/api/*` routes. Browsers send the matching build-time `VITE_DEMO_ACCESS_TOKEN`
+as a Bearer token. Health/readiness and opaque share Viewer routes remain
+anonymous; the browser token is visible in its bundle and does not represent a
+per-user identity or permission system.
+
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
 `main.jsx` application orchestration, and a Gemini/browser-specific
 `LiveTranslateSession`.
 
+Session-first implementation now creates a persisted `created` Session before
+opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
+`sessionId` and `segmentId`, and exposes a read-only Viewer path through opaque
+share tokens and per-Session SSE events. The current broadcaster is
+process-local; multi-process event distribution remains later work. Share token
+records are file-backed and survive backend restart.
+
+Translation execution status is also available through the authenticated
+`/api/sessions/:sessionId/execution-events` WebSocket. A process-local execution
+broadcaster publishes safe snapshots after persisted execution create/update
+operations, including worker transitions, manual retry, cancellation, and DLQ
+related terminal updates. Reconnect performs a REST refetch; there is no event
+replay. Cross-process brokers and durable event logs remain out of scope.
+
 Phase 2B target architecture introduces an explicit Application Layer,
 repository and provider ports, TranslationRequest / TranslationExecution /
 TranslationOutput contracts, read-model contracts, and Compatibility Adapter
 mapping. Phase 2C adds saved transcript re-translation, multiple outputs,
 retry/cancel/delete, provider selection, and output version UI.
+
+The DLQ administration capability is backend-only: when durable queue storage is
+enabled, a protected application service lists the full file-backed DLQ and
+creates new queued executions for single-item replay while retaining original
+failure records.
+
+The first Phase 2B-2 implementation slice adds `SessionApplicationService` as
+the boundary for Session commands and Session read models. Existing repository
+and read-model adapters remain responsible for legacy `SessionRecord`
+compatibility mapping.
 
 Long Meeting support adds a separate Meeting aggregate with ordered
 MeetingSegment records. A MeetingSegment may reference an existing Live Session
@@ -520,11 +550,16 @@ Current limitations:
   success for missing-output or mismatched execution/durable state.
 - Failed reconciliation requires no output and leaves output-bearing failed
   executions durable.
-- No lease renewal/heartbeat or execution fencing after lease expiry.
 - No multi-worker locking or cross-process deduplication policy.
 - These layers do not provide multi-process exactly-once delivery.
 - Provider-level external idempotency keys and event-publishing deduplication
   remain out of scope.
+
+Queue observability is process-local. The shared metrics registry is injected
+into the Worker, Worker Runtime, and startup recovery and is read through the
+authenticated `GET /api/metrics` endpoint. It intentionally uses fixed
+low-cardinality names and does not persist or expose execution/provider
+identifiers.
 
 ## 5. Authentication and Token Flow
 
@@ -980,7 +1015,6 @@ Intentionally deferred:
 - Usage Metrics
 - Diagnostics dashboard
 - Token refresh
-- Multi-language re-translation
 - Broader reconnect reasons
 - Audio output selection
 - AudioWorklet migration
@@ -992,10 +1026,6 @@ Intentionally deferred:
 - Billing
 - Multi-tenancy
 - Production deployment concerns
-- Provider selection UI
-- Multi-output UI
-- Retry/cancel/delete behavior
-- Output version UI
 
 ## 20. Terminology
 

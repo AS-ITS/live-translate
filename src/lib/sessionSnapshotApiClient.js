@@ -1,5 +1,8 @@
+import { authenticatedFetch } from './accessToken.js';
+
 export function createSessionSnapshotApiClient({ fetchImpl = globalThis.fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('session snapshot API client requires fetchImpl to be a function.');
+  fetchImpl = authenticatedFetch(fetchImpl);
   return Object.freeze({
     async sync(snapshot) {
       const sessionId = snapshot?.session?.id;

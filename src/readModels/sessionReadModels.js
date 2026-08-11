@@ -15,6 +15,7 @@ const UNKNOWN_TARGET_LANGUAGE_CODE = 'unknown-language';
 export function mapSessionRecordToHistoryListItem(sessionRecord = {}) {
   return {
     id: sessionRecord.id,
+    ...(sessionRecord.name !== undefined ? { name: sessionRecord.name } : {}),
     status: sessionRecord.status,
     startedAt: sessionRecord.startedAt ?? null,
     endedAt: sessionRecord.endedAt ?? null,
@@ -71,6 +72,7 @@ export function mapSessionRecordDetailToDTO(detail = {}) {
 function mapSessionRecordToDetailSession(sessionRecord) {
   return {
     id: sessionRecord.id,
+    ...(sessionRecord.name !== undefined ? { name: sessionRecord.name } : {}),
     status: sessionRecord.status,
     startedAt: sessionRecord.startedAt ?? null,
     endedAt: sessionRecord.endedAt ?? null,

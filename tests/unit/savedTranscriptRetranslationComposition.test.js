@@ -10,6 +10,7 @@ test('translation application barrel exposes only intended public factories', as
   const exports = await import('../../src/application/translation/index.js');
 
   assert.deepEqual(Object.keys(exports).sort(), [
+    'createDeadLetterQueueApplicationService',
     'createSavedTranscriptRetranslationService',
     'createSavedTranscriptTranslationProvider',
     'createTranslationDomainEventHandlers',
@@ -108,11 +109,14 @@ test('application composition wires saved transcript re-translation once through
     'liveTokenCreator',
     'meetingCheckpointService',
     'meetingReadController',
+    'recorderLeaseService',
     'savedTranscriptRetranslationController',
+    'sessionApplicationService',
     'sessionAudioArtifactRepository',
     'sessionReadController',
     'sessionRepository',
     'translationCommandController',
+    'translationExecutionMetrics',
     'translationHistoryController',
     'translationRepository'
   ]);

@@ -781,6 +781,75 @@ input:disabled {
   background: #ffffff;
 }
 
+.dead-letter-queue-panel {
+  display: grid;
+  gap: 16px;
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 20px;
+  background: #ffffff;
+}
+
+.dead-letter-queue-summary {
+  color: #516070;
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+
+.dead-letter-queue-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dead-letter-queue-item {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 16px;
+  background: #fbfcfd;
+}
+
+.dead-letter-queue-item h3 {
+  overflow-wrap: anywhere;
+}
+
+.dead-letter-queue-metadata {
+  margin-bottom: 16px;
+}
+
+.dead-letter-queue-failures {
+  display: grid;
+  gap: 8px;
+}
+
+.dead-letter-queue-metadata-disclosure {
+  border-top: 1px solid #e4e8ed;
+  padding-top: 8px;
+}
+
+.dead-letter-queue-metadata-disclosure summary {
+  min-height: 36px;
+  padding: 7px 0;
+  color: #314152;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.dead-letter-queue-metadata-disclosure pre {
+  max-height: 280px;
+  overflow: auto;
+  margin: 4px 0 0;
+  border-radius: 6px;
+  padding: 12px;
+  background: #17202a;
+  color: #f2f5f7;
+  font: 0.8125rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .history-search-field {
   max-width: 520px;
   margin-bottom: 20px;
@@ -1444,6 +1513,47 @@ input:disabled {
   margin: 0;
   color: #17202a;
   white-space: pre-wrap;
+}
+
+.retry-lineage-list {
+  display: grid;
+  gap: 12px;
+}
+
+.retry-lineage {
+  border: 1px solid #d8dee6;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fbfcfd;
+}
+
+.retry-lineage-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: #314152;
+}
+
+.retry-lineage-header span {
+  color: #6b7886;
+  font-size: 0.8125rem;
+}
+
+.retry-lineage-timeline {
+  gap: 12px;
+}
+
+.retry-lineage-timeline li {
+  border-left: 3px solid #d8dee6;
+  padding-left: 10px;
+}
+
+.retry-lineage-execution-id {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
 }
 
 @media (max-width: 900px) {

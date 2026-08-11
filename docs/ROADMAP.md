@@ -18,6 +18,24 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
+Execution status push is now available through a process-local authenticated
+WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay
+remain deferred.
+
+DLQ inspection and single-item replay API is completed as a backend-only
+follow-up. Authenticated operators can list the full file-backed DLQ and create
+new queued executions without changing original failed records.
+
+DLQ management UI is completed as a direct `#dead-letter-queue` page. It uses
+the existing shared Access Token, lists the complete FIFO DLQ, supports
+confirmed single-item replay with original-item retention, and does not add a
+main-navigation entry or change queue/worker behavior.
+
+Retry lineage UI is completed in History detail. Executions are grouped by
+their existing translation request identity and shown chronologically with
+the existing failed-execution retry action; no new lineage schema or API was
+introduced.
+
 Phase 1 Demo is completed. Phase 2A Foundation is completed. Phase 2 overall is
 in progress and not completed. Phase 2C Saved Transcript Re-translation,
 Phase 2D Production Gemini Saved-Transcript Translation, and Phase 2E
@@ -45,9 +63,21 @@ Integration, and WP5 Documentation Closeout are completed.
 Phase 3I Lease Renewal & Execution Fencing is completed: lease renewal,
 heartbeat orchestration, monotonic fence tokens, fenced execution persistence,
 token-aware acknowledgement, and production vertical integration are covered.
-Remaining reliability work: retry scheduling/backoff, dead-letter queues,
-provider-level idempotency, event publishing deduplication, multi-worker and
-distributed locking, cross-process atomicity, and metrics/observability.
+Phase 3J Queue Retry & Dead-Letter Handling is completed: retryable provider
+failures use durable capped backoff scheduling, retry metadata survives restart,
+and exhausted or non-retryable failures transfer to an idempotent file-backed
+dead-letter queue with ownership checks. Remaining reliability work:
+cross-host coordination and event publishing deduplication.
+Phase 3L Queue Metrics & Observability v1 is completed: a process-local shared
+metrics registry, protected `GET /api/metrics` snapshot, and deterministic
+queue/retry/DLQ/recovery instrumentation are covered. Remaining reliability
+work is cross-host coordination and event publishing deduplication.
+
+Phase 3M Single-host Multi-process Queue Atomicity is completed. File-backed
+queue and DLQ operations now use sidecar locks, atomic temporary-file renames,
+bounded lock waits, stale-lock recovery, and cross-process regression tests.
+This milestone does not add a broker, database, durable event outbox, event
+replay, or cross-host exactly-once delivery.
 
 Phase 4A WP1 Target Language Selection is completed. The existing target-language
 allowlist and `en` default now apply at live-token, translation-command,
@@ -91,8 +121,7 @@ Phase 4B is completed:
 4. WP4 History UI, polling, and selected-output export.
 5. WP5 Documentation and release closeout.
 
-Follow-up backlog, not Phase 4B delivery: manual retry/cancel, DLQ
-inspection/replay UI, cross-Session history search, output retention/deletion
+Follow-up backlog, not Phase 4B delivery: manual retry/cancel, cross-Session history search, output retention/deletion
 policy, provider-side idempotency guarantees, and push-based execution-status
 updates in place of polling.
 
@@ -140,8 +169,8 @@ persistence reload, full transcript reconstruction, duplicate/order checks, and
 failed-Segment readable checkpoint coverage. E2E coverage verifies
 browser-suspended wake recovery and explicit resource diagnostics after
 long-meeting Stop.
-Offline pause/resume and device-disconnect recovery remain deferred resilience
-extensions.
+Offline pause/resume and device-disconnect recovery are completed resilience
+extensions. Proactive token refresh remains deferred.
 
 Completed Phase 1 capabilities include:
 
@@ -210,7 +239,8 @@ Foundation is current.
 
 ### Candidate Features
 
-- Basic login / access control
+- Shared Access Token v1 completed; per-user login/authorization remains
+  deferred.
 - Translation history. Deferred beyond the foundation milestone.
 - Export transcript as TXT / SRT / VTT. Completed.
 - Audio input device selection. Completed.
@@ -571,7 +601,8 @@ phase.
 
 ### Phase 2B-2 - Foundation Implementation
 
-Status: In Progress (WP4 durable queue deduplication implemented).
+Status: In Progress (Session, Translation, and Export application boundaries
+implemented; frontend translation history read-model assembly centralized).
 
 Scope:
 
@@ -587,6 +618,9 @@ Scope:
   - `SavedTranscriptTranslationPort`
 - Compatibility Adapter implementation in repository implementation or
   read-model mapper.
+- Frontend translation history/detail reads use a focused read-model helper for
+  legacy/formal output merging, selected output projections, and polished
+  article derivation without changing HTTP payloads.
 - Read-model wrappers:
   - `SessionHistoryListItem`
   - `SessionDetailDTO`

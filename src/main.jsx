@@ -8,8 +8,11 @@ import { audioInputDevices } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
+import { createSessionControlLease } from './lib/sessionControlLease.js';
+import { createSessionShareApiClient } from './lib/sessionShareApiClient.js';
 import { createMeetingReadApiClient } from './lib/meetingReadApiClient.js';
 import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.js';
+import { createSessionCommandApiClient } from './lib/sessionCommandApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
 import {
@@ -20,12 +23,21 @@ import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
+import { createDeadLetterQueueApiClient } from './lib/deadLetterQueueApiClient.js';
+import { authenticatedFetch } from './lib/accessToken.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import {
+  compactTranslationHistoryForDetail,
+  mergeRetranslationHistoryIntoDetail,
+  removeRetranslationOutputFromDetail,
+  retryLineagesForExecutions
+} from './lib/sessionTranslationHistory.js';
+import { createExportApplicationService } from './application/exportApplicationService.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -35,14 +47,11 @@ import {
 } from './lib/sessionRecordLifecycle.js';
 import {
   buildSavedSessionFileName,
-  canExportSavedSession,
-  formatSavedSessionExport
+  canExportSavedSession
 } from './lib/sessionRecordExport.js';
-import { buildTranscriptFileName, canExportTranscript, formatTranscriptExport } from './lib/transcriptExport.js';
+import { buildTranscriptFileName, canExportTranscript } from './lib/transcriptExport.js';
 import {
   canExportCues,
-  exportCuesToSrt,
-  exportCuesToVtt,
   wrapSubtitleText
 } from './lib/subtitleCueExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from './lib/chineseText.js';
@@ -57,6 +66,7 @@ import {
   transcriptItemsForStream
 } from './lib/transcript.js';
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
+import { subscribeToExecutionEvents } from './lib/executionEventsWebSocket.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
@@ -80,11 +90,12 @@ import {
   pcm16ChunksToWavBlob
 } from './lib/audio.js';
 import './styles.css';
+import QRCode from 'qrcode';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
@@ -101,6 +112,7 @@ const TRANSCRIPT_POLISHING_MIN_CHARS = Number.parseInt(import.meta.env?.VITE_TRA
 const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
 const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
+const exportApplicationService = createExportApplicationService();
 const TRANSLATED_AUDIO_IDLE_STATE = {
   status: 'idle',
   blob: null,
@@ -128,16 +140,21 @@ function pageInfoFromLocation() {
   return {
     page,
     sessionId: params.get('sessionId') || '',
-    meetingId: params.get('meetingId') || ''
+    meetingId: params.get('meetingId') || '',
+    shareToken: params.get('token') || '',
+    shareCode: params.get('code') || ''
   };
 }
 
 function App() {
   const [page, setPage] = useState(pageFromLocation);
   const [status, setStatus] = useState('idle');
+  const [hasSessionControl, setHasSessionControl] = useState(false);
+  const [controlLeaseSnapshot, setControlLeaseSnapshot] = useState(null);
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
+  const [sessionName, setSessionName] = useState('');
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   // Legacy transcript state remains in the data flow for persistence, export,
   // and backward-compatible Session detail fallback. Live rendering is
@@ -155,12 +172,18 @@ function App() {
   const [error, setError] = useState('');
   const [historyRecords, setHistoryRecords] = useState([]);
   const [historyLoadError, setHistoryLoadError] = useState('');
+  const [deadLetterQueue, setDeadLetterQueue] = useState({ items: [], size: 0 });
+  const [deadLetterQueueLoadError, setDeadLetterQueueLoadError] = useState(null);
+  const [isLoadingDeadLetterQueue, setIsLoadingDeadLetterQueue] = useState(false);
+  const [replayingDeadLetterExecutionId, setReplayingDeadLetterExecutionId] = useState('');
+  const [deadLetterQueueNotice, setDeadLetterQueueNotice] = useState('');
   const [meetingLoadError, setMeetingLoadError] = useState('');
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isLoadingMeetings, setIsLoadingMeetings] = useState(false);
   const [selectedHistoryRecordId, setSelectedHistoryRecordId] = useState(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState(null);
   const [historyDetailError, setHistoryDetailError] = useState('');
+  const [retryingHistoryExecutionId, setRetryingHistoryExecutionId] = useState('');
   const [meetingRecords, setMeetingRecords] = useState([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState(null);
   const [selectedMeetingDetail, setSelectedMeetingDetail] = useState(null);
@@ -202,9 +225,12 @@ function App() {
   const archivedTranscriptRef = useRef(archivedTranscript);
   const archivedTranscriptSegmentsRef = useRef([]);
   const reconnectControllerRef = useRef(null);
+  const inputDevicesRef = useRef(inputDevices);
+  const selectedInputDeviceIdRef = useRef(selectedInputDeviceId);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
+  const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
@@ -215,6 +241,9 @@ function App() {
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
+  const sessionShareApiClientRef = useRef(createSessionShareApiClient());
+  const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
+  const deadLetterQueueApiClientRef = useRef(createDeadLetterQueueApiClient());
   const meetingReadApiClientRef = useRef(createMeetingReadApiClient());
   const sessionDetailCacheRef = useRef(new Map());
   const meetingDetailCacheRef = useRef(new Map());
@@ -222,6 +251,7 @@ function App() {
   const transcriptPolishingLifecycleRef = useRef(null);
   const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
+  const sessionControlLeaseRef = useRef(null);
   const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const detailRequestIdRef = useRef(0);
@@ -232,13 +262,35 @@ function App() {
   const liveCueUpdatesAllowedRef = useRef(false);
   const liveCueIdleTimersRef = useRef(new Map());
 
+  const routeSessionId = pageInfoFromLocation().sessionId;
+  const routeMeetingId = pageInfoFromLocation().meetingId;
+  const isViewingReadOnlySession = page === 'live' && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
+  const isReadOnlyControlView = page === 'live' && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
+
   const isActive =
     status === 'requesting-permission' ||
     status === 'connecting' ||
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment';
-  const controlsLocked = isActive || status === 'paused';
+  const controlsLocked = isActive || status === 'paused' || Boolean(controlLeaseSnapshot && !hasSessionControl);
+
+  useEffect(() => {
+    const lease = createSessionControlLease();
+    sessionControlLeaseRef.current = lease;
+    const unsubscribe = lease.subscribe((current) => {
+      setControlLeaseSnapshot(current);
+      setHasSessionControl(Boolean(activeSessionRecordIdRef.current && lease.owns(activeSessionRecordIdRef.current)));
+    });
+    return () => {
+      unsubscribe();
+      lease.destroy();
+      sessionControlLeaseRef.current = null;
+    };
+  }, []);
+
+  inputDevicesRef.current = inputDevices;
+  selectedInputDeviceIdRef.current = selectedInputDeviceId;
 
   useEffect(() => {
     void refreshInputDevices();
@@ -253,6 +305,28 @@ function App() {
 
     navigator.mediaDevices.addEventListener('devicechange', handleDeviceChange);
     return () => navigator.mediaDevices.removeEventListener('devicechange', handleDeviceChange);
+  }, []);
+
+  useEffect(() => {
+    const handleOffline = () => {
+      reconnectController().setConnectivity(false);
+      setStatusLabelOverride('網路離線');
+      setError('網路已中斷，等待恢復後重新連線。');
+      if (sessionRef.current) {
+        void sessionRef.current.handleNetworkOffline();
+      }
+    };
+    const handleOnline = () => {
+      reconnectController().setConnectivity(true);
+      setStatusLabelOverride('重新連線中');
+      setError('');
+    };
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
   }, []);
 
   useEffect(() => {
@@ -277,6 +351,10 @@ function App() {
     if (page === 'history' || page === 'meetings') {
       void refreshMeetingRecords();
     }
+  }, [page]);
+
+  useEffect(() => {
+    if (page === 'dead-letter-queue') void refreshDeadLetterQueue();
   }, [page]);
 
   useEffect(() => {
@@ -429,6 +507,7 @@ function App() {
         }
 
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
+        selectedInputDeviceIdRef.current = '';
         return '';
       });
     } catch {
@@ -442,6 +521,14 @@ function App() {
   }
 
   async function startSession() {
+    if (status === 'active' || status === 'paused' || isActive || sessionRef.current || activeSessionRecordIdRef.current) {
+      setError('目前已有工作階段正在進行或暫停中，請先暫停或結束目前工作階段。');
+      return;
+    }
+    if (sessionControlLeaseRef.current?.current()) {
+      setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
+      return;
+    }
     invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -452,6 +539,7 @@ function App() {
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     let session;
+    let record = null;
 
     try {
       await recordingController().cleanup({ discard: true });
@@ -460,18 +548,39 @@ function App() {
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
       const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
+      record = await createCurrentSessionRecord(meetingCheckpoint);
+      if (!sessionControlLeaseRef.current?.tryAcquire(record.id)) {
+        throw new Error('目前已有工作階段由其他頁籤控制。');
+      }
+      setHasSessionControl(true);
       session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
-      const record = await createCurrentSessionRecord(meetingCheckpoint);
-      await startRecordingForSession(record);
+      const activeRecord = sessionRepositoryRef.current.updateSessionRecord(record.id, {
+        status: 'active',
+        startedAt: record.startedAt || Date.now(),
+        lastLifecycleState: 'listening'
+      });
+      await flushSessionSnapshot(record.id);
+      await startRecordingForSession(activeRecord);
       setStatus('listening');
       updateLiveMeetingUrl(meetingCheckpoint.meetingId);
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (record?.id) {
+        sessionControlLeaseRef.current?.release(record.id);
+        setHasSessionControl(false);
+        sessionRepositoryRef.current.updateSessionRecord(record.id, {
+          status: 'failed',
+          failureReason: 'live_connect_failed',
+          failureCategory: 'provider'
+        });
+        await flushSessionSnapshot(record.id).catch(() => {});
+        activeSessionRecordIdRef.current = null;
+      }
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
       segmentSwitchOrchestratorRef.current?.cancel();
@@ -497,6 +606,7 @@ function App() {
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('pause');
     await flushMeetingCheckpointSync();
+    await updateCurrentSessionStatus('paused');
     pendingMicrophoneStreamRef.current = null;
     setStatus('paused');
   }
@@ -522,6 +632,7 @@ function App() {
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
+      await updateCurrentSessionStatus('active', { lastLifecycleState: 'listening' });
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -604,8 +715,8 @@ function App() {
       setStatus('requesting-permission');
     }
 
-    const inputDeviceIdForSession = inputDevices.some((device) => device.deviceId === selectedInputDeviceId)
-      ? selectedInputDeviceId
+    const inputDeviceIdForSession = inputDevicesRef.current.some((device) => device.deviceId === selectedInputDeviceIdRef.current)
+      ? selectedInputDeviceIdRef.current
       : '';
 
     const { LiveTranslateSession } = await import('./lib/liveSession.js');
@@ -618,7 +729,7 @@ function App() {
     const session = new LiveTranslateSession({
       liveSessionId,
       sessionId: activeSessionRecordIdRef.current,
-      segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
       sessionClock: () => sessionTimeForSubtitleCues(),
       targetLanguageCode,
       sourceLanguageCode,
@@ -684,6 +795,11 @@ function App() {
       },
       onConnectionFailure: (failure) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        if (failure.source === 'microphone_disconnected' && failure.reasonHint === 'selected_device_missing') {
+          selectedInputDeviceIdRef.current = '';
+          setSelectedInputDeviceId('');
+          setDeviceMessage('所選麥克風已中斷，重新連線時會改用瀏覽器預設麥克風。');
+        }
         const classification = classifyFailureSignal(failure);
         const failureUiState = failureUiStateForClassification(classification);
 
@@ -710,7 +826,7 @@ function App() {
         void reconnectController()
           .scheduleReconnect(classification)
           .then((result) => {
-            if (!result.scheduled && !result.ignored) {
+            if (!result.scheduled && !result.ignored && !result.paused) {
               suppressReconnectErrorRef.current = false;
               setStatusLabelOverride('');
               setError(reconnectErrorMessage(result));
@@ -1030,6 +1146,7 @@ function App() {
 
   async function resumeMeetingSession() {
     if (!resumeDraft || isActive) return;
+    const draft = resumeDraft;
 
     reconnectController().reset();
     invalidateLiveSessionCallbacks();
@@ -1047,11 +1164,11 @@ function App() {
       const nextLiveSessionId = generateLiveSessionId();
       setStatus('reconnecting');
       const recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
-        meetingId: resumeDraft.meetingId,
-        segmentId: resumeDraft.segmentId,
-        idempotencyKey: `recover:${resumeDraft.segmentId}:${nextLiveSessionId}`,
+        meetingId: draft.meetingId,
+        segmentId: draft.segmentId,
+        idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
         checkpoint: {
-          idempotencyKey: `checkpoint:${resumeDraft.segmentId}:resume:${nextLiveSessionId}`,
+          idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
           durableChunks: [],
           pendingPartial: null
         },
@@ -1061,17 +1178,23 @@ function App() {
         outcome: 'interrupted'
       });
       const nextMeetingCheckpoint = {
-        meetingId: resumeDraft.meetingId,
+        meetingId: draft.meetingId,
         segmentId: recovery.segment.id
       };
       activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-      await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
-      resetActiveTranscriptForNextSegment(resumeDraft.transcriptState.nextSequence);
+      await createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
+      resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
       session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
+      sessionRepositoryRef.current.updateSessionRecord(activeSessionRecordIdRef.current, {
+        status: 'active',
+        startedAt: Date.now(),
+        lastLifecycleState: 'listening'
+      });
+      await flushSessionSnapshot(activeSessionRecordIdRef.current);
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -1219,16 +1342,29 @@ function App() {
     }
   }
 
-  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null) {
+  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
+    const persisted = existingSessionId
+      ? await sessionCommandApiClientRef.current.update(existingSessionId, { status: 'active' })
+      : await sessionCommandApiClientRef.current.create({
+      name: sessionName.trim() || `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
+      targetLanguageCode,
+      targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
+      sourceLanguageCode,
+      selectedInputDeviceId: selectedInputDeviceId || null,
+      inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
+      });
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
-        startedAt: Date.now(),
+        id: persisted?.session?.id,
+        startedAt: null,
+        status: 'created',
+        name: persisted?.session?.name,
         targetLanguageCode,
         targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
         sourceLanguageCode,
         meetingId: meetingCheckpoint?.meetingId,
-        segmentId: meetingCheckpoint?.segmentId,
+        segmentId: meetingCheckpoint?.segmentId || liveSessionId,
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -1437,6 +1573,8 @@ function App() {
     } catch {
       return null;
     } finally {
+      sessionControlLeaseRef.current?.release(sessionId);
+      setHasSessionControl(false);
       activeMeetingCheckpointRef.current = null;
     }
   }
@@ -1585,7 +1723,7 @@ function App() {
   }
 
   async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
-    const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
+    const response = await authenticatedFetch(fetch)(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'audio/wav',
@@ -1725,6 +1863,17 @@ function App() {
     return sessionSnapshotSyncCoordinator().flush(sessionId);
   }
 
+  async function updateCurrentSessionStatus(nextStatus, patch = {}) {
+    const sessionId = activeSessionRecordIdRef.current;
+    if (!sessionId) return null;
+    const updated = sessionRepositoryRef.current.updateSessionRecord(sessionId, {
+      status: nextStatus,
+      ...patch
+    });
+    await flushSessionSnapshot(sessionId);
+    return updated;
+  }
+
   function reportSessionSnapshotSyncError(error) {
     console.error('Session snapshot persistence failed.', error);
     if (error?.status === 413 || error?.code === 'request_too_large') {
@@ -1847,6 +1996,48 @@ function App() {
     }
   }
 
+  async function retryHistoryExecution(execution) {
+    if (!execution?.id) return;
+    setRetryingHistoryExecutionId(execution.id);
+    try {
+      await translationCommandApiClientRef.current.retryFailedTranslationExecution(execution.id);
+      await refreshSelectedHistoryRecordDetail();
+    } catch {
+      setHistoryDetailError('無法重試此重新翻譯工作。請稍後再試。');
+    } finally {
+      setRetryingHistoryExecutionId('');
+    }
+  }
+
+  async function refreshDeadLetterQueue() {
+    setIsLoadingDeadLetterQueue(true);
+    setDeadLetterQueueLoadError(null);
+    setDeadLetterQueueNotice('');
+    try {
+      setDeadLetterQueue(await deadLetterQueueApiClientRef.current.list());
+    } catch (error) {
+      setDeadLetterQueueLoadError(error);
+    } finally {
+      setIsLoadingDeadLetterQueue(false);
+    }
+  }
+
+  async function replayDeadLetterItem(item) {
+    if (!window.confirm(`確定要重新排入 ${item.executionId} 嗎？原始 DLQ 紀錄會保留。`)) return;
+    setReplayingDeadLetterExecutionId(item.executionId);
+    setDeadLetterQueueLoadError(null);
+    setDeadLetterQueueNotice('');
+    try {
+      const result = await deadLetterQueueApiClientRef.current.replay(item.executionId);
+      await refreshDeadLetterQueue();
+      setDeadLetterQueueNotice(`已建立新的 queued execution：${result?.execution?.id || '未提供 ID'}。原始 DLQ 紀錄仍保留。`);
+    } catch (error) {
+      setDeadLetterQueueLoadError(error);
+    } finally {
+      setReplayingDeadLetterExecutionId('');
+    }
+  }
+
   async function loadMeetingResumeDraft(meetingId) {
     if (sessionRef.current || activeSessionRecordIdRef.current || runtimeMeetingIdsRef.current.has(meetingId)) {
       return;
@@ -1909,6 +2100,8 @@ function App() {
         segmentId: activeSegment.id
       };
       setResumeDraft({
+        sessionId: (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
+          .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
         meetingId,
         segmentId: activeSegment.id,
         transcriptState: resumeTranscript,
@@ -2176,15 +2369,15 @@ function App() {
     setError('');
 
     try {
-      const content = exportFormat === 'srt' && subtitleCueState.finalCues.length > 0
-        ? exportCuesToSrt(subtitleCueState.finalCues, { stream: exportStream })
-        : exportFormat === 'vtt' && subtitleCueState.finalCues.length > 0
-          ? exportCuesToVtt(subtitleCueState.finalCues, { stream: exportStream })
-          : formatTranscriptExport(transcriptItems, {
-            format: exportFormat,
-            stream: exportStream,
-            timeOrigin: transcriptTimeOrigin
-          });
+      const content = exportApplicationService.exportTranscript({
+        items: transcriptItems,
+        cues: subtitleCueState.finalCues,
+        options: {
+          format: exportFormat,
+          stream: exportStream,
+          timeOrigin: transcriptTimeOrigin
+        }
+      });
       const fileName = buildTranscriptFileName({ format: exportFormat });
       downloadTextFile(content, fileName, contentTypeForFormat(exportFormat));
     } catch {
@@ -2267,6 +2460,20 @@ function App() {
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
 
+  if (page === 'watch') {
+    const watchInfo = pageInfoFromLocation();
+    return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
+  }
+
+  if (page === 'record') {
+    const recordInfo = pageInfoFromLocation();
+    return <RecorderPage token={recordInfo.shareToken} code={recordInfo.shareCode} />;
+  }
+
+  if (isReadOnlyControlView) {
+    return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
+  }
+
   return (
     <main className="app-shell">
       <header className="app-header">
@@ -2295,6 +2502,10 @@ function App() {
           </div>
 
           <div className="controls" aria-label="翻譯控制項">
+            <label className="field">
+              <span>工作階段名稱</span>
+              <input value={sessionName} onChange={(event) => setSessionName(event.target.value)} placeholder="例如：產品會議" disabled={controlsLocked} maxLength={120} />
+            </label>
             <div className="language-controls">
               <label className="field">
                 <span>我主要說的語言</span>
@@ -2360,6 +2571,9 @@ function App() {
 
           <div className="control-status-row">
             <div className="control-status-messages">
+              {controlLeaseSnapshot && !hasSessionControl ? (
+                <p className="device-note">目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p>
+              ) : null}
               {status === 'reconnecting' ? <p className="device-note">正在重新連線即時翻譯…</p> : null}
               {status === 'switching-segment' ? <p className="device-note">正在切換下一段即時翻譯…</p> : null}
               {status === 'paused' ? (
@@ -2434,7 +2648,7 @@ function App() {
                     </button>
                   </>
                 ) : (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive}>
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}>
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {isActive ? '正在開始' : '開始'}
                   </button>
@@ -2442,6 +2656,7 @@ function App() {
               </div>
             </div>
           </div>
+          {activeSessionRecordIdRef.current ? <SessionSharePanel sessionId={activeSessionRecordIdRef.current} /> : null}
         </section>
 
         <section className="export-panel" aria-label="逐字稿匯出">
@@ -2501,7 +2716,7 @@ function App() {
         </div>
         <HistoryPanel
           titleId="session-history-title"
-          records={historyRecords}
+          records={historyRecords.filter((record) => record.id !== activeSessionRecordIdRef.current)}
           meetingRecords={meetingRecords}
           selectedRecordId={selectedHistoryRecordId}
           selectedDetail={selectedHistoryDetail}
@@ -2519,6 +2734,21 @@ function App() {
           onRetryHistory={refreshHistoryRecords}
           onRetryMeetingHistory={refreshMeetingRecords}
           onRetryHistoryDetail={refreshSelectedHistoryRecordDetail}
+          onRetryExecution={retryHistoryExecution}
+          retryingExecutionId={retryingHistoryExecutionId}
+        />
+      </section>
+
+      <section className="feature-page dead-letter-queue-page" aria-labelledby="dead-letter-queue-page-title" hidden={page !== 'dead-letter-queue'}>
+        <DeadLetterQueuePanel
+          items={deadLetterQueue.items}
+          size={deadLetterQueue.size}
+          isLoading={isLoadingDeadLetterQueue}
+          loadError={deadLetterQueueLoadError}
+          notice={deadLetterQueueNotice}
+          replayingExecutionId={replayingDeadLetterExecutionId}
+          onReplay={replayDeadLetterItem}
+          onRefresh={refreshDeadLetterQueue}
         />
       </section>
 
@@ -2551,6 +2781,500 @@ function App() {
       </section>
     </main>
   );
+}
+
+function DeadLetterQueuePanel({ items, size, isLoading, loadError, notice, replayingExecutionId, onReplay, onRefresh }) {
+  return (
+    <div className="dead-letter-queue-panel">
+      <div className="history-header">
+        <div>
+          <h2 id="dead-letter-queue-page-title">Dead-letter queue</h2>
+          <p className="history-description">受保護的失敗翻譯工作管理頁面；此頁只透過 #dead-letter-queue 直接進入。</p>
+        </div>
+        <button className="button secondary" type="button" onClick={onRefresh} disabled={isLoading}>
+          <RefreshCw size={18} aria-hidden="true" />
+          {isLoading ? '重新整理中…' : '重新整理'}
+        </button>
+      </div>
+
+      {loadError ? <p className="error-message" role="alert">{deadLetterQueueErrorMessage(loadError)} <button className="inline-retry" type="button" onClick={onRefresh}>重試</button></p> : null}
+      {notice ? <p className="success-message" role="status">{notice}</p> : null}
+      {isLoading && items.length === 0 ? <p className="history-empty">正在載入 dead-letter queue…</p> : null}
+      {!isLoading && !loadError && items.length === 0 ? <p className="history-empty">目前沒有待處理的 dead-letter queue 項目。</p> : null}
+
+      <div className="dead-letter-queue-summary" aria-live="polite">共 {size} 筆，依 FIFO 順序顯示。</div>
+      <ol className="dead-letter-queue-list">
+        {items.map((item) => (
+          <li className="dead-letter-queue-item" key={item.executionId}>
+            <div className="history-item-header">
+              <div>
+                <h3>{item.executionId}</h3>
+                <p className="history-summary">Request ID：{item.requestId}</p>
+              </div>
+              <button className="detail-button primary" type="button" onClick={() => onReplay(item)} disabled={replayingExecutionId === item.executionId}>
+                {replayingExecutionId === item.executionId ? 'Replay 中…' : 'Replay'}
+              </button>
+            </div>
+            <dl className="history-metadata dead-letter-queue-metadata">
+              <div><dt>Attempt</dt><dd>{item.attempt}</dd></div>
+              <div><dt>Failed at</dt><dd>{item.failedAt}</dd></div>
+              <div><dt>Provider key</dt><dd>{item.providerKey || '未提供'}</dd></div>
+            </dl>
+            <div className="dead-letter-queue-failures">
+              <MetadataDisclosure label="Failure" value={item.failure} />
+              <MetadataDisclosure label="Last failure" value={item.lastFailure} />
+              <MetadataDisclosure label="Provider metadata" value={item.providerMetadata} />
+              <MetadataDisclosure label="Execution metadata" value={item.executionMetadata} />
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function MetadataDisclosure({ label, value }) {
+  return (
+    <details className="dead-letter-queue-metadata-disclosure">
+      <summary>{label}</summary>
+      <pre>{formatDeadLetterMetadata(value)}</pre>
+    </details>
+  );
+}
+
+function formatDeadLetterMetadata(value) {
+  if (value === null || value === undefined) return '未提供';
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return '資料無法顯示。';
+  }
+}
+
+function deadLetterQueueErrorMessage(error) {
+  if (error?.status === 503 || error?.code === 'dead_letter_queue_unavailable') return 'DLQ 目前未啟用，請稍後重試。';
+  if (error?.status === 401 || error?.status === 403) return '你沒有權限查看 DLQ，請確認 Access Token 後重試。';
+  if (error?.status === 404 || error?.code === 'dead_letter_item_not_found') return '找不到這筆 DLQ 項目，請重新整理清單。';
+  return 'DLQ 載入或操作失敗，請檢查連線後重試。';
+}
+
+function ReadOnlySessionPage({ sessionId }) {
+  const clientRef = useRef(createSessionReadApiClient());
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    async function load() {
+      try {
+        const [sessionDetail, translationHistory] = await Promise.all([
+          clientRef.current.getSessionDetail(sessionId),
+          clientRef.current.getSessionTranslations(sessionId)
+        ]);
+        if (cancelled) return;
+        if (!sessionDetail) {
+          setDetail(null);
+          setError('找不到此工作階段。');
+          if (timer !== null) clearInterval(timer);
+          return;
+        }
+        setDetail(mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory));
+        setError('');
+        setIsLoading(false);
+        if (TERMINAL_HISTORY_STATUSES.has(sessionDetail?.session?.status) && timer !== null) {
+          clearInterval(timer);
+        }
+      } catch {
+        if (!cancelled) {
+          setIsLoading(false);
+          setError('工作階段內容載入失敗，請稍後重試。');
+        }
+      }
+    }
+
+    void load();
+    timer = window.setInterval(load, 2000);
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearInterval(timer);
+    };
+  }, [sessionId]);
+
+  const sourceItems = detail?.sourceTranscript?.items || [];
+  const translationItems = detail?.selectedTranslationOutput?.items || [];
+  const session = detail?.session;
+
+  return (
+    <main className="app-shell watch-page session-read-only-page">
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>{session?.name || '即時翻譯工作階段'}</h1>
+          <p>唯讀查看 · 目前不持有錄音控制權</p>
+        </div>
+        <span className="status-pill">{session ? historyStatusLabel(session.status) : '載入中'}</span>
+      </header>
+      <p className="device-note">此頁面可以查看內容，但不會取得麥克風，也不能暫停、繼續或結束工作階段。</p>
+      {isLoading && !detail ? <p className="history-empty">正在載入工作階段內容…</p> : null}
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {detail ? (
+        <section className="transcript-panel" aria-label="工作階段唯讀內容">
+          <div className="transcript-columns">
+            <div>
+              <h2>原文</h2>
+              {sourceItems.length > 0 ? sourceItems.map((item) => <p key={item.id}>{item.text}</p>) : <p className="history-empty">尚無原文內容。</p>}
+            </div>
+            <div>
+              <h2>翻譯</h2>
+              {translationItems.length > 0 ? translationItems.map((item) => <p key={item.id}>{item.text}</p>) : <p className="history-empty">尚無翻譯內容。</p>}
+            </div>
+          </div>
+        </section>
+      ) : null}
+      <p><a className="button detail-button" href="#history">返回翻譯紀錄</a></p>
+    </main>
+  );
+}
+
+function WatchPage({ token, code }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    const identifier = token || code;
+    if (!identifier) {
+      setError('分享連結無效或已撤銷。');
+      return undefined;
+    }
+    const basePath = token ? `/api/shared-sessions/${encodeURIComponent(token)}` : `/api/shared-sessions/code/${encodeURIComponent(code)}`;
+    let cancelled = false;
+    const controller = new AbortController();
+    fetch(basePath, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error('分享連結無效或已過期。');
+        return response.json();
+      })
+      .then((nextDetail) => { if (!cancelled) setDetail(nextDetail); })
+      .catch((nextError) => { if (!cancelled && nextError.name !== 'AbortError') setError(nextError.message); });
+
+    const events = new EventSource(`${basePath}/events`);
+    events.addEventListener('session.snapshot', (event) => {
+      try {
+        if (!cancelled) setDetail(JSON.parse(event.data));
+      } catch {
+        if (!cancelled) setError('無法讀取分享內容。');
+      }
+    });
+    events.onerror = () => {
+      if (!cancelled) setError((current) => current.includes('無效') || current.includes('過期') || current.includes('撤銷') ? current : '分享連線中斷，瀏覽器會自動嘗試重新連線。');
+    };
+    return () => {
+      cancelled = true;
+      controller.abort();
+      events.close();
+    };
+  }, [token, code]);
+
+  const sourceItems = detail?.sourceTranscript?.items || [];
+  const translationItems = detail?.selectedTranslationOutput?.items || [];
+  return (
+    <main className="app-shell watch-page">
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>即時翻譯觀看</h1>
+          <p>唯讀分享內容</p>
+        </div>
+        <span className="status-pill">{detail?.session?.status || '載入中'}</span>
+      </header>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {!detail && !error ? <p className="history-empty">正在載入分享內容…</p> : null}
+      {detail ? (
+        <section className="transcript-panel" aria-label="分享翻譯內容">
+          <div className="transcript-columns">
+            <div><h2>原文</h2>{sourceItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
+            <div><h2>翻譯</h2>{translationItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
+          </div>
+        </section>
+      ) : null}
+    </main>
+  );
+}
+
+function RecorderPage({ token, code = '' }) {
+  const [detail, setDetail] = useState(null);
+  const [lease, setLease] = useState(null);
+  const [recorderGrant, setRecorderGrant] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [transcript, setTranscript] = useState({ source: [], translation: [] });
+  const [cueState, setCueState] = useState(createSubtitleCueState);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const liveSessionRef = useRef(null);
+  const heartbeatRef = useRef(null);
+  const transcriptRef = useRef({ source: [], translation: [] });
+  const transcriptSyncTimerRef = useRef(null);
+  const audioChunksRef = useRef({ input: [], translation: [] });
+  const audioSegmentIndexRef = useRef({ input: 0, translation: 0 });
+  const audioFlushPromiseRef = useRef({ input: null, translation: null });
+  const leaseRef = useRef(null);
+  const grantRef = useRef('');
+  const cueStateRef = useRef(createSubtitleCueState());
+  const cueTimeOriginRef = useRef(Date.now());
+  useEffect(() => {
+    if (!token && !code) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
+    const detailPath = token
+      ? `/api/shared-sessions/${encodeURIComponent(token)}`
+      : `/api/shared-sessions/code/${encodeURIComponent(code)}`;
+    fetch(detailPath).then(async (response) => {
+      if (!response.ok) throw new Error('錄音連結無效或已過期。');
+      return response.json();
+    }).then((value) => { setDetail(value); setLoading(false); }).catch((value) => { setError(value.message); setLoading(false); });
+    return undefined;
+  }, [token, code]);
+  const sharePath = token
+    ? encodeURIComponent(token)
+    : `code/${encodeURIComponent(code)}`;
+  async function claim() {
+    setError('');
+    try {
+      const response = await fetch(`/api/shared-sessions/${sharePath}/recorder-lease`, { method: 'POST' });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error?.message || '無法取得錄音控制權。');
+      setLease(body.lease);
+      setRecorderGrant(body.recorderGrant || '');
+      leaseRef.current = body.lease;
+      grantRef.current = body.recorderGrant || '';
+    } catch (value) { setError(value.message); }
+  }
+  const recorderHeaders = () => ({
+    'X-Recorder-Token': token,
+    'X-Recorder-Code': code,
+    'X-Recorder-Grant': recorderGrant,
+    'X-Recorder-Lease-Id': lease?.leaseId || '',
+    'X-Recorder-Fence-Token': String(lease?.fenceToken || ''),
+    'X-Recorder-Session-Id': detail?.session?.id || ''
+  });
+  async function syncSnapshot(status = detail?.session?.status || 'active') {
+    if (!detail?.session?.id || !lease) return;
+    const items = ['source', 'translation'].flatMap((stream) => transcriptRef.current[stream].map((item, index) => ({
+      id: item.id || `${detail.session.id}:recorder:${stream}:${index + 1}`,
+      sessionId: detail.session.id,
+      stream,
+      status: 'final',
+      text: item.text,
+      sequence: item.sequence || index + 1,
+      startedAt: item.startedAt || Date.now(),
+      finalizedAt: item.finalizedAt || Date.now(),
+      segmentId: item.segmentId || detail.session.segmentId || null
+    })));
+    const response = await fetch(`/api/sessions/${encodeURIComponent(detail.session.id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', ...recorderHeaders() },
+      body: JSON.stringify({ session: { ...detail.session, id: detail.session.id, status, sourceLanguageCode: detail.session.sourceLanguageCode, targetLanguageCode: detail.session.targetLanguageCode }, transcriptItems: items, finalCues: cueStateRef.current.finalCues })
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error?.message || '同步錄音內容失敗。');
+    if (detail.session.meetingId && detail.session.segmentId && items.length > 0) {
+      const durableChunks = items.map((item) => ({
+        idempotencyKey: `checkpoint:${item.segmentId || detail.session.segmentId}:${item.id}`,
+        meetingId: detail.session.meetingId,
+        segmentId: item.segmentId || detail.session.segmentId,
+        stream: item.stream,
+        sequence: item.sequence,
+        text: item.text,
+        timestamp: item.finalizedAt
+      }));
+      const checkpointResponse = await fetch(`/api/meetings/${encodeURIComponent(detail.session.meetingId)}/segments/${encodeURIComponent(detail.session.segmentId)}/checkpoint`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', ...recorderHeaders() },
+        body: JSON.stringify({
+          idempotencyKey: `recorder:${detail.session.segmentId}:${items.at(-1).id}`,
+          durableChunks,
+          pendingPartial: null,
+          finalCues: cueStateRef.current.finalCues
+        })
+      });
+      if (!checkpointResponse.ok) throw new Error((await checkpointResponse.json().catch(() => null))?.error?.message || '同步字幕 checkpoint 失敗。');
+    }
+  }
+  async function flushRecorderAudio(kind, force = false) {
+    if (audioFlushPromiseRef.current[kind]) {
+      await audioFlushPromiseRef.current[kind];
+    }
+    const chunks = audioChunksRef.current[kind];
+    if (!chunks.length || !detail?.session?.id || !lease) return;
+    if (!force && chunks.length < 20) return;
+    audioChunksRef.current[kind] = [];
+    const blob = pcm16ChunksToWavBlob(chunks, {
+      sampleRate: kind === 'input' ? INPUT_SAMPLE_RATE : undefined,
+      normalizePeak: true
+    });
+    const segmentIndex = audioSegmentIndexRef.current[kind];
+    const fileName = kind === 'input'
+      ? buildInputAudioFileName({ sessionId: detail.session.id, startedAt: detail.session.startedAt })
+      : buildTranslatedAudioFileName({ sessionId: detail.session.id, startedAt: detail.session.startedAt });
+    const upload = (async () => {
+      const response = await fetch(`/api/sessions/${encodeURIComponent(detail.session.id)}/audio/${kind}/segments/${segmentIndex}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'audio/wav', 'X-File-Name': fileName, ...recorderHeaders() },
+        body: blob
+      });
+      if (!response.ok) {
+        audioChunksRef.current[kind] = chunks.concat(audioChunksRef.current[kind]);
+        throw new Error(`音訊同步失敗（${response.status}）。`);
+      }
+      audioSegmentIndexRef.current[kind] += 1;
+    })();
+    audioFlushPromiseRef.current[kind] = upload;
+    try {
+      await upload;
+    } finally {
+      if (audioFlushPromiseRef.current[kind] === upload) audioFlushPromiseRef.current[kind] = null;
+    }
+  }
+  function queueRecorderTranscript(update, stream) {
+    if (!update?.isFinal || typeof update.text !== 'string' || update.text.trim() === '') return;
+    const next = { ...transcriptRef.current };
+    const id = update.eventId || `${stream}:${next[stream].length + 1}:${update.text}`;
+    if (next[stream].some((item) => item.id === id)) return;
+    next[stream] = [...next[stream], {
+      id,
+      text: update.text,
+      sequence: next[stream].length + 1,
+      startedAt: update.startedAt || Date.now(),
+      finalizedAt: Date.now(),
+      segmentId: detail?.session?.segmentId || null
+    }];
+    transcriptRef.current = next;
+    setTranscript(next);
+    if (transcriptSyncTimerRef.current) window.clearTimeout(transcriptSyncTimerRef.current);
+    transcriptSyncTimerRef.current = window.setTimeout(() => { void syncSnapshot('active'); }, 250);
+  }
+  function applyRecorderCueEvent(event) {
+    const next = applySubtitleCueEvent(cueStateRef.current, event, {
+      sessionId: detail?.session?.id,
+      segmentId: detail?.session?.segmentId || null,
+      sessionClock: () => Date.now() - cueTimeOriginRef.current
+    });
+    if (next === cueStateRef.current) return;
+    cueStateRef.current = next;
+    setCueState(next);
+  }
+  function finalizeRecorderCues(reason) {
+    const next = finalizePendingSubtitleCue(cueStateRef.current, {
+      sessionId: detail?.session?.id,
+      segmentId: detail?.session?.segmentId || null,
+      sessionTimeMs: Date.now() - cueTimeOriginRef.current,
+      reason
+    });
+    cueStateRef.current = next;
+    setCueState(next);
+  }
+  async function startRecording() {
+    setError('');
+    try {
+      const { LiveTranslateSession } = await import('./lib/liveSession.js');
+      const session = new LiveTranslateSession({
+        sessionId: detail.session.id,
+        targetLanguageCode: detail.session.targetLanguageCode,
+        sourceLanguageCode: detail.session.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE,
+        echoTargetLanguage: true,
+        authorizationHeaders: recorderHeaders(),
+        onInputAudioChunk: (chunk) => {
+          audioChunksRef.current.input.push(new Uint8Array(chunk));
+          void flushRecorderAudio('input');
+        },
+        onOutputAudioChunk: (chunk) => {
+          audioChunksRef.current.translation.push(new Uint8Array(chunk));
+          void flushRecorderAudio('translation');
+        },
+        onInputTranscript: (item) => queueRecorderTranscript(item, 'source'),
+        onOutputTranscript: (item) => queueRecorderTranscript(item, 'translation'),
+        onCueEvent: applyRecorderCueEvent
+      });
+      liveSessionRef.current = session;
+      await session.start();
+      setRecording(true);
+      setPaused(false);
+      await syncSnapshot('active');
+    } catch (value) { setError(value.message || '無法開始錄音。'); await liveSessionRef.current?.cleanup?.({ closeSession: true }); liveSessionRef.current = null; }
+  }
+  async function pauseRecording() {
+    setError('');
+    try {
+      await liveSessionRef.current?.stop?.();
+      liveSessionRef.current = null;
+      finalizeRecorderCues('pause');
+      await Promise.all([flushRecorderAudio('input', true), flushRecorderAudio('translation', true)]);
+      setRecording(false);
+      setPaused(true);
+      await syncSnapshot('paused');
+    } catch (value) { setError(value.message || '暫停錄音時同步失敗。'); }
+  }
+  async function stopRecording() {
+    setError('');
+    try {
+      await liveSessionRef.current?.stop?.();
+      liveSessionRef.current = null;
+      finalizeRecorderCues('stop');
+      await Promise.all([flushRecorderAudio('input', true), flushRecorderAudio('translation', true)]);
+      setRecording(false);
+      setPaused(false);
+      await syncSnapshot('stopped');
+      await fetch(`/api/shared-sessions/${sharePath}/recorder-lease`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken }) });
+      setLease(null);
+      setRecorderGrant('');
+      leaseRef.current = null;
+      grantRef.current = '';
+    } catch (value) { setError(value.message || '停止錄音時同步失敗。'); }
+  }
+  useEffect(() => {
+    if (!lease || !recorderGrant) return undefined;
+    heartbeatRef.current = window.setInterval(async () => {
+      const response = await fetch(`/api/shared-sessions/${sharePath}/recorder-lease/heartbeat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken, recorderGrant }) });
+      if (!response.ok) {
+        setError('錄音控制權已失效，請重新取得錄音控制權。');
+        await liveSessionRef.current?.cleanup?.({ closeSession: true });
+        setRecording(false);
+        setLease(null);
+        setRecorderGrant('');
+        leaseRef.current = null;
+        grantRef.current = '';
+        return;
+      }
+      const body = await response.json();
+      setLease(body.lease); setRecorderGrant(body.recorderGrant || recorderGrant);
+      leaseRef.current = body.lease; grantRef.current = body.recorderGrant || recorderGrant;
+    }, 3000);
+    return () => window.clearInterval(heartbeatRef.current);
+  }, [lease?.leaseId, lease?.fenceToken, recorderGrant, token]);
+  useEffect(() => {
+    leaseRef.current = lease;
+    grantRef.current = recorderGrant;
+  }, [lease, recorderGrant]);
+  useEffect(() => () => {
+    if (transcriptSyncTimerRef.current) window.clearTimeout(transcriptSyncTimerRef.current);
+    void liveSessionRef.current?.cleanup?.({ closeSession: true });
+    const currentLease = leaseRef.current;
+    if (currentLease && grantRef.current) {
+      void fetch(`/api/shared-sessions/${sharePath}/recorder-lease`, {
+        method: 'DELETE', keepalive: true, headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ leaseId: currentLease.leaseId, fenceToken: currentLease.fenceToken })
+      });
+    }
+  }, [token]);
+  return <main className="app-shell watch-page">
+    <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
+    {loading ? <p className="history-empty">正在載入會議…</p> : null}
+    {error ? <p className="error-message" role="alert">{error}</p> : null}
+    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>取得錄音控制權</button> : null}
+    {lease && !recording ? <button className="button primary" type="button" onClick={startRecording}>開始錄音</button> : null}
+    {recording ? <><button className="button secondary" type="button" onClick={pauseRecording}>暫停錄音</button><button className="button danger-button" type="button" onClick={stopRecording}>停止錄音</button></> : null}
+    {lease && paused ? <button className="button primary" type="button" onClick={startRecording}>繼續錄音</button> : null}
+    {lease ? <p className="device-note">{recording ? '正在錄音並同步到此 Session。' : paused ? '錄音已暫停，內容已同步。' : '已取得錄音控制權，開始前才會要求麥克風權限。'}</p> : null}
+    {recording || paused ? <section className="transcript-panel" aria-label="Recorder transcript"><div className="cue-list">{cueListForDisplay(cueState, { includePartial: recording }).map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}</div><div className="transcript-columns"><div><h2>原文</h2>{transcript.source.map((item) => <p key={item}>{item}</p>)}</div><div><h2>翻譯</h2>{transcript.translation.map((item) => <p key={item}>{item}</p>)}</div></div></section> : null}
+  </main>;
 }
 
 function logTranscriptSegmentDecision(update, decision, previous, next) {
@@ -2960,7 +3684,9 @@ function HistoryPanel({
   meetingDetailError = '',
   onRetryHistory,
   onRetryMeetingHistory,
-  onRetryHistoryDetail
+  onRetryHistoryDetail,
+  onRetryExecution,
+  retryingExecutionId = ''
 }) {
   const [query, setQuery] = useState('');
   const [visibleCount, setVisibleCount] = useState(12);
@@ -3001,6 +3727,8 @@ function HistoryPanel({
                 onRetranslationSubmitted={onRetranslationSubmitted}
                 onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
                 onPolishingRetry={onPolishingRetry}
+                onRetryExecution={onRetryExecution}
+                retryingExecutionId={retryingExecutionId}
                 detailError={historyDetailError}
                 onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)}
               />
@@ -3036,6 +3764,8 @@ function SessionHistoryItem({
   onRetranslationSubmitted,
   onOpenRetranslationWorkflow,
   onPolishingRetry,
+  onRetryExecution,
+  retryingExecutionId = '',
   detailError = '',
   onRetryDetail
 }) {
@@ -3048,10 +3778,10 @@ function SessionHistoryItem({
             <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
           </div>
           <div className="history-actions">
-            {record.status === 'active' || record.status === 'interrupted' ? (
-              <a className="button detail-button" href={record.meetingId ? `#live?meetingId=${encodeURIComponent(record.meetingId)}` : '#live'}>
+            {record.status === 'active' || record.status === 'paused' || record.status === 'interrupted' ? (
+              <a className="button detail-button" href={record.meetingId ? `#live?meetingId=${encodeURIComponent(record.meetingId)}` : `#live?sessionId=${encodeURIComponent(record.id)}`}>
                 <Play size={16} aria-hidden="true" />
-                {record.status === 'active' ? '繼續翻譯' : '繼續處理'}
+                {record.status === 'paused' ? '繼續翻譯' : record.status === 'active' ? '繼續翻譯' : '繼續處理'}
               </a>
             ) : null}
             <button
@@ -3098,6 +3828,8 @@ function SessionHistoryItem({
           onRetranslationSubmitted={onRetranslationSubmitted}
           onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
           onPolishingRetry={onPolishingRetry}
+          onRetryExecution={onRetryExecution}
+          retryingExecutionId={retryingExecutionId}
           detailError={detailError}
           onRetryDetail={onRetryDetail}
         />
@@ -3265,10 +3997,13 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     setMeetingExportError('');
 
     try {
-      const content = formatTranscriptExport(transcriptItems, {
-        format: meetingExportFormat,
-        stream: meetingExportStream,
-        timeOrigin
+      const content = exportApplicationService.exportTranscript({
+        items: transcriptItems,
+        options: {
+          format: meetingExportFormat,
+          stream: meetingExportStream,
+          timeOrigin
+        }
       });
       downloadTextFile(
         content,
@@ -3496,6 +4231,16 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     return () => { cancelled = true; };
   }, [selectedSessionId]);
 
+  useEffect(() => {
+    if (!selectedSessionId) return undefined;
+    return subscribeToExecutionEvents({
+      sessionId: selectedSessionId,
+      refetch: () => loadSelectedSessionDetail(),
+      poll: () => loadSelectedSessionDetail(),
+      onSnapshot: ({ execution }) => setDetail((current) => replaceHistoryExecution(current, execution))
+    });
+  }, [selectedSessionId]);
+
   const translationHistory = compactTranslationHistoryForDetail(detail);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const selectedOutput = selectedOutputId
@@ -3613,10 +4358,13 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     setOperationError('');
 
     try {
-      const content = formatTranscriptExport(retranslationExportItems, {
-        format: retranslationExportFormat,
-        stream: retranslationExportStream,
-        timeOrigin: detail?.session?.startedAt
+      const content = exportApplicationService.exportTranscript({
+        items: retranslationExportItems,
+        options: {
+          format: retranslationExportFormat,
+          stream: retranslationExportStream,
+          timeOrigin: detail?.session?.startedAt
+        }
       });
       downloadTextFile(
         content,
@@ -3724,7 +4472,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
                 <li className="history-item" key={record.id}>
                   <div className="history-item-header">
                     <div>
-                      <h3>{historyLanguageLabel(record)}</h3>
+            <h3>{record.name || historyLanguageLabel(record)}</h3>
                       <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
                     </div>
                     <button className="button detail-button" type="button" aria-label="選擇" onClick={() => onSelectSession(record.id)}>重新翻譯此紀錄</button>
@@ -4089,13 +4837,16 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, detailError = '', onRetryDetail }) {
+function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, onRetryExecution, retryingExecutionId = '', detailError = '', onRetryDetail }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
   const [trackedRetranslations, setTrackedRetranslations] = useState([]);
+  const [executionEventsStatus, setExecutionEventsStatus] = useState('closed');
   const sessionRecordId = detail?.session?.id;
+  const onRetranslationSubmittedRef = useRef(onRetranslationSubmitted);
+  onRetranslationSubmittedRef.current = onRetranslationSubmitted;
 
   useEffect(() => {
     setSavedExportFormat('txt');
@@ -4105,8 +4856,20 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
 
+  useEffect(() => {
+    if (!sessionRecordId) return undefined;
+    return subscribeToExecutionEvents({
+      sessionId: sessionRecordId,
+      refetch: () => onRetranslationSubmittedRef.current?.(sessionRecordId),
+      poll: () => onRetranslationSubmittedRef.current?.(sessionRecordId),
+      onStatus: setExecutionEventsStatus,
+      onSnapshot: () => onRetranslationSubmittedRef.current?.(sessionRecordId)
+    });
+  }, [sessionRecordId]);
+
 
   const translationHistory = useMemo(() => compactTranslationHistoryForDetail(detail), [detail]);
+  const retryLineages = useMemo(() => retryLineagesForExecutions(translationHistory.executions), [translationHistory.executions]);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const hasPendingRetranslationProgress = hasPendingRetranslationItems(retranslationProgress);
   const sessionRecord = useMemo(
@@ -4176,9 +4939,12 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setSavedExportError('');
 
     try {
-      const content = formatSavedSessionExport(exportDetail, {
-        format: savedExportFormat,
-        stream: savedExportStream
+      const content = exportApplicationService.exportCombinedSessionView({
+        sessionDetail: exportDetail,
+        options: {
+          format: savedExportFormat,
+          stream: savedExportStream
+        }
       });
       const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
         format: savedExportFormat,
@@ -4194,6 +4960,9 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     <section className="session-detail" aria-label="工作階段詳細資料">
       <div className="session-detail-header">
         <h3>{historyLanguageLabel(sessionRecord)}詳細資料</h3>
+        {executionEventsStatus === 'reconnecting' || executionEventsStatus === 'polling' ? (
+          <span className="history-status history-status-running">狀態同步恢復中</span>
+        ) : null}
       </div>
 
       <dl className="session-detail-metadata">
@@ -4280,7 +5049,12 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
       )}
       <section className="saved-export-panel" aria-label="重新翻譯">
         <button className="button primary detail-button" type="button" aria-label="以此原文重新翻譯" onClick={() => onOpenRetranslationWorkflow?.(retranslationSourceSessionId)} disabled={!retranslationSourceSessionId}>用這份原文重新翻譯</button>
-        <RetranslationProgress progress={retranslationProgress} />
+        <RetranslationProgress
+          progress={retranslationProgress}
+          lineages={retryLineages}
+          onRetry={onRetryExecution}
+          retryingExecutionId={retryingExecutionId}
+        />
       </section>
 
       <section className="saved-export-panel" aria-label="已儲存逐字稿匯出">
@@ -4317,6 +5091,85 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
         {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
       </section>
+    </section>
+  );
+}
+
+function SessionSharePanel({ sessionId }) {
+  const clientRef = useRef(createSessionShareApiClient());
+  const [shares, setShares] = useState([]);
+  const [createdShare, setCreatedShare] = useState(null);
+  const [expiry, setExpiry] = useState('');
+  const [error, setError] = useState('');
+  const [qrDataUrl, setQrDataUrl] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setCreatedShare(null);
+    setQrDataUrl('');
+    if (!sessionId) return undefined;
+    clientRef.current.list(sessionId).then((result) => {
+      if (!cancelled) setShares(result);
+    }).catch(() => { if (!cancelled) setError('無法載入分享資訊。'); });
+    return () => { cancelled = true; };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!createdShare?.url) return undefined;
+    const shareUrl = createdShare.share?.role === 'recorder' ? createdShare.recorderUrl : createdShare.url;
+    const absoluteUrl = new URL(shareUrl || createdShare.url, window.location.href).href;
+    QRCode.toDataURL(absoluteUrl, { width: 180, margin: 1 }).then(setQrDataUrl).catch(() => setQrDataUrl(''));
+    return undefined;
+  }, [createdShare]);
+
+  async function createShare(role = 'viewer') {
+    setError('');
+    try {
+      const expiresAt = expiry ? Date.now() + Number(expiry) : null;
+      const result = await clientRef.current.create(sessionId, expiresAt, role);
+      setCreatedShare(result);
+      setShares((current) => [...current, result.share]);
+    } catch {
+      setError('無法建立分享連結。');
+    }
+  }
+
+  async function revokeShare(shareId) {
+    try {
+      await clientRef.current.revoke(sessionId, shareId);
+      setShares((current) => current.filter((share) => share.id !== shareId));
+      if (createdShare?.share?.id === shareId) setCreatedShare(null);
+    } catch {
+      setError('無法撤銷分享連結。');
+    }
+  }
+
+  function copy(value) {
+    if (value && navigator.clipboard) void navigator.clipboard.writeText(new URL(value, window.location.href).href);
+  }
+
+  if (!sessionId) return null;
+  return (
+    <section className="saved-export-panel session-share-panel" aria-label="分享工作階段">
+      <h4>分享唯讀觀看頁</h4>
+      <div className="controls saved-export-controls">
+        <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}>
+          <option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option>
+        </select></label>
+        <button className="button detail-button" type="button" onClick={() => createShare('viewer')}>建立觀看連結</button>
+        <button className="button detail-button" type="button" onClick={() => createShare('recorder')}>建立錄音連結</button>
+      </div>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {createdShare ? (
+        <div className="share-created">
+          {qrDataUrl ? <img src={qrDataUrl} alt="分享連結 QR Code" width="180" height="180" /> : null}
+          <p><strong>{createdShare.share.role === 'recorder' ? '錄音連結' : '觀看連結'}</strong> · <strong>短碼：</strong><code>{createdShare.share.shortCode}</code></p>
+          <p className="share-url"><a href={createdShare.url}>{createdShare.url}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.url)}><Copy size={15} aria-hidden="true" />複製</button></p>
+          {createdShare.recorderUrl ? <p className="share-url"><a href={createdShare.recorderUrl}>{createdShare.recorderUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.recorderUrl)}><Copy size={15} aria-hidden="true" />複製錄音連結</button></p> : null}
+          <p className="share-url"><a href={createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl}>{createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl}</a> <button className="button detail-button" type="button" onClick={() => copy(createdShare.share.role === 'recorder' ? createdShare.recorderCodeUrl : createdShare.codeUrl)}><Copy size={15} aria-hidden="true" />複製短碼連結</button></p>
+        </div>
+      ) : null}
+      {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : <p className="export-note">重新整理後只顯示仍有效的分享 metadata；既有 plaintext token 不會再次顯示。</p>}
     </section>
   );
 }
@@ -4366,7 +5219,7 @@ function AudioArtifactDownloads({
   );
 }
 
-function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) {
+function RetranslationProgress({ progress, lineages = null, onRetry, retryingExecutionId = '' }) {
   const hasTimedProgress = progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
   const [nowMs, setNowMs] = useState(() => Date.now());
 
@@ -4387,21 +5240,25 @@ function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) 
     <section className="translation-history-summary" aria-label="重新翻譯進度">
       <h4>重新翻譯進度</h4>
       {progress.executions.length > 0 ? (
-        <ol className="translation-history-list">
-          {progress.executions.map((execution) => (
-            <li key={execution.id}>
-              <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
-              <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
-              {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
-              {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
-              {execution.status === 'failed' && onRetry ? (
-                <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
-                  {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
-                </button>
-              ) : null}
-            </li>
-          ))}
-        </ol>
+        lineages ? (
+          <div className="retry-lineage-list">
+            {lineages.map((lineage, index) => (
+              <section className="retry-lineage" key={lineage.requestId || `legacy-lineage-${index}`} aria-label={`重新翻譯 lineage ${lineage.requestId || 'legacy'}`}>
+                <div className="retry-lineage-header">
+                  <strong>{lineage.requestId ? `Request ${lineage.requestId}` : 'Legacy execution'}</strong>
+                  <span>{lineage.executions.length} 次 execution</span>
+                </div>
+                <ol className="translation-history-list retry-lineage-timeline">
+                  {lineage.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
+                </ol>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <ol className="translation-history-list">
+            {progress.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
+          </ol>
+        )
       ) : null}
       {progress.outputs.length > 0 ? (
         <ol className="translation-history-list">
@@ -4414,6 +5271,23 @@ function RetranslationProgress({ progress, onRetry, retryingExecutionId = '' }) 
         </ol>
       ) : null}
     </section>
+  );
+}
+
+function RetranslationExecutionItem({ execution, nowMs, onRetry, retryingExecutionId }) {
+  return (
+    <li>
+      <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
+      <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
+      <p className="retry-lineage-execution-id">Execution：{execution.id}</p>
+      {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
+      {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
+      {execution.status === 'failed' && onRetry ? (
+        <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
+          {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
+        </button>
+      ) : null}
+    </li>
   );
 }
 
@@ -4870,88 +5744,6 @@ function glossaryScopeLabel(scope) {
   };
 
   return labels[scope] || labels.history;
-}
-
-function compactTranslationHistoryForDetail(detail) {
-  const history = detail?.translationHistory || {};
-  return {
-    outputs: Array.isArray(history.outputs) ? history.outputs : [],
-    executions: Array.isArray(history.executions) ? history.executions : []
-  };
-}
-
-function mergeRetranslationHistoryIntoDetail(detail, translations) {
-  if (!detail) {
-    return detail;
-  }
-
-  const detailHistory = compactTranslationHistoryForDetail(detail);
-  const translationsHistory = compactTranslationHistoryForDetail(translations);
-  const hasAuthoritativeTranslationHistory = Boolean(
-    translations && typeof translations === 'object' && (
-      (translations.translationHistory && typeof translations.translationHistory === 'object') ||
-      Array.isArray(translations.outputs) ||
-      Array.isArray(translations.executions)
-    )
-  );
-  if (!hasAuthoritativeTranslationHistory) {
-    return detail;
-  }
-
-  const mergedOutputs = mergeHistoryItemsById(detailHistory.outputs, translationsHistory.outputs);
-  const polishedItems = mergePolishedItemsFromOutputs(mergedOutputs);
-  return {
-    ...detail,
-    polishedArticle: polishedArticleContentFromItems(polishedItems, mergedOutputs),
-    translationHistory: {
-      outputs: mergedOutputs,
-      executions: translationsHistory.executions
-    }
-  };
-}
-
-function polishedArticleContentFromItems(items = [], outputs = []) {
-  const latest = [...(Array.isArray(outputs) ? outputs : [])].sort((left, right) => (
-    (right?.version ?? 0) - (left?.version ?? 0)
-    || String(right?.completedAt || '').localeCompare(String(left?.completedAt || ''))
-  ))[0];
-  const text = items.map((item) => item.polishedText).filter(Boolean).join('\n');
-  return {
-    kind: 'polishedArticle',
-    status: text ? 'available' : 'empty',
-    text,
-    paragraphs: text ? text.split(/\n+/).filter(Boolean) : [],
-    items,
-    version: latest?.version ?? null,
-    createdAt: latest?.createdAt ?? null,
-    completedAt: latest?.completedAt ?? null,
-    emptyReason: text ? null : 'no_content'
-  };
-}
-
-function removeRetranslationOutputFromDetail(detail, outputId) {
-  if (!detail) {
-    return detail;
-  }
-
-  const history = compactTranslationHistoryForDetail(detail);
-  return {
-    ...detail,
-    translationHistory: {
-      outputs: history.outputs.filter((output) => output.id !== outputId),
-      executions: history.executions
-    }
-  };
-}
-
-function mergeHistoryItemsById(firstItems, secondItems) {
-  const merged = new Map();
-  for (const item of [...firstItems, ...secondItems]) {
-    const key = item?.id || item?.executionId || item?.requestId;
-    if (!key) continue;
-    merged.set(key, item);
-  }
-  return [...merged.values()];
 }
 
 function trackedRetranslationForSubmitResult(result, fallbackTargetLanguageCode) {

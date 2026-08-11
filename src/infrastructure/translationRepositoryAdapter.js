@@ -1,5 +1,6 @@
 import { TranslationExecution, TranslationOutput, TranslationRequest } from '../domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
+import { safeFailureInfo } from '../readModels/translationReadModels.js';
 
 const REQUIRED_SESSION_REPOSITORY_METHODS = Object.freeze(['getSessionRecord', 'updateSessionRecord', 'listSessionRecords']);
 const EMPTY_TRANSLATION_COMMAND_STATE = Object.freeze({
@@ -8,7 +9,7 @@ const EMPTY_TRANSLATION_COMMAND_STATE = Object.freeze({
   outputs: Object.freeze([])
 });
 
-export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
+export function createTranslationRepositoryAdapter({ sessionRepository, executionEventBroadcaster } = {}) {
   assertSessionRepository(sessionRepository);
 
   const repository = {
@@ -104,13 +105,19 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
             if (request?.operation !== 'transcript_polishing' || existingExecution.translationRequestId !== translationExecution.translationRequestId) {
               throw new Error(`TranslationExecution already exists: ${translationExecution.id}`);
             }
-            return toTranslationExecution(existingExecution);
+            const persistedExecution = toTranslationExecution(existingExecution);
+            publishExecutionEvent(executionEventBroadcaster, request, persistedExecution);
+            return persistedExecution;
           }
 
           return saveTranslationState(sessionRepository, result.sessionRecord.id, {
             ...state,
             executions: [...state.executions, serializeTranslationExecution(translationExecution)]
-          }).thenResult(() => toTranslationExecution(translationExecution));
+          }).thenResult(() => {
+            const persistedExecution = toTranslationExecution(translationExecution);
+            publishExecutionEvent(executionEventBroadcaster, state.requests.find((item) => item.id === translationExecution.translationRequestId), persistedExecution);
+            return persistedExecution;
+          });
         }
       );
     },
@@ -143,9 +150,12 @@ export function createTranslationRepositoryAdapter({ sessionRepository } = {}) {
           const index = state.executions.findIndex((storedExecution) => storedExecution.id === translationExecution.id);
           const executions = replaceAt(state.executions, index, serializeTranslationExecution(translationExecution));
 
-          return saveTranslationState(sessionRepository, result.sessionRecord.id, { ...state, executions }).thenResult(() =>
-            toTranslationExecution(translationExecution)
-          );
+          return saveTranslationState(sessionRepository, result.sessionRecord.id, { ...state, executions }).thenResult(() => {
+            const request = state.requests.find((item) => item.id === translationExecution.translationRequestId);
+            const persistedExecution = toTranslationExecution(translationExecution);
+            publishExecutionEvent(executionEventBroadcaster, request, persistedExecution);
+            return persistedExecution;
+          });
         }
       );
     },
@@ -320,6 +330,24 @@ function saveTranslationState(sessionRepository, sessionId, translationCommandSt
       return mapMaybePromise(result, mapper);
     }
   };
+}
+
+function publishExecutionEvent(broadcaster, request, execution) {
+  if (!broadcaster || typeof broadcaster.publish !== 'function' || !request?.sessionId) return;
+  broadcaster.publish(request.sessionId, {
+    id: execution.id,
+    requestId: request.id,
+    translationRequestId: request.id,
+    status: execution.status,
+    targetLanguageCode: request.targetLanguageCode,
+    startedAt: execution.startedAt ?? null,
+    createdAt: request.createdAt ?? null,
+    providerAttemptStatus: execution.providerAttemptStatus ?? 'not_started',
+    providerAttemptedAt: execution.providerAttemptedAt ?? null,
+    providerCompletedAt: execution.providerCompletedAt ?? null,
+    completedAt: execution.completedAt ?? null,
+    failureInfo: safeFailureInfo(execution.failureInfo)
+  });
 }
 
 function findSessionRecord(sessionRepository, predicate) {

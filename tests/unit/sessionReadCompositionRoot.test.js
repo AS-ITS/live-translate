@@ -21,6 +21,8 @@ test('application dependencies expose the assembled session read controller', ()
 
   assert.equal(typeof dependencies.sessionReadController.listSessions, 'function');
   assert.equal(typeof dependencies.sessionReadController.getSession, 'function');
+  assert.equal(typeof dependencies.sessionApplicationService.listSessions, 'function');
+  assert.equal(typeof dependencies.sessionApplicationService.getSessionDetail, 'function');
 });
 
 test('application dependencies compose the HTTP request handler from the assembled controller', () => {
@@ -35,6 +37,7 @@ test('application dependencies compose the HTTP request handler from the assembl
   });
 
   assert.strictEqual(injectedController, dependencies.sessionReadController);
+  assert.strictEqual(dependencies.sessionApplicationService.listSessions instanceof Function, true);
   assert.equal(typeof dependencies.requestHandler, 'function');
 });
 

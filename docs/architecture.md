@@ -83,6 +83,12 @@ history downloads.
 
 ## Translation Execution Durable Queue
 
+When durable storage is enabled, the file-backed DLQ has a protected
+administration path. Its application service reads items in repository order
+and delegates single-item replay to the existing manual retry service. Replay
+creates a new queued execution and never edits or removes the failed source or
+DLQ item; worker leases, retry policy, fencing, and metrics are unchanged.
+
 ### Phase 4C Execution Control
 
 `TranslationExecution` has terminal states `completed`, `failed`, and
@@ -285,8 +291,17 @@ provided. Durable Workers may atomically requeue an owned transient provider
 failure with retry metadata and return its running execution to `queued`; delay
 scheduling is driven by the Worker Runtime from `availableAt`. Terminal failures
 are persisted before a claim/fence-checked DLQ transfer; a failed transfer keeps
-the durable item for recovery. Distributed locking,
-cross-process atomicity remain out of scope.
+the durable item for recovery.
+
+The file-backed queue and DLQ repositories use sidecar directory locks to
+serialize read-modify-write operations across Node.js processes on the same
+host. Queue writes use a process-unique temporary file followed by an atomic
+rename. Lock acquisition has a bounded wait and stale-lock recovery. Queue
+operations retain their existing lease and fence checks, so a process that
+loses ownership cannot acknowledge, retry, renew, or transfer an item. This
+provides single-host multi-process atomicity, not cross-host coordination or
+exactly-once provider delivery. Cross-storage queue/DLQ transfer remains
+recoverable rather than transactional.
 
 Before provider execution, the Worker reads the persisted execution and request.
 Only `queued` executions proceed to durable claim and provider work; `created`,
@@ -304,10 +319,16 @@ Current limitations:
   output; missing-output or mismatched execution/durable state remains durable.
 - Failed reconciliation is limited to failed executions with no output; a
   failed execution that has output remains durable for manual investigation.
-- No multi-worker locking or cross-process deduplication policy.
-- These safeguards do not provide multi-process exactly-once delivery.
+- Locking is limited to file-backed repositories on one host.
+- These safeguards do not provide cross-host exactly-once delivery.
 - Provider external idempotency keys and event-publishing deduplication remain
   out of scope.
+
+Queue reliability metrics are process-local and are exposed through the
+authenticated `GET /api/metrics` read model. The registry records queue depth,
+worker outcomes, retry/DLQ activity, recovery, lease errors, acknowledgement
+errors, and the last successful processing timestamp. Metrics are best-effort;
+metric update failures never change queue or translation behavior.
 
 ## Gemini Live Session Flow
 

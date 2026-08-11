@@ -40,6 +40,15 @@ test('token request validation rejects unsupported source language', () => {
   });
 });
 
+test('token request validation rejects malformed target language instead of defaulting', () => {
+  for (const targetLanguageCode of ['', ' ', 'zh-TW', ['ja']]) {
+    assert.throws(() => normalizeTokenRequest({ targetLanguageCode }), {
+      message: 'Unsupported targetLanguageCode',
+      status: 400
+    });
+  }
+});
+
 test('token config uses v1alpha and single-use Gemini Live constraints', () => {
   const config = buildTokenConfig(
     { targetLanguageCode: 'en', echoTargetLanguage: true },

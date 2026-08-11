@@ -1,3 +1,5 @@
+import { isSessionStatus } from '../domain/session/index.js';
+
 const TERMINAL_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -14,6 +16,7 @@ export function createSessionRecord(input = {}, options = {}) {
 
   return {
     id,
+    ...(Object.hasOwn(input, 'name') ? { name: input.name || null } : {}),
     startedAt: input.startedAt,
     endedAt: null,
     durationMs: null,
@@ -22,7 +25,8 @@ export function createSessionRecord(input = {}, options = {}) {
     sourceLanguageCode: input.sourceLanguageCode || null,
     meetingId: input.meetingId || null,
     segmentId: input.segmentId || null,
-    status: 'active',
+    ...(Object.hasOwn(input, 'segments') ? { segments: Array.isArray(input.segments) ? input.segments.map(clonePlain) : [] } : {}),
+    status: input.status || 'active',
     failureReason: null,
     failureCategory: null,
     lastLifecycleState: 'listening',
@@ -49,6 +53,29 @@ function sanitizeAudioArtifacts(artifacts = {}) {
 export function updateSessionRecord(record, patch = {}, options = {}) {
   const updatedAt = resolveNow(options.now);
 
+  if (patch.status !== undefined && patch.status !== record.status) {
+    const from = record.status === 'completed' ? 'stopped' : record.status;
+    const to = patch.status === 'completed' ? 'stopped' : patch.status;
+    // Preserve older lifecycle-only values such as `reconnecting`; enforce
+    // transitions only when both sides use the Session aggregate status model.
+    if (!isSessionStatus(from) || !isSessionStatus(to)) return {
+      ...record,
+      ...patch,
+      id: record.id,
+      createdAt: record.createdAt,
+      updatedAt
+    };
+    const allowed = {
+      created: ['active', 'failed'],
+      active: ['paused', 'stopped', 'failed', 'expired'],
+      paused: ['active', 'stopped', 'failed', 'expired'],
+      stopped: [], failed: [], expired: []
+    };
+    if (!allowed[from]?.includes(to)) {
+      throw new RangeError(`Session status transition from ${record.status} to ${patch.status} is not allowed`);
+    }
+  }
+
   return {
     ...record,
     ...patch,
@@ -59,7 +86,7 @@ export function updateSessionRecord(record, patch = {}, options = {}) {
 }
 
 export function finalizeSessionRecord(record, patch = {}, options = {}) {
-  if (record.status !== 'active') {
+  if (!['active', 'paused'].includes(record.status)) {
     throw new Error('Cannot finalize a non-active session record.');
   }
 
@@ -89,6 +116,7 @@ export function createTranscriptItemForSession(sessionId, transcriptItem = {}) {
   const mapped = {
     id: transcriptItem.id,
     sessionId,
+    ...(transcriptItem.segmentId ? { segmentId: transcriptItem.segmentId } : {}),
     stream: transcriptItem.stream,
     status: transcriptItem.status,
     text: transcriptItem.text,

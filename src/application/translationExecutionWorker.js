@@ -3,6 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { assertDurableTranslationExecutionQueueRepository } from './translation/durableTranslationExecutionQueueRepository.js';
 import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 import { createTranslationExecutionLeaseHeartbeat } from './translation/translationExecutionLeaseHeartbeat.js';
+import {
+  assertTranslationExecutionMetrics,
+  createNoopTranslationExecutionMetrics,
+  TRANSLATION_EXECUTION_METRIC_NAMES
+} from './translation/translationExecutionMetrics.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
@@ -20,6 +25,7 @@ export function createTranslationExecutionWorker({
   translationExecutionRetryPolicy,
   translationExecutionRetryErrorClassifier,
   retryRandom = Math.random,
+  metrics = createNoopTranslationExecutionMetrics(),
   leaseDurationMs = 300000,
   leaseRenewalMs = 100000,
   clock = () => new Date().toISOString(),
@@ -29,6 +35,7 @@ export function createTranslationExecutionWorker({
   assertTranslationExecutionQueue(translationExecutionQueue);
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionRunner(translationExecutionRunner);
+  assertTranslationExecutionMetrics(metrics);
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
   if (durableTranslationExecutionQueueRepository !== undefined) {
     assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler);
@@ -40,8 +47,10 @@ export function createTranslationExecutionWorker({
       const job = await translationExecutionQueue.dequeue();
 
       if (job === null || job === undefined) {
+        safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
         return IDLE_RESULT;
       }
+      safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
 
       const execution = await translationRepository.findExecutionById(job.executionId);
       assertFoundExecution(execution, job.executionId);
@@ -50,6 +59,7 @@ export function createTranslationExecutionWorker({
       assertFoundRequest(request, job.requestId);
 
       if (execution.status === 'cancelled') {
+        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.CANCELLED_TOTAL);
         return acknowledgeCancelledExecution({
           durableTranslationExecutionQueueRepository,
           job,
@@ -60,6 +70,7 @@ export function createTranslationExecutionWorker({
       }
 
       if (execution.status !== 'queued') {
+        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.SKIPPED_TOTAL);
         return {
           processed: false,
           reason: EXECUTION_NOT_PROCESSABLE_REASON,
@@ -184,8 +195,10 @@ export function createTranslationExecutionWorker({
                 targetLanguageCode: request.targetLanguageCode
               }
             });
+            safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.DLQ_TRANSFER_TOTAL);
           } catch (error) {
             // The provider error remains authoritative; recovery retries only this transfer.
+            safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.ACKNOWLEDGEMENT_ERROR_TOTAL);
           }
         } else if (isTerminalExecution(persistedExecution)) {
           try {
@@ -194,6 +207,7 @@ export function createTranslationExecutionWorker({
               fenceToken: claimedDurableItem.fenceToken
             });
           } catch (error) {
+            safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.ACKNOWLEDGEMENT_ERROR_TOTAL);
             if (!runnerFailed) throw error;
           }
         }
@@ -201,12 +215,21 @@ export function createTranslationExecutionWorker({
 
       if (runnerFailed) {
         if (retryQueued) {
+          safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RETRY_TOTAL);
           return { status: 'retried', executionId: job.executionId };
         }
+        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.FAILED_TOTAL);
         throw runnerError;
       }
 
-      if (renewalError !== undefined) throw renewalError;
+      if (renewalError !== undefined) {
+        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.LEASE_ERROR_TOTAL);
+        throw renewalError;
+      }
+
+      safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.PROCESSED_TOTAL);
+      safeMarkSuccess(metrics);
+      safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
 
       return {
         status: 'processed',
@@ -214,6 +237,30 @@ export function createTranslationExecutionWorker({
       };
     }
   });
+}
+
+function safeIncrement(metrics, name) {
+  try {
+    metrics.increment(name);
+  } catch {
+    // Metrics must never change queue behavior.
+  }
+}
+
+function safeSetGauge(metrics, name, value) {
+  try {
+    metrics.setGauge(name, value);
+  } catch {
+    // Metrics must never change queue behavior.
+  }
+}
+
+function safeMarkSuccess(metrics) {
+  try {
+    metrics.markSuccess();
+  } catch {
+    // Metrics must never change queue behavior.
+  }
 }
 
 function isTerminalExecution(execution) {

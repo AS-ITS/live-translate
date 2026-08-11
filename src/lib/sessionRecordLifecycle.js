@@ -5,6 +5,9 @@ const STREAMS = ['source', 'translation'];
 export function buildSessionRecordInput(options = {}) {
   return {
     startedAt: options.startedAt,
+    ...(options.id ? { id: options.id } : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(options.name !== undefined ? { name: options.name } : {}),
     targetLanguageCode: options.targetLanguageCode,
     targetLanguageLabel: options.targetLanguageLabel || null,
     sourceLanguageCode: options.sourceLanguageCode || null,
@@ -24,7 +27,9 @@ export function appendNewFinalTranscriptItems(repository, sessionId, previousTra
     return [];
   }
 
-  const existingIds = new Set((repository.getSessionRecord(sessionId)?.transcriptItems || []).map((item) => item.id));
+  const detail = repository.getSessionRecord(sessionId);
+  const sessionSegmentId = detail?.sessionRecord?.segmentId || null;
+  const existingIds = new Set((detail?.transcriptItems || []).map((item) => item.id));
   const appended = [];
 
   for (const item of newFinalTranscriptItems(previousTranscriptState, nextTranscriptState)) {
@@ -32,7 +37,10 @@ export function appendNewFinalTranscriptItems(repository, sessionId, previousTra
       continue;
     }
 
-    const stored = repository.appendTranscriptItem(sessionId, item);
+    const stored = repository.appendTranscriptItem(sessionId, {
+      ...item,
+      ...(item.segmentId || !sessionSegmentId ? {} : { segmentId: sessionSegmentId })
+    });
     existingIds.add(item.id);
     appended.push(stored);
   }

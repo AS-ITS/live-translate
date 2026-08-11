@@ -1,28 +1,29 @@
-const TRANSLATION_COMMAND_SERVICE_METHODS = Object.freeze([
-  'createTranslationRequest',
-  'createTranslationExecution',
-  'updateTranslationExecution',
-  'createTranslationOutput'
+const TRANSLATION_APPLICATION_SERVICE_METHODS = Object.freeze([
+  'requestTranslation',
+  'executeTranslation',
+  'updateExecution',
+  'recordTranslationOutput'
 ]);
 
-export function createTranslationCommandController({ translationCommandService } = {}) {
-  assertTranslationCommandService(translationCommandService);
+export function createTranslationCommandController({ translationApplicationService, translationCommandService } = {}) {
+  const service = translationApplicationService ?? createLegacyAdapter(translationCommandService);
+  assertTranslationApplicationService(service);
 
   return Object.freeze({
     createTranslationRequest(input) {
-      return translationCommandService.createTranslationRequest(input);
+      return service.requestTranslation(input);
     },
 
     createTranslationExecution(input) {
-      return translationCommandService.createTranslationExecution(forwardTranslationExecutionInput(input));
+      return service.executeTranslation(forwardTranslationExecutionInput(input));
     },
 
     updateTranslationExecution(input) {
-      return translationCommandService.updateTranslationExecution(input);
+      return service.updateExecution(input);
     },
 
     createTranslationOutput(input) {
-      return translationCommandService.createTranslationOutput(input);
+      return service.recordTranslationOutput(input);
     }
   });
 }
@@ -31,18 +32,26 @@ function forwardTranslationExecutionInput(input) {
   return input;
 }
 
-function assertTranslationCommandService(translationCommandService) {
-  if (!translationCommandService) {
-    throw new TypeError('translationCommandService is required.');
-  }
-
-  for (const methodName of TRANSLATION_COMMAND_SERVICE_METHODS) {
-    assertMethod(translationCommandService, methodName);
+function assertTranslationApplicationService(service) {
+  if (!service) throw new TypeError('translationApplicationService is required.');
+  for (const methodName of TRANSLATION_APPLICATION_SERVICE_METHODS) {
+    if (typeof service[methodName] !== 'function') {
+      throw new TypeError(`translationApplicationService.${methodName} must be a function.`);
+    }
   }
 }
 
-function assertMethod(target, methodName) {
-  if (typeof target[methodName] !== 'function') {
-    throw new TypeError(`translationCommandService.${methodName} must be a function.`);
+function createLegacyAdapter(translationCommandService) {
+  if (!translationCommandService) throw new TypeError('translationApplicationService is required.');
+  for (const methodName of ['createTranslationRequest', 'createTranslationExecution', 'updateTranslationExecution', 'createTranslationOutput']) {
+    if (typeof translationCommandService[methodName] !== 'function') {
+      throw new TypeError(`translationCommandService.${methodName} must be a function.`);
+    }
   }
+  return {
+    requestTranslation: (input) => translationCommandService.createTranslationRequest(input),
+    executeTranslation: (input) => translationCommandService.createTranslationExecution(input),
+    updateExecution: (input) => translationCommandService.updateTranslationExecution(input),
+    recordTranslationOutput: (input) => translationCommandService.createTranslationOutput(input)
+  };
 }

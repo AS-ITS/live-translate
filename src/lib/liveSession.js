@@ -9,10 +9,10 @@ import {
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
+import { authenticatedFetch } from './accessToken.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
-const DEMO_ACCESS_TOKEN = import.meta.env?.VITE_DEMO_ACCESS_TOKEN;
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 
@@ -37,7 +37,8 @@ export class LiveTranslateSession {
     sessionId = null,
     segmentId = null,
     sessionClock = createDefaultSessionClock(),
-    onCueEvent
+    onCueEvent,
+    authorizationHeaders = {}
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
@@ -59,6 +60,7 @@ export class LiveTranslateSession {
     this.segmentId = segmentId;
     this.sessionClock = sessionClock;
     this.onCueEvent = onCueEvent;
+    this.authorizationHeaders = { ...authorizationHeaders };
     this.eventSequence = 0;
     this.audioContext = null;
     this.mediaStream = null;
@@ -76,12 +78,15 @@ export class LiveTranslateSession {
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
+    this.microphoneTrackListeners = [];
+    this.microphoneFailureSignaled = false;
     this.retranslationCueIds = new Set();
     this.activeRetranslationCueId = null;
   }
 
   async start() {
     this.mediaStream = await this.openInputStream();
+    this.attachMicrophoneTrackListeners();
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
     this.audioContext = new AudioContext();
@@ -90,11 +95,9 @@ export class LiveTranslateSession {
 
     const tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(DEMO_ACCESS_TOKEN ? { 'X-Demo-Access-Token': DEMO_ACCESS_TOKEN } : {})
-      },
+      headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
       body: JSON.stringify({
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage
@@ -181,6 +184,44 @@ export class LiveTranslateSession {
       this.onInputDeviceFallback?.();
       return navigator.mediaDevices.getUserMedia(buildAudioInputConstraints());
     }
+  }
+
+  attachMicrophoneTrackListeners() {
+    for (const track of this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.() || []) {
+      if (typeof track?.addEventListener !== 'function') continue;
+      const onEnded = () => {
+        void this.handleMicrophoneDisconnected();
+      };
+      track.addEventListener('ended', onEnded);
+      this.microphoneTrackListeners.push({ track, onEnded });
+    }
+  }
+
+  async handleMicrophoneDisconnected() {
+    if (this.closeExpected || this.closed || this.microphoneFailureSignaled) return;
+    this.microphoneFailureSignaled = true;
+    this.flushPendingTranscripts();
+    await this.cleanup({ closeSession: true });
+    this.onConnectionFailure?.({
+      source: 'microphone_disconnected',
+      rawError: new Error('Microphone track ended.'),
+      reasonHint: this.inputDeviceId ? 'selected_device_missing' : 'microphone_disconnected',
+      afterCleanup: true
+    });
+    this.onError?.(new Error('Microphone track ended.'));
+  }
+
+  async handleNetworkOffline() {
+    if (this.closeExpected || this.closed) return;
+    this.flushPendingTranscripts();
+    await this.cleanup({ closeSession: true });
+    this.onConnectionFailure?.({
+      source: 'network_offline',
+      rawError: new Error('Browser went offline.'),
+      reasonHint: 'network_offline',
+      afterCleanup: true
+    });
+    this.onError?.(new Error('Browser went offline.'));
   }
 
   retranslateSourceText(sourceText, cueId = '') {
@@ -466,6 +507,10 @@ export class LiveTranslateSession {
     this.cleaningUp = true;
     try {
       this.closed = true;
+      for (const { track, onEnded } of this.microphoneTrackListeners) {
+        track.removeEventListener?.('ended', onEnded);
+      }
+      this.microphoneTrackListeners = [];
       this.chunker?.reset();
       this.clearPlaybackQueue();
 
@@ -559,7 +604,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await authenticatedFetch(fetch)(url, { ...options, signal: controller.signal });
   } catch (error) {
     if (error.name === 'AbortError') {
       throw new Error('即時翻譯服務回應逾時。請再試一次。');
@@ -626,7 +671,7 @@ function userMessageForErrorCode(code) {
   const messages = {
     auth_required: '此示範尚未設定存取權限。請聯絡管理員。',
     auth_invalid: '此示範尚未設定存取權限。請聯絡管理員。',
-    auth_not_configured: '正式環境尚未設定即時翻譯。',
+    auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
     invalid_origin: '此網站不允許請求即時翻譯。',
     provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
     rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',

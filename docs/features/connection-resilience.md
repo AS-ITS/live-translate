@@ -203,8 +203,15 @@ replacement startup.
 
 Controlled reconnect is enabled for `unexpected_close`, `token_expired`, and
 selected transient provider/network/browser failure classifications. Offline
-pause/resume, microphone-disconnect recovery, proactive token refresh, and a
-separate SessionFactory remain not implemented.
+pause/resume and microphone-disconnect recovery are also enabled. Proactive
+token refresh and a separate SessionFactory remain not implemented.
+
+When the browser goes offline, the active Live session is cleaned up once and
+the current reconnect decision is held without starting a replacement. The
+decision resumes after the browser reports `online`. User Stop cancels the
+held recovery. When an input track ends, the next replacement session retries
+with the browser default microphone if a selected device is no longer present;
+if capture still fails, recovery ends with a user-visible microphone error.
 
 ## Retry Exhaustion and Failure UX Hardening
 
@@ -223,8 +230,8 @@ callbacks are guarded by reconnect generation checks, and transcript/export
 state remains available after reconnect failure.
 
 Token refresh remains reactive: replacement sessions request fresh ephemeral
-tokens through the existing token endpoint. Proactive token refresh and
-microphone-disconnect recovery remain not implemented.
+tokens through the existing token endpoint. Proactive token refresh remains
+not implemented.
 
 ## Reload Resume for Long Meetings
 
@@ -244,8 +251,9 @@ next active Segment with a fresh Live session association, starts a replacement
 Live session through the existing `/api/live-token` flow, and keeps restored
 content in the final Session snapshot.
 
-This path does not auto-start the microphone on page load and does not add
-offline pause/resume or device-disconnect recovery.
+This path does not auto-start the microphone on page load. Offline pause/resume
+and device-disconnect recovery are handled only during an active recovery
+lifecycle.
 
 ## Token Expiration UX Display Path
 
@@ -470,4 +478,5 @@ Low:
 - Retry, timeout, token refresh, auto reconnect, health monitoring, and recovery
   UX strategies are documented.
 - Testing strategy is documented without requiring real Gemini API calls.
-- No production code is changed by this specification.
+- Offline retry pause/resume and microphone-disconnect fallback are covered by
+  deterministic unit and browser-mock E2E tests.

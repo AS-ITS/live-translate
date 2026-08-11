@@ -16,7 +16,12 @@ export function createSessionSnapshotSyncService({ sessionRepository } = {}) {
 
 function syncSnapshot(repository, existing, session, transcriptItems) {
   if (!existing) {
-    const created = repository.createSessionRecord(session);
+    const created = repository.createSessionRecord({
+      ...session,
+      // Create through the mutable state first so terminal snapshots retain
+      // endedAt and failure metadata via finalizeSessionRecord.
+      ...(isTerminalSessionStatus(session.status) ? { status: 'active' } : {})
+    });
     return isPromiseLike(created)
       ? created.then(() => repository.getSessionRecord(session.id)).then((detail) => syncSnapshot(repository, detail, session, transcriptItems))
       : syncSnapshot(repository, repository.getSessionRecord(session.id), session, transcriptItems);
@@ -53,7 +58,7 @@ function applySessionPatch(repository, session) {
       return finalized;
     }
 
-    if (current?.status === 'active') {
+    if (['created', 'active', 'paused'].includes(current?.status)) {
       return repository.updateSessionRecord(session.id, sessionMetadata(session));
     }
 
@@ -65,7 +70,7 @@ function validateSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) invalid();
   const { session, transcriptItems } = snapshot;
   if (!session || typeof session !== 'object' || Array.isArray(session) || !nonEmptyString(session.id)) invalid();
-  if (!nonEmptyString(session.targetLanguageCode) || !['active', 'completed', 'stopped', 'failed', 'expired'].includes(session.status)) invalid();
+  if (!nonEmptyString(session.targetLanguageCode) || !['created', 'active', 'paused', 'completed', 'stopped', 'failed', 'expired'].includes(session.status)) invalid();
   if (!Array.isArray(transcriptItems)) invalid();
   for (const item of transcriptItems) {
     if (!item || typeof item !== 'object' || !nonEmptyString(item.id) || !['source', 'translation'].includes(item.stream)
@@ -78,9 +83,16 @@ function validateSnapshot(snapshot) {
 
 function sessionMetadata(session) {
   return {
+    startedAt: session.startedAt ?? null,
+    endedAt: session.endedAt ?? null,
+    durationMs: session.durationMs ?? null,
+    ...(session.name !== undefined ? { name: session.name } : {}),
+    ...(session.status !== undefined ? { status: session.status } : {}),
     targetLanguageCode: session.targetLanguageCode,
     targetLanguageLabel: session.targetLanguageLabel ?? null,
     sourceLanguageCode: session.sourceLanguageCode ?? null,
+    meetingId: session.meetingId ?? null,
+    segmentId: session.segmentId ?? null,
     selectedInputDeviceId: session.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null
   };

@@ -15,7 +15,7 @@ test('meeting checkpoint API client creates a meeting', async () => {
 
   assert.equal(result.meeting.id, 'meeting-1');
   assert.equal(result.segment.id, 'segment-1');
-  assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'POST' } }]);
+  assert.deepEqual(calls, [{ url: '/api/meetings', options: { method: 'POST', headers: {} } }]);
 });
 
 test('meeting checkpoint API client creates a meeting with live session association', async () => {

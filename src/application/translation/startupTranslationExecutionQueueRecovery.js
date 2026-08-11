@@ -7,6 +7,11 @@ import {
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES,
   DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_IDENTITY
 } from './durableTranslationExecutionQueueRepository.js';
+import {
+  assertTranslationExecutionMetrics,
+  createNoopTranslationExecutionMetrics,
+  TRANSLATION_EXECUTION_METRIC_NAMES
+} from './translationExecutionMetrics.js';
 
 export function createStartupTranslationExecutionQueueRecovery({
   durableRepository,
@@ -16,7 +21,8 @@ export function createStartupTranslationExecutionQueueRecovery({
   canReplayInFlight = () => false,
   clock = () => new Date().toISOString(),
   leaseDurationMs = 300000,
-  leaseIdFactory = randomUUID
+  leaseIdFactory = randomUUID,
+  metrics = createNoopTranslationExecutionMetrics()
 } = {}) {
   assertDurableTranslationExecutionQueueRepository(durableRepository);
   assertTranslationExecutionQueue(activeQueue);
@@ -25,6 +31,7 @@ export function createStartupTranslationExecutionQueueRecovery({
   if (typeof clock !== 'function') throw new TypeError('clock must be a function.');
   if (!Number.isInteger(leaseDurationMs) || leaseDurationMs <= 0) throw new TypeError('leaseDurationMs must be a positive integer.');
   if (typeof leaseIdFactory !== 'function') throw new TypeError('leaseIdFactory must be a function.');
+  assertTranslationExecutionMetrics(metrics);
 
   const replayedExecutionIds = new Set();
 
@@ -146,6 +153,7 @@ export function createStartupTranslationExecutionQueueRecovery({
         if (replayedExecutionIds.has(item.executionId)) return;
         await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
         replayedExecutionIds.add(item.executionId);
+        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RECOVERY_TOTAL);
       }
 
       function createRecoveryLease(recoveredAt) {
@@ -173,6 +181,14 @@ export function createStartupTranslationExecutionQueueRecovery({
       }
     }
   });
+}
+
+function safeIncrement(metrics, name) {
+  try {
+    metrics.increment(name);
+  } catch {
+    // Metrics must never change recovery behavior.
+  }
 }
 
 async function isReplayEligible(execution, outputs, canReplayInFlight) {

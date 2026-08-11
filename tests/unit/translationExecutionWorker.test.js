@@ -6,6 +6,10 @@ import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/tra
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
 import { createFakeDeadLetterQueueRepository } from '../../src/infrastructure/fakeDeadLetterQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
+import {
+  createTranslationExecutionMetrics,
+  TRANSLATION_EXECUTION_METRIC_NAMES
+} from '../../src/application/translation/translationExecutionMetrics.js';
 
 test('empty queue returns idle', async () => {
   const worker = createTranslationExecutionWorker(workerDependencies({ translationExecutionQueue: queue() }));
@@ -35,6 +39,16 @@ test('dequeue once processes only one job', async () => {
   assert.deepEqual(calls.map((call) => call[0]), ['findExecutionById', 'findRequestById', 'runner.run']);
   assert.equal(queue.size(), 1);
   assert.deepEqual(queue.dequeue(), { executionId: 'execution-2', requestId: 'request-2' });
+});
+
+test('successful worker processing updates queue metrics without changing the result', async () => {
+  const metrics = createTranslationExecutionMetrics({ clock: () => '2026-08-10T00:00:00.000Z' });
+  const worker = createTranslationExecutionWorker(workerDependencies({ metrics }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'processed', executionId: 'execution-1' });
+  assert.equal(metrics.snapshot().metrics[TRANSLATION_EXECUTION_METRIC_NAMES.PROCESSED_TOTAL], 1);
+  assert.equal(metrics.snapshot().metrics[TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH], 0);
+  assert.equal(metrics.snapshot().metrics[TRANSLATION_EXECUTION_METRIC_NAMES.LAST_SUCCESS_AT], '2026-08-10T00:00:00.000Z');
 });
 
 test('repository is queried with execution and request identifiers', async () => {
@@ -823,6 +837,7 @@ function workerDependencies(options = {}) {
     ...(options.leaseHeartbeatScheduler !== undefined ? { leaseHeartbeatScheduler: options.leaseHeartbeatScheduler } : {}),
     ...(options.translationExecutionRetryPolicy !== undefined ? { translationExecutionRetryPolicy: options.translationExecutionRetryPolicy } : {}),
     ...(options.translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier: options.translationExecutionRetryErrorClassifier } : {}),
+    ...(options.metrics !== undefined ? { metrics: options.metrics } : {}),
     ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {})
   };
 }

@@ -1,8 +1,39 @@
+import { execFile } from 'node:child_process';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'live-translate-dev-shortcuts',
+      configureServer(server) {
+        server.bindCLIShortcuts({
+          print: false,
+          customShortcuts: [
+            {
+              key: 'o',
+              description: 'open in the default browser',
+              action() {
+                const url = server.resolvedUrls?.local?.[0] || server.resolvedUrls?.network?.[0];
+                if (!url) {
+                  server.config.logger.warn('No Vite URL is available to open.');
+                  return;
+                }
+
+                openInDefaultBrowser(url, (error) => {
+                  if (error) {
+                    server.config.logger.error(`Could not open the browser automatically: ${error.message}`);
+                    server.config.logger.info(`Open this URL manually: ${url}`);
+                  }
+                });
+              }
+            }
+          ]
+        });
+      }
+    }
+  ],
   build: {
     chunkSizeWarningLimit: 1200,
     rolldownOptions: {
@@ -43,3 +74,17 @@ export default defineConfig({
     }
   }
 });
+
+function openInDefaultBrowser(url, callback) {
+  if (process.platform === 'darwin') {
+    execFile('open', [url], callback);
+    return;
+  }
+
+  if (process.platform === 'win32') {
+    execFile('cmd', ['/c', 'start', '', url], callback);
+    return;
+  }
+
+  execFile('xdg-open', [url], callback);
+}

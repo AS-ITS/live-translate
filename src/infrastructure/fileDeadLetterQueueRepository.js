@@ -1,4 +1,6 @@
 import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createFileLock } from './fileLock.js';
 import {
   createDeadLetterQueueItem,
   createDeadLetterQueueRepository
@@ -10,8 +12,9 @@ const INITIAL_STORAGE = Object.freeze({ items: [] });
 export function createFileDeadLetterQueueRepository({ fileSystem, filePath } = {}) {
   assertFileSystem(fileSystem);
   assertFilePath(filePath);
+  const lock = createFileLock({ fileSystem, filePath });
 
-  return createDeadLetterQueueRepository({
+  const implementation = {
     async enqueue(item) {
       const storage = await readStorage({ fileSystem, filePath });
       if (!storage.items.some((candidate) => candidate.executionId === item.executionId)) storage.items.push(createDeadLetterQueueItem(item));
@@ -26,7 +29,14 @@ export function createFileDeadLetterQueueRepository({ fileSystem, filePath } = {
     async clear() {
       await writeStorage({ fileSystem, filePath, storage: INITIAL_STORAGE });
     }
-  });
+  };
+
+  return createDeadLetterQueueRepository(
+    Object.fromEntries(Object.entries(implementation).map(([name, method]) => [
+      name,
+      (...args) => lock.run(() => method(...args))
+    ]))
+  );
 }
 
 async function readStorage({ fileSystem, filePath }) {
@@ -56,12 +66,22 @@ async function ensureStorageFile({ fileSystem, filePath }) {
 
 async function writeStorage({ fileSystem, filePath, storage }) {
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
-  await fileSystem.writeFile(filePath, `${JSON.stringify({ items: storage.items }, null, 2)}\n`, 'utf8');
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fileSystem.writeFile(temporaryPath, `${JSON.stringify({ items: storage.items }, null, 2)}\n`, 'utf8');
+    await fileSystem.rename(temporaryPath, filePath);
+  } finally {
+    try {
+      await fileSystem.unlink(temporaryPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
 }
 
 function assertFileSystem(fileSystem) {
   if (!isRecord(fileSystem)) throw new TypeError('fileSystem is required.');
-  for (const method of ['access', 'mkdir', 'readFile', 'writeFile']) {
+  for (const method of ['access', 'mkdir', 'readFile', 'writeFile', 'rename', 'unlink', 'rmdir', 'stat']) {
     if (typeof fileSystem[method] !== 'function') throw new TypeError(`fileSystem.${method} must be a function.`);
   }
 }

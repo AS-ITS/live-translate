@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added single-host multi-process safety for file-backed translation queue and
+  dead-letter queue operations. Sidecar locks serialize claims, enqueue,
+  retry, renewal, acknowledgement, and transfer operations; writes use unique
+  temporary files and atomic rename with bounded stale-lock recovery.
+
 - Added authenticated per-Session WebSocket execution status snapshots with
   reconnect, REST refetch, and polling fallback behavior.
 

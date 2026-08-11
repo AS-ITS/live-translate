@@ -67,13 +67,17 @@ Phase 3J Queue Retry & Dead-Letter Handling is completed: retryable provider
 failures use durable capped backoff scheduling, retry metadata survives restart,
 and exhausted or non-retryable failures transfer to an idempotent file-backed
 dead-letter queue with ownership checks. Remaining reliability work:
-multi-worker/distributed locking, cross-process atomicity, event publishing
-deduplication.
+cross-host coordination and event publishing deduplication.
 Phase 3L Queue Metrics & Observability v1 is completed: a process-local shared
 metrics registry, protected `GET /api/metrics` snapshot, and deterministic
 queue/retry/DLQ/recovery instrumentation are covered. Remaining reliability
-work is multi-worker/distributed locking, cross-process atomicity, and event
-publishing deduplication.
+work is cross-host coordination and event publishing deduplication.
+
+Phase 3M Single-host Multi-process Queue Atomicity is completed. File-backed
+queue and DLQ operations now use sidecar locks, atomic temporary-file renames,
+bounded lock waits, stale-lock recovery, and cross-process regression tests.
+This milestone does not add a broker, database, durable event outbox, event
+replay, or cross-host exactly-once delivery.
 
 Phase 4A WP1 Target Language Selection is completed. The existing target-language
 allowlist and `en` default now apply at live-token, translation-command,

@@ -1,4 +1,6 @@
 import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { createFileLock } from './fileLock.js';
 import {
   compareDurableTranslationExecutionQueueItemIdentity,
   createTranslationExecutionQueueItemConflictError,
@@ -18,8 +20,9 @@ const INITIAL_STORAGE = Object.freeze({ items: [] });
 export function createFileDurableTranslationExecutionQueueRepository({ fileSystem, filePath, deadLetterQueueRepository } = {}) {
   assertFileSystem(fileSystem);
   assertFilePath(filePath);
+  const lock = createFileLock({ fileSystem, filePath });
 
-  return createDurableTranslationExecutionQueueRepository({
+  const implementation = {
     async enqueue(item) {
       const storage = await readStorage({ fileSystem, filePath });
 
@@ -213,7 +216,14 @@ export function createFileDurableTranslationExecutionQueueRepository({ fileSyste
       await writeStorage({ fileSystem, filePath, storage });
       return requeuedItem;
     }
-  });
+  };
+
+  return createDurableTranslationExecutionQueueRepository(
+    Object.fromEntries(Object.entries(implementation).map(([name, method]) => [
+      name,
+      (...args) => lock.run(() => method(...args))
+    ]))
+  );
 }
 
 async function readStorage({ fileSystem, filePath }) {
@@ -256,7 +266,17 @@ async function ensureStorageFile({ fileSystem, filePath }) {
 
 async function writeStorage({ fileSystem, filePath, storage }) {
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
-  await fileSystem.writeFile(filePath, serializeStorage(storage), 'utf8');
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fileSystem.writeFile(temporaryPath, serializeStorage(storage), 'utf8');
+    await fileSystem.rename(temporaryPath, filePath);
+  } finally {
+    try {
+      await fileSystem.unlink(temporaryPath);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
 }
 
 function serializeStorage(storage) {
@@ -362,7 +382,7 @@ function assertFileSystem(fileSystem) {
     throw new TypeError('fileSystem is required.');
   }
 
-  for (const methodName of ['access', 'mkdir', 'readFile', 'writeFile']) {
+  for (const methodName of ['access', 'mkdir', 'readFile', 'writeFile', 'rename', 'unlink', 'rmdir', 'stat']) {
     if (typeof fileSystem[methodName] !== 'function') {
       throw new TypeError(`fileSystem.${methodName} must be a function.`);
     }

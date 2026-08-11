@@ -6,6 +6,16 @@ is opt-in only.
 
 ## Unit Tests
 
+Run the file-backed queue concurrency and persistence tests:
+
+```bash
+node --test tests/unit/fileDurableTranslationExecutionQueueRepository.test.js tests/unit/fileDeadLetterQueueRepository.test.js
+```
+
+These tests include two independent Node.js processes writing the same queue
+file, concurrent claim ownership, stale sidecar-lock recovery, deterministic
+JSON persistence, and the existing queue/DLQ repository contracts.
+
 Run all unit tests:
 
 ```bash

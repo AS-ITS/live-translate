@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { promises as fileSystem } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -494,6 +495,44 @@ test('storage without items array throws deterministic storage error', async () 
   await assert.rejects(() => repository.peek(), storageErrorMatcher);
 });
 
+test('separate Node processes preserve all concurrent enqueue operations', async () => {
+  const filePath = temporaryFilePath();
+  await Promise.all([
+    spawnQueueWriter(filePath, 'worker-a', 0, 8),
+    spawnQueueWriter(filePath, 'worker-b', 8, 8)
+  ]);
+
+  const items = await createRepository({ filePath }).list();
+  assert.equal(items.length, 16);
+  assert.deepEqual(new Set(items.map((item) => item.executionId)).size, 16);
+});
+
+test('separate repositories allow only one concurrent claim owner', async () => {
+  const filePath = temporaryFilePath();
+  const first = createRepository({ filePath });
+  const second = createRepository({ filePath });
+  await first.enqueue(createItem());
+
+  const results = await Promise.allSettled([
+    first.claim('execution-1', { leaseId: 'lease-a', leaseExpiresAt: '2026-07-17T08:05:00.000Z' }),
+    second.claim('execution-1', { leaseId: 'lease-b', leaseExpiresAt: '2026-07-17T08:05:00.000Z' })
+  ]);
+
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal((await first.peek()).fenceToken, 1);
+});
+
+test('stale sidecar lock is recovered before reading storage', async () => {
+  const filePath = temporaryFilePath();
+  const repository = createRepository({ filePath });
+  await fileSystem.mkdir(`${filePath}.lock`, { recursive: true });
+  const old = new Date(Date.now() - 60000);
+  await fileSystem.utimes(`${filePath}.lock`, old, old);
+
+  assert.equal(await repository.size(), 0);
+  await assert.rejects(() => fileSystem.access(`${filePath}.lock`), { code: 'ENOENT' });
+});
+
 function createRepository({ filePath }) {
   return createFileDurableTranslationExecutionQueueRepository({
     fileSystem,
@@ -508,6 +547,26 @@ function temporaryFilePath() {
 
 async function readStorage(filePath) {
   return JSON.parse(await fileSystem.readFile(filePath, 'utf8'));
+}
+
+function spawnQueueWriter(filePath, workerId, start, count) {
+  const source = `
+    import { promises as fs } from 'node:fs';
+    import { createFileDurableTranslationExecutionQueueRepository } from ${JSON.stringify(new URL('../../src/infrastructure/fileDurableTranslationExecutionQueueRepository.js', import.meta.url).href)};
+    const repository = createFileDurableTranslationExecutionQueueRepository({ fileSystem: fs, filePath: process.argv[1] });
+    for (let index = 0; index < Number(process.argv[3]); index += 1) {
+      await repository.enqueue({ executionId: process.argv[2] + '-' + (Number(process.argv[4]) + index), requestId: process.argv[2] + '-request-' + index, enqueuedAt: '2026-07-17T08:00:00.000Z', status: 'queued', fenceToken: 0, attempt: 0, availableAt: null, lastFailure: null });
+    }
+  `;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', source, filePath, workerId, String(count), String(start)], {
+      stdio: ['ignore', 'ignore', 'pipe']
+    });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('exit', (code) => code === 0 ? resolve() : reject(new Error(stderr || `child exited with ${code}`)));
+  });
 }
 
 function storageErrorMatcher(error) {

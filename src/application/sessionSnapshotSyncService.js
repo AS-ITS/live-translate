@@ -83,11 +83,16 @@ function validateSnapshot(snapshot) {
 
 function sessionMetadata(session) {
   return {
+    startedAt: session.startedAt ?? null,
+    endedAt: session.endedAt ?? null,
+    durationMs: session.durationMs ?? null,
     ...(session.name !== undefined ? { name: session.name } : {}),
     ...(session.status !== undefined ? { status: session.status } : {}),
     targetLanguageCode: session.targetLanguageCode,
     targetLanguageLabel: session.targetLanguageLabel ?? null,
     sourceLanguageCode: session.sourceLanguageCode ?? null,
+    meetingId: session.meetingId ?? null,
+    segmentId: session.segmentId ?? null,
     selectedInputDeviceId: session.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null
   };

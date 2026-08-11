@@ -462,7 +462,7 @@ async function openGlossaryPage(page) {
 }
 
 async function openLivePage(page) {
-  await page.getByRole('link', { name: '即時翻譯' }).click();
+  await page.getByRole('link', { name: '即時翻譯', exact: true }).click();
   await expect(page).toHaveURL(/#live$/);
 }
 
@@ -767,10 +767,10 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
-  await expect(page.getByText('長會議同步：尚未開始', { exact: true })).toBeVisible();
+  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toBeVisible();
   await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
-  const sourceLanguage = page.getByRole('combobox', { name: '主要輸入語言' });
+  const sourceLanguage = page.getByRole('combobox', { name: '我主要說的語言' });
   const targetLanguage = page.getByRole('combobox', { name: '目標語言' });
 
   await expect(sourceLanguage).toHaveValue('zh-Hant');
@@ -788,7 +788,8 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   expect(page.liveTokenRequests[0]).toEqual({
     targetLanguageCode: 'ja',
     sourceLanguageCode: 'en',
-    echoTargetLanguage: true
+    echoTargetLanguage: true,
+    sessionId: expect.any(String)
   });
 
   const liveConnect = await page.evaluate(() => {
@@ -871,7 +872,9 @@ test('audio segment upload retries a temporary failure and preserves the saved a
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByLabel('錄製講者原音').check();
+  await page.getByText('錄音與播放設定', { exact: true }).click();
+  await page.getByLabel('錄下原始聲音').check();
+  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'before pause source', 'before pause translation');
@@ -908,7 +911,9 @@ test('pause keeps the session content and end exposes microphone recording downl
 test('microphone recording error does not stop live translation', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByLabel('錄製講者原音').check();
+  await page.getByText('錄音與播放設定', { exact: true }).click();
+  await page.getByLabel('錄下原始聲音').check();
+  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -927,7 +932,7 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(page.getByText('長會議同步：準備同步')).toBeVisible();
+  await expect(page.getByText('會議模式：準備中')).toBeVisible();
 
   await emitPartialTranscript(page, 'checkpoint source', 'checkpoint translation');
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
@@ -946,7 +951,7 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
     { meetingId: 'meeting-1', segmentId: 'segment-1', stream: 'source', sequence: 1, text: 'checkpoint source' },
     { meetingId: 'meeting-1', segmentId: 'segment-1', stream: 'translation', sequence: 2, text: 'checkpoint translation' }
   ]);
-  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+  await expect(page.getByText('會議模式：已保存')).toBeVisible();
 });
 
 test('long meeting proactively switches through three segments and preserves confirmed transcript', async ({ page }) => {
@@ -963,15 +968,15 @@ test('long meeting proactively switches through three segments and preserves con
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
   await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
-  await expect(page.getByText('長會議段落：已封存 1 段 · 已載入 1 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('保存狀態：長會議已保存 1 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment two source', 'segment two translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
-  await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('保存狀態：長會議已保存 2 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation', { waitMs: 100 });
-  await expect(page.getByText('長會議段落：已封存 2 段 · 已載入 2 段 · 目前段落 2 筆')).toBeVisible();
+  await expect(page.getByText('保存狀態：長會議已保存 2 段 · 目前段落 2 筆')).toBeVisible();
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
@@ -1014,12 +1019,12 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   for (let index = 0; index < 12; index += 1) {
-    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 100 });
+    await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 250 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
   }
 
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(13);
-  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation', { waitMs: 100 });
+  await emitFinalTranscript(page, 'soak segment 13 source', 'soak segment 13 translation', { waitMs: 250 });
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 
@@ -1052,7 +1057,7 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'sync failure source', 'sync failure translation');
 
-  await expect(page.getByText('長會議同步：同步失敗，等待重試')).toBeVisible({ timeout: 6500 });
+  await expect(page.getByText('會議模式：保存失敗，等待重試')).toBeVisible({ timeout: 6500 });
   await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
   await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
 });
@@ -1066,7 +1071,7 @@ test('checkpoint sync retries a temporary failure and clears the error after suc
   await emitFinalTranscript(page, 'retry source', 'retry translation');
 
   await expect.poll(() => checkpointRequests.length, { timeout: 12000 }).toBe(2);
-  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+  await expect(page.getByText('會議模式：已保存')).toBeVisible();
   await expect(page.locator('.error-message')).toBeHidden();
 });
 
@@ -1114,7 +1119,7 @@ test('empty meeting resume draft does not show continue recording action', async
 
   await page.goto('/#live?meetingId=meeting-1');
 
-  await expect(page.getByText('長會議同步：已同步')).toBeVisible();
+  await expect(page.getByText('會議模式：已保存')).toBeVisible();
   await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 });
@@ -1552,7 +1557,7 @@ test('page scroll stops follow-latest until the user returns to the latest subti
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   for (let index = 0; index < 5; index += 1) {
-    await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`);
+    await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`, { waitMs: 1800 });
   }
 
   await expect(cueList(page)).toHaveCSS('overflow-y', 'visible');
@@ -1562,7 +1567,7 @@ test('page scroll stops follow-latest until the user returns to the latest subti
   await expect(page.getByTestId('follow-latest-button')).toBeVisible();
 
   const scrollTopBeforeNewCue = await page.evaluate(() => window.scrollY);
-  await emitFinalTranscript(page, 'scroll source newest', 'scroll translation newest');
+  await emitFinalTranscript(page, 'scroll source newest', 'scroll translation newest', { waitMs: 1800 });
   await expect(finalCueRows(page)).toHaveCount(6);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollTopBeforeNewCue);
 
@@ -1825,7 +1830,7 @@ test('source and translation remain paired in one Cue row without article aggreg
     translatedText: '汉语 软件 自行车'
   });
 
-  await emitFinalTranscript(page, 'new article source', 'new article translation');
+  await emitFinalTranscript(page, 'new article source', 'new article translation', { waitMs: 1200 });
   await expect(finalCueRows(page)).toHaveCount(2);
   await expectCueRow(finalCueRows(page).nth(1), {
     sourceText: 'new article source',
@@ -1838,8 +1843,8 @@ test('copies only completed source transcript from live subtitles', async ({ pag
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, '第一段原文', '第一段翻譯');
-  await emitFinalTranscript(page, '第二段原文', '第二段翻譯');
+  await emitFinalTranscript(page, '第一段原文', '第一段翻譯', { waitMs: 1800 });
+  await emitFinalTranscript(page, '第二段原文', '第二段翻譯', { waitMs: 1800 });
 
   await page.evaluate(() => {
     navigator.clipboard.writeText = async (value) => { window.__copiedText = value; };
@@ -1994,7 +1999,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = sessionDetail(page);
-  await expect(detail.getByRole('heading', { name: '日文詳細資料' })).toBeVisible();
+  await expect(detail.getByRole('heading', { name: /日文.*詳細資料/ })).toBeVisible();
   await expect(detail.getByText('目標語言', { exact: true })).toBeVisible();
   await expect(detail.getByText('日文', { exact: true })).toBeVisible();
   await expect(detail.getByText('狀態')).toBeVisible();
@@ -2574,7 +2579,7 @@ test('downloads saved Cue TXT, SRT, and VTT through browser downloads', async ({
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'saved download source', 'saved download translation');
+  await emitFinalTranscript(page, 'saved download source', 'saved download translation', { waitMs: 1800 });
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -2649,7 +2654,7 @@ test('switching saved session resets saved export controls', async ({ page }) =>
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'first source', 'first translation');
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('即時翻譯工作區').getByText('已停止', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2727,7 +2732,7 @@ test('failed session detail shows normalized failure reason', async ({ page }) =
   await expect(detail.getByText('失敗原因')).toBeVisible();
   await expect(detail.getByText('unexpected_close')).toBeVisible();
   await expect(detail.getByText('失敗類別')).toBeVisible();
-  await expect(detail.getByText('provider')).toBeVisible();
+  await expect(detail.getByText('翻譯服務暫時失敗')).toBeVisible();
 });
 
 test('token expiration reconnect does not finalize history until user stops', async ({ page }) => {
@@ -2791,7 +2796,7 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
 
   await openLivePage(page);
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('即時翻譯工作區').getByText('已停止', { exact: true })).toBeVisible();
 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);

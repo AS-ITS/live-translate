@@ -263,8 +263,9 @@ function App() {
   const liveCueIdleTimersRef = useRef(new Map());
 
   const routeSessionId = pageInfoFromLocation().sessionId;
+  const routeMeetingId = pageInfoFromLocation().meetingId;
   const isViewingReadOnlySession = page === 'live' && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
-  const isReadOnlyControlView = isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl);
+  const isReadOnlyControlView = page === 'live' && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
 
   const isActive =
     status === 'requesting-permission' ||
@@ -1145,6 +1146,7 @@ function App() {
 
   async function resumeMeetingSession() {
     if (!resumeDraft || isActive) return;
+    const draft = resumeDraft;
 
     reconnectController().reset();
     invalidateLiveSessionCallbacks();
@@ -1162,11 +1164,11 @@ function App() {
       const nextLiveSessionId = generateLiveSessionId();
       setStatus('reconnecting');
       const recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
-        meetingId: resumeDraft.meetingId,
-        segmentId: resumeDraft.segmentId,
-        idempotencyKey: `recover:${resumeDraft.segmentId}:${nextLiveSessionId}`,
+        meetingId: draft.meetingId,
+        segmentId: draft.segmentId,
+        idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
         checkpoint: {
-          idempotencyKey: `checkpoint:${resumeDraft.segmentId}:resume:${nextLiveSessionId}`,
+          idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
           durableChunks: [],
           pendingPartial: null
         },
@@ -1176,17 +1178,23 @@ function App() {
         outcome: 'interrupted'
       });
       const nextMeetingCheckpoint = {
-        meetingId: resumeDraft.meetingId,
+        meetingId: draft.meetingId,
         segmentId: recovery.segment.id
       };
       activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-      await createCurrentSessionRecord(nextMeetingCheckpoint, resumeDraft.transcriptState);
-      resetActiveTranscriptForNextSegment(resumeDraft.transcriptState.nextSequence);
+      await createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
+      resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
       session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
       activateLiveSessionCallbacks(session.callbackGeneration);
+      sessionRepositoryRef.current.updateSessionRecord(activeSessionRecordIdRef.current, {
+        status: 'active',
+        startedAt: Date.now(),
+        lastLifecycleState: 'listening'
+      });
+      await flushSessionSnapshot(activeSessionRecordIdRef.current);
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
@@ -1334,15 +1342,17 @@ function App() {
     }
   }
 
-  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null) {
-    const persisted = await sessionCommandApiClientRef.current.create({
+  async function createCurrentSessionRecord(meetingCheckpoint = activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
+    const persisted = existingSessionId
+      ? await sessionCommandApiClientRef.current.update(existingSessionId, { status: 'active' })
+      : await sessionCommandApiClientRef.current.create({
       name: sessionName.trim() || `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
       targetLanguageCode,
       targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
       sourceLanguageCode,
       selectedInputDeviceId: selectedInputDeviceId || null,
       inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
-    });
+      });
     const record = createActiveSessionRecord(
       sessionRepositoryRef.current,
       buildSessionRecordInput({
@@ -2090,6 +2100,8 @@ function App() {
         segmentId: activeSegment.id
       };
       setResumeDraft({
+        sessionId: (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
+          .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
         meetingId,
         segmentId: activeSegment.id,
         transcriptState: resumeTranscript,
@@ -2704,7 +2716,7 @@ function App() {
         </div>
         <HistoryPanel
           titleId="session-history-title"
-          records={historyRecords}
+          records={historyRecords.filter((record) => record.id !== activeSessionRecordIdRef.current)}
           meetingRecords={meetingRecords}
           selectedRecordId={selectedHistoryRecordId}
           selectedDetail={selectedHistoryDetail}
@@ -4027,8 +4039,6 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         inputLabel="下載整場原始語音"
         translationLabel="下載整場翻譯語音"
       />
-
-      <SessionSharePanel sessionId={sessionRecordId} />
 
       <section className="meeting-timeline" aria-label="會議段落時間軸">
         <h4>段落時間軸</h4>

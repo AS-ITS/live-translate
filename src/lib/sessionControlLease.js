@@ -129,5 +129,14 @@ export function createSessionControlLease({
 }
 
 function createTabId() {
-  return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const storageKey = 'live-translate:session-control-tab-id';
+  try {
+    const existing = globalThis.sessionStorage?.getItem(storageKey);
+    if (existing) return existing;
+    const next = `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    globalThis.sessionStorage?.setItem(storageKey, next);
+    return next;
+  } catch {
+    return `tab-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 }

@@ -64,6 +64,7 @@ import {
   transcriptItemsForStream
 } from './lib/transcript.js';
 import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState.js';
+import { subscribeToExecutionEvents } from './lib/executionEventsWebSocket.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
 import {
@@ -3799,6 +3800,16 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
     return () => { cancelled = true; };
   }, [selectedSessionId]);
 
+  useEffect(() => {
+    if (!selectedSessionId) return undefined;
+    return subscribeToExecutionEvents({
+      sessionId: selectedSessionId,
+      refetch: () => loadSelectedSessionDetail(),
+      poll: () => loadSelectedSessionDetail(),
+      onSnapshot: ({ execution }) => setDetail((current) => replaceHistoryExecution(current, execution))
+    });
+  }, [selectedSessionId]);
+
   const translationHistory = compactTranslationHistoryForDetail(detail);
   const retranslationProgress = retranslationProgressFor(translationHistory, trackedRetranslations);
   const selectedOutput = selectedOutputId
@@ -4401,7 +4412,10 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
   const [savedExportError, setSavedExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
   const [trackedRetranslations, setTrackedRetranslations] = useState([]);
+  const [executionEventsStatus, setExecutionEventsStatus] = useState('closed');
   const sessionRecordId = detail?.session?.id;
+  const onRetranslationSubmittedRef = useRef(onRetranslationSubmitted);
+  onRetranslationSubmittedRef.current = onRetranslationSubmitted;
 
   useEffect(() => {
     setSavedExportFormat('txt');
@@ -4409,6 +4423,17 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setSavedExportError('');
     setReadingTab('translationArticle');
     setTrackedRetranslations([]);
+  }, [sessionRecordId]);
+
+  useEffect(() => {
+    if (!sessionRecordId) return undefined;
+    return subscribeToExecutionEvents({
+      sessionId: sessionRecordId,
+      refetch: () => onRetranslationSubmittedRef.current?.(sessionRecordId),
+      poll: () => onRetranslationSubmittedRef.current?.(sessionRecordId),
+      onStatus: setExecutionEventsStatus,
+      onSnapshot: () => onRetranslationSubmittedRef.current?.(sessionRecordId)
+    });
   }, [sessionRecordId]);
 
 
@@ -4504,6 +4529,9 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     <section className="session-detail" aria-label="工作階段詳細資料">
       <div className="session-detail-header">
         <h3>{historyLanguageLabel(sessionRecord)}詳細資料</h3>
+        {executionEventsStatus === 'reconnecting' || executionEventsStatus === 'polling' ? (
+          <span className="history-status history-status-running">狀態同步恢復中</span>
+        ) : null}
       </div>
 
       <dl className="session-detail-metadata">

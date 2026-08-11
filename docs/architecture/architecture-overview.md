@@ -75,6 +75,13 @@ share tokens and per-Session SSE events. The current broadcaster is
 process-local; multi-process event distribution remains later work. Share token
 records are file-backed and survive backend restart.
 
+Translation execution status is also available through the authenticated
+`/api/sessions/:sessionId/execution-events` WebSocket. A process-local execution
+broadcaster publishes safe snapshots after persisted execution create/update
+operations, including worker transitions, manual retry, cancellation, and DLQ
+related terminal updates. Reconnect performs a REST refetch; there is no event
+replay. Cross-process brokers and durable event logs remain out of scope.
+
 Phase 2B target architecture introduces an explicit Application Layer,
 repository and provider ports, TranslationRequest / TranslationExecution /
 TranslationOutput contracts, read-model contracts, and Compatibility Adapter

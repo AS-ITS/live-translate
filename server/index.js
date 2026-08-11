@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { WebSocketServer } from 'ws';
 import crypto from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
@@ -11,6 +12,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
+import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
 import {
@@ -508,6 +510,7 @@ export function createRequestHandler(options = {}) {
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
     sessionShareService = createSessionShareService(),
     sessionEventBroadcaster = createSessionEventBroadcaster(),
+    executionEventBroadcaster,
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
@@ -556,7 +559,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -2196,6 +2199,13 @@ function publicViewerDetail(detail) {
 
 if (IS_MAIN) {
   const server = http.createServer(handleRequest);
+  attachExecutionEventsWebSocket({
+    server,
+    accessControl,
+    sessionReadController: defaultApplicationDependencies.sessionReadController,
+    broadcaster: defaultApplicationDependencies.executionEventBroadcaster,
+    WebSocketServerClass: WebSocketServer
+  });
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 
   server.listen(PORT, HOST, () => {

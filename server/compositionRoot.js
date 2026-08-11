@@ -54,6 +54,7 @@ import {
 import { createTranslationProviderResolutionComposition } from '../src/infrastructure/translationProviderResolutionComposition.js';
 import { createTranslationDomainEventPublisherAdapter } from '../src/infrastructure/translationDomainEventPublisherAdapter.js';
 import { createTranslationDomainEventSubscriber } from '../src/infrastructure/translationDomainEventSubscriber.js';
+import { createExecutionEventBroadcaster, createExecutionEventRepository } from '../src/infrastructure/executionEventBroadcaster.js';
 import { createInMemoryDomainEventBus } from '../src/infrastructure/inMemoryDomainEventBus.js';
 import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
@@ -100,6 +101,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRetryErrorClassifier,
     translationExecutionMetrics,
     translationDomainEventHandlers,
+    executionEventBroadcaster,
     savedTranscriptTranslationProvider,
     resolveSavedTranscriptTranslationProvider,
     savedTranscriptRetranslationServiceFactory = createDefaultSavedTranscriptRetranslationService,
@@ -182,10 +184,20 @@ export function createApplicationDependencies(options = {}) {
         })
       : undefined
   );
+  const resolvedExecutionEventBroadcaster = executionEventBroadcaster ?? createExecutionEventBroadcaster();
+  const hasInjectedTranslationRepository = Object.prototype.hasOwnProperty.call(options, 'translationRepository');
+  const baseTranslationRepository = hasInjectedTranslationRepository
+    ? translationRepository
+    : createTranslationRepositoryAdapter({
+        sessionRepository: sessionReadDependencies.sessionRepository,
+        executionEventBroadcaster: resolvedExecutionEventBroadcaster
+      });
+  const executionEventTranslationRepository = createExecutionEventRepository({
+    repository: baseTranslationRepository,
+    broadcaster: resolvedExecutionEventBroadcaster
+  });
   const translationCommandDependencies = createTranslationCommandDependencies({
-    translationRepository: Object.prototype.hasOwnProperty.call(options, 'translationRepository')
-      ? translationRepository
-      : createTranslationRepositoryAdapter({ sessionRepository: sessionReadDependencies.sessionRepository }),
+    translationRepository: executionEventTranslationRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
@@ -323,6 +335,7 @@ export function createApplicationDependencies(options = {}) {
     ...sessionReadDependencies,
     ...translationCommandDependencies,
     translationExecutionMetrics: resolvedTranslationExecutionMetrics,
+    executionEventBroadcaster: resolvedExecutionEventBroadcaster,
     translationApplicationService: resolvedTranslationApplicationService,
     translationCommandController,
     translationHistoryQueryService,

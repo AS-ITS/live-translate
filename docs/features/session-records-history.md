@@ -541,3 +541,11 @@ not call the real Gemini API.
 - Storage decision is deferred.
 - Capability boundary is clear.
 - No production code is changed by this specification.
+
+## Execution status synchronization
+
+History detail and the re-translation workflow subscribe to the authenticated
+per-Session execution WebSocket when available. They merge snapshots by
+execution ID, refetch the REST read model after reconnect, and fall back to the
+existing two-second polling interval after repeated disconnects. Cleanup occurs
+when detail closes, the hash page changes, or the active Session changes.

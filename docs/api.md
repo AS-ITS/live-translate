@@ -1,5 +1,24 @@
 # Live Translate API and Events
 
+## Authenticated execution WebSocket
+
+`WS /api/sessions/:sessionId/execution-events` streams execution status for one
+Session. The first message must be
+`{"type":"auth","token":"<DEMO_ACCESS_TOKEN>"}`; invalid or missing
+authentication closes the connection. The token is never placed in the URL.
+
+Messages are safe snapshots containing no stack traces, API keys, ephemeral
+tokens, or unsaved provider data. Each Session has a monotonically increasing
+`sequence` in the current process:
+
+```json
+{"type":"execution.snapshot","sequence":12,"sessionId":"session-1","execution":{"id":"execution-2","requestId":"request-1","translationRequestId":"request-1","status":"queued","targetLanguageCode":"ja","startedAt":null,"createdAt":"2026-08-10T00:00:00.000Z","providerAttemptStatus":"not_started","providerAttemptedAt":null,"providerCompletedAt":null,"completedAt":null,"failureInfo":null}}
+```
+
+Events are not replayed after reconnect. Clients refetch the authenticated REST
+read model, then subscribe again. The frontend reconnects with backoff and
+falls back to the existing two-second polling interval after repeated failures.
+
 ## Dead-letter queue administration
 
 When durable translation queue storage is enabled, the shared Access Token

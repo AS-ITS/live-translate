@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added authenticated per-Session WebSocket execution status snapshots with
+  reconnect, REST refetch, and polling fallback behavior.
+
 - Added retry lineage visibility to History detail. Executions sharing the
   same translation request are grouped into a chronological timeline, with
   existing failed-execution retry controls preserved and no API contract or

@@ -18,6 +18,10 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
+Execution status push is now available through a process-local authenticated
+WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay
+remain deferred.
+
 DLQ inspection and single-item replay API is completed as a backend-only
 follow-up. Authenticated operators can list the full file-backed DLQ and create
 new queued executions without changing original failed records.

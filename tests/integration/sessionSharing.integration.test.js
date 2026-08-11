@@ -33,9 +33,10 @@ test('Recorder share claims one backend lease while Viewer remains read-only', a
     const viewer = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, {});
     const recorder = await request(server, 'POST', `/api/sessions/${created.body.session.id}/shares`, { role: 'recorder' });
     assert.equal(recorder.body.share.role, 'recorder');
+    assert.match(recorder.body.recorderCodeUrl, /^#record\?code=/);
     const denied = await request(server, 'POST', `/api/shared-sessions/${viewer.body.share.token}/recorder-lease`, {});
     assert.equal(denied.status, 403);
-    const lease = await request(server, 'POST', `/api/shared-sessions/${recorder.body.share.token}/recorder-lease`, {});
+    const lease = await request(server, 'POST', `/api/shared-sessions/code/${encodeURIComponent(recorder.body.share.shortCode)}/recorder-lease`, {});
     assert.equal(lease.status, 200);
     const duplicate = await request(server, 'POST', `/api/shared-sessions/${recorder.body.share.token}/recorder-lease`, {});
     assert.equal(duplicate.status, 409);

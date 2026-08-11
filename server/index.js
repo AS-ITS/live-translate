@@ -797,8 +797,7 @@ async function handleRequestWithSessionReadController(
   if (isRecorderLeasePath(req.method, path)) {
     try {
       if (!recorderLeaseService) throw createHttpError('recorder_lease_invalid');
-      const token = decodeRecorderToken(path);
-      const share = await sessionShareService.resolveShare(token);
+      const share = await resolveRecorderShare(path, sessionShareService);
       if (!share || share.role !== 'recorder') throw createHttpError('recorder_forbidden');
       const body = req.method === 'POST' ? await readJson(req) : {};
       let lease;
@@ -1669,14 +1668,23 @@ function validateRecorderSnapshot(existingSession, body) {
 }
 
 function isRecorderLeasePath(method, path) {
-  return (method === 'POST' && /^\/api\/shared-sessions\/[^/]+\/recorder-lease(?:\/heartbeat)?$/.test(path)) ||
-    (method === 'DELETE' && /^\/api\/shared-sessions\/[^/]+\/recorder-lease$/.test(path));
+  return (method === 'POST' && /^\/api\/shared-sessions\/(?:code\/)?[^/]+\/recorder-lease(?:\/heartbeat)?$/.test(path)) ||
+    (method === 'DELETE' && /^\/api\/shared-sessions\/(?:code\/)?[^/]+\/recorder-lease$/.test(path));
 }
 
 function decodeRecorderToken(path) {
   const match = path.match(/^\/api\/shared-sessions\/([^/]+)\/recorder-lease/);
   if (!match) throw createHttpError('invalid_request');
   return decodeURIComponent(match[1]);
+}
+
+async function resolveRecorderShare(path, sessionShareService) {
+  if (path.startsWith('/api/shared-sessions/code/')) {
+    const match = path.match(/^\/api\/shared-sessions\/code\/([^/]+)\/recorder-lease/);
+    if (!match) throw createHttpError('invalid_request');
+    return sessionShareService.resolveCode(decodeURIComponent(match[1]));
+  }
+  return sessionShareService.resolveShare(decodeRecorderToken(path));
 }
 
 function isSavedTranscriptRetranslationRoute(method, path) {

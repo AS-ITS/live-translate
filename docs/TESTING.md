@@ -317,4 +317,6 @@ wrapping as export input.
 
 Use mocked request contexts to verify Recorder share role migration, lease
 claim/heartbeat/release, duplicate claim (`409 recorder_already_active`),
-expiry, and fence-token rejection. Do not call Gemini or run a full benchmark.
+expiry, hash-only grant expiry/revocation, Recorder live-token authorization,
+snapshot/audio write authorization, and fence-token rejection. Do not call
+Gemini or run a full benchmark.

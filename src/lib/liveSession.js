@@ -37,7 +37,8 @@ export class LiveTranslateSession {
     sessionId = null,
     segmentId = null,
     sessionClock = createDefaultSessionClock(),
-    onCueEvent
+    onCueEvent,
+    authorizationHeaders = {}
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
@@ -59,6 +60,7 @@ export class LiveTranslateSession {
     this.segmentId = segmentId;
     this.sessionClock = sessionClock;
     this.onCueEvent = onCueEvent;
+    this.authorizationHeaders = { ...authorizationHeaders };
     this.eventSequence = 0;
     this.audioContext = null;
     this.mediaStream = null;
@@ -93,8 +95,9 @@ export class LiveTranslateSession {
 
     const tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
       body: JSON.stringify({
+        ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage

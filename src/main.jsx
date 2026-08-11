@@ -2993,8 +2993,13 @@ function WatchPage({ token, code }) {
 function RecorderPage({ token }) {
   const [detail, setDetail] = useState(null);
   const [lease, setLease] = useState(null);
+  const [recorderGrant, setRecorderGrant] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [transcript, setTranscript] = useState({ source: [], translation: [] });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const liveSessionRef = useRef(null);
+  const heartbeatRef = useRef(null);
   useEffect(() => {
     if (!token) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
     fetch(`/api/shared-sessions/${encodeURIComponent(token)}`).then(async (response) => {
@@ -3010,14 +3015,83 @@ function RecorderPage({ token }) {
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message || '無法取得錄音控制權。');
       setLease(body.lease);
+      setRecorderGrant(body.recorderGrant || '');
     } catch (value) { setError(value.message); }
   }
+  const recorderHeaders = () => ({
+    'X-Recorder-Token': token,
+    'X-Recorder-Grant': recorderGrant,
+    'X-Recorder-Lease-Id': lease?.leaseId || '',
+    'X-Recorder-Fence-Token': String(lease?.fenceToken || '')
+  });
+  async function syncSnapshot(status = detail?.session?.status || 'active') {
+    if (!detail?.session?.id || !lease) return;
+    const items = ['source', 'translation'].flatMap((stream) => transcript[stream].map((text, index) => ({
+      id: `${detail.session.id}:recorder:${stream}:${index + 1}`,
+      sessionId: detail.session.id,
+      stream,
+      status: 'final',
+      text,
+      sequence: index + 1,
+      startedAt: Date.now(),
+      finalizedAt: Date.now()
+    })));
+    const response = await fetch(`/api/sessions/${encodeURIComponent(detail.session.id)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json', ...recorderHeaders() },
+      body: JSON.stringify({ session: { ...detail.session, id: detail.session.id, status, sourceLanguageCode: detail.session.sourceLanguageCode, targetLanguageCode: detail.session.targetLanguageCode }, transcriptItems: items })
+    });
+    if (!response.ok) throw new Error((await response.json().catch(() => null))?.error?.message || '同步錄音內容失敗。');
+  }
+  async function startRecording() {
+    setError('');
+    try {
+      const { LiveTranslateSession } = await import('./lib/liveSession.js');
+      const session = new LiveTranslateSession({
+        sessionId: detail.session.id,
+        targetLanguageCode: detail.session.targetLanguageCode,
+        sourceLanguageCode: detail.session.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE,
+        echoTargetLanguage: true,
+        authorizationHeaders: recorderHeaders(),
+        onInputTranscript: (item) => setTranscript((current) => ({ ...current, source: [...current.source, item.text] })),
+        onOutputTranscript: (item) => setTranscript((current) => ({ ...current, translation: [...current.translation, item.text] }))
+      });
+      liveSessionRef.current = session;
+      await session.start();
+      setRecording(true);
+      await syncSnapshot('active');
+    } catch (value) { setError(value.message || '無法開始錄音。'); await liveSessionRef.current?.cleanup?.({ closeSession: true }); liveSessionRef.current = null; }
+  }
+  async function stopRecording() {
+    setError('');
+    try {
+      await liveSessionRef.current?.cleanup?.({ closeSession: true });
+      liveSessionRef.current = null;
+      setRecording(false);
+      await syncSnapshot('stopped');
+      await fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken }) });
+      setLease(null);
+    } catch (value) { setError(value.message || '停止錄音時同步失敗。'); }
+  }
+  useEffect(() => {
+    if (!lease || !recorderGrant) return undefined;
+    heartbeatRef.current = window.setInterval(async () => {
+      const response = await fetch(`/api/shared-sessions/${encodeURIComponent(token)}/recorder-lease/heartbeat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken, recorderGrant }) });
+      if (!response.ok) { setError('錄音控制權已失效，請重新取得錄音控制權。'); await liveSessionRef.current?.cleanup?.({ closeSession: true }); setRecording(false); return; }
+      const body = await response.json();
+      setLease(body.lease); setRecorderGrant(body.recorderGrant || recorderGrant);
+    }, 3000);
+    return () => window.clearInterval(heartbeatRef.current);
+  }, [lease?.leaseId, lease?.fenceToken, recorderGrant, token]);
+  useEffect(() => () => { void liveSessionRef.current?.cleanup?.({ closeSession: true }); }, []);
   return <main className="app-shell watch-page">
     <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
     {loading ? <p className="history-empty">正在載入會議…</p> : null}
     {error ? <p className="error-message" role="alert">{error}</p> : null}
-    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>開始錄音</button> : null}
-    {lease ? <p className="device-note">已取得本 Session 的錄音 lease。Live 錄音串流整合將沿用此 lease 與 fence token。</p> : null}
+    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>取得錄音控制權</button> : null}
+    {lease && !recording ? <button className="button primary" type="button" onClick={startRecording}>開始錄音</button> : null}
+    {recording ? <button className="button danger-button" type="button" onClick={stopRecording}>停止錄音</button> : null}
+    {lease ? <p className="device-note">{recording ? '正在錄音並同步到此 Session。' : '已取得錄音控制權，開始前才會要求麥克風權限。'}</p> : null}
+    {recording ? <section className="transcript-panel" aria-label="Recorder transcript"><div className="transcript-columns"><div><h2>原文</h2>{transcript.source.map((item, index) => <p key={`source-${index}`}>{item}</p>)}</div><div><h2>翻譯</h2>{transcript.translation.map((item, index) => <p key={`translation-${index}`}>{item}</p>)}</div></div></section> : null}
   </main>;
 }
 

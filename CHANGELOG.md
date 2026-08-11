@@ -1,5 +1,10 @@
 # Changelog
 
+- #21 Recorder flow now issues short-lived hash-only grants after lease claim,
+  authorizes Recorder live-token, snapshot, and audio writes with lease/fence
+  checks, supports heartbeat/stop lifecycle in the Recorder page, and keeps
+  Recorder audio downloads restricted.
+
 - Added Viewer/Recorder share capability roles and a file-backed, fenced
   recorder lease API for independent Session recording.
 

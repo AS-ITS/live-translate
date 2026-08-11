@@ -12,6 +12,8 @@ import { createApplicationDependencies, createProductionApplicationDependencies 
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
+import { createRecorderGrantService } from '../src/application/recorderGrantService.js';
+import { authorizeRecorderRequest, hasRecorderHeaders } from '../src/application/recorderAuthorization.js';
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
 import { resolveSavedRetranslationModel } from '../src/infrastructure/geminiSavedTranscriptTranslationComposition.js';
@@ -62,6 +64,8 @@ const ERROR_RESPONSES = {
   recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
   recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
   recorder_forbidden: { status: 403, message: 'Recorder capability is required.' },
+  recorder_grant_invalid: { status: 409, message: 'Recorder grant is invalid or expired.' },
+  recorder_session_mismatch: { status: 403, message: 'Recorder capability does not belong to this Session.' },
   saved_transcript_retranslation_unavailable: {
     status: 503,
     message: 'Saved transcript re-translation is not configured.'
@@ -514,6 +518,7 @@ export function createRequestHandler(options = {}) {
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
     sessionShareService = createSessionShareService(),
     recorderLeaseService,
+    recorderGrantService = createRecorderGrantService(),
     sessionEventBroadcaster = createSessionEventBroadcaster(),
     executionEventBroadcaster,
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
@@ -549,6 +554,7 @@ export function createRequestHandler(options = {}) {
       liveTokenCreator,
       sessionShareService,
       recorderLeaseService,
+      recorderGrantService,
       sessionEventBroadcaster,
       sessionSnapshotMaxBytes,
       meetingCheckpointMaxBytes,
@@ -565,7 +571,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -642,7 +648,7 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
-  if (path.startsWith('/api/') && !isPublicApiPath(req.method, path)) {
+  if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       accessControl.validateRequest(req);
@@ -717,7 +723,12 @@ async function handleRequestWithSessionReadController(
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord) throw createHttpError('session_not_found');
       const body = await readJson(req);
-      const share = await sessionShareService.createShare(sessionId, { role: body?.role || 'viewer', expiresAt: body?.expiresAt ?? null });
+      const role = body?.role || 'viewer';
+      const expiresAt = role === 'recorder' && body?.expiresAt === undefined
+        ? Date.now() + 30 * 60 * 1000
+        : body?.expiresAt ?? null;
+      if (role === 'recorder' && !Number.isFinite(expiresAt)) throw createHttpError('invalid_request');
+      const share = await sessionShareService.createShare(sessionId, { role, expiresAt });
       statusCode = 201;
       sendJson(res, statusCode, {
         share,
@@ -788,8 +799,17 @@ async function handleRequestWithSessionReadController(
       let lease;
       if (path.endsWith('/recorder-lease') && req.method === 'POST') {
         lease = await recorderLeaseService.claim(share.sessionId);
+        const issued = recorderGrantService.issue({ sessionId: share.sessionId, shareId: share.id, leaseId: lease.leaseId, fenceToken: lease.fenceToken });
+        const detail = await sessionReadController.getSession(share.sessionId);
+        sendJson(res, 200, { session: publicViewerDetail(detail), capability: { role: 'recorder', sessionId: share.sessionId, expiresAt: share.expiresAt }, recorderGrant: issued.grant, grantExpiresAt: issued.expiresAt, lease }, requestId);
+        return;
       } else if (path.endsWith('/heartbeat')) {
         lease = await recorderLeaseService.heartbeat(share.sessionId, body.leaseId, body.fenceToken);
+        const refreshed = recorderGrantService.refresh(body.recorderGrant || req.headers?.['x-recorder-grant'], { leaseId: lease.leaseId, fenceToken: lease.fenceToken });
+        if (!refreshed) throw createHttpError('recorder_grant_invalid');
+        const detail = await sessionReadController.getSession(share.sessionId);
+        sendJson(res, 200, { session: publicViewerDetail(detail), capability: { role: 'recorder', sessionId: share.sessionId, expiresAt: share.expiresAt }, grantExpiresAt: refreshed.expiresAt, lease }, requestId);
+        return;
       } else {
         await recorderLeaseService.release(share.sessionId, body.leaseId, body.fenceToken);
         lease = null;
@@ -1074,6 +1094,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'POST' && isSessionAudioPath(path)) {
     try {
       const { sessionId, kind } = parseSessionAudioPath(path);
+      await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
       if (req.headers?.['content-type']?.split(';')[0] !== 'audio/wav') throw createHttpError('invalid_request');
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord) {
@@ -1111,6 +1132,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'POST' && isSessionAudioSegmentPath(path)) {
     try {
       const { sessionId, kind, segmentIndex } = parseSessionAudioSegmentPath(path);
+      await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
       if (req.headers?.['content-type']?.split(';')[0] !== 'audio/wav') throw createHttpError('invalid_request');
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord) {
@@ -1166,6 +1188,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && isSessionAudioPath(path)) {
     try {
       const { sessionId, kind } = parseSessionAudioPath(path);
+      if (hasRecorderHeaders(req)) throw createHttpError('recorder_forbidden');
       const detail = await sessionRepository.getSessionRecord(sessionId);
       const metadata = detail?.sessionRecord?.audioArtifacts?.[kind];
       if (!metadata) {
@@ -1256,6 +1279,7 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'PUT' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
     try {
       const sessionId = decodeURIComponent(path.slice('/api/sessions/'.length));
+      await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
       const body = await readJson(req, { maxBytes: sessionSnapshotMaxBytes });
       if (body?.session?.id !== sessionId) throw createHttpError('invalid_request');
       const result = await createSessionSnapshotSyncService({
@@ -1484,8 +1508,20 @@ async function handleRequestWithSessionReadController(
     enforceRateLimit(clientIp);
 
     const body = await readJson(req);
+    let tokenRequest = body;
+    if (hasRecorderHeaders(req)) {
+      const sessionId = body?.sessionId;
+      const auth = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
+      const detail = await sessionReadController.getSession(sessionId);
+      const session = detail?.sessionRecord || detail?.session;
+      if (!session) throw createHttpError('session_not_found');
+      if (body.targetLanguageCode && body.targetLanguageCode !== session.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
+      if (body.sourceLanguageCode && body.sourceLanguageCode !== session.sourceLanguageCode) throw createHttpError('recorder_session_mismatch');
+      tokenRequest = { ...body, targetLanguageCode: session.targetLanguageCode, sourceLanguageCode: session.sourceLanguageCode };
+      void auth;
+    }
     targetLanguageCode = body.targetLanguageCode || 'en';
-    const token = await liveTokenCreator(body);
+    const token = await liveTokenCreator(tokenRequest);
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);
     logEvent({
@@ -1574,6 +1610,26 @@ function isPublicApiPath(method, path) {
     isSharedSessionDetailPath(path) ||
     isSharedSessionEventsPath(path)
   )) || isRecorderLeasePath(method, path);
+}
+
+function isRecorderAuthorizedPath(method, path, req) {
+  if (!hasRecorderHeaders(req)) return false;
+  if (method === 'POST' && path === '/api/live-token') return true;
+  if (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) return true;
+  if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
+  if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;
+  return false;
+}
+
+async function authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService }) {
+  if (!hasRecorderHeaders(req)) return null;
+  return authorizeRecorderRequest({
+    request: req,
+    sessionId,
+    sessionShareService,
+    recorderGrantService,
+    recorderLeaseService
+  });
 }
 
 function isRecorderLeasePath(method, path) {

@@ -7,14 +7,19 @@ records remain Viewer shares. Recorder shares claim a backend-managed,
 file-backed lease and cannot modify Session settings or manage shares.
 
 Recorder operations use the opaque token at `/recorder-lease` and
-`/recorder-lease/heartbeat`; release uses `DELETE /recorder-lease`. Lease
-responses include a `fenceToken` so stale Recorders cannot renew a newer lease.
+`/recorder-lease/heartbeat`; release uses `DELETE /recorder-lease`. A claim
+also returns a short-lived hash-only recorder grant. Recorder writes must send
+the share token, grant, lease ID, and fence token; all four are checked against
+the current Session lease. Lease responses include a `fenceToken` so stale
+Recorders cannot renew or write through a newer lease.
 
 ## Status
 
 Implemented: Session creation before Gemini startup, Session lifecycle
 snapshot syncing, opaque share tokens, read-only SSE viewing, and read-only
-Session viewing across browser tabs.
+Session viewing across browser tabs. The Recorder page can claim a lease,
+request the existing direct Gemini Live connection, sync snapshots, heartbeat,
+and stop with a terminal snapshot.
 
 ## Current Contract
 

@@ -1170,7 +1170,7 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
-  for (let index = 0; index < 12; index += 1) {
+  for (let index = 0; index < 20; index += 1) {
     await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 250 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
     await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(index + 2);
@@ -1637,29 +1637,31 @@ test('unpaired cumulative translation stays hidden until its source arrives', as
   });
 });
 
-test('page scroll stops follow-latest until the user returns to the latest subtitle', async ({ page }) => {
+test('cue list scroll stops follow-latest until the user returns to the latest subtitle', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
-  for (let index = 0; index < 5; index += 1) {
-    await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`, { waitMs: 1800 });
+  for (let index = 0; index < 20; index += 1) {
+    await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`, { waitMs: 800 });
   }
 
-  await expect(cueList(page)).toHaveCSS('overflow-y', 'visible');
-  await expect(cueList(page)).toHaveCSS('max-height', 'none');
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page.evaluate(() => window.dispatchEvent(new Event('scroll')));
+  await expect(cueList(page)).toHaveCSS('overflow-y', 'auto');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBe(await page.evaluate(() => window.innerHeight));
+  await page.waitForTimeout(1000);
+  await cueList(page).hover();
+  await page.mouse.wheel(0, -1000);
+  await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBe(0);
   await expect(page.getByTestId('follow-latest-button')).toBeVisible();
 
-  const scrollTopBeforeNewCue = await page.evaluate(() => window.scrollY);
+  const scrollTopBeforeNewCue = await cueList(page).evaluate((list) => list.scrollTop);
   await emitFinalTranscript(page, 'scroll source newest', 'scroll translation newest', { waitMs: 1800 });
-  await expect(finalCueRows(page)).toHaveCount(6);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(scrollTopBeforeNewCue);
+  await expect(finalCueRows(page)).toHaveCount(21);
+  await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBe(scrollTopBeforeNewCue);
 
   await page.getByTestId('follow-latest-button').click();
   await expect(page.getByTestId('follow-latest-button')).toHaveCount(0);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(scrollTopBeforeNewCue);
+  await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBeGreaterThan(scrollTopBeforeNewCue);
 });
 
 test('paired Cue auto-finalizes after idle when a provider boundary is absent', async ({ page }) => {

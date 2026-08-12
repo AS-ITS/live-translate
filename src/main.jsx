@@ -3693,10 +3693,9 @@ function GlossaryActionsCell({ context, data }) {
   );
 }
 
-function isPageAtLatestCuePosition(panel) {
-  if (!panel || typeof window === 'undefined') return false;
-  const distanceFromViewportBottom = window.innerHeight - panel.getBoundingClientRect().bottom;
-  return Math.abs(distanceFromViewportBottom) <= CUE_PAGE_FOLLOW_THRESHOLD_PX;
+function isCueListAtLatestPosition(list) {
+  if (!list) return false;
+  return list.scrollHeight - list.clientHeight - list.scrollTop <= CUE_PAGE_FOLLOW_THRESHOLD_PX;
 }
 
 function LiveCuePanel({
@@ -3714,36 +3713,35 @@ function LiveCuePanel({
   onCopyTranslation
 }) {
   const panelRef = useRef(null);
+  const cueListRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
   const hasContent = cues.length > 0 || Boolean(polishedArticle?.text);
 
   useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return undefined;
+    const list = cueListRef.current;
+    if (!list) return undefined;
 
     const updateFollowState = () => {
-      setIsFollowingLatest(isPageAtLatestCuePosition(panel));
+      setIsFollowingLatest(isCueListAtLatestPosition(list));
     };
 
     updateFollowState();
-    window.addEventListener('scroll', updateFollowState, { passive: true });
     window.addEventListener('resize', updateFollowState);
     return () => {
-      window.removeEventListener('scroll', updateFollowState);
       window.removeEventListener('resize', updateFollowState);
     };
   }, []);
 
   useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel || !isFollowingLatest || cues.length === 0) return;
-    panel.scrollIntoView({ block: 'end', behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
+    const list = cueListRef.current;
+    if (!list || !isFollowingLatest || cues.length === 0) return;
+    list.scrollTo({ top: list.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
 
   function returnToLatest() {
-    const panel = panelRef.current;
-    if (panel) panel.scrollIntoView({ block: 'end', behavior: 'smooth' });
+    const list = cueListRef.current;
+    if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
     setIsFollowingLatest(true);
   }
 

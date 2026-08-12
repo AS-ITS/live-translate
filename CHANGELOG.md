@@ -28,6 +28,10 @@
 
 ## Unreleased
 
+- Added guarded Meeting deletion from Meeting Management. Only unstarted
+  `created` Meetings can be deleted; their draft Segments and Recorder shares
+  are removed together, while started or terminal Meetings are protected.
+
 - Added Meeting Management: creators can configure a Meeting name, languages,
   and glossary before generating a Recorder share link; shared recording only
   activates the Meeting and creates a Session after explicit start.

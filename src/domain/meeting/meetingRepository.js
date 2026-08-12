@@ -2,6 +2,7 @@ export const MEETING_REPOSITORY_METHODS = Object.freeze([
   'createMeeting',
   'getMeeting',
   'updateMeeting',
+  'deleteMeeting',
   'listMeetings',
   'createMeetingSegment',
   'getMeetingSegment',

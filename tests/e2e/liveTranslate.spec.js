@@ -3258,6 +3258,11 @@ test('meeting management uses the live workspace layout and preserves create flo
       return;
     }
 
+    if (request.method() === 'DELETE' && url.pathname === '/api/meetings/meeting-created') {
+      await route.fulfill({ status: 204 });
+      return;
+    }
+
     await route.fallback();
   });
   await page.route('**/api/glossary', async (route) => {
@@ -3329,4 +3334,11 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(page.locator('.meeting-management-grid > .control-panel')).toHaveCount(2);
   const cardWidths = await page.locator('.meeting-management-grid > .control-panel').evaluateAll((cards) => cards.map((card) => Math.round(card.getBoundingClientRect().width)));
   expect(cardWidths[0]).toBe(cardWidths[1]);
+
+  await page.getByRole('button', { name: '返回會議清單' }).click();
+  page.once('dialog', (dialog) => dialog.accept());
+  const createdMeetingRow = page.getByRole('row').filter({ has: page.getByText('產品會議', { exact: true }) });
+  await createdMeetingRow.getByRole('button', { name: '刪除' }).click();
+  await expect(createdMeetingRow).toHaveCount(0);
+  await expect(page.getByRole('status')).toHaveText('會議已刪除。');
 });

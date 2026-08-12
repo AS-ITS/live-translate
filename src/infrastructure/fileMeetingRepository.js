@@ -47,6 +47,17 @@ export function createFileMeetingRepository({ filePath, fileSystem } = {}) {
       });
     },
 
+    async deleteMeeting(meetingId) {
+      return mutate(async (storage) => {
+        const index = storage.meetings.findIndex((stored) => stored.id === meetingId);
+        if (index === -1) return null;
+
+        const [deleted] = storage.meetings.splice(index, 1);
+        delete storage.segments[meetingId];
+        return new Meeting(deleted);
+      });
+    },
+
     async listMeetings() {
       const storage = await readCachedStorage();
       return storage.meetings.map((meeting) => new Meeting(meeting));

@@ -31,6 +31,15 @@ export function createMemoryMeetingRepository() {
       return new Meeting(entity);
     },
 
+    deleteMeeting(meetingId) {
+      const meeting = meetings.get(meetingId);
+      if (!meeting) return null;
+
+      meetings.delete(meetingId);
+      segments.delete(meetingId);
+      return new Meeting(meeting);
+    },
+
     listMeetings() {
       return Array.from(meetings.values(), (meeting) => new Meeting(meeting));
     },

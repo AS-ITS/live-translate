@@ -79,6 +79,7 @@ const ERROR_RESPONSES = {
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
+  meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
   meeting_share_invalid: { status: 409, message: 'Meeting share is not available for recording.' },
@@ -960,6 +961,26 @@ async function handleRequestWithSessionReadController(
         res.writeHead(statusCode, { 'X-Request-Id': requestId });
         res.end();
       }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && isMeetingDetailPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId } = parseMeetingDetailPath(path);
+      const result = await meetingCheckpointService.deleteMeeting({ meetingId });
+      if (sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function') {
+        await sessionShareService.revokeMeetingShares(meetingId);
+      }
+      statusCode = 204;
+      res.writeHead(statusCode, { 'X-Request-Id': requestId });
+      res.end();
+      return;
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;

@@ -76,6 +76,17 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       if (!share || share.sessionId !== sessionId) return false;
       shares.delete(shareId);
       return true;
+    },
+
+    revokeMeetingShares(meetingId) {
+      let revoked = 0;
+      for (const [shareId, share] of shares.entries()) {
+        if (share.resourceType === 'meeting' && share.meetingId === meetingId) {
+          shares.delete(shareId);
+          revoked += 1;
+        }
+      }
+      return revoked;
     }
   });
 }

@@ -62,6 +62,21 @@ export function createMeetingCheckpointService({
       return { meeting: updated };
     },
 
+    async deleteMeeting({ meetingId } = {}) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      if (meeting.status !== 'created') {
+        throw codedError('meeting_delete_not_allowed', 'Only meetings that have not started can be deleted.');
+      }
+      if (typeof meetingRepository.deleteMeeting !== 'function') {
+        throw codedError('meeting_checkpoint_unavailable', 'Meeting deletion is not configured.');
+      }
+
+      const deleted = await meetingRepository.deleteMeeting(normalizedMeetingId);
+      return { meeting: deleted };
+    },
+
     async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
       const meeting = await meetingRepository.getMeeting(validateRequiredString(meetingId, 'meetingId'));
       if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${meetingId}`);

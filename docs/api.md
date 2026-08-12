@@ -241,6 +241,13 @@ Updates Meeting name, source/target languages, and glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
 boundary; the current Segment keeps its settings snapshot.
 
+## `DELETE /api/meetings/:meetingId`
+
+Deletes a Meeting only when its status is `created` and recording has not
+started. The Meeting's created Segments and Recorder shares are removed with
+it. Active, completed, interrupted, or failed Meetings return `409
+meeting_delete_not_allowed`.
+
 ## `GET|POST /api/meetings/:meetingId/shares`
 
 Lists active Recorder shares or creates a Recorder share after Meeting settings

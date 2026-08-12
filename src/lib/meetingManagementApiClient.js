@@ -15,6 +15,10 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input)
       }));
     },
+    async delete(meetingId) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}`), { method: 'DELETE' });
+      await assertOk(response);
+    },
     async listShares(meetingId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares`));
       await assertOk(response);

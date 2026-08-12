@@ -56,6 +56,24 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(started.segment.liveSessionId, 'live-session-management-1');
 });
 
+test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects started meetings', async () => {
+  const handler = createHandler();
+  const draft = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true, name: '可刪除草稿' })
+  })).json();
+
+  const deleted = await request(handler, { method: 'DELETE', url: `/api/meetings/${draft.meeting.id}` });
+  assert.equal(deleted.status, 204);
+  assert.equal((await request(handler, { method: 'GET', url: `/api/meetings/${draft.meeting.id}` })).status, 404);
+
+  const active = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const rejected = await request(handler, { method: 'DELETE', url: `/api/meetings/${active.meeting.id}` });
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.json().error.code, 'meeting_delete_not_allowed');
+});
+
 test('GET /api/meetings/:meetingId/segments returns ordered segments', async () => {
   const handler = createHandler();
   const createResponse = await request(handler, { method: 'POST', url: '/api/meetings' });

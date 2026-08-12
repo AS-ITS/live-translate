@@ -289,6 +289,7 @@ input {
 .meeting-management-data-grid .ag-cell {
   padding-inline: 16px;
   line-height: 1.45;
+  white-space: nowrap;
 }
 
 .meeting-management-data-grid .ag-cell-wrapper,
@@ -308,6 +309,15 @@ input {
 
 .meeting-management-data-grid .ag-cell[col-id="meeting-actions"] {
   justify-content: flex-end;
+}
+
+.meeting-management-data-grid .meeting-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  width: 100%;
+  white-space: nowrap;
 }
 
 .meeting-management-page > .history-panel .history-item {

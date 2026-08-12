@@ -93,6 +93,14 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
         storage.shares.splice(index, 1);
         return true;
       });
+    },
+
+    async revokeMeetingShares(meetingId) {
+      return mutate((storage) => {
+        const originalLength = storage.shares.length;
+        storage.shares = storage.shares.filter((share) => !(share.resourceType === 'meeting' && share.meetingId === meetingId));
+        return originalLength - storage.shares.length;
+      });
     }
   });
 

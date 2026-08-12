@@ -37,6 +37,21 @@ test('file meeting repository persists meetings and segments across reload', asy
   assert.deepEqual(segments[0].checkpoint, { transcriptItemId: 'source-2', offsetMs: 2000 });
 });
 
+test('file meeting repository deletes a meeting and its segments across reload', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-meeting-repo-delete-'));
+  const filePath = join(directory, 'meetings.json');
+  const fs = await import('node:fs/promises');
+  const repository = createFileMeetingRepository({ filePath, fileSystem: fs });
+
+  await repository.createMeeting({ id: 'meeting-1', status: 'created', createdAt: 1000 });
+  await repository.createMeetingSegment({ id: 'segment-1', meetingId: 'meeting-1', sequence: 0, createdAt: 1000 });
+
+  assert.equal((await repository.deleteMeeting('meeting-1')).id, 'meeting-1');
+  const reloaded = createFileMeetingRepository({ filePath, fileSystem: fs });
+  assert.equal(await reloaded.getMeeting('meeting-1'), null);
+  await assert.rejects(reloaded.listMeetingSegments('meeting-1'), /Meeting not found/);
+});
+
 test('file meeting repository rejects invalid storage shape', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-meeting-repo-'));
   const filePath = join(directory, 'meetings.json');

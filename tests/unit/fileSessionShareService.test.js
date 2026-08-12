@@ -50,6 +50,19 @@ test('file session share service serializes concurrent mutations without losing 
   assert.equal((await service.listShares('session-1')).length, 3);
 });
 
+test('file session share service revokes all draft Meeting shares', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-share-service-meeting-'));
+  const filePath = join(directory, 'shares.json');
+  const fs = await import('node:fs/promises');
+  const service = createFileSessionShareService({ filePath, fileSystem: fs, clock: () => 1000 });
+
+  await service.createMeetingShare('meeting-1', { role: 'recorder' });
+  await service.createMeetingShare('meeting-2', { role: 'recorder' });
+  assert.equal(await service.revokeMeetingShares('meeting-1'), 1);
+  assert.equal((await service.listShares('meeting-1')).length, 0);
+  assert.equal((await service.listShares('meeting-2')).length, 1);
+});
+
 test('file session share service rejects invalid storage', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-share-service-'));
   const filePath = join(directory, 'shares.json');

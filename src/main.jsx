@@ -4295,48 +4295,89 @@ function MeetingManagementPage({ onOpenLive }) {
     }
   }
 
+  async function deleteMeeting(meeting) {
+    if (!meeting?.id || meeting.status !== 'created') return;
+    if (!window.confirm(`確定要刪除「${meeting.name || meeting.id}」嗎？此操作無法復原。`)) return;
+
+    setError('');
+    try {
+      await managementClientRef.current.delete(meeting.id);
+      setMeetings((current) => current.filter((item) => item.id !== meeting.id));
+      setNotice('會議已刪除。');
+    } catch (requestError) {
+      setError(requestError?.status === 409
+        ? '只有尚未開始的會議可以刪除。'
+        : '無法刪除會議。');
+    }
+  }
+
   const meetingColumnDefs = useMemo(() => [
     {
       headerName: '會議名稱',
       colId: 'meeting-name',
       minWidth: 180,
-      flex: 1,
+      flex: 1.5,
+      wrapText: false,
+      autoHeight: false,
       valueGetter: ({ data }) => data?.name || data?.id || '未命名會議',
       cellRenderer: ({ data }) => <strong className="meeting-name-cell">{data?.name || data?.id || '未命名會議'}</strong>
     },
     {
       headerName: '狀態',
       colId: 'meeting-status',
-      width: 110,
+      minWidth: 110,
+      flex: 0.85,
+      wrapText: false,
+      autoHeight: false,
       valueGetter: ({ data }) => data?.status || '',
       cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingStatusLabel(data?.status)}</span>
     },
     {
       headerName: '主要輸入語言',
       colId: 'source-language',
-      width: 150,
+      minWidth: 140,
+      flex: 1.1,
+      wrapText: false,
+      autoHeight: false,
       valueGetter: ({ data }) => targetLanguageLabelFor(data?.sourceLanguageCode) || data?.sourceLanguageCode || '未設定'
     },
     {
       headerName: '目標語言',
       colId: 'target-language',
-      width: 130,
+      minWidth: 120,
+      flex: 1,
+      wrapText: false,
+      autoHeight: false,
       valueGetter: ({ data }) => targetLanguageLabelFor(data?.targetLanguageCode) || data?.targetLanguageCode || '未設定'
     },
     {
       headerName: '建立時間',
       colId: 'created-time',
-      width: 180,
+      minWidth: 180,
+      flex: 1.25,
+      wrapText: false,
+      autoHeight: false,
       valueGetter: ({ data }) => data?.createdAt || data?.startedAt || '',
       cellRenderer: ({ data }) => formatRecordTime(data?.createdAt || data?.startedAt)
     },
     {
       headerName: '操作',
       colId: 'meeting-actions',
-      width: 100,
+      minWidth: 190,
+      flex: 1.2,
+      wrapText: false,
+      autoHeight: false,
       sortable: false,
       cellRenderer: ({ data }) => (
-        <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+        <div className="meeting-actions">
+          <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+          {data?.status === 'created' ? (
+            <button className="button detail-button danger-button" type="button" onClick={() => deleteMeeting(data)} title="刪除會議">
+              <Trash2 size={16} aria-hidden="true" />
+              刪除
+            </button>
+          ) : null}
+        </div>
       )
     }
   ], []);

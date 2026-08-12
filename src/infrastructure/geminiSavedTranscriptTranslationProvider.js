@@ -28,7 +28,11 @@ export function createGeminiSavedTranscriptTranslationProvider({ client, model, 
     async translate(input) {
       assertTranslationInput(input);
 
-      const glossaryEntries = glossary === undefined ? undefined : await glossary.entriesFor(input.targetLanguageCode, { scope: 'history' });
+      const glossaryEntries = Array.isArray(input.glossaryEntries)
+        ? glossaryEntriesForTarget(input.glossaryEntries, input.targetLanguageCode)
+        : glossary === undefined
+          ? undefined
+          : await glossary.entriesFor(input.targetLanguageCode, { scope: 'history' });
       const request = buildGeminiSavedTranscriptTranslationRequest({
         input: glossaryEntries === undefined ? input : { ...input, glossaryEntries },
         model,
@@ -49,6 +53,16 @@ export function createGeminiSavedTranscriptTranslationProvider({ client, model, 
       });
     }
   });
+}
+
+function glossaryEntriesForTarget(entries, targetLanguageCode) {
+  return entries.map((entry) => ({
+    source: entry.source,
+    target: entry.target || entry.translations?.[targetLanguageCode],
+    replacementAliases: Array.isArray(entry.replacementAliases)
+      ? entry.replacementAliases
+      : entry.replacementAliases?.[targetLanguageCode] || []
+  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
 }
 
 export function buildGeminiSavedTranscriptTranslationRequest({ input, model, promptBuilder = buildDefaultGeminiSavedTranscriptTranslationPrompt }) {

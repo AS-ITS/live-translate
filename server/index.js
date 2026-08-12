@@ -699,6 +699,9 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: body?.targetLanguageCode || 'en',
         targetLanguageLabel: body?.targetLanguageLabel || null,
         sourceLanguageCode: body?.sourceLanguageCode || null,
+        ...(Object.hasOwn(body || {}, 'meetingGlossaryEntries')
+          ? { meetingGlossaryEntries: Array.isArray(body.meetingGlossaryEntries) ? body.meetingGlossaryEntries : [] }
+          : {}),
         selectedInputDeviceId: body?.selectedInputDeviceId || null,
         inputDeviceLabelSnapshot: body?.inputDeviceLabelSnapshot || null,
         status: 'created',

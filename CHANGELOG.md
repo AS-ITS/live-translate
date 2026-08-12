@@ -1512,3 +1512,6 @@ These items are intentionally deferred:
 - Added owner share management with expiry, local QR generation, short codes,
   listing, and revocation.
 - Added named Session creation and explicit single-instance start blocking.
+# Unreleased
+
+- Added meeting-scoped glossary snapshots. Users can select live glossary terms before starting a meeting; the snapshot is reused across meeting segments, reconnects, and saved transcript re-translation without following later global glossary changes.

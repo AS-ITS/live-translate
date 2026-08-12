@@ -93,6 +93,11 @@ function sessionMetadata(session) {
     sourceLanguageCode: session.sourceLanguageCode ?? null,
     meetingId: session.meetingId ?? null,
     segmentId: session.segmentId ?? null,
+    ...(Object.hasOwn(session, 'meetingGlossaryEntries')
+      ? { meetingGlossaryEntries: Array.isArray(session.meetingGlossaryEntries)
+        ? session.meetingGlossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        : [] }
+      : {}),
     selectedInputDeviceId: session.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null
   };

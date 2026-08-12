@@ -204,10 +204,21 @@ Creates one active Meeting with its first active Segment. This endpoint is the
 minimal backend entry point for checkpoint persistence; it does not start,
 stop, reconnect, or segment a Gemini Live session. The optional
 `liveSessionId` request field associates the first Segment with the frontend's
-first Gemini Live connection.
+first Gemini Live connection. `glossaryEntries` optionally stores a complete
+meeting-owned glossary snapshot; it is not merged with later global glossary
+changes.
 
 ```json
-{ "liveSessionId": "live-session-1" }
+{
+  "liveSessionId": "live-session-1",
+  "glossaryEntries": [
+    {
+      "source": "Acme",
+      "translations": { "en": "Acme", "ja": "アクメ" },
+      "replacementAliases": { "en": ["ACME"] }
+    }
+  ]
+}
 ```
 
 Returns `201 Created`:
@@ -432,6 +443,11 @@ for live output and saved retranslation output. Live glossary instructions also
 ask Gemini to use the configured terms in translated speech audio, but the
 frontend does not post-process generated audio after Gemini returns it. Source
 transcripts are not rewritten.
+
+Meeting-scoped glossary entries use the same source/translation structure but
+are stored as a snapshot on the Meeting. They are selected before starting a
+Meeting, reused by every Segment and saved retranslation for that Meeting, and
+do not change when the global glossary is edited.
 
 ## Execution Control
 
@@ -798,7 +814,8 @@ must not expose `GEMINI_API_KEY`.
 {
   "targetLanguageCode": "en",
   "sourceLanguageCode": "zh-Hant",
-  "echoTargetLanguage": true
+  "echoTargetLanguage": true,
+  "meetingId": "meeting-1"
 }
 ```
 
@@ -809,6 +826,8 @@ Fields:
   primary input-language hint for model context; it does not prevent mixed
   speech and is not sent as `translationConfig.sourceLanguageCode`.
 - `echoTargetLanguage`: Optional boolean. Defaults to `true`.
+- `meetingId`: Optional Meeting identifier. When provided, the token uses the
+  Meeting's saved glossary snapshot instead of the global live glossary.
 
 ## Response Body
 

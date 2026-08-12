@@ -162,7 +162,7 @@ export function createApplicationDependencies(options = {}) {
     ? glossaryControllerFactory({ glossary: translationGlossary })
     : glossaryController;
   const resolvedLiveTokenCreator = liveTokenCreator === undefined
-    ? (body) => createLiveToken(body, { glossary: translationGlossary })
+    ? (body) => createLiveToken(body, { glossary: translationGlossary, meetingRepository: resolvedMeetingRepository })
     : liveTokenCreator;
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository
@@ -582,7 +582,7 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionRetryErrorClassifier,
     translationExecutionMetrics,
     glossaryController,
-    liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary }),
+    liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary, meetingRepository }),
     ...resolvedProviderDependencies
   });
   const startupTranslationExecutionQueueRecovery =
@@ -1084,6 +1084,9 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
       revisionId: request.sourceTranscriptRevisionId,
       sourceTranscriptSnapshot
     },
+    glossaryEntries: Array.isArray(sourceTranscriptSnapshot.glossaryEntries)
+      ? sourceTranscriptSnapshot.glossaryEntries
+      : undefined,
     targetLanguageCode: request.targetLanguageCode,
     providerKey: execution.providerKey,
     completedAt: execution.startedAt

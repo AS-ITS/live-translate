@@ -25,6 +25,9 @@ export function createSessionRecord(input = {}, options = {}) {
     sourceLanguageCode: input.sourceLanguageCode || null,
     meetingId: input.meetingId || null,
     segmentId: input.segmentId || null,
+    ...(Object.hasOwn(input, 'meetingGlossaryEntries')
+      ? { meetingGlossaryEntries: Array.isArray(input.meetingGlossaryEntries) ? input.meetingGlossaryEntries.map(clonePlain) : [] }
+      : {}),
     ...(Object.hasOwn(input, 'segments') ? { segments: Array.isArray(input.segments) ? input.segments.map(clonePlain) : [] } : {}),
     status: input.status || 'active',
     failureReason: null,
@@ -48,6 +51,10 @@ function sanitizeAudioArtifacts(artifacts = {}) {
     }
   }
   return result;
+}
+
+function clonePlain(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
 export function updateSessionRecord(record, patch = {}, options = {}) {

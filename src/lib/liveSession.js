@@ -33,6 +33,7 @@ export class LiveTranslateSession {
     onClose,
     onConnectionFailure,
     liveGlossaryEntries = [],
+    meetingId = null,
     liveSessionId = null,
     sessionId = null,
     segmentId = null,
@@ -55,6 +56,7 @@ export class LiveTranslateSession {
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
     this.liveGlossaryEntries = liveGlossaryEntries;
+    this.meetingId = meetingId;
     this.liveSessionId = liveSessionId;
     this.sessionId = sessionId;
     this.segmentId = segmentId;
@@ -98,6 +100,7 @@ export class LiveTranslateSession {
       headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
       body: JSON.stringify({
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+        ...(this.meetingId ? { meetingId: this.meetingId } : {}),
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage

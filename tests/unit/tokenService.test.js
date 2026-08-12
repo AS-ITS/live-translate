@@ -82,6 +82,27 @@ test('createLiveToken resolves live-scoped glossary entries for token and browse
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
 });
 
+test('createLiveToken uses the meeting glossary snapshot instead of the global glossary', async () => {
+  let tokenConfig;
+  const client = { authTokens: { async create({ config }) { tokenConfig = config; return { name: 'meeting-token' }; } } };
+  const result = await createLiveToken(
+    { targetLanguageCode: 'ja', meetingId: 'meeting-1' },
+    {
+      client,
+      glossary: { entriesFor: async () => [{ source: 'global', target: '全域' }] },
+      meetingRepository: {
+        async getMeeting(id) {
+          assert.equal(id, 'meeting-1');
+          return { glossaryEntries: [{ source: 'Acme', translations: { ja: 'アクメ' }, replacementAliases: { ja: ['ACME'] } }] };
+        }
+      }
+    }
+  );
+
+  assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Acme', target: 'アクメ', replacementAliases: ['ACME'] }]);
+  assert.match(tokenConfig.liveConnectConstraints.config.systemInstruction.parts[0].text, /Acme/);
+});
+
 test('createLiveToken maps provider failures to 502', async () => {
   const client = {
     authTokens: {

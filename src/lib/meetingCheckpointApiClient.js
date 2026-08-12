@@ -5,12 +5,17 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
   fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
-    async createMeeting({ liveSessionId } = {}) {
+    async createMeeting(input = {}) {
+      const { liveSessionId, glossaryEntries = [] } = input;
       const options = { method: 'POST' };
-      if (liveSessionId !== undefined && liveSessionId !== null) {
+      if ((liveSessionId !== undefined && liveSessionId !== null) || Object.hasOwn(input, 'glossaryEntries')) {
         assertNonEmptyString(liveSessionId, 'liveSessionId');
+        if (!Array.isArray(glossaryEntries)) throw new TypeError('glossaryEntries must be an array.');
         options.headers = { 'Content-Type': 'application/json' };
-        options.body = JSON.stringify({ liveSessionId });
+        options.body = JSON.stringify({
+          ...(liveSessionId === undefined ? {} : { liveSessionId }),
+          ...(Object.hasOwn(input, 'glossaryEntries') ? { glossaryEntries } : {})
+        });
       }
 
       options.headers = { ...authorizationHeadersFor(authorizationHeaders), ...(options.headers || {}) };

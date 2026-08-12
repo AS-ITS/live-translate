@@ -15,9 +15,13 @@ export function createMeetingCheckpointService({
   if (typeof clock !== 'function') throw new TypeError('clock is required.');
 
   return Object.freeze({
-    async createMeeting({ liveSessionId = null } = {}) {
+    async createMeeting({ liveSessionId = null, glossaryEntries = [] } = {}) {
       const now = clock();
-      const meeting = await meetingRepository.createMeeting({ id: idGenerator('meeting'), createdAt: now });
+      const meeting = await meetingRepository.createMeeting({
+        id: idGenerator('meeting'),
+        createdAt: now,
+        glossaryEntries
+      });
       const activeMeeting = await meetingRepository.updateMeeting(meeting.activate(now));
       const segment = await meetingRepository.createMeetingSegment({
         id: idGenerator('segment'),

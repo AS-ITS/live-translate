@@ -29,6 +29,7 @@ export class Meeting {
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
     this.updatedAt = assertTimestamp(input.updatedAt ?? input.createdAt, 'updatedAt');
     this.failureInfo = deepClone(input.failureInfo ?? null);
+    this.glossaryEntries = normalizeGlossaryEntries(input.glossaryEntries);
 
     validateMeetingState(this);
     deepFreeze(this);
@@ -77,7 +78,8 @@ export class Meeting {
       endedAt: Object.hasOwn(patch, 'endedAt') ? patch.endedAt : this.endedAt,
       createdAt: this.createdAt,
       updatedAt: patch.updatedAt ?? patch.endedAt ?? patch.startedAt ?? this.updatedAt,
-      failureInfo: Object.hasOwn(patch, 'failureInfo') ? patch.failureInfo : this.failureInfo
+      failureInfo: Object.hasOwn(patch, 'failureInfo') ? patch.failureInfo : this.failureInfo,
+      glossaryEntries: this.glossaryEntries
     });
   }
 }
@@ -219,6 +221,32 @@ function validateMeetingState(meeting) {
   } else if (meeting.failureInfo !== null) {
     throw new RangeError(`failureInfo is not allowed for ${meeting.status} meeting`);
   }
+}
+
+function normalizeGlossaryEntries(value) {
+  if (value === undefined || value === null) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new TypeError('Meeting glossaryEntries must be an array.');
+
+  return Object.freeze(value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new TypeError(`Meeting glossary entry ${index} must be an object.`);
+    }
+    if (typeof entry.source !== 'string' || entry.source.trim() === '') {
+      throw new TypeError(`Meeting glossary entry ${index}.source must be a non-empty string.`);
+    }
+    if (typeof entry.target !== 'string' || entry.target.trim() === '') {
+      throw new TypeError(`Meeting glossary entry ${index}.target must be a non-empty string.`);
+    }
+    const replacementAliases = entry.replacementAliases === undefined ? [] : entry.replacementAliases;
+    if (!Array.isArray(replacementAliases) || replacementAliases.some((alias) => typeof alias !== 'string' || alias.trim() === '')) {
+      throw new TypeError(`Meeting glossary entry ${index}.replacementAliases must be an array of non-empty strings.`);
+    }
+    return Object.freeze({
+      source: entry.source,
+      target: entry.target,
+      replacementAliases: Object.freeze([...replacementAliases])
+    });
+  }));
 }
 
 function validateMeetingSegmentState(segment) {

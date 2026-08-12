@@ -11,6 +11,12 @@ export function normalizeTokenRequest(body = {}) {
     : DEFAULT_SOURCE_LANGUAGE_CODE;
   const echoTargetLanguage =
     typeof body.echoTargetLanguage === 'boolean' ? body.echoTargetLanguage : true;
+  const meetingId = body.meetingId === undefined ? undefined : body.meetingId;
+  if (meetingId !== undefined && (typeof meetingId !== 'string' || meetingId.trim() === '')) {
+    const error = new Error('Invalid meetingId');
+    error.status = 400;
+    throw error;
+  }
 
   if (!isSupportedLanguage(targetLanguageCode)) {
     const error = new Error('Unsupported targetLanguageCode');
@@ -24,7 +30,7 @@ export function normalizeTokenRequest(body = {}) {
     throw error;
   }
 
-  return { targetLanguageCode, sourceLanguageCode, echoTargetLanguage };
+  return { targetLanguageCode, sourceLanguageCode, echoTargetLanguage, meetingId };
 }
 
 export function buildTokenConfig({
@@ -74,11 +80,33 @@ export async function createLiveToken(body, options = {}) {
   const request = normalizeTokenRequest(body);
   const now = options.now || new Date();
   const liveTranslateModel = options.liveTranslateModel ?? resolveLiveTranslateModel(process.env);
-  const glossaryEntries = options.glossary === undefined
+  const meeting = request.meetingId && options.meetingRepository
+    ? await options.meetingRepository.getMeeting(request.meetingId)
+    : null;
+  if (request.meetingId && !meeting) {
+    const error = new Error('Meeting not found');
+    error.status = 404;
+    error.code = 'meeting_not_found';
+    throw error;
+  }
+  const glossaryEntries = meeting
+    ? meeting.glossaryEntries
+    : options.glossary === undefined
+      ? undefined
+      : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
+  const targetGlossaryEntries = glossaryEntries === undefined
     ? undefined
-    : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
+    : glossaryEntries
+      .map((entry) => ({
+        source: entry.source,
+        target: entry.target || entry.translations?.[request.targetLanguageCode],
+        replacementAliases: Array.isArray(entry.replacementAliases)
+          ? entry.replacementAliases
+          : entry.replacementAliases?.[request.targetLanguageCode] || []
+      }))
+      .filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
   const configWithGlossary = buildTokenConfig(
-    { ...request, liveTranslateModel, ...(glossaryEntries === undefined ? {} : { glossaryEntries }) },
+    { ...request, liveTranslateModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
   const client = options.client || (await createGenAiClient(process.env.GEMINI_API_KEY));
@@ -90,7 +118,7 @@ export async function createLiveToken(body, options = {}) {
       expiresAt: configWithGlossary.expireTime,
       liveConnectModel: liveTranslateModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
-      liveGlossaryEntries: glossaryEntries || []
+      liveGlossaryEntries: targetGlossaryEntries || []
     };
   } catch (cause) {
     const error = new Error('Failed to create Gemini ephemeral token');

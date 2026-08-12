@@ -95,7 +95,10 @@ function resolveCanonicalSource(detail, sessionId) {
       items,
       sourceText: text,
       ...(sourceLanguageCode === undefined ? {} : { sourceLanguageCode }),
-      sourceLanguageDetection: sourceLanguageDetection.metadata
+      sourceLanguageDetection: sourceLanguageDetection.metadata,
+      glossaryEntries: Array.isArray(detail.sessionRecord.meetingGlossaryEntries)
+        ? structuredClone(detail.sessionRecord.meetingGlossaryEntries)
+        : []
     }
   };
 }

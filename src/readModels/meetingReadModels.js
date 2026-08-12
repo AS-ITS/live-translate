@@ -33,7 +33,12 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
   const summary = mapMeetingToHistoryListItem({ meeting, segments: normalizedSegments });
 
   return {
-    meeting: summary,
+    meeting: {
+      ...summary,
+      glossaryEntries: Array.isArray(meeting?.glossaryEntries)
+        ? meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        : []
+    },
     segments: normalizedSegments.map(mapSegmentToDTO),
     timeline: normalizedSegments.map(mapSegmentToTimelineItem),
     transcriptItems,

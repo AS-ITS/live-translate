@@ -761,6 +761,73 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
   expect(requests[1].body.scope).toBe('both');
 });
 
+test('live translation opens a glossary drawer and quickly adds live terms', async ({ page }) => {
+  const requests = [];
+  let entries = [{
+    id: 'entry-live',
+    source: 'microphone',
+    translations: { en: 'Mic' },
+    scope: 'live'
+  }];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/glossary/entries') {
+      const body = JSON.parse(request.postData() || '{}');
+      requests.push(body);
+      const entry = { id: `entry-new-${entries.length + 1}`, ...body };
+      entries = [...entries, entry];
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: /字典/ })).toBeVisible();
+  await page.getByRole('button', { name: /字典/ }).click();
+
+  const drawer = page.getByRole('complementary', { name: '本次翻譯字典' });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.locator('.glossary-drawer-list')).toHaveCSS('overflow-y', 'auto');
+  await expect(drawer.getByText('microphone')).toBeVisible();
+  await drawer.getByRole('checkbox').check();
+  await expect(drawer.getByRole('checkbox')).toBeChecked();
+
+  await drawer.getByLabel('原文').fill('product name');
+  await drawer.getByLabel(/翻譯（/).fill('Product');
+  await drawer.getByRole('button', { name: '新增並套用' }).click();
+  await expect(drawer.getByText('詞條已新增並套用。')).toBeVisible();
+  await expect(drawer.getByText('product name')).toBeVisible();
+  expect(requests).toEqual([{
+    source: 'product name',
+    translations: { en: 'Product' },
+    scope: 'live'
+  }]);
+
+  await drawer.getByRole('button', { name: '前往完整字典管理' }).click();
+  await expect(page).toHaveURL(/#glossary$/);
+  await expect(glossaryPanel(page).getByText('product name → Product')).toBeVisible();
+
+  await glossaryPanel(page).getByLabel('詞條').fill('meeting room');
+  await glossaryPanel(page).getByLabel('替換成').fill('conference room');
+  await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
+  await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
+  await expect(glossaryPanel(page).getByText('meeting room → conference room')).toBeVisible();
+
+  await openLivePage(page);
+  await page.getByRole('button', { name: /字典/ }).click();
+  await expect(page.getByRole('complementary', { name: '本次翻譯字典' }).getByText('meeting room')).toBeVisible();
+
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+});
+
 test('active session is not shown while listening', async ({ page }) => {
   await page.goto('/');
 

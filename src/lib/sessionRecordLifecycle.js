@@ -13,6 +13,11 @@ export function buildSessionRecordInput(options = {}) {
     sourceLanguageCode: options.sourceLanguageCode || null,
     meetingId: options.meetingId || null,
     segmentId: options.segmentId || null,
+    ...(Object.hasOwn(options, 'meetingGlossaryEntries')
+      ? { meetingGlossaryEntries: Array.isArray(options.meetingGlossaryEntries)
+        ? options.meetingGlossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        : [] }
+      : {}),
     selectedInputDeviceId: options.selectedInputDeviceId || null,
     inputDeviceLabelSnapshot: options.inputDeviceLabelSnapshot || null
   };

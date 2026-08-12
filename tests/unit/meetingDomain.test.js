@@ -25,6 +25,15 @@ test('Meeting constructs an immutable created aggregate', () => {
   assert.equal(Object.isFrozen(meeting), true);
 });
 
+test('Meeting preserves an immutable glossary snapshot across lifecycle transitions', () => {
+  const entries = [{ source: 'Acme', target: '艾克米', replacementAliases: ['ACME'] }];
+  const meeting = new Meeting({ id: 'meeting-1', createdAt: 1000, glossaryEntries: entries });
+  entries[0].target = 'changed';
+
+  assert.deepEqual(meeting.glossaryEntries, [{ source: 'Acme', target: '艾克米', replacementAliases: ['ACME'] }]);
+  assert.deepEqual(meeting.activate(1100).glossaryEntries, meeting.glossaryEntries);
+});
+
 test('Meeting supports legal lifecycle transitions', () => {
   const created = new Meeting({ id: 'meeting-1', createdAt: 1000 });
   const active = created.activate(1100);

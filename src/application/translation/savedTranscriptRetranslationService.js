@@ -72,7 +72,10 @@ export function createSavedTranscriptRetranslationService({
           targetLanguageCode: operationInput.targetLanguageCode,
           requestId: request.id,
           sessionId: operationInput.sessionId,
-          executionId: runningExecution.id
+          executionId: runningExecution.id,
+          ...(Array.isArray(sourceTranscript.snapshot.glossaryEntries) && sourceTranscript.snapshot.glossaryEntries.length > 0
+            ? { glossaryEntries: sourceTranscript.snapshot.glossaryEntries }
+            : {})
         });
       } catch (error) {
         await maybeAwait(
@@ -150,7 +153,10 @@ function resolveSavedSourceTranscript(sessionDetail, sessionId) {
     text: textItems.map((item) => item.text).join('\n'),
     snapshot: {
       revisionId,
-      items
+      items,
+      glossaryEntries: Array.isArray(sessionDetail?.sessionRecord?.meetingGlossaryEntries)
+        ? sessionDetail.sessionRecord.meetingGlossaryEntries.map((entry) => ({ ...entry }))
+        : []
     }
   };
 }

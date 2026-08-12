@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { BookOpen, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -190,6 +190,8 @@ function App() {
   const [meetingDetailError, setMeetingDetailError] = useState('');
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
+  const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
+  const [isLiveGlossaryDrawerOpen, setIsLiveGlossaryDrawerOpen] = useState(false);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
@@ -356,6 +358,28 @@ function App() {
   useEffect(() => {
     if (page === 'dead-letter-queue') void refreshDeadLetterQueue();
   }, [page]);
+
+  useEffect(() => {
+    if (page !== 'live') return undefined;
+    let cancelled = false;
+    void createGlossaryApiClient().listEntries()
+      .then((entries) => {
+        if (!cancelled) setGlossaryEntries(entries);
+      })
+      .catch(() => {
+        // The drawer reports glossary loading failures when the user opens it.
+      });
+    return () => { cancelled = true; };
+  }, [page]);
+
+  useEffect(() => {
+    if (!isLiveGlossaryDrawerOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsLiveGlossaryDrawerOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isLiveGlossaryDrawerOpen]);
 
   useEffect(() => {
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
@@ -547,7 +571,10 @@ function App() {
       resetTranslatedAudioDownload();
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
-      const meetingCheckpoint = await createMeetingCheckpointForSession({ liveSessionId });
+      const meetingCheckpoint = await createMeetingCheckpointForSession({
+        liveSessionId,
+        glossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode)
+      });
       record = await createCurrentSessionRecord(meetingCheckpoint);
       if (!sessionControlLeaseRef.current?.tryAcquire(record.id)) {
         throw new Error('目前已有工作階段由其他頁籤控制。');
@@ -729,12 +756,16 @@ function App() {
     const session = new LiveTranslateSession({
       liveSessionId,
       sessionId: activeSessionRecordIdRef.current,
+      meetingId: activeMeetingCheckpointRef.current?.meetingId || null,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
       sessionClock: () => sessionTimeForSubtitleCues(),
       targetLanguageCode,
       sourceLanguageCode,
       echoTargetLanguage,
-      liveGlossaryEntries: liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode),
+      liveGlossaryEntries: liveGlossaryEntriesForTarget(
+        selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
+        targetLanguageCode
+      ),
       inputDeviceId: inputDeviceIdForSession,
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
@@ -1041,9 +1072,7 @@ function App() {
     const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
 
     for (const session of sessions) {
-      if (session) {
-        session.liveGlossaryEntries = liveGlossaryEntries;
-      }
+      if (session) session.liveGlossaryEntries = liveGlossaryEntries;
     }
   }
 
@@ -1323,10 +1352,10 @@ function App() {
     return `live-session-${Date.now()}-${liveSessionIdSequenceRef.current}`;
   }
 
-  async function createMeetingCheckpointForSession({ liveSessionId } = {}) {
+  async function createMeetingCheckpointForSession({ liveSessionId, glossaryEntries = [] } = {}) {
     try {
       setMeetingCheckpointStatus('syncing');
-      const result = await meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId });
+      const result = await meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId, glossaryEntries });
       const meetingCheckpoint = {
         meetingId: result.meeting.id,
         segmentId: result.segment.id
@@ -1350,6 +1379,7 @@ function App() {
       targetLanguageCode,
       targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
       sourceLanguageCode,
+      meetingGlossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
       selectedInputDeviceId: selectedInputDeviceId || null,
       inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
       });
@@ -1365,6 +1395,7 @@ function App() {
         sourceLanguageCode,
         meetingId: meetingCheckpoint?.meetingId,
         segmentId: meetingCheckpoint?.segmentId || liveSessionId,
+        meetingGlossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -2494,9 +2525,24 @@ function App() {
       <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
         <section className="control-panel">
           <div className="title-block">
-            <div className="status-pill">
-              <Radio size={16} aria-hidden="true" />
-              {statusLabel(status, statusLabelOverride)}
+            <div className="title-block-header">
+              <div className="status-pill">
+                <Radio size={16} aria-hidden="true" />
+                {statusLabel(status, statusLabelOverride)}
+              </div>
+              <button
+                className="button secondary glossary-drawer-trigger"
+                type="button"
+                onClick={() => setIsLiveGlossaryDrawerOpen(true)}
+                aria-haspopup="dialog"
+                aria-expanded={isLiveGlossaryDrawerOpen}
+              >
+                <BookOpen size={18} aria-hidden="true" />
+                字典
+                <span className="glossary-count-badge">
+                  {selectedMeetingGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
+                </span>
+              </button>
             </div>
             <p>選擇你主要說的語言與要翻譯成的語言，按下開始就能說話。</p>
           </div>
@@ -2506,7 +2552,7 @@ function App() {
               <span>工作階段名稱</span>
               <input value={sessionName} onChange={(event) => setSessionName(event.target.value)} placeholder="例如：產品會議" disabled={controlsLocked} maxLength={120} />
             </label>
-            <div className="language-controls">
+          <div className="language-controls">
               <label className="field">
                 <span>我主要說的語言</span>
                 <select
@@ -2702,6 +2748,21 @@ function App() {
         />
       </section>
 
+      <LiveGlossaryDrawer
+        open={isLiveGlossaryDrawerOpen}
+        entries={glossaryEntries}
+        targetLanguageCode={targetLanguageCode}
+        selectedEntryIds={selectedMeetingGlossaryIds}
+        disabled={controlsLocked}
+        onClose={() => setIsLiveGlossaryDrawerOpen(false)}
+        onEntriesChange={setGlossaryEntries}
+        onSelectionChange={setSelectedMeetingGlossaryIds}
+        onOpenManager={() => {
+          setIsLiveGlossaryDrawerOpen(false);
+          navigateTo('glossary');
+        }}
+      />
+
       <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
         <div className="history-header">
           <div>
@@ -2777,7 +2838,11 @@ function App() {
       </section>
 
       <section className="feature-page glossary-page" aria-labelledby="glossary-page-title" hidden={page !== 'glossary'}>
-        <GlossaryPanel titleId="glossary-page-title" onEntriesChange={setGlossaryEntries} />
+        <GlossaryPanel
+          titleId="glossary-page-title"
+          entries={glossaryEntries}
+          onEntriesChange={setGlossaryEntries}
+        />
       </section>
     </main>
   );
@@ -4666,8 +4731,146 @@ function RetranslationOutputList({ outputs, selectedOutputId, onSelect, onDelete
   );
 }
 
-function GlossaryPanel({ titleId, onEntriesChange }) {
-  const [entries, setEntries] = useState([]);
+function LiveGlossaryDrawer({
+  open,
+  entries,
+  targetLanguageCode,
+  selectedEntryIds,
+  disabled,
+  onClose,
+  onEntriesChange,
+  onSelectionChange,
+  onOpenManager
+}) {
+  const [source, setSource] = useState('');
+  const [translation, setTranslation] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const apiClientRef = useRef(createGlossaryApiClient());
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    setIsLoading(true);
+    setError('');
+    void apiClientRef.current.listEntries()
+      .then((loadedEntries) => {
+        if (!cancelled) onEntriesChange(loadedEntries);
+      })
+      .catch(() => {
+        if (!cancelled) setError('無法載入字典。請稍後再試。');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [open, onEntriesChange]);
+
+  function resetQuickAdd() {
+    setSource('');
+    setTranslation('');
+  }
+
+  async function saveQuickEntry() {
+    setIsSaving(true);
+    setStatus('');
+    setError('');
+    try {
+      const entry = await apiClientRef.current.createEntry({
+        source: source.trim(),
+        translations: { [targetLanguageCode]: translation.trim() },
+        scope: 'live'
+      });
+      onEntriesChange(mergeGlossaryEntry(entries, entry));
+      onSelectionChange((current) => [...new Set([...current, entry.id])]);
+      setStatus('詞條已新增並套用。');
+      resetQuickAdd();
+    } catch {
+      setError('無法新增詞條。請確認原文與翻譯皆已填寫。');
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  const targetEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
+  const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving && !disabled;
+
+  return (
+    <>
+      <div className={`glossary-drawer-backdrop${open ? ' is-open' : ''}`} onClick={onClose} aria-hidden="true" />
+      <aside className={`glossary-drawer${open ? ' is-open' : ''}`} aria-label="本次翻譯字典" aria-hidden={!open}>
+        <div className="glossary-drawer-header">
+          <div>
+            <p className="eyebrow">即時翻譯</p>
+            <h2>本次使用字典</h2>
+            <p>選取的詞條會套用到本次翻譯與後續分段。</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} aria-label="關閉字典" tabIndex={open ? 0 : -1}>
+            <X size={20} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className="glossary-drawer-body">
+          {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
+          {error ? <p className="error-message" role="alert">{error}</p> : null}
+          {!isLoading && targetEntries.length === 0 ? (
+            <div className="glossary-drawer-empty">
+              <BookOpen size={28} aria-hidden="true" />
+              <strong>目前沒有可用詞條</strong>
+              <p>新增常用名稱或專有名詞，讓翻譯更一致。</p>
+            </div>
+          ) : null}
+          {targetEntries.length > 0 ? (
+            <div className="glossary-drawer-list">
+              {targetEntries.map((entry) => (
+                <label className={`glossary-choice${selectedEntryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedEntryIds.includes(entry.id)}
+                    onChange={(event) => onSelectionChange((current) => event.target.checked
+                      ? [...new Set([...current, entry.id])]
+                      : current.filter((id) => id !== entry.id))}
+                    disabled={disabled}
+                    tabIndex={open ? 0 : -1}
+                  />
+                  <span>
+                    <strong>{entry.source}</strong>
+                    <small>{entry.target}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="glossary-quick-add">
+            <h3>快速新增詞條</h3>
+            <label className="field">
+              <span>原文</span>
+              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：產品名稱" disabled={disabled || isSaving} tabIndex={open ? 0 : -1} />
+            </label>
+            <label className="field">
+              <span>翻譯（{targetLanguageLabelFor(targetLanguageCode) || targetLanguageCode}）</span>
+              <input value={translation} onChange={(event) => setTranslation(event.target.value)} placeholder="例如：正式翻譯" disabled={disabled || isSaving} tabIndex={open ? 0 : -1} />
+            </label>
+            <button className="button primary" type="button" onClick={saveQuickEntry} disabled={!canSave} tabIndex={open ? 0 : -1}>
+              {isSaving ? '儲存中…' : '新增並套用'}
+            </button>
+            {status ? <p className="success-message" role="status">{status}</p> : null}
+          </div>
+        </div>
+
+        <div className="glossary-drawer-footer">
+          <button className="button secondary" type="button" onClick={onOpenManager} tabIndex={open ? 0 : -1}>前往完整字典管理</button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }) {
+  const [entries, setEntries] = useState(sharedEntries);
   const [source, setSource] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [translation, setTranslation] = useState('');
@@ -4679,6 +4882,11 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
   const [isSaving, setIsSaving] = useState(false);
   const entriesRef = useRef([]);
   const glossaryApiClientRef = useRef(createGlossaryApiClient());
+
+  useEffect(() => {
+    entriesRef.current = sharedEntries;
+    setEntries(sharedEntries);
+  }, [sharedEntries]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4725,7 +4933,7 @@ function GlossaryPanel({ titleId, onEntriesChange }) {
         : await glossaryApiClientRef.current.createEntry(payload);
       publishEntries(editingEntry
         ? entriesRef.current.map((item) => item.id === entry.id ? entry : item)
-        : [...entriesRef.current, entry]);
+        : mergeGlossaryEntry(entriesRef.current, entry));
       setStatus(editingEntry ? '字典詞條已更新。' : '字典詞條已新增。');
       resetForm();
     } catch {
@@ -5702,6 +5910,12 @@ function glossaryReplacementLabel(entry = {}) {
   return replacements.join('、') || entry.source || '未命名字典詞條';
 }
 
+function mergeGlossaryEntry(entries = [], entry) {
+  if (!entry?.id) return entries;
+  const withoutEntry = entries.filter((item) => item.id !== entry.id);
+  return [...withoutEntry, entry];
+}
+
 function glossaryLanguagesLabel(translations = {}) {
   const label = Object.entries(translations)
     .map(([languageCode]) => targetLanguageLabelFor(languageCode) || languageCode)
@@ -5722,6 +5936,7 @@ function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
   return entries
     .filter((entry) => entry?.scope === 'live' || entry?.scope === 'both')
     .map((entry) => ({
+      id: entry.id,
       source: entry.source,
       target: entry.translations?.[targetLanguageCode],
       replacementAliases: Array.isArray(entry.replacementAliases?.[targetLanguageCode])
@@ -5734,6 +5949,20 @@ function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
       typeof entry.target === 'string' &&
       entry.target.length > 0
     ));
+}
+
+function selectedMeetingGlossaryEntries(entries, selectedIds, targetLanguageCode) {
+  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+  return (Array.isArray(entries) ? entries : [])
+    .filter((entry) => selected.has(entry.id))
+    .filter((entry) => typeof entry?.source === 'string' && entry.source.trim() !== '')
+    .map((entry) => ({
+      source: entry.source,
+      translations: { ...(entry.translations || {}) },
+      replacementAliases: Object.fromEntries(
+        Object.entries(entry.replacementAliases || {}).map(([languageCode, aliases]) => [languageCode, [...aliases]])
+      )
+    }));
 }
 
 function glossaryScopeLabel(scope) {

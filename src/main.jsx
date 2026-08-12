@@ -2583,32 +2583,28 @@ function App() {
     return <RecorderPage token={recordInfo.shareToken} code={recordInfo.shareCode} />;
   }
 
-  if (page === 'meeting') {
-    return <MeetingManagementPage onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }} />;
-  }
-
   if (isReadOnlyControlView) {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
   return (
-    <main className={`app-shell ${page === 'live' ? 'live-app-shell' : ''}`}>
-      {page === 'live' ? (
+    <main className={`app-shell ${page === 'live' || page === 'meeting' ? 'live-app-shell' : ''}`}>
+      {page === 'live' || page === 'meeting' ? (
         <aside className="live-sidebar" aria-label="即時翻譯工作區導覽">
           <a className="live-sidebar-brand" href="#live" aria-label="即時翻譯首頁" onClick={(event) => navigateTo('live', event)}>
             <span className="live-sidebar-mark" aria-hidden="true"><Radio size={20} /></span>
             <h1>即時翻譯</h1>
           </a>
           <nav className="live-sidebar-navigation" aria-label="主要導覽">
-            <a href="#meeting" onClick={(event) => navigateTo('meeting', event)}><Play size={18} aria-hidden="true" />會議管理</a>
-            <a href="#live" aria-current="page" onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
+            <a href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} onClick={(event) => navigateTo('meeting', event)}><Play size={18} aria-hidden="true" />會議管理</a>
+            <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
             <a href="#history" onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
             <a href="#retranslate" onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
             <a href="#glossary" onClick={(event) => navigateTo('glossary', event)}><BookOpen size={18} aria-hidden="true" />翻譯字典</a>
           </nav>
         </aside>
       ) : null}
-      <header className="app-header" hidden={page === 'live'}>
+      <header className="app-header" hidden={page === 'live' || page === 'meeting'}>
         <div className="brand-block">
           <h1>即時翻譯</h1>
           <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
@@ -2623,6 +2619,10 @@ function App() {
       </header>
 
       {error ? <p className="error-message" role="alert">{error}</p> : null}
+
+      {page === 'meeting' ? (
+        <MeetingManagementPage onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }} />
+      ) : null}
 
       <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
         <div className="live-workspace-grid">
@@ -4171,6 +4171,7 @@ function MeetingManagementPage({ onOpenLive }) {
   const glossaryClientRef = useRef(createGlossaryApiClient());
   const [meetings, setMeetings] = useState([]);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
+  const [viewMode, setViewMode] = useState('list');
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [selectedGlossaryIds, setSelectedGlossaryIds] = useState([]);
   const [name, setName] = useState('');
@@ -4182,6 +4183,7 @@ function MeetingManagementPage({ onOpenLive }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isGlossaryDrawerOpen, setIsGlossaryDrawerOpen] = useState(false);
 
   useEffect(() => {
     Promise.all([readClientRef.current.listMeetingHistory(), glossaryClientRef.current.listEntries()])
@@ -4189,7 +4191,16 @@ function MeetingManagementPage({ onOpenLive }) {
       .catch(() => setError('無法載入會議或字典資料。'));
   }, []);
 
-  function resetForm() {
+  useEffect(() => {
+    if (!isGlossaryDrawerOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsGlossaryDrawerOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isGlossaryDrawerOpen]);
+
+  function clearMeetingForm() {
     setSelectedMeeting(null);
     setName('');
     setSourceLanguageCode(DEFAULT_SOURCE_LANGUAGE_CODE);
@@ -4198,6 +4209,17 @@ function MeetingManagementPage({ onOpenLive }) {
     setShares([]);
     setCreatedShare(null);
     setNotice('');
+    setIsGlossaryDrawerOpen(false);
+  }
+
+  function openCreateForm() {
+    clearMeetingForm();
+    setViewMode('form');
+  }
+
+  function returnToMeetingList() {
+    clearMeetingForm();
+    setViewMode('list');
   }
 
   async function selectMeeting(id) {
@@ -4213,6 +4235,7 @@ function MeetingManagementPage({ onOpenLive }) {
       setSelectedGlossaryIds(glossaryEntries.filter((entry) => (meeting?.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[meetingTargetLanguageCode] === item.target)).map((entry) => entry.id));
       setShares(await managementClientRef.current.listShares(id));
       setCreatedShare(null);
+      setViewMode('form');
     } catch {
       setError('無法載入會議設定。');
     }
@@ -4231,13 +4254,14 @@ function MeetingManagementPage({ onOpenLive }) {
     setNotice('');
     setIsSaving(true);
     try {
+      const isUpdating = Boolean(selectedMeeting?.id);
       const input = { name: name.trim() || null, sourceLanguageCode, targetLanguageCode, glossaryEntries: selectedEntries() };
-      const meeting = selectedMeeting
+      const meeting = isUpdating
         ? await managementClientRef.current.update(selectedMeeting.id, input)
         : await managementClientRef.current.create(input);
       setSelectedMeeting(meeting);
       setMeetings((current) => [meeting, ...current.filter((item) => item.id !== meeting.id)]);
-      setNotice('會議設定已儲存。');
+      setNotice(isUpdating ? '會議設定已更新。' : '會議已建立。');
     } catch {
       setError('無法儲存會議設定。');
     } finally {
@@ -4271,37 +4295,136 @@ function MeetingManagementPage({ onOpenLive }) {
     }
   }
 
+  const meetingColumnDefs = useMemo(() => [
+    {
+      headerName: '會議名稱',
+      colId: 'meeting-name',
+      minWidth: 180,
+      flex: 1,
+      valueGetter: ({ data }) => data?.name || data?.id || '未命名會議',
+      cellRenderer: ({ data }) => <strong className="meeting-name-cell">{data?.name || data?.id || '未命名會議'}</strong>
+    },
+    {
+      headerName: '狀態',
+      colId: 'meeting-status',
+      width: 110,
+      valueGetter: ({ data }) => data?.status || '',
+      cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingStatusLabel(data?.status)}</span>
+    },
+    {
+      headerName: '主要輸入語言',
+      colId: 'source-language',
+      width: 150,
+      valueGetter: ({ data }) => targetLanguageLabelFor(data?.sourceLanguageCode) || data?.sourceLanguageCode || '未設定'
+    },
+    {
+      headerName: '目標語言',
+      colId: 'target-language',
+      width: 130,
+      valueGetter: ({ data }) => targetLanguageLabelFor(data?.targetLanguageCode) || data?.targetLanguageCode || '未設定'
+    },
+    {
+      headerName: '建立時間',
+      colId: 'created-time',
+      width: 180,
+      valueGetter: ({ data }) => data?.createdAt || data?.startedAt || '',
+      cellRenderer: ({ data }) => formatRecordTime(data?.createdAt || data?.startedAt)
+    },
+    {
+      headerName: '操作',
+      colId: 'meeting-actions',
+      width: 100,
+      sortable: false,
+      cellRenderer: ({ data }) => (
+        <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+      )
+    }
+  ], []);
+
   return (
     <section className="feature-page meeting-management-page" aria-labelledby="meeting-management-title">
       <div className="history-header">
         <div><h2 id="meeting-management-title">會議管理</h2><p className="history-description">先建立會議並完成設定，再分享給參與者錄音。</p></div>
-        <button className="button secondary" type="button" onClick={resetForm}>建立新會議</button>
+        {viewMode === 'list' ? (
+          <button className="button primary" type="button" onClick={openCreateForm}>建立新會議</button>
+        ) : (
+          <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>
+        )}
       </div>
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {notice ? <p className="success-message" role="status">{notice}</p> : null}
-      <div className="meeting-management-grid">
-        <section className="control-panel" aria-label="會議設定">
-          <h3>{selectedMeeting ? '編輯會議設定' : '建立會議'}</h3>
+      {viewMode === 'form' ? (
+        <div className={`meeting-management-grid ${selectedMeeting ? '' : 'settings-only'}`}>
+          <section className="control-panel" aria-label="會議設定">
+          <div className="title-block">
+            <div className="title-block-header">
+              <div><p className="eyebrow">MEETING SETUP</p><h3>{selectedMeeting ? '編輯會議設定' : '建立會議'}</h3></div>
+            </div>
+            <p>設定語言與會議字典，儲存後即可建立錄音分享入口。</p>
+          </div>
           <label className="field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} /></label>
           <label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
           <label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
-          <h4>會議字典</h4>
-          {glossaryEntries.filter((entry) => entry.scope === 'live' || entry.scope === 'both').map((entry) => (
-            <label className="toggle" key={entry.id}><input type="checkbox" checked={selectedGlossaryIds.includes(entry.id)} onChange={(event) => setSelectedGlossaryIds((current) => event.target.checked ? [...new Set([...current, entry.id])] : current.filter((id) => id !== entry.id))} /><span>{entry.source} → {entry.translations?.[targetLanguageCode] || '此語言尚未設定'}</span></label>
-          ))}
-          <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : '儲存會議設定'}</button>
-          {selectedMeeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button> : null}
-        </section>
-        <section className="control-panel" aria-label="會議分享">
-          <h3>分享錄音入口</h3>
+          <button
+            className="button secondary glossary-drawer-trigger"
+            type="button"
+            onClick={() => setIsGlossaryDrawerOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={isGlossaryDrawerOpen}
+          >
+            <BookOpen size={18} aria-hidden="true" />
+            會議字典
+            <span className="glossary-count-badge">
+              {selectedGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
+            </span>
+          </button>
+          <div className="meeting-management-actions">
+            <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button>
+            {selectedMeeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button> : null}
+          </div>
+          </section>
+          {selectedMeeting ? <section className="control-panel" aria-label="會議分享">
+          <div className="title-block">
+            <div className="title-block-header">
+              <div><p className="eyebrow">RECORDER LINK</p><h3>分享錄音入口</h3></div>
+            </div>
+          </div>
           <p className="export-note">完成設定並儲存後，產生 Recorder 連結給參與者。開啟連結不會立即取得麥克風。</p>
           <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
           <button className="button secondary" type="button" onClick={createShare} disabled={!selectedMeeting}>建立錄音分享連結</button>
           {createdShare ? <div className="share-created">{createdShare.qrDataUrl ? <img src={createdShare.qrDataUrl} alt="會議錄音入口 QR Code" width="180" height="180" /> : null}<p className="share-url"><a href={createdShare.absoluteUrl}>{createdShare.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(createdShare.absoluteUrl)}>複製連結</button></div> : null}
           {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : null}
-        </section>
-      </div>
-      <section className="history-panel"><h3>既有會議</h3>{meetings.length === 0 ? <p className="history-empty">尚無會議。</p> : <ul className="history-list">{meetings.map((meeting) => <li className="history-item" key={meeting.id}><strong>{meeting.name || meeting.id}</strong><span>{meetingStatusLabel(meeting.status)}</span><button className="button detail-button" type="button" onClick={() => selectMeeting(meeting.id)}>編輯</button></li>)}</ul>}</section>
+          </section> : null}
+        </div>
+      ) : null}
+      {viewMode === 'list' ? <section className="history-panel" aria-labelledby="existing-meetings-title">
+        <h3 id="existing-meetings-title">既有會議</h3>
+        {meetings.length === 0 ? (
+          <p className="history-empty">尚無會議。</p>
+        ) : (
+          <AgGridReact
+            {...dataGridProps('meeting-management-data-grid')}
+            aria-label="既有會議列表"
+            columnDefs={meetingColumnDefs}
+            rowData={meetings}
+            getRowId={({ data }) => data.id}
+          />
+        )}
+      </section> : null}
+      <LiveGlossaryDrawer
+        open={isGlossaryDrawerOpen}
+        entries={glossaryEntries}
+        targetLanguageCode={targetLanguageCode}
+        selectedEntryIds={selectedGlossaryIds}
+        disabled={isSaving}
+        onClose={() => setIsGlossaryDrawerOpen(false)}
+        onEntriesChange={setGlossaryEntries}
+        onSelectionChange={setSelectedGlossaryIds}
+        onOpenManager={() => {
+          setIsGlossaryDrawerOpen(false);
+          window.location.hash = 'glossary';
+        }}
+      />
     </section>
   );
 }

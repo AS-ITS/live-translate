@@ -3199,3 +3199,134 @@ test('retry exhaustion shows explicit error and preserves transcript', async ({ 
   await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(4);
 });
+
+test('meeting management uses the live workspace layout and preserves create flow', async ({ page }) => {
+  await page.unroute('**/api/meetings');
+  await page.route('**/api/meetings**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: 'meeting-existing',
+          name: '既有產品會議',
+          status: 'created',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en',
+          createdAt: 1700000000000
+        }])
+      });
+      return;
+    }
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-existing') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-existing',
+            name: '既有產品會議',
+            status: 'created',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en',
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+
+    if (request.method() === 'POST' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-created',
+            name: '產品會議',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en',
+            status: 'created',
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+  await page.route('**/api/glossary', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        entries: [{
+          id: 'glossary-product',
+          source: '產品名稱',
+          scope: 'live',
+          translations: { en: 'Product Name' },
+          replacementAliases: { en: [] }
+        }]
+      })
+    });
+  });
+
+  await page.goto('/#meeting');
+
+  await expect(page.locator('.live-app-shell')).toBeVisible();
+  await expect(page.getByRole('link', { name: '會議管理' })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.app-header')).toBeHidden();
+  await expect(page.getByText('MEETING SETUP')).toBeHidden();
+  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.locator('.meeting-management-page > .history-panel')).toBeVisible();
+
+  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
+  await expect(page.locator('.meeting-management-page ul.history-list')).toHaveCount(0);
+  await expect(page.getByRole('row', { name: /既有產品會議/ })).toBeVisible();
+  await page.getByRole('row', { name: /既有產品會議/ }).getByRole('button', { name: '編輯' }).click();
+  await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
+  await expect(page.getByLabel('會議名稱')).toHaveValue('既有產品會議');
+  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeVisible();
+  await page.getByRole('button', { name: '返回會議清單' }).click();
+  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '編輯會議設定' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '建立新會議', exact: true }).click();
+  await expect(page.getByText('MEETING SETUP')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '建立會議' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '返回會議清單' })).toBeVisible();
+
+  const managementCards = page.locator('.meeting-management-grid > .control-panel');
+  await expect(managementCards).toHaveCount(1);
+
+  await page.getByRole('button', { name: /會議字典/ }).click();
+  const glossaryDrawer = page.locator('.meeting-management-page .glossary-drawer');
+  await expect(glossaryDrawer).toBeVisible();
+  await glossaryDrawer.locator('.glossary-choice input').check();
+  await expect(page.getByRole('button', { name: /會議字典/ })).toContainText('1');
+  await page.keyboard.press('Escape');
+  await expect(glossaryDrawer).toBeHidden();
+
+  await page.getByRole('button', { name: /會議字典/ }).click();
+  await expect(glossaryDrawer).toBeVisible();
+  await glossaryDrawer.getByRole('button', { name: '關閉字典' }).click();
+  await expect(glossaryDrawer).toBeHidden();
+
+  await page.getByLabel('會議名稱').fill('產品會議');
+  await page.getByRole('button', { name: '建立會議', exact: true }).click();
+
+  await expect(page.getByRole('status')).toHaveText('會議已建立。');
+  await expect(page.getByRole('button', { name: '儲存變更', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '返回會議清單', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeEnabled();
+  await expect(page.locator('.meeting-management-grid > .control-panel')).toHaveCount(2);
+  const cardWidths = await page.locator('.meeting-management-grid > .control-panel').evaluateAll((cards) => cards.map((card) => Math.round(card.getBoundingClientRect().width)));
+  expect(cardWidths[0]).toBe(cardWidths[1]);
+});

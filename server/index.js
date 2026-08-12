@@ -77,6 +77,7 @@ const ERROR_RESPONSES = {
   execution_invalid_state: { status: 409, message: 'Translation execution is not in a valid state for this operation.' },
   checkpoint_conflict: { status: 409, message: 'Meeting checkpoint conflicts with previously persisted content.' },
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
+  meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
@@ -930,6 +931,66 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (((req.method === 'GET' || req.method === 'POST') && isMeetingShareCollectionPath(path)) ||
+      (req.method === 'DELETE' && isMeetingSharePath(path))) {
+    try {
+      const meetingId = req.method === 'DELETE'
+        ? parseMeetingSharePath(path).meetingId
+        : parseMeetingShareCollectionPath(path);
+      if (!sessionShareService) throw createHttpError('meeting_share_invalid');
+      if (req.method === 'GET') {
+        statusCode = 200;
+        sendJson(res, statusCode, { shares: await sessionShareService.listShares(meetingId) }, requestId);
+      } else if (req.method === 'POST') {
+        const body = await readJson(req);
+        const share = await sessionShareService.createMeetingShare(meetingId, {
+          role: 'recorder',
+          expiresAt: body?.expiresAt ?? null
+        });
+        statusCode = 201;
+        sendJson(res, statusCode, {
+          share,
+          url: `#record?token=${encodeURIComponent(share.token)}`,
+          codeUrl: `#record?code=${encodeURIComponent(share.shortCode)}`
+        }, requestId);
+      } else {
+        const shareId = parseMeetingSharePath(path).shareId;
+        if (!await sessionShareService.revokeShare(meetingId, shareId)) throw createHttpError('meeting_share_invalid');
+        statusCode = 204;
+        res.writeHead(statusCode, { 'X-Request-Id': requestId });
+        res.end();
+      }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'PATCH' && isMeetingDetailPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const meetingId = parseMeetingDetailPath(path).meetingId;
+      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
+      if (body?.sourceLanguageCode && !isSupportedLanguage(body.sourceLanguageCode)) throw createHttpError('unsupported_language');
+      const result = await meetingCheckpointService.updateMeeting({ meetingId, settings: {
+        ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
+        ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
+        ...(Object.hasOwn(body || {}, 'targetLanguageCode') ? { targetLanguageCode: body.targetLanguageCode } : {}),
+        ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {})
+      }});
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingAudioPath(path)) {
     try {
       const { meetingId, kind } = parseMeetingAudioPath(path);
@@ -971,16 +1032,9 @@ async function handleRequestWithSessionReadController(
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const input = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
-      const result = await meetingCheckpointService.createMeeting(input);
-      if ((input?.liveSessionId === undefined || input?.liveSessionId === null) && sessionShareService?.createMeetingShare) {
-        const share = await sessionShareService.createMeetingShare(result.meeting.id, {
-          role: 'recorder',
-          expiresAt: input?.expiresAt ?? Date.now() + 30 * 60 * 1000
-        });
-        result.share = share;
-        result.url = `#record?token=${encodeURIComponent(share.token)}`;
-        result.codeUrl = `#record?code=${encodeURIComponent(share.shortCode)}`;
-      }
+      if (input?.targetLanguageCode && !isSupportedLanguage(input.targetLanguageCode)) throw createHttpError('unsupported_language');
+      if (input?.sourceLanguageCode && !isSupportedLanguage(input.sourceLanguageCode)) throw createHttpError('unsupported_language');
+      const result = await meetingCheckpointService.createMeeting({ ...input, draft: input?.draft === true });
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
@@ -1016,27 +1070,29 @@ async function handleRequestWithSessionReadController(
       if (!share || share.resourceType !== 'meeting' || share.role !== 'recorder') throw createHttpError('meeting_share_invalid');
       const meeting = await meetingRepository.getMeeting(share.meetingId);
       const segments = await meetingCheckpointService.listMeetingSegments(share.meetingId);
-      const segment = segments.find((item) => item.status === 'active' && !item.liveSessionId);
+      const segment = [...segments].reverse().find((item) => (item.status === 'active' || item.status === 'created') && !item.liveSessionId);
       if (!meeting || !segment) throw createHttpError('meeting_share_invalid');
       const body = await readJson(req);
-      if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
       const liveSessionId = body?.liveSessionId || `live-session-${crypto.randomUUID()}`;
-      await meetingCheckpointService.attachLiveSession({ meetingId: share.meetingId, segmentId: segment.id, liveSessionId });
+      const started = segment.status === 'created'
+        ? await meetingCheckpointService.startMeeting({ meetingId: share.meetingId, segmentId: segment.id, liveSessionId })
+        : await meetingCheckpointService.attachLiveSession({ meetingId: share.meetingId, segmentId: segment.id, liveSessionId });
       const session = await sessionRepository.createSessionRecord({
         id: body?.sessionId,
-        name: body?.name || `會議 ${new Date().toLocaleString('zh-TW')}`,
-        targetLanguageCode: body?.targetLanguageCode || 'en',
-        targetLanguageLabel: body?.targetLanguageLabel || null,
-        sourceLanguageCode: body?.sourceLanguageCode || null,
+        name: meeting.name || `會議 ${new Date().toLocaleString('zh-TW')}`,
+        targetLanguageCode: meeting.targetLanguageCode || 'en',
+        targetLanguageLabel: meeting.targetLanguageCode || null,
+        sourceLanguageCode: meeting.sourceLanguageCode || null,
+        meetingGlossaryEntries: meeting.glossaryEntries || [],
         meetingId: share.meetingId,
-        segmentId: segment.id,
+        segmentId: started.segment.id,
         status: 'created',
         startedAt: null
       });
       if (!await sessionShareService.bindShareToSession(share.id, session.id)) throw createHttpError('meeting_share_invalid');
       const detail = await sessionReadController.getSession(session.id);
       statusCode = 201;
-      sendJson(res, statusCode, { session: detail?.session || session, meetingId: share.meetingId, segmentId: segment.id, liveSessionId }, requestId);
+      sendJson(res, statusCode, { session: detail?.session || session, meetingId: share.meetingId, segmentId: started.segment.id, liveSessionId }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1065,6 +1121,22 @@ async function handleRequestWithSessionReadController(
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingSegmentStartPath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingSegmentStartPath(path);
+      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      const result = await meetingCheckpointService.startMeeting({ meetingId, segmentId, liveSessionId: body?.liveSessionId });
+      statusCode = 201;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -1831,6 +1903,28 @@ function isMeetingDetailPath(path) {
   return !path.slice(prefix.length).includes('/');
 }
 
+function isMeetingShareCollectionPath(path) {
+  return path.startsWith('/api/meetings/') && path.endsWith('/shares') && path.split('/').length === 5;
+}
+
+function isMeetingSharePath(path) {
+  return /^\/api\/meetings\/[^/]+\/shares\/[^/]+$/.test(path);
+}
+
+function parseMeetingShareCollectionPath(path) {
+  const prefix = '/api/meetings/';
+  return safeDecodePathComponent(path.slice(prefix.length, -'/shares'.length));
+}
+
+function parseMeetingSharePath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/shares\/([^/]+)$/);
+  if (!match) throw createHttpError('invalid_request');
+  return {
+    meetingId: safeDecodePathComponent(match[1]),
+    shareId: safeDecodePathComponent(match[2])
+  };
+}
+
 async function readMeetingAudioArtifact({ sessionRepository, meetingId, kind }) {
   const records = await sessionRepository.listSessionRecords();
   const record = [...records]
@@ -1863,6 +1957,10 @@ function isMeetingSegmentRolloverPath(path) {
     path.includes('/segments/') &&
     path.endsWith('/rollover') &&
     path.length > '/api/meetings//segments//rollover'.length;
+}
+
+function isMeetingSegmentStartPath(path) {
+  return path.startsWith('/api/meetings/') && path.includes('/segments/') && path.endsWith('/start');
 }
 
 function isMeetingSegmentRecoverPath(path) {
@@ -1907,6 +2005,17 @@ function parseMeetingSegmentRolloverPath(path) {
   const separator = body.indexOf('/segments/');
   if (separator <= 0) throw createHttpError('invalid_request');
 
+  return {
+    meetingId: safeDecodePathComponent(body.slice(0, separator)),
+    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
+  };
+}
+
+function parseMeetingSegmentStartPath(path) {
+  const prefix = '/api/meetings/';
+  const body = path.slice(prefix.length, -'/start'.length);
+  const separator = body.indexOf('/segments/');
+  if (separator <= 0) throw createHttpError('invalid_request');
   return {
     meetingId: safeDecodePathComponent(body.slice(0, separator)),
     segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))

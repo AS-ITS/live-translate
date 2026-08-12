@@ -200,17 +200,22 @@ Missing Meetings return `404`.
 
 ## `POST /api/meetings`
 
-Creates one active Meeting with its first active Segment. This endpoint is the
-minimal backend entry point for checkpoint persistence; it does not start,
-stop, reconnect, or segment a Gemini Live session. The optional
+Creates a Meeting and its first Segment. Pass `draft: true` for the Meeting
+Management flow; the Meeting and Segment remain `created` until a Recorder
+explicitly starts. Existing internal checkpoint callers may omit `draft` and
+retain the active Meeting behavior. This endpoint does not start, stop,
+reconnect, or segment a Gemini Live session. The optional
 `liveSessionId` request field associates the first Segment with the frontend's
-first Gemini Live connection. `glossaryEntries` optionally stores a complete
-meeting-owned glossary snapshot; it is not merged with later global glossary
-changes.
+first Gemini Live connection. `name`, `sourceLanguageCode`, and
+`targetLanguageCode` store Meeting settings. `glossaryEntries` stores a complete
+meeting-owned glossary snapshot.
 
 ```json
 {
-  "liveSessionId": "live-session-1",
+  "draft": true,
+  "name": "產品會議",
+  "sourceLanguageCode": "zh-Hant",
+  "targetLanguageCode": "en",
   "glossaryEntries": [
     {
       "source": "Acme",
@@ -225,10 +230,26 @@ Returns `201 Created`:
 
 ```json
 {
-  "meeting": { "id": "meeting-1", "status": "active" },
-  "segment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "active" }
+  "meeting": { "id": "meeting-1", "name": "產品會議", "status": "created" },
+  "segment": { "id": "segment-1", "meetingId": "meeting-1", "sequence": 0, "status": "created" }
 }
 ```
+
+## `PATCH /api/meetings/:meetingId`
+
+Updates Meeting name, source/target languages, and glossary entries. A live
+Recorder applies changed language or glossary settings at the next Segment
+boundary; the current Segment keeps its settings snapshot.
+
+## `GET|POST /api/meetings/:meetingId/shares`
+
+Lists active Recorder shares or creates a Recorder share after Meeting settings
+are saved. `POST` returns the opaque token and short-code URLs once; later list
+responses contain metadata only.
+
+## `DELETE /api/meetings/:meetingId/shares/:shareId`
+
+Revokes one Meeting Recorder share.
 
 ## `GET /api/meetings/:meetingId/segments`
 
@@ -445,9 +466,10 @@ frontend does not post-process generated audio after Gemini returns it. Source
 transcripts are not rewritten.
 
 Meeting-scoped glossary entries use the same source/translation structure but
-are stored as a snapshot on the Meeting. They are selected before starting a
-Meeting, reused by every Segment and saved retranslation for that Meeting, and
-do not change when the global glossary is edited.
+are stored on the Meeting and copied into each Segment settings snapshot. They
+are reused by each Segment and saved retranslation until the Meeting settings
+are changed; a change applies to the next Segment and does not rewrite earlier
+Segment history.
 
 ## Execution Control
 

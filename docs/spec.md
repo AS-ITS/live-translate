@@ -99,9 +99,11 @@ The MVP includes:
 - The app shows recoverable errors and allows the user to retry.
 - The backend rejects unsupported target languages.
 - The backend never exposes `GEMINI_API_KEY` to the browser.
-- A Meeting can be created before recording and produces a recorder entry link
-  and QR code; opening the link does not request a microphone or create a live
-  Session until the user explicitly starts recording.
+- A Meeting can be created and configured before recording. The creator can set
+  its name, source/target languages, and meeting glossary before generating a
+  recorder entry link and QR code; opening the link does not request a
+  microphone or create a live Session until the user explicitly starts
+  recording.
 - Active recording Sessions do not expose a control for creating new shares.
 
 ## Non-Functional Requirements
@@ -133,12 +135,17 @@ The MVP includes:
 
 Meeting share flow:
 
-1. The user creates a Meeting.
-2. The app displays a recorder entry link and QR code.
-3. A recipient opens the entry link and sees a preparation page.
-4. The recipient explicitly prepares and starts recording.
-5. Only then does the backend create the first Session and the browser request
-   microphone access and connect to Gemini Live API.
+1. The user opens Meeting Management and creates a Meeting draft.
+2. The user sets the meeting name, source/target languages, and meeting glossary.
+3. The user saves the settings and generates a recorder entry link and QR code.
+4. A recipient opens the entry link and sees a preparation page.
+5. The recipient explicitly prepares and starts recording.
+6. Only then does the backend activate the Meeting, create the first Session, and the browser request
+  microphone access and connect to Gemini Live API.
+
+Meeting settings may be edited after sharing. If recording is active, a language
+or glossary change takes effect at the next Segment boundary by stopping the
+current Live session and starting a new Segment with the updated settings.
 
 ## Supported MVP Languages
 

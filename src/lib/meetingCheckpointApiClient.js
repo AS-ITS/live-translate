@@ -6,7 +6,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
 
   return Object.freeze({
     async createMeeting(input = {}) {
-      const { liveSessionId, glossaryEntries = [] } = input;
+      const { liveSessionId, glossaryEntries = [], name, sourceLanguageCode, targetLanguageCode, draft = false } = input;
       const options = { method: 'POST' };
       if ((liveSessionId !== undefined && liveSessionId !== null) || Object.hasOwn(input, 'glossaryEntries')) {
         assertNonEmptyString(liveSessionId, 'liveSessionId');
@@ -14,7 +14,11 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         options.headers = { 'Content-Type': 'application/json' };
         options.body = JSON.stringify({
           ...(liveSessionId === undefined ? {} : { liveSessionId }),
-          ...(Object.hasOwn(input, 'glossaryEntries') ? { glossaryEntries } : {})
+          ...(Object.hasOwn(input, 'glossaryEntries') ? { glossaryEntries } : {}),
+          ...(name !== undefined ? { name } : {}),
+          ...(sourceLanguageCode !== undefined ? { sourceLanguageCode } : {}),
+          ...(targetLanguageCode !== undefined ? { targetLanguageCode } : {}),
+          ...(draft ? { draft: true } : {})
         });
       }
 
@@ -32,6 +36,19 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       ), { method: 'GET' });
       await assertOkResponse(response);
       return parseSegmentsResponse(response);
+    },
+
+    async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(segmentId, 'segmentId');
+      assertNonEmptyString(liveSessionId, 'liveSessionId');
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/start`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        body: JSON.stringify({ liveSessionId })
+      });
+      await assertOkResponse(response);
+      return parseStartMeetingResponse(response);
     },
 
     async getCheckpoint({ meetingId, segmentId } = {}) {
@@ -174,6 +191,12 @@ async function parseSegmentsResponse(response) {
   if (!body || typeof body !== 'object' || typeof body.meetingId !== 'string' || !Array.isArray(body.segments)) {
     throw new Error('Segments response must contain meetingId and segments.');
   }
+  return body;
+}
+
+async function parseStartMeetingResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body?.meeting?.id || !body?.segment?.id) throw new Error('Start meeting response must contain meeting and segment.');
   return body;
 }
 

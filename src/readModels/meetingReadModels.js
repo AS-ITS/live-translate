@@ -17,6 +17,9 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
   return {
     id: meeting?.id,
     status: meeting?.status ?? null,
+    name: meeting?.name ?? null,
+    sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
+    targetLanguageCode: meeting?.targetLanguageCode ?? null,
     startedAt,
     endedAt,
     durationMs: durationBetween(startedAt, endedAt),
@@ -37,7 +40,10 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
       ...summary,
       glossaryEntries: Array.isArray(meeting?.glossaryEntries)
         ? meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
-        : []
+        : [],
+      name: meeting?.name ?? null,
+      sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
+      targetLanguageCode: meeting?.targetLanguageCode ?? null
     },
     segments: normalizedSegments.map(mapSegmentToDTO),
     timeline: normalizedSegments.map(mapSegmentToTimelineItem),
@@ -86,6 +92,7 @@ function mapSegmentToDTO(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
     errorInfo: copyRecord(segment.errorInfo),
     checkpointUpdatedAt: segment.checkpoint?.updatedAt ?? null,
     transcriptSummary: {
@@ -106,6 +113,7 @@ function mapSegmentToTimelineItem(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
     errorInfo: copyRecord(segment.errorInfo)
   };
 }

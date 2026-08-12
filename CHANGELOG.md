@@ -28,6 +28,10 @@
 
 ## Unreleased
 
+- Added Meeting Management: creators can configure a Meeting name, languages,
+  and glossary before generating a Recorder share link; shared recording only
+  activates the Meeting and creates a Session after explicit start.
+
 - 修正主要頁面外框寬度，桌面版改為全寬顯示並保留響應式安全內距。
 
 - 調整全站內容比例與響應式欄位，讓控制項、字幕、紀錄與重新翻譯工作區依畫面寬度流動排列。

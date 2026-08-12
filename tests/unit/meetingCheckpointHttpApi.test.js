@@ -17,6 +17,45 @@ test('POST /api/meetings creates an active meeting and first segment', async () 
   assert.equal(body.segment.meetingId, body.meeting.id);
 });
 
+test('Meeting Management creates a draft, updates settings, and starts its first segment', async () => {
+  const handler = createHandler();
+  const createResponse = await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({
+      draft: true,
+      name: '產品會議',
+      sourceLanguageCode: 'zh-Hant',
+      targetLanguageCode: 'en',
+      glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }]
+    })
+  });
+  const created = createResponse.json();
+
+  assert.equal(createResponse.status, 201);
+  assert.equal(created.meeting.status, 'created');
+  assert.equal(created.segment.status, 'created');
+
+  const updateResponse = await request(handler, {
+    method: 'PATCH',
+    url: `/api/meetings/${created.meeting.id}`,
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', glossaryEntries: [] })
+  });
+  assert.equal(updateResponse.status, 200);
+  assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');
+
+  const startResponse = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/segments/${created.segment.id}/start`,
+    body: JSON.stringify({ liveSessionId: 'live-session-management-1' })
+  });
+  const started = startResponse.json();
+  assert.equal(startResponse.status, 201);
+  assert.equal(started.meeting.status, 'active');
+  assert.equal(started.segment.status, 'active');
+  assert.equal(started.segment.liveSessionId, 'live-session-management-1');
+});
+
 test('GET /api/meetings/:meetingId/segments returns ordered segments', async () => {
   const handler = createHandler();
   const createResponse = await request(handler, { method: 'POST', url: '/api/meetings' });

@@ -29,6 +29,9 @@ export class Meeting {
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
     this.updatedAt = assertTimestamp(input.updatedAt ?? input.createdAt, 'updatedAt');
     this.failureInfo = deepClone(input.failureInfo ?? null);
+    this.name = normalizeOptionalString(input.name);
+    this.sourceLanguageCode = normalizeOptionalString(input.sourceLanguageCode);
+    this.targetLanguageCode = normalizeOptionalString(input.targetLanguageCode);
     this.glossaryEntries = normalizeGlossaryEntries(input.glossaryEntries);
 
     validateMeetingState(this);
@@ -67,7 +70,7 @@ export class Meeting {
   transitionTo(status, patch = {}) {
     const nextStatus = assertMeetingStatus(status);
 
-    if (!ALLOWED_MEETING_TRANSITIONS[this.status].includes(nextStatus)) {
+    if (nextStatus !== this.status && !ALLOWED_MEETING_TRANSITIONS[this.status].includes(nextStatus)) {
       throw new RangeError(`meeting status transition from ${this.status} to ${nextStatus} is not allowed`);
     }
 
@@ -79,7 +82,23 @@ export class Meeting {
       createdAt: this.createdAt,
       updatedAt: patch.updatedAt ?? patch.endedAt ?? patch.startedAt ?? this.updatedAt,
       failureInfo: Object.hasOwn(patch, 'failureInfo') ? patch.failureInfo : this.failureInfo,
-      glossaryEntries: this.glossaryEntries
+      name: Object.hasOwn(patch, 'name') ? normalizeOptionalString(patch.name) : this.name,
+      sourceLanguageCode: Object.hasOwn(patch, 'sourceLanguageCode') ? normalizeOptionalString(patch.sourceLanguageCode) : this.sourceLanguageCode,
+      targetLanguageCode: Object.hasOwn(patch, 'targetLanguageCode') ? normalizeOptionalString(patch.targetLanguageCode) : this.targetLanguageCode,
+      glossaryEntries: Object.hasOwn(patch, 'glossaryEntries')
+        ? normalizeGlossaryEntries(patch.glossaryEntries)
+        : this.glossaryEntries
+    });
+  }
+
+  withSettings(settings = {}) {
+    if (isTerminalMeetingStatus(this.status)) {
+      throw new RangeError(`meeting settings cannot be changed for ${this.status} meeting`);
+    }
+    return this.transitionTo(this.status, {
+      ...settings,
+      updatedAt: settings.updatedAt ?? this.updatedAt,
+      glossaryEntries: normalizeGlossaryEntries(settings.glossaryEntries ?? this.glossaryEntries)
     });
   }
 }
@@ -95,6 +114,7 @@ export class MeetingSegment {
     this.startedAt = input.startedAt ?? null;
     this.endedAt = input.endedAt ?? null;
     this.liveSessionId = assertOptionalString(input.liveSessionId, 'liveSessionId') ?? null;
+    this.settingsSnapshot = input.settingsSnapshot ? deepClone(input.settingsSnapshot) : null;
     this.checkpoint = deepClone(input.checkpoint ?? null);
     this.errorInfo = deepClone(input.errorInfo ?? null);
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
@@ -178,6 +198,7 @@ export class MeetingSegment {
       startedAt: Object.hasOwn(patch, 'startedAt') ? patch.startedAt : this.startedAt,
       endedAt: Object.hasOwn(patch, 'endedAt') ? patch.endedAt : this.endedAt,
       liveSessionId: Object.hasOwn(patch, 'liveSessionId') ? patch.liveSessionId : this.liveSessionId,
+      settingsSnapshot: Object.hasOwn(patch, 'settingsSnapshot') ? patch.settingsSnapshot : this.settingsSnapshot,
       checkpoint: Object.hasOwn(patch, 'checkpoint') ? patch.checkpoint : this.checkpoint,
       errorInfo: Object.hasOwn(patch, 'errorInfo') ? patch.errorInfo : this.errorInfo,
       createdAt: this.createdAt,
@@ -247,6 +268,12 @@ function normalizeGlossaryEntries(value) {
       replacementAliases: Object.freeze([...replacementAliases])
     });
   }));
+}
+
+function normalizeOptionalString(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError('Meeting setting must be a non-empty string.');
+  return value.trim();
 }
 
 function validateMeetingSegmentState(segment) {

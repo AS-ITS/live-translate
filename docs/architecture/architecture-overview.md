@@ -75,10 +75,13 @@ share tokens and per-Session SSE events. The current broadcaster is
 process-local; multi-process event distribution remains later work. Share token
 records are file-backed and survive backend restart.
 
-Meeting-first recorder sharing creates the Meeting and its first empty active
-Segment before recording. The Meeting share link and QR code are issued at
-that point; the shared recorder page does not create a Session, claim a lease,
-or request microphone access until the recipient explicitly prepares recording.
+Meeting-first recorder sharing creates a configurable Meeting draft and its
+first empty Segment before recording. The creator saves the name, languages,
+and meeting glossary before issuing the Meeting share link and QR code; the
+shared recorder page does not activate the Meeting, create a Session, claim a
+lease, or request microphone access until the recipient explicitly starts
+recording. Editing settings during recording takes effect at the next Segment
+boundary.
 The first Session is then created and bound to the empty Segment, after which
 the existing recorder grant, lease, checkpoint, and direct Gemini flow apply.
 

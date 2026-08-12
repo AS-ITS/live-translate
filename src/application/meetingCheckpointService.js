@@ -15,23 +15,68 @@ export function createMeetingCheckpointService({
   if (typeof clock !== 'function') throw new TypeError('clock is required.');
 
   return Object.freeze({
-    async createMeeting({ liveSessionId = null, glossaryEntries = [] } = {}) {
+    async createMeeting({
+      liveSessionId = null,
+      glossaryEntries = [],
+      name = null,
+      sourceLanguageCode = null,
+      targetLanguageCode = null,
+      draft = false
+    } = {}) {
       const now = clock();
       const meeting = await meetingRepository.createMeeting({
         id: idGenerator('meeting'),
         createdAt: now,
-        glossaryEntries
+        glossaryEntries,
+        name,
+        sourceLanguageCode,
+        targetLanguageCode
       });
-      const activeMeeting = await meetingRepository.updateMeeting(meeting.activate(now));
+      const activeMeeting = draft
+        ? meeting
+        : await meetingRepository.updateMeeting(meeting.activate(now));
       const segment = await meetingRepository.createMeetingSegment({
         id: idGenerator('segment'),
         meetingId: activeMeeting.id,
         sequence: 0,
         liveSessionId: liveSessionId === null ? null : validateRequiredString(liveSessionId, 'liveSessionId'),
+        settingsSnapshot: meetingSettingsSnapshot(activeMeeting),
         createdAt: now
       });
-      const activeSegment = await meetingRepository.updateMeetingSegment(segment.activate(now));
+      const activeSegment = draft
+        ? segment
+        : await meetingRepository.updateMeetingSegment(segment.activate(now));
 
+      return { meeting: activeMeeting, segment: activeSegment };
+    },
+
+    async updateMeeting({ meetingId, settings = {} } = {}) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      const now = clock();
+      const updated = await meetingRepository.updateMeeting(meeting.withSettings({
+        ...settings,
+        updatedAt: now
+      }));
+      return { meeting: updated };
+    },
+
+    async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
+      const meeting = await meetingRepository.getMeeting(validateRequiredString(meetingId, 'meetingId'));
+      if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${meetingId}`);
+      const segment = await requireSegment({ meetingRepository, meetingId, segmentId });
+      if (!['created', 'active'].includes(segment.status) || segment.liveSessionId !== null) {
+        throw codedError('meeting_segment_invalid_state', 'segment is not available to start');
+      }
+      const now = clock();
+      const activeMeeting = meeting.status === 'created'
+        ? await meetingRepository.updateMeeting(meeting.activate(now))
+        : meeting;
+      const withLiveSession = segment.withLiveSession(validateRequiredString(liveSessionId, 'liveSessionId'));
+      const activeSegment = segment.status === 'created'
+        ? await meetingRepository.updateMeetingSegment(withLiveSession.activate(now))
+        : await meetingRepository.updateMeetingSegment(withLiveSession);
       return { meeting: activeMeeting, segment: activeSegment };
     },
 
@@ -131,6 +176,7 @@ export function createMeetingCheckpointService({
         meetingId: currentSegment.meetingId,
         sequence: currentSegment.sequence + 1,
         liveSessionId: input.nextLiveSessionId,
+        settingsSnapshot: meetingSettingsSnapshot(await meetingRepository.getMeeting(currentSegment.meetingId)),
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
@@ -212,6 +258,7 @@ export function createMeetingCheckpointService({
         meetingId: currentSegment.meetingId,
         sequence: currentSegment.sequence + 1,
         liveSessionId: input.nextLiveSessionId,
+        settingsSnapshot: meetingSettingsSnapshot(await meetingRepository.getMeeting(currentSegment.meetingId)),
         createdAt: now
       });
       const activeNextSegment = await meetingRepository.updateMeetingSegment(nextSegment.activate(now));
@@ -220,6 +267,15 @@ export function createMeetingCheckpointService({
       return { interruptedSegment, segment: activeNextSegment };
     }
   });
+}
+
+function meetingSettingsSnapshot(meeting) {
+  return meeting ? {
+    name: meeting.name,
+    sourceLanguageCode: meeting.sourceLanguageCode,
+    targetLanguageCode: meeting.targetLanguageCode,
+    glossaryEntries: meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...entry.replacementAliases] }))
+  } : null;
 }
 
 async function notifySegmentFinalized(callback, segment) {

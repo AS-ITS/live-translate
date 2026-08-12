@@ -42,6 +42,26 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       return { ...publicShare(share), token, shortCode };
     },
 
+    async createMeetingShare(meetingId, options = {}) {
+      const created = await this.createShare(meetingId, options);
+      await mutate((storage) => {
+        const share = storage.shares.find((item) => item.id === created.id);
+        share.resourceType = 'meeting';
+        share.meetingId = meetingId;
+      });
+      return { ...created, resourceType: 'meeting', meetingId };
+    },
+
+    async bindShareToSession(shareId, sessionId) {
+      return mutate((storage) => {
+        const share = storage.shares.find((item) => item.id === shareId);
+        if (!share || share.resourceType !== 'meeting') return false;
+        share.sessionId = sessionId;
+        share.resourceType = 'session';
+        return true;
+      });
+    },
+
     async resolveShare(token) {
       if (typeof token !== 'string' || token.length < 20) return null;
       const tokenHash = hashToken(token);
@@ -143,10 +163,12 @@ function normalizeStorage(value) {
           (share.shortCodeHash !== undefined && share.shortCodeHash !== null && (typeof share.shortCodeHash !== 'string' || share.shortCodeHash.length !== 64)) ||
           typeof share.createdAt !== 'number' || !Number.isFinite(share.createdAt) ||
           (share.expiresAt !== null && (typeof share.expiresAt !== 'number' || !Number.isFinite(share.expiresAt))) ||
-          (share.role !== undefined && share.role !== 'viewer' && share.role !== 'recorder')) {
+          (share.role !== undefined && share.role !== 'viewer' && share.role !== 'recorder') ||
+          (share.resourceType !== undefined && share.resourceType !== 'session' && share.resourceType !== 'meeting') ||
+          (share.meetingId !== undefined && typeof share.meetingId !== 'string')) {
         throw storageError(`Session share ${index} is invalid.`);
       }
-      return clonePlain({ ...share, role: share.role || 'viewer', shortCodeHash: share.shortCodeHash || null });
+      return clonePlain({ ...share, role: share.role || 'viewer', resourceType: share.resourceType || 'session', shortCodeHash: share.shortCodeHash || null });
     })
   };
 }
@@ -156,6 +178,8 @@ function publicShare(share) {
     id: share.id,
     sessionId: share.sessionId,
     role: share.role || 'viewer',
+    resourceType: share.resourceType || 'session',
+    ...(share.meetingId ? { meetingId: share.meetingId } : {}),
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
   };

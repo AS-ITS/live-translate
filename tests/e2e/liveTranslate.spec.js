@@ -226,7 +226,7 @@ function historyPanel(page) {
 }
 
 function historyItems(page) {
-  return historyPanel(page).locator('.history-item');
+  return historyPanel(page).locator('.history-data-grid .ag-row');
 }
 
 function meetingsPanel(page) {
@@ -234,7 +234,7 @@ function meetingsPanel(page) {
 }
 
 function meetingItems(page) {
-  return meetingsPanel(page).locator('.meeting-item');
+  return meetingsPanel(page).locator('.history-data-grid .ag-row');
 }
 
 function sessionDetail(page) {
@@ -285,7 +285,7 @@ function savedExportPanel(page) {
 }
 
 function activeExportPanel(page) {
-  return page.locator('.export-panel');
+  return page.getByRole('complementary', { name: '逐字稿匯出' });
 }
 
 function glossaryPanel(page) {
@@ -623,6 +623,41 @@ test('initial history shows empty state', async ({ page }) => {
   await expect(historyItems(page)).toHaveCount(0);
 });
 
+test('history grid uses native pagination and page size controls', async ({ page }) => {
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(Array.from({ length: 13 }, (_, index) => historyRecord({
+        id: `session-pagination-${index + 1}`,
+        startedAt: index + 1,
+        endedAt: index + 2
+      })))
+    });
+  });
+
+  await page.goto('/');
+  await openHistoryPage(page);
+
+  const grid = historyPanel(page).locator('.history-data-grid');
+  await expect(grid.locator('.ag-row')).toHaveCount(12);
+  await expect(grid.locator('.ag-paging-page-size')).toBeVisible();
+  await expect(grid.getByRole('button', { name: '下一頁' })).toBeEnabled();
+
+  await grid.getByRole('button', { name: '下一頁' }).click();
+  await expect(grid.locator('.ag-row')).toHaveCount(1);
+
+  await grid.locator('.ag-paging-page-size .ag-picker-field-display').click();
+  await expect(page.getByRole('option', { name: '24' })).toBeVisible();
+  await page.getByRole('option', { name: '24' }).click();
+  await expect(grid.locator('.ag-row')).toHaveCount(13);
+});
+
 test('meeting history detail shows timeline, article views, and export controls', async ({ page }) => {
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
@@ -657,7 +692,7 @@ test('meeting history detail shows timeline, article views, and export controls'
   await expect(meetingItems(page).first().getByText('3 段（完成 1、中斷 1、失敗 1）')).toBeVisible();
   await meetingItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
-  const detail = meetingItems(page).first().locator('.meeting-detail');
+  const detail = historyPanel(page).locator('.meeting-detail');
   const timeline = detail.getByLabel('會議段落時間軸');
   await expect(timeline.getByText('段落 1')).toBeVisible();
   await expect(timeline.getByText('段落 2')).toBeVisible();
@@ -743,7 +778,9 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
   await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
   await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
 
-  await expect(glossaryPanel(page).getByText('microphone → Alan speak')).toBeVisible();
+  const glossaryRow = glossaryPanel(page).locator('.glossary-data-grid .ag-row').first();
+  await expect(glossaryRow.getByText('microphone', { exact: true })).toBeVisible();
+  await expect(glossaryRow.getByText('Alan speak')).toBeVisible();
   await expect(glossaryPanel(page).getByText('套用範圍：即時翻譯')).toBeVisible();
 
   await glossaryPanel(page).getByRole('button', { name: '編輯' }).click();
@@ -991,9 +1028,7 @@ test('audio segment upload retries a temporary failure and preserves the saved a
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByLabel('錄下原始聲音').check();
-  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'before pause source', 'before pause translation');
@@ -1030,9 +1065,7 @@ test('pause keeps the session content and end exposes microphone recording downl
 test('microphone recording error does not stop live translation', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByLabel('錄下原始聲音').check();
-  await page.getByText('錄音與播放設定', { exact: true }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -1805,9 +1838,10 @@ test('downloads the active transcript through a browser download', async ({ page
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'download source', 'download translation');
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
 
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下載', exact: true }).click();
+  await activeExportPanel(page).getByRole('button', { name: '下載', exact: true }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/^live-translate-transcript-.*\.txt$/);
 });
@@ -1818,8 +1852,9 @@ test('active source and translation SRT downloads use the same Cue timeline', as
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'first source', 'first translation');
   await emitFinalTranscript(page, 'second source', 'second translation');
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
 
-  const exportPanel = page.locator('.export-panel');
+  const exportPanel = activeExportPanel(page);
   await exportPanel.getByRole('combobox', { name: '匯出格式' }).selectOption('srt');
 
   const downloadStream = async (stream) => {
@@ -1975,23 +2010,26 @@ test('stopped session can be deleted from history', async ({ page }) => {
   await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
 });
 
-test('advanced settings overlay does not stretch desktop layout or overflow mobile', async ({ page }) => {
+test('recording and playback settings appear before export fields without overflow', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
 
-  const controlPanel = page.locator('.live-page .control-panel');
-  const before = await controlPanel.boundingBox();
-  await page.locator('.advanced-settings summary').click();
-
-  await expect(page.locator('.advanced-settings-content')).toBeVisible();
-  const after = await controlPanel.boundingBox();
-  expect(after?.height).toBe(before?.height);
+  const playback = page.getByLabel('播放翻譯聲音');
+  const recording = page.getByLabel('錄下原始聲音');
+  const exportTrigger = page.getByRole('button', { name: '匯出', exact: true });
+  await expect(exportTrigger).toBeVisible();
+  await exportTrigger.click();
+  const exportPanel = activeExportPanel(page);
+  await expect(exportPanel.getByRole('combobox', { name: '匯出格式' })).toBeVisible();
+  expect(await playback.evaluate((element) => element.compareDocumentPosition(document.querySelector('.live-settings-controls .live-export-trigger')) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
+  expect(await recording.evaluate((element) => element.compareDocumentPosition(document.querySelector('.live-settings-controls .live-export-trigger')) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await page.locator('.advanced-settings summary').click();
 
-  await expect(page.locator('.advanced-settings-content')).toBeVisible();
+  await expect(playback).toBeVisible();
+  await expect(recording).toBeVisible();
+  await expect(page.getByRole('button', { name: '匯出', exact: true })).toBeVisible();
   const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(hasHorizontalOverflow).toBe(false);
 });
@@ -2696,8 +2734,10 @@ test('switching saved session resets saved export controls', async ({ page }) =>
 test('saved export controls do not alter active export controls', async ({ page }) => {
   await page.goto('/');
 
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
   await activeExportPanel(page).getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
   await activeExportPanel(page).getByRole('combobox', { name: '匯出內容' }).selectOption('source');
+  await activeExportPanel(page).getByRole('button', { name: '關閉匯出' }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'source export separation', 'translation export separation');
@@ -2709,6 +2749,7 @@ test('saved export controls do not alter active export controls', async ({ page 
   await savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' }).selectOption('translation');
 
   await openLivePage(page);
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
   await expect(activeExportPanel(page).getByRole('combobox', { name: '匯出格式' })).toHaveValue('vtt');
   await expect(activeExportPanel(page).getByRole('combobox', { name: '匯出內容' })).toHaveValue('source');
 });
@@ -2893,9 +2934,7 @@ test('selected microphone disconnect falls back on reconnect', async ({ page }) 
   });
   await page.goto('/');
 
-  await page.locator('details.advanced-settings').locator('summary').click();
   await page.getByLabel('麥克風').selectOption('mic-1');
-  await page.locator('details.advanced-settings').locator('summary').click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 

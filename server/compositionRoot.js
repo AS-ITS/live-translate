@@ -316,6 +316,7 @@ export function createApplicationDependencies(options = {}) {
       executionControlController,
       ...(deadLetterQueueController ? { deadLetterQueueController } : {}),
       translationHistoryController,
+      meetingRepository: resolvedMeetingRepository,
       meetingReadController,
       meetingCheckpointService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,

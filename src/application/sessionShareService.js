@@ -27,6 +27,22 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       return { ...publicShare(share), token, shortCode };
     },
 
+    createMeetingShare(meetingId, options = {}) {
+      const created = this.createShare(meetingId, options);
+      const share = shares.get(created.id);
+      share.resourceType = 'meeting';
+      share.meetingId = meetingId;
+      return { ...publicShare(share), token: created.token, shortCode: created.shortCode };
+    },
+
+    bindShareToSession(shareId, sessionId) {
+      const share = shares.get(shareId);
+      if (!share || share.resourceType !== 'meeting') return false;
+      share.sessionId = sessionId;
+      share.resourceType = 'session';
+      return true;
+    },
+
     resolveShare(token) {
       if (typeof token !== 'string' || token.length < 20) return null;
       const tokenHash = hashToken(token);
@@ -86,6 +102,8 @@ function publicShare(share) {
     id: share.id,
     sessionId: share.sessionId,
     role: share.role || 'viewer',
+    resourceType: share.resourceType || 'session',
+    ...(share.meetingId ? { meetingId: share.meetingId } : {}),
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
   };

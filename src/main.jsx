@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AgGridReact } from 'ag-grid-react';
+import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
 import { BookOpen, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
@@ -91,6 +93,58 @@ import {
 } from './lib/audio.js';
 import './styles.css';
 import QRCode from 'qrcode';
+
+ModuleRegistry.registerModules([AllCommunityModule]);
+
+const DATA_GRID_LOCALE_TEXT = {
+  page: '頁',
+  more: '更多',
+  to: '至',
+  of: '共',
+  nextPage: '下一頁',
+  lastPage: '最後一頁',
+  firstPage: '第一頁',
+  previousPage: '上一頁',
+  pageSizeSelectorLabel: '每頁顯示：',
+  noRowsToShow: '尚無資料。',
+  noMatches: '找不到符合條件的資料。'
+};
+
+const DATA_GRID_THEME = themeQuartz.withParams({
+  borderColor: '#d8dee6',
+  headerBackgroundColor: '#f3f6f9',
+  headerFontSize: 15,
+  headerFontWeight: 700,
+  rowBorder: { color: '#e4e8ed' },
+  rowHoverColor: '#f8fafc',
+  fontSize: 15,
+  rowHeight: 64,
+  headerHeight: 56,
+  paginationPanelHeight: 56
+});
+
+const DATA_GRID_DEFAULT_COL_DEF = {
+  sortable: true,
+  resizable: false,
+  wrapText: true,
+  autoHeight: true,
+  suppressHeaderMenuButton: true
+};
+
+function dataGridProps(className) {
+  return {
+    className: `data-grid ${className}`,
+    theme: DATA_GRID_THEME,
+    defaultColDef: DATA_GRID_DEFAULT_COL_DEF,
+    pagination: true,
+    paginationPageSize: 12,
+    paginationPageSizeSelector: [12, 24, 48],
+    localeText: DATA_GRID_LOCALE_TEXT,
+    domLayout: 'autoHeight',
+    animateRows: false,
+    suppressCellFocus: false
+  };
+}
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
@@ -192,6 +246,7 @@ function App() {
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [isLiveGlossaryDrawerOpen, setIsLiveGlossaryDrawerOpen] = useState(false);
+  const [isLiveExportDrawerOpen, setIsLiveExportDrawerOpen] = useState(false);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
@@ -210,6 +265,7 @@ function App() {
   const [polishingState, setPolishingState] = useState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
   const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
+  const [meetingShare, setMeetingShare] = useState(null);
   const sessionRef = useRef(null);
   const pendingMicrophoneStreamRef = useRef(null);
   const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
@@ -553,6 +609,7 @@ function App() {
       setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
       return;
     }
+    setMeetingShare(null);
     invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -612,6 +669,20 @@ function App() {
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
       segmentSwitchOrchestratorRef.current?.cancel();
       applyStartFailure(nextError, '無法開始即時翻譯。');
+    }
+  }
+
+  async function createMeetingShare() {
+    setError('');
+    try {
+      const result = await meetingCheckpointApiClientRef.current.createMeeting({
+        glossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode)
+      });
+      const url = new URL(result.url, window.location.href).href;
+      const qrDataUrl = await QRCode.toDataURL(url, { width: 180, margin: 1 });
+      setMeetingShare({ ...result, absoluteUrl: url, qrDataUrl });
+    } catch {
+      setError('無法建立會議分享連結。');
     }
   }
 
@@ -2506,8 +2577,22 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
+    <main className={`app-shell ${page === 'live' ? 'live-app-shell' : ''}`}>
+      {page === 'live' ? (
+        <aside className="live-sidebar" aria-label="即時翻譯工作區導覽">
+          <a className="live-sidebar-brand" href="#live" aria-label="即時翻譯首頁" onClick={(event) => navigateTo('live', event)}>
+            <span className="live-sidebar-mark" aria-hidden="true"><Radio size={20} /></span>
+            <h1>即時翻譯</h1>
+          </a>
+          <nav className="live-sidebar-navigation" aria-label="主要導覽">
+            <a href="#live" aria-current="page" onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
+            <a href="#history" onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
+            <a href="#retranslate" onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
+            <a href="#glossary" onClick={(event) => navigateTo('glossary', event)}><BookOpen size={18} aria-hidden="true" />翻譯字典</a>
+          </nav>
+        </aside>
+      ) : null}
+      <header className="app-header" hidden={page === 'live'}>
         <div className="brand-block">
           <h1>即時翻譯</h1>
           <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
@@ -2523,96 +2608,85 @@ function App() {
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
       <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
-        <section className="control-panel">
+        <div className="live-workspace-grid">
+        <section className="control-panel live-settings-card">
           <div className="title-block">
             <div className="title-block-header">
-              <div className="status-pill">
-                <Radio size={16} aria-hidden="true" />
-                {statusLabel(status, statusLabelOverride)}
-              </div>
-              <button
-                className="button secondary glossary-drawer-trigger"
-                type="button"
-                onClick={() => setIsLiveGlossaryDrawerOpen(true)}
-                aria-haspopup="dialog"
-                aria-expanded={isLiveGlossaryDrawerOpen}
-              >
-                <BookOpen size={18} aria-hidden="true" />
-                字典
-                <span className="glossary-count-badge">
-                  {selectedMeetingGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
-                </span>
-              </button>
+              <div><p className="eyebrow">LIVE TRANSLATE</p><h2>本次會議設定</h2></div>
             </div>
-            <p>選擇你主要說的語言與要翻譯成的語言，按下開始就能說話。</p>
+            <p>設定語言與音訊來源，準備好後開始即時翻譯。</p>
           </div>
 
-          <div className="controls" aria-label="翻譯控制項">
+          <div className="controls live-settings-controls" aria-label="翻譯控制項">
             <label className="field">
               <span>工作階段名稱</span>
               <input value={sessionName} onChange={(event) => setSessionName(event.target.value)} placeholder="例如：產品會議" disabled={controlsLocked} maxLength={120} />
             </label>
-          <div className="language-controls">
-              <label className="field">
-                <span>我主要說的語言</span>
-                <select
-                  value={sourceLanguageCode}
-                  onChange={(event) => setSourceLanguageCode(event.target.value)}
-                  disabled={controlsLocked}
-                >
-                  {SUPPORTED_LANGUAGES.map((language) => (
-                    <option key={language.code} value={language.code}>
-                      {language.label}
-                    </option>
-                  ))}
-                </select>
+            <label className="field">
+              <span>我主要說的語言</span>
+              <select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={controlsLocked}>
+                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+              </select>
+            </label>
+
+            <label className="field">
+              <span>目標語言</span>
+              <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={controlsLocked}>
+                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+              </select>
+            </label>
+
+            <label className="field">
+              <span>麥克風</span>
+              <select
+                value={selectedInputDeviceId}
+                onChange={(event) => {
+                  setSelectedInputDeviceId(event.target.value);
+                  setDeviceMessage('');
+                }}
+                disabled={controlsLocked}
+              >
+                <option value="">瀏覽器預設麥克風</option>
+                {inputDevices.map((device) => <option key={device.deviceId || device.label} value={device.deviceId}>{device.label}</option>)}
+              </select>
+            </label>
+
+            <div className="live-audio-settings" aria-label="錄音與播放設定">
+              <label className="toggle">
+                <input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={controlsLocked} />
+                <span>播放翻譯聲音</span>
               </label>
 
-              <label className="field">
-                <span>目標語言</span>
-                <select
-                  value={targetLanguageCode}
-                  onChange={(event) => setTargetLanguageCode(event.target.value)}
-                  disabled={controlsLocked}
-                >
-                  {SUPPORTED_LANGUAGES.map((language) => (
-                    <option key={language.code} value={language.code}>
-                      {language.label}
-                    </option>
-                  ))}
-                </select>
+              <label className="toggle">
+                <input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={controlsLocked} />
+                <span>錄下原始聲音</span>
               </label>
             </div>
 
-            <details className="advanced-settings" open={false}>
-              <summary>錄音與播放設定</summary>
-              <div className="advanced-settings-content">
-                <label className="field">
-                  <span>麥克風</span>
-                  <select
-                    value={selectedInputDeviceId}
-                    onChange={(event) => {
-                      setSelectedInputDeviceId(event.target.value);
-                      setDeviceMessage('');
-                    }}
-                    disabled={controlsLocked}
-                  >
-                    <option value="">瀏覽器預設麥克風</option>
-                    {inputDevices.map((device) => (
-                      <option key={device.deviceId || device.label} value={device.deviceId}>{device.label}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="toggle">
-                  <input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={controlsLocked} />
-                  <span>播放翻譯聲音</span>
-                </label>
-                <label className="toggle">
-                  <input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={controlsLocked} />
-                  <span>錄下原始聲音</span>
-                </label>
-              </div>
-            </details>
+            <button
+              className="button secondary glossary-drawer-trigger"
+              type="button"
+              onClick={() => setIsLiveGlossaryDrawerOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={isLiveGlossaryDrawerOpen}
+            >
+              <BookOpen size={18} aria-hidden="true" />
+              字典
+              <span className="glossary-count-badge">
+                {selectedMeetingGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
+              </span>
+            </button>
+
+            <button
+              className="button secondary live-export-trigger"
+              type="button"
+              onClick={() => setIsLiveExportDrawerOpen(true)}
+              aria-haspopup="dialog"
+              aria-expanded={isLiveExportDrawerOpen}
+            >
+              <Download size={18} aria-hidden="true" />
+              匯出
+            </button>
           </div>
 
           <div className="control-status-row">
@@ -2666,6 +2740,11 @@ function App() {
               ) : null}
 
               <div className="session-actions">
+                {status === 'idle' && !meetingShare ? (
+                  <button className="button secondary" type="button" onClick={createMeetingShare}>
+                    建立會議分享連結
+                  </button>
+                ) : null}
                 {status === 'listening' ? (
                   <>
                     <button className="button secondary" type="button" onClick={pauseSession}>
@@ -2702,40 +2781,22 @@ function App() {
               </div>
             </div>
           </div>
-          {activeSessionRecordIdRef.current ? <SessionSharePanel sessionId={activeSessionRecordIdRef.current} /> : null}
+          {meetingShare ? (
+            <section className="saved-export-panel session-share-panel" aria-label="會議錄音入口">
+              <h4>會議錄音入口</h4>
+              <p className="export-note">請分享此連結或 QR code；開啟後仍要按「準備錄音」及「開始錄音」才會取得麥克風。</p>
+              {meetingShare.qrDataUrl ? <img src={meetingShare.qrDataUrl} alt="會議錄音入口 QR Code" width="180" height="180" /> : null}
+              <p className="share-url"><a href={meetingShare.absoluteUrl}>{meetingShare.absoluteUrl}</a></p>
+              <button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(meetingShare.absoluteUrl)}>複製錄音入口</button>
+            </section>
+          ) : null}
         </section>
 
-        <section className="export-panel" aria-label="逐字稿匯出">
-          <div className="controls export-controls">
-          <label className="field">
-            <span>匯出格式</span>
-            <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)}>
-              <option value="txt">TXT</option>
-              <option value="srt">SRT</option>
-              <option value="vtt">VTT</option>
-            </select>
-          </label>
-
-          <label className="field">
-            <span>匯出內容</span>
-            <select value={exportStream} onChange={(event) => setExportStream(event.target.value)}>
-              <option value="translation">翻譯</option>
-              <option value="source">原文</option>
-              <option value="both">兩者</option>
-            </select>
-          </label>
-
-          <button className="button secondary" type="button" onClick={downloadTranscript} disabled={!canDownloadTranscript}>
-            <Download size={18} aria-hidden="true" />
-            下載
-          </button>
-          </div>
-          {!canDownloadTranscript && !exportUnavailableReason ? <p className="export-note">完成至少一句翻譯後，才可下載檔案。</p> : null}
-          {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
-        </section>
-
+        <div className="live-transcript-column">
         <LiveCuePanel
           cueState={subtitleCueState}
+          status={status}
+          statusLabelOverride={statusLabelOverride}
           isPaused={status === 'paused'}
           isStopped={status === 'stopped'}
           polishingState={polishingState}
@@ -2746,7 +2807,49 @@ function App() {
           onCopySource={copyLiveSource}
           onCopyTranslation={copyLiveTranslation}
         />
+        </div>
+        </div>
       </section>
+
+      <>
+        <div className={`export-drawer-backdrop${isLiveExportDrawerOpen ? ' is-open' : ''}`} onClick={() => setIsLiveExportDrawerOpen(false)} aria-hidden="true" />
+        <aside className={`export-drawer${isLiveExportDrawerOpen ? ' is-open' : ''}`} aria-label="逐字稿匯出" aria-hidden={!isLiveExportDrawerOpen}>
+          <div className="export-drawer-header">
+            <div>
+              <p className="eyebrow">即時翻譯</p>
+              <h2>匯出逐字稿</h2>
+              <p>選擇檔案格式與匯出內容後下載。</p>
+            </div>
+            <button className="icon-button" type="button" onClick={() => setIsLiveExportDrawerOpen(false)} aria-label="關閉匯出" tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
+              <X size={20} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="export-drawer-body">
+            <label className="field">
+              <span>匯出格式</span>
+              <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)} tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
+                <option value="txt">TXT</option>
+                <option value="srt">SRT</option>
+                <option value="vtt">VTT</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>匯出內容</span>
+              <select value={exportStream} onChange={(event) => setExportStream(event.target.value)} tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
+                <option value="translation">翻譯</option>
+                <option value="source">原文</option>
+                <option value="both">兩者</option>
+              </select>
+            </label>
+            <button className="button secondary" type="button" onClick={downloadTranscript} disabled={!canDownloadTranscript} tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
+              <Download size={18} aria-hidden="true" />
+              下載
+            </button>
+            {!canDownloadTranscript && !exportUnavailableReason ? <p className="export-note">完成至少一句翻譯後，才可下載檔案。</p> : null}
+            {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
+          </div>
+        </aside>
+      </>
 
       <LiveGlossaryDrawer
         open={isLiveGlossaryDrawerOpen}
@@ -3091,8 +3194,8 @@ function RecorderPage({ token, code = '' }) {
   useEffect(() => {
     if (!token && !code) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
     const detailPath = token
-      ? `/api/shared-sessions/${encodeURIComponent(token)}`
-      : `/api/shared-sessions/code/${encodeURIComponent(code)}`;
+      ? `/api/shared-meetings/${encodeURIComponent(token)}`
+      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     fetch(detailPath).then(async (response) => {
       if (!response.ok) throw new Error('錄音連結無效或已過期。');
       return response.json();
@@ -3105,9 +3208,23 @@ function RecorderPage({ token, code = '' }) {
   async function claim() {
     setError('');
     try {
+      if (!detail?.session?.id) {
+        const startPath = token
+          ? `/api/shared-meetings/${encodeURIComponent(token)}/start`
+          : `/api/shared-meetings/code/${encodeURIComponent(code)}/start`;
+        const startResponse = await fetch(startPath, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetLanguageCode: 'en', sourceLanguageCode: DEFAULT_SOURCE_LANGUAGE_CODE })
+        });
+        const startBody = await startResponse.json();
+        if (!startResponse.ok) throw new Error(startBody?.error?.message || '無法建立錄音工作階段。');
+        setDetail((current) => ({ ...current, session: startBody.session }));
+      }
       const response = await fetch(`/api/shared-sessions/${sharePath}/recorder-lease`, { method: 'POST' });
       const body = await response.json();
       if (!response.ok) throw new Error(body?.error?.message || '無法取得錄音控制權。');
+      if (body.session) setDetail((current) => ({ ...current, session: body.session }));
       setLease(body.lease);
       setRecorderGrant(body.recorderGrant || '');
       leaseRef.current = body.lease;
@@ -3333,7 +3450,7 @@ function RecorderPage({ token, code = '' }) {
     <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
     {loading ? <p className="history-empty">正在載入會議…</p> : null}
     {error ? <p className="error-message" role="alert">{error}</p> : null}
-    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>取得錄音控制權</button> : null}
+    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>準備錄音</button> : null}
     {lease && !recording ? <button className="button primary" type="button" onClick={startRecording}>開始錄音</button> : null}
     {recording ? <><button className="button secondary" type="button" onClick={pauseRecording}>暫停錄音</button><button className="button danger-button" type="button" onClick={stopRecording}>停止錄音</button></> : null}
     {lease && paused ? <button className="button primary" type="button" onClick={startRecording}>繼續錄音</button> : null}
@@ -3485,6 +3602,97 @@ function buildArticleFileName(stream) {
 
 const CUE_PAGE_FOLLOW_THRESHOLD_PX = 80;
 
+function HistoryNameCell({ data }) {
+  return <strong role="heading" aria-level="3">{data.kind === 'meeting' ? meetingTitle(data.record) : historyLanguageLabel(data.record)}</strong>;
+}
+
+function HistoryStatusCell({ data }) {
+  return <span className={`history-status history-status-${data.record.status}`}>{data.kind === 'meeting' ? meetingStatusLabel(data.record.status) : historyStatusLabel(data.record.status)}</span>;
+}
+
+function HistorySummaryCell({ data }) {
+  return <span>{data.kind === 'meeting' ? meetingSegmentSummaryLabel(data.record.segmentSummary) : transcriptSummaryLabel(data.record.transcriptSummary)}</span>;
+}
+
+function HistoryActionsCell({ data, context }) {
+  const { onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId } = context;
+  const record = data.record;
+  if (data.kind === 'meeting') {
+    return (
+      <div className="history-actions">
+        {record.status === 'active' || record.status === 'interrupted' ? (
+          <a className="button detail-button" href={`#live?meetingId=${encodeURIComponent(record.id)}`}>
+            <Play size={16} aria-hidden="true" />
+            {record.status === 'active' ? '繼續翻譯' : '繼續處理'}
+          </a>
+        ) : null}
+        <button className="button detail-button" type="button" aria-label={selectedMeetingId === record.id ? '關閉詳細資料' : '查看詳細資料'} aria-expanded={selectedMeetingId === record.id} onClick={() => onViewMeetingDetails(record.id)}>
+          {selectedMeetingId === record.id ? '關閉內容' : '查看內容'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="history-actions">
+      {record.status === 'active' || record.status === 'paused' || record.status === 'interrupted' ? (
+        <a className="button detail-button" href={record.meetingId ? `#live?meetingId=${encodeURIComponent(record.meetingId)}` : `#live?sessionId=${encodeURIComponent(record.id)}`}>
+          <Play size={16} aria-hidden="true" />
+          {record.status === 'paused' || record.status === 'active' ? '繼續翻譯' : '繼續處理'}
+        </a>
+      ) : null}
+      <button className="button detail-button" type="button" aria-label={selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'} aria-expanded={selectedRecordId === record.id} onClick={() => onViewDetails(record.id)}>
+        {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
+      </button>
+      <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}><Trash2 size={16} aria-hidden="true" />刪除</button>
+    </div>
+  );
+}
+
+function RetranslationSessionNameCell({ data }) {
+  return <strong role="heading" aria-level="3">{data.name || historyLanguageLabel(data)}</strong>;
+}
+
+function RetranslationSessionStatusCell({ data }) {
+  return <span className={`history-status history-status-${data.status}`}>{historyStatusLabel(data.status)}</span>;
+}
+
+function RetranslationSessionActionCell({ context, data }) {
+  return <button className="button detail-button" type="button" aria-label="選擇" onClick={() => context.onSelectSession(data.id)}>重新翻譯此紀錄</button>;
+}
+
+function RetranslationOutputTitleCell({ data }) {
+  return <strong role="heading" aria-level="4">{translationOutputTitle(data)}</strong>;
+}
+
+function RetranslationOutputStatusCell() {
+  return <span className="history-status history-status-completed">已完成</span>;
+}
+
+function RetranslationOutputActionsCell({ context, data }) {
+  return (
+    <div className="history-actions">
+      <button className="button detail-button" type="button" aria-pressed={context.selectedOutputId === data.id} onClick={() => context.onSelect(data.id)}>
+        {context.selectedOutputId === data.id ? '已選取' : '查看內容'}
+      </button>
+      <button className="button detail-button danger-button" type="button" onClick={() => context.onDelete(data)}><Trash2 size={16} aria-hidden="true" />刪除</button>
+    </div>
+  );
+}
+
+function GlossarySourceCell({ data }) {
+  return <strong>{data.source}</strong>;
+}
+
+function GlossaryActionsCell({ context, data }) {
+  return (
+    <div className="glossary-actions">
+      <button className="button detail-button" type="button" onClick={() => context.onEdit(data)}>編輯</button>
+      <button className="button detail-button danger-button" type="button" onClick={() => context.onDelete(data)}>刪除</button>
+    </div>
+  );
+}
+
 function isPageAtLatestCuePosition(panel) {
   if (!panel || typeof window === 'undefined') return false;
   const distanceFromViewportBottom = window.innerHeight - panel.getBoundingClientRect().bottom;
@@ -3493,6 +3701,8 @@ function isPageAtLatestCuePosition(panel) {
 
 function LiveCuePanel({
   cueState,
+  status,
+  statusLabelOverride,
   isPaused,
   isStopped,
   polishingState,
@@ -3506,6 +3716,7 @@ function LiveCuePanel({
   const panelRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
+  const hasContent = cues.length > 0 || Boolean(polishedArticle?.text);
 
   useEffect(() => {
     const panel = panelRef.current;
@@ -3541,16 +3752,24 @@ function LiveCuePanel({
       <div className="cue-panel-header">
         <div>
           <h2>即時字幕</h2>
-          <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '原文與譯文會依句子同步顯示。'}</p>
+          <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : hasContent ? '原文與譯文會依句子同步顯示。' : '開始翻譯後，原文與翻譯字幕會顯示在這裡'}</p>
         </div>
         <div className="cue-panel-actions">
+          <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時翻譯狀態：${statusLabel(status, statusLabelOverride)}`}>
+            <Radio size={15} aria-hidden="true" />
+            {statusLabel(status, statusLabelOverride)}
+          </span>
+          {hasContent ? <>
           <TranscriptPolishingStatus polishingState={polishingState} onRetry={onPolishingRetry} />
           {!isFollowingLatest ? (
             <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
           ) : null}
+          </> : null}
         </div>
       </div>
-      <div className="cue-list" data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
+      <div className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
+        {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始翻譯後，原文與翻譯字幕會顯示在這裡</p> : null}
+        {hasContent ? <>
         <section className="cue-language-section" aria-label="即時字幕原文">
           <div className="cue-section-header">
             <h3>輸入／原文</h3>
@@ -3581,6 +3800,7 @@ function LiveCuePanel({
               : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
           </div>
         </section>
+        </> : null}
       </div>
       {polishedArticle?.text ? (
         <section className="transcript-panel" data-testid="polished-article" aria-label="潤飾文章版">
@@ -3754,17 +3974,29 @@ function HistoryPanel({
   retryingExecutionId = ''
 }) {
   const [query, setQuery] = useState('');
-  const [visibleCount, setVisibleCount] = useState(12);
   const entries = useMemo(() => combinedHistoryEntries(records, meetingRecords), [records, meetingRecords]);
   const filteredEntries = useMemo(() => entries.filter((entry) => historyEntryMatches(entry, query)), [entries, query]);
-  const visibleEntries = filteredEntries.slice(0, visibleCount);
+  const gridContext = useMemo(() => ({ onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId }), [onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId]);
+  const columnDefs = useMemo(() => [
+    { headerName: '名稱', valueGetter: ({ data }) => data.kind === 'meeting' ? meetingTitle(data.record) : historyLanguageLabel(data.record), width: 220, cellRenderer: HistoryNameCell },
+    { headerName: '狀態', valueGetter: ({ data }) => data.record.status || '', width: 100, cellRenderer: HistoryStatusCell },
+    { headerName: '開始時間', valueGetter: ({ data }) => historyRecordSortTime(data.record), width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.startedAt) },
+    { headerName: '結束時間', valueGetter: ({ data }) => data.record.endedAt || '', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.endedAt) },
+    { headerName: '摘要', valueGetter: ({ data }) => data.kind === 'meeting' ? meetingSegmentSummaryLabel(data.record.segmentSummary) : transcriptSummaryLabel(data.record.transcriptSummary), minWidth: 210, flex: 1, cellRenderer: HistorySummaryCell },
+    { headerName: '操作', width: 300, sortable: false, cellRenderer: HistoryActionsCell }
+  ], []);
+  const selectedEntry = selectedRecordId
+    ? entries.find((entry) => entry.kind === 'session' && entry.record.id === selectedRecordId)
+    : selectedMeetingId
+      ? entries.find((entry) => entry.kind === 'meeting' && entry.record.id === selectedMeetingId)
+      : null;
 
   return (
     <section className="history-panel" aria-labelledby={titleId}>
       <h3 id={titleId} className="sr-only">紀錄清單</h3>
       <label className="field history-search-field">
         <span>搜尋紀錄</span>
-        <input value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(12); }} placeholder="搜尋日期、語言或狀態" />
+        <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
       </label>
 
       {entries.length === 0 ? (
@@ -3776,31 +4008,18 @@ function HistoryPanel({
       ) : filteredEntries.length === 0 ? (
         <p className="history-empty">找不到符合條件的紀錄。</p>
       ) : (
-        <div className="history-groups">
-          <ol className="history-list" aria-label="翻譯紀錄列表">
-            {visibleEntries.map((entry) => entry.kind === 'meeting' ? (
-              <MeetingHistoryItem key={`meeting-${entry.record.id}`} record={entry.record} selectedMeetingId={selectedMeetingId} selectedDetail={selectedMeetingDetail} onViewDetails={onViewMeetingDetails} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} />
-            ) : (
-              <SessionHistoryItem
-                key={`session-${entry.record.id}`}
-                record={entry.record}
-                selectedRecordId={selectedRecordId}
-                selectedDetail={selectedDetail}
-                selectedRecord={selectedRecord}
-                onViewDetails={onViewDetails}
-                onDeleteRecord={onDeleteRecord}
-                onRetranslationSubmitted={onRetranslationSubmitted}
-                onOpenRetranslationWorkflow={onOpenRetranslationWorkflow}
-                onPolishingRetry={onPolishingRetry}
-                onRetryExecution={onRetryExecution}
-                retryingExecutionId={retryingExecutionId}
-                detailError={historyDetailError}
-                onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)}
-              />
-            ))}
-          </ol>
-          {filteredEntries.length > visibleCount ? <button className="button detail-button history-more-button" type="button" onClick={() => setVisibleCount((count) => count + 12)}>顯示更多紀錄</button> : null}
-        </div>
+        <>
+          <AgGridReact
+            {...dataGridProps('history-data-grid')}
+            aria-label="翻譯紀錄列表"
+            columnDefs={columnDefs}
+            context={gridContext}
+            rowData={filteredEntries}
+            getRowId={({ data }) => `${data.kind}-${data.record.id}`}
+          />
+          {selectedEntry?.kind === 'session' ? <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onRetranslationSubmitted={onRetranslationSubmitted} onOpenRetranslationWorkflow={onOpenRetranslationWorkflow} onPolishingRetry={onPolishingRetry} onRetryExecution={onRetryExecution} retryingExecutionId={retryingExecutionId} detailError={historyDetailError} onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)} /> : null}
+          {selectedEntry?.kind === 'meeting' ? <MeetingDetail detail={selectedMeetingDetail} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} /> : null}
+        </>
       )}
     </section>
   );
@@ -4532,24 +4751,21 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
           {selectableRecords.length === 0 ? <div className="empty-state"><p className="history-empty">尚無可重新翻譯的原始逐字稿。先完成一次即時翻譯，再回到這裡選擇目標語言。</p><a className="button primary" href="#live">開始即時翻譯</a></div> : null}
           {selectableRecords.length > 0 && filteredRecords.length === 0 ? <p className="history-empty">找不到符合條件的 Session。</p> : null}
           {filteredRecords.length > 0 ? (
-            <ol className="history-list retranslation-session-list">
-              {filteredRecords.map((record) => (
-                <li className="history-item" key={record.id}>
-                  <div className="history-item-header">
-                    <div>
-            <h3>{record.name || historyLanguageLabel(record)}</h3>
-                      <span className={`history-status history-status-${record.status}`}>{historyStatusLabel(record.status)}</span>
-                    </div>
-                    <button className="button detail-button" type="button" aria-label="選擇" onClick={() => onSelectSession(record.id)}>重新翻譯此紀錄</button>
-                  </div>
-                  <dl className="history-metadata">
-                    <div><dt>開始時間</dt><dd>{formatRecordTime(record.startedAt)}</dd></div>
-                    <div><dt>結束時間</dt><dd>{formatRecordTime(record.endedAt)}</dd></div>
-                    <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(record.transcriptSummary)}</dd></div>
-                  </dl>
-                </li>
-              ))}
-            </ol>
+            <AgGridReact
+              {...dataGridProps('retranslation-session-data-grid')}
+              aria-label="重新翻譯 Session 列表"
+              columnDefs={[
+                { headerName: '名稱', valueGetter: ({ data }) => data.name || historyLanguageLabel(data), width: 220, cellRenderer: RetranslationSessionNameCell },
+                { headerName: '狀態', field: 'status', width: 100, cellRenderer: RetranslationSessionStatusCell },
+                { headerName: '開始時間', field: 'startedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.startedAt) },
+                { headerName: '結束時間', field: 'endedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.endedAt) },
+                { headerName: '逐字稿', valueGetter: ({ data }) => transcriptSummaryLabel(data.transcriptSummary), minWidth: 210, flex: 1 },
+                { headerName: '操作', width: 300, sortable: false, cellRenderer: RetranslationSessionActionCell }
+              ]}
+              context={{ onSelectSession }}
+              rowData={filteredRecords}
+              getRowId={({ data }) => data.id}
+            />
           ) : null}
         </section>
       ) : (
@@ -4695,37 +4911,21 @@ function RetranslationOutputList({ outputs, selectedOutputId, onSelect, onDelete
       {outputs.length === 0 ? (
         <p className="history-empty retranslation-output-empty">尚無重新翻譯結果。</p>
       ) : (
-        <ol className="history-list retranslation-output-list">
-          {outputs.map((output) => (
-            <li className="history-item" key={output.id}>
-              <div className="history-item-header">
-                <div>
-                  <h4>{translationOutputTitle(output)}</h4>
-                  <span className="history-status history-status-completed">已完成</span>
-                </div>
-                <div className="history-actions">
-                  <button
-                    className="button detail-button"
-                    type="button"
-                    aria-pressed={selectedOutputId === output.id}
-                    onClick={() => onSelect(output.id)}
-                  >
-                    {selectedOutputId === output.id ? '已選取' : '查看內容'}
-                  </button>
-                  <button className="button detail-button danger-button" type="button" onClick={() => onDelete(output)}>
-                    <Trash2 size={16} aria-hidden="true" />
-                    刪除
-                  </button>
-                </div>
-              </div>
-              <dl className="history-metadata">
-                <div><dt>目標語言</dt><dd>{targetLanguageLabelFor(output.targetLanguageCode) || output.targetLanguageCode || '未知語言'}</dd></div>
-                <div><dt>完成時間</dt><dd>{formatRecordTime(output.completedAt)}</dd></div>
-                <div><dt>輸出</dt><dd>{output.translatedText ? '可閱讀' : '沒有內容'}</dd></div>
-              </dl>
-            </li>
-          ))}
-        </ol>
+        <AgGridReact
+          {...dataGridProps('retranslation-output-data-grid')}
+          aria-label="重新翻譯結果列表"
+          columnDefs={[
+            { headerName: '結果', valueGetter: ({ data }) => translationOutputTitle(data), width: 220, cellRenderer: RetranslationOutputTitleCell },
+            { headerName: '狀態', valueGetter: () => '已完成', width: 100, cellRenderer: RetranslationOutputStatusCell },
+            { headerName: '目標語言', valueGetter: ({ data }) => targetLanguageLabelFor(data.targetLanguageCode) || data.targetLanguageCode || '', width: 130 },
+            { headerName: '完成時間', field: 'completedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.completedAt) },
+            { headerName: '輸出', valueGetter: ({ data }) => data.translatedText ? '可閱讀' : '沒有內容', width: 120 },
+            { headerName: '操作', width: 280, sortable: false, cellRenderer: RetranslationOutputActionsCell }
+          ]}
+          context={{ onSelect, onDelete, selectedOutputId }}
+          rowData={outputs}
+          getRowId={({ data }) => data.id}
+        />
       )}
     </section>
   );
@@ -5025,21 +5225,19 @@ function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }
       {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
       {!isLoading && entries.length === 0 ? <div className="empty-state"><p className="history-empty">尚無字典詞條。</p><p className="history-empty">新增常用名稱或專有名詞後，翻譯會更一致。</p></div> : null}
       {entries.length > 0 ? (
-        <ol className="glossary-list">
-          {entries.map((entry) => (
-            <li key={entry.id || entry.source}>
-              <div>
-                <strong>{glossaryReplacementLabel(entry)}</strong>
-                <p>{glossaryLanguagesLabel(entry.translations)}</p>
-                <p>{glossaryScopeLabel(entry.scope)}</p>
-              </div>
-              <div className="glossary-actions">
-                <button className="button detail-button" type="button" onClick={() => startEditing(entry)}>編輯</button>
-                <button className="button detail-button" type="button" onClick={() => deleteEntry(entry)}>刪除</button>
-              </div>
-            </li>
-          ))}
-        </ol>
+        <AgGridReact
+          {...dataGridProps('glossary-data-grid')}
+          aria-label="翻譯字典詞條列表"
+          columnDefs={[
+            { headerName: '詞條', field: 'source', width: 220, cellRenderer: GlossarySourceCell },
+            { headerName: '翻譯內容', valueGetter: ({ data }) => glossaryTranslationLabel(data.translations), minWidth: 280, flex: 1 },
+            { headerName: '套用範圍', valueGetter: ({ data }) => glossaryScopeLabel(data.scope), width: 150 },
+            { headerName: '操作', width: 220, sortable: false, cellRenderer: GlossaryActionsCell }
+          ]}
+          context={{ onEdit: startEditing, onDelete: deleteEntry }}
+          rowData={entries}
+          getRowId={({ data }) => data.id || data.source}
+        />
       ) : null}
     </section>
   );
@@ -5921,6 +6119,13 @@ function glossaryLanguagesLabel(translations = {}) {
     .map(([languageCode]) => targetLanguageLabelFor(languageCode) || languageCode)
     .join('、');
   return label ? `目標語言：${label}` : '目標語言：未設定';
+}
+
+function glossaryTranslationLabel(translations = {}) {
+  const values = Object.entries(translations)
+    .map(([languageCode, text]) => `${targetLanguageLabelFor(languageCode) || languageCode}：${text}`)
+    .join('、');
+  return values || '尚未設定翻譯';
 }
 
 function hasReplacementAliases(replacementAliases = {}) {

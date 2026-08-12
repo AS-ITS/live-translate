@@ -99,6 +99,10 @@ The MVP includes:
 - The app shows recoverable errors and allows the user to retry.
 - The backend rejects unsupported target languages.
 - The backend never exposes `GEMINI_API_KEY` to the browser.
+- A Meeting can be created before recording and produces a recorder entry link
+  and QR code; opening the link does not request a microphone or create a live
+  Session until the user explicitly starts recording.
+- Active recording Sessions do not expose a control for creating new shares.
 
 ## Non-Functional Requirements
 
@@ -126,6 +130,15 @@ The MVP includes:
 10. The frontend plays translated audio and updates transcripts.
 11. The user clicks stop.
 12. The frontend closes the Gemini session and stops microphone tracks.
+
+Meeting share flow:
+
+1. The user creates a Meeting.
+2. The app displays a recorder entry link and QR code.
+3. A recipient opens the entry link and sees a preparation page.
+4. The recipient explicitly prepares and starts recording.
+5. Only then does the backend create the first Session and the browser request
+   microphone access and connect to Gemini Live API.
 
 ## Supported MVP Languages
 

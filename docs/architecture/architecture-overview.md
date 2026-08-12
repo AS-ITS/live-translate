@@ -75,6 +75,13 @@ share tokens and per-Session SSE events. The current broadcaster is
 process-local; multi-process event distribution remains later work. Share token
 records are file-backed and survive backend restart.
 
+Meeting-first recorder sharing creates the Meeting and its first empty active
+Segment before recording. The Meeting share link and QR code are issued at
+that point; the shared recorder page does not create a Session, claim a lease,
+or request microphone access until the recipient explicitly prepares recording.
+The first Session is then created and bound to the empty Segment, after which
+the existing recorder grant, lease, checkpoint, and direct Gemini flow apply.
+
 Translation execution status is also available through the authenticated
 `/api/sessions/:sessionId/execution-events` WebSocket. A process-local execution
 broadcaster publishes safe snapshots after persisted execution create/update

@@ -1,5 +1,9 @@
 # Changelog
 
+- Meeting-first recorder sharing creates the Meeting before recording, issues
+  an entry link and QR code, and delays Session creation and microphone access
+  until the recipient explicitly starts recording.
+
 - Completed the Recorder persistence path: finalized transcript updates,
   segmented input/translation audio, checkpoint writes, metadata protection,
   Recorder QR/short-code URLs, lease expiry cleanup, and unload release.
@@ -23,6 +27,12 @@
   Session.
 
 ## Unreleased
+
+- 修正主要頁面外框寬度，桌面版改為全寬顯示並保留響應式安全內距。
+
+- 調整全站內容比例與響應式欄位，讓控制項、字幕、紀錄與重新翻譯工作區依畫面寬度流動排列。
+
+- 翻譯紀錄、重新翻譯與翻譯字典的主要列表改用 AG Grid Community，使用內建欄位排序、原生分頁與每頁筆數選擇，既有搜尋、詳細資料與翻譯操作維持不變。
 
 - Added single-host multi-process safety for file-backed translation queue and
   dead-letter queue operations. Sidecar locks serialize claims, enqueue,

@@ -42,6 +42,17 @@ export function createMeetingCheckpointService({
       return meetingRepository.listMeetingSegments(normalizedMeetingId);
     },
 
+    async attachLiveSession({ meetingId, segmentId, liveSessionId } = {}) {
+      const segment = await requireSegment({ meetingRepository, meetingId, segmentId });
+      if (segment.status !== 'active' || segment.liveSessionId !== null) {
+        throw codedError('meeting_segment_invalid_state', 'segment is not available for a live session');
+      }
+      const updated = await meetingRepository.updateMeetingSegment(
+        segment.withLiveSession(validateRequiredString(liveSessionId, 'liveSessionId'))
+      );
+      return { meetingId: updated.meetingId, segmentId: updated.id, segment: updated };
+    },
+
     async getCheckpoint({ meetingId, segmentId } = {}) {
       const segment = await requireSegment({ meetingRepository, meetingId, segmentId });
       return {

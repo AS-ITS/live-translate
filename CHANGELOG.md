@@ -34,6 +34,8 @@
 
 ## Unreleased
 
+- 翻譯紀錄改為會議管理風格：使用工作區側欄、會議導向資料表與會議摘要；沒有 Meeting 的一般 Session 會以「單次翻譯」會議卡呈現，既有查看、匯出、刪除、繼續翻譯與重新翻譯操作維持不變。
+
 - 即時翻譯入口現在只允許使用尚未開始錄音的已建立會議。
 
 - Added guarded Meeting deletion from Meeting Management. Only unstarted

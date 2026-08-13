@@ -620,8 +620,41 @@ test('initial history shows empty state', async ({ page }) => {
   await openHistoryPage(page);
 
   await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無會議紀錄。')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
+});
+
+test('page-specific workspaces stay isolated', async ({ page }) => {
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{ id: 'navigation-meeting', name: '導覽測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }])
+    });
+  });
+
+  await page.goto('/#live');
+  await expect(page.locator('.history-page')).toBeHidden();
+  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
+  await expect(page.locator('.live-page')).toBeVisible();
+
+  await page.goto('/#meeting');
+  await expect(page.locator('.history-page')).toBeHidden();
+  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
+  await expect(page.locator('.meeting-management-page:not(.history-page)')).toBeVisible();
+
+  await openHistoryPage(page);
+  await expect(page.locator('.history-page')).toBeVisible();
+  await expect(page.locator('.live-page')).toBeHidden();
+  await expect(page.locator('.retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
+});
+
+test('workspace pages use the sidebar instead of the legacy header', async ({ page }) => {
+  for (const hash of ['#history', '#retranslate', '#glossary', '#meetings', '#dead-letter-queue']) {
+    await page.goto(`/${hash}`);
+    await expect(page.locator('.live-sidebar')).toBeVisible();
+    await expect(page.locator('.app-header')).toBeHidden();
+  }
 });
 
 test('history grid uses native pagination and page size controls', async ({ page }) => {
@@ -679,6 +712,54 @@ test('history grid uses native pagination and page size controls', async ({ page
   await expect(grid.locator('.ag-row')).toHaveCount(13);
 });
 
+test('history workspace keeps page scrolling inside the table', async ({ page }) => {
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(Array.from({ length: 48 }, (_, index) => historyRecord({
+        id: `session-scroll-${index + 1}`,
+        startedAt: index + 1,
+        endedAt: index + 2,
+        targetLanguageLabel: `語言 ${index + 1}`
+      })))
+    });
+  });
+
+  await page.goto('/');
+  await openHistoryPage(page);
+  await expect(historyPanel(page).locator('.history-data-grid')).toBeVisible();
+  await expect(historyItems(page)).not.toHaveCount(0);
+
+  const layout = await page.evaluate(() => {
+    const grid = document.querySelector('.history-data-grid');
+    const tableScroll = document.querySelector('.history-table-scroll');
+    const pageScroll = document.scrollingElement;
+    const body = document.body;
+    const gridBody = grid?.querySelector('.ag-body-viewport');
+    const rect = grid?.getBoundingClientRect();
+    const panelRect = document.querySelector('.history-page > .history-panel')?.getBoundingClientRect();
+    return {
+      bodyCanScroll: body.scrollHeight > body.clientHeight,
+      pageCanScroll: pageScroll.scrollHeight > pageScroll.clientHeight,
+      tableScrollEnabled: Boolean(tableScroll && ['auto', 'scroll'].includes(getComputedStyle(tableScroll).overflowY)),
+      gridBodyScrollEnabled: Boolean(gridBody && ['auto', 'scroll'].includes(getComputedStyle(gridBody).overflowY)),
+      gridFitsPanel: Boolean(rect && panelRect && rect.top >= panelRect.top && rect.bottom <= panelRect.bottom + 1),
+      domLayout: grid?.querySelector('.ag-root')?.getAttribute('class') || ''
+    };
+  });
+  expect(layout.bodyCanScroll).toBe(false);
+  expect(layout.pageCanScroll).toBe(false);
+  expect(layout.tableScrollEnabled || layout.gridBodyScrollEnabled).toBe(true);
+  expect(layout.gridFitsPanel).toBe(true);
+  expect(layout.domLayout).not.toContain('ag-layout-auto-height');
+});
+
 test('meeting history detail shows timeline, article views, and export controls', async ({ page }) => {
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
@@ -714,6 +795,21 @@ test('meeting history detail shows timeline, article views, and export controls'
   await meetingItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
 
   const detail = historyPanel(page).locator('.meeting-detail');
+  await expect(historyPanel(page).locator('.history-table-scroll')).toBeVisible();
+  await expect(historyPanel(page).locator('.history-detail-scroll')).toBeVisible();
+  const detailLayout = await page.evaluate(() => {
+    const table = document.querySelector('.history-table-scroll');
+    const detail = document.querySelector('.history-detail-scroll');
+    const pageScroll = document.scrollingElement;
+    return {
+      pageCanScroll: pageScroll.scrollHeight > pageScroll.clientHeight,
+      tableScrollEnabled: Boolean(table && ['auto', 'scroll'].includes(getComputedStyle(table).overflowY)),
+      detailScrollEnabled: Boolean(detail && ['auto', 'scroll'].includes(getComputedStyle(detail).overflowY))
+    };
+  });
+  expect(detailLayout.pageCanScroll).toBe(false);
+  expect(detailLayout.tableScrollEnabled).toBe(true);
+  expect(detailLayout.detailScrollEnabled).toBe(true);
   const timeline = detail.getByLabel('會議段落時間軸');
   await expect(timeline.getByText('段落 1')).toBeVisible();
   await expect(timeline.getByText('段落 2')).toBeVisible();
@@ -861,16 +957,46 @@ test('live translation meeting glossary is read-only', async ({ page }) => {
   await expect(drawer.getByRole('button', { name: '回會議管理修改' })).toBeVisible();
 });
 
-test('active session is not shown while listening', async ({ page }) => {
-  await page.goto('/');
+test('active session locks workspace navigation while listening', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{ id: 'meeting-1', name: '錄音鎖定測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }])
+    });
+  });
+  await page.route('**/api/meetings/meeting-1', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: 'meeting-1', name: '錄音鎖定測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', glossaryEntries: [] },
+        segments: []
+      })
+    });
+  });
+  await page.route('**/api/meetings/meeting-1/segments/segment-1/start', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: 'meeting-1', name: '錄音鎖定測試會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+        segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active', liveSessionId: 'live-session-1' }
+      })
+    });
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await openHistoryPage(page);
+  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
 
-  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
-  await expect(historyItems(page)).toHaveCount(0);
-  await expect(historyPanel(page).getByRole('button', { name: '查看詳細資料' })).toHaveCount(0);
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.locator('.history-page')).toHaveCount(0);
+  await expect(page.getByRole('alert')).toContainText('錄音進行中');
+  await expect(page.locator('.live-sidebar-navigation a[aria-disabled="true"]')).toHaveCount(5);
 });
 
 test('missing microphone keeps a retryable error visible', async ({ page }) => {
@@ -1034,10 +1160,11 @@ test('pause keeps the session content and end exposes microphone recording downl
   await expect(page.getByText('before pause source')).toBeVisible();
   await expect(page.getByText('before pause translation')).toBeVisible();
   await expect(page.getByText('原始語音：錄音已暫停，已保留目前片段。')).toBeVisible();
-  await openHistoryPage(page);
-  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
+  const pausedLiveUrl = page.url();
+  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
+  await expect(page).toHaveURL(pausedLiveUrl);
+  await expect(page.getByRole('alert')).toContainText('錄音進行中');
 
-  await openLivePage(page);
   await page.getByRole('button', { name: '繼續' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect.poll(() => page.liveTokenRequests.length).toBe(2);
@@ -1343,10 +1470,10 @@ test('navigation keeps an active translation session and its article reading sta
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'keep this source', 'keep this translation');
 
-  await openHistoryPage(page);
-  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
-
-  await openLivePage(page);
+  const listeningLiveUrl = page.url();
+  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
+  await expect(page).toHaveURL(listeningLiveUrl);
+  await expect(page.getByRole('alert')).toContainText('錄音進行中');
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(liveCuePanel(page)).toBeVisible();
   await expect(finalCueRows(page)).toHaveCount(1);
@@ -1982,7 +2109,7 @@ test('stopped session appears in history with language, status, and transcript s
 
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
-  await expect(item.getByRole('heading', { name: '日文' })).toBeVisible();
+  await expect(item.getByRole('heading', { name: '單次翻譯' })).toBeVisible();
   await expect(item.getByText('已停止', { exact: true })).toBeVisible();
   await expect(item.getByText('原文完成：1 · 翻譯完成：1')).toBeVisible();
 });
@@ -2005,7 +2132,7 @@ test('stopped session can be deleted from history', async ({ page }) => {
 
   await expect(sessionDetail(page)).toBeHidden();
   await expect(historyItems(page)).toHaveCount(0);
-  await expect(historyPanel(page).getByText('尚無翻譯紀錄。')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無會議紀錄。')).toBeVisible();
 });
 
 test('recording and playback settings appear before export fields without overflow', async ({ page }) => {
@@ -3313,16 +3440,32 @@ test('meeting management uses the live workspace layout and preserves create flo
 
   const meetingGridLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
     const gridRect = element.getBoundingClientRect();
-    const panelRect = element.parentElement.getBoundingClientRect();
+    const scrollRect = element.parentElement.getBoundingClientRect();
+    const panelRect = element.closest('.history-panel').getBoundingClientRect();
+    const root = element.querySelector('.ag-root-wrapper');
+    const scroll = element.parentElement;
+    const cell = element.querySelector('.ag-cell');
     return {
       gridFitsPanel: gridRect.bottom <= panelRect.bottom + 1,
-      rootHeight: getComputedStyle(element.querySelector('.ag-root-wrapper')).height,
+      pageFitsViewport: document.scrollingElement.scrollHeight <= document.scrollingElement.clientHeight,
+      layout: root?.className || '',
+      overflowY: getComputedStyle(scroll).overflowY,
+      overflowX: getComputedStyle(scroll).overflowX,
+      cellAlignItems: cell ? getComputedStyle(cell).alignItems : '',
+      rootHeight: root?.getBoundingClientRect().height || 0,
       gridRect: { top: gridRect.top, bottom: gridRect.bottom, height: gridRect.height },
+      scrollRect: { top: scrollRect.top, bottom: scrollRect.bottom, height: scrollRect.height },
       panelRect: { top: panelRect.top, bottom: panelRect.bottom, height: panelRect.height }
     };
   });
   expect(meetingGridLayout.gridFitsPanel).toBe(true);
-  expect(meetingGridLayout.rootHeight).not.toBe('100%');
+  expect(meetingGridLayout.pageFitsViewport).toBe(true);
+  expect(meetingGridLayout.layout).toContain('ag-layout-normal');
+  expect(meetingGridLayout.overflowY).toBe('auto');
+  expect(meetingGridLayout.overflowX).toBe('auto');
+  expect(meetingGridLayout.cellAlignItems).toBe('center');
+  expect(meetingGridLayout.rootHeight).toBeLessThanOrEqual(meetingGridLayout.scrollRect.height);
+  expect(meetingGridLayout.scrollRect.height).toBeGreaterThan(0);
 
   await page.getByRole('row', { name: /既有產品會議/ }).getByRole('button', { name: '編輯' }).click();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();

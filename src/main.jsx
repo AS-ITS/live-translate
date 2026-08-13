@@ -133,16 +133,25 @@ const DATA_GRID_DEFAULT_COL_DEF = {
   suppressHeaderMenuButton: true
 };
 
-function dataGridProps(className) {
+function dataGridProps(className, { fixedHeight = false } = {}) {
+  const defaultColDef = fixedHeight
+    ? {
+      ...DATA_GRID_DEFAULT_COL_DEF,
+      wrapText: false,
+      autoHeight: false
+    }
+    : DATA_GRID_DEFAULT_COL_DEF;
+
   return {
     className: `data-grid ${className}`,
     theme: DATA_GRID_THEME,
-    defaultColDef: DATA_GRID_DEFAULT_COL_DEF,
+    defaultColDef,
     pagination: true,
     paginationPageSize: 12,
     paginationPageSizeSelector: [12, 24, 48],
     localeText: DATA_GRID_LOCALE_TEXT,
-    domLayout: 'autoHeight',
+    domLayout: fixedHeight ? 'normal' : 'autoHeight',
+    rowHeight: fixedHeight ? 64 : undefined,
     animateRows: false,
     suppressCellFocus: false
   };
@@ -419,6 +428,7 @@ function App() {
     status === 'reconnecting' ||
     status === 'switching-segment';
   const controlsLocked = isActive || status === 'paused' || Boolean(controlLeaseSnapshot && !hasSessionControl);
+  const isNavigationLocked = isActive || status === 'paused';
 
   useEffect(() => {
     const lease = createSessionControlLease();
@@ -2573,6 +2583,11 @@ function App() {
   function navigateTo(nextPage, event) {
     event?.preventDefault();
 
+    if (isNavigationLocked) {
+      setError('錄音進行中，請先結束目前工作階段後再切換目錄。');
+      return;
+    }
+
     if (nextPage === 'retranslate') {
       setRetranslationSessionId('');
       window.location.hash = 'retranslate';
@@ -2718,34 +2733,36 @@ function App() {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
+  const usesWorkspaceNavigation = ['live', 'meeting', 'history', 'meetings', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
+
   return (
-    <main className={`app-shell ${page === 'live' || page === 'meeting' ? 'live-app-shell' : ''}`}>
-      {page === 'live' || page === 'meeting' ? (
+    <main className={`app-shell ${usesWorkspaceNavigation ? 'live-app-shell' : ''}`}>
+      {usesWorkspaceNavigation ? (
         <aside className="live-sidebar" aria-label="即時翻譯工作區導覽">
-          <a className="live-sidebar-brand" href="#live" aria-label="即時翻譯首頁" onClick={(event) => navigateTo('live', event)}>
+          <a className={`live-sidebar-brand${isNavigationLocked ? ' is-navigation-locked' : ''}`} href="#live" aria-label="即時翻譯首頁" aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}>
             <span className="live-sidebar-mark" aria-hidden="true"><Radio size={20} /></span>
             <h1>即時翻譯</h1>
           </a>
           <nav className="live-sidebar-navigation" aria-label="主要導覽">
-            <a href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} onClick={(event) => navigateTo('meeting', event)}><Play size={18} aria-hidden="true" />會議管理</a>
-            <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
-            <a href="#history" onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
-            <a href="#retranslate" onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
-            <a href="#glossary" onClick={(event) => navigateTo('glossary', event)}><BookOpen size={18} aria-hidden="true" />翻譯字典</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meeting', event)}><Play size={18} aria-hidden="true" />會議管理</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#live" aria-current={page === 'live' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#history" aria-current={page === 'history' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#retranslate" aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#glossary" aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('glossary', event)}><BookOpen size={18} aria-hidden="true" />翻譯字典</a>
           </nav>
         </aside>
       ) : null}
-      <header className="app-header" hidden={page === 'live' || page === 'meeting'}>
+      <header className="app-header" hidden={usesWorkspaceNavigation}>
         <div className="brand-block">
           <h1>即時翻譯</h1>
           <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
         </div>
         <nav className="feature-navigation" aria-label="主要導覽">
-          <a href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} onClick={(event) => navigateTo('meeting', event)}>會議管理</a>
-          <a href="#live" aria-current={page === 'live' ? 'page' : undefined} onClick={(event) => navigateTo('live', event)}>即時翻譯</a>
-          <a href="#history" aria-current={page === 'history' ? 'page' : undefined} onClick={(event) => navigateTo('history', event)}>翻譯紀錄</a>
-          <a href="#retranslate" aria-current={page === 'retranslate' ? 'page' : undefined} onClick={(event) => navigateTo('retranslate', event)}>重新翻譯</a>
-          <a href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} onClick={(event) => navigateTo('glossary', event)}>翻譯字典</a>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meeting', event)}>會議管理</a>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#live" aria-current={page === 'live' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}>即時翻譯</a>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#history" aria-current={page === 'history' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('history', event)}>翻譯紀錄</a>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#retranslate" aria-current={page === 'retranslate' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('retranslate', event)}>重新翻譯</a>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#glossary" aria-current={page === 'glossary' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('glossary', event)}>翻譯字典</a>
         </nav>
       </header>
 
@@ -3011,11 +3028,12 @@ function App() {
         }}
       />
 
-      <section className="feature-page history-page" aria-labelledby="history-page-title" hidden={page !== 'history'}>
+      {page === 'history' ? (
+      <section className="feature-page history-page meeting-management-page" aria-labelledby="history-page-title">
         <div className="history-header">
           <div>
             <h2 id="history-page-title">翻譯紀錄</h2>
-            <p className="history-description">查看已完成的翻譯工作階段；選取紀錄可閱讀、下載或重新翻譯。</p>
+            <p className="history-description">以會議管理方式整理翻譯紀錄；選取一場會議可查看段落、逐字稿與後續操作。</p>
           </div>
         </div>
         <div className="history-load-status">
@@ -3047,8 +3065,10 @@ function App() {
           retryingExecutionId={retryingHistoryExecutionId}
         />
       </section>
+      ) : null}
 
-      <section className="feature-page dead-letter-queue-page" aria-labelledby="dead-letter-queue-page-title" hidden={page !== 'dead-letter-queue'}>
+      {page === 'dead-letter-queue' ? (
+      <section className="feature-page dead-letter-queue-page" aria-labelledby="dead-letter-queue-page-title">
         <DeadLetterQueuePanel
           items={deadLetterQueue.items}
           size={deadLetterQueue.size}
@@ -3060,8 +3080,10 @@ function App() {
           onRefresh={refreshDeadLetterQueue}
         />
       </section>
+      ) : null}
 
-      <section className="feature-page meetings-page" aria-labelledby="meetings-page-title" hidden={page !== 'meetings'}>
+      {page === 'meetings' ? (
+      <section className="feature-page meetings-page" aria-labelledby="meetings-page-title">
         <MeetingPanel
           titleId="meetings-page-title"
           records={meetingRecords}
@@ -3075,8 +3097,10 @@ function App() {
           onRetryLoad={refreshMeetingRecords}
         />
       </section>
+      ) : null}
 
-      <section className="feature-page retranslation-page" aria-labelledby="retranslation-page-title" hidden={page !== 'retranslate'}>
+      {page === 'retranslate' ? (
+      <section className="feature-page retranslation-page" aria-labelledby="retranslation-page-title">
         <RetranslationWorkflow
           titleId="retranslation-page-title"
           records={historyRecords}
@@ -3084,14 +3108,17 @@ function App() {
           onSelectSession={openRetranslationWorkflow}
         />
       </section>
+      ) : null}
 
-      <section className="feature-page glossary-page" aria-labelledby="glossary-page-title" hidden={page !== 'glossary'}>
+      {page === 'glossary' ? (
+      <section className="feature-page glossary-page" aria-labelledby="glossary-page-title">
         <GlossaryPanel
           titleId="glossary-page-title"
           entries={glossaryEntries}
           onEntriesChange={setGlossaryEntries}
         />
       </section>
+      ) : null}
     </main>
   );
 }
@@ -3748,7 +3775,7 @@ function buildArticleFileName(stream) {
 const CUE_PAGE_FOLLOW_THRESHOLD_PX = 80;
 
 function HistoryNameCell({ data }) {
-  return <strong role="heading" aria-level="3">{data.kind === 'meeting' ? meetingTitle(data.record) : historyLanguageLabel(data.record)}</strong>;
+  return <strong role="heading" aria-level="3">{historyEntryTitle(data)}</strong>;
 }
 
 function HistoryStatusCell({ data }) {
@@ -3756,7 +3783,7 @@ function HistoryStatusCell({ data }) {
 }
 
 function HistorySummaryCell({ data }) {
-  return <span>{data.kind === 'meeting' ? meetingSegmentSummaryLabel(data.record.segmentSummary) : transcriptSummaryLabel(data.record.transcriptSummary)}</span>;
+  return <span>{historyEntrySummary(data)}</span>;
 }
 
 function HistoryActionsCell({ data, context }) {
@@ -4121,11 +4148,11 @@ function HistoryPanel({
   const filteredEntries = useMemo(() => entries.filter((entry) => historyEntryMatches(entry, query)), [entries, query]);
   const gridContext = useMemo(() => ({ onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId }), [onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId]);
   const columnDefs = useMemo(() => [
-    { headerName: '名稱', valueGetter: ({ data }) => data.kind === 'meeting' ? meetingTitle(data.record) : historyLanguageLabel(data.record), width: 220, cellRenderer: HistoryNameCell },
+    { headerName: '會議', valueGetter: ({ data }) => historyEntryTitle(data), width: 240, cellRenderer: HistoryNameCell },
     { headerName: '狀態', valueGetter: ({ data }) => data.record.status || '', width: 100, cellRenderer: HistoryStatusCell },
     { headerName: '開始時間', valueGetter: ({ data }) => historyRecordSortTime(data.record), width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.startedAt) },
     { headerName: '結束時間', valueGetter: ({ data }) => data.record.endedAt || '', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.endedAt) },
-    { headerName: '摘要', valueGetter: ({ data }) => data.kind === 'meeting' ? meetingSegmentSummaryLabel(data.record.segmentSummary) : transcriptSummaryLabel(data.record.transcriptSummary), minWidth: 210, flex: 1, cellRenderer: HistorySummaryCell },
+    { headerName: '會議摘要', valueGetter: ({ data }) => historyEntrySummary(data), minWidth: 230, flex: 1, cellRenderer: HistorySummaryCell },
     { headerName: '操作', width: 300, sortable: false, cellRenderer: HistoryActionsCell }
   ], []);
   const selectedEntry = selectedRecordId
@@ -4135,33 +4162,44 @@ function HistoryPanel({
       : null;
 
   return (
-    <section className="history-panel" aria-labelledby={titleId}>
-      <h3 id={titleId} className="sr-only">紀錄清單</h3>
+    <section className={`history-panel${selectedEntry ? ' has-history-detail' : ''}`} aria-labelledby={titleId}>
+      <div className="history-header">
+        <div>
+          <h3 id={titleId}>會議紀錄</h3>
+          <p className="history-description">查看會議狀態、語言、時間與翻譯內容。</p>
+        </div>
+      </div>
       <label className="field history-search-field">
-        <span>搜尋紀錄</span>
+        <span>搜尋會議</span>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
       </label>
 
       {entries.length === 0 ? (
         <div className="empty-state">
-          <p className="history-empty">尚無翻譯紀錄。</p>
-          <p className="history-empty">完成一次即時翻譯後，紀錄會出現在這裡。</p>
+          <p className="history-empty">尚無會議紀錄。</p>
+          <p className="history-empty">完成一次即時翻譯後，會議摘要會出現在這裡。</p>
           <a className="button primary" href="#live">開始即時翻譯</a>
         </div>
       ) : filteredEntries.length === 0 ? (
         <p className="history-empty">找不到符合條件的紀錄。</p>
       ) : (
         <>
+          <div className="history-table-scroll">
           <AgGridReact
-            {...dataGridProps('history-data-grid')}
-            aria-label="翻譯紀錄列表"
+            {...dataGridProps('history-data-grid', { fixedHeight: true })}
+            aria-label="會議紀錄列表"
             columnDefs={columnDefs}
             context={gridContext}
             rowData={filteredEntries}
             getRowId={({ data }) => `${data.kind}-${data.record.id}`}
           />
-          {selectedEntry?.kind === 'session' ? <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onRetranslationSubmitted={onRetranslationSubmitted} onOpenRetranslationWorkflow={onOpenRetranslationWorkflow} onPolishingRetry={onPolishingRetry} onRetryExecution={onRetryExecution} retryingExecutionId={retryingExecutionId} detailError={historyDetailError} onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)} /> : null}
-          {selectedEntry?.kind === 'meeting' ? <MeetingDetail detail={selectedMeetingDetail} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} /> : null}
+          </div>
+          {selectedEntry ? (
+            <div className="history-detail-scroll">
+              {selectedEntry.kind === 'session' ? <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onRetranslationSubmitted={onRetranslationSubmitted} onOpenRetranslationWorkflow={onOpenRetranslationWorkflow} onPolishingRetry={onPolishingRetry} onRetryExecution={onRetryExecution} retryingExecutionId={retryingExecutionId} detailError={historyDetailError} onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)} /> : null}
+              {selectedEntry.kind === 'meeting' ? <MeetingDetail detail={selectedMeetingDetail} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} /> : null}
+            </div>
+          ) : null}
         </>
       )}
     </section>
@@ -4173,12 +4211,24 @@ function historyEntryMatches(entry, query) {
   if (!normalizedQuery) return true;
   const record = entry.record || {};
   return [
-    entry.kind === 'meeting' ? meetingTitle(record) : sessionDisplayName(record),
+    historyEntryTitle(entry),
     record.status,
     formatRecordTime(record.startedAt),
     record.targetLanguageLabel,
     record.targetLanguageCode
   ].filter(Boolean).join(' ').toLocaleLowerCase().includes(normalizedQuery);
+}
+
+function historyEntryTitle(entry) {
+  if (entry?.kind === 'meeting') return meetingTitle(entry.record);
+  return entry?.record?.name || '單次翻譯';
+}
+
+function historyEntrySummary(entry) {
+  if (entry?.kind === 'meeting') {
+    return `${meetingSegmentSummaryLabel(entry.record.segmentSummary)} · ${transcriptSummaryLabel(entry.record.transcriptSummary)}`;
+  }
+  return `${historyLanguageLabel(entry.record)} · ${transcriptSummaryLabel(entry.record.transcriptSummary)}`;
 }
 
 function SessionHistoryItem({
@@ -4540,8 +4590,10 @@ function MeetingManagementPage({ onOpenLive }) {
           <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>
         )}
       </div>
-      {error ? <p className="error-message" role="alert">{error}</p> : null}
-      {notice ? <p className="success-message" role="status">{notice}</p> : null}
+      <div className="meeting-management-status">
+        {error ? <p className="error-message" role="alert">{error}</p> : null}
+        {notice ? <p className="success-message" role="status">{notice}</p> : null}
+      </div>
       {viewMode === 'form' ? (
         <div className={`meeting-management-grid ${selectedMeeting ? '' : 'settings-only'}`}>
           <section className="control-panel" aria-label="會議設定">
@@ -4591,13 +4643,15 @@ function MeetingManagementPage({ onOpenLive }) {
         {meetings.length === 0 ? (
           <p className="history-empty">尚無會議。</p>
         ) : (
-          <AgGridReact
-            {...dataGridProps('meeting-management-data-grid')}
-            aria-label="既有會議列表"
-            columnDefs={meetingColumnDefs}
-            rowData={meetings}
-            getRowId={({ data }) => data.id}
-          />
+          <div className="meeting-table-scroll">
+            <AgGridReact
+              {...dataGridProps('meeting-management-data-grid', { fixedHeight: true })}
+              aria-label="既有會議列表"
+              columnDefs={meetingColumnDefs}
+              rowData={meetings}
+              getRowId={({ data }) => data.id}
+            />
+          </div>
         )}
       </section> : null}
       <LiveGlossaryDrawer

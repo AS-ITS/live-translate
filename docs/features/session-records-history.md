@@ -9,8 +9,11 @@ relationship, and repository abstraction.
 Status: Slice 5 implemented with a finalized history list, inline session
 detail, saved-session export, finalized-record delete, and saved-retranslation
 output delete backed by the repository boundary. The UI exposes translation
-history through `#history`; the same page lists saved Sessions and Long Meeting
-summaries together chronologically, while live translation remains on `#live`.
+history through `#history` as a Meeting Management-style workspace: Meeting
+records and standalone Sessions are shown in one meeting-oriented table, with
+standalone Sessions labelled as `單次翻譯`. Existing detail, export, delete,
+resume, and re-translation actions remain available, while live translation
+remains on `#live`.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,

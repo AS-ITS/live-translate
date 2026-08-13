@@ -1,5 +1,11 @@
 # Changelog
 
+- 即時翻譯的會議選擇改為可搜尋的 autocomplete，支援鍵盤選取與無結果提示，避免一次展開所有會議選項。
+- 即時錄音現在必須先選擇狀態為 `created` 的會議；無效或已失效的會議連結會導回會議管理。
+- 即時頁會呈現會議建立時的設定值；會議名稱、語言與會議字典需回會議管理修改。
+- 即時頁移除工作階段名稱欄位，會議選擇欄位改名為「選擇會議」。
+- 從即時翻譯返回會議管理修改時，會直接開啟目前會議的設定編輯畫面。
+
 - Meeting-first recorder sharing creates the Meeting before recording, issues
   an entry link and QR code, and delays Session creation and microphone access
   until the recipient explicitly starts recording.
@@ -27,6 +33,8 @@
   Session.
 
 ## Unreleased
+
+- 即時翻譯入口現在只允許使用尚未開始錄音的已建立會議。
 
 - Added guarded Meeting deletion from Meeting Management. Only unstarted
   `created` Meetings can be deleted; their draft Segments and Recorder shares

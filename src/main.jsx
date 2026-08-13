@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { useCombobox } from 'downshift';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { BookOpen, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2, X } from 'lucide-react';
+import { BookOpen, ChevronDown, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -201,8 +202,94 @@ function pageInfoFromLocation() {
   };
 }
 
+const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請重新選擇已建立的會議。';
+
+function LiveTranslationModeCombobox({ meetingRecords = [], routeMeetingId = '', controlsLocked = false, onChange }) {
+  const items = useMemo(() => meetingRecords
+      .filter((meeting) => meeting.status === 'created')
+      .map((meeting) => ({
+        value: `meeting:${meeting.id}`,
+        label: meeting.name || meeting.id,
+        searchText: `${meeting.name || ''} ${meeting.id || ''}`
+      })),
+    [meetingRecords]);
+  const selectedItem = items.find((item) => item.value === `meeting:${routeMeetingId}`) || null;
+  const [inputValue, setInputValue] = useState(selectedItem?.label || '');
+  const filteredItems = useMemo(() => {
+    const normalizedQuery = inputValue.trim().toLocaleLowerCase();
+    if (!normalizedQuery || inputValue === selectedItem?.label) return items;
+    return items.filter((item) => item.searchText.toLocaleLowerCase().includes(normalizedQuery));
+  }, [inputValue, items, selectedItem?.label]);
+  const {
+    isOpen,
+    getLabelProps,
+    getMenuProps,
+    getInputProps,
+    getItemProps,
+    getToggleButtonProps,
+    highlightedIndex
+  } = useCombobox({
+    items: filteredItems,
+    itemToString: (item) => item?.label || '',
+    selectedItem,
+    inputValue,
+    isOpen: controlsLocked ? false : undefined,
+    onInputValueChange: ({ inputValue: nextValue }) => setInputValue(nextValue || ''),
+    onSelectedItemChange: ({ selectedItem: nextItem }) => {
+      if (!nextItem) return;
+      setInputValue(nextItem.label);
+      onChange(nextItem.value);
+    }
+  });
+
+  useEffect(() => {
+    setInputValue(selectedItem?.label || '');
+  }, [selectedItem?.label]);
+
+  return (
+    <div className="field live-translation-mode-field">
+      <label {...getLabelProps()}>選擇會議</label>
+      <div className="combobox-wrapper">
+        <div className="combobox-input-wrapper">
+          <input
+            {...getInputProps({
+              'aria-describedby': 'live-translation-mode-help',
+              disabled: controlsLocked,
+              placeholder: '搜尋已建立的會議'
+            })}
+          />
+          <button
+            {...getToggleButtonProps({
+              type: 'button',
+              'aria-label': isOpen ? '收合會議選單' : '展開會議選單',
+              className: `combobox-toggle${isOpen ? ' is-open' : ''}`,
+              disabled: controlsLocked
+            })}
+          >
+            <ChevronDown size={18} strokeWidth={2.25} aria-hidden="true" />
+          </button>
+        </div>
+        <ul {...getMenuProps()} className="combobox-menu">
+          {isOpen ? filteredItems.map((item, index) => (
+            <li
+              key={item.value}
+              {...getItemProps({ item, index })}
+              className={`combobox-option${highlightedIndex === index ? ' is-highlighted' : ''}`}
+            >
+              {item.label}
+            </li>
+          )) : null}
+          {isOpen && filteredItems.length === 0 ? <li className="combobox-empty">找不到符合的會議。</li> : null}
+        </ul>
+      </div>
+      <span id="live-translation-mode-help" className="field-help">請先選擇一個已建立的會議。</span>
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState(pageFromLocation);
+  const [locationVersion, setLocationVersion] = useState(0);
   const [status, setStatus] = useState('idle');
   const [hasSessionControl, setHasSessionControl] = useState(false);
   const [controlLeaseSnapshot, setControlLeaseSnapshot] = useState(null);
@@ -391,6 +478,7 @@ function App() {
     const handleHashChange = () => {
       const next = pageInfoFromLocation();
       setPage(next.page);
+      setLocationVersion((current) => current + 1);
       if (next.page === 'retranslate') {
         setRetranslationSessionId(next.sessionId);
       }
@@ -409,6 +497,22 @@ function App() {
     if (page === 'history' || page === 'meetings') {
       void refreshMeetingRecords();
     }
+  }, [page]);
+
+  useEffect(() => {
+    if (page !== 'live') return;
+    let cancelled = false;
+    void refreshMeetingRecords().then((meetings) => {
+      if (cancelled || !meetings) return;
+      const createdMeetings = meetings.filter((meeting) => meeting.status === 'created');
+      const currentMeetingId = pageInfoFromLocation().meetingId;
+      if (currentMeetingId && !createdMeetings.some((meeting) => meeting.id === currentMeetingId)) {
+        redirectToMeetingWithError();
+      } else if (!currentMeetingId && createdMeetings.length === 0) {
+        window.location.hash = 'meeting';
+      }
+    });
+    return () => { cancelled = true; };
   }, [page]);
 
   useEffect(() => {
@@ -506,7 +610,10 @@ function App() {
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
         const meeting = detail?.meeting;
-        if (!meeting) return;
+        if (!meeting || meeting.status !== 'created') {
+          redirectToMeetingWithError();
+          return;
+        }
         const nextTargetLanguageCode = meeting.targetLanguageCode || 'en';
         setSessionName(meeting.name || '');
         setSourceLanguageCode(meeting.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE);
@@ -517,8 +624,12 @@ function App() {
         });
       })
       .catch(() => {})
-      .finally(() => loadMeetingResumeDraft(meetingId));
-  }, [page, status]);
+      .finally(() => {
+        if (pageFromLocation() === 'live' && pageInfoFromLocation().meetingId === meetingId) {
+          loadMeetingResumeDraft(meetingId);
+        }
+      });
+  }, [page, status, locationVersion]);
 
   useEffect(() => () => {
     invalidateLiveSessionCallbacks();
@@ -623,6 +734,12 @@ function App() {
       setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
       return;
     }
+    const selectedRouteMeetingId = pageInfoFromLocation().meetingId;
+    const selectedCreatedMeeting = meetingRecords.find((meeting) => meeting.id === selectedRouteMeetingId && meeting.status === 'created');
+    if (!selectedCreatedMeeting) {
+      setError('請先選擇一個已建立的會議。');
+      return;
+    }
     invalidateLiveSessionCallbacks();
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
@@ -641,7 +758,7 @@ function App() {
       resetTranslatedAudioDownload();
       pendingMicrophoneStreamRef.current = null;
       const liveSessionId = generateLiveSessionId();
-      const routeMeetingId = pageInfoFromLocation().meetingId;
+      const routeMeetingId = selectedRouteMeetingId;
       let meetingCheckpoint;
       if (routeMeetingId) {
         const segmentsResult = await meetingCheckpointApiClientRef.current.listSegments({ meetingId: routeMeetingId });
@@ -2102,8 +2219,10 @@ function App() {
     try {
       const meetings = await meetingReadApiClientRef.current.listMeetingHistory();
       setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
+      return meetings;
     } catch {
       setMeetingLoadError('長會議紀錄載入失敗。請檢查連線後重試。');
+      return null;
     } finally {
       setIsLoadingMeetings(false);
     }
@@ -2467,6 +2586,16 @@ function App() {
     window.location.hash = nextPage;
   }
 
+  function selectLiveTranslationMode(value) {
+    const meetingId = value.replace(/^meeting:/, '');
+    if (meetingId) window.location.hash = `live?meetingId=${encodeURIComponent(meetingId)}`;
+  }
+
+  function redirectToMeetingWithError() {
+    setError(INVALID_MEETING_ROUTE_MESSAGE);
+    if (pageFromLocation() !== 'meeting') window.location.hash = 'meeting';
+  }
+
   function updateLiveMeetingUrl(meetingId) {
     if (!meetingId || pageFromLocation() !== 'live') return;
     runtimeMeetingIdsRef.current.add(meetingId);
@@ -2572,6 +2701,8 @@ function App() {
   const selectedHistoryRecord = selectedHistoryRecordId
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
+  const hasSelectedCreatedMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && meeting.status === 'created');
+  const meetingSettingsReadOnly = Boolean(routeMeetingId);
 
   if (page === 'watch') {
     const watchInfo = pageInfoFromLocation();
@@ -2635,20 +2766,22 @@ function App() {
           </div>
 
           <div className="controls live-settings-controls" aria-label="翻譯控制項">
-            <label className="field">
-              <span>工作階段名稱</span>
-              <input value={sessionName} onChange={(event) => setSessionName(event.target.value)} placeholder="例如：產品會議" disabled={controlsLocked} maxLength={120} />
-            </label>
+            <LiveTranslationModeCombobox
+              meetingRecords={meetingRecords}
+              routeMeetingId={routeMeetingId}
+              controlsLocked={controlsLocked}
+              onChange={selectLiveTranslationMode}
+            />
             <label className="field">
               <span>我主要說的語言</span>
-              <select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={controlsLocked}>
+              <select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly}>
                 {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
               </select>
             </label>
 
             <label className="field">
               <span>目標語言</span>
-              <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={controlsLocked}>
+              <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly}>
                 {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
               </select>
             </label>
@@ -2693,6 +2826,10 @@ function App() {
                 {selectedMeetingGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
               </span>
             </button>
+
+            {meetingSettingsReadOnly ? (
+              <a className="button secondary meeting-settings-edit-link" href={`#meeting?meetingId=${encodeURIComponent(routeMeetingId)}`}>回會議管理修改</a>
+            ) : null}
 
             <button
               className="button secondary live-export-trigger"
@@ -2785,7 +2922,7 @@ function App() {
                     </button>
                   </>
                 ) : (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}>
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedCreatedMeeting}>
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {isActive ? '正在開始' : '開始'}
                   </button>
@@ -2860,12 +2997,17 @@ function App() {
         targetLanguageCode={targetLanguageCode}
         selectedEntryIds={selectedMeetingGlossaryIds}
         disabled={controlsLocked}
+        readOnly={meetingSettingsReadOnly}
         onClose={() => setIsLiveGlossaryDrawerOpen(false)}
         onEntriesChange={setGlossaryEntries}
         onSelectionChange={setSelectedMeetingGlossaryIds}
         onOpenManager={() => {
           setIsLiveGlossaryDrawerOpen(false);
-          navigateTo('glossary');
+          if (meetingSettingsReadOnly) {
+            window.location.hash = `meeting?meetingId=${encodeURIComponent(pageInfoFromLocation().meetingId)}`;
+          } else {
+            navigateTo('glossary');
+          }
         }}
       />
 
@@ -4186,8 +4328,13 @@ function MeetingManagementPage({ onOpenLive }) {
   const [isGlossaryDrawerOpen, setIsGlossaryDrawerOpen] = useState(false);
 
   useEffect(() => {
+    const routeMeetingId = pageInfoFromLocation().meetingId;
     Promise.all([readClientRef.current.listMeetingHistory(), glossaryClientRef.current.listEntries()])
-      .then(([meetingItems, entries]) => { setMeetings(meetingItems); setGlossaryEntries(entries); })
+      .then(async ([meetingItems, entries]) => {
+        setMeetings(meetingItems);
+        setGlossaryEntries(entries);
+        if (routeMeetingId) await selectMeeting(routeMeetingId, entries);
+      })
       .catch(() => setError('無法載入會議或字典資料。'));
   }, []);
 
@@ -4222,17 +4369,18 @@ function MeetingManagementPage({ onOpenLive }) {
     setViewMode('list');
   }
 
-  async function selectMeeting(id) {
+  async function selectMeeting(id, availableGlossaryEntries = glossaryEntries) {
     setError('');
     try {
       const detail = await readClientRef.current.getMeetingDetail(id);
       const meeting = detail?.meeting;
+      if (!meeting) throw new Error('meeting_not_found');
       setSelectedMeeting(meeting);
       setName(meeting?.name || '');
       setSourceLanguageCode(meeting?.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE);
       const meetingTargetLanguageCode = meeting?.targetLanguageCode || 'en';
       setTargetLanguageCode(meetingTargetLanguageCode);
-      setSelectedGlossaryIds(glossaryEntries.filter((entry) => (meeting?.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[meetingTargetLanguageCode] === item.target)).map((entry) => entry.id));
+      setSelectedGlossaryIds(availableGlossaryEntries.filter((entry) => (meeting?.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[meetingTargetLanguageCode] === item.target)).map((entry) => entry.id));
       setShares(await managementClientRef.current.listShares(id));
       setCreatedShare(null);
       setViewMode('form');
@@ -5243,6 +5391,7 @@ function LiveGlossaryDrawer({
   targetLanguageCode,
   selectedEntryIds,
   disabled,
+  readOnly = false,
   onClose,
   onEntriesChange,
   onSelectionChange,
@@ -5301,7 +5450,8 @@ function LiveGlossaryDrawer({
   }
 
   const targetEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
-  const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving && !disabled;
+  const settingsDisabled = disabled || readOnly;
+  const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving && !settingsDisabled;
 
   return (
     <>
@@ -5311,7 +5461,7 @@ function LiveGlossaryDrawer({
           <div>
             <p className="eyebrow">即時翻譯</p>
             <h2>本次使用字典</h2>
-            <p>選取的詞條會套用到本次翻譯與後續分段。</p>
+            <p>{readOnly ? '這些詞條來自會議建立設定；如需修改，請回會議管理。' : '選取的詞條會套用到本次翻譯與後續分段。'}</p>
           </div>
           <button className="icon-button" type="button" onClick={onClose} aria-label="關閉字典" tabIndex={open ? 0 : -1}>
             <X size={20} aria-hidden="true" />
@@ -5338,7 +5488,7 @@ function LiveGlossaryDrawer({
                     onChange={(event) => onSelectionChange((current) => event.target.checked
                       ? [...new Set([...current, entry.id])]
                       : current.filter((id) => id !== entry.id))}
-                    disabled={disabled}
+                    disabled={settingsDisabled}
                     tabIndex={open ? 0 : -1}
                   />
                   <span>
@@ -5350,25 +5500,27 @@ function LiveGlossaryDrawer({
             </div>
           ) : null}
 
-          <div className="glossary-quick-add">
-            <h3>快速新增詞條</h3>
-            <label className="field">
-              <span>原文</span>
-              <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：產品名稱" disabled={disabled || isSaving} tabIndex={open ? 0 : -1} />
-            </label>
-            <label className="field">
-              <span>翻譯（{targetLanguageLabelFor(targetLanguageCode) || targetLanguageCode}）</span>
-              <input value={translation} onChange={(event) => setTranslation(event.target.value)} placeholder="例如：正式翻譯" disabled={disabled || isSaving} tabIndex={open ? 0 : -1} />
-            </label>
-            <button className="button primary" type="button" onClick={saveQuickEntry} disabled={!canSave} tabIndex={open ? 0 : -1}>
-              {isSaving ? '儲存中…' : '新增並套用'}
-            </button>
-            {status ? <p className="success-message" role="status">{status}</p> : null}
-          </div>
+          {!readOnly ? (
+            <div className="glossary-quick-add">
+              <h3>快速新增詞條</h3>
+              <label className="field">
+                <span>原文</span>
+                <input value={source} onChange={(event) => setSource(event.target.value)} placeholder="例如：產品名稱" disabled={settingsDisabled || isSaving} tabIndex={open ? 0 : -1} />
+              </label>
+              <label className="field">
+                <span>翻譯（{targetLanguageLabelFor(targetLanguageCode) || targetLanguageCode}）</span>
+                <input value={translation} onChange={(event) => setTranslation(event.target.value)} placeholder="例如：正式翻譯" disabled={settingsDisabled || isSaving} tabIndex={open ? 0 : -1} />
+              </label>
+              <button className="button primary" type="button" onClick={saveQuickEntry} disabled={!canSave} tabIndex={open ? 0 : -1}>
+                {isSaving ? '儲存中…' : '新增並套用'}
+              </button>
+              {status ? <p className="success-message" role="status">{status}</p> : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="glossary-drawer-footer">
-          <button className="button secondary" type="button" onClick={onOpenManager} tabIndex={open ? 0 : -1}>前往完整字典管理</button>
+          <button className="button secondary" type="button" onClick={onOpenManager} tabIndex={open ? 0 : -1}>{readOnly ? '回會議管理修改' : '前往完整字典管理'}</button>
         </div>
       </aside>
     </>

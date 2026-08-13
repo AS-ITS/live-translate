@@ -21,6 +21,7 @@
     "@vitejs/plugin-react": "^6.0.3",
     "ag-grid-community": "^36.1.0",
     "ag-grid-react": "^36.1.0",
+    "downshift": "^9.4.0",
     "lucide-react": "^0.468.0",
     "opencc-js": "^1.4.1",
     "qrcode": "^1.5.4",

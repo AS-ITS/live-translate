@@ -265,9 +265,15 @@ input {
 }
 
 .meeting-management-data-grid {
+  height: auto !important;
   width: 100%;
   min-width: 0;
   overflow: hidden;
+}
+
+.meeting-management-data-grid .ag-root-wrapper,
+.meeting-management-data-grid .ag-root-wrapper-body {
+  height: auto;
 }
 
 .meeting-management-data-grid .ag-root-wrapper-body,
@@ -385,6 +391,11 @@ input {
   width: 100%;
 }
 
+.live-settings-card .button {
+  min-height: 42px;
+  padding-inline: 14px;
+}
+
 .live-settings-card .control-status-row {
   display: grid;
   gap: 16px;
@@ -398,6 +409,11 @@ input {
 .live-settings-card .session-actions .button,
 .live-settings-card .control-actions > .button {
   width: 100%;
+}
+
+.meeting-settings-edit-link {
+  width: 100%;
+  text-align: center;
 }
 
 .live-transcript-column {
@@ -623,6 +639,89 @@ input {
   padding: 0 12px;
   background: #ffffff;
   color: #17202a;
+}
+
+.combobox-wrapper {
+  position: relative;
+}
+
+.combobox-input-wrapper {
+  display: flex;
+  align-items: stretch;
+}
+
+.combobox-input-wrapper input {
+  border-radius: 8px 0 0 8px;
+  flex: 1 1 auto;
+}
+
+.combobox-input-wrapper button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  border: 1px solid #b9c4d1;
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: #ffffff;
+  color: #314152;
+  cursor: pointer;
+}
+
+.combobox-toggle svg {
+  transition: transform 180ms ease;
+}
+
+.combobox-toggle.is-open svg {
+  transform: rotate(180deg);
+}
+
+.combobox-input-wrapper button:focus-visible,
+.combobox-input-wrapper input:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+.combobox-menu {
+  position: absolute;
+  z-index: 20;
+  display: none;
+  width: 100%;
+  max-height: 280px;
+  margin: 4px 0 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  border: 1px solid #b9c4d1;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 24px rgba(39, 57, 77, 0.14);
+  list-style: none;
+}
+
+.combobox-input-wrapper input[aria-expanded="true"] ~ .combobox-menu,
+.combobox-menu:not(:empty) {
+  display: block;
+}
+
+.combobox-option,
+.combobox-empty {
+  min-height: 44px;
+  padding: 11px 12px;
+  color: #17202a;
+  font-weight: 500;
+}
+
+.combobox-option {
+  cursor: pointer;
+}
+
+.combobox-option.is-highlighted,
+.combobox-option:hover {
+  background: #edf4ff;
+}
+
+.combobox-empty {
+  color: #516070;
 }
 
 .toggle {
@@ -1581,6 +1680,7 @@ input:disabled {
 
 .data-grid {
   width: 100%;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   border: 1px solid #d8dee6;
@@ -1589,6 +1689,9 @@ input:disabled {
 }
 
 .data-grid .ag-root-wrapper {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   border: 0;
   border-radius: inherit;
 }
@@ -1596,6 +1699,7 @@ input:disabled {
 .data-grid .ag-root-wrapper-body,
 .data-grid .ag-body-viewport,
 .data-grid .ag-center-cols-viewport {
+  min-width: 0;
   overflow-x: auto;
 }
 
@@ -1611,14 +1715,29 @@ input:disabled {
 }
 
 .data-grid .ag-paging-panel {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  height: 56px;
   min-height: 56px;
   border-top: 1px solid #d8dee6;
   color: #516070;
   font-size: 0.875rem;
+  overflow: hidden;
+}
+
+.data-grid .ag-paging-panel-content {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
 }
 
 .data-grid .ag-paging-button,
 .data-grid .ag-picker-field-wrapper {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
   min-height: 40px;
 }
 
@@ -2351,8 +2470,11 @@ input:disabled {
   .live-app-shell {
     display: grid;
     grid-template-columns: 1fr;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
     align-items: stretch;
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
     padding: 12px var(--page-gutter) 24px;
   }
 
@@ -2407,11 +2529,16 @@ input:disabled {
 
   .live-settings-card {
     min-height: 0;
-    overflow-y: auto;
+    overflow: visible;
   }
 
   .live-workspace-grid {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .live-page {
+    height: auto;
   }
 
   .live-settings-card {

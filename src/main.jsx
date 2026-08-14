@@ -5292,7 +5292,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
       {!selectedSessionId ? (
         <section className="history-panel" aria-label="選擇歷史紀錄">
           <div className="controls retranslation-picker-controls">
-            <label className="field">
+            <label className="field history-search-field">
               <span>搜尋翻譯紀錄</span>
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
             </label>

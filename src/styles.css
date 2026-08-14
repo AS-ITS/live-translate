@@ -290,10 +290,6 @@ input {
   padding-top: 0;
 }
 
-.history-page .history-search-field {
-  max-width: 560px;
-}
-
 .history-page .session-detail,
 .history-page .meeting-detail {
   margin-top: 20px;
@@ -1809,7 +1805,7 @@ input:disabled {
 }
 
 .history-search-field {
-  max-width: 520px;
+  max-width: 560px;
 }
 
 .history-groups {

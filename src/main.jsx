@@ -160,7 +160,7 @@ function dataGridProps(className, { fixedHeight = false } = {}) {
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
@@ -206,9 +206,14 @@ function pageInfoFromLocation() {
     page,
     sessionId: params.get('sessionId') || '',
     meetingId: params.get('meetingId') || '',
+    meetingDetailFrom: params.get('from') || '',
     shareToken: params.get('token') || '',
     shareCode: params.get('code') || ''
   };
+}
+
+function meetingDetailReturnPage(info = pageInfoFromLocation()) {
+  return info.meetingDetailFrom === 'meetings' ? 'meetings' : 'history';
 }
 
 const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請重新選擇已建立的會議。';
@@ -508,6 +513,23 @@ function App() {
       void refreshMeetingRecords();
     }
   }, [page]);
+
+  useEffect(() => {
+    if (page !== 'meeting-detail') return;
+
+    const info = pageInfoFromLocation();
+    if (!info.meetingId) {
+      selectedMeetingIdRef.current = null;
+      setSelectedMeetingId(null);
+      setSelectedMeetingDetail(null);
+      setMeetingDetailError('缺少會議識別碼，請從會議列表重新選擇。');
+      return;
+    }
+
+    if (selectedMeetingIdRef.current !== info.meetingId) {
+      void loadMeetingDetail(info.meetingId);
+    }
+  }, [page, routeMeetingId, locationVersion]);
 
   useEffect(() => {
     if (page !== 'live') return;
@@ -2473,12 +2495,7 @@ function App() {
     setSelectedHistoryDetail(null);
   }
 
-  async function openMeetingDetail(id) {
-    if (selectedMeetingIdRef.current === id) {
-      closeMeetingDetail();
-      return;
-    }
-
+  async function loadMeetingDetail(id) {
     const requestId = meetingDetailRequestIdRef.current + 1;
     meetingDetailRequestIdRef.current = requestId;
     selectedMeetingIdRef.current = id;
@@ -2514,6 +2531,14 @@ function App() {
     }
   }
 
+  function openMeetingDetail(id, sourcePage = page) {
+    if (!id) return;
+
+    const from = sourcePage === 'meetings' ? 'meetings' : 'history';
+    void loadMeetingDetail(id);
+    window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(id)}&from=${from}`;
+  }
+
   async function refreshSelectedMeetingDetail(id) {
     if (!id || selectedMeetingIdRef.current !== id) {
       return false;
@@ -2538,7 +2563,7 @@ function App() {
       return true;
     } catch {
       if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
-        setError('會議詳細資料無法更新。');
+        setMeetingDetailError('會議詳細資料無法更新。');
       }
 
       return false;
@@ -2550,6 +2575,13 @@ function App() {
     selectedMeetingIdRef.current = null;
     setSelectedMeetingId(null);
     setSelectedMeetingDetail(null);
+    setMeetingDetailError('');
+  }
+
+  function returnFromMeetingDetail() {
+    const returnPage = meetingDetailReturnPage();
+    closeMeetingDetail();
+    window.location.hash = `#${returnPage}`;
   }
 
   async function deleteHistoryRecord(id) {
@@ -2733,7 +2765,7 @@ function App() {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
-  const usesWorkspaceNavigation = ['live', 'meeting', 'history', 'meetings', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
+  const usesWorkspaceNavigation = ['live', 'meeting', 'meeting-detail', 'history', 'meetings', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
 
   return (
     <main className={`app-shell ${usesWorkspaceNavigation ? 'live-app-shell' : ''}`}>
@@ -2770,6 +2802,16 @@ function App() {
 
       {page === 'meeting' ? (
         <MeetingManagementPage onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }} />
+      ) : null}
+
+      {page === 'meeting-detail' ? (
+        <MeetingDetailPage
+          detail={selectedMeetingDetail}
+          detailError={meetingDetailError}
+          returnPage={meetingDetailReturnPage()}
+          onBack={returnFromMeetingDetail}
+          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+        />
       ) : null}
 
       <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
@@ -2938,12 +2980,12 @@ function App() {
                       結束本次工作階段
                     </button>
                   </>
-                ) : (
+                ) : hasSelectedCreatedMeeting || resumeDraft?.hasTranscript ? (
                   <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedCreatedMeeting}>
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {isActive ? '正在開始' : '開始'}
                   </button>
-                )}
+                ) : null}
               </div>
             </div>
           </div>
@@ -4157,34 +4199,22 @@ function HistoryPanel({
   ], []);
   const selectedEntry = selectedRecordId
     ? entries.find((entry) => entry.kind === 'session' && entry.record.id === selectedRecordId)
-    : selectedMeetingId
-      ? entries.find((entry) => entry.kind === 'meeting' && entry.record.id === selectedMeetingId)
-      : null;
+    : null;
 
   return (
-    <section className={`history-panel${selectedEntry ? ' has-history-detail' : ''}`} aria-labelledby={titleId}>
-      <div className="history-header">
-        <div>
-          <h3 id={titleId}>會議紀錄</h3>
-          <p className="history-description">查看會議狀態、語言、時間與翻譯內容。</p>
-        </div>
-      </div>
+    <section className={`history-panel${selectedEntry ? ' has-history-detail' : ''}`} aria-label="翻譯紀錄">
       <label className="field history-search-field">
         <span>搜尋會議</span>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
       </label>
 
-      {entries.length === 0 ? (
-        <div className="empty-state">
-          <p className="history-empty">尚無會議紀錄。</p>
-          <p className="history-empty">完成一次即時翻譯後，會議摘要會出現在這裡。</p>
-          <a className="button primary" href="#live">開始即時翻譯</a>
-        </div>
-      ) : filteredEntries.length === 0 ? (
-        <p className="history-empty">找不到符合條件的紀錄。</p>
-      ) : (
-        <>
-          <div className="history-table-scroll">
+      <div className="history-table-region">
+        {entries.length === 0 ? (
+          <div className="empty-state" aria-hidden="true" />
+        ) : filteredEntries.length === 0 ? (
+          <p className="history-empty">找不到符合條件的紀錄。</p>
+        ) : null}
+        <div className="history-table-scroll">
           <AgGridReact
             {...dataGridProps('history-data-grid', { fixedHeight: true })}
             aria-label="會議紀錄列表"
@@ -4193,15 +4223,15 @@ function HistoryPanel({
             rowData={filteredEntries}
             getRowId={({ data }) => `${data.kind}-${data.record.id}`}
           />
+        </div>
+      </div>
+      <>
+        {selectedEntry ? (
+          <div className="history-detail-scroll">
+            {selectedEntry.kind === 'session' ? <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onRetranslationSubmitted={onRetranslationSubmitted} onOpenRetranslationWorkflow={onOpenRetranslationWorkflow} onPolishingRetry={onPolishingRetry} onRetryExecution={onRetryExecution} retryingExecutionId={retryingExecutionId} detailError={historyDetailError} onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)} /> : null}
           </div>
-          {selectedEntry ? (
-            <div className="history-detail-scroll">
-              {selectedEntry.kind === 'session' ? <SessionDetail detail={selectedDetail} historyRecord={selectedRecord} onRetranslationSubmitted={onRetranslationSubmitted} onOpenRetranslationWorkflow={onOpenRetranslationWorkflow} onPolishingRetry={onPolishingRetry} onRetryExecution={onRetryExecution} retryingExecutionId={retryingExecutionId} detailError={historyDetailError} onRetryDetail={() => onRetryHistoryDetail?.(selectedRecordId)} /> : null}
-              {selectedEntry.kind === 'meeting' ? <MeetingDetail detail={selectedMeetingDetail} detailError={meetingDetailError} onRetryDetail={() => onRetryMeetingHistory?.()} /> : null}
-            </div>
-          ) : null}
-        </>
-      )}
+        ) : null}
+      </>
     </section>
   );
 }
@@ -4315,7 +4345,7 @@ function SessionHistoryItem({
   );
 }
 
-function MeetingHistoryItem({ record, selectedMeetingId, selectedDetail, onViewDetails, detailError = '', onRetryDetail }) {
+function MeetingHistoryItem({ record, onViewDetails }) {
   return (
     <li className="history-item meeting-item" key={record.id}>
       <article aria-label={`${meetingTitle(record)} ${meetingStatusLabel(record.status)}會議`}>
@@ -4334,11 +4364,10 @@ function MeetingHistoryItem({ record, selectedMeetingId, selectedDetail, onViewD
             <button
               className="button detail-button"
               type="button"
-              aria-label={selectedMeetingId === record.id ? '關閉詳細資料' : '查看詳細資料'}
-              aria-expanded={selectedMeetingId === record.id}
+              aria-label="查看詳細資料"
               onClick={() => onViewDetails(record.id)}
             >
-              {selectedMeetingId === record.id ? '關閉內容' : '查看內容'}
+              查看內容
             </button>
           </div>
         </div>
@@ -4352,7 +4381,6 @@ function MeetingHistoryItem({ record, selectedMeetingId, selectedDetail, onViewD
           <div><dt>異常段落</dt><dd>{meetingExceptionSummaryLabel(record.segmentSummary)}</dd></div>
         </dl>
       </article>
-      {selectedMeetingId === record.id ? <MeetingDetail detail={selectedDetail} detailError={detailError} onRetryDetail={onRetryDetail} /> : null}
     </li>
   );
 }
@@ -4640,19 +4668,16 @@ function MeetingManagementPage({ onOpenLive }) {
       ) : null}
       {viewMode === 'list' ? <section className="history-panel" aria-labelledby="existing-meetings-title">
         <h3 id="existing-meetings-title">既有會議</h3>
-        {meetings.length === 0 ? (
-          <p className="history-empty">尚無會議。</p>
-        ) : (
-          <div className="meeting-table-scroll">
-            <AgGridReact
-              {...dataGridProps('meeting-management-data-grid', { fixedHeight: true })}
-              aria-label="既有會議列表"
-              columnDefs={meetingColumnDefs}
-              rowData={meetings}
-              getRowId={({ data }) => data.id}
-            />
-          </div>
-        )}
+        {meetings.length === 0 ? <p className="history-empty">尚無會議。</p> : null}
+        <div className="meeting-table-scroll">
+          <AgGridReact
+            {...dataGridProps('meeting-management-data-grid', { fixedHeight: true })}
+            aria-label="既有會議列表"
+            columnDefs={meetingColumnDefs}
+            rowData={meetings}
+            getRowId={({ data }) => data.id}
+          />
+        </div>
       </section> : null}
       <LiveGlossaryDrawer
         open={isGlossaryDrawerOpen}
@@ -4685,9 +4710,8 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
       {isLoading ? <p className="history-empty">正在載入長會議紀錄…</p> : null}
       {loadError ? <p className="error-message" role="alert">{loadError} <button className="inline-retry" type="button" onClick={onRetryLoad}>重試</button></p> : null}
 
-      {records.length === 0 ? (
-        <p className="history-empty">尚無翻譯紀錄。</p>
-      ) : (
+      {records.length === 0 ? <p className="history-empty">尚無翻譯紀錄。</p> : null}
+      {records.length > 0 ? (
         <ol className="history-list">
           {records.map((record) => (
             <li className="history-item meeting-item" key={record.id}>
@@ -4701,10 +4725,9 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
                     <button
                       className="button detail-button"
                       type="button"
-                      aria-expanded={selectedMeetingId === record.id}
                       onClick={() => onViewDetails(record.id)}
                     >
-                      {selectedMeetingId === record.id ? '關閉會議詳細資料' : '查看會議詳細資料'}
+                      查看會議詳細資料
                     </button>
                   </div>
                 </div>
@@ -4718,11 +4741,29 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
                   <div><dt>異常段落</dt><dd>{meetingExceptionSummaryLabel(record.segmentSummary)}</dd></div>
                 </dl>
               </article>
-              {selectedMeetingId === record.id ? <MeetingDetail detail={selectedDetail} detailError={detailError} onRetryDetail={onRetryDetail} /> : null}
             </li>
           ))}
         </ol>
-      )}
+      ) : null}
+    </section>
+  );
+}
+
+function MeetingDetailPage({ detail, detailError = '', returnPage = 'history', onBack, onRetry }) {
+  const returnLabel = returnPage === 'meetings' ? '返回會議列表' : '返回翻譯紀錄';
+
+  return (
+    <section className="feature-page meeting-detail-page" aria-labelledby="meeting-detail-page-title">
+      <div className="meeting-detail-page-header">
+        <button className="button secondary" type="button" onClick={onBack}>{returnLabel}</button>
+        <div>
+          <p className="eyebrow">MEETING RECORD</p>
+          <h2 id="meeting-detail-page-title">會議詳細資料</h2>
+        </div>
+      </div>
+      <div className="meeting-detail-page-scroll">
+        <MeetingDetail detail={detail} detailError={detailError} onRetryDetail={onRetry} />
+      </div>
     </section>
   );
 }
@@ -5256,10 +5297,9 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
             </label>
           </div>
-          {selectableRecords.length === 0 ? <div className="empty-state"><p className="history-empty">尚無可重新翻譯的原始逐字稿。先完成一次即時翻譯，再回到這裡選擇目標語言。</p><a className="button primary" href="#live">開始即時翻譯</a></div> : null}
+          {selectableRecords.length === 0 ? <div className="empty-state"><p className="history-empty">尚無可重新翻譯的原始逐字稿。</p><p className="history-empty">完成一次即時翻譯後，再回到這裡選擇目標語言。</p></div> : null}
           {selectableRecords.length > 0 && filteredRecords.length === 0 ? <p className="history-empty">找不到符合條件的 Session。</p> : null}
-          {filteredRecords.length > 0 ? (
-            <AgGridReact
+          <AgGridReact
               {...dataGridProps('retranslation-session-data-grid')}
               aria-label="重新翻譯 Session 列表"
               columnDefs={[
@@ -5273,8 +5313,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
               context={{ onSelectSession }}
               rowData={filteredRecords}
               getRowId={({ data }) => data.id}
-            />
-          ) : null}
+          />
         </section>
       ) : (
         <>
@@ -5416,10 +5455,8 @@ function RetranslationOutputList({ outputs, selectedOutputId, onSelect, onDelete
   return (
     <section className="history-panel retranslation-output-list-panel" aria-label="重新翻譯結果">
       <h3>{`重新翻譯結果（${outputs.length}）`}</h3>
-      {outputs.length === 0 ? (
-        <p className="history-empty retranslation-output-empty">尚無重新翻譯結果。</p>
-      ) : (
-        <AgGridReact
+      {outputs.length === 0 ? <p className="history-empty retranslation-output-empty">尚無重新翻譯結果。</p> : null}
+      <AgGridReact
           {...dataGridProps('retranslation-output-data-grid')}
           aria-label="重新翻譯結果列表"
           columnDefs={[
@@ -5433,8 +5470,7 @@ function RetranslationOutputList({ outputs, selectedOutputId, onSelect, onDelete
           context={{ onSelect, onDelete, selectedOutputId }}
           rowData={outputs}
           getRowId={({ data }) => data.id}
-        />
-      )}
+      />
     </section>
   );
 }
@@ -5736,8 +5772,7 @@ function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }
       {status ? <p className="success-message" role="status">{status}</p> : null}
       {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
       {!isLoading && entries.length === 0 ? <div className="empty-state"><p className="history-empty">尚無字典詞條。</p><p className="history-empty">新增常用名稱或專有名詞後，翻譯會更一致。</p></div> : null}
-      {entries.length > 0 ? (
-        <AgGridReact
+      <AgGridReact
           {...dataGridProps('glossary-data-grid')}
           aria-label="翻譯字典詞條列表"
           columnDefs={[
@@ -5749,8 +5784,7 @@ function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }
           context={{ onEdit: startEditing, onDelete: deleteEntry }}
           rowData={entries}
           getRowId={({ data }) => data.id || data.source}
-        />
-      ) : null}
+      />
     </section>
   );
 }

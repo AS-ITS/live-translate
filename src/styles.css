@@ -161,6 +161,15 @@ input {
   overflow: hidden;
 }
 
+.glossary-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: clamp(16px, 2vw, 24px);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
 .history-page > .history-panel {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -189,6 +198,15 @@ input {
   min-width: 0;
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.glossary-table-scroll {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
 }
 
 .history-table-region {
@@ -298,11 +316,6 @@ input {
 
 .meeting-management-page .history-header {
   margin-bottom: 0;
-}
-
-.meeting-management-page .history-header h2 {
-  color: #17202a;
-  font-size: clamp(1.5rem, 2.5vw, 2rem);
 }
 
 .meeting-management-page .history-description {
@@ -433,8 +446,10 @@ input {
   margin-top: 0;
 }
 
-.meeting-management-page > .history-panel > h3 {
-  margin-bottom: 12px;
+.meeting-table-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 16px;
 }
 
 .meeting-management-page:not(.history-page) > .history-panel {
@@ -1837,10 +1852,11 @@ input:disabled {
   margin-bottom: 16px;
 }
 
-.history-header h2 {
+.workspace-page-heading {
   margin: 0;
-  color: #314152;
-  font-size: 1rem;
+  color: #17202a;
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
+  font-weight: 800;
   letter-spacing: 0;
 }
 
@@ -1956,15 +1972,34 @@ input:disabled {
 
 .glossary-panel {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
-  margin-bottom: 16px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  margin-bottom: 0;
   border: 1px solid #d8dee6;
-  border-radius: 8px;
-  padding: 16px;
-  background: #fbfcfd;
+  border-color: #dfe5ec;
+  border-radius: 18px;
+  padding: var(--panel-padding);
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(39, 57, 77, 0.06);
 }
 
-.glossary-header h2,
+.glossary-data-grid {
+  flex: 1 0 auto;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 100%;
+  overflow: hidden;
+}
+
+.glossary-data-grid .ag-root-wrapper,
+.glossary-data-grid .ag-root-wrapper-body {
+  height: 100%;
+}
+
 .glossary-header h3 {
   margin: 0;
   color: #314152;
@@ -2441,6 +2476,55 @@ input:disabled {
   gap: 16px;
 }
 
+.retranslation-page {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 18px;
+}
+
+.retranslation-workflow:not(.has-selection) {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.retranslation-picker-panel {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.retranslation-picker-feedback {
+  min-height: 0;
+}
+
+.retranslation-picker-table-scroll {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding-bottom: 16px;
+  overflow: auto;
+}
+
+.retranslation-session-data-grid {
+  flex: 1 0 auto;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 100%;
+  overflow: hidden;
+}
+
+.retranslation-session-data-grid .ag-root-wrapper,
+.retranslation-session-data-grid .ag-root-wrapper-body {
+  height: 100%;
+}
+
 .retranslation-picker-controls {
   grid-template-columns: minmax(220px, 1fr);
   margin-bottom: 16px;
@@ -2621,6 +2705,26 @@ input:disabled {
     position: static;
   }
 
+  .retranslation-workflow:not(.has-selection) {
+    height: auto;
+    overflow: visible;
+  }
+
+  .retranslation-page {
+    height: auto;
+    overflow: visible;
+  }
+
+  .retranslation-picker-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .retranslation-picker-table-scroll {
+    height: min(60dvh, 560px);
+    min-height: 280px;
+  }
+
   .live-workspace-grid {
     grid-template-columns: minmax(250px, 0.8fr) minmax(0, 1.2fr);
   }
@@ -2724,6 +2828,24 @@ input:disabled {
     min-height: 480px;
     grid-template-rows: auto auto minmax(0, 1fr);
     overflow: hidden;
+  }
+
+  .glossary-page {
+    grid-template-rows: auto auto;
+    height: auto;
+    overflow: visible;
+  }
+
+  .glossary-panel {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+
+  .glossary-table-scroll {
+    height: min(60dvh, 560px);
+    min-height: 280px;
   }
 
   .meeting-detail-page {

@@ -907,7 +907,8 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
   await page.goto('/');
   await openGlossaryPage(page);
 
-  await expect(glossaryPanel(page).getByRole('heading', { name: '翻譯字典' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯字典' })).toBeVisible();
+  await expect(page.locator('.glossary-page > .history-header')).toBeVisible();
   await glossaryPanel(page).getByLabel('詞條').fill('microphone');
   await glossaryPanel(page).getByLabel('目標語言').selectOption('ja');
   await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');

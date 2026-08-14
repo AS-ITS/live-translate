@@ -3074,7 +3074,7 @@ function App() {
       <section className="feature-page history-page meeting-management-page" aria-labelledby="history-page-title">
         <div className="history-header">
           <div>
-            <h2 id="history-page-title">翻譯紀錄</h2>
+            <h2 className="workspace-page-heading" id="history-page-title">翻譯紀錄</h2>
             <p className="history-description">以會議管理方式整理翻譯紀錄；選取一場會議可查看段落、逐字稿與後續操作。</p>
           </div>
         </div>
@@ -3154,8 +3154,13 @@ function App() {
 
       {page === 'glossary' ? (
       <section className="feature-page glossary-page" aria-labelledby="glossary-page-title">
+        <div className="history-header">
+          <div>
+            <h2 className="workspace-page-heading" id="glossary-page-title">翻譯字典</h2>
+            <p className="history-description">管理即時翻譯與歷史重新翻譯字幕使用的全域替換規則。</p>
+          </div>
+        </div>
         <GlossaryPanel
-          titleId="glossary-page-title"
           entries={glossaryEntries}
           onEntriesChange={setGlossaryEntries}
         />
@@ -4611,12 +4616,10 @@ function MeetingManagementPage({ onOpenLive }) {
   return (
     <section className="feature-page meeting-management-page" aria-labelledby="meeting-management-title">
       <div className="history-header">
-        <div><h2 id="meeting-management-title">會議管理</h2><p className="history-description">先建立會議並完成設定，再分享給參與者錄音。</p></div>
-        {viewMode === 'list' ? (
-          <button className="button primary" type="button" onClick={openCreateForm}>建立新會議</button>
-        ) : (
+        <div><h2 className="workspace-page-heading" id="meeting-management-title">會議管理</h2><p className="history-description">先建立會議並完成設定，再分享給參與者錄音。</p></div>
+        {viewMode === 'form' ? (
           <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>
-        )}
+        ) : null}
       </div>
       <div className="meeting-management-status">
         {error ? <p className="error-message" role="alert">{error}</p> : null}
@@ -4666,9 +4669,10 @@ function MeetingManagementPage({ onOpenLive }) {
           </section> : null}
         </div>
       ) : null}
-      {viewMode === 'list' ? <section className="history-panel" aria-labelledby="existing-meetings-title">
-        <h3 id="existing-meetings-title">既有會議</h3>
-        {meetings.length === 0 ? <p className="history-empty">尚無會議。</p> : null}
+      {viewMode === 'list' ? <section className="history-panel" aria-label="會議列表">
+        <div className="meeting-table-toolbar">
+          <button className="button primary" type="button" onClick={openCreateForm}>建立新會議</button>
+        </div>
         <div className="meeting-table-scroll">
           <AgGridReact
             {...dataGridProps('meeting-management-data-grid', { fixedHeight: true })}
@@ -5280,40 +5284,43 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const shouldShowRetranslationContent = !hasCompletedOutputs || Boolean(selectedOutput);
 
   return (
-    <section className="retranslation-workflow" aria-labelledby={titleId}>
+    <section className={`retranslation-workflow${selectedSessionId ? ' has-selection' : ''}`} aria-labelledby={titleId}>
       <div className="history-header">
         <div>
-          <h2 id={titleId}>重新翻譯</h2>
+          <h2 className="workspace-page-heading" id={titleId}>重新翻譯</h2>
           <p className="history-description">從已保存 Session 的原始逐字稿產生新的文章式翻譯。</p>
         </div>
         {selectedSessionId ? <a className="button detail-button" href="#retranslate">返回 Session 清單</a> : null}
       </div>
 
       {!selectedSessionId ? (
-        <section className="history-panel" aria-label="選擇歷史紀錄">
+        <section className="history-panel retranslation-picker-panel" aria-label="選擇歷史紀錄">
           <div className="controls retranslation-picker-controls">
             <label className="field history-search-field">
               <span>搜尋翻譯紀錄</span>
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋日期、語言或狀態" />
             </label>
           </div>
-          {selectableRecords.length === 0 ? <div className="empty-state"><p className="history-empty">尚無可重新翻譯的原始逐字稿。</p><p className="history-empty">完成一次即時翻譯後，再回到這裡選擇目標語言。</p></div> : null}
-          {selectableRecords.length > 0 && filteredRecords.length === 0 ? <p className="history-empty">找不到符合條件的 Session。</p> : null}
-          <AgGridReact
-              {...dataGridProps('retranslation-session-data-grid')}
-              aria-label="重新翻譯 Session 列表"
-              columnDefs={[
-                { headerName: '名稱', valueGetter: ({ data }) => data.name || historyLanguageLabel(data), width: 220, cellRenderer: RetranslationSessionNameCell },
-                { headerName: '狀態', field: 'status', width: 100, cellRenderer: RetranslationSessionStatusCell },
-                { headerName: '開始時間', field: 'startedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.startedAt) },
-                { headerName: '結束時間', field: 'endedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.endedAt) },
-                { headerName: '逐字稿', valueGetter: ({ data }) => transcriptSummaryLabel(data.transcriptSummary), minWidth: 210, flex: 1 },
-                { headerName: '操作', width: 300, sortable: false, cellRenderer: RetranslationSessionActionCell }
-              ]}
-              context={{ onSelectSession }}
-              rowData={filteredRecords}
-              getRowId={({ data }) => data.id}
-          />
+          <div className="retranslation-picker-feedback">
+            {selectableRecords.length > 0 && filteredRecords.length === 0 ? <p className="history-empty">找不到符合條件的 Session。</p> : null}
+          </div>
+          <div className="retranslation-picker-table-scroll">
+            <AgGridReact
+                {...dataGridProps('retranslation-session-data-grid', { fixedHeight: true })}
+                aria-label="重新翻譯 Session 列表"
+                columnDefs={[
+                  { headerName: '名稱', valueGetter: ({ data }) => data.name || historyLanguageLabel(data), width: 220, cellRenderer: RetranslationSessionNameCell },
+                  { headerName: '狀態', field: 'status', width: 100, cellRenderer: RetranslationSessionStatusCell },
+                  { headerName: '開始時間', field: 'startedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.startedAt) },
+                  { headerName: '結束時間', field: 'endedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.endedAt) },
+                  { headerName: '逐字稿', valueGetter: ({ data }) => transcriptSummaryLabel(data.transcriptSummary), minWidth: 210, flex: 1 },
+                  { headerName: '操作', width: 300, sortable: false, cellRenderer: RetranslationSessionActionCell }
+                ]}
+                context={{ onSelectSession }}
+                rowData={filteredRecords}
+                getRowId={({ data }) => data.id}
+            />
+          </div>
         </section>
       ) : (
         <>
@@ -5617,7 +5624,7 @@ function LiveGlossaryDrawer({
   );
 }
 
-function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }) {
+function GlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
   const [entries, setEntries] = useState(sharedEntries);
   const [source, setSource] = useState('');
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
@@ -5728,13 +5735,7 @@ function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }
   const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving;
 
   return (
-    <section className="glossary-panel" aria-labelledby={titleId || undefined} aria-label={titleId ? undefined : '翻譯字典'}>
-      <div className="glossary-header">
-        <div>
-          <h2 id={titleId}>翻譯字典</h2>
-          <p className="history-description">管理即時翻譯與歷史重新翻譯字幕使用的全域替換規則。</p>
-        </div>
-      </div>
+    <section className="glossary-panel" aria-label="翻譯字典詞條管理">
       <div className="controls glossary-controls">
         <label className="field">
           <span>詞條</span>
@@ -5767,24 +5768,28 @@ function GlossaryPanel({ titleId, entries: sharedEntries = [], onEntriesChange }
         </button>
         {editingEntry ? <button className="button detail-button" type="button" onClick={resetForm}>取消編輯</button> : null}
       </div>
-      {error ? <p className="error-message glossary-form-message" role="alert">{error}</p> : null}
-      {!canSave && !isSaving && !editingEntry ? <p className="form-hint">請填寫詞條與替換內容後，才能新增。</p> : null}
-      {status ? <p className="success-message" role="status">{status}</p> : null}
-      {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
-      {!isLoading && entries.length === 0 ? <div className="empty-state"><p className="history-empty">尚無字典詞條。</p><p className="history-empty">新增常用名稱或專有名詞後，翻譯會更一致。</p></div> : null}
-      <AgGridReact
-          {...dataGridProps('glossary-data-grid')}
-          aria-label="翻譯字典詞條列表"
-          columnDefs={[
-            { headerName: '詞條', field: 'source', width: 220, cellRenderer: GlossarySourceCell },
-            { headerName: '翻譯內容', valueGetter: ({ data }) => glossaryTranslationLabel(data.translations), minWidth: 280, flex: 1 },
-            { headerName: '套用範圍', valueGetter: ({ data }) => glossaryScopeLabel(data.scope), width: 150 },
-            { headerName: '操作', width: 220, sortable: false, cellRenderer: GlossaryActionsCell }
-          ]}
-          context={{ onEdit: startEditing, onDelete: deleteEntry }}
-          rowData={entries}
-          getRowId={({ data }) => data.id || data.source}
-      />
+      <div className="glossary-feedback">
+        {error ? <p className="error-message glossary-form-message" role="alert">{error}</p> : null}
+        {!canSave && !isSaving && !editingEntry ? <p className="form-hint">請填寫詞條與替換內容後，才能新增。</p> : null}
+        {status ? <p className="success-message" role="status">{status}</p> : null}
+        {isLoading ? <p className="history-empty">正在載入字典…</p> : null}
+        {!isLoading && entries.length === 0 ? <div className="empty-state"><p className="history-empty">尚無字典詞條。</p><p className="history-empty">新增常用名稱或專有名詞後，翻譯會更一致。</p></div> : null}
+      </div>
+      <div className="glossary-table-scroll">
+        <AgGridReact
+            {...dataGridProps('glossary-data-grid', { fixedHeight: true })}
+            aria-label="翻譯字典詞條列表"
+            columnDefs={[
+              { headerName: '詞條', field: 'source', width: 220, cellRenderer: GlossarySourceCell },
+              { headerName: '翻譯內容', valueGetter: ({ data }) => glossaryTranslationLabel(data.translations), minWidth: 280, flex: 1 },
+              { headerName: '套用範圍', valueGetter: ({ data }) => glossaryScopeLabel(data.scope), width: 150 },
+              { headerName: '操作', width: 220, sortable: false, cellRenderer: GlossaryActionsCell }
+            ]}
+            context={{ onEdit: startEditing, onDelete: deleteEntry }}
+            rowData={entries}
+            getRowId={({ data }) => data.id || data.source}
+        />
+      </div>
     </section>
   );
 }

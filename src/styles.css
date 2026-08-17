@@ -2771,6 +2771,19 @@ input:disabled {
     font-size: 0.9375rem;
   }
 
+  .glossary-drawer {
+    width: min(340px, calc(100vw - 24px));
+  }
+
+  .glossary-drawer-header,
+  .glossary-drawer-footer {
+    padding-inline: 18px;
+  }
+
+  .glossary-drawer-body {
+    padding-inline: 18px;
+  }
+
   .live-workspace-grid {
     grid-template-columns: minmax(220px, 0.78fr) minmax(0, 1.22fr);
     gap: clamp(12px, 1.5vw, 18px);

@@ -3547,6 +3547,23 @@ test('meeting management uses the live workspace layout and preserves create flo
   await page.keyboard.press('Escape');
   await expect(glossaryDrawer).toBeHidden();
 
+  await page.setViewportSize({ width: 1024, height: 720 });
+  await page.getByRole('button', { name: /會議字典/ }).click();
+  await expect(glossaryDrawer).toBeVisible();
+  const laptopDrawerLayout = await glossaryDrawer.evaluate((element) => {
+    const styles = getComputedStyle(element.querySelector('.glossary-drawer-header'));
+    return {
+      width: element.getBoundingClientRect().width,
+      borderBoxFits: element.scrollWidth <= element.clientWidth + 1,
+      headerPadding: styles.paddingInline
+    };
+  });
+  expect(laptopDrawerLayout.width).toBeCloseTo(340, 0);
+  expect(laptopDrawerLayout.borderBoxFits).toBe(true);
+  expect(laptopDrawerLayout.headerPadding).toBe('18px');
+  await glossaryDrawer.getByRole('button', { name: '關閉字典' }).click();
+  await expect(glossaryDrawer).toBeHidden();
+
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: /會議字典/ }).click();
   await expect(glossaryDrawer).toBeVisible();

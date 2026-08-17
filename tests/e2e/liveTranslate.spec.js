@@ -3428,7 +3428,25 @@ test('meeting management uses the live workspace layout and preserves create flo
 
     await route.fallback();
   });
-  await page.route('**/api/glossary', async (route) => {
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/glossary/entries') {
+      const payload = request.postDataJSON();
+      await route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          entry: {
+            id: 'glossary-new',
+            source: payload.source,
+            scope: payload.scope,
+            translations: payload.translations,
+            replacementAliases: { en: [] }
+          }
+        })
+      });
+      return;
+    }
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -3509,11 +3527,36 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(glossaryDrawer).toBeVisible();
   await glossaryDrawer.locator('.glossary-choice input').check();
   await expect(page.getByRole('button', { name: /會議字典/ })).toContainText('1');
+
+  await glossaryDrawer.getByLabel('原文').fill('新產品名稱');
+  await glossaryDrawer.getByLabel('翻譯（英文）').fill('New Product Name');
+  await glossaryDrawer.getByRole('button', { name: '新增並套用' }).click();
+  await expect(glossaryDrawer.getByRole('status')).toHaveText('詞條已新增並套用。');
+  await expect(glossaryDrawer.locator('.glossary-choice')).toHaveCount(2);
+  await expect(glossaryDrawer.locator('.glossary-choice').first()).toContainText('新產品名稱');
+  await expect(glossaryDrawer.locator('.glossary-choice').first().locator('input')).toBeChecked();
+  await expect(page.getByRole('button', { name: /會議字典/ })).toContainText('2');
   await page.keyboard.press('Escape');
   await expect(glossaryDrawer).toBeHidden();
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: /會議字典/ }).click();
   await expect(glossaryDrawer).toBeVisible();
+  const mobileDrawerLayout = await glossaryDrawer.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const styles = getComputedStyle(element);
+    return {
+      width: rect.width,
+      height: rect.height,
+      borderTopWidth: styles.borderTopWidth,
+      borderLeftWidth: styles.borderLeftWidth
+    };
+  });
+  expect(mobileDrawerLayout.width).toBeLessThanOrEqual(390);
+  expect(mobileDrawerLayout.height).toBeLessThanOrEqual(760);
+  expect(mobileDrawerLayout.borderTopWidth).toBe('1px');
+  expect(mobileDrawerLayout.borderLeftWidth).toBe('0px');
+  await expect(glossaryDrawer.getByRole('button', { name: '前往完整字典管理' })).toBeVisible();
   await glossaryDrawer.getByRole('button', { name: '關閉字典' }).click();
   await expect(glossaryDrawer).toBeHidden();
 
@@ -3528,6 +3571,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   const cardWidths = await page.locator('.meeting-management-grid > .control-panel').evaluateAll((cards) => cards.map((card) => Math.round(card.getBoundingClientRect().width)));
   expect(cardWidths[0]).toBe(cardWidths[1]);
 
+  await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole('button', { name: '返回會議清單' }).click();
   page.once('dialog', (dialog) => dialog.accept());
   const createdMeetingRow = page.getByRole('row').filter({ has: page.getByText('產品會議', { exact: true }) });

@@ -5500,6 +5500,8 @@ function LiveGlossaryDrawer({
   const [isLoading, setIsLoading] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [recentlyAddedEntryId, setRecentlyAddedEntryId] = useState('');
+  const glossaryListRef = useRef(null);
   const apiClientRef = useRef(createGlossaryApiClient());
 
   useEffect(() => {
@@ -5537,6 +5539,7 @@ function LiveGlossaryDrawer({
       });
       onEntriesChange(mergeGlossaryEntry(entries, entry));
       onSelectionChange((current) => [...new Set([...current, entry.id])]);
+      setRecentlyAddedEntryId(entry.id);
       setStatus('詞條已新增並套用。');
       resetQuickAdd();
     } catch {
@@ -5549,6 +5552,12 @@ function LiveGlossaryDrawer({
   const targetEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
   const settingsDisabled = disabled || readOnly;
   const canSave = source.trim().length > 0 && translation.trim().length > 0 && !isSaving && !settingsDisabled;
+
+  useEffect(() => {
+    if (!recentlyAddedEntryId || !targetEntries.some((entry) => entry.id === recentlyAddedEntryId)) return;
+    glossaryListRef.current?.scrollTo({ top: 0, behavior: 'auto' });
+    setRecentlyAddedEntryId('');
+  }, [recentlyAddedEntryId, targetEntries]);
 
   return (
     <>
@@ -5576,7 +5585,7 @@ function LiveGlossaryDrawer({
             </div>
           ) : null}
           {targetEntries.length > 0 ? (
-            <div className="glossary-drawer-list">
+            <div className="glossary-drawer-list" ref={glossaryListRef}>
               {targetEntries.map((entry) => (
                 <label className={`glossary-choice${selectedEntryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}>
                   <input
@@ -6662,7 +6671,7 @@ function glossaryReplacementLabel(entry = {}) {
 function mergeGlossaryEntry(entries = [], entry) {
   if (!entry?.id) return entries;
   const withoutEntry = entries.filter((item) => item.id !== entry.id);
-  return [...withoutEntry, entry];
+  return [entry, ...withoutEntry];
 }
 
 function glossaryLanguagesLabel(translations = {}) {

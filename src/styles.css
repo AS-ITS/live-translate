@@ -2794,6 +2794,12 @@ input:disabled {
     padding: 16px;
   }
 
+  .live-settings-card {
+    align-content: start;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
   .live-settings-card .title-block-header,
   .cue-panel-header {
     gap: 10px;

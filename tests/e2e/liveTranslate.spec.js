@@ -2164,8 +2164,28 @@ test('recording and playback settings appear before export fields without overfl
       body: JSON.stringify([{ id: 'meeting-layout', name: '版面測試會議', status: 'created' }])
     });
   });
+  await page.route('**/api/meetings/meeting-layout', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: {
+          id: 'meeting-layout',
+          name: '版面測試會議',
+          status: 'created',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en',
+          glossaryEntries: []
+        }
+      })
+    });
+  });
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
+
+  const meetingPicker = page.getByRole('combobox', { name: '選擇會議' });
+  await meetingPicker.click();
+  await page.getByRole('option', { name: '版面測試會議' }).click();
 
   const playback = page.getByLabel('播放翻譯聲音');
   const recording = page.getByLabel('錄下原始聲音');
@@ -2197,6 +2217,30 @@ test('recording and playback settings appear before export fields without overfl
   expect(layout.cardContainsStartButton).toBe(true);
   expect(layout.pageCanScrollVertically).toBe(true);
   expect(layout.hasHorizontalOverflow).toBe(false);
+
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.reload();
+
+  const laptopCard = page.locator('.live-settings-card');
+  const laptopStartButton = page.getByRole('button', { name: '開始', exact: true });
+  await expect(laptopStartButton).toHaveCount(1);
+  const laptopLayoutBeforeScroll = await laptopCard.evaluate((card, startButton) => {
+    const cardRect = card.getBoundingClientRect();
+    const startRect = startButton.getBoundingClientRect();
+    return {
+      overflowY: getComputedStyle(card).overflowY,
+      cardCanScrollVertically: card.scrollHeight > card.clientHeight,
+      startButtonInitiallyBelowCard: startRect.bottom > cardRect.bottom,
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+    };
+  }, await laptopStartButton.elementHandle());
+  expect(laptopLayoutBeforeScroll.overflowY).toBe('auto');
+  expect(laptopLayoutBeforeScroll.cardCanScrollVertically).toBe(true);
+  expect(laptopLayoutBeforeScroll.startButtonInitiallyBelowCard).toBe(true);
+  expect(laptopLayoutBeforeScroll.hasHorizontalOverflow).toBe(false);
+
+  await laptopStartButton.scrollIntoViewIfNeeded();
+  await expect(laptopStartButton).toBeInViewport();
 });
 
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {

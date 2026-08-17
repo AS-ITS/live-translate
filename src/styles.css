@@ -561,9 +561,12 @@ input {
 }
 
 .live-settings-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   padding: 20px;
+  overflow: hidden;
 }
 
 .live-settings-card h2 {
@@ -579,6 +582,8 @@ input {
 .controls.live-settings-controls {
   grid-template-columns: 1fr;
   gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .live-audio-settings {
@@ -2090,6 +2095,7 @@ input:disabled {
   min-height: 28px;
   border-radius: 999px;
   padding: 3px 10px;
+  white-space: nowrap;
   background: #eef3f7;
   color: #314152;
   font-size: 0.8125rem;
@@ -2797,7 +2803,6 @@ input:disabled {
   .live-settings-card {
     align-content: start;
     overflow-x: hidden;
-    overflow-y: auto;
   }
 
   .live-settings-card .title-block-header,
@@ -2994,6 +2999,7 @@ input:disabled {
   }
 
   .live-settings-card {
+    grid-template-rows: auto auto auto;
     min-height: 0;
     overflow: visible;
   }
@@ -3013,6 +3019,8 @@ input:disabled {
 
   .live-settings-controls {
     grid-template-columns: 1fr;
+    min-height: auto;
+    overflow: visible;
   }
 
   .control-panel {

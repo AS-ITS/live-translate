@@ -310,6 +310,21 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
     const url = new URL(request.url());
     const method = request.method();
 
+    if (method === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: 'meeting-1',
+          name: '測試會議',
+          status: 'created',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en'
+        }])
+      });
+      return;
+    }
+
     if (method === 'POST' && url.pathname === '/api/meetings') {
       const body = JSON.parse(request.postData() || '{}');
       await route.fulfill({
@@ -2307,20 +2322,28 @@ test('recording and playback settings appear before export fields without overfl
   const laptopLayoutBeforeScroll = await laptopCard.evaluate((card, startButton) => {
     const cardRect = card.getBoundingClientRect();
     const startRect = startButton.getBoundingClientRect();
+    const controls = card.querySelector('.live-settings-controls');
+    const statusRow = card.querySelector('.control-status-row');
+    const statusRect = statusRow?.getBoundingClientRect();
     return {
-      overflowY: getComputedStyle(card).overflowY,
-      cardCanScrollVertically: card.scrollHeight > card.clientHeight,
-      startButtonInitiallyBelowCard: startRect.bottom > cardRect.bottom,
+      cardOverflowY: getComputedStyle(card).overflowY,
+      controlsOverflowY: getComputedStyle(controls).overflowY,
+      controlsCanScrollVertically: controls.scrollHeight > controls.clientHeight,
+      startButtonVisible: startRect.top >= cardRect.top && startRect.bottom <= cardRect.bottom,
+      statusRowVisible: statusRect.top >= cardRect.top && statusRect.bottom <= cardRect.bottom,
       hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
     };
   }, await laptopStartButton.elementHandle());
-  expect(laptopLayoutBeforeScroll.overflowY).toBe('auto');
-  expect(laptopLayoutBeforeScroll.cardCanScrollVertically).toBe(true);
-  expect(laptopLayoutBeforeScroll.startButtonInitiallyBelowCard).toBe(true);
+  expect(laptopLayoutBeforeScroll.cardOverflowY).toBe('hidden');
+  expect(laptopLayoutBeforeScroll.controlsOverflowY).toBe('auto');
+  expect(laptopLayoutBeforeScroll.controlsCanScrollVertically).toBe(true);
+  expect(laptopLayoutBeforeScroll.startButtonVisible).toBe(true);
+  expect(laptopLayoutBeforeScroll.statusRowVisible).toBe(true);
   expect(laptopLayoutBeforeScroll.hasHorizontalOverflow).toBe(false);
 
-  await laptopStartButton.scrollIntoViewIfNeeded();
+  await laptopCard.locator('.live-settings-controls').evaluate((controls) => { controls.scrollTop = controls.scrollHeight; });
   await expect(laptopStartButton).toBeInViewport();
+  await expect(laptopCard.getByRole('button', { name: '開始', exact: true })).toBeVisible();
 });
 
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
@@ -3451,6 +3474,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
 });
 
 test('retry exhaustion shows explicit error and preserves transcript', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
   await page.goto('/');
 
   await page.getByRole('button', { name: '開始' }).click();
@@ -3729,7 +3753,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(page.getByRole('status')).toHaveText('會議已刪除。');
 });
 
-test('live translation only offers created meetings and loads selected settings', async ({ page }) => {
+test('live translation offers resumable meetings and loads selected settings', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -3782,10 +3806,10 @@ test('live translation only offers created meetings and loads selected settings'
 
   const mode = page.getByRole('combobox', { name: '選擇會議' });
   await expect(mode).toHaveValue('');
-  await expect(page.getByRole('button', { name: '開始' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '開始' })).toHaveCount(0);
   await mode.click();
   await expect(page.getByRole('option', { name: '產品評審會議' })).toBeVisible();
-  await expect(page.getByRole('option', { name: '進行中的會議' })).toHaveCount(0);
+  await expect(page.getByRole('option', { name: '進行中的會議' })).toHaveCount(1);
   await page.keyboard.press('Escape');
 
   await mode.fill('產品評審');
@@ -3820,17 +3844,17 @@ test('live translation only offers created meetings and loads selected settings'
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
 });
 
-test('live route redirects when the meeting is not created', async ({ page }) => {
+test('live route redirects when the meeting is terminal', async ({ page }) => {
   await page.unroute('**/api/meetings');
   await page.route('**/api/meetings', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([{ id: 'meeting-active', name: '已開始的會議', status: 'active' }])
+      body: JSON.stringify([{ id: 'meeting-failed', name: '已失敗的會議', status: 'failed' }])
     });
   });
 
-  await page.goto('/#live?meetingId=meeting-active');
+  await page.goto('/#live?meetingId=meeting-failed');
 
   await expect(page).toHaveURL(/#meeting$/);
   await expect(page.getByRole('alert')).toHaveText('會議連結不存在或已失效，請重新選擇已建立的會議。');

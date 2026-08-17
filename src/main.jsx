@@ -220,7 +220,7 @@ const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請�
 
 function LiveTranslationModeCombobox({ meetingRecords = [], routeMeetingId = '', controlsLocked = false, onChange }) {
   const items = useMemo(() => meetingRecords
-      .filter((meeting) => meeting.status === 'created')
+      .filter((meeting) => ['created', 'active', 'interrupted'].includes(meeting.status))
       .map((meeting) => ({
         value: `meeting:${meeting.id}`,
         label: meeting.name || meeting.id,
@@ -540,11 +540,11 @@ function App() {
     let cancelled = false;
     void refreshMeetingRecords().then((meetings) => {
       if (cancelled || !meetings) return;
-      const createdMeetings = meetings.filter((meeting) => meeting.status === 'created');
+      const resumableMeetings = meetings.filter((meeting) => ['created', 'active', 'interrupted'].includes(meeting.status));
       const currentMeetingId = pageInfoFromLocation().meetingId;
-      if (currentMeetingId && !createdMeetings.some((meeting) => meeting.id === currentMeetingId)) {
+      if (currentMeetingId && !resumableMeetings.some((meeting) => meeting.id === currentMeetingId)) {
         redirectToMeetingWithError();
-      } else if (!currentMeetingId && createdMeetings.length === 0) {
+      } else if (!currentMeetingId && resumableMeetings.length === 0) {
         window.location.hash = 'meeting';
       }
     });
@@ -646,7 +646,7 @@ function App() {
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
         const meeting = detail?.meeting;
-        if (!meeting || meeting.status !== 'created') {
+        if (!meeting || !['created', 'active', 'interrupted'].includes(meeting.status)) {
           redirectToMeetingWithError();
           return;
         }
@@ -771,9 +771,9 @@ function App() {
       return;
     }
     const selectedRouteMeetingId = pageInfoFromLocation().meetingId;
-    const selectedCreatedMeeting = meetingRecords.find((meeting) => meeting.id === selectedRouteMeetingId && meeting.status === 'created');
-    if (!selectedCreatedMeeting) {
-      setError('請先選擇一個已建立的會議。');
+    const selectedResumableMeeting = meetingRecords.find((meeting) => meeting.id === selectedRouteMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
+    if (!selectedResumableMeeting) {
+      setError('請先選擇一個可錄音的會議。');
       return;
     }
     invalidateLiveSessionCallbacks();
@@ -1048,7 +1048,7 @@ function App() {
         setError(nextError.message);
         setStatus('error');
         sessionRef.current = null;
-        finalizeCurrentSessionRecord({
+        void finalizeFailedSession({
           status: 'failed',
           failureReason: 'unknown_error',
           failureCategory: 'unknown'
@@ -1074,7 +1074,7 @@ function App() {
           setError(failureUiState.message);
           setStatus(failureUiState.status);
           setStatusLabelOverride(failureUiState.statusLabel);
-          finalizeCurrentSessionRecord({
+          void finalizeFailedSession({
             status: failureUiState.status === 'expired' ? 'expired' : 'failed',
             failureReason: classification.reason,
             failureCategory: classification.category
@@ -1097,7 +1097,7 @@ function App() {
               setStatusLabelOverride('');
               setError(reconnectErrorMessage(result));
               setStatus('error');
-              finalizeCurrentSessionRecord({
+              void finalizeFailedSession({
                 status: 'failed',
                 failureReason: classification.reason,
                 failureCategory: classification.category
@@ -1382,7 +1382,7 @@ function App() {
       setStatusLabelOverride('');
       setError(RECONNECT_FAILED_MESSAGE);
       setStatus('error');
-      finalizeCurrentSessionRecord({
+      void finalizeFailedSession({
         status: 'failed',
         failureReason: classification.reason,
         failureCategory: classification.category
@@ -1427,20 +1427,28 @@ function App() {
     try {
       const nextLiveSessionId = generateLiveSessionId();
       setStatus('reconnecting');
-      const recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
-        meetingId: draft.meetingId,
-        segmentId: draft.segmentId,
-        idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
-        checkpoint: {
-          idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
-          durableChunks: [],
-          pendingPartial: null
-        },
-        nextLiveSessionId,
-        failureReason: 'manual_resume',
-        failureCategory: 'user_intent',
-        outcome: 'interrupted'
-      });
+      const segmentsResult = await meetingCheckpointApiClientRef.current.listSegments({ meetingId: draft.meetingId });
+      const currentSegment = segmentsResult.segments.find((segment) => segment.id === draft.segmentId);
+      const recovery = currentSegment?.status === 'created'
+        ? await meetingCheckpointApiClientRef.current.startMeeting({
+          meetingId: draft.meetingId,
+          segmentId: draft.segmentId,
+          liveSessionId: nextLiveSessionId
+        })
+        : await meetingCheckpointApiClientRef.current.recoverSegment({
+          meetingId: draft.meetingId,
+          segmentId: draft.segmentId,
+          idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
+          checkpoint: {
+            idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
+            durableChunks: [],
+            pendingPartial: null
+          },
+          nextLiveSessionId,
+          failureReason: 'manual_resume',
+          failureCategory: 'user_intent',
+          outcome: 'interrupted'
+        });
       const nextMeetingCheckpoint = {
         meetingId: draft.meetingId,
         segmentId: recovery.segment.id
@@ -1575,7 +1583,7 @@ function App() {
     setStatusLabelOverride('切換失敗');
     setError('長會議分段切換失敗。已保留目前逐字稿，請停止後重新開始。');
     setStatus('error');
-    void finalizeCurrentSessionRecord({
+    void finalizeFailedSession({
       status: 'failed',
       failureReason: 'segment_switch_failed',
       failureCategory: 'provider'
@@ -1843,6 +1851,36 @@ function App() {
       setHasSessionControl(false);
       activeMeetingCheckpointRef.current = null;
     }
+  }
+
+  async function interruptActiveMeeting({ failureReason, failureCategory } = {}) {
+    const meetingCheckpoint = activeMeetingCheckpointRef.current;
+    if (!meetingCheckpoint) return null;
+
+    try {
+      await flushMeetingCheckpointSync();
+      return await meetingCheckpointApiClientRef.current.recoverSegment({
+        meetingId: meetingCheckpoint.meetingId,
+        segmentId: meetingCheckpoint.segmentId,
+        idempotencyKey: `interrupt:${meetingCheckpoint.segmentId}:${failureReason}`,
+        checkpoint: {
+          idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:interrupt:${failureReason}`,
+          durableChunks: [],
+          pendingPartial: null
+        },
+        nextLiveSessionId: null,
+        failureReason: failureReason || 'unknown_error',
+        failureCategory: failureCategory || 'unknown',
+        outcome: 'interrupted'
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async function finalizeFailedSession({ status = 'failed', failureReason, failureCategory } = {}) {
+    await interruptActiveMeeting({ failureReason, failureCategory });
+    await finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
   }
 
   async function uploadFinalizedSessionAudioArtifacts(sessionId, states = {}, options = {}) {
@@ -2322,8 +2360,8 @@ function App() {
       }
 
       const segments = [...result.segments].sort((left, right) => left.sequence - right.sequence);
-      const activeSegment = [...segments].reverse().find((segment) => segment.status === 'active');
-      if (!activeSegment) {
+      const resumableSegment = [...segments].reverse().find((segment) => ['active', 'created'].includes(segment.status));
+      if (!resumableSegment) {
         setResumeDraft(null);
         setMeetingCheckpointStatus('idle');
         return;
@@ -2365,13 +2403,13 @@ function App() {
       setCopiedArticleStream('');
       activeMeetingCheckpointRef.current = {
         meetingId,
-        segmentId: activeSegment.id
+        segmentId: resumableSegment.id
       };
       setResumeDraft({
         sessionId: (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
           .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
         meetingId,
-        segmentId: activeSegment.id,
+        segmentId: resumableSegment.id,
         transcriptState: resumeTranscript,
         hasTranscript: transcriptHasFinalItems(resumeTranscript) > 0
       });
@@ -2753,7 +2791,7 @@ function App() {
   const selectedHistoryRecord = selectedHistoryRecordId
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
-  const hasSelectedCreatedMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && meeting.status === 'created');
+  const hasSelectedResumableMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
   const meetingSettingsReadOnly = Boolean(routeMeetingId);
 
   if (page === 'watch') {
@@ -2986,8 +3024,8 @@ function App() {
                       結束本次工作階段
                     </button>
                   </>
-                ) : hasSelectedCreatedMeeting || resumeDraft?.hasTranscript ? (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedCreatedMeeting}>
+                ) : hasSelectedResumableMeeting || resumeDraft?.hasTranscript ? (
+                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}>
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {isActive ? '正在開始' : '開始'}
                   </button>
@@ -4625,6 +4663,9 @@ function MeetingManagementPage({ onOpenLive }) {
       cellRenderer: ({ data }) => (
         <div className="meeting-actions">
           <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+          {['active', 'interrupted'].includes(data?.status) ? (
+            <button className="button detail-button" type="button" onClick={() => onOpenLive(data.id)}>繼續錄製</button>
+          ) : null}
           {data?.status === 'created' ? (
             <button className="button detail-button danger-button" type="button" onClick={() => deleteMeeting(data)} title="刪除會議">
               <Trash2 size={16} aria-hidden="true" />

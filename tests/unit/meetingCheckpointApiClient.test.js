@@ -172,6 +172,34 @@ test('meeting checkpoint API client parses failed recovery response', async () =
   assert.equal(result.failedSegment.id, 'segment-1');
 });
 
+test('meeting checkpoint API client allows terminal interruption without a replacement live session', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok({
+        meeting: { id: 'meeting-1', status: 'interrupted' },
+        interruptedSegment: { id: 'segment-1', status: 'interrupted' },
+        segment: { id: 'segment-2', status: 'created', liveSessionId: null }
+      });
+    }
+  });
+
+  await client.recoverSegment({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    idempotencyKey: 'interrupt-1',
+    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null },
+    nextLiveSessionId: null,
+    failureReason: 'unexpected_close',
+    failureCategory: 'provider',
+    outcome: 'interrupted'
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(calls[0].options.body).nextLiveSessionId, null);
+});
+
 test('meeting checkpoint API client rejects malformed and failed responses', async () => {
   const malformedClient = createMeetingCheckpointApiClient({ fetchImpl: async () => ok({ meeting: {}, segment: {} }) });
   await assert.rejects(malformedClient.createMeeting(), /meeting\.id and segment\.id/);

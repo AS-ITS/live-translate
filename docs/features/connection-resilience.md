@@ -255,6 +255,20 @@ This path does not auto-start the microphone on page load. Offline pause/resume
 and device-disconnect recovery are handled only during an active recovery
 lifecycle.
 
+## Terminal Disconnect Meeting Recovery
+
+Status: Implemented.
+
+When automatic reconnect is exhausted or a non-recoverable live failure ends an
+active Meeting, the frontend flushes the current checkpoint and uses the
+recovery API to mark the current Segment and Meeting as `interrupted`. A new
+`created` Segment is prepared without a placeholder Live Session. The Meeting
+Management and live routes accept interrupted Meetings, and explicit resume
+starts that Segment with a fresh Live Session and ephemeral token.
+
+This path does not automatically request microphone access after failure. It is
+idempotent and preserves confirmed transcript content for later resume.
+
 ## Token Expiration UX Display Path
 
 Status: Implemented.

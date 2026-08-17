@@ -85,7 +85,7 @@ export function createMeetingCheckpointService({
         throw codedError('meeting_segment_invalid_state', 'segment is not available to start');
       }
       const now = clock();
-      const activeMeeting = meeting.status === 'created'
+      const activeMeeting = ['created', 'interrupted'].includes(meeting.status)
         ? await meetingRepository.updateMeeting(meeting.activate(now))
         : meeting;
       const withLiveSession = segment.withLiveSession(validateRequiredString(liveSessionId, 'liveSessionId'));
@@ -216,7 +216,7 @@ export function createMeetingCheckpointService({
           existingNext &&
           currentSegment.status === 'interrupted' &&
           storedCheckpoint.idempotencyKey === input.idempotencyKey &&
-          existingNext.liveSessionId === input.nextLiveSessionId &&
+          existingNext.liveSessionId === (input.nextLiveSessionId || null) &&
           sameErrorInfo(currentSegment.errorInfo, errorInfo)
         ) {
           return { interruptedSegment: currentSegment, segment: existingNext };
@@ -268,6 +268,23 @@ export function createMeetingCheckpointService({
         checkpoint: recoveryCheckpoint,
         errorInfo
       }));
+      if (!input.nextLiveSessionId) {
+        const meeting = await meetingRepository.getMeeting(currentSegment.meetingId);
+        if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${currentSegment.meetingId}`);
+        const interruptedMeeting = meeting.status === 'active'
+          ? await meetingRepository.updateMeeting(meeting.interrupt(now))
+          : meeting;
+        const nextSegment = await meetingRepository.createMeetingSegment({
+          id: idGenerator('segment'),
+          meetingId: currentSegment.meetingId,
+          sequence: currentSegment.sequence + 1,
+          liveSessionId: null,
+          settingsSnapshot: meetingSettingsSnapshot(interruptedMeeting),
+          createdAt: now
+        });
+        await notifySegmentFinalized(onSegmentFinalized, interruptedSegment);
+        return { interruptedSegment, segment: nextSegment, meeting: interruptedMeeting };
+      }
       const nextSegment = await meetingRepository.createMeetingSegment({
         id: idGenerator('segment'),
         meetingId: currentSegment.meetingId,
@@ -414,7 +431,9 @@ function validateRecoveryInput(input) {
   return {
     idempotencyKey: validateRequiredString(input.idempotencyKey, 'idempotencyKey'),
     checkpoint: input.checkpoint,
-    nextLiveSessionId: validateRequiredString(input.nextLiveSessionId, 'nextLiveSessionId'),
+    nextLiveSessionId: input.nextLiveSessionId === null || input.nextLiveSessionId === undefined
+      ? null
+      : validateRequiredString(input.nextLiveSessionId, 'nextLiveSessionId'),
     failureReason: validateRequiredString(input.failureReason, 'failureReason'),
     failureCategory: validateRequiredString(input.failureCategory, 'failureCategory'),
     outcome

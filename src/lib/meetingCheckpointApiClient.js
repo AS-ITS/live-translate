@@ -122,7 +122,11 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
       assertNonEmptyString(idempotencyKey, 'idempotencyKey');
-      assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
+      if (outcome === 'interrupted' && nextLiveSessionId !== null && nextLiveSessionId !== undefined) {
+        assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
+      } else if (outcome === 'failed') {
+        assertNonEmptyString(nextLiveSessionId, 'nextLiveSessionId');
+      }
       assertNonEmptyString(failureReason, 'failureReason');
       assertNonEmptyString(failureCategory, 'failureCategory');
       if (outcome !== 'interrupted' && outcome !== 'failed') throw new TypeError('outcome must be interrupted or failed.');

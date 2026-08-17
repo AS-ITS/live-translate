@@ -246,6 +246,33 @@ test('interrupted recovery marks current segment and creates next active segment
   assert.equal(result.segment.liveSessionId, 'live-session-2');
 });
 
+test('terminal interruption marks the meeting interrupted and creates a resumable segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+  const recoveryInput = recovery({
+    idempotencyKey: 'interrupt-1',
+    checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+    nextLiveSessionId: null,
+    failureReason: 'unexpected_close',
+    failureCategory: 'provider',
+    outcome: 'interrupted'
+  });
+
+  const first = await service.recoverSegment({ meetingId: meeting.id, segmentId: segment.id, recovery: recoveryInput });
+  const duplicate = await service.recoverSegment({ meetingId: meeting.id, segmentId: segment.id, recovery: recoveryInput });
+  const storedMeeting = await repository.getMeeting(meeting.id);
+  const segments = await repository.listMeetingSegments(meeting.id);
+
+  assert.equal(first.meeting.status, 'interrupted');
+  assert.equal(first.interruptedSegment.status, 'interrupted');
+  assert.equal(first.segment.status, 'created');
+  assert.equal(first.segment.liveSessionId, null);
+  assert.equal(duplicate.segment.id, first.segment.id);
+  assert.equal(storedMeeting.status, 'interrupted');
+  assert.deepEqual(segments.map((item) => item.status), ['interrupted', 'created']);
+});
+
 test('failed recovery terminalizes current segment without creating next segment', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);
@@ -453,7 +480,7 @@ function recovery(overrides = {}) {
   return {
     idempotencyKey: overrides.idempotencyKey ?? 'recover-1',
     checkpoint: overrides.checkpoint ?? checkpoint(),
-    nextLiveSessionId: overrides.nextLiveSessionId ?? 'live-session-2',
+    nextLiveSessionId: Object.hasOwn(overrides, 'nextLiveSessionId') ? overrides.nextLiveSessionId : 'live-session-2',
     failureReason: overrides.failureReason ?? 'unexpected_close',
     failureCategory: overrides.failureCategory ?? 'provider',
     outcome: overrides.outcome ?? 'interrupted'

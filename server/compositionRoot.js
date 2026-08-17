@@ -79,6 +79,12 @@ export const DEFAULT_MEETING_RECORDS_FILE = 'meeting-records.json';
 export const DEFAULT_SESSION_SHARES_FILE = 'session-shares.json';
 export const DEFAULT_RECORDER_LEASES_FILE = 'recorder-leases.json';
 
+export async function ensureDataDirectory({ env = process.env, fileSystem: storageFileSystem = fileSystem } = {}) {
+  const directory = dataDirFor(env);
+  await storageFileSystem.mkdir(directory, { recursive: true });
+  return directory;
+}
+
 export function createApplicationDependencies(options = {}) {
   const {
     env = process.env,

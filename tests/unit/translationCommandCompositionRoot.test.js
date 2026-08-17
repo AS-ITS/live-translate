@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { access, mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import test from 'node:test';
 import {
   DEFAULT_MEETING_RECORDS_FILE,
@@ -6,11 +9,22 @@ import {
   DEFAULT_SESSION_RECORDS_FILE,
   createApplicationDependencies,
   createProductionApplicationDependencies,
-  createTranslationCommandDependencies
+  createTranslationCommandDependencies,
+  ensureDataDirectory
 } from '../../server/compositionRoot.js';
 import { TranslationExecution } from '../../src/domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../../src/domain/translation/translationRepository.js';
 import { createFakeTranslationExecutionProvider } from '../../src/infrastructure/fakeTranslationExecutionProvider.js';
+
+test('ensureDataDirectory creates a missing configured data directory recursively', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'live-translate-data-directory-'));
+  const dataDirectory = join(root, 'nested', 'data');
+  const fileSystem = await import('node:fs/promises');
+
+  assert.equal(await ensureDataDirectory({ env: { DATA_DIR: dataDirectory }, fileSystem }), dataDirectory);
+  await assert.doesNotReject(access(dataDirectory));
+  await assert.doesNotReject(ensureDataDirectory({ env: { DATA_DIR: dataDirectory }, fileSystem }));
+});
 
 test('production composition exposes and injects one queue retry policy and error classifier instance for durable workers', () => {
   const retryPolicy = { canRetry() {}, getNextDelayMs() {} };

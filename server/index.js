@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
 import { createAccessControl } from './accessControl.js';
-import { createApplicationDependencies, createProductionApplicationDependencies } from './compositionRoot.js';
+import { createApplicationDependencies, createProductionApplicationDependencies, ensureDataDirectory } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
@@ -2622,6 +2622,7 @@ function publicViewerDetail(detail) {
 }
 
 if (IS_MAIN) {
+  await ensureDataDirectory();
   const server = http.createServer(handleRequest);
   attachExecutionEventsWebSocket({
     server,

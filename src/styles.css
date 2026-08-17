@@ -50,13 +50,14 @@ input {
   overflow: hidden;
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: clamp(18px, 2.4vw, 36px);
   align-items: start;
   background: #f3f6f9;
 }
 
 .live-sidebar {
+  grid-row: 1 / -1;
   position: sticky;
   top: 24px;
   display: grid;
@@ -134,6 +135,14 @@ input {
 .live-app-shell > .feature-page {
   grid-column: 2;
   min-width: 0;
+}
+
+.live-app-shell > .error-message {
+  grid-row: 1;
+}
+
+.live-app-shell > .feature-page {
+  grid-row: 2;
 }
 
 .live-page {
@@ -2890,6 +2899,7 @@ input:disabled {
   }
 
   .live-sidebar {
+    grid-row: auto;
     position: static;
     min-height: 0;
     gap: 14px;
@@ -2909,6 +2919,7 @@ input:disabled {
   .live-app-shell > .error-message,
   .live-app-shell > .feature-page {
     grid-column: 1;
+    grid-row: auto;
     min-width: 0;
   }
 

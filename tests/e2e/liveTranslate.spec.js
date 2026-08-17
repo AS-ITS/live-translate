@@ -1454,6 +1454,26 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
   await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
 });
 
+test('stop error banner stays above the live workspace', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, { failCheckpoint: true });
+  await page.goto('/');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'stop error source', 'stop error translation');
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.getByLabel('即時翻譯工作區')).toBeVisible();
+  const errorBanner = page.getByRole('alert').filter({ hasText: '長會議同步暫時失敗' });
+  await expect(errorBanner).toBeVisible();
+
+  const errorBox = await errorBanner.boundingBox();
+  const workspaceBox = await page.getByLabel('即時翻譯工作區').boundingBox();
+  expect(errorBox).not.toBeNull();
+  expect(workspaceBox).not.toBeNull();
+  expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(workspaceBox.y);
+});
+
 test('checkpoint sync retries a temporary failure and clears the error after success', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page, { failCheckpointAttempts: 1 });
 

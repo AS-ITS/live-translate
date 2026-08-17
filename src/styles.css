@@ -2833,6 +2833,28 @@ input:disabled {
   }
 }
 
+@media (min-width: 761px) and (max-width: 1280px) {
+  .history-page .history-panel {
+    padding: 16px;
+  }
+
+  .history-page .history-table-region {
+    gap: 10px;
+  }
+
+  .retranslation-picker-panel {
+    padding: 16px;
+  }
+
+  .retranslation-picker-controls {
+    margin-bottom: 10px;
+  }
+
+  .retranslation-picker-table-scroll {
+    padding-bottom: 10px;
+  }
+}
+
 @media (min-width: 761px) {
   .retranslation-result-workspace {
     grid-template-columns: minmax(240px, 0.75fr) minmax(0, 1.25fr);

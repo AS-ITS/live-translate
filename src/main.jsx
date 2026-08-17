@@ -326,6 +326,7 @@ function App() {
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
+  const [navigationNotice, setNavigationNotice] = useState('');
   const [historyRecords, setHistoryRecords] = useState([]);
   const [historyLoadError, setHistoryLoadError] = useState('');
   const [deadLetterQueue, setDeadLetterQueue] = useState({ items: [], size: 0 });
@@ -494,6 +495,9 @@ function App() {
       const next = pageInfoFromLocation();
       setPage(next.page);
       setLocationVersion((current) => current + 1);
+      if (next.page !== 'meeting') {
+        setNavigationNotice('');
+      }
       if (next.page === 'retranslate') {
         setRetranslationSessionId(next.sessionId);
       }
@@ -2639,7 +2643,8 @@ function App() {
   }
 
   function redirectToMeetingWithError() {
-    setError(INVALID_MEETING_ROUTE_MESSAGE);
+    setError('');
+    setNavigationNotice(INVALID_MEETING_ROUTE_MESSAGE);
     if (pageFromLocation() !== 'meeting') window.location.hash = 'meeting';
   }
 
@@ -2798,6 +2803,7 @@ function App() {
         </nav>
       </header>
 
+      {page === 'meeting' && navigationNotice ? <p className="error-message" role="alert">{navigationNotice}</p> : null}
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
       {page === 'meeting' ? (
@@ -4191,17 +4197,34 @@ function HistoryPanel({
   retryingExecutionId = ''
 }) {
   const [query, setQuery] = useState('');
+  const [isCompactLayout, setIsCompactLayout] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 761px) and (max-width: 1280px)').matches
+  ));
   const entries = useMemo(() => combinedHistoryEntries(records, meetingRecords), [records, meetingRecords]);
   const filteredEntries = useMemo(() => entries.filter((entry) => historyEntryMatches(entry, query)), [entries, query]);
   const gridContext = useMemo(() => ({ onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId }), [onDeleteRecord, onViewDetails, onViewMeetingDetails, selectedMeetingId, selectedRecordId]);
-  const columnDefs = useMemo(() => [
-    { headerName: '會議', valueGetter: ({ data }) => historyEntryTitle(data), width: 240, cellRenderer: HistoryNameCell },
-    { headerName: '狀態', valueGetter: ({ data }) => data.record.status || '', width: 100, cellRenderer: HistoryStatusCell },
-    { headerName: '開始時間', valueGetter: ({ data }) => historyRecordSortTime(data.record), width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.startedAt) },
-    { headerName: '結束時間', valueGetter: ({ data }) => data.record.endedAt || '', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.endedAt) },
-    { headerName: '會議摘要', valueGetter: ({ data }) => historyEntrySummary(data), minWidth: 230, flex: 1, cellRenderer: HistorySummaryCell },
-    { headerName: '操作', width: 300, sortable: false, cellRenderer: HistoryActionsCell }
-  ], []);
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(min-width: 761px) and (max-width: 1280px)');
+    const handleChange = (event) => setIsCompactLayout(event.matches);
+    setIsCompactLayout(mediaQuery.matches);
+    mediaQuery.addEventListener?.('change', handleChange);
+    return () => mediaQuery.removeEventListener?.('change', handleChange);
+  }, []);
+  const columnDefs = useMemo(() => {
+    const columns = [
+      { headerName: '會議', valueGetter: ({ data }) => historyEntryTitle(data), width: isCompactLayout ? 210 : 240, cellRenderer: HistoryNameCell },
+      { headerName: '狀態', valueGetter: ({ data }) => data.record.status || '', width: isCompactLayout ? 90 : 100, cellRenderer: HistoryStatusCell },
+      { headerName: '開始時間', valueGetter: ({ data }) => historyRecordSortTime(data.record), width: isCompactLayout ? 132 : 150, cellRenderer: ({ data }) => formatRecordTime(data.record.startedAt) }
+    ];
+    if (!isCompactLayout) {
+      columns.push({ headerName: '結束時間', valueGetter: ({ data }) => data.record.endedAt || '', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.record.endedAt) });
+    }
+    columns.push(
+      { headerName: '會議摘要', valueGetter: ({ data }) => historyEntrySummary(data), minWidth: isCompactLayout ? 180 : 230, flex: 1, cellRenderer: HistorySummaryCell },
+      { headerName: '操作', width: isCompactLayout ? 230 : 300, sortable: false, cellRenderer: HistoryActionsCell }
+    );
+    return columns;
+  }, [isCompactLayout]);
   const selectedEntry = selectedRecordId
     ? entries.find((entry) => entry.kind === 'session' && entry.record.id === selectedRecordId)
     : null;
@@ -5009,6 +5032,9 @@ function groupTranscriptItemsBySegment(transcriptItems = []) {
 
 function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
   const [query, setQuery] = useState('');
+  const [isCompactLayout, setIsCompactLayout] = useState(() => (
+    typeof window !== 'undefined' && window.matchMedia('(min-width: 761px) and (max-width: 1280px)').matches
+  ));
   const [detail, setDetail] = useState(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const [detailError, setDetailError] = useState('');
@@ -5030,6 +5056,14 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const sessionRetranslationApiClientRef = useRef(createSessionRetranslationApiClient());
   const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(min-width: 761px) and (max-width: 1280px)');
+    const handleChange = (event) => setIsCompactLayout(event.matches);
+    setIsCompactLayout(mediaQuery.matches);
+    mediaQuery.addEventListener?.('change', handleChange);
+    return () => mediaQuery.removeEventListener?.('change', handleChange);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -5282,6 +5316,21 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
   const canSubmit = Boolean(selectedSessionId && detail && sourceContent.paragraphs.length > 0 && targetLanguageCode && providerKey && !isSubmitting);
   const hasCompletedOutputs = retranslationProgress.outputs.length > 0;
   const shouldShowRetranslationContent = !hasCompletedOutputs || Boolean(selectedOutput);
+  const retranslationPickerColumnDefs = useMemo(() => {
+    const columns = [
+      { headerName: '名稱', valueGetter: ({ data }) => data.name || historyLanguageLabel(data), width: isCompactLayout ? 210 : 220, cellRenderer: RetranslationSessionNameCell },
+      { headerName: '狀態', field: 'status', width: isCompactLayout ? 90 : 100, cellRenderer: RetranslationSessionStatusCell },
+      { headerName: '開始時間', field: 'startedAt', width: isCompactLayout ? 132 : 150, cellRenderer: ({ data }) => formatRecordTime(data.startedAt) }
+    ];
+    if (!isCompactLayout) {
+      columns.push({ headerName: '結束時間', field: 'endedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.endedAt) });
+    }
+    columns.push(
+      { headerName: '逐字稿', valueGetter: ({ data }) => transcriptSummaryLabel(data.transcriptSummary), minWidth: isCompactLayout ? 180 : 210, flex: 1 },
+      { headerName: '操作', width: isCompactLayout ? 230 : 300, sortable: false, cellRenderer: RetranslationSessionActionCell }
+    );
+    return columns;
+  }, [isCompactLayout]);
 
   return (
     <section className={`retranslation-workflow${selectedSessionId ? ' has-selection' : ''}`} aria-labelledby={titleId}>
@@ -5308,14 +5357,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
             <AgGridReact
                 {...dataGridProps('retranslation-session-data-grid', { fixedHeight: true })}
                 aria-label="重新翻譯 Session 列表"
-                columnDefs={[
-                  { headerName: '名稱', valueGetter: ({ data }) => data.name || historyLanguageLabel(data), width: 220, cellRenderer: RetranslationSessionNameCell },
-                  { headerName: '狀態', field: 'status', width: 100, cellRenderer: RetranslationSessionStatusCell },
-                  { headerName: '開始時間', field: 'startedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.startedAt) },
-                  { headerName: '結束時間', field: 'endedAt', width: 150, cellRenderer: ({ data }) => formatRecordTime(data.endedAt) },
-                  { headerName: '逐字稿', valueGetter: ({ data }) => transcriptSummaryLabel(data.transcriptSummary), minWidth: 210, flex: 1 },
-                  { headerName: '操作', width: 300, sortable: false, cellRenderer: RetranslationSessionActionCell }
-                ]}
+                columnDefs={retranslationPickerColumnDefs}
                 context={{ onSelectSession }}
                 rowData={filteredRecords}
                 getRowId={({ data }) => data.id}

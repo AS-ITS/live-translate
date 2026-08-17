@@ -714,6 +714,46 @@ test('history grid uses native pagination and page size controls', async ({ page
   await expect(grid.locator('.ag-row')).toHaveCount(13);
 });
 
+test('history grid uses compact columns on laptop viewports', async ({ page }) => {
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        historyRecord({ id: 'session-compact-1', targetLanguageLabel: '英文' }),
+        historyRecord({ id: 'session-compact-2', targetLanguageLabel: '日文' }),
+        historyRecord({ id: 'session-compact-3', targetLanguageLabel: '韓文' })
+      ])
+    });
+  });
+
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.goto('/#history');
+
+  const grid = historyPanel(page).locator('.history-data-grid');
+  await expect(grid.locator('.ag-row')).toHaveCount(3);
+  await expect(grid.getByText('會議', { exact: true })).toBeVisible();
+  await expect(grid.getByText('開始時間', { exact: true })).toBeVisible();
+  await expect(grid.getByText('會議摘要', { exact: true })).toBeVisible();
+  await expect(grid.getByText('操作', { exact: true })).toBeVisible();
+  await expect(grid.getByText('結束時間', { exact: true })).toHaveCount(0);
+
+  const layout = await grid.evaluate((element) => {
+    const horizontalScroll = element.querySelector('.ag-body-horizontal-scroll-viewport');
+    return {
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      gridHasHorizontalOverflow: Boolean(horizontalScroll && horizontalScroll.scrollWidth > horizontalScroll.clientWidth + 1)
+    };
+  });
+  expect(layout.pageHasHorizontalOverflow).toBe(false);
+  expect(layout.gridHasHorizontalOverflow).toBe(false);
+});
+
 test('history workspace keeps page scrolling inside the table', async ({ page }) => {
   await page.route('**/api/sessions', async (route) => {
     if (route.request().method() !== 'GET') {
@@ -760,6 +800,46 @@ test('history workspace keeps page scrolling inside the table', async ({ page })
   expect(layout.tableScrollEnabled || layout.gridBodyScrollEnabled).toBe(true);
   expect(layout.gridFitsPanel).toBe(true);
   expect(layout.domLayout).not.toContain('ag-layout-auto-height');
+});
+
+test('retranslation picker uses compact columns on laptop viewports', async ({ page }) => {
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        historyRecord({ id: 'session-retranslation-compact-1', name: '紀錄一' }),
+        historyRecord({ id: 'session-retranslation-compact-2', name: '紀錄二' }),
+        historyRecord({ id: 'session-retranslation-compact-3', name: '紀錄三' })
+      ])
+    });
+  });
+
+  await page.setViewportSize({ width: 1024, height: 600 });
+  await page.goto('/#retranslate');
+
+  const grid = page.locator('.retranslation-session-data-grid');
+  await expect(grid.locator('.ag-row')).toHaveCount(3);
+  await expect(grid.getByText('名稱', { exact: true })).toBeVisible();
+  await expect(grid.getByText('開始時間', { exact: true })).toBeVisible();
+  await expect(grid.getByText('逐字稿', { exact: true })).toBeVisible();
+  await expect(grid.getByRole('button', { name: '選擇' }).first()).toBeVisible();
+  await expect(grid.getByText('結束時間', { exact: true })).toHaveCount(0);
+
+  const layout = await grid.evaluate((element) => {
+    const horizontalScroll = element.querySelector('.ag-body-horizontal-scroll-viewport');
+    return {
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      gridHasHorizontalOverflow: Boolean(horizontalScroll && horizontalScroll.scrollWidth > horizontalScroll.clientWidth + 1)
+    };
+  });
+  expect(layout.pageHasHorizontalOverflow).toBe(false);
+  expect(layout.gridHasHorizontalOverflow).toBe(false);
 });
 
 test('meeting history detail uses an independent page with timeline, article views, and export controls', async ({ page }) => {
@@ -3761,4 +3841,7 @@ test('live route redirects when the meeting does not exist', async ({ page }) =>
 
   await expect(page).toHaveURL(/#meeting$/);
   await expect(page.getByRole('alert')).toHaveText('會議連結不存在或已失效，請重新選擇已建立的會議。');
+
+  await openHistoryPage(page);
+  await expect(page.getByRole('alert')).toHaveCount(0);
 });

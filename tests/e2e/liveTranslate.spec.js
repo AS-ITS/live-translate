@@ -3428,6 +3428,8 @@ test('meeting management uses the live workspace layout and preserves create flo
 
     await route.fallback();
   });
+  let glossaryListRequestCount = 0;
+  let releaseGlossaryDrawerLoad;
   await page.route('**/api/glossary**', async (route) => {
     const request = route.request();
     if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/glossary/entries') {
@@ -3446,6 +3448,10 @@ test('meeting management uses the live workspace layout and preserves create flo
         })
       });
       return;
+    }
+    glossaryListRequestCount += 1;
+    if (glossaryListRequestCount === 2) {
+      await new Promise((resolve) => { releaseGlossaryDrawerLoad = resolve; });
     }
     await route.fulfill({
       status: 200,
@@ -3525,6 +3531,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   await page.getByRole('button', { name: /會議字典/ }).click();
   const glossaryDrawer = page.locator('.meeting-management-page .glossary-drawer');
   await expect(glossaryDrawer).toBeVisible();
+  await expect.poll(() => glossaryListRequestCount).toBe(2);
   await glossaryDrawer.locator('.glossary-choice input').check();
   await expect(page.getByRole('button', { name: /會議字典/ })).toContainText('1');
 
@@ -3532,6 +3539,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   await glossaryDrawer.getByLabel('翻譯（英文）').fill('New Product Name');
   await glossaryDrawer.getByRole('button', { name: '新增並套用' }).click();
   await expect(glossaryDrawer.getByRole('status')).toHaveText('詞條已新增並套用。');
+  releaseGlossaryDrawerLoad?.();
   await expect(glossaryDrawer.locator('.glossary-choice')).toHaveCount(2);
   await expect(glossaryDrawer.locator('.glossary-choice').first()).toContainText('新產品名稱');
   await expect(glossaryDrawer.locator('.glossary-choice').first().locator('input')).toBeChecked();

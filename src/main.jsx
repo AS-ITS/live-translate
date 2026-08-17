@@ -5502,6 +5502,7 @@ function LiveGlossaryDrawer({
   const [error, setError] = useState('');
   const [recentlyAddedEntryId, setRecentlyAddedEntryId] = useState('');
   const glossaryListRef = useRef(null);
+  const locallyAddedEntryIdsRef = useRef(new Set());
   const apiClientRef = useRef(createGlossaryApiClient());
 
   useEffect(() => {
@@ -5509,9 +5510,19 @@ function LiveGlossaryDrawer({
     let cancelled = false;
     setIsLoading(true);
     setError('');
+    locallyAddedEntryIdsRef.current = new Set();
     void apiClientRef.current.listEntries()
       .then((loadedEntries) => {
-        if (!cancelled) onEntriesChange(loadedEntries);
+        if (!cancelled) {
+          onEntriesChange((currentEntries) => {
+            const current = Array.isArray(currentEntries) ? currentEntries : [];
+            const loadedIds = new Set(loadedEntries.map((entry) => entry?.id).filter(Boolean));
+            const locallyAddedEntries = current.filter((entry) => (
+              locallyAddedEntryIdsRef.current.has(entry?.id) && !loadedIds.has(entry?.id)
+            ));
+            return [...locallyAddedEntries, ...loadedEntries];
+          });
+        }
       })
       .catch(() => {
         if (!cancelled) setError('無法載入字典。請稍後再試。');
@@ -5537,6 +5548,7 @@ function LiveGlossaryDrawer({
         translations: { [targetLanguageCode]: translation.trim() },
         scope: 'live'
       });
+      locallyAddedEntryIdsRef.current.add(entry.id);
       onEntriesChange(mergeGlossaryEntry(entries, entry));
       onSelectionChange((current) => [...new Set([...current, entry.id])]);
       setRecentlyAddedEntryId(entry.id);

@@ -1,5 +1,7 @@
 # Changelog
 
+- 保留完整 OpenCC 初始載入，並將 AG Grid、QR Code 與 Downshift 拆分為獨立 vendor chunks，避免 build 出現 large file warning。
+
 - 修正首次使用時沒有 `data` 資料夾造成建立資料失敗的問題；伺服器啟動前會自動建立設定的資料目錄。
 
 - 調整 13／14 吋筆電的響應式工作區：保留縮窄側欄，並讓即時翻譯、會議管理、翻譯紀錄與相關面板在有限寬高下可正常捲動。

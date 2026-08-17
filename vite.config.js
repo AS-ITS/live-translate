@@ -51,6 +51,18 @@ export default defineConfig({
             return 'vendor-opencc';
           }
 
+          if (id.includes('/node_modules/ag-grid-community/') || id.includes('/node_modules/ag-grid-react/')) {
+            return 'vendor-ag-grid';
+          }
+
+          if (id.includes('/node_modules/qrcode/')) {
+            return 'vendor-qrcode';
+          }
+
+          if (id.includes('/node_modules/downshift/')) {
+            return 'vendor-downshift';
+          }
+
           if (id.includes('/node_modules/lucide-react/')) {
             return 'vendor-icons';
           }

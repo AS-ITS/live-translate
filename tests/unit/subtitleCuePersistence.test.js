@@ -51,6 +51,24 @@ test('checkpoint saves and reloads recovery-only cue state', async () => {
   assert.deepEqual(await repository.loadCueCheckpoint('session-1'), checkpoint);
 });
 
+test('refined Cue update is version fenced and idempotently persists refined values', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const cue = finalCue({ refinement: { status: 'queued', version: 1, inputHash: 'hash-1' } });
+  await repository.appendFinalCue(cue);
+  const applied = await repository.updateRefinedCue({
+    sessionId: cue.sessionId, cueId: cue.cueId, version: 1, inputHash: 'hash-1',
+    refinedSource: 'refined source', refinedTranslation: 'refined translation', completedAt: '2026-08-17T00:00:00.000Z'
+  });
+  assert.equal(applied.applied, true);
+  assert.equal(applied.cue.refinedTranslation, 'refined translation');
+  const stale = await repository.updateRefinedCue({
+    sessionId: cue.sessionId, cueId: cue.cueId, version: 1, inputHash: 'old-hash',
+    refinedSource: 'stale', refinedTranslation: 'stale'
+  });
+  assert.equal(stale.stale, true);
+});
+
 test('partial, punctuation-only, and invalid timeline cues are rejected', async () => {
   const { sessions, meetings } = await fixture();
   const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });

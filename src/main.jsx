@@ -35,6 +35,7 @@ import { createTranslationCommandLifecycle } from './lib/translationCommandLifec
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from './lib/cueContent.js';
 import {
   compactTranslationHistoryForDetail,
   mergeRetranslationHistoryIntoDetail,
@@ -322,6 +323,7 @@ function App() {
   const [copiedArticleStream, setCopiedArticleStream] = useState('');
   const [exportFormat, setExportFormat] = useState('txt');
   const [exportStream, setExportStream] = useState('translation');
+  const [exportVariant, setExportVariant] = useState('refined');
   const [inputDevices, setInputDevices] = useState([]);
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
@@ -421,6 +423,9 @@ function App() {
   const meetingResumeDraftRequestIdRef = useRef(0);
   const liveCueUpdatesAllowedRef = useRef(false);
   const liveCueIdleTimersRef = useRef(new Map());
+  const refinementDispatchingRef = useRef(new Set());
+  const refinementSubmissionTimesRef = useRef([]);
+  const refinementRateLimitTimerRef = useRef(null);
 
   const routeSessionId = pageInfoFromLocation().sessionId;
   const routeMeetingId = pageInfoFromLocation().meetingId;
@@ -585,6 +590,7 @@ function App() {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
         const detail = await getSessionDetailWithTranslationHistory(sessionId);
         const outputs = completedPolishingOutputs(detail);
+        applyRefinedOutputs(detail);
         const output = latestPolishingOutput(detail);
         const latestExecution = latestPolishingExecution(detail);
         const pendingExecution = latestExecution && ['queued', 'processing', 'running'].includes(latestExecution.status)
@@ -599,13 +605,16 @@ function App() {
             executionId: pendingExecution.id
           });
         } else if (!cancelled && outputs.length > 0) {
-          const polishedItems = mergePolishedItemsFromOutputs(outputs);
-          applyPolishedOutput({
-            ...output,
-            polishedItems,
-            translatedText: polishedItems.map((item) => item.polishedText).join('\n')
-          });
-          setPolishingState({ status: 'completed', text: output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
+          const hasRefinedItems = outputs.some((item) => Array.isArray(item.refinedItems) && item.refinedItems.length > 0);
+          if (!hasRefinedItems) {
+            const polishedItems = mergePolishedItemsFromOutputs(outputs);
+            applyPolishedOutput({
+              ...output,
+              polishedItems,
+              translatedText: polishedItems.map((item) => item.polishedText).join('\n')
+            });
+          }
+          setPolishingState({ status: 'completed', text: hasRefinedItems ? '已完成逐句修正' : output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
         } else {
           if (!cancelled && latestExecution) setPolishingState({
             status: latestExecution.status,
@@ -635,6 +644,37 @@ function App() {
       updatedAt: output.completedAt || output.createdAt || null
     });
     setPolishingState((current) => ({ ...current, text, version: output.version ?? current.version, updatedAt: output.completedAt || output.createdAt || current.updatedAt }));
+  }
+
+  function applyRefinedOutputs(detail) {
+    const outputs = completedPolishingOutputs(detail);
+    const items = outputs.flatMap((output) => {
+      if (!Array.isArray(output?.refinedItems)) return [];
+      const currentSequence = output.segmentRange?.toSequence;
+      return output.refinedItems.filter((item) => currentSequence === null || currentSequence === undefined || item.sequence === currentSequence);
+    });
+    if (items.length === 0) return;
+    const byCueId = new Map(items.map((item) => [item.cueId, item]));
+    const current = subtitleCueStateRef.current;
+    let changed = false;
+    const nextCues = current.finalCues.map((cue) => {
+      const item = byCueId.get(cue.cueId);
+      if (!item || item.version !== cue.refinement?.version || item.inputHash !== cue.refinement?.inputHash) return cue;
+      changed = true;
+      return {
+        ...cue,
+        refinedSource: item.refinedSource,
+        refinedTranslation: item.refinedTranslation,
+        refinement: { ...cue.refinement, status: 'completed', completedAt: item.completedAt || new Date().toISOString() }
+      };
+    });
+    if (!changed) return;
+    const next = { ...current, finalCues: nextCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+    const refinedText = nextCues.map((cue) => effectiveTranslationForCue(cue)).filter(Boolean).join('\n');
+    setPolishedArticle({ text: refinedText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });
   }
 
   useEffect(() => {
@@ -675,6 +715,8 @@ function App() {
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
     meetingCheckpointSyncCoordinatorRef.current?.cancel();
+    if (refinementRateLimitTimerRef.current) window.clearTimeout(refinementRateLimitTimerRef.current);
+    refinementRateLimitTimerRef.current = null;
     cancelAudioUploadRetries();
     segmentSwitchOrchestratorRef.current?.cancel();
     for (const session of sessions) {
@@ -1766,13 +1808,46 @@ function App() {
 
   function scheduleTranscriptPolishing(finalCues = [], { force = false } = {}) {
     if (!TRANSCRIPT_POLISHING_ENABLED) return;
-    const cues = finalCues
-      .filter((cue) => cue?.status === 'final' && cue?.sourceText && cue?.translatedText)
-      .map((cue) => ({ ...cue, translationText: cue.translatedText }));
+    const cues = finalCues.filter((cue) => cue?.status === 'final' && rawSourceForCue(cue) && rawTranslationForCue(cue));
     if (!activeSessionRecordIdRef.current || cues.length === 0) return;
-    void transcriptPolishingCoordinator().add(cues, { force }).catch((nextError) => {
-      setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
-    });
+    const nowMs = Date.now();
+    const maxRpm = Number.isInteger(TRANSCRIPT_POLISHING_MAX_RPM) && TRANSCRIPT_POLISHING_MAX_RPM > 0 ? TRANSCRIPT_POLISHING_MAX_RPM : 15;
+    refinementSubmissionTimesRef.current = refinementSubmissionTimesRef.current.filter((time) => nowMs - time < 60000);
+    for (const cue of cues) {
+      if (cue.refinement?.status === 'completed' || refinementDispatchingRef.current.has(cue.cueId)) continue;
+      if (refinementSubmissionTimesRef.current.length >= maxRpm) {
+        const waitMs = Math.max(250, 60000 - (nowMs - refinementSubmissionTimesRef.current[0]) + 10);
+        if (!refinementRateLimitTimerRef.current) {
+          refinementRateLimitTimerRef.current = window.setTimeout(() => {
+            refinementRateLimitTimerRef.current = null;
+            scheduleTranscriptPolishing(subtitleCueStateRef.current.finalCues, { force: true });
+          }, waitMs);
+        }
+        break;
+      }
+      refinementDispatchingRef.current.add(cue.cueId);
+      refinementSubmissionTimesRef.current.push(nowMs);
+      const index = cues.findIndex((candidate) => candidate.cueId === cue.cueId);
+      void transcriptPolishingLifecycle().submitCue({
+        sessionId: activeSessionRecordIdRef.current,
+        targetLanguageCode,
+        sourceLanguageCode,
+        cue,
+        contextCues: cues.slice(Math.max(0, index - 2), index)
+      }).then((result) => {
+        const current = subtitleCueStateRef.current;
+        const nextCues = current.finalCues.map((candidate) => candidate.cueId === cue.cueId
+          ? { ...candidate, refinement: { ...(candidate.refinement || {}), status: 'queued', executionId: result.executionId, requestedAt: new Date().toISOString() } }
+          : candidate);
+        const next = { ...current, finalCues: nextCues };
+        subtitleCueStateRef.current = next;
+        setSubtitleCueState(next);
+        enqueueCuePersistence(current, next);
+        setPolishingState((state) => ({ ...state, status: 'queued', executionId: result.executionId, error: '' }));
+      }).catch((nextError) => {
+        setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
+      }).finally(() => refinementDispatchingRef.current.delete(cue.cueId));
+    }
   }
 
   async function retryPolishingExecution(executionId) {
@@ -2707,6 +2782,7 @@ function App() {
         options: {
           format: exportFormat,
           stream: exportStream,
+          variant: exportVariant,
           timeOrigin: transcriptTimeOrigin
         }
       });
@@ -2781,7 +2857,7 @@ function App() {
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
   const canDownloadTranscript = exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
-    ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream })
+    ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream, variant: exportVariant })
     : canExportTranscript(transcriptItems, {
       format: exportFormat,
       stream: exportStream,
@@ -3082,6 +3158,13 @@ function App() {
                 <option value="translation">翻譯</option>
                 <option value="source">原文</option>
                 <option value="both">兩者</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>文字版本</span>
+              <select value={exportVariant} onChange={(event) => setExportVariant(event.target.value)} tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
+                <option value="refined">修正版（可用時）</option>
+                <option value="raw">原始內容</option>
               </select>
             </label>
             <button className="button secondary" type="button" onClick={downloadTranscript} disabled={!canDownloadTranscript} tabIndex={isLiveExportDrawerOpen ? 0 : -1}>
@@ -4120,8 +4203,11 @@ function formatPolishingTimestamp(value) {
 }
 
 function CueRow({ cue, partial = false, stream }) {
+  const [showRaw, setShowRaw] = useState(false);
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
-  const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
+  const text = stream === 'translation'
+    ? effectiveTranslationForCue(cue, showRaw ? 'raw' : 'refined')
+    : effectiveSourceForCue(cue, showRaw ? 'raw' : 'refined');
   const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
   const languageCode = stream === 'translation' ? cue.targetLanguageCode : cue.sourceLanguageCode;
   const wrappedText = wrapSubtitleText(text, languageCode);
@@ -4133,6 +4219,9 @@ function CueRow({ cue, partial = false, stream }) {
       aria-label={label}
     >
       {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
+      {!partial && cue.refinement?.status && cue.refinement.status !== 'completed' ? (
+        <div className="cue-row-meta"><span className="cue-partial-status">{cue.refinement.status === 'failed' ? '修正失敗，保留原文' : '修正中'}</span></div>
+      ) : null}
       <div className="cue-text-toggle">
         {stream ? (
           <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{wrappedText || '—'}</span>
@@ -4143,6 +4232,11 @@ function CueRow({ cue, partial = false, stream }) {
           </>
         )}
       </div>
+      {!partial && ((stream === 'translation' ? cue.refinedTranslation : cue.refinedSource) || '').trim() ? (
+        <button className="button detail-button" type="button" onClick={() => setShowRaw((value) => !value)}>
+          {showRaw ? '顯示修正版' : '查看原始'}
+        </button>
+      ) : null}
     </article>
   );
 }

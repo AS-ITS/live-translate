@@ -24,6 +24,38 @@ export function createSubtitleCueRepository({ sessionRepository, meetingReposito
       return { cue: merged.cue, appended: true, segment: updated };
     },
 
+    async updateRefinedCue({ sessionId, cueId, version, inputHash, refinedSource, refinedTranslation, completedAt = new Date().toISOString() } = {}) {
+      const session = await sessionRepository.getSessionRecord(sessionId);
+      if (!session) throw coded(CUE_ERROR_CODES.sessionNotFound, `Session not found: ${sessionId}`);
+      const segments = await meetingRepository.listMeetingSegments(session.sessionRecord.meetingId);
+      const segment = segments.find((item) => item.checkpoint?.finalCues?.some((cue) => cue.cueId === cueId));
+      const existing = segment?.checkpoint?.finalCues?.find((cue) => cue.cueId === cueId);
+      if (!segment || !existing) throw coded(CUE_ERROR_CODES.segmentNotFound, `Cue not found: ${cueId}`);
+      if (existing.refinement?.version !== version || existing.refinement?.inputHash !== inputHash) {
+        return { applied: false, stale: true, cue: existing };
+      }
+      const nextCue = validateFinalCue({
+        ...existing,
+        rawSource: existing.rawSource ?? existing.sourceText,
+        rawTranslation: existing.rawTranslation ?? existing.translatedText,
+        refinedSource,
+        refinedTranslation,
+        refinement: {
+          ...(existing.refinement || {}),
+          status: 'completed',
+          completedAt,
+          failure: undefined
+        }
+      });
+      const finalCues = segment.checkpoint.finalCues.map((cue) => cue.cueId === cueId ? nextCue : cue);
+      const updated = await meetingRepository.updateMeetingSegment(segment.withCheckpoint({
+        ...(segment.checkpoint || {}),
+        finalCues,
+        updatedAt: Date.now()
+      }));
+      return { applied: true, stale: false, cue: nextCue, segment: updated };
+    },
+
     async listFinalCuesBySession(sessionId) {
       const session = await sessionRepository.getSessionRecord(sessionId);
       if (!session) return [];

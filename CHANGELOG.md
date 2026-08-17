@@ -48,6 +48,11 @@
 
 ## Unreleased
 
+- #27 finalized Cue refinement now runs asynchronously per Cue, preserves raw
+  source/translation values, applies version-fenced refined source and
+  translation values to the same Cue row, and supports refined-default or
+  explicit raw transcript exports.
+
 - 改善筆電版重新翻譯 Session 清單：隱藏次要結束時間欄、縮窄欄位與操作區，避免重新翻譯按鈕被裁切。
 
 - 改善筆電版翻譯紀錄表格：隱藏次要結束時間欄並縮窄主要欄位，減少水平擁擠；失效會議路由提示也不再跨頁殘留。

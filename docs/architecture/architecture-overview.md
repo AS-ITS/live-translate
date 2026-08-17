@@ -121,9 +121,11 @@ still obtains each fresh ephemeral token through `/api/live-token` and connects
 directly to Gemini Live API.
 
 Final subtitle Cues are stored in the existing file-backed Meeting/Segment
-checkpoint. Partial Cues, processed event IDs, and pending boundary state are
-stored only in the recovery Cue checkpoint. Session detail reads aggregate final
-Cues across Segments in sequence order while preserving legacy transcript fields
+checkpoint. Each finalized Cue keeps raw source/translation values plus
+optional versioned refined values and refinement status. Partial Cues, processed
+event IDs, and pending boundary state are stored only in the recovery Cue
+checkpoint. Session detail reads aggregate final Cues across Segments in
+sequence order while preserving legacy transcript fields
 for compatibility.
 
 The live UI renders `finalCues` as ordered bilingual rows and derives at most

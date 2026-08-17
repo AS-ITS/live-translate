@@ -598,9 +598,10 @@ output still fall back to server-side projection from persisted final transcript
 items so older history remains readable:
 
 The same Session detail also includes `cues`, containing only final subtitle
-Cues merged from all persisted Segments and sorted by `sequence`. Partial Cue
-checkpoint state is never exposed through this read model; legacy transcript
-fields remain available for backward compatibility.
+Cues merged from all persisted Segments and sorted by `sequence`. Each Cue
+contains `rawSource`, `rawTranslation`, optional `refinedSource` and
+`refinedTranslation`, plus versioned `refinement` status metadata. Partial Cue
+checkpoint state is never exposed through this read model.
 
 ```js
 {
@@ -1100,21 +1101,19 @@ TODO: Confirm exact SDK session close/end event names.
 Transcript polishing reuses `POST /api/translation-requests` and
 `POST /api/translation-executions`. A polishing request sets
 `operation: "transcript_polishing"` and includes `segmentRange`, `inputHash`,
-`model`, and a `sourceTranscriptSnapshot.polishingItems` array containing only
-paired final Cue data. The execution remains asynchronous and returns `202`.
+`model`, and a `sourceTranscriptSnapshot.refinementItems` array containing the
+current finalized Cue plus up to two preceding Cues. The execution remains
+asynchronous and returns `202`.
 
 The existing `POST /api/translation-executions/:executionId/retry` endpoint is
 used for failed polishing executions. Session detail translation history
 includes completed polishing outputs with `operation`, `segmentRange`,
-`inputHash`, `model`, `version`, completion timestamps, and `polishedItems`.
-Each item contains `cueId`, `sequence`, and `polishedText`. Clients render these
-items through an independent `polishedArticle` field; they must not merge them
-into `cues`, `sourceTranscript`, `translationArticle`, session transcript
-items, or the Live prompt. Legacy outputs containing source-polishing fields
-are ignored for canonical field replacement.
+`inputHash`, `model`, completion timestamps, and `refinedItems`. Each item
+contains `cueId`, `sequence`, `version`, `inputHash`, `refinedSource`, and
+`refinedTranslation`. Clients apply only the current Cue item after version
+validation; context Cues are never updated.
 
-Current transcript polishing uses one plain-text provider result. The result is
-returned through the existing `translatedText` output field and does not use
-structured-output configuration. Failed executions retain safe provider
+Current transcript polishing uses a structured source-and-translation result.
+Failed executions retain safe provider
 diagnostics (`status`, provider code/status/message, model, and config field
 names) without prompt text, transcript content, API keys, or tokens.

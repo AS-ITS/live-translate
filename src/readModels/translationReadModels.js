@@ -68,6 +68,9 @@ function polishingFields(value, { includeProviderModel = false } = {}) {
   return {
     operation: value.operation,
     polishedItems: value.polishedItems ?? [],
+    ...(value.refinedItems === undefined ? {} : { refinedItems: value.refinedItems }),
+    ...(value.refinedSource === undefined ? {} : { refinedSource: value.refinedSource }),
+    ...(value.refinedTranslation === undefined ? {} : { refinedTranslation: value.refinedTranslation }),
     segmentRange: value.segmentRange ?? null,
     inputHash: value.inputHash ?? null,
     model: includeProviderModel ? value.model ?? value.providerMetadata?.model ?? null : value.model ?? null

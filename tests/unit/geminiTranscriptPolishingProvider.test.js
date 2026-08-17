@@ -61,3 +61,30 @@ test('markdown code fences are safely converted to plain text', () => {
     refinedText: 'Hello, everyone.'
   });
 });
+
+test('refinement returns source and translation for the addressed Cue version', async () => {
+  const input = {
+    sessionId: 'session-1',
+    targetLanguageCode: 'en',
+    refinementItems: [{
+      cueId: 'cue-1', sequence: 1, version: 1, inputHash: 'hash-1',
+      rawSource: '我明天會到。', rawTranslation: 'I will go yesterday.'
+    }]
+  };
+  const provider = createGeminiTranscriptPolishingProvider({
+    client: { generateContent() { return { text: JSON.stringify({ refinedItems: [{
+      cueId: 'cue-1', sequence: 1, version: 1, inputHash: 'hash-1',
+      refinedSource: '我明天會到。', refinedTranslation: 'I will go tomorrow.'
+    }] }) }; } }
+  });
+
+  assert.deepEqual(await provider.execute(input), {
+    refinedSource: '我明天會到。',
+    refinedTranslation: 'I will go tomorrow.',
+    refinedItems: [{
+      cueId: 'cue-1', sequence: 1, version: 1, inputHash: 'hash-1',
+      refinedSource: '我明天會到。', refinedTranslation: 'I will go tomorrow.'
+    }],
+    detectedSourceLanguageCode: undefined
+  });
+});

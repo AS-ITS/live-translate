@@ -15,6 +15,7 @@ const PUNCTUATION_ONLY = /^[\s\p{P}\p{S}]+$/u;
 const PROTECTED_TOKEN = /https?:\/\/[^\s]+|www\.[^\s]+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|\d+(?:[.,]\d+)+(?:\s*[A-Za-z%°]+)?|\d{1,4}[./-]\d{1,4}(?:[./-]\d{1,4})?|\d+(?:\.\d+)?\s*[A-Za-z%°]+/iu;
 const WORD_TOKEN = /[\p{L}\p{N}_]+(?:['’.-][\p{L}\p{N}_]+)*/u;
 const CJK_TOKEN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
 
 export function normalizeExportableCues(cues = [], options = {}) {
   const stream = normalizeStream(options.stream);
@@ -22,7 +23,7 @@ export function normalizeExportableCues(cues = [], options = {}) {
 
   for (const cue of Array.isArray(cues) ? cues : []) {
     if (cue?.status !== 'final') continue;
-    const text = textForStream(cue, stream);
+    const text = textForStream(cue, stream, options.variant || 'refined');
     if (!text) continue;
 
     if (typeof cue.cueId !== 'string' || cue.cueId.trim() === '') {
@@ -35,7 +36,7 @@ export function normalizeExportableCues(cues = [], options = {}) {
       }
       continue;
     }
-    byCueId.set(cue.cueId, { ...cue, sourceText: cue.sourceText?.trim(), translatedText: cue.translatedText?.trim() });
+    byCueId.set(cue.cueId, { ...cue, sourceText: cue.sourceText?.trim(), translatedText: cue.translatedText?.trim(), __exportVariant: options.variant || 'refined' });
   }
 
   const normalized = [...byCueId.values()];
@@ -135,15 +136,15 @@ export function exportCuesToTxt(cues, options = {}) {
   if (normalized.length === 0) throw exportError('No exportable subtitle cues.', 'subtitle_cue_empty');
 
   if (stream === 'both') {
-    const source = normalized.map((cue) => cue.sourceText?.trim()).filter(Boolean);
-    const translation = normalized.map((cue) => cue.translatedText?.trim()).filter(Boolean);
+    const source = normalized.map((cue) => textForStream(cue, 'source', cue.__exportVariant)).filter(Boolean);
+    const translation = normalized.map((cue) => textForStream(cue, 'translation', cue.__exportVariant)).filter(Boolean);
     const sections = [];
     if (source.length) sections.push(`Source\n${source.join('\n')}`);
     if (translation.length) sections.push(`Translation\n${translation.join('\n')}`);
     return `${sections.join('\n\n')}\n`;
   }
 
-  return `${normalized.map((cue) => textForStream(cue, stream)).join('\n')}\n`;
+  return `${normalized.map((cue) => textForStream(cue, stream, cue.__exportVariant)).join('\n')}\n`;
 }
 
 export function exportCuesToSrt(cues, options = {}) {
@@ -171,7 +172,7 @@ function formatTimedCueExport(cues, options) {
   const normalized = normalizeCueTimeline(normalizeExportableCues(cues, { ...options, stream }), options);
   if (normalized.length === 0) throw exportError('No exportable subtitle cues.', 'subtitle_cue_empty');
   const blocks = normalized.map((cue, index) => {
-    const text = wrapSubtitleText(textForStream(cue, stream), languageForStream(cue, stream), options);
+    const text = wrapSubtitleText(textForStream(cue, stream, cue.__exportVariant), languageForStream(cue, stream), options);
     const timestamps = `${options.format === 'srt' ? formatSrtTimestamp(cue.startTimeMs) : formatVttTimestamp(cue.startTimeMs)} --> ${options.format === 'srt' ? formatSrtTimestamp(cue.endTimeMs) : formatVttTimestamp(cue.endTimeMs)}`;
     return options.format === 'srt' ? `${index + 1}\n${timestamps}\n${text}` : `${timestamps}\n${text}`;
   });
@@ -183,10 +184,12 @@ function normalizeStream(stream = 'translation') {
   return stream;
 }
 
-function textForStream(cue, stream) {
-  if (stream === 'source') return validCueText(cue?.sourceText) ? cue.sourceText.trim() : '';
-  if (stream === 'translation') return validCueText(cue?.translatedText) ? cue.translatedText.trim() : '';
-  return validCueText(cue?.sourceText) || validCueText(cue?.translatedText) ? 'cue' : '';
+function textForStream(cue, stream, variant = 'refined') {
+  const source = effectiveSourceForCue(cue, variant);
+  const translation = effectiveTranslationForCue(cue, variant);
+  if (stream === 'source') return validCueText(source) ? source : '';
+  if (stream === 'translation') return validCueText(translation) ? translation : '';
+  return validCueText(source) || validCueText(translation) ? 'cue' : '';
 }
 
 function languageForStream(cue, stream) {

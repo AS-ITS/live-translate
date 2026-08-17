@@ -150,3 +150,9 @@ test('source and translation exports preserve the same Cue timeline', () => {
     [...translation.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)].map((match) => match.slice(1))
   );
 });
+
+test('refined export is default and raw export remains explicit', () => {
+  const refinedCue = cue({ rawSource: 'raw source', rawTranslation: 'raw translation', refinedSource: 'refined source', refinedTranslation: 'refined translation' });
+  assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation' }), 'refined translation\n');
+  assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation', variant: 'raw' }), 'raw translation\n');
+});

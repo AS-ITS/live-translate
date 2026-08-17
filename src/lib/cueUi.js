@@ -1,4 +1,5 @@
 export const CUE_FOLLOW_BOTTOM_THRESHOLD_PX = 80;
+import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
 
 export function formatCueTimecode(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--:--.---';
@@ -22,14 +23,14 @@ export function sortFinalCues(cues = []) {
 
 export function sourceTextForCopy(cues = []) {
   return sortFinalCues(cues)
-    .map((cue) => String(cue?.sourceText || '').trim())
+    .map((cue) => effectiveSourceForCue(cue))
     .filter(Boolean)
     .join('\n');
 }
 
 export function translationTextForCopy(cues = []) {
   return sortFinalCues(cues)
-    .map((cue) => String(cue?.translatedText || '').trim())
+    .map((cue) => effectiveTranslationForCue(cue))
     .filter(Boolean)
     .join('\n');
 }

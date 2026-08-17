@@ -1,4 +1,5 @@
 import { transcriptPolishingInputHash } from './transcriptPolishing.js';
+import { cueRefinementInputHash, cueRefinementItem } from './cueContent.js';
 
 export const TRANSCRIPT_POLISHING_MODEL = 'gemini-3.5-flash-lite';
 export const TRANSCRIPT_POLISHING_PROVIDER_KEY = 'gemini';
@@ -10,6 +11,50 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
   const states = new Map();
 
   return Object.freeze({
+    submitCue({ sessionId, targetLanguageCode, sourceLanguageCode, cue, contextCues = [] } = {}) {
+      if (!sessionId || !targetLanguageCode || !cue?.cueId) return Promise.resolve(null);
+      const refinement = cueRefinementItem(cue);
+      const hash = refinement.inputHash || cueRefinementInputHash(cue);
+      const requestId = `polishing-request:${sessionId}:${cue.cueId}:v${refinement.version}`;
+      const executionId = `polishing-execution:${sessionId}:${cue.cueId}:v${refinement.version}`;
+      const startedAt = now();
+      const items = [...contextCues, cue].slice(-3).map((item) => cueRefinementItem(item));
+      const snapshot = {
+        operation: 'transcript_polishing',
+        inputHash: hash,
+        cueId: cue.cueId,
+        refinementVersion: refinement.version,
+        refinementItems: items,
+        sourceLanguageCode,
+        targetLanguageCode
+      };
+      return Promise.resolve()
+        .then(() => apiClient.createTranslationRequest({
+          id: requestId,
+          sessionId,
+          sourceTranscriptRevisionId: `source-revision:${sessionId}:final`,
+          targetLanguageCode,
+          operation: 'transcript_polishing',
+          segmentRange: { fromSequence: cue.sequence, toSequence: cue.sequence, segmentIds: [cue.segmentId].filter(Boolean) },
+          inputHash: hash,
+          sourceTranscriptSnapshot: snapshot,
+          createdAt: startedAt
+        }))
+        .then(() => apiClient.createTranslationExecution({
+          id: executionId,
+          translationRequestId: requestId,
+          providerKey: TRANSCRIPT_POLISHING_PROVIDER_KEY,
+          startedAt
+        }))
+        .then(() => {
+          onStateChange({ status: 'queued', inputHash: hash, cueId: cue.cueId, executionId });
+          return { requestId, executionId, inputHash: hash, cueId: cue.cueId, version: refinement.version };
+        })
+        .catch((error) => {
+          onStateChange({ status: 'failed', cueId: cue.cueId, error });
+          throw error;
+        });
+    },
     submit({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange } = {}) {
       if (!sessionId || !targetLanguageCode || !Array.isArray(cues) || cues.length === 0) return Promise.resolve(null);
       const hash = inputHash || transcriptPolishingInputHash(cues);

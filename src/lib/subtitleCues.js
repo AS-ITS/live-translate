@@ -4,6 +4,7 @@ const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
+import { cueRefinementInputHash } from './cueContent.js';
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
@@ -515,6 +516,19 @@ function finalizeCue(state, cue, options = {}) {
     ...cue,
     sourceText: normalizeText(cue.sourceText),
     translatedText: normalizeText(cue.translatedText),
+    rawSource: normalizeText(cue.rawSource || cue.sourceText),
+    rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
+    refinedSource: cue.refinedSource || null,
+    refinedTranslation: cue.refinedTranslation || null,
+    refinement: {
+      status: 'pending',
+      version: 1,
+      inputHash: cueRefinementInputHash({
+        ...cue,
+        rawSource: normalizeText(cue.rawSource || cue.sourceText),
+        rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText)
+      })
+    },
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };
@@ -571,6 +585,16 @@ function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
     ...previousCue,
     sourceText: mergeCueText(previousCue.sourceText, nextCue.sourceText),
     translatedText: mergeCueText(previousCue.translatedText, nextCue.translatedText),
+    rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
+    rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText),
+    refinedSource: null,
+    refinedTranslation: null,
+    refinement: { status: 'pending', version: 1, inputHash: cueRefinementInputHash({
+      cueId: previousCue.cueId,
+      sequence: previousCue.sequence,
+      rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
+      rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText)
+    }) },
     endTimeMs: Math.max(previousCue.endTimeMs, options.observedEndTimeMs || nextCue.endTimeMs),
     updatedTimeMs: Math.max(previousCue.updatedTimeMs || 0, nextCue.updatedTimeMs || 0),
     finalizedReason: nextCue.finalizedReason === 'length' ? 'length' : 'merged'

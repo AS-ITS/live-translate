@@ -40,6 +40,7 @@ test('Meeting supports legal lifecycle transitions', () => {
   const interrupted = active.interrupt(1200);
   const resumed = interrupted.activate(1300);
   const completed = resumed.complete(1400);
+  const completedBeforeStart = created.complete(1500);
   const failed = created.activate(1100).fail({ reason: 'storage_error', nested: { code: 'x' } }, 1500);
 
   assert.equal(active.status, 'active');
@@ -50,6 +51,8 @@ test('Meeting supports legal lifecycle transitions', () => {
   assert.equal(resumed.endedAt, null);
   assert.equal(completed.status, 'completed');
   assert.equal(completed.endedAt, 1400);
+  assert.equal(completedBeforeStart.status, 'completed');
+  assert.equal(completedBeforeStart.startedAt, 1000);
   assert.equal(failed.status, 'failed');
   assert.deepEqual(failed.failureInfo, { reason: 'storage_error', nested: { code: 'x' } });
   assert.throws(() => {
@@ -65,8 +68,6 @@ test('Meeting rejects invalid data and illegal transitions', () => {
   assert.throws(() => new Meeting(), /id/);
   assert.throws(() => new Meeting({ id: 'meeting-1', createdAt: 1000, status: 'unknown' }), /not supported/);
   assert.throws(() => new Meeting({ id: 'meeting-1', createdAt: 1000, status: 'created', startedAt: 1000 }), /created meeting/);
-  assert.throws(() => created.complete(1200), /transition/);
-  assert.throws(() => active.activate(1200), /transition/);
   assert.throws(() => completed.fail({ reason: 'later' }, 1300), /transition/);
 });
 
@@ -111,6 +112,12 @@ test('MeetingSegment tracks live session, checkpoint, and lifecycle independentl
     endedAt: 1400,
     checkpoint: { offsetMs: 5000 }
   });
+  const completedBeforeStart = new MeetingSegment({
+    id: 'segment-3',
+    meetingId: 'meeting-1',
+    sequence: 2,
+    createdAt: 1000
+  }).complete({ endedAt: 1500 });
   const failed = new MeetingSegment({
     id: 'segment-2',
     meetingId: 'meeting-1',
@@ -129,6 +136,8 @@ test('MeetingSegment tracks live session, checkpoint, and lifecycle independentl
   assert.equal(resumed.errorInfo, null);
   assert.equal(completed.status, 'completed');
   assert.deepEqual(completed.checkpoint, { offsetMs: 5000 });
+  assert.equal(completedBeforeStart.status, 'completed');
+  assert.equal(completedBeforeStart.startedAt, 1000);
   assert.equal(failed.status, 'failed');
 });
 
@@ -147,8 +156,6 @@ test('MeetingSegment rejects invalid data and illegal transitions', () => {
     () => new MeetingSegment({ id: 'segment-1', meetingId: 'meeting-1', sequence: -1, createdAt: 1000 }),
     /sequence/
   );
-  assert.throws(() => created.complete({ endedAt: 1200 }), /transition/);
-  assert.throws(() => active.activate(1200), /transition/);
   assert.throws(() => active.fail({ endedAt: 1200 }), /errorInfo/);
   assert.throws(() => completed.withCheckpoint({ offsetMs: 1 }, 1300), /checkpoint cannot be changed/);
 });

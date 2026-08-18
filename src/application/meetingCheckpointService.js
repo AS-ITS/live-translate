@@ -77,6 +77,29 @@ export function createMeetingCheckpointService({
       return { meeting: deleted };
     },
 
+    async completeMeeting({ meetingId } = {}) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      if (meeting.status === 'completed') return { meeting };
+      if (meeting.status === 'failed') {
+        throw codedError('meeting_complete_not_allowed', 'Failed meetings cannot be completed.');
+      }
+
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
+      if (segments.some((segment) => segment.status === 'active')) {
+        throw codedError('meeting_complete_not_allowed', 'Meetings with an active recording cannot be completed.');
+      }
+
+      const now = clock();
+      for (const segment of segments.filter((item) => item.status === 'created')) {
+        await meetingRepository.updateMeetingSegment(segment.complete({ endedAt: now, liveSessionId: null }));
+      }
+
+      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now));
+      return { meeting: completedMeeting };
+    },
+
     async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
       const meeting = await meetingRepository.getMeeting(validateRequiredString(meetingId, 'meetingId'));
       if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${meetingId}`);

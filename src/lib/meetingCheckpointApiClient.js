@@ -38,6 +38,20 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseSegmentsResponse(response);
     },
 
+    async completeMeeting({ meetingId } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      const response = await fetchImpl(buildUrl(
+        baseUrl,
+        `/api/meetings/${encodeURIComponent(meetingId)}/complete`
+      ), {
+        method: 'POST',
+        headers: authorizationHeadersFor(authorizationHeaders)
+      });
+      await assertOkResponse(response);
+      const body = await response.json();
+      return { meeting: body?.meeting || body };
+    },
+
     async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');

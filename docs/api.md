@@ -248,6 +248,13 @@ started. The Meeting's created Segments and Recorder shares are removed with
 it. Active, completed, interrupted, or failed Meetings return `409
 meeting_delete_not_allowed`.
 
+## `POST /api/meetings/:meetingId/complete`
+
+Completes a Meeting that has no active Live recording. Existing checkpoints,
+transcripts, and audio artifacts are preserved. Any not-yet-started trailing
+Segment is finalized as an empty completed Segment. Active recordings return
+`409 meeting_complete_not_allowed`.
+
 ## `GET|POST /api/meetings/:meetingId/shares`
 
 Lists active Recorder shares or creates a Recorder share after Meeting settings

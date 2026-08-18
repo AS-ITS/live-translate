@@ -48,6 +48,8 @@
 
 ## Unreleased
 
+- 即時翻譯會依續錄資料自動顯示單一「繼續錄製」或「開始」按鈕；待續錄會議可選擇「結束會議」封存，既有逐字稿與 checkpoints 會保留。
+
 - #27 finalized Cue refinement now runs asynchronously per Cue, preserves raw
   source/translation values, applies version-fenced refined source and
   translation values to the same Cue row, and supports refined-default or

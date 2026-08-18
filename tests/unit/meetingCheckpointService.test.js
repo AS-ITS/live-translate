@@ -273,6 +273,41 @@ test('terminal interruption marks the meeting interrupted and creates a resumabl
   assert.deepEqual(segments.map((item) => item.status), ['interrupted', 'created']);
 });
 
+test('completes an interrupted meeting and finalizes its empty resumable segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+  await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recovery: recovery({
+      idempotencyKey: 'interrupt-complete-1',
+      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+      nextLiveSessionId: null,
+      outcome: 'interrupted'
+    })
+  });
+
+  const result = await service.completeMeeting({ meetingId: meeting.id });
+  const segments = await repository.listMeetingSegments(meeting.id);
+
+  assert.equal(result.meeting.status, 'completed');
+  assert.deepEqual(segments.map((item) => item.status), ['interrupted', 'completed']);
+  assert.equal(segments[0].checkpoint.durableChunks.length, 1);
+  assert.equal(segments[1].startedAt, 1000);
+});
+
+test('does not complete a meeting with an active segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting } = await service.createMeeting();
+
+  await assert.rejects(
+    service.completeMeeting({ meetingId: meeting.id }),
+    (error) => error.code === 'meeting_complete_not_allowed'
+  );
+});
+
 test('failed recovery terminalizes current segment without creating next segment', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);

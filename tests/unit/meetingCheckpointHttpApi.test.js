@@ -447,6 +447,32 @@ test('missing meeting or segment returns HTTP 404', async () => {
   assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
 });
 
+test('completes an interrupted meeting through the HTTP API', async () => {
+  const handler = createHandler();
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const recovered = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/segments/${created.segment.id}/recover`,
+    body: JSON.stringify({
+      idempotencyKey: 'http-interrupt-1',
+      checkpoint: { idempotencyKey: 'http-checkpoint-1', durableChunks: [], pendingPartial: null },
+      nextLiveSessionId: null,
+      failureReason: 'unexpected_close',
+      failureCategory: 'provider',
+      outcome: 'interrupted'
+    })
+  });
+  assert.equal(recovered.status, 201);
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/complete`
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().meeting.status, 'completed');
+});
+
 function createHandler({ meetingCheckpointMaxBytes } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;

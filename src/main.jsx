@@ -992,6 +992,23 @@ function App() {
     setStatus('stopped');
   }
 
+  async function completeResumableMeeting() {
+    if (!resumeDraft || isActive || status !== 'idle') return;
+    if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return;
+
+    setError('');
+    try {
+      await meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: resumeDraft.meetingId });
+      setResumeDraft(null);
+      activeMeetingCheckpointRef.current = null;
+      setMeetingCheckpointStatus('synced');
+      await refreshMeetingRecords();
+      window.location.hash = 'meeting';
+    } catch {
+      setError('無法結束會議，請稍後再試。');
+    }
+  }
+
   async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId() }) {
     if (!preserveTranscript) {
       setError('');
@@ -3065,13 +3082,6 @@ function App() {
             </div>
 
             <div className="control-actions">
-              {resumeDraft?.hasTranscript && !isActive && status === 'idle' ? (
-                <button className="button secondary" type="button" onClick={resumeMeetingSession}>
-                  <RefreshCw size={18} aria-hidden="true" />
-                  繼續錄製
-                </button>
-              ) : null}
-
               <div className="session-actions">
                 {status === 'listening' ? (
                   <>
@@ -3101,9 +3111,19 @@ function App() {
                     </button>
                   </>
                 ) : hasSelectedResumableMeeting || resumeDraft?.hasTranscript ? (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}>
+                  <button
+                    className="button primary"
+                    type="button"
+                    onClick={resumeDraft?.hasTranscript ? resumeMeetingSession : startSession}
+                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}
+                  >
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {isActive ? '正在開始' : '開始'}
+                    {isActive ? '正在開始' : resumeDraft?.hasTranscript ? '繼續錄製' : '開始'}
+                  </button>
+                ) : null}
+                {resumeDraft && !isActive && status === 'idle' ? (
+                  <button className="button secondary" type="button" onClick={completeResumableMeeting}>
+                    結束會議
                   </button>
                 ) : null}
               </div>

@@ -1526,13 +1526,25 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
   await expect(detail.getByText('before reload source after resume source')).toBeVisible();
 });
 
-test('empty meeting resume draft does not show continue recording action', async ({ page }) => {
+test('empty meeting resume draft shows start instead of continue recording', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
+  await page.route('**/api/meetings/meeting-1/complete', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ meeting: { id: 'meeting-1', status: 'completed' } })
+    });
+  });
 
   await page.goto('/#live?meetingId=meeting-1');
 
   await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
-  await expect(page.getByRole('button', { name: '開始' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page).toHaveURL(/#meeting$/);
 });
 
 test('live glossary replacement is applied to final translation article text only', async ({ page }) => {

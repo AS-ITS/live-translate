@@ -80,6 +80,7 @@ const ERROR_RESPONSES = {
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
+  meeting_complete_not_allowed: { status: 409, message: 'Meeting cannot be completed in its current state.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
   meeting_share_invalid: { status: 409, message: 'Meeting share is not available for recording.' },
@@ -981,6 +982,21 @@ async function handleRequestWithSessionReadController(
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
       return;
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingCompletePath(path)) {
+    try {
+      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId } = parseMeetingCompletePath(path);
+      const result = await meetingCheckpointService.completeMeeting({ meetingId });
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1924,6 +1940,10 @@ function isMeetingDetailPath(path) {
   return !path.slice(prefix.length).includes('/');
 }
 
+function isMeetingCompletePath(path) {
+  return path.startsWith('/api/meetings/') && path.endsWith('/complete') && path.split('/').length === 5;
+}
+
 function isMeetingShareCollectionPath(path) {
   return path.startsWith('/api/meetings/') && path.endsWith('/shares') && path.split('/').length === 5;
 }
@@ -2003,6 +2023,13 @@ function parseMeetingDetailPath(path) {
   const prefix = '/api/meetings/';
   return {
     meetingId: safeDecodePathComponent(path.slice(prefix.length))
+  };
+}
+
+function parseMeetingCompletePath(path) {
+  const prefix = '/api/meetings/';
+  return {
+    meetingId: safeDecodePathComponent(path.slice(prefix.length, -'/complete'.length))
   };
 }
 

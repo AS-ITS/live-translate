@@ -35,6 +35,7 @@ import { createTranslationCommandLifecycle } from './lib/translationCommandLifec
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { applyCueRefinementExecutionStates, completedCueRefinementOutputs } from './lib/cueRefinement.js';
 import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from './lib/cueContent.js';
 import {
   compactTranslationHistoryForDetail,
@@ -591,6 +592,7 @@ function App() {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
         const detail = await getSessionDetailWithTranslationHistory(sessionId);
         const outputs = completedPolishingOutputs(detail);
+        applyRefinementExecutionStates(detail);
         applyRefinedOutputs(detail);
         const output = latestPolishingOutput(detail);
         const latestExecution = latestPolishingExecution(detail);
@@ -651,8 +653,7 @@ function App() {
     const outputs = completedPolishingOutputs(detail);
     const items = outputs.flatMap((output) => {
       if (!Array.isArray(output?.refinedItems)) return [];
-      const currentSequence = output.segmentRange?.toSequence;
-      return output.refinedItems.filter((item) => currentSequence === null || currentSequence === undefined || item.sequence === currentSequence);
+      return output.refinedItems;
     });
     if (items.length === 0) return;
     const byCueId = new Map(items.map((item) => [item.cueId, item]));
@@ -678,6 +679,16 @@ function App() {
     setPolishedArticle({ text: refinedText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });
   }
 
+  function applyRefinementExecutionStates(detail) {
+    const current = subtitleCueStateRef.current;
+    const nextCues = applyCueRefinementExecutionStates(current.finalCues, detail?.translationHistory?.executions);
+    if (nextCues.every((cue, index) => cue === current.finalCues[index])) return;
+    const next = { ...current, finalCues: nextCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
     if (currentPage !== 'live' || !meetingId || status !== 'idle') {
@@ -687,6 +698,10 @@ function App() {
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
         const meeting = detail?.meeting;
+        if (meeting?.status === 'completed') {
+          window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meeting.id)}&from=history`;
+          return;
+        }
         if (!meeting || !['created', 'active', 'interrupted'].includes(meeting.status)) {
           redirectToMeetingWithError();
           return;
@@ -2973,7 +2988,10 @@ function App() {
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
       {page === 'meeting' ? (
-        <MeetingManagementPage onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }} />
+        <MeetingManagementPage
+          onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }}
+          onOpenHistory={(meetingId) => { window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`; }}
+        />
       ) : null}
 
       {page === 'meeting-detail' ? (
@@ -4180,7 +4198,7 @@ function LiveCuePanel({
           <div className="cue-section-list" data-testid="cue-source-list">
             {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
             {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" />
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" showRefinementStatus={cue.cueId === cues.at(-1)?.cueId} />
               : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="source" />)}
           </div>
         </section>
@@ -4195,7 +4213,7 @@ function LiveCuePanel({
           <div className="cue-section-list" data-testid="cue-translation-list">
             {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
             {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" />
+              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" showRefinementStatus={cue.cueId === cues.at(-1)?.cueId} />
               : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
           </div>
         </section>
@@ -4211,8 +4229,8 @@ function LiveCuePanel({
   );
 }
 
-function FinalCueRow({ cue, stream }) {
-  return <CueRow cue={cue} stream={stream} />;
+function FinalCueRow({ cue, stream, showRefinementStatus = true }) {
+  return <CueRow cue={cue} stream={stream} showRefinementStatus={showRefinementStatus} />;
 }
 
 function PartialCueRow({ cue, stream }) {
@@ -4257,7 +4275,7 @@ function formatPolishingTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
 }
 
-function CueRow({ cue, partial = false, stream }) {
+function CueRow({ cue, partial = false, stream, showRefinementStatus = true }) {
   const [showRaw, setShowRaw] = useState(false);
   const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
   const text = stream === 'translation'
@@ -4274,7 +4292,7 @@ function CueRow({ cue, partial = false, stream }) {
       aria-label={label}
     >
       {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
-      {!partial && cue.refinement?.status && cue.refinement.status !== 'completed' ? (
+      {!partial && showRefinementStatus && cue.refinement?.status && cue.refinement.status !== 'completed' ? (
         <div className="cue-row-meta"><span className="cue-partial-status">{cue.refinement.status === 'failed' ? '修正失敗，保留原文' : '修正中'}</span></div>
       ) : null}
       <div className="cue-text-toggle">
@@ -4302,8 +4320,7 @@ function latestPolishingOutput(detail) {
 }
 
 function completedPolishingOutputs(detail) {
-  return (detail?.translationHistory?.outputs || [])
-    .filter((output) => output.operation === 'transcript_polishing' && typeof output.translatedText === 'string' && output.translatedText.trim().length > 0);
+  return completedCueRefinementOutputs(detail);
 }
 
 function latestPolishingExecution(detail) {
@@ -4600,7 +4617,7 @@ function MeetingHistoryItem({ record, onViewDetails }) {
   );
 }
 
-function MeetingManagementPage({ onOpenLive }) {
+function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
   const managementClientRef = useRef(createMeetingManagementApiClient());
   const readClientRef = useRef(createMeetingReadApiClient());
   const glossaryClientRef = useRef(createGlossaryApiClient());
@@ -4691,6 +4708,7 @@ function MeetingManagementPage({ onOpenLive }) {
   }
 
   async function saveMeeting() {
+    if (selectedMeeting?.status === 'completed') return;
     setError('');
     setNotice('');
     setIsSaving(true);
@@ -4703,15 +4721,15 @@ function MeetingManagementPage({ onOpenLive }) {
       setSelectedMeeting(meeting);
       setMeetings((current) => [meeting, ...current.filter((item) => item.id !== meeting.id)]);
       setNotice(isUpdating ? '會議設定已更新。' : '會議已建立。');
-    } catch {
-      setError('無法儲存會議設定。');
+    } catch (requestError) {
+      setError(requestError?.status === 409 ? '已完成會議不可修改設定。' : '無法儲存會議設定。');
     } finally {
       setIsSaving(false);
     }
   }
 
   async function createShare() {
-    if (!selectedMeeting?.id) {
+    if (!selectedMeeting?.id || selectedMeeting.status === 'completed') {
       setError('請先儲存會議設定。');
       return;
     }
@@ -4721,12 +4739,13 @@ function MeetingManagementPage({ onOpenLive }) {
       const qrDataUrl = await QRCode.toDataURL(url, { width: 180, margin: 1 });
       setCreatedShare({ ...result, absoluteUrl: url, qrDataUrl });
       setShares((current) => [...current, result.share]);
-    } catch {
-      setError('無法建立會議分享連結。');
+    } catch (requestError) {
+      setError(requestError?.status === 409 ? '已完成會議不可新增分享連結。' : '無法建立會議分享連結。');
     }
   }
 
   async function revokeShare(shareId) {
+    if (selectedMeeting?.status === 'completed') return;
     try {
       await managementClientRef.current.revokeShare(selectedMeeting.id, shareId);
       setShares((current) => current.filter((share) => share.id !== shareId));
@@ -4811,9 +4830,12 @@ function MeetingManagementPage({ onOpenLive }) {
       sortable: false,
       cellRenderer: ({ data }) => (
         <div className="meeting-actions">
-          <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+          <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>{data?.status === 'completed' ? '查看設定' : '編輯'}</button>
           {['active', 'interrupted'].includes(data?.status) ? (
             <button className="button detail-button" type="button" onClick={() => onOpenLive(data.id)}>繼續錄製</button>
+          ) : null}
+          {data?.status === 'completed' ? (
+            <button className="button detail-button" type="button" onClick={() => onOpenHistory(data.id)}>前往翻譯紀錄</button>
           ) : null}
           {data?.status === 'created' ? (
             <button className="button detail-button danger-button" type="button" onClick={() => deleteMeeting(data)} title="刪除會議">
@@ -4843,19 +4865,20 @@ function MeetingManagementPage({ onOpenLive }) {
           <section className="control-panel" aria-label="會議設定">
           <div className="title-block">
             <div className="title-block-header">
-              <div><p className="eyebrow">MEETING SETUP</p><h3>{selectedMeeting ? '編輯會議設定' : '建立會議'}</h3></div>
+              <div><p className="eyebrow">MEETING SETUP</p><h3>{selectedMeeting?.status === 'completed' ? '會議設定' : selectedMeeting ? '編輯會議設定' : '建立會議'}</h3></div>
             </div>
-            <p>設定語言與會議字典，儲存後即可建立錄音分享入口。</p>
+            <p>{selectedMeeting?.status === 'completed' ? '會議已完成，設定內容僅供查看。' : '設定語言與會議字典，儲存後即可建立錄音分享入口。'}</p>
           </div>
-          <label className="field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} /></label>
-          <label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
-          <label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <label className="field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} readOnly={selectedMeeting?.status === 'completed'} /></label>
+          <label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={selectedMeeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={selectedMeeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
           <button
             className="button secondary glossary-drawer-trigger"
             type="button"
             onClick={() => setIsGlossaryDrawerOpen(true)}
             aria-haspopup="dialog"
             aria-expanded={isGlossaryDrawerOpen}
+            disabled={selectedMeeting?.status === 'completed'}
           >
             <BookOpen size={18} aria-hidden="true" />
             會議字典
@@ -4864,21 +4887,27 @@ function MeetingManagementPage({ onOpenLive }) {
             </span>
           </button>
           <div className="meeting-management-actions">
-            <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button>
-            {selectedMeeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button> : null}
+            {selectedMeeting?.status !== 'completed' ? <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button> : null}
+            {selectedMeeting ? (
+              selectedMeeting.status === 'completed'
+                ? <button className="button secondary" type="button" onClick={() => onOpenHistory(selectedMeeting.id)}>前往翻譯紀錄</button>
+                : <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button>
+            ) : null}
           </div>
           </section>
           {selectedMeeting ? <section className="control-panel" aria-label="會議分享">
           <div className="title-block">
             <div className="title-block-header">
-              <div><p className="eyebrow">RECORDER LINK</p><h3>分享錄音入口</h3></div>
+              <div><p className="eyebrow">RECORDER LINK</p><h3>{selectedMeeting.status === 'completed' ? '既有分享連結' : '分享錄音入口'}</h3></div>
             </div>
           </div>
-          <p className="export-note">完成設定並儲存後，產生 Recorder 連結給參與者。開啟連結不會立即取得麥克風。</p>
-          <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
-          <button className="button secondary" type="button" onClick={createShare} disabled={!selectedMeeting}>建立錄音分享連結</button>
+          <p className="export-note">{selectedMeeting.status === 'completed' ? '會議已完成，既有分享連結維持可查看，但不能新增或撤銷。' : '完成設定並儲存後，產生 Recorder 連結給參與者。開啟連結不會立即取得麥克風。'}</p>
+          {selectedMeeting.status !== 'completed' ? <>
+            <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
+            <button className="button secondary" type="button" onClick={createShare} disabled={!selectedMeeting}>建立錄音分享連結</button>
+          </> : null}
           {createdShare ? <div className="share-created">{createdShare.qrDataUrl ? <img src={createdShare.qrDataUrl} alt="會議錄音入口 QR Code" width="180" height="180" /> : null}<p className="share-url"><a href={createdShare.absoluteUrl}>{createdShare.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(createdShare.absoluteUrl)}>複製連結</button></div> : null}
-          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : null}
+          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span>{selectedMeeting.status !== 'completed' ? <button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
           </section> : null}
         </div>
       ) : null}

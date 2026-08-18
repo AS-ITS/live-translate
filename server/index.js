@@ -82,6 +82,8 @@ const ERROR_RESPONSES = {
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
+  meeting_settings_locked: { status: 409, message: 'Completed meeting settings cannot be changed.' },
+  meeting_share_locked: { status: 409, message: 'Completed meeting shares are read-only.' },
   meeting_complete_not_allowed: { status: 409, message: 'Meeting cannot be completed in its current state.' },
   meeting_segment_not_found: { status: 404, message: 'Meeting segment not found.' },
   meeting_segment_invalid_state: { status: 409, message: 'Meeting segment is not in a valid state for this operation.' },
@@ -948,6 +950,7 @@ async function handleRequestWithSessionReadController(
         statusCode = 200;
         sendJson(res, statusCode, { shares: await sessionShareService.listShares(meetingId) }, requestId);
       } else if (req.method === 'POST') {
+        await assertMeetingShareMutable(meetingId, meetingRepository);
         const body = await readJson(req);
         const share = await sessionShareService.createMeetingShare(meetingId, {
           role: 'recorder',
@@ -960,6 +963,7 @@ async function handleRequestWithSessionReadController(
           codeUrl: `#record?code=${encodeURIComponent(share.shortCode)}`
         }, requestId);
       } else {
+        await assertMeetingShareMutable(meetingId, meetingRepository);
         const shareId = parseMeetingSharePath(path).shareId;
         if (!await sessionShareService.revokeShare(meetingId, shareId)) throw createHttpError('meeting_share_invalid');
         statusCode = 204;
@@ -2604,6 +2608,12 @@ function isSharedMeetingDetailPath(path) {
 function isSharedMeetingStartPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/start') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
+}
+
+async function assertMeetingShareMutable(meetingId, meetingRepository) {
+  if (!meetingRepository || typeof meetingRepository.getMeeting !== 'function') return;
+  const meeting = await meetingRepository.getMeeting(meetingId);
+  if (meeting?.status === 'completed') throw createHttpError('meeting_share_locked');
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {

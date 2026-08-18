@@ -2,6 +2,7 @@ const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
+const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
 import { cueRefinementInputHash } from './cueContent.js';
@@ -608,8 +609,7 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
   if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
   if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
-  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)
-    || endsSentence(nextCue.sourceText) || endsSentence(nextCue.translatedText)) return false;
+  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
   const adjacentTexts = [previousCue.sourceText, previousCue.translatedText, nextCue.sourceText, nextCue.translatedText];
   if (!adjacentTexts.some(endsFragment) && !adjacentTexts.some(isNumericFragment)) return false;
 
@@ -618,10 +618,13 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
 
   const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
   const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
-  // Cue boundaries come from the provider turn/sentence lifecycle. Do not
-  // invent a second boundary merely because a language-specific character
-  // budget was reached.
-  return Boolean(sourceText && translatedText);
+  const maxLength = DEFAULT_MAX_CUE_TEXT_LENGTH;
+  // Prefer a complete sentence over provider turn boundaries. The length cap
+  // is only a safety valve so an absent punctuation event cannot grow one Cue
+  // without limit.
+  return Boolean(sourceText && translatedText)
+    && sourceText.length <= maxLength
+    && translatedText.length <= maxLength;
 }
 
 function containsCjk(text) {

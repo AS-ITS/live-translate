@@ -24,6 +24,18 @@ test('creates an active meeting with the first active segment', async () => {
   assert.equal(segment.status, 'active');
 });
 
+test('completed meeting settings are locked', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting } = await service.createMeeting({ draft: true });
+  await service.completeMeeting({ meetingId: meeting.id });
+
+  await assert.rejects(
+    service.updateMeeting({ meetingId: meeting.id, settings: { name: '不應修改' } }),
+    (error) => error.code === 'meeting_settings_locked'
+  );
+});
+
 test('checkpoint updates merge out-of-order chunks and read them back sorted', async () => {
   const repository = createMemoryMeetingRepository();
   const service = createService(repository);

@@ -239,7 +239,8 @@ Returns `201 Created`:
 
 Updates Meeting name, source/target languages, and glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
-boundary; the current Segment keeps its settings snapshot.
+boundary; the current Segment keeps its settings snapshot. Completed Meetings
+are read-only and return `409 meeting_settings_locked`.
 
 ## `DELETE /api/meetings/:meetingId`
 
@@ -259,11 +260,13 @@ Segment is finalized as an empty completed Segment. Active recordings return
 
 Lists active Recorder shares or creates a Recorder share after Meeting settings
 are saved. `POST` returns the opaque token and short-code URLs once; later list
-responses contain metadata only.
+responses contain metadata only. Completed Meetings keep existing shares
+available for viewing, but `POST` returns `409 meeting_share_locked`.
 
 ## `DELETE /api/meetings/:meetingId/shares/:shareId`
 
-Revokes one Meeting Recorder share.
+Revokes one Meeting Recorder share. Completed Meetings are read-only; revocation
+returns `409 meeting_share_locked`.
 
 ## `GET /api/meetings/:meetingId/segments`
 

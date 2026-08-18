@@ -6,6 +6,7 @@ import { createMeetingReadController } from '../../server/meetingReadController.
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
+import { createSessionShareService } from '../../src/application/sessionShareService.js';
 
 test('POST /api/meetings creates an active meeting and first segment', async () => {
   const response = await request(createHandler(), { method: 'POST', url: '/api/meetings' });
@@ -54,6 +55,43 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(started.meeting.status, 'active');
   assert.equal(started.segment.status, 'active');
   assert.equal(started.segment.liveSessionId, 'live-session-management-1');
+});
+
+test('completed meetings reject settings changes and share mutations', async () => {
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true })
+  })).json();
+  const share = shareService.createMeetingShare(created.meeting.id);
+
+  const completed = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/complete` });
+  assert.equal(completed.status, 200);
+
+  const update = await request(handler, {
+    method: 'PATCH',
+    url: `/api/meetings/${created.meeting.id}`,
+    body: JSON.stringify({ name: '不應修改' })
+  });
+  assert.equal(update.status, 409);
+  assert.equal(update.json().error.code, 'meeting_settings_locked');
+
+  const createShare = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({})
+  });
+  assert.equal(createShare.status, 409);
+  assert.equal(createShare.json().error.code, 'meeting_share_locked');
+
+  const revokeShare = await request(handler, {
+    method: 'DELETE',
+    url: `/api/meetings/${created.meeting.id}/shares/${share.id}`
+  });
+  assert.equal(revokeShare.status, 409);
+  assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
 });
 
 test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects started meetings', async () => {
@@ -473,7 +511,7 @@ test('completes an interrupted meeting through the HTTP API', async () => {
   assert.equal(response.json().meeting.status, 'completed');
 });
 
-function createHandler({ meetingCheckpointMaxBytes } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -492,8 +530,10 @@ function createHandler({ meetingCheckpointMaxBytes } = {}) {
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
+    meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
+    ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }

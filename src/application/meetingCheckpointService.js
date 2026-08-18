@@ -54,6 +54,9 @@ export function createMeetingCheckpointService({
       const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
       const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
       if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      if (meeting.status === 'completed') {
+        throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
+      }
       const now = clock();
       const updated = await meetingRepository.updateMeeting(meeting.withSettings({
         ...settings,

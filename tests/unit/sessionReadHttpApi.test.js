@@ -379,21 +379,51 @@ test('DELETE /api/sessions/:sessionId deletes stored audio artifacts', async () 
   ]);
 });
 
+test('DELETE /api/sessions/:sessionId cascades deletion for a linked meeting', async () => {
+  const calls = [];
+  const handler = createHandler({
+    sessionRepository: {
+      async getSessionRecord(id) {
+        calls.push(['get', id]);
+        return { sessionRecord: historyItem({ id, meetingId: 'meeting-1', status: 'stopped' }), transcriptItems: [] };
+      }
+    },
+    meetingDeletionService: {
+      async deleteMeeting(input) {
+        calls.push(['deleteMeeting', input.meetingId]);
+        return { deletedSessionCount: 2, deletedSegmentCount: 2 };
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'DELETE', url: '/api/sessions/session-1' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.json(), {
+    deleted: true,
+    sessionId: 'session-1',
+    meetingId: 'meeting-1',
+    deletedSessionCount: 2,
+    deletedSegmentCount: 2
+  });
+  assert.deepEqual(calls, [['get', 'session-1'], ['deleteMeeting', 'meeting-1']]);
+});
+
 test('GET /api/meetings/:meetingId/audio/:kind downloads linked whole-meeting audio artifact', async () => {
   const calls = [];
   const audioArtifacts = {
-    input: {
-      kind: 'input',
-      mimeType: 'audio/wav',
-      fileName: 'meeting-input.wav',
-      storagePath: 'session-1/input.wav'
-    }
+      input: {
+        kind: 'input',
+        mimeType: 'audio/wav',
+        fileName: 'meeting-input.wav',
+        storagePath: 'session-1/input.wav'
+      }
   };
   const handler = createHandler({
     sessionAudioArtifactRepository: {
       async read(metadata) {
         calls.push(['read', metadata.storagePath]);
-        return { metadata, bytes: Buffer.from('meeting-wav') };
+        return { metadata, bytes: createPcm16WavBytes(new Uint8Array([1, 0]), { sampleRate: 16000 }) };
       }
     },
     sessionRepository: {
@@ -410,12 +440,46 @@ test('GET /api/meetings/:meetingId/audio/:kind downloads linked whole-meeting au
 
   assert.equal(response.status, 200);
   assert.equal(response.headers['Content-Type'], 'audio/wav');
-  assert.equal(response.headers['Content-Disposition'], 'attachment; filename="meeting-input.wav"');
-  assert.equal(response.body.toString('utf8'), 'meeting-wav');
+  assert.equal(response.headers['Content-Disposition'], 'attachment; filename="live-translate-meeting-meeting-1-input.wav"');
+  assert.equal(response.body.readUInt32LE(40), 2);
   assert.deepEqual(calls, [
     ['list'],
     ['read', 'session-1/input.wav']
   ]);
+});
+
+test('GET /api/meetings/:meetingId/audio/:kind merges linked sessions by segment sequence', async () => {
+  const first = createPcm16WavBytes(new Uint8Array([1, 0]), { sampleRate: 16000 });
+  const second = createPcm16WavBytes(new Uint8Array([2, 0]), { sampleRate: 16000 });
+  const handler = createHandler({
+    meetingRepository: {
+      async listMeetingSegments() {
+        return [
+          { liveSessionId: 'session-2', sequence: 1 },
+          { liveSessionId: 'session-1', sequence: 0 }
+        ];
+      }
+    },
+    sessionAudioArtifactRepository: {
+      async read(metadata) {
+        return { metadata, bytes: metadata.storagePath.includes('session-1') ? first : second };
+      }
+    },
+    sessionRepository: {
+      async listSessionRecords() {
+        return [
+          historyItem({ id: 'session-2', meetingId: 'meeting-1', startedAt: 2000, audioArtifacts: { input: { kind: 'input', storagePath: 'session-2/input.wav' } } }),
+          historyItem({ id: 'session-1', meetingId: 'meeting-1', startedAt: 1000, audioArtifacts: { input: { kind: 'input', storagePath: 'session-1/input.wav' } } })
+        ];
+      }
+    }
+  });
+
+  const response = await request(handler, { method: 'GET', url: '/api/meetings/meeting-1/audio/input' });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.readUInt32LE(40), 4);
+  assert.deepEqual([...response.body.subarray(44)], [1, 0, 2, 0]);
 });
 
 test('DELETE /api/sessions/:sessionId/translations/:outputId deletes formal retranslation outputs', async () => {
@@ -638,6 +702,8 @@ function createHandler(serviceOverrides = {}) {
   return createRequestHandler({
     sessionReadController,
     ...(serviceOverrides.sessionRepository ? { sessionRepository: serviceOverrides.sessionRepository } : {}),
+    ...(serviceOverrides.meetingRepository ? { meetingRepository: serviceOverrides.meetingRepository } : {}),
+    ...(serviceOverrides.meetingDeletionService ? { meetingDeletionService: serviceOverrides.meetingDeletionService } : {}),
     ...(serviceOverrides.sessionAudioArtifactRepository ? { sessionAudioArtifactRepository: serviceOverrides.sessionAudioArtifactRepository } : {}),
     ...(serviceOverrides.translationRepository ? { translationRepository: serviceOverrides.translationRepository } : {}),
     ...(serviceOverrides.translationHistory

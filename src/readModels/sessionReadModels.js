@@ -15,6 +15,7 @@ const UNKNOWN_TARGET_LANGUAGE_CODE = 'unknown-language';
 export function mapSessionRecordToHistoryListItem(sessionRecord = {}) {
   return {
     id: sessionRecord.id,
+    ...(sessionRecord.meetingId != null ? { meetingId: sessionRecord.meetingId } : {}),
     ...(sessionRecord.name !== undefined ? { name: sessionRecord.name } : {}),
     status: sessionRecord.status,
     startedAt: sessionRecord.startedAt ?? null,

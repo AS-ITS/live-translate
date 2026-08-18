@@ -6,6 +6,7 @@ import { createSessionApplicationService } from '../src/application/sessionAppli
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createTranslationApplicationService } from '../src/application/translationApplicationService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
+import { createMeetingDeletionService } from '../src/application/meetingDeletionService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
@@ -315,6 +316,14 @@ export function createApplicationDependencies(options = {}) {
         fileSystem: sessionAudioArtifactFileSystem,
         clock
       });
+  const meetingDeletionService = createMeetingDeletionService({
+    meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository,
+    sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    revokeMeetingShares: sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function'
+      ? (meetingId) => sessionShareService.revokeMeetingShares(meetingId)
+      : undefined
+  });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
@@ -327,6 +336,7 @@ export function createApplicationDependencies(options = {}) {
       meetingRepository: resolvedMeetingRepository,
       meetingReadController,
       meetingCheckpointService,
+      meetingDeletionService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
@@ -363,6 +373,7 @@ export function createApplicationDependencies(options = {}) {
     recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
+    meetingDeletionService,
     glossaryController: resolvedGlossaryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),

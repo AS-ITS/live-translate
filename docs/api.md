@@ -723,8 +723,10 @@ Missing Sessions or missing artifacts return `404 session_not_found`.
 ## `GET /api/meetings/:meetingId/audio/:kind`
 
 Downloads the whole-meeting audio artifact for a Long Meeting. The backend
-resolves the SessionRecord associated with the Meeting and serves its persisted
-`input` or `translation` artifact. Missing Meetings or missing artifacts return
+resolves all persisted SessionRecords associated with the Meeting, orders them by
+Meeting Segment sequence, and composes their `input` or `translation` WAV payloads
+into one download. Session-level segmented manifests are composed before the
+Meeting-level composition. Missing Meetings or missing artifacts return
 `404 session_not_found`.
 
 The detailed session-scoped history is also available from `GET
@@ -755,9 +757,11 @@ outputs return `404 translation_output_not_found`. Malformed identifiers return
 ## `DELETE /api/sessions/:sessionId`
 
 Deletes one finalized Session history record, its related transcript items, and
-any persisted audio artifacts. The endpoint is intended for history consumers
-only; it does not affect any active Live API session, microphone resource, token
-flow, language preference, or current transcript state.
+any persisted audio artifacts. When the Session belongs to a Meeting, deletion
+is Meeting-scoped: all finalized Session records, Meeting Segments, transcript
+checkpoints, audio artifacts, and Meeting Recorder shares are deleted together.
+The endpoint rejects deletion while the Meeting or any related Session is active.
+Sessions without a `meetingId` retain the legacy single-Session behavior.
 
 Successful deletion returns:
 
@@ -765,7 +769,20 @@ Successful deletion returns:
 { "deleted": true, "sessionId": "session-1" }
 ```
 
+For a Meeting-linked Session, the response also includes the cascade summary:
+
+```json
+{
+  "deleted": true,
+  "sessionId": "session-1",
+  "meetingId": "meeting-1",
+  "deletedSessionCount": 2,
+  "deletedSegmentCount": 2
+}
+```
+
 Missing records and non-finalized records return `404 session_not_found`.
+Active Meeting-linked records return `409 meeting_delete_active_not_allowed`.
 Malformed session identifiers return `400 invalid_request`.
 
 ## Access control

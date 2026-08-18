@@ -2,6 +2,7 @@ import {
   mapMeetingToDetailDTO,
   mapMeetingToHistoryListItem
 } from '../readModels/meetingReadModels.js';
+import { audioArtifactDownloadByteLength } from '../infrastructure/sessionAudioArtifacts.js';
 
 export function createMeetingReadQueryService({ meetingRepository, sessionRepository } = {}) {
   assertMeetingRepository(meetingRepository);
@@ -29,21 +30,41 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       return mapMeetingToDetailDTO({
         meeting,
         segments: await meetingRepository.listMeetingSegments(normalizedMeetingId),
-        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId)
+        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, await meetingRepository.listMeetingSegments(normalizedMeetingId))
       });
     }
   });
 }
 
-async function audioArtifactsForMeeting(sessionRepository, meetingId) {
+async function audioArtifactsForMeeting(sessionRepository, meetingId, segments = []) {
   if (!sessionRepository || typeof sessionRepository.listSessionRecords !== 'function') {
     return {};
   }
   const records = await sessionRepository.listSessionRecords();
-  const record = [...records]
+  const orderByLiveSessionId = new Map(segments.map((segment) => [segment.liveSessionId, segment.sequence]));
+  const meetingRecords = records
     .filter((sessionRecord) => sessionRecord?.meetingId === meetingId && sessionRecord.audioArtifacts)
-    .sort((left, right) => timestampValue(left.startedAt) - timestampValue(right.startedAt))[0];
-  return record?.audioArtifacts || {};
+    .sort((left, right) => (
+      (orderByLiveSessionId.get(left.liveSessionId) ?? Number.MAX_SAFE_INTEGER) -
+        (orderByLiveSessionId.get(right.liveSessionId) ?? Number.MAX_SAFE_INTEGER) ||
+      timestampValue(left.startedAt) - timestampValue(right.startedAt) ||
+      String(left.id).localeCompare(String(right.id))
+    ));
+
+  return Object.fromEntries(['input', 'translation'].flatMap((kind) => {
+    const artifacts = meetingRecords.map((record) => record.audioArtifacts?.[kind]).filter(Boolean);
+    if (artifacts.length === 0) return [];
+    const totalDataBytes = artifacts.reduce((total, artifact) => (
+      total + Math.max(0, audioArtifactDownloadByteLength(artifact) - 44)
+    ), 0);
+    const first = artifacts[0];
+    return [[kind, {
+      ...first,
+      storageMode: 'meeting-composed',
+      byteLength: 44 + totalDataBytes,
+      fileName: `live-translate-meeting-${meetingId}-${kind}.wav`
+    }]];
+  }));
 }
 
 function compareMeetingHistoryItems(left, right) {

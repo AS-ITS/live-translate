@@ -402,6 +402,7 @@ function App() {
   const runtimeMeetingIdsRef = useRef(new Set());
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
+  const sessionStopRequestedRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const sessionShareApiClientRef = useRef(createSessionShareApiClient());
   const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
@@ -819,6 +820,7 @@ function App() {
       return;
     }
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
@@ -874,6 +876,7 @@ function App() {
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (sessionStopRequestedRef.current) return;
       if (record?.id) {
         sessionControlLeaseRef.current?.release(record.id);
         setHasSessionControl(false);
@@ -919,6 +922,7 @@ function App() {
     if (status !== 'paused') return;
 
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     reconnectController().reset();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
@@ -941,6 +945,7 @@ function App() {
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (sessionStopRequestedRef.current) return;
       sessionRef.current = null;
       applyStartFailure(nextError, '無法繼續即時翻譯。');
     }
@@ -964,6 +969,7 @@ function App() {
   }
 
   async function endCurrentSession() {
+    sessionStopRequestedRef.current = true;
     invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
@@ -973,11 +979,14 @@ function App() {
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
+    const activeSession = sessionRef.current;
     reconnectSessionRef.current = null;
+    sessionRef.current = null;
     const inputAudioState = await finalizeRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
-    await sessionRef.current?.stop().catch(() => {});
-    sessionRef.current = null;
+    if (activeSession !== reconnectingSession) {
+      await activeSession?.stop().catch(() => {});
+    }
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('stop');
     await flushMeetingCheckpointSync();
@@ -1371,7 +1380,7 @@ function App() {
   }
 
   async function startReconnectSession({ generationId, classification }) {
-    if (generationId !== reconnectController().currentGeneration()) {
+    if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
       return;
     }
 
@@ -1395,7 +1404,7 @@ function App() {
       await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
       flushSubtitleCues('reconnect');
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
@@ -1421,16 +1430,20 @@ function App() {
         outcome: 'interrupted'
       });
 
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
 
       await session.start();
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
+        await session.stop().catch(() => {});
+        return;
+      }
       activateLiveSessionCallbacks(session.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (nextError) {
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
@@ -1449,7 +1462,7 @@ function App() {
       return;
     }
 
-    if (generationId !== reconnectController().currentGeneration() || segmentSwitchCancelledRef.current) {
+    if (generationId !== reconnectController().currentGeneration() || segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
       await session.stop().catch(() => {});
       return;
     }
@@ -1473,6 +1486,7 @@ function App() {
 
     reconnectController().reset();
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
@@ -1530,6 +1544,7 @@ function App() {
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (sessionStopRequestedRef.current) return;
       sessionRef.current = null;
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
@@ -1542,7 +1557,7 @@ function App() {
   async function switchMeetingSegment() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const previousSession = sessionRef.current;
-    if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current) return;
+    if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     invalidateLiveSessionCallbacks();
     setError('');
@@ -1551,11 +1566,11 @@ function App() {
 
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('segment-rollover');
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     const flushed = await flushMeetingCheckpointSync();
     if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
     archiveActiveTranscriptSegment();
 
     const nextLiveSessionId = generateLiveSessionId();
@@ -1571,7 +1586,7 @@ function App() {
       nextLiveSessionId
     });
 
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
@@ -1583,6 +1598,10 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
+      if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
+        await nextSession.stop().catch(() => {});
+        return;
+      }
       activateLiveSessionCallbacks(nextSession.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (error) {
@@ -1590,7 +1609,7 @@ function App() {
       throw error;
     }
 
-    if (segmentSwitchCancelledRef.current) {
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
       await nextSession.stop().catch(() => {});
       return;
     }
@@ -1638,6 +1657,7 @@ function App() {
   }
 
   function reportSegmentSwitchError(error) {
+    if (sessionStopRequestedRef.current) return;
     console.error('Meeting segment switch failed.', error);
     setStatusLabelOverride('切換失敗');
     setError('長會議分段切換失敗。已保留目前逐字稿，請停止後重新開始。');
@@ -2718,16 +2738,31 @@ function App() {
     window.location.hash = `#${returnPage}`;
   }
 
-  async function deleteHistoryRecord(id) {
-    if (!window.confirm('確定要刪除此翻譯紀錄？')) {
+  async function deleteHistoryRecord(recordOrId) {
+    const record = typeof recordOrId === 'object' ? recordOrId : historyRecords.find((item) => item.id === recordOrId);
+    const id = record?.id || recordOrId;
+    if (!id) return;
+    const message = record?.meetingId
+      ? '此筆錄音屬於一場會議。刪除後會一併刪除該會議的所有錄音段落、逐字稿與音檔，確定要繼續嗎？'
+      : '確定要刪除此翻譯紀錄？';
+    if (!window.confirm(message)) {
       return;
     }
 
     try {
-      await sessionReadApiClientRef.current.deleteSessionRecord(id);
+      const result = await sessionReadApiClientRef.current.deleteSessionRecord(id);
       setError('');
       sessionDetailCacheRef.current.delete(id);
-      setHistoryRecords((records) => records.filter((record) => record.id !== id));
+      const deletedMeetingId = result?.meetingId || record?.meetingId;
+      setHistoryRecords((records) => records.filter((item) => (
+        item.id !== id && (!deletedMeetingId || item.meetingId !== deletedMeetingId)
+      )));
+      if (deletedMeetingId) {
+        setMeetingRecords((meetings) => meetings.filter((meeting) => meeting.id !== deletedMeetingId));
+        meetingDetailCacheRef.current.delete(deletedMeetingId);
+        if (selectedMeetingIdRef.current === deletedMeetingId) closeMeetingDetail();
+      }
+      await Promise.all([refreshHistoryRecords(), refreshMeetingRecords()]);
 
       if (selectedHistoryRecordIdRef.current === id) {
         closeHistoryRecordDetail();
@@ -4010,7 +4045,7 @@ function HistoryActionsCell({ data, context }) {
       <button className="button detail-button" type="button" aria-label={selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'} aria-expanded={selectedRecordId === record.id} onClick={() => onViewDetails(record.id)}>
         {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
       </button>
-      <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}><Trash2 size={16} aria-hidden="true" />刪除</button>
+      <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record)}><Trash2 size={16} aria-hidden="true" />刪除</button>
     </div>
   );
 }
@@ -4480,7 +4515,7 @@ function SessionHistoryItem({
             >
               {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
             </button>
-            <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}>
+            <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record)}>
               <Trash2 size={16} aria-hidden="true" />
               刪除
             </button>

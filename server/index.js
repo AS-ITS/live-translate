@@ -23,6 +23,7 @@ import {
   sanitizeAudioArtifactsForDTO,
   validateAudioArtifactKind
 } from '../src/infrastructure/sessionAudioArtifacts.js';
+import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -61,6 +62,7 @@ const ERROR_RESPONSES = {
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
   session_not_found: { status: 404, message: 'Session not found.' },
+  meeting_delete_active_not_allowed: { status: 409, message: 'Active meetings cannot be deleted.' },
   recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
   recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
   recorder_forbidden: { status: 403, message: 'Recorder capability is required.' },
@@ -512,6 +514,7 @@ export function createRequestHandler(options = {}) {
     meetingRepository,
     meetingReadController,
     meetingCheckpointService,
+    meetingDeletionService,
     sessionAudioArtifactRepository,
     sessionApplicationService,
     translationProviderOptionsController,
@@ -550,6 +553,7 @@ export function createRequestHandler(options = {}) {
       meetingRepository,
       meetingReadController,
       meetingCheckpointService,
+      meetingDeletionService,
       sessionAudioArtifactRepository,
       ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
@@ -577,7 +581,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1031,29 +1035,21 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && isMeetingAudioPath(path)) {
     try {
       const { meetingId, kind } = parseMeetingAudioPath(path);
-      const metadata = await readMeetingAudioArtifact({ sessionRepository, meetingId, kind });
-      if (!metadata) {
+      const artifacts = await listMeetingAudioArtifacts({ sessionRepository, meetingRepository, meetingId, kind });
+      if (artifacts.length === 0) {
         statusCode = 404;
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
         return;
       }
 
       statusCode = 200;
-      if (metadata.storageMode === 'segmented' && typeof sessionAudioArtifactRepository.stream === 'function') {
-        await sendBinaryStream(res, statusCode, sessionAudioArtifactRepository.stream(metadata), {
-          contentType: 'audio/wav',
-          contentLength: audioArtifactDownloadByteLength(metadata),
-          fileName: metadata.fileName,
-          requestId
-        });
-      } else {
-        const artifact = await sessionAudioArtifactRepository.read(metadata);
-        sendBinary(res, statusCode, artifact.bytes, {
-          contentType: artifact.metadata.mimeType,
-          fileName: artifact.metadata.fileName,
-          requestId
-        });
-      }
+      const parts = await Promise.all(artifacts.map((metadata) => sessionAudioArtifactRepository.read(metadata)));
+      const bytes = composeWavSegments(parts.map((part) => part.bytes));
+      sendBinary(res, statusCode, bytes, {
+        contentType: 'audio/wav',
+        fileName: `live-translate-meeting-${meetingId}-${kind}.wav`,
+        requestId
+      });
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1424,6 +1420,19 @@ async function handleRequestWithSessionReadController(
       if (!existing?.sessionRecord || !DELETABLE_SESSION_STATUSES.has(existing.sessionRecord.status)) {
         statusCode = 404;
         sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId);
+        return;
+      }
+
+      if (existing.sessionRecord.meetingId && meetingDeletionService) {
+        const result = await meetingDeletionService.deleteMeeting({ meetingId: existing.sessionRecord.meetingId });
+        statusCode = 200;
+        sendJson(res, statusCode, {
+          deleted: true,
+          sessionId,
+          meetingId: existing.sessionRecord.meetingId,
+          deletedSessionCount: result.deletedSessionCount,
+          deletedSegmentCount: result.deletedSegmentCount
+        }, requestId);
         return;
       }
 
@@ -1966,14 +1975,22 @@ function parseMeetingSharePath(path) {
   };
 }
 
-async function readMeetingAudioArtifact({ sessionRepository, meetingId, kind }) {
+async function listMeetingAudioArtifacts({ sessionRepository, meetingRepository, meetingId, kind }) {
   const records = await sessionRepository.listSessionRecords();
-  const record = [...records]
+  const segments = meetingRepository && typeof meetingRepository.listMeetingSegments === 'function'
+    ? await meetingRepository.listMeetingSegments(meetingId)
+    : [];
+  const orderByLiveSessionId = new Map(segments.map((segment) => [segment.liveSessionId, segment.sequence]));
+
+  return records
     .filter((sessionRecord) => sessionRecord?.meetingId === meetingId && sessionRecord.audioArtifacts?.[kind])
-    .sort((left, right) => timestampValue(left.startedAt) - timestampValue(right.startedAt))[0];
-  const metadata = record?.audioArtifacts?.[kind];
-  if (!metadata) return null;
-  return metadata;
+    .sort((left, right) => (
+      (orderByLiveSessionId.get(left.liveSessionId) ?? Number.MAX_SAFE_INTEGER) -
+        (orderByLiveSessionId.get(right.liveSessionId) ?? Number.MAX_SAFE_INTEGER) ||
+      timestampValue(left.startedAt) - timestampValue(right.startedAt) ||
+      String(left.id).localeCompare(String(right.id))
+    ))
+    .map((record) => record.audioArtifacts[kind]);
 }
 
 function timestampValue(value) {

@@ -33,6 +33,7 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
 export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts = {} } = {}) {
   const normalizedSegments = sortedSegments(segments);
   const transcriptItems = transcriptItemsFromSegments({ meeting, segments: normalizedSegments });
+  const cues = finalCuesFromSegments(normalizedSegments);
   const summary = mapMeetingToHistoryListItem({ meeting, segments: normalizedSegments });
 
   return {
@@ -48,10 +49,28 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
     segments: normalizedSegments.map(mapSegmentToDTO),
     timeline: normalizedSegments.map(mapSegmentToTimelineItem),
     transcriptItems,
+    cues,
     audioArtifacts: sanitizeAudioArtifactsForDTO(audioArtifacts, { meetingId: meeting?.id }),
     readingContent: buildReadingContent(transcriptItems),
     recordKind: 'meeting'
   };
+}
+
+function finalCuesFromSegments(segments = []) {
+  return segments
+    .flatMap((segment) => (segment?.checkpoint?.refinedSubtitleStatus === 'completed' && Array.isArray(segment?.checkpoint?.refinedSubtitleCues) && segment.checkpoint.refinedSubtitleCues.length > 0
+      ? segment.checkpoint.refinedSubtitleCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))
+      : Array.isArray(segment?.checkpoint?.finalCues)
+        ? segment.checkpoint.finalCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))
+      : []))
+    .filter((cue) => cue?.status === 'final')
+    .sort((left, right) => (
+      left.segmentSequence - right.segmentSequence ||
+      left.startTimeMs - right.startTimeMs ||
+      left.sequence - right.sequence ||
+      left.cueId.localeCompare(right.cueId)
+    ))
+    .map(({ segmentSequence, ...cue }) => cue);
 }
 
 export function transcriptItemsFromSegments({ meeting, segments = [] } = {}) {

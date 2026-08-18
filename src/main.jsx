@@ -427,6 +427,7 @@ function App() {
   const liveCueIdleTimersRef = useRef(new Map());
   const refinementDispatchingRef = useRef(new Set());
   const refinementSubmissionTimesRef = useRef([]);
+  const subtitleRefinementTimerRef = useRef(null);
   const refinementRateLimitTimerRef = useRef(null);
 
   const routeSessionId = pageInfoFromLocation().sessionId;
@@ -1022,6 +1023,9 @@ function App() {
 
     setError('');
     try {
+      flushSubtitleCues('complete');
+      const checkpointFlushed = await flushMeetingCheckpointSync();
+      if (!checkpointFlushed) throw new Error('Unable to flush meeting checkpoint before completion.');
       await meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: resumeDraft.meetingId });
       setResumeDraft(null);
       activeMeetingCheckpointRef.current = null;
@@ -1862,44 +1866,50 @@ function App() {
     if (!TRANSCRIPT_POLISHING_ENABLED) return;
     const cues = finalCues.filter((cue) => cue?.status === 'final' && rawSourceForCue(cue) && rawTranslationForCue(cue));
     if (!activeSessionRecordIdRef.current || cues.length === 0) return;
-    const nowMs = Date.now();
-    const maxRpm = Number.isInteger(TRANSCRIPT_POLISHING_MAX_RPM) && TRANSCRIPT_POLISHING_MAX_RPM > 0 ? TRANSCRIPT_POLISHING_MAX_RPM : 15;
-    refinementSubmissionTimesRef.current = refinementSubmissionTimesRef.current.filter((time) => nowMs - time < 60000);
-    for (const cue of cues) {
-      if (cue.refinement?.status === 'completed' || refinementDispatchingRef.current.has(cue.cueId)) continue;
-      if (refinementSubmissionTimesRef.current.length >= maxRpm) {
-        const waitMs = Math.max(250, 60000 - (nowMs - refinementSubmissionTimesRef.current[0]) + 10);
-        if (!refinementRateLimitTimerRef.current) {
-          refinementRateLimitTimerRef.current = window.setTimeout(() => {
-            refinementRateLimitTimerRef.current = null;
-            scheduleTranscriptPolishing(subtitleCueStateRef.current.finalCues, { force: true });
-          }, waitMs);
-        }
-        break;
-      }
-      refinementDispatchingRef.current.add(cue.cueId);
-      refinementSubmissionTimesRef.current.push(nowMs);
-      const index = cues.findIndex((candidate) => candidate.cueId === cue.cueId);
-      void transcriptPolishingLifecycle().submitCue({
+    if (subtitleRefinementTimerRef.current) window.clearTimeout(subtitleRefinementTimerRef.current);
+    const dispatch = () => {
+      subtitleRefinementTimerRef.current = null;
+      const group = [...cues].sort((left, right) => left.sequence - right.sequence).slice(-12);
+      void transcriptPolishingLifecycle().submitStableGroup({
         sessionId: activeSessionRecordIdRef.current,
         targetLanguageCode,
         sourceLanguageCode,
-        cue,
-        contextCues: cues.slice(Math.max(0, index - 2), index)
+        cues: group
       }).then((result) => {
-        const current = subtitleCueStateRef.current;
-        const nextCues = current.finalCues.map((candidate) => candidate.cueId === cue.cueId
-          ? { ...candidate, refinement: { ...(candidate.refinement || {}), status: 'queued', executionId: result.executionId, requestedAt: new Date().toISOString() } }
-          : candidate);
-        const next = { ...current, finalCues: nextCues };
-        subtitleCueStateRef.current = next;
-        setSubtitleCueState(next);
-        enqueueCuePersistence(current, next);
-        setPolishingState((state) => ({ ...state, status: 'queued', executionId: result.executionId, error: '' }));
-      }).catch((nextError) => {
-        setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
-      }).finally(() => refinementDispatchingRef.current.delete(cue.cueId));
-    }
+        if (result) {
+          const current = subtitleCueStateRef.current;
+          const next = { ...current, refinedSubtitleInputHash: result.inputHash, refinedSubtitleStatus: 'queued' };
+          subtitleCueStateRef.current = next;
+          setSubtitleCueState(next);
+          enqueueCuePersistence(current, next);
+          pollRefinedSubtitleResult(result.inputHash, 0);
+          setPolishingState((state) => ({ ...state, status: 'queued', executionId: result.executionId, error: '' }));
+        }
+      }).catch((nextError) => setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' })));
+    };
+    if (force) dispatch();
+    else subtitleRefinementTimerRef.current = window.setTimeout(dispatch, 1500);
+  }
+
+  function pollRefinedSubtitleResult(inputHash, attempt) {
+    if (!inputHash || !activeSessionRecordIdRef.current || attempt > 5) return;
+    window.setTimeout(async () => {
+      try {
+        const detail = await sessionReadApiClientRef.current.getSessionDetail(activeSessionRecordIdRef.current);
+        const cues = (detail?.cues || []).filter((cue) => cue?.cueId?.startsWith('refined-subtitle:') && cue?.refinement?.inputHash === inputHash);
+        if (cues.length > 0) {
+          const current = subtitleCueStateRef.current;
+          const next = { ...current, refinedSubtitleCues: cues, refinedSubtitleStatus: 'completed', refinedSubtitleRevision: (current.refinedSubtitleRevision || 0) + 1 };
+          subtitleCueStateRef.current = next;
+          setSubtitleCueState(next);
+          enqueueCuePersistence(current, next);
+          return;
+        }
+      } catch {
+        // Raw final Cues remain visible while the asynchronous refinement is pending.
+      }
+      pollRefinedSubtitleResult(inputHash, attempt + 1);
+    }, 1000);
   }
 
   async function retryPolishingExecution(executionId) {
@@ -1937,7 +1947,11 @@ function App() {
       lastFinalizedStream: state?.lastFinalizedStream || null,
       lastFinalizedReason: state?.lastFinalizedReason || null,
       lastCommittedCueSequence: lastCue?.sequence || 0,
-      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
+      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null,
+      refinedSubtitleCues: state?.refinedSubtitleCues || [],
+      refinedSubtitleRevision: state?.refinedSubtitleRevision || 0,
+      refinedSubtitleInputHash: state?.refinedSubtitleInputHash || null,
+      refinedSubtitleStatus: state?.refinedSubtitleStatus || 'pending'
     };
   }
 
@@ -2509,11 +2523,15 @@ function App() {
       const persistedCues = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.finalCues || []
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.sequence - right.sequence);
+      const refinedSubtitleCues = checkpoints.flatMap((checkpointResult) => (
+        checkpointResult?.checkpoint?.refinedSubtitleCues || []
+      )).filter((cue) => cue?.status === 'final').sort((left, right) => left.startTimeMs - right.startTimeMs);
       const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
       if (persistedCues.length > 0 || latestCueCheckpoint) {
         const restoredCueState = createSubtitleCueState({
           ...(latestCueCheckpoint || {}),
           finalCues: persistedCues,
+          refinedSubtitleCues,
           nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
         });
         subtitleCueStateRef.current = restoredCueState;
@@ -5025,6 +5043,10 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
     [detail?.transcriptItems]
   );
+  const finalCues = useMemo(
+    () => Array.isArray(detail?.cues) ? detail.cues : [],
+    [detail?.cues]
+  );
   const timeline = useMemo(
     () => Array.isArray(detail?.timeline) ? detail.timeline : [],
     [detail?.timeline]
@@ -5061,11 +5083,13 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
   }
 
   const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
-  const canDownloadMeetingTranscript = canExportTranscript(transcriptItems, {
-    format: meetingExportFormat,
-    stream: meetingExportStream,
-    timeOrigin
-  });
+  const canDownloadMeetingTranscript = meetingExportFormat !== 'txt' && finalCues.length > 0
+    ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
+    : canExportTranscript(transcriptItems, {
+        format: meetingExportFormat,
+        stream: meetingExportStream,
+        timeOrigin
+      });
   const exportUnavailableReason = meetingExportUnavailableReason({
     canExport: canDownloadMeetingTranscript,
     format: meetingExportFormat,
@@ -5078,6 +5102,7 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     try {
       const content = exportApplicationService.exportTranscript({
         items: transcriptItems,
+        cues: finalCues,
         options: {
           format: meetingExportFormat,
           stream: meetingExportStream,
@@ -5178,7 +5203,7 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
             下載整場逐字稿
           </button>
         </div>
-        <p className="export-note">整場字幕依段落與時間順序輸出；中斷或失敗段落已保存的內容仍會保留。</p>
+        <p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；中斷或失敗段落已保存的內容仍會保留。舊紀錄沒有 Final Cue 時會使用逐字稿分組 fallback。</p>
         {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         {meetingExportError ? <p className="error-message">{meetingExportError}</p> : null}
       </section>

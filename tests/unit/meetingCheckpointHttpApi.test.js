@@ -174,6 +174,15 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
       checkpoint: checkpoint({
         meetingId: meeting.id,
         segmentId: segment.id,
+        finalCues: [finalCue({
+          cueId: 'cue:meeting:segment-1:1',
+          segmentId: segment.id,
+          sessionId: 'session-meeting-1',
+          sourceText: 'segment one source',
+          translatedText: 'segment one translation',
+          startTimeMs: 100,
+          endTimeMs: 800
+        })],
         durableChunks: [
           chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'segment one source' }),
           chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'segment one translation' })
@@ -229,6 +238,9 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
   );
   assert.equal(body.readingContent.sourceTranscript.status, 'available');
   assert.equal(body.readingContent.translationArticle.status, 'available');
+  assert.deepEqual(body.cues.map(({ cueId, segmentId, translatedText }) => ({ cueId, segmentId, translatedText })), [
+    { cueId: 'cue:meeting:segment-1:1', segmentId: 'segment-1', translatedText: 'segment one translation' }
+  ]);
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {

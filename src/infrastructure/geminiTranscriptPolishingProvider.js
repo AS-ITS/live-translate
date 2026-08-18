@@ -1,5 +1,6 @@
 import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
 import { normalizeGeminiTranscriptPolishingItems } from '../lib/geminiTranscriptPolishing.js';
+import { validateSubtitleResegmentationResponse } from '../lib/subtitleResegmentation.js';
 
 
 export const TRANSCRIPT_POLISHING_OPERATION = 'transcript_polishing';
@@ -18,9 +19,19 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
         : undefined;
       const request = buildTranscriptPolishingRequest({ input, model, glossaryEntries });
       const response = await withTimeout(Promise.resolve().then(() => client.generateContent(request)), timeoutMs);
-      const result = normalizeTranscriptPolishingResponse(response, input.refinementItems || input.polishingItems, {
-        refinement: Array.isArray(input.refinementItems)
+      const result = normalizeTranscriptPolishingResponse(response, input.items || input.refinementItems || input.polishingItems, {
+        refinement: Array.isArray(input.refinementItems) && input.mode !== 'subtitle_resegment',
+        resegment: input.mode === 'subtitle_resegment'
       });
+      if (input.mode === 'subtitle_resegment') {
+        const refinedCues = validateSubtitleResegmentationResponse(result, (input.items || []).map((item) => ({
+          ...item,
+          status: 'final',
+          sourceText: item.rawSource ?? item.sourceText,
+          translatedText: item.rawTranslation ?? item.translatedText
+        })));
+        return Object.freeze({ refinedCues, detectedSourceLanguageCode: input.sourceLanguageCode });
+      }
       if (Array.isArray(input.refinementItems)) {
         const item = result.refinedItems?.[0];
         return Object.freeze({
@@ -41,23 +52,31 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
 
 export function buildTranscriptPolishingRequest({ input, model, glossaryEntries } = {}) {
   assertInput(input);
-  const refinement = Array.isArray(input.refinementItems);
+  const resegment = input.mode === 'subtitle_resegment';
+  const refinement = Array.isArray(input.refinementItems) && !resegment;
   const items = refinement ? input.refinementItems : (Array.isArray(input.polishingItems) ? input.polishingItems : []);
+  const resegmentItems = resegment ? (input.items || []) : items;
   const prompt = [
     `Target language: ${input.targetLanguageCode}`,
-    refinement
+    resegment
+      ? 'Understand the complete stable cue group before correcting source and translation. You may merge or split subtitles, but must preserve every source cue id exactly once.'
+      : refinement
       ? 'Correct the current source transcript conservatively, then refine its translation using that corrected source.'
       : 'Polish each translation item using the source transcript as context.',
     'Do not add facts that are not present in the source or translation.',
     'Preserve meaning, numbers, dates, names, and proper nouns.',
     'Only correct clear homophones, broken word boundaries, missing words, punctuation, and sentence boundaries.',
-    refinement
+    resegment
+      ? 'Return JSON: {"refinedCues":[{"sourceCueIds":["cue-1"],"refinedSource":"...","refinedTranslation":"..."}]} and no other text.'
+      : refinement
       ? 'Return JSON: {"refinedItems":[{"cueId":"...","sequence":1,"version":1,"inputHash":"...","refinedSource":"...","refinedTranslation":"..."}]} and no other text.'
       : 'Return JSON: {"polishedItems":[{"cueId":"...","sequence":1,"polishedText":"..."}]} and no other text.',
-    refinement ? 'When uncertain, retain the raw source and translation wording.' : 'Polish the existing translation only; never rewrite or return source transcript text.',
+    resegment || refinement ? 'When uncertain, retain the raw wording.' : 'Polish the existing translation only; never rewrite or return source transcript text.',
     'Do not add facts or remove meaning.',
     ...(Array.isArray(glossaryEntries) ? glossaryEntries.map((entry) => `Glossary: ${entry.source} => ${entry.target}`) : []),
-    JSON.stringify(items.map((item) => refinement
+    JSON.stringify(resegmentItems.map((item) => resegment
+      ? ({ cueId: item.cueId, sequence: item.sequence, rawSource: item.rawSource ?? item.sourceText, rawTranslation: item.rawTranslation ?? item.translatedText })
+      : refinement
       ? ({ cueId: item.cueId, sequence: item.sequence, version: item.version, inputHash: item.inputHash, rawSource: item.rawSource, rawTranslation: item.rawTranslation })
       : ({ cueId: item.cueId, sequence: item.sequence, source: item.sourceText, translation: item.translationText })))
   ].join('\n');
@@ -87,6 +106,10 @@ export function normalizeTranscriptPolishingResponse(response, inputItems = []) 
     parsed = JSON.parse(refinedText);
   } catch {
     return Object.freeze({ refinedText });
+  }
+  if (arguments[2]?.resegment) {
+    if (!Array.isArray(parsed?.refinedCues)) throw providerInvalidResponse('structured resegmentation response');
+    return Object.freeze({ refinedCues: parsed.refinedCues });
   }
   if (arguments[2]?.refinement) {
     if (!Array.isArray(parsed?.refinedItems)) throw providerInvalidResponse('structured refinement response');
@@ -124,10 +147,10 @@ function providerInvalidResponse(detail) {
 }
 
 function assertInput(input) {
-  if (!input || typeof input !== 'object' || (!Array.isArray(input.polishingItems) && !Array.isArray(input.refinementItems))) {
+  if (!input || typeof input !== 'object' || (!Array.isArray(input.polishingItems) && !Array.isArray(input.refinementItems) && !Array.isArray(input.items))) {
     throw new TypeError('polishingItems or refinementItems must be a non-empty array.');
   }
-  const items = input.refinementItems || input.polishingItems;
+  const items = input.items || input.refinementItems || input.polishingItems;
   if (items.length === 0) throw new TypeError('polishingItems or refinementItems must be a non-empty array.');
   for (const field of ['targetLanguageCode']) {
     if (typeof input[field] !== 'string' || input[field].trim() === '') throw new TypeError(`${field} must be a non-empty string.`);

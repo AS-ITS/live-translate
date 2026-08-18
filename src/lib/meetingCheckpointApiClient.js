@@ -77,7 +77,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
     },
 
     async updateCheckpoint(input = {}) {
-      const { meetingId, segmentId, idempotencyKey, durableChunks } = input;
+      const { meetingId, segmentId, idempotencyKey, durableChunks, refinedSubtitleCues, refinedSubtitleRevision, refinedSubtitleInputHash, refinedSubtitleStatus } = input;
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
       assertNonEmptyString(idempotencyKey, 'idempotencyKey');
@@ -85,6 +85,12 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
 
       const body = { idempotencyKey, durableChunks, pendingPartial: null };
       if (Object.hasOwn(input, 'finalCues')) body.finalCues = input.finalCues;
+      for (const [field, value] of Object.entries({ refinedSubtitleCues, refinedSubtitleRevision, refinedSubtitleInputHash, refinedSubtitleStatus })) {
+        if (value !== undefined) body[field] = value;
+      }
+      for (const field of ['refinedSubtitleCues', 'refinedSubtitleRevision', 'refinedSubtitleInputHash', 'refinedSubtitleStatus']) {
+        if (Object.hasOwn(input, field)) body[field] = input[field];
+      }
       if (Object.hasOwn(input, 'cueCheckpoint')) body.cueCheckpoint = input.cueCheckpoint;
       const response = await fetchImpl(buildUrl(
         baseUrl,

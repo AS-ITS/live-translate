@@ -356,6 +356,10 @@ export function validateCheckpointInput(input, meetingId, segmentId) {
     idempotencyKey,
     durableChunks: sortChunks(durableChunks),
     finalCues,
+    refinedSubtitleCues: normalizeRefinedSubtitleCues(input.refinedSubtitleCues),
+    refinedSubtitleRevision: positiveOrZero(input.refinedSubtitleRevision),
+    refinedSubtitleInputHash: optionalString(input.refinedSubtitleInputHash),
+    refinedSubtitleStatus: validRefinedSubtitleStatus(input.refinedSubtitleStatus),
     cueCheckpoint: normalizeCueCheckpoint(input.cueCheckpoint),
     pendingPartial: null
   };
@@ -408,6 +412,10 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
     idempotencyKey: incoming.idempotencyKey,
     durableChunks: sortChunks(Array.from(chunksByKey.values())),
     finalCues: mergedCues.sort((left, right) => left.sequence - right.sequence),
+    refinedSubtitleCues: incoming.refinedSubtitleCues?.length ? incoming.refinedSubtitleCues : normalizedExisting.refinedSubtitleCues,
+    refinedSubtitleRevision: incoming.refinedSubtitleRevision > 0 ? incoming.refinedSubtitleRevision : normalizedExisting.refinedSubtitleRevision,
+    refinedSubtitleInputHash: incoming.refinedSubtitleInputHash || normalizedExisting.refinedSubtitleInputHash,
+    refinedSubtitleStatus: incoming.refinedSubtitleStatus !== 'pending' ? incoming.refinedSubtitleStatus : normalizedExisting.refinedSubtitleStatus,
     cueCheckpoint: incoming.cueCheckpoint ?? normalizedExisting.cueCheckpoint,
     pendingPartial: null,
     updatedAt
@@ -420,6 +428,10 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
       idempotencyKey: null,
       durableChunks: [],
       finalCues: [],
+      refinedSubtitleCues: [],
+      refinedSubtitleRevision: 0,
+      refinedSubtitleInputHash: null,
+      refinedSubtitleStatus: 'pending',
       cueCheckpoint: null,
       pendingPartial: null,
       updatedAt: null
@@ -434,6 +446,10 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
     idempotencyKey: checkpoint.idempotencyKey ?? null,
     durableChunks: sortChunks(checkpoint.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId))),
     finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues.map((cue) => validateFinalCue(cue)) : [],
+    refinedSubtitleCues: normalizeRefinedSubtitleCues(checkpoint.refinedSubtitleCues),
+    refinedSubtitleRevision: positiveOrZero(checkpoint.refinedSubtitleRevision),
+    refinedSubtitleInputHash: optionalString(checkpoint.refinedSubtitleInputHash),
+    refinedSubtitleStatus: validRefinedSubtitleStatus(checkpoint.refinedSubtitleStatus),
     cueCheckpoint: normalizeCueCheckpoint(checkpoint.cueCheckpoint),
     pendingPartial: null,
     updatedAt: checkpoint.updatedAt ?? null
@@ -564,6 +580,21 @@ function sameChunk(left, right) {
 function sameErrorInfo(left, right) {
   return left?.reason === right?.reason && left?.category === right?.category;
 }
+
+function normalizeRefinedSubtitleCues(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) invalid('refinedSubtitleCues must be an array');
+  return value.map((cue) => {
+    if (!isRecord(cue) || typeof cue.cueId !== 'string' || !Array.isArray(cue.sourceCueIds) || cue.sourceCueIds.length === 0 ||
+      typeof cue.sourceText !== 'string' || !cue.sourceText.trim() || typeof cue.translatedText !== 'string' || !cue.translatedText.trim() ||
+      !Number.isFinite(cue.startTimeMs) || !Number.isFinite(cue.endTimeMs) || cue.endTimeMs <= cue.startTimeMs || cue.status !== 'final') invalid('refinedSubtitleCue is invalid');
+    return { ...cue, sourceCueIds: [...cue.sourceCueIds] };
+  });
+}
+
+function positiveOrZero(value) { return Number.isInteger(value) && value >= 0 ? value : 0; }
+function optionalString(value) { return typeof value === 'string' && value.trim() ? value : null; }
+function validRefinedSubtitleStatus(value) { return ['pending', 'queued', 'running', 'completed', 'failed'].includes(value) ? value : 'pending'; }
 
 function assertMeetingRepository(repository) {
   for (const method of ['createMeeting', 'getMeeting', 'updateMeeting', 'listMeetingSegments', 'createMeetingSegment', 'getMeetingSegment', 'updateMeetingSegment']) {

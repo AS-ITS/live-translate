@@ -1045,6 +1045,18 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
         });
       }
     }
+    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && Array.isArray(output.refinedCues)) {
+      const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
+      if (output.sessionId) {
+        await subtitleCueRepository.saveRefinedSubtitleCues({
+          sessionId: output.sessionId,
+          sourceCueIds: snapshot.items?.map((item) => item.cueId) || [],
+          refinedCues: output.refinedCues,
+          inputHash: output.inputHash,
+          completedAt: output.completedAt
+        });
+      }
+    }
   };
 
   return Object.freeze({
@@ -1114,6 +1126,8 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     operation: request.operation,
     polishingItems: sourceTranscriptSnapshot.polishingItems,
     refinementItems: sourceTranscriptSnapshot.refinementItems,
+    items: sourceTranscriptSnapshot.items,
+    mode: sourceTranscriptSnapshot.mode,
     refinementVersion: sourceTranscriptSnapshot.refinementVersion,
     segmentRange: request.segmentRange,
     inputHash: request.inputHash,

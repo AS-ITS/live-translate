@@ -71,7 +71,7 @@ function hasMeaningfulPartialText(text) {
 }
 
 export function cueListForDisplay(state = {}, { includePartial = true, requireSourceTextForPartial = false } = {}) {
-  const final = sortFinalCues(state.finalCues);
+  const final = sortFinalCues(state.refinedSubtitleCues?.length ? state.refinedSubtitleCues : state.finalCues);
   const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
   const cues = partial ? [...final, partial] : final;
   return includePartial ? mergeRepeatedLiveCues(cues) : cues;

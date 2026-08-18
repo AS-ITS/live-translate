@@ -94,9 +94,11 @@ stop, recover, or mutate Live sessions.
 ## `GET /api/meetings/:meetingId`
 
 Returns one composed Meeting detail read model with ordered Segments, a Segment
-timeline, final checkpoint transcript items, and article-style reading content.
-Transcript items are ordered by Segment sequence and chunk time while retaining
-Segment identity and status metadata.
+timeline, final checkpoint transcript items, persisted Final Cues, and
+article-style reading content. Transcript items are ordered by Segment sequence
+and chunk time while retaining Segment identity and status metadata. `cues`
+contains final bilingual subtitle Cues aggregated from Segment checkpoints and
+is the preferred source for SRT/VTT export.
 
 Missing Meetings return `404`.
 
@@ -178,6 +180,22 @@ Missing Meetings return `404`.
       "sequence": 1,
       "startedAt": 1720000100000,
       "finalizedAt": 1720000100000
+    }
+  ],
+  "cues": [
+    {
+      "cueId": "cue:session-1:segment-1:1",
+      "sessionId": "session-1",
+      "segmentId": "segment-1",
+      "sequence": 1,
+      "startTimeMs": 1000,
+      "endTimeMs": 2800,
+      "sourceLanguageCode": "zh-Hant",
+      "targetLanguageCode": "en",
+      "sourceText": "確認的原文。",
+      "translatedText": "confirmed source text.",
+      "status": "final",
+      "finalizedReason": "turnComplete"
     }
   ],
   "readingContent": {
@@ -376,6 +394,11 @@ Persists confirmed transcript or translation chunks for one Segment.
       "timestamp": 1720000000000
     }
   ],
+  "finalCues": [],
+  "refinedSubtitleCues": [],
+  "refinedSubtitleRevision": 0,
+  "refinedSubtitleInputHash": null,
+  "refinedSubtitleStatus": "pending",
   "pendingPartial": null
 }
 ```
@@ -398,6 +421,11 @@ Returns the Segment checkpoint:
   "checkpoint": {
     "idempotencyKey": "checkpoint:segment-1:12",
     "durableChunks": [],
+    "finalCues": [],
+    "refinedSubtitleCues": [],
+    "refinedSubtitleRevision": 0,
+    "refinedSubtitleInputHash": null,
+    "refinedSubtitleStatus": "pending",
     "pendingPartial": null,
     "updatedAt": 1720000000000
   }

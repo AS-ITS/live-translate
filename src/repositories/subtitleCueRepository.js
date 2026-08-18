@@ -1,4 +1,5 @@
 import { CUE_ERROR_CODES, mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { allocateSubtitleResegmentedCueTimes, stableSubtitleGroup, subtitleResegmentationInputHash } from '../lib/subtitleResegmentation.js';
 
 export function createSubtitleCueRepository({ sessionRepository, meetingRepository } = {}) {
   if (!sessionRepository || !meetingRepository) throw new TypeError('sessionRepository and meetingRepository are required.');
@@ -56,6 +57,30 @@ export function createSubtitleCueRepository({ sessionRepository, meetingReposito
       return { applied: true, stale: false, cue: nextCue, segment: updated };
     },
 
+    async saveRefinedSubtitleCues({ sessionId, sourceCueIds = [], refinedCues = [], inputHash, completedAt = new Date().toISOString() } = {}) {
+      const session = await sessionRepository.getSessionRecord(sessionId);
+      if (!session) throw coded(CUE_ERROR_CODES.sessionNotFound, `Session not found: ${sessionId}`);
+      const segments = await meetingRepository.listMeetingSegments(session.sessionRecord.meetingId);
+      const raw = segments.flatMap((segment) => segment.checkpoint?.finalCues || [])
+        .filter((cue) => sourceCueIds.includes(cue.cueId));
+      const group = stableSubtitleGroup(raw);
+      const hash = inputHash || subtitleResegmentationInputHash(group);
+      if (group.length === 0 || hash !== subtitleResegmentationInputHash(group)) return { applied: false, stale: true };
+      const refinedSubtitleCues = allocateSubtitleResegmentedCueTimes(group, refinedCues, { groupHash: hash });
+      const segment = segments.find((item) => group.some((cue) => cue.segmentId === item.id));
+      if (!segment) throw coded(CUE_ERROR_CODES.segmentNotFound, `Cue group not found for session: ${sessionId}`);
+      const updated = await meetingRepository.updateMeetingSegment(segment.withCheckpoint({
+        ...(segment.checkpoint || {}),
+        refinedSubtitleCues,
+        refinedSubtitleRevision: (segment.checkpoint?.refinedSubtitleRevision || 0) + 1,
+        refinedSubtitleInputHash: hash,
+        refinedSubtitleStatus: 'completed',
+        refinedSubtitleCompletedAt: completedAt,
+        updatedAt: Date.now()
+      }));
+      return { applied: true, refinedSubtitleCues, segment: updated };
+    },
+
     async listFinalCuesBySession(sessionId) {
       const session = await sessionRepository.getSessionRecord(sessionId);
       if (!session) return [];
@@ -76,6 +101,15 @@ export function createSubtitleCueRepository({ sessionRepository, meetingReposito
     async listFinalCuesBySegment(segmentId) {
       const segment = await meetingRepository.getMeetingSegment(segmentId);
       return segment?.checkpoint?.finalCues?.filter((cue) => cue.status === 'final').sort((a, b) => a.sequence - b.sequence) || [];
+    },
+
+    async listRefinedSubtitleCuesBySession(sessionId) {
+      const session = await sessionRepository.getSessionRecord(sessionId);
+      if (!session) return [];
+      const segments = await meetingRepository.listMeetingSegments(session.sessionRecord.meetingId);
+      return segments.flatMap((segment) => segment.checkpoint?.refinedSubtitleCues || [])
+        .filter((cue) => cue.status === 'final')
+        .sort((a, b) => a.startTimeMs - b.startTimeMs || a.sequence - b.sequence);
     },
 
     async saveCueCheckpoint(sessionId, checkpoint) {

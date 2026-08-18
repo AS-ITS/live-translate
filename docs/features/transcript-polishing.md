@@ -68,3 +68,18 @@ still be inspected and explicitly exported. Failed polishing leaves raw values
 visible and does not affect Live controls or audio downloads.
 The Live view also shows queued, running, completed, and failed polishing
 states, with a retry action for failed executions.
+
+## Stable subtitle resegmentation
+
+Final Cues are held in a short stability window (currently 1.5 seconds). A new
+adjacent Cue resets that window; stop, pause, segment rollover, and meeting
+completion flush it immediately. The request uses `mode: "subtitle_resegment"`
+and sends the bounded complete group as `items` with `cueId`, `sequence`,
+`rawSource`, and `rawTranslation`.
+
+Gemini returns ordered `refinedCues`. The application verifies complete,
+duplicate-free source Cue coverage, then allocates timestamps from the original
+group window. Gemini never supplies milliseconds. Completed
+`refinedSubtitleCues` are persisted beside raw `finalCues` and preferred by
+history/read models and SRT/VTT export; raw Cues remain available for recovery
+and raw export.

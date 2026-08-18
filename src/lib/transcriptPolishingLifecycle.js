@@ -1,5 +1,6 @@
 import { transcriptPolishingInputHash } from './transcriptPolishing.js';
 import { cueRefinementInputHash, cueRefinementItem } from './cueContent.js';
+import { stableSubtitleGroup, subtitleResegmentationInputHash } from './subtitleResegmentation.js';
 
 export const TRANSCRIPT_POLISHING_MODEL = 'gemini-3.5-flash-lite';
 export const TRANSCRIPT_POLISHING_PROVIDER_KEY = 'gemini';
@@ -11,6 +12,44 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
   const states = new Map();
 
   return Object.freeze({
+    submitStableGroup({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange } = {}) {
+      const items = stableSubtitleGroup(cues);
+      if (!sessionId || !targetLanguageCode || items.length === 0) return Promise.resolve(null);
+      const hash = inputHash || subtitleResegmentationInputHash(items);
+      const requestId = `subtitle-resegment-request:${sessionId}:${hash}`;
+      const executionId = `subtitle-resegment-execution:${sessionId}:${hash}`;
+      const startedAt = now();
+      const snapshot = {
+        operation: 'transcript_polishing',
+        mode: 'subtitle_resegment',
+        inputHash: hash,
+        sourceLanguageCode,
+        targetLanguageCode,
+        items: items.map((cue) => ({
+          cueId: cue.cueId,
+          sequence: cue.sequence,
+          rawSource: cue.rawSource ?? cue.sourceText,
+          rawTranslation: cue.rawTranslation ?? cue.translatedText
+        }))
+      };
+      return Promise.resolve()
+        .then(() => apiClient.createTranslationRequest({
+          id: requestId,
+          sessionId,
+          sourceTranscriptRevisionId: `subtitle-revision:${sessionId}`,
+          targetLanguageCode,
+          operation: 'transcript_polishing',
+          segmentRange: segmentRange || { fromSequence: items[0].sequence, toSequence: items.at(-1).sequence, segmentIds: [...new Set(items.map((cue) => cue.segmentId).filter(Boolean))] },
+          inputHash: hash,
+          sourceTranscriptSnapshot: snapshot,
+          createdAt: startedAt
+        }))
+        .then(() => apiClient.createTranslationExecution({ id: executionId, translationRequestId: requestId, providerKey: TRANSCRIPT_POLISHING_PROVIDER_KEY, startedAt }))
+        .then(() => {
+          onStateChange({ status: 'queued', inputHash: hash, executionId, mode: 'subtitle_resegment' });
+          return { requestId, executionId, inputHash: hash, mode: 'subtitle_resegment', items };
+        });
+    },
     submitCue({ sessionId, targetLanguageCode, sourceLanguageCode, cue, contextCues = [] } = {}) {
       if (!sessionId || !targetLanguageCode || !cue?.cueId) return Promise.resolve(null);
       const refinement = cueRefinementItem(cue);

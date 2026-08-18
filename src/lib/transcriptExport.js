@@ -4,7 +4,7 @@ const FORMATS = ['txt', 'srt', 'vtt'];
 const STREAMS = ['source', 'translation'];
 const DEFAULT_STREAM = 'translation';
 const DEFAULT_FALLBACK_CUE_MS = 2000;
-const SOURCE_SUBTITLE_PAUSE_GAP_MS = 1200;
+const SUBTITLE_PAUSE_GAP_MS = 1200;
 
 export function formatTranscriptExport(items, options = {}) {
   const format = normalizeFormat(options.format);
@@ -138,13 +138,13 @@ function formatTimedCues(items, options) {
 
 function buildSubtitleCueItems(allItems, selectedItems, options) {
   if (options.stream === 'source') {
-    return groupSourceSubtitleItems(selectedItems);
+    return groupSubtitleItems(selectedItems);
   }
 
   const sourceItems = selectExportItems(allItems, { ...options, stream: 'source' });
-  const sourceCueItems = groupSourceSubtitleItems(sourceItems);
+  const sourceCueItems = groupSubtitleItems(sourceItems);
   if (sourceCueItems.length === 0 || !sourceCueItems.every((item) => Number.isFinite(item.startedAt))) {
-    return selectedItems;
+    return groupSubtitleItems(selectedItems);
   }
 
   return alignTranslationItemsToSourceCues(selectedItems, sourceCueItems);
@@ -161,7 +161,7 @@ function alignTranslationItemsToSourceCues(translationItems, sourceCueItems) {
   }));
 }
 
-function groupSourceSubtitleItems(items) {
+function groupSubtitleItems(items) {
   const groups = [];
   let currentGroup = [];
 
@@ -169,8 +169,8 @@ function groupSourceSubtitleItems(items) {
     currentGroup.push(item);
 
     const nextItem = items[index + 1];
-    if (!nextItem || shouldEndSourceSubtitleGroup(item, nextItem)) {
-      groups.push(createSourceSubtitleGroup(currentGroup));
+    if (!nextItem || shouldEndSubtitleGroup(item, nextItem)) {
+      groups.push(createSubtitleGroup(currentGroup));
       currentGroup = [];
     }
   });
@@ -178,11 +178,11 @@ function groupSourceSubtitleItems(items) {
   return groups;
 }
 
-function shouldEndSourceSubtitleGroup(item, nextItem) {
+function shouldEndSubtitleGroup(item, nextItem) {
   return endsWithSentenceBoundary(item.text) || hasSourceSubtitlePause(item, nextItem);
 }
 
-function createSourceSubtitleGroup(groupItems) {
+function createSubtitleGroup(groupItems) {
   const firstItem = groupItems[0];
   const lastItem = groupItems.at(-1);
 
@@ -204,7 +204,7 @@ function hasSourceSubtitlePause(item, nextItem) {
   }
 
   const itemEndAt = validEndTime(item) ? item.finalizedAt : item.startedAt;
-  return Number.isFinite(itemEndAt) && nextItem.startedAt - itemEndAt >= SOURCE_SUBTITLE_PAUSE_GAP_MS;
+  return Number.isFinite(itemEndAt) && nextItem.startedAt - itemEndAt >= SUBTITLE_PAUSE_GAP_MS;
 }
 
 function joinSubtitleTextParts(parts) {

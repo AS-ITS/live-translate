@@ -9,9 +9,14 @@ import { cueRefinementInputHash } from './cueContent.js';
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
+  const refinedSubtitleCues = Array.isArray(input.refinedSubtitleCues) ? input.refinedSubtitleCues.map(copyCue) : [];
   const pendingCues = Array.isArray(input.pendingCues) ? input.pendingCues.map(copyCue) : [];
   return {
     finalCues,
+    refinedSubtitleCues,
+    refinedSubtitleRevision: Number.isInteger(input.refinedSubtitleRevision) ? input.refinedSubtitleRevision : 0,
+    refinedSubtitleInputHash: input.refinedSubtitleInputHash || null,
+    refinedSubtitleStatus: input.refinedSubtitleStatus || 'pending',
     currentCue: input.currentCue ? copyCue(input.currentCue) : null,
     pendingCues,
     pendingBoundary: {

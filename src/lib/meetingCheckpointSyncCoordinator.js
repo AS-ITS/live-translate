@@ -100,7 +100,11 @@ export function createMeetingCheckpointSyncCoordinator({
         idempotencyKey: checkpointIdempotencyKey(flushContext.segmentId, chunks),
         durableChunks: chunks,
         finalCues: cues,
-        cueCheckpoint: payloadCheckpoint
+        cueCheckpoint: payloadCheckpoint,
+        refinedSubtitleCues: payloadCheckpoint?.refinedSubtitleCues,
+        refinedSubtitleRevision: payloadCheckpoint?.refinedSubtitleRevision,
+        refinedSubtitleInputHash: payloadCheckpoint?.refinedSubtitleInputHash,
+        refinedSubtitleStatus: payloadCheckpoint?.refinedSubtitleStatus
       });
 
       for (const chunk of chunks) {

@@ -8,6 +8,7 @@ import {
   thresholdReached,
   transcriptPolishingInputHash
 } from '../../src/lib/transcriptPolishing.js';
+import { createTranscriptPolishingLifecycle } from '../../src/lib/transcriptPolishingLifecycle.js';
 
 const cue = (overrides = {}) => ({
   cueId: 'cue-1', sequence: 1, status: 'final', sourceText: '原文', translationText: 'A translated sentence.', ...overrides
@@ -103,4 +104,26 @@ test('coordinator enforces single flight and submits dirty content after complet
   await first;
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(submissions.length, 2);
+});
+
+test('polishing lifecycle persists an explicit target contract in the request snapshot', async () => {
+  const requests = [];
+  const lifecycle = createTranscriptPolishingLifecycle({
+    now: () => '2026-08-19T00:00:00.000Z',
+    apiClient: {
+      async createTranslationRequest(request) { requests.push(request); },
+      async createTranslationExecution() {}
+    }
+  });
+  await lifecycle.submit({
+    sessionId: 'session-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant', connectionEpoch: 7,
+    cues: [cue({ cueId: 'cue-a', sequence: 4, segmentId: 'segment-1' }), cue({ cueId: 'cue-b', sequence: 5, segmentId: 'segment-1' })]
+  });
+  const targets = requests[0].sourceTranscriptSnapshot.refinementTargets;
+  assert.deepEqual(targets.map(({ targetCueId, targetSequence, sessionId, segmentId, connectionEpoch, fields }) => ({ targetCueId, targetSequence, sessionId, segmentId, connectionEpoch, fields })), [
+    { targetCueId: 'cue-a', targetSequence: 4, sessionId: 'session-1', segmentId: 'segment-1', connectionEpoch: 7, fields: ['translation'] },
+    { targetCueId: 'cue-b', targetSequence: 5, sessionId: 'session-1', segmentId: 'segment-1', connectionEpoch: 7, fields: ['translation'] }
+  ]);
+  assert.equal(targets[0].refinementJobId, `polishing-execution:session-1:${requests[0].inputHash}`);
+  assert.equal(targets[0].requestId, `polishing-request:session-1:${requests[0].inputHash}`);
 });

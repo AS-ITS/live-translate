@@ -94,6 +94,29 @@ test('completed meetings reject settings changes and share mutations', async () 
   assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
 });
 
+test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
+  const handler = createHandler();
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ liveSessionId: 'live-session-1' })
+  })).json();
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/complete`
+  });
+  const body = response.json();
+  const segments = (await request(handler, {
+    method: 'GET',
+    url: `/api/meetings/${created.meeting.id}/segments`
+  })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.meeting.status, 'completed');
+  assert.equal(segments.segments[0].status, 'completed');
+});
+
 test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects started meetings', async () => {
   const handler = createHandler();
   const draft = (await request(handler, {

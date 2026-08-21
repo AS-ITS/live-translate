@@ -101,6 +101,7 @@ const ERROR_RESPONSES = {
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const DEFAULT_JSON_REQUEST_MAX_BYTES = 10_000;
 const SESSION_SNAPSHOT_MAX_BYTES = parseByteLimit(process.env.SESSION_SNAPSHOT_MAX_BYTES, 25 * 1024 * 1024);
+const TRANSLATION_OUTPUT_MAX_BYTES = parseByteLimit(process.env.TRANSLATION_OUTPUT_MAX_BYTES, 25 * 1024 * 1024);
 const MEETING_CHECKPOINT_MAX_BYTES = parseByteLimit(process.env.MEETING_CHECKPOINT_MAX_BYTES, 25 * 1024 * 1024);
 const MAX_AUDIO_ARTIFACT_BYTES = parseByteLimit(process.env.SESSION_AUDIO_MAX_BYTES, 50 * 1024 * 1024);
 
@@ -526,6 +527,7 @@ export function createRequestHandler(options = {}) {
     translationExecutionWorkerRuntime,
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
+    translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES,
     sessionShareService = createSessionShareService(),
     recorderLeaseService,
     recorderGrantService = createRecorderGrantService(),
@@ -565,6 +567,7 @@ export function createRequestHandler(options = {}) {
       translationExecutionWorkerRuntime,
       liveTokenCreator,
       sessionShareService,
+      translationOutputMaxBytes,
       recorderLeaseService,
       recorderGrantService,
       sessionEventBroadcaster,
@@ -583,7 +586,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1621,7 +1624,11 @@ async function handleRequestWithSessionReadController(
     try {
       assertTranslationCommandController(translationCommandController);
 
-      const body = await readJson(req);
+      const body = await readJson(req, {
+        maxBytes: path === '/api/translation-outputs'
+          ? translationOutputMaxBytes
+          : DEFAULT_JSON_REQUEST_MAX_BYTES
+      });
       const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
 
       statusCode = status;

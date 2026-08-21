@@ -69,6 +69,70 @@ test('refined Cue update is version fenced and idempotently persists refined val
   assert.equal(stale.stale, true);
 });
 
+test('persisted refinement wins over a later stale full Cue snapshot', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const cue = finalCue({ refinement: { status: 'pending', version: 1, inputHash: 'hash-1' } });
+  await repository.appendFinalCue(cue);
+
+  await repository.updateRefinedCue({
+    sessionId: cue.sessionId,
+    cueId: cue.cueId,
+    version: 1,
+    inputHash: 'hash-1',
+    refinedTranslation: 'persisted revision'
+  });
+  await repository.appendFinalCue(cue);
+
+  const reloaded = await repository.listFinalCuesBySession(cue.sessionId);
+  assert.equal(reloaded.length, 1);
+  assert.equal(reloaded[0].cueId, cue.cueId);
+  assert.equal(reloaded[0].refinedTranslation, 'persisted revision');
+  assert.equal(reloaded[0].refinement.status, 'completed');
+  assert.equal(reloaded[0].sequence, cue.sequence);
+});
+
+test('refinement results update addressed Cues in place, including out-of-order polished items', async () => {
+  const { sessions, meetings } = await fixture();
+  const segment = await meetings.getMeetingSegment('segment-1');
+  await meetings.updateMeetingSegment(segment.withCheckpoint({
+    ...(segment.checkpoint || {}),
+    finalCues: [
+      finalCue({ cueId: 'cue-a', sequence: 1, endTimeMs: 100, refinement: { status: 'queued', version: 1, inputHash: 'hash-a' } }),
+      finalCue({ cueId: 'cue-b', sequence: 2, startTimeMs: 100, endTimeMs: 200, refinement: { status: 'queued', version: 1, inputHash: 'hash-b' } })
+    ]
+  }));
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const result = await repository.applyRefinementResults({
+    sessionId: 'session-1', refinementJobId: 'job-1', requestId: 'request-1',
+    results: [
+      { targetCueId: 'cue-b', cueId: 'cue-b', sequence: 2, version: 1, inputHash: 'hash-b', polishedText: 'B revised', fields: ['translation'] },
+      { targetCueId: 'cue-a', cueId: 'cue-a', sequence: 1, version: 1, inputHash: 'hash-a', polishedText: 'A revised', fields: ['translation'] }
+    ],
+    completedAt: '2026-08-19T00:00:00.000Z'
+  });
+  assert.equal(result.applied, true);
+  const cues = await repository.listFinalCuesBySession('session-1');
+  assert.deepEqual(cues.map(({ cueId, sequence, startTimeMs, endTimeMs, refinedTranslation }) => ({ cueId, sequence, startTimeMs, endTimeMs, refinedTranslation })), [
+    { cueId: 'cue-a', sequence: 1, startTimeMs: 0, endTimeMs: 100, refinedTranslation: 'A revised' },
+    { cueId: 'cue-b', sequence: 2, startTimeMs: 100, endTimeMs: 200, refinedTranslation: 'B revised' }
+  ]);
+  assert.equal(cues.every((cue) => cue.refinement.status === 'completed'), true);
+});
+
+test('missing refinement target does not append a Cue and emits diagnostic data', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const diagnostics = [];
+  const result = await repository.applyRefinementResults({
+    sessionId: 'session-1', refinementJobId: 'job-1', requestId: 'request-1', logger: (event) => diagnostics.push(event),
+    results: [{ targetCueId: 'missing-cue', polishedText: 'ignored', fields: ['translation'] }]
+  });
+  assert.deepEqual(result.results[0], { applied: false, reason: 'target_not_found', targetCueId: 'missing-cue' });
+  assert.equal(diagnostics[0].targetCueId, 'missing-cue');
+  assert.deepEqual(await repository.listFinalCuesBySession('session-1'), []);
+});
+
 test('partial, punctuation-only, and invalid timeline cues are rejected', async () => {
   const { sessions, meetings } = await fixture();
   const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });

@@ -571,7 +571,7 @@ input {
 
 .live-settings-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: start;
   min-width: 0;
   min-height: 0;
   padding: 20px;
@@ -592,7 +592,7 @@ input {
   grid-template-columns: 1fr;
   gap: 16px;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: visible;
 }
 
 .live-audio-settings {
@@ -615,17 +615,40 @@ input {
 
 .live-settings-card .control-status-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   gap: 16px;
 }
 
-.live-settings-card .control-actions,
-.live-settings-card .session-actions {
+.control-actions,
+.session-actions {
+  width: 100%;
+  min-width: 0;
   justify-content: stretch;
+  align-items: stretch;
+  justify-self: stretch;
+  align-self: stretch;
 }
 
-.live-settings-card .session-actions .button,
-.live-settings-card .control-actions > .button {
+.live-settings-action-wrapper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
+  min-width: 0;
+  align-items: stretch;
+  justify-self: stretch;
+}
+
+.live-settings-action-wrapper > .button,
+.meeting-live-action-button {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  justify-self: stretch;
+  display: flex;
+  justify-content: center;
 }
 
 .meeting-settings-edit-link {
@@ -816,18 +839,18 @@ input {
 }
 
 .control-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   flex: 0 0 auto;
-  justify-content: flex-end;
-  gap: 12px;
+  justify-content: stretch;
+  gap: 16px;
 }
 
 .session-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  gap: 16px;
 }
 
 .language-controls {
@@ -1057,6 +1080,73 @@ input:disabled {
   opacity: 0;
   pointer-events: none;
   transition: opacity 180ms ease;
+}
+
+.live-settings-drawer-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  background: rgba(23, 32, 42, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.live-settings-drawer-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.live-settings-drawer {
+  position: fixed;
+  z-index: 90;
+  top: 0;
+  right: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(420px, 100vw);
+  height: 100dvh;
+  border-left: 1px solid #d8dee6;
+  background: #ffffff;
+  box-shadow: -16px 0 36px rgba(23, 32, 42, 0.16);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  visibility: hidden;
+}
+
+.live-settings-drawer.is-open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.live-settings-drawer-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e4e8ed;
+  padding: 22px 24px;
+}
+
+.live-settings-drawer-header h2 {
+  margin: 0;
+  color: #314152;
+  font-size: 1.15rem;
+}
+
+.live-settings-drawer-header p:not(.eyebrow) {
+  max-width: 34ch;
+  margin: 8px 0 0;
+  color: #6b7886;
+  line-height: 1.5;
+}
+
+.live-settings-drawer-body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 22px 24px;
 }
 
 .export-drawer-backdrop.is-open {
@@ -2251,6 +2341,36 @@ input:disabled {
   line-height: 1.4;
 }
 
+.session-failure-diagnostics {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  border: 1px solid #f0caca;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff8f8;
+}
+
+.session-failure-diagnostics h4 {
+  margin: 0;
+  color: #8f2020;
+  font-size: 0.875rem;
+}
+
+.failure-diagnostic-list {
+  display: grid;
+  gap: 6px;
+}
+
+.failure-diagnostic-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: #5d3b3b;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 .meeting-detail-metadata {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2712,9 +2832,11 @@ input:disabled {
     display: grid;
   }
 
-  .control-actions,
-  .session-actions {
-    justify-content: flex-start;
+  .live-settings-card .control-status-row {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    justify-self: stretch;
   }
 
   .retranslation-result-workspace {
@@ -3010,7 +3132,6 @@ input:disabled {
   }
 
   .live-settings-card {
-    grid-template-rows: auto auto auto;
     min-height: 0;
     overflow: visible;
   }
@@ -3030,7 +3151,13 @@ input:disabled {
 
   .live-settings-controls {
     grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
     min-height: auto;
+    row-gap: 12px;
+    align-items: start;
+    align-content: start;
+    align-self: start;
+    height: max-content;
     overflow: visible;
   }
 
@@ -3101,6 +3228,12 @@ input:disabled {
     justify-content: stretch;
   }
 
+  .live-settings-card .control-status-row,
+  .live-settings-card .control-actions,
+  .live-settings-card .session-actions {
+    width: 100%;
+  }
+
   .article-actions {
     justify-content: stretch;
   }
@@ -3137,6 +3270,22 @@ input:disabled {
     transform: translateY(100%);
   }
 
+  .live-settings-drawer {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: min(86dvh, 720px);
+    border-top: 1px solid #d8dee6;
+    border-left: 0;
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+  }
+
+  .live-settings-drawer.is-open {
+    transform: translateY(0);
+  }
+
   .export-drawer.is-open {
     transform: translateY(0);
   }
@@ -3146,6 +3295,14 @@ input:disabled {
   }
 
   .export-drawer-body {
+    padding: 18px 20px;
+  }
+
+  .live-settings-drawer-header {
+    padding: 18px 20px;
+  }
+
+  .live-settings-drawer-body {
     padding: 18px 20px;
   }
 
@@ -3225,6 +3382,8 @@ input:disabled {
 @media (prefers-reduced-motion: reduce) {
   .glossary-drawer,
   .glossary-drawer-backdrop,
+  .live-settings-drawer,
+  .live-settings-drawer-backdrop,
   .export-drawer,
   .export-drawer-backdrop {
     transition: none;

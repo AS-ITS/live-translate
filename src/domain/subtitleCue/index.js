@@ -53,6 +53,10 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   const existingById = normalizedExisting.find((cue) => cue.cueId === input?.cueId);
   if (existingById) {
     const incoming = validateFinalCue(input);
+    if (isPreferredRefinementUpdate(existingById, incoming)) {
+      const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
+      return { cue: clone(incoming), appended: false, updated: true, cues };
+    }
     if (sameCue(existingById, incoming)) return { cue: clone(existingById), appended: false, cues: normalizedExisting };
     if (isMonotonicMergedCue(existingById, incoming)) {
       const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
@@ -105,6 +109,28 @@ function previousCueFor(cues, sequence) {
 
 function sameCue(left, right) {
   return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);
+}
+
+function isPreferredRefinementUpdate(existing, incoming) {
+  const existingRefinement = existing.refinement;
+  const incomingRefinement = incoming.refinement;
+  if (!existingRefinement || !incomingRefinement) return false;
+  const sameIdentity = existing.sessionId === incoming.sessionId
+    && existing.segmentId === incoming.segmentId
+    && existing.sequence === incoming.sequence
+    && existing.startTimeMs === incoming.startTimeMs
+    && existing.endTimeMs === incoming.endTimeMs
+    && existing.rawSource === incoming.rawSource
+    && existing.rawTranslation === incoming.rawTranslation;
+  if (!sameIdentity) return false;
+  const existingVersion = Number.isInteger(existingRefinement.version) ? existingRefinement.version : 0;
+  const incomingVersion = Number.isInteger(incomingRefinement.version) ? incomingRefinement.version : 0;
+  const statusRank = { pending: 0, queued: 1, running: 2, failed: 3, completed: 4 };
+  return incomingVersion > existingVersion
+    || (incomingVersion === existingVersion
+      && ((statusRank[incomingRefinement.status] || 0) > (statusRank[existingRefinement.status] || 0)
+        || (incomingRefinement.status === 'completed'
+          && (incoming.refinedSource !== existing.refinedSource || incoming.refinedTranslation !== existing.refinedTranslation))));
 }
 
 function isMonotonicMergedCue(existing, incoming) {

@@ -221,6 +221,7 @@ export class TranslationOutput {
     this.polishedItems = input.polishedItems === undefined ? undefined : deepClone(input.polishedItems);
     this.refinedItems = input.refinedItems === undefined ? undefined : deepClone(input.refinedItems);
     this.refinedCues = input.refinedCues === undefined ? undefined : deepClone(input.refinedCues);
+    this.refinementTargets = input.refinementTargets === undefined ? undefined : deepClone(input.refinementTargets);
     this.refinedSource = input.refinedSource === undefined ? undefined : assertOptionalString(input.refinedSource, 'refinedSource');
     this.refinedTranslation = input.refinedTranslation === undefined ? undefined : assertOptionalString(input.refinedTranslation, 'refinedTranslation');
     this.targetLanguageCode = assertRequiredString(input.targetLanguageCode, 'targetLanguageCode');

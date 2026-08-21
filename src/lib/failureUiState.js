@@ -75,6 +75,7 @@ function shouldReconnect(reason) {
     'provider_error',
     'browser_suspended',
     'audio_context_lost',
-    'selected_device_missing'
+    'selected_device_missing',
+    'pcm_send_failed'
   ].includes(reason);
 }

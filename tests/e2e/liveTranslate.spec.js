@@ -7,12 +7,15 @@ test.beforeEach(async ({ page }) => {
   page.liveTokenRequests = [];
   page.failLiveTokenRequestAt = null;
   page.liveGlossaryEntries = [];
+  page.delayLiveTokenRequestMs = 0;
+  page.useMockMeetings = false;
 
   await page.addInitScript(() => {
     window.__mockMicTracks = [];
     window.__mockAudioContexts = [];
     window.__mockAudioProcessors = [];
     window.__mockMediaRecorders = [];
+    window.__mockLiveConnectDelayMs = 0;
 
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
@@ -49,7 +52,13 @@ test.beforeEach(async ({ page }) => {
         this.currentTime = 0;
         this.destination = {};
         this.state = 'running';
+        this.resumeCalls = 0;
         window.__mockAudioContexts.push(this);
+      }
+
+      async resume() {
+        this.resumeCalls += 1;
+        this.state = 'running';
       }
 
       createMediaStreamSource() {
@@ -143,6 +152,10 @@ test.beforeEach(async ({ page }) => {
       return;
     }
 
+    if (page.delayLiveTokenRequestMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, page.delayLiveTokenRequestMs));
+    }
+
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -207,17 +220,22 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route('**/api/meetings', async (route) => {
+  await page.route('**/api/meetings**', async (route) => {
     const url = new URL(route.request().url());
     if (route.request().method() !== 'GET' || url.pathname !== '/api/meetings') {
       await route.fallback();
       return;
     }
-
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify([])
+      body: JSON.stringify(page.useMockMeetings ? [{
+        id: 'meeting-1',
+        name: '測試會議',
+        status: 'created',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en'
+      }] : [])
     });
   });
 });
@@ -289,6 +307,23 @@ function activeExportPanel(page) {
   return page.getByRole('complementary', { name: '逐字稿匯出' });
 }
 
+async function openLiveSettings(page) {
+  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  await page.getByRole('button', { name: '設定', exact: true }).click();
+  await expect(drawer).toBeVisible();
+  return drawer;
+}
+
+async function liveSetting(page, label) {
+  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
+  if (await settingsTrigger.isVisible()) {
+    if (!(await drawer.isVisible())) await openLiveSettings(page);
+    return drawer.getByLabel(label);
+  }
+  return page.getByLabel(label);
+}
+
 function glossaryPanel(page) {
   return page.locator('.glossary-panel');
 }
@@ -298,6 +333,7 @@ function retranslationPage(page) {
 }
 
 async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failCheckpointAttempts = 0, waitForSegmentList = null } = {}) {
+  page.useMockMeetings = true;
   const checkpointRequests = [];
   const rolloverRequests = [];
   const recoverRequests = [];
@@ -321,6 +357,23 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
           sourceLanguageCode: 'zh-Hant',
           targetLanguageCode: 'en'
         }])
+      });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/meetings/meeting-1') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-1',
+            name: '測試會議',
+            status: 'created',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en'
+          }
+        })
       });
       return;
     }
@@ -513,6 +566,116 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
   checkpointRequests.rolloverRequests = rolloverRequests;
   checkpointRequests.recoverRequests = recoverRequests;
   return checkpointRequests;
+}
+
+async function mockSingleMeetingList(page) {
+  await page.addInitScript(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const url = typeof input === 'string' ? input : input?.url || '';
+      if (new URL(url, window.location.origin).pathname === '/api/meetings') {
+        return new Response(JSON.stringify([{
+          id: 'meeting-1',
+          name: '測試會議',
+          status: 'created',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en'
+        }]), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return originalFetch(input, init);
+    };
+  });
+  await page.route('**/api/meetings**', async (route) => {
+    if (route.request().method() !== 'GET' || new URL(route.request().url()).pathname !== '/api/meetings') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'meeting-1',
+        name: '測試會議',
+        status: 'created',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en'
+      }])
+    });
+  });
+}
+
+async function mockLiveLayoutMeeting(page, { meetingId = '4444', archivedSegmentCount = 0 } = {}) {
+  const segmentCount = archivedSegmentCount + 1;
+  const segments = Array.from({ length: segmentCount }, (_, index) => ({
+    id: `${meetingId}-segment-${index + 1}`,
+    meetingId,
+    sequence: index,
+    status: index === segmentCount - 1 ? 'active' : 'completed'
+  }));
+
+  await page.route('**/api/meetings**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{
+          id: meetingId,
+          name: '版面回歸測試會議',
+          status: 'created',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en'
+        }])
+      });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === `/api/meetings/${meetingId}`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: meetingId,
+            name: '版面回歸測試會議',
+            status: 'created',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en',
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === `/api/meetings/${meetingId}/segments`) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ meetingId, segments })
+      });
+      return;
+    }
+    if (request.method() === 'GET' && new RegExp(`^/api/meetings/${meetingId}/segments/[^/]+/checkpoint$`).test(url.pathname)) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meetingId,
+          segmentId: url.pathname.split('/').at(-2),
+          checkpoint: {
+            durableChunks: [],
+            finalCues: [],
+            refinedSubtitleCues: [],
+            cueCheckpoint: null,
+            pendingPartial: null,
+            updatedAt: null
+          }
+        })
+      });
+      return;
+    }
+    await route.fallback();
+  });
 }
 
 async function openHistoryPage(page) {
@@ -1164,13 +1327,15 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toBeVisible();
   await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
-  const sourceLanguage = page.getByRole('combobox', { name: '我主要說的語言' });
-  const targetLanguage = page.getByRole('combobox', { name: '目標語言' });
+  const settingsPanel = await openLiveSettings(page);
+  const sourceLanguage = settingsPanel.getByRole('combobox', { name: '我主要說的語言' });
+  const targetLanguage = settingsPanel.getByRole('combobox', { name: '目標語言' });
 
   await expect(sourceLanguage).toHaveValue('zh-Hant');
   await expect(targetLanguage).toHaveValue('en');
   await sourceLanguage.selectOption('en');
   await targetLanguage.selectOption('ja');
+  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '開始' }).click();
 
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1237,6 +1402,55 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   expect(savedTranslatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
+test('captures and drains first speech while provider connect is delayed', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockSingleMeetingList(page);
+  await page.goto('/');
+  await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('正在連線，已暫存音訊')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+
+  await emitMicrophoneAudio(page);
+  await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getSnapshot().preRollBufferedChunkCount)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].sentInputs.length)).toBe(1);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  const snapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(snapshot.pcmGeneratedCount).toBe(1);
+  expect(snapshot.pcmSendAttemptCount).toBe(1);
+  expect(snapshot.preRollBufferedChunkCount).toBe(0);
+
+  await emitFinalTranscript(page, 'delayed first source', 'delayed first translation');
+  await expect(page.getByText('delayed first source')).toBeVisible();
+  await expect(page.getByText('delayed first translation')).toBeVisible();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
+test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '暫停' }).click();
+  await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
+
+  await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
+  await page.getByRole('button', { name: '繼續' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
+  await emitMicrophoneAudio(page);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[1].sentInputs.length)).toBe(1);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, 'resume first source', 'resume first translation');
+  await expect(page.getByText('resume first source')).toBeVisible();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
 test('audio segment upload retries a temporary failure and preserves the saved artifact', async ({ page }) => {
   let uploadAttempts = 0;
   await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
@@ -1266,7 +1480,7 @@ test('audio segment upload retries a temporary failure and preserves the saved a
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByLabel('錄下原始聲音').check();
+  await (await liveSetting(page, '錄下原始聲音')).check();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'before pause source', 'before pause translation');
@@ -1283,9 +1497,11 @@ test('pause keeps the session content and end exposes microphone recording downl
 
   await page.getByRole('button', { name: '繼續' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(partialCueRows(page)).toHaveCount(0);
   await expect.poll(() => page.liveTokenRequests.length).toBe(2);
   await expect(page.getByText('before pause source')).toBeVisible();
   await emitMicrophoneAudio(page);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1)?.sentInputs.length || 0)).toBe(1);
   await emitFinalTranscript(page, 'after continue source', 'after continue translation');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
@@ -1301,10 +1517,26 @@ test('pause keeps the session content and end exposes microphone recording downl
   expect(savedInputDownload.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
 });
 
+test('pause preserves a pending subtitle received immediately before pause', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitPartialTranscript(page, 'pause pending source', 'pause pending translation');
+
+  await page.getByRole('button', { name: '暫停' }).click();
+
+  await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'pause pending source',
+    translatedText: 'pause pending translation'
+  });
+});
+
 test('microphone recording error does not stop live translation', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByLabel('錄下原始聲音').check();
+  await (await liveSetting(page, '錄下原始聲音')).check();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -1489,9 +1721,11 @@ test('checkpoint sync retries a temporary failure and clears the error after suc
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
-
   await page.goto('/');
+  await page.getByRole('combobox', { name: '選擇會議' }).click();
+  await page.getByRole('option', { name: '測試會議' }).click();
   await page.getByRole('button', { name: '開始' }).click();
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
 
@@ -1507,14 +1741,29 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
   await expect(partialCueRows(page)).toHaveCount(0);
   await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
 
+  page.delayLiveTokenRequestMs = 1000;
   await page.getByRole('button', { name: '繼續錄製' }).click();
   await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
+  await expect(partialCueRows(page)).toHaveCount(0);
   await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
   expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('manual_resume');
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
   await expect.poll(() => page.liveTokenRequests.length).toBe(2);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
+  await expect.poll(() => page.evaluate(() => ({
+    sentInputCount: window.__mockGoogleGenAI.liveSessions.at(-1)?.sentInputs.length || 0,
+    openAudioContextCount: (window.__mockAudioContexts || []).filter((context) => context.state !== 'closed').length,
+    resumedAudioContextCount: (window.__mockAudioContexts || []).filter((context) => context.resumeCalls > 0).length
+  }))).toEqual({ sentInputCount: 1, openAudioContextCount: 1, resumedAudioContextCount: 1 });
+
   await emitFinalTranscript(page, 'after resume source', 'after resume translation');
+  await expect(finalCueRows(page)).toHaveCount(2);
+  await expectCueRow(finalCueRows(page).last(), {
+    sourceText: 'after resume source',
+    translatedText: 'after resume translation'
+  });
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -1541,6 +1790,58 @@ test('empty meeting resume draft shows start instead of continue recording', asy
   await expect(page.getByRole('button', { name: '繼續錄製' })).toBeHidden();
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const buttonMetrics = await page.evaluate(() => {
+    const readButton = (button) => {
+      const style = getComputedStyle(button);
+      const rect = button.getBoundingClientRect();
+      const parent = button.parentElement;
+      const grandparent = parent?.parentElement;
+      const readContainer = (element) => {
+        if (!element) return null;
+        const containerStyle = getComputedStyle(element);
+        return {
+          className: element.className,
+          display: containerStyle.display,
+          width: containerStyle.width,
+          alignItems: containerStyle.alignItems,
+          alignSelf: containerStyle.alignSelf,
+          flex: containerStyle.flex,
+          maxWidth: containerStyle.maxWidth
+        };
+      };
+      return {
+        text: button.textContent.trim(),
+        className: button.className,
+        outerHTML: button.outerHTML,
+        computedWidth: style.width,
+        display: style.display,
+        alignSelf: style.alignSelf,
+        flex: style.flex,
+        maxWidth: style.maxWidth,
+        inlineStyle: button.getAttribute('style'),
+        boxSizing: style.boxSizing,
+        rectWidth: rect.width,
+        parentWidth: parent?.getBoundingClientRect().width ?? null,
+        parent: readContainer(parent),
+        grandparent: readContainer(grandparent)
+      };
+    };
+    return {
+      meetingControls: [...document.querySelectorAll('.meeting-live-action-button')].map(readButton),
+      export: readButton(document.querySelector('.live-export-trigger'))
+    };
+  });
+  console.log(`[live-settings-widths] ${JSON.stringify(buttonMetrics)}`);
+  expect(buttonMetrics.meetingControls).toHaveLength(2);
+  expect(buttonMetrics.meetingControls[0].computedWidth).toBe(buttonMetrics.meetingControls[1].computedWidth);
+  expect(buttonMetrics.meetingControls[0].rectWidth).toBe(buttonMetrics.meetingControls[1].rectWidth);
+  expect(buttonMetrics.meetingControls[0].computedWidth).toBe(buttonMetrics.export.computedWidth);
+  expect(buttonMetrics.meetingControls[0].rectWidth).toBe(buttonMetrics.export.rectWidth);
+  expect(buttonMetrics.meetingControls.every(({ boxSizing }) => boxSizing === 'border-box')).toBe(true);
+  expect(buttonMetrics.meetingControls.every(({ parentWidth, rectWidth }) => parentWidth === rectWidth)).toBe(true);
+  await page.screenshot({ path: '/private/tmp/live-settings-controls-mobile.png', fullPage: true });
 
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: '結束會議' }).click();
@@ -1632,6 +1933,8 @@ test('navigation keeps an active translation session and its article reading sta
 
 test('transcript polishing status and independent article output are visible', async ({ page }) => {
   let polishingOutput = null;
+  await mockMeetingCheckpointApi(page);
+  await mockSingleMeetingList(page);
   await page.route('**/api/sessions/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1654,6 +1957,8 @@ test('transcript polishing status and independent article output are visible', a
   });
 
   await page.goto('/');
+  await page.getByRole('combobox', { name: '選擇會議' }).click();
+  await page.getByRole('option', { name: '測試會議' }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, '常會議', 'The regular meeting.');
@@ -2246,7 +2551,7 @@ test('interim input transcription stays in the same pending pair as formal input
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'hello history', '履歴');
@@ -2310,26 +2615,46 @@ test('recording and playback settings appear before export fields without overfl
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto('/');
 
+  const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
+  await expect(settingsTrigger).toBeVisible();
+  await settingsTrigger.click();
+  const settingsPanel = page.getByRole('complementary', { name: '即時翻譯設定' });
+  await expect(settingsPanel).toBeVisible();
+  await expect(settingsPanel.getByLabel('我主要說的語言')).toBeEnabled();
+  await expect(settingsPanel.getByLabel('目標語言')).toBeEnabled();
+  await page.keyboard.press('Escape');
+  await expect(settingsPanel).toBeHidden();
+
   const meetingPicker = page.getByRole('combobox', { name: '選擇會議' });
   await meetingPicker.click();
   await page.getByRole('option', { name: '版面測試會議' }).click();
 
+  await expect(settingsTrigger).toBeVisible();
+  await settingsTrigger.click();
+  await expect(settingsPanel).toBeVisible();
   const playback = page.getByLabel('播放翻譯聲音');
   const recording = page.getByLabel('錄下原始聲音');
   const exportTrigger = page.getByRole('button', { name: '匯出', exact: true });
   await expect(exportTrigger).toBeVisible();
+  await expect(settingsPanel.getByLabel('我主要說的語言')).toBeVisible();
+  await expect(settingsPanel.getByLabel('目標語言')).toBeVisible();
+  await expect(settingsPanel.getByLabel('麥克風')).toBeVisible();
+  await expect(playback).toBeVisible();
+  await expect(recording).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(settingsPanel).toBeHidden();
   await exportTrigger.click();
   const exportPanel = activeExportPanel(page);
   await expect(exportPanel.getByRole('combobox', { name: '匯出格式' })).toBeVisible();
-  expect(await playback.evaluate((element) => element.compareDocumentPosition(document.querySelector('.live-settings-controls .live-export-trigger')) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
-  expect(await recording.evaluate((element) => element.compareDocumentPosition(document.querySelector('.live-settings-controls .live-export-trigger')) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
 
+  await settingsTrigger.click();
   await expect(playback).toBeVisible();
   await expect(recording).toBeVisible();
-  await expect(page.getByRole('button', { name: '匯出', exact: true })).toBeVisible();
+  const exportButton = page.getByRole('button', { name: '匯出', exact: true });
+  await expect(exportButton).toBeVisible();
   const layout = await page.evaluate(() => {
     const card = document.querySelector('.live-settings-card');
     const startButton = [...document.querySelectorAll('button')].find((button) => button.textContent.includes('開始'));
@@ -2360,28 +2685,66 @@ test('recording and playback settings appear before export fields without overfl
     return {
       cardOverflowY: getComputedStyle(card).overflowY,
       controlsOverflowY: getComputedStyle(controls).overflowY,
-      controlsCanScrollVertically: controls.scrollHeight > controls.clientHeight,
       startButtonVisible: startRect.top >= cardRect.top && startRect.bottom <= cardRect.bottom,
       statusRowVisible: statusRect.top >= cardRect.top && statusRect.bottom <= cardRect.bottom,
       hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
     };
   }, await laptopStartButton.elementHandle());
   expect(laptopLayoutBeforeScroll.cardOverflowY).toBe('hidden');
-  expect(laptopLayoutBeforeScroll.controlsOverflowY).toBe('auto');
-  expect(laptopLayoutBeforeScroll.controlsCanScrollVertically).toBe(true);
+  expect(laptopLayoutBeforeScroll.controlsOverflowY).toBe('visible');
   expect(laptopLayoutBeforeScroll.startButtonVisible).toBe(true);
   expect(laptopLayoutBeforeScroll.statusRowVisible).toBe(true);
   expect(laptopLayoutBeforeScroll.hasHorizontalOverflow).toBe(false);
 
-  await laptopCard.locator('.live-settings-controls').evaluate((controls) => { controls.scrollTop = controls.scrollHeight; });
   await expect(laptopStartButton).toBeInViewport();
   await expect(laptopCard.getByRole('button', { name: '開始', exact: true })).toBeVisible();
+});
+
+test('live settings actions keep the same width without a long-meeting checkpoint note', async ({ page }) => {
+  await mockLiveLayoutMeeting(page, { archivedSegmentCount: 0 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#live?meetingId=4444');
+
+  const card = page.locator('.live-settings-card');
+  await expect(card.getByText('會議模式：已保存')).toBeVisible();
+  const widths = await card.evaluate((element) => {
+    const widthOf = (button) => button.getBoundingClientRect().width;
+    return {
+      start: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('開始'))),
+      end: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('結束會議'))),
+      export: widthOf(element.querySelector('.live-export-trigger'))
+    };
+  });
+
+  expect(Math.abs(widths.start - widths.end)).toBeLessThanOrEqual(1);
+  expect(Math.abs(widths.start - widths.export)).toBeLessThanOrEqual(1);
+});
+
+test('live settings actions keep the same width with a long-meeting checkpoint note', async ({ page }) => {
+  await mockLiveLayoutMeeting(page, { archivedSegmentCount: 30 });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto('/#live?meetingId=4444');
+
+  const card = page.locator('.live-settings-card');
+  await expect(card.getByText('會議模式：已保存')).toBeVisible();
+  await expect(card.getByText('保存狀態：長會議已保存 30 段 · 目前段落 0 筆')).toBeVisible();
+  const widths = await card.evaluate((element) => {
+    const widthOf = (button) => button.getBoundingClientRect().width;
+    return {
+      start: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('開始'))),
+      end: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('結束會議'))),
+      export: widthOf(element.querySelector('.live-export-trigger'))
+    };
+  });
+
+  expect(Math.abs(widths.start - widths.end)).toBeLessThanOrEqual(1);
+  expect(Math.abs(widths.start - widths.export)).toBeLessThanOrEqual(1);
 });
 
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
   await page.goto('/');
 
-  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -2484,7 +2847,7 @@ test('session detail queues retranslation and displays pending status', async ({
   });
 
   await page.goto('/');
-  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello retranslation', 'live output');
@@ -2660,7 +3023,7 @@ test('completed retranslation stays out of translation history records', async (
   });
 
   await page.goto('/');
-  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello complete retranslation', 'live output');
@@ -3212,7 +3575,7 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   const checkpointRequests = await mockMeetingCheckpointApi(page);
   await page.goto('/');
 
-  await page.getByRole('combobox', { name: '目標語言' }).selectOption('ja');
+  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
@@ -3240,6 +3603,11 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('unexpected_close');
   expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
   await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitMicrophoneAudio(page);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1)?.sentInputs.length || 0)).toBe(1);
+  await emitFinalTranscript(page, 'reconnect first speech', 'reconnect first translation');
+  await expect(page.getByText('reconnect first speech')).toBeVisible();
+  await expect(page.getByText('reconnect first translation')).toBeVisible();
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
   await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
@@ -3278,7 +3646,7 @@ test('selected microphone disconnect falls back on reconnect', async ({ page }) 
   });
   await page.goto('/');
 
-  await page.getByLabel('麥克風').selectOption('mic-1');
+  await (await liveSetting(page, '麥克風')).selectOption('mic-1');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
@@ -3507,9 +3875,13 @@ test('reconnect failure preserves transcript and allows manual restart', async (
 
 test('retry exhaustion shows explicit error and preserves transcript', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
+  await mockSingleMeetingList(page);
   await page.goto('/');
 
+  await page.getByRole('combobox', { name: '選擇會議' }).click();
+  await page.getByRole('option', { name: '測試會議' }).click();
   await page.getByRole('button', { name: '開始' }).click();
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await page.evaluate(() => {
@@ -3785,6 +4157,133 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(page.getByRole('status')).toHaveText('會議已刪除。');
 });
 
+test('opening a meeting live workspace clears the previous live preview', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.route('**/api/meetings/meeting-1/segments/segment-1/start', async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: 'meeting-1', name: '測試會議', status: 'active' },
+        segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active', liveSessionId: 'live-session-1' }
+      })
+    });
+  });
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, '上一場原文', 'Previous translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  await page.route('**/api/meetings**', async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([{ id: 'meeting-2', name: '新測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }])
+      });
+      return;
+    }
+    if (route.request().method() === 'GET' && url.pathname === '/api/meetings/meeting-2') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ meeting: { id: 'meeting-2', name: '新測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', glossaryEntries: [] } })
+      });
+      return;
+    }
+    if (route.request().method() === 'GET' && url.pathname === '/api/meetings/meeting-2/segments') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ meetingId: 'meeting-2', segments: [] }) });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.goto('/#meeting');
+  await page.getByRole('row', { name: /新測試會議/ }).getByRole('button', { name: '編輯' }).click();
+  await page.getByRole('button', { name: '前往即時翻譯' }).click();
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-2$/);
+  await expect(page.getByTestId('cue-empty-state')).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(0);
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expect(page.getByText('上一場原文')).toHaveCount(0);
+  await expect(page.getByText('Previous translation')).toHaveCount(0);
+  await expect(page.getByTestId('polished-article')).toHaveCount(0);
+  await expect(page.getByTestId('transcript-polishing-status')).toHaveCount(0);
+});
+
+test('switching meetings before recording clears subtitles from the previous meeting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: 'meeting-1',
+        name: '已有記錄的會議',
+        status: 'created',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en'
+      }, {
+        id: 'meeting-2',
+        name: '尚未錄製的會議',
+        status: 'created',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en'
+      }])
+    });
+  });
+  await page.route('**/api/meetings/meeting-1/segments/segment-1/start', async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: 'meeting-1', name: '已有記錄的會議', status: 'active' },
+        segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active', liveSessionId: 'live-session-1' }
+      })
+    });
+  });
+  await page.route('**/api/meetings/meeting-2', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: 'meeting-2', name: '尚未錄製的會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', glossaryEntries: [] }
+      })
+    });
+  });
+  await page.route('**/api/meetings/meeting-2/segments', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ meetingId: 'meeting-2', segments: [] })
+    });
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, '上一場原文', 'Previous translation');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  const mode = page.getByRole('combobox', { name: '選擇會議' });
+  await mode.fill('尚未錄製');
+  await mode.press('ArrowDown');
+  await mode.press('Enter');
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-2$/);
+  await expect(page.getByTestId('cue-empty-state')).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(0);
+  await expect(partialCueRows(page)).toHaveCount(0);
+  await expect(page.getByText('上一場原文')).toHaveCount(0);
+  await expect(page.getByText('Previous translation')).toHaveCount(0);
+});
+
 test('live translation offers resumable meetings and loads selected settings', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     if (route.request().method() !== 'GET') {
@@ -3850,9 +4349,11 @@ test('live translation offers resumable meetings and loads selected settings', a
   await mode.press('ArrowDown');
   await mode.press('Enter');
   await expect(page).toHaveURL(/#live\?meetingId=meeting-live$/);
-  await expect(page.locator('.live-page').getByLabel('目標語言')).toHaveValue('ja');
-  await expect(page.locator('.live-page').getByLabel('我主要說的語言')).toBeDisabled();
-  await expect(page.locator('.live-page').getByLabel('目標語言')).toBeDisabled();
+  const settingsPanel = await openLiveSettings(page);
+  await expect(settingsPanel.getByLabel('目標語言')).toHaveValue('ja');
+  await expect(settingsPanel.getByLabel('我主要說的語言')).toBeDisabled();
+  await expect(settingsPanel.getByLabel('目標語言')).toBeDisabled();
+  await page.keyboard.press('Escape');
   await expect(page.getByRole('option', { name: '產品評審會議' })).toBeHidden();
   await mode.fill('不存在的會議');
   await expect(page.getByText('找不到符合的會議。')).toBeVisible();

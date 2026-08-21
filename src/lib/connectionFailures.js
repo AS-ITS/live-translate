@@ -4,7 +4,7 @@ const CATEGORIES = {
   network: ['network_offline', 'network_timeout', 'network_interrupted'],
   provider: ['provider_unavailable', 'provider_error', 'live_connect_failed', 'unexpected_close'],
   browser_runtime: ['browser_suspended', 'audio_context_lost'],
-  audio_device: ['microphone_disconnected', 'selected_device_missing', 'audio_capture_failed'],
+  audio_device: ['microphone_disconnected', 'selected_device_missing', 'audio_capture_failed', 'pcm_send_failed'],
   user_intent: ['user_stop', 'page_unload'],
   cleanup: ['cleanup_failed'],
   unknown: ['unknown_error']
@@ -33,6 +33,7 @@ const SAFE_MESSAGES = {
   microphone_disconnected: '所選麥克風已中斷連線。請檢查麥克風後再試一次。',
   selected_device_missing: '所選麥克風無法使用。請改用其他麥克風後再試一次。',
   audio_capture_failed: '無法擷取麥克風音訊。請檢查麥克風後再試一次。',
+  pcm_send_failed: '麥克風音訊已產生，但未送達即時翻譯服務。請重新連線。',
   user_stop: '即時翻譯已停止。',
   page_unload: '頁面已關閉或重新載入。',
   cleanup_failed: '即時翻譯清理未完成。請重新啟動工作階段。',

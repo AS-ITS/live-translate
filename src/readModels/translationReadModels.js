@@ -70,6 +70,7 @@ function polishingFields(value, { includeProviderModel = false } = {}) {
     polishedItems: value.polishedItems ?? [],
     ...(value.refinedItems === undefined ? {} : { refinedItems: value.refinedItems }),
     ...(value.refinedCues === undefined ? {} : { refinedCues: value.refinedCues }),
+    ...(value.refinementTargets === undefined ? {} : { refinementTargets: value.refinementTargets }),
     ...(value.refinedSource === undefined ? {} : { refinedSource: value.refinedSource }),
     ...(value.refinedTranslation === undefined ? {} : { refinedTranslation: value.refinedTranslation }),
     segmentRange: value.segmentRange ?? null,

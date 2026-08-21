@@ -105,6 +105,33 @@ test('execute omits undefined optional request fields', async () => {
   ]);
 });
 
+test('execute preserves subtitle resegmentation mode and items for Gemini', async () => {
+  const calls = [];
+  const provider = createGeminiTranslationExecutionProvider({
+    client: client({
+      translate(request) {
+        calls.push(request);
+        return providerResult({ refinedCues: [{ sourceCueIds: ['cue-1'], refinedSource: '你好', refinedTranslation: 'Hello' }] });
+      }
+    })
+  });
+
+  await provider.execute(translationInput({
+    operation: 'transcript_polishing',
+    mode: 'subtitle_resegment',
+    items: [{ cueId: 'cue-1', sequence: 1, rawSource: '你好', rawTranslation: 'Hello' }],
+    refinementItems: [{ cueId: 'cue-1' }],
+    polishingItems: [{ cueId: 'cue-1' }],
+    refinementTargets: [{ targetCueId: 'cue-1' }]
+  }));
+
+  assert.deepEqual(calls[0].mode, 'subtitle_resegment');
+  assert.deepEqual(calls[0].items, [{ cueId: 'cue-1', sequence: 1, rawSource: '你好', rawTranslation: 'Hello' }]);
+  assert.deepEqual(calls[0].refinementItems, [{ cueId: 'cue-1' }]);
+  assert.deepEqual(calls[0].polishingItems, [{ cueId: 'cue-1' }]);
+  assert.deepEqual(calls[0].refinementTargets, [{ targetCueId: 'cue-1' }]);
+});
+
 test('execute rethrows GeminiClient.translate errors unchanged', async () => {
   const error = new Error('client failed');
   error.name = 'GeminiClientError';

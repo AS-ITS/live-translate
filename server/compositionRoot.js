@@ -1029,18 +1029,30 @@ function createResolverBackedTranslationExecutionProvider(translationExecutionPr
 function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer, subtitleCueRepository }) {
   const onTranslationOutputCreated = async ({ output }) => {
     if (retranslationSessionMaterializer !== undefined) await retranslationSessionMaterializer.materialize({ output });
-    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && Array.isArray(output.refinedItems)) {
+    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && output.sessionId) {
       const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
-      const currentCueId = snapshot.cueId || output.refinedItems.at(-1)?.cueId;
-      const item = output.refinedItems.find((candidate) => candidate.cueId === currentCueId) || output.refinedItems.at(-1);
-      if (item && output.sessionId) {
-        await subtitleCueRepository.updateRefinedCue({
+      const targets = output.refinementTargets || snapshot.refinementTargets || [];
+      const targetByCueId = new Map(targets.map((target) => [target.targetCueId, target]));
+      const results = [
+        ...(Array.isArray(output.polishedItems) ? output.polishedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['translation'] })) : []),
+        ...(Array.isArray(output.refinedItems) ? output.refinedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['source', 'translation'] })) : [])
+      ].map((item) => ({
+        ...item,
+        sessionId: targetByCueId.get(item.targetCueId)?.sessionId || output.sessionId,
+        segmentId: targetByCueId.get(item.targetCueId)?.segmentId || snapshot.segmentId || snapshot.items?.find((candidate) => candidate.cueId === item.targetCueId)?.segmentId,
+        refinementJobId: targetByCueId.get(item.targetCueId)?.refinementJobId || output.executionId,
+        requestId: targetByCueId.get(item.targetCueId)?.requestId || output.requestId,
+        connectionEpoch: targetByCueId.get(item.targetCueId)?.connectionEpoch ?? null,
+        version: item.version ?? targetByCueId.get(item.targetCueId)?.version,
+        inputHash: item.inputHash ?? targetByCueId.get(item.targetCueId)?.inputHash
+      }));
+      if (results.length > 0) {
+        await subtitleCueRepository.applyRefinementResults({
           sessionId: output.sessionId,
-          cueId: item.cueId,
-          version: item.version,
-          inputHash: item.inputHash,
-          refinedSource: item.refinedSource,
-          refinedTranslation: item.refinedTranslation,
+          refinementJobId: output.executionId,
+          requestId: output.requestId,
+          connectionEpoch: targets[0]?.connectionEpoch ?? null,
+          results,
           completedAt: output.completedAt
         });
       }
@@ -1126,6 +1138,7 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     operation: request.operation,
     polishingItems: sourceTranscriptSnapshot.polishingItems,
     refinementItems: sourceTranscriptSnapshot.refinementItems,
+    refinementTargets: sourceTranscriptSnapshot.refinementTargets,
     items: sourceTranscriptSnapshot.items,
     mode: sourceTranscriptSnapshot.mode,
     refinementVersion: sourceTranscriptSnapshot.refinementVersion,
@@ -1170,7 +1183,7 @@ function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
 
   if (Array.isArray(sourceTranscriptSnapshot.items)) {
     return sourceTranscriptSnapshot.items
-      .map((item) => item?.text)
+      .map((item) => item?.rawSource || item?.sourceText || item?.text)
       .filter((text) => typeof text === 'string' && text.length > 0)
       .join('\n');
   }

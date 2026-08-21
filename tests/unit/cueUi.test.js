@@ -113,6 +113,25 @@ test('history display keeps repeated cues as separate persisted records', () => 
   assert.deepEqual(cueListForDisplay({ finalCues: [first, second] }, { includePartial: false }).map((cue) => cue.cueId), ['cue-1', 'cue-2']);
 });
 
+test('export display merges identical adjacent finalized cues and keeps the full timeline', () => {
+  const first = { ...finalCue('cue-1', 1, 'same'), sessionId: 'session-1', segmentId: 'segment-1', startTimeMs: 1000, endTimeMs: 1800 };
+  const second = { ...finalCue('cue-2', 2, 'same'), translatedText: 'translation 1', sessionId: 'session-1', segmentId: 'segment-1', startTimeMs: 1800, endTimeMs: 2600 };
+
+  const display = cueListForDisplay({ finalCues: [first, second] }, { includePartial: false, mergeRepeatedFinalCues: true });
+
+  assert.equal(display.length, 1);
+  assert.equal(display[0].cueId, 'cue-1');
+  assert.equal(display[0].startTimeMs, 1000);
+  assert.equal(display[0].endTimeMs, 2600);
+});
+
+test('export display does not merge cumulative repeated finalized cues with different text', () => {
+  const first = { ...finalCue('cue-1', 1, '123'), sessionId: 'session-1', segmentId: 'segment-1', translatedText: '1, 2, 3' };
+  const second = { ...finalCue('cue-2', 2, '123'), sessionId: 'session-1', segmentId: 'segment-1', translatedText: '1, 2, 3, 1, 2' };
+
+  assert.equal(cueListForDisplay({ finalCues: [first, second] }, { includePartial: false, mergeRepeatedFinalCues: true }).length, 2);
+});
+
 test('follow-latest uses distance from the scroll bottom threshold', () => {
   const element = { scrollHeight: 1000, scrollTop: 820, clientHeight: 100 };
   assert.equal(distanceFromScrollBottom(element), 80);

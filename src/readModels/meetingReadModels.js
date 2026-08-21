@@ -1,5 +1,6 @@
 import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
 import { sanitizeAudioArtifactsForDTO } from '../infrastructure/sessionAudioArtifacts.js';
+import { meetingGlossaryAliasesForTarget } from '../lib/meetingGlossary.js';
 
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -40,7 +41,10 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
     meeting: {
       ...summary,
       glossaryEntries: Array.isArray(meeting?.glossaryEntries)
-        ? meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        ? meeting.glossaryEntries.map((entry) => ({
+          ...entry,
+          replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, meeting?.targetLanguageCode)
+        }))
         : [],
       name: meeting?.name ?? null,
       sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
@@ -111,7 +115,7 @@ function mapSegmentToDTO(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
-    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
+    settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo),
     checkpointUpdatedAt: segment.checkpoint?.updatedAt ?? null,
     transcriptSummary: {
@@ -132,8 +136,21 @@ function mapSegmentToTimelineItem(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
-    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
+    settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo)
+  };
+}
+
+function meetingSettingsSnapshotDTO(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  return {
+    ...snapshot,
+    glossaryEntries: Array.isArray(snapshot.glossaryEntries)
+      ? snapshot.glossaryEntries.map((entry) => ({
+        ...entry,
+        replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, snapshot.targetLanguageCode)
+      }))
+      : []
   };
 }
 

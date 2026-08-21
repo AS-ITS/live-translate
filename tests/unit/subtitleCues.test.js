@@ -4,6 +4,7 @@ import {
   applySubtitleCueEvent,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
+  prepareSubtitleCueStateForNewSegment,
   resolveIdleSubtitleCue,
   resetSubtitleCueState,
   subtitleCuesForDisplay
@@ -83,6 +84,67 @@ test('sentence punctuation stays pending until an explicit flush', () => {
     translatedText: 'Bonjour le monde.',
     finalizedReason: 'turnComplete'
   }]);
+});
+
+test('preparing a new Segment finalizes paired recovery Cues and clears partial metadata', () => {
+  let state = createSubtitleCueState({
+    finalCues: [{
+      cueId: 'cue:old:segment:1', sessionId: 'session-1', segmentId: 'segment-old', sequence: 1,
+      startTimeMs: 10, endTimeMs: 100, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+      sourceText: '上一句', translatedText: 'the previous sentence', status: 'final', finalizedReason: 'final'
+    }],
+    nextSequence: 2,
+    processedEventIds: ['old-event'],
+    pendingBoundary: { turnComplete: true, generationComplete: false },
+    currentCue: {
+      cueId: 'cue:old:segment:2', sessionId: 'session-1', liveSessionId: 'live-old', segmentId: 'segment-old',
+      sequence: 2, startTimeMs: 200, endTimeMs: 240, sourceText: '續錄前最後一句',
+      translatedText: 'the last sentence before resume', status: 'partial', updatedTimeMs: 240
+    }
+  });
+
+  state = prepareSubtitleCueStateForNewSegment(state, { sessionTimeMs: 300, reason: 'resume' });
+
+  assert.equal(state.finalCues.length, 2);
+  assert.equal(state.finalCues[1].sourceText, '續錄前最後一句');
+  assert.equal(state.nextSequence, 3);
+  assert.equal(state.currentCue, null);
+  assert.deepEqual(state.pendingCues, []);
+  assert.deepEqual(state.pendingBoundary, { turnComplete: false, generationComplete: false });
+  assert.deepEqual(state.processedEventIds, []);
+  assert.equal(state.lastFinalizedCueId, null);
+});
+
+test('preparing a new Segment drops an unmatched source-only recovery Cue', () => {
+  const state = prepareSubtitleCueStateForNewSegment(createSubtitleCueState({
+    nextSequence: 4,
+    currentCue: {
+      cueId: 'cue:old:segment:4', sessionId: 'session-1', liveSessionId: 'live-old', segmentId: 'segment-old',
+      sequence: 4, startTimeMs: 200, endTimeMs: 220, sourceText: '沒有翻譯', translatedText: '', status: 'partial', updatedTimeMs: 220
+    }
+  }), { sessionTimeMs: 300, reason: 'resume' });
+
+  assert.deepEqual(state.finalCues, []);
+  assert.equal(state.nextSequence, 4);
+  assert.equal(state.currentCue, null);
+  assert.deepEqual(state.pendingCues, []);
+});
+
+test('source-only retranslation has bounded retries and a stable failure state', () => {
+  let state = createSubtitleCueState({ currentCue: {
+    cueId: 'cue:source-only', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
+    startTimeMs: 10, endTimeMs: 20, sourceText: 'source only', translatedText: '', status: 'partial', updatedTimeMs: 20
+  } });
+  let result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', sessionTimeMs: 100, maxRetranslationAttempts: 2 });
+  assert.equal(result.action, 'needs-retranslation');
+  state = result.state;
+  result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', updatedTimeMs: 100, sessionTimeMs: 200, maxRetranslationAttempts: 2 });
+  assert.equal(result.action, 'needs-retranslation');
+  state = result.state;
+  result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', updatedTimeMs: 200, sessionTimeMs: 300, maxRetranslationAttempts: 2 });
+  assert.equal(result.action, 'translation-failed');
+  assert.equal(result.state.currentCue.translationStatus, 'failed');
+  assert.equal(resolveIdleSubtitleCue(result.state, { cueId: 'cue:source-only', updatedTimeMs: 300, sessionTimeMs: 400 }).state, result.state);
 });
 
 test('buffers short Chinese fragments until a complete paired sentence is available', () => {
@@ -487,7 +549,7 @@ test('formal source after an interim paired Cue stays in a new partial Cue', () 
   assert.equal(state.currentCue.status, 'partial');
 });
 
-test('idle source-only Cue requests one retranslation, then remains partial on retry timeout', () => {
+test('idle source-only Cue retries a bounded number of times, then reports failure', () => {
   let state = createSubtitleCueState();
   state = applySubtitleCueEvent(state, baseEvent({ stream: 'source', text: 'source text', sessionTimeMs: 100 }));
   let result = resolveIdleSubtitleCue(state, { cueId: state.currentCue.cueId, updatedTimeMs: 100, sessionTimeMs: 1300 });
@@ -499,10 +561,18 @@ test('idle source-only Cue requests one retranslation, then remains partial on r
     updatedTimeMs: result.state.currentCue.updatedTimeMs,
     sessionTimeMs: 2500
   });
-  assert.equal(result.action, 'waiting-for-translation');
+  assert.equal(result.action, 'needs-retranslation');
   assert.equal(result.state.currentCue.sourceText, 'source text');
   assert.equal(result.state.currentCue.status, 'partial');
   assert.equal(result.state.finalCues.length, 0);
+
+  result = resolveIdleSubtitleCue(result.state, {
+    cueId: result.state.currentCue.cueId,
+    updatedTimeMs: result.state.currentCue.updatedTimeMs,
+    sessionTimeMs: 3700
+  });
+  assert.equal(result.action, 'translation-failed');
+  assert.equal(result.state.currentCue.translationStatus, 'failed');
 });
 
 test('late translation fills the most recent source-only Cue without finalizing without a boundary', () => {

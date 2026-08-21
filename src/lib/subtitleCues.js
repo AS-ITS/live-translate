@@ -5,6 +5,7 @@ const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
 const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
+export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
 import { cueRefinementInputHash } from './cueContent.js';
 
 export function createSubtitleCueState(input = {}) {
@@ -38,6 +39,26 @@ export function createSubtitleCueState(input = {}) {
 
 export function resetSubtitleCueState() {
   return createSubtitleCueState();
+}
+
+// Recovery checkpoints may contain an in-flight Cue from the previous
+// Segment. Finalize only complete pairs, then discard all recovery-only
+// partial/boundary state before the next Live session starts.
+export function prepareSubtitleCueStateForNewSegment(stateInput, options = {}) {
+  const state = createSubtitleCueState(stateInput);
+  const flushed = finalizePendingSubtitleCue(state, options);
+  return {
+    ...flushed,
+    currentCue: null,
+    pendingCues: [],
+    pendingBoundary: { turnComplete: false, generationComplete: false },
+    pendingBoundaryAtMs: null,
+    processedEventIds: [],
+    lastFinalizedCueId: null,
+    lastFinalizedAtMs: null,
+    lastFinalizedStream: null,
+    lastFinalizedReason: null
+  };
 }
 
 export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {}) {
@@ -134,11 +155,22 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
   }
 
   if (cue.sourceText && !cue.translatedText) {
-    if (cue.retranslationRequested || options.retry) {
-      return { state: stateInput, action: 'waiting-for-translation' };
+    if (cue.retranslationFailed) return { state: stateInput, action: 'translation-failed', cue };
+    const maxAttempts = Number.isInteger(options.maxRetranslationAttempts) && options.maxRetranslationAttempts > 0
+      ? options.maxRetranslationAttempts
+      : DEFAULT_MAX_RETRANSLATION_ATTEMPTS;
+    const attempts = Number.isInteger(cue.retranslationAttempts) ? cue.retranslationAttempts : 0;
+    if (attempts >= maxAttempts) {
+      const failed = updateCandidate(state, candidate, {
+        translationStatus: 'failed',
+        retranslationFailed: true,
+        updatedTimeMs: options.sessionTimeMs
+      });
+      return { state: failed, action: 'translation-failed', cue: cueForState(failed, candidate.key) };
     }
     const requested = updateCandidate(state, candidate, {
       retranslationRequested: true,
+      retranslationAttempts: attempts + 1,
       updatedTimeMs: options.sessionTimeMs
     });
     return { state: requested, action: 'needs-retranslation', cue: cueForState(requested, candidate.key) };
@@ -426,6 +458,9 @@ function addCue(state, event) {
     sourceText: event.stream === 'source' ? event.text : '',
     translatedText: event.stream === 'translation' ? event.text : '',
     status: 'partial',
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     updatedTimeMs: event.sessionTimeMs,
     providerEventSequence: Number.isFinite(event.eventSequence) ? event.eventSequence : null,
     boundaryAtMs: event.turnComplete || event.generationComplete
@@ -458,6 +493,9 @@ function updateCue(state, target, event) {
       ? event.eventSequence
       : cue.providerEventSequence,
     status: 'partial',
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     boundaryAtMs: event.turnComplete || event.generationComplete
       ? event.sessionTimeMs
       : cue.boundaryAtMs,

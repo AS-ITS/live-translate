@@ -54,6 +54,23 @@ test('records session start through translation request, execution creation, and
   ]);
 });
 
+test('does not restart an existing running execution after lifecycle recreation', async () => {
+  const calls = [];
+  const lifecycle = createTranslationCommandLifecycle({
+    translationCommandApiClient: fakeClient(calls, {
+      createTranslationExecution(command) {
+        calls.push(['createTranslationExecution', command]);
+        return { ...command, status: 'running' };
+      }
+    }),
+    now: () => 1000
+  });
+
+  await lifecycle.recordSessionStarted(sessionRecord());
+
+  assert.equal(calls.filter((call) => call[0] === 'updateTranslationExecution').length, 0);
+});
+
 test('records article-level translation output and completes execution after dependent commands finish', async () => {
   const calls = [];
   const lifecycle = createTranslationCommandLifecycle({

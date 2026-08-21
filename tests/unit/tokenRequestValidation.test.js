@@ -60,6 +60,9 @@ test('token config uses v1alpha and single-use Gemini Live constraints', () => {
   assert.equal(config.newSessionExpireTime, '2026-07-07T00:01:00.000Z');
   assert.equal(config.liveConnectConstraints.model, DEFAULT_LIVE_TRANSLATE_MODEL);
   assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['AUDIO']);
+  assert.deepEqual(config.liveConnectConstraints.config.realtimeInputConfig, {
+    automaticActivityDetection: {}
+  });
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.sourceLanguageCode, undefined);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
   assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });

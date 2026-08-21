@@ -7,7 +7,10 @@ test('session snapshot sync is idempotent for sessions and transcript items, and
   const repository = createMemorySessionRepository({ now: () => 1000 });
   const service = createSessionSnapshotSyncService({ sessionRepository: repository });
   const snapshot = {
-    session: { id: 'session-1', startedAt: 100, endedAt: 200, targetLanguageCode: 'ja', targetLanguageLabel: 'Japanese', sourceLanguageCode: 'zh-Hant', status: 'stopped', failureReason: 'user_stop', failureCategory: 'user_intent' },
+    session: {
+      id: 'session-1', startedAt: 100, endedAt: 200, targetLanguageCode: 'ja', targetLanguageLabel: 'Japanese', sourceLanguageCode: 'zh-Hant', status: 'stopped', failureReason: 'user_stop', failureCategory: 'user_intent',
+      failureDiagnostics: [{ at: 150, source: 'unexpected_close', stage: 'connect_live_session', reason: 'unexpected_close', category: 'provider', code: 1011, status: null }]
+    },
     transcriptItems: [
       { id: 'source-1', stream: 'source', status: 'final', text: 'hello', sequence: 1 },
       { id: 'translation-1', stream: 'translation', status: 'final', text: 'こんにちは', sequence: 1 }
@@ -22,11 +25,31 @@ test('session snapshot sync is idempotent for sessions and transcript items, and
   assert.equal(detail.sessionRecord.status, 'stopped');
   assert.equal(detail.sessionRecord.sourceLanguageCode, 'zh-Hant');
   assert.equal(detail.sessionRecord.failureReason, 'user_stop');
+  assert.equal(detail.sessionRecord.failureDiagnostics[0].stage, 'connect_live_session');
   assert.deepEqual(detail.transcriptItems.map((item) => item.id), ['source-1', 'translation-1']);
   assert.deepEqual(detail.sessionRecord.transcriptSummary, {
     totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1,
     sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true
   });
+});
+
+test('session snapshot sync normalizes legacy glossary aliases', () => {
+  const repository = createMemorySessionRepository({ now: () => 1000 });
+  const service = createSessionSnapshotSyncService({ sessionRepository: repository });
+
+  service.sync({
+    session: {
+      id: 'session-glossary',
+      targetLanguageCode: 'en',
+      status: 'active',
+      meetingGlossaryEntries: [{ source: 'microphone', target: 'Alan speak', replacementAliases: { en: ['mic'] } }]
+    },
+    transcriptItems: []
+  });
+
+  assert.deepEqual(repository.getSessionRecord('session-glossary').sessionRecord.meetingGlossaryEntries, [
+    { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
+  ]);
 });
 
 test('session snapshot sync rejects invalid input deterministically', () => {

@@ -35,6 +35,7 @@ test('create active session record', () => {
     status: 'active',
     failureReason: null,
     failureCategory: null,
+    failureDiagnostics: [],
     lastLifecycleState: 'listening',
     selectedInputDeviceId: 'device-1',
     inputDeviceLabelSnapshot: 'Studio Mic',
@@ -50,6 +51,28 @@ test('create active session record', () => {
     createdAt: 1100,
     updatedAt: 1100
   });
+});
+
+test('failure diagnostics are sanitized and capped at ten entries', () => {
+  const diagnostics = Array.from({ length: 11 }, (_, index) => ({
+    at: `2026-08-20T00:00:${String(index).padStart(2, '0')}.000Z`,
+    source: `source-${index}`,
+    reason: 'unexpected_close',
+    providerReason: 'secret-token-value',
+    stack: 'sensitive stack trace'
+  }));
+
+  const record = createSessionRecord({
+    id: 'session-diagnostics',
+    startedAt: 1000,
+    targetLanguageCode: 'en',
+    failureDiagnostics: diagnostics
+  });
+
+  assert.equal(record.failureDiagnostics.length, 10);
+  assert.equal(record.failureDiagnostics[0].source, 'source-1');
+  assert.equal(record.failureDiagnostics[0].providerReason, undefined);
+  assert.equal(record.failureDiagnostics[0].stack, undefined);
 });
 
 test('create active session record can reference a meeting segment', () => {

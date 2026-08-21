@@ -678,7 +678,11 @@ Persists a live Session snapshot. The request body is JSON:
 
 ```json
 {
-  "session": { "id": "session-id", "status": "active" },
+  "session": {
+    "id": "session-id",
+    "status": "active",
+    "failureDiagnostics": []
+  },
   "transcriptItems": []
 }
 ```
@@ -688,6 +692,14 @@ newly finalized transcript items; the server appends them idempotently by item
 id and updates session metadata/status from the `session` object. This supports
 incremental long-session syncing, so Stop does not need to resend the complete
 transcript item list.
+
+`failureDiagnostics` is an optional array containing the latest safe connection
+failure summaries. The server keeps at most the most recent 10 entries. Each
+entry may include `at`, `source`, `stage`, `reason`, `category`, `code`,
+`status`, `connectionEpoch`, `liveSessionId`, `segmentId`, and audio transport
+counters. Tokens, API keys, authorization values, stack traces, and raw provider
+messages are not persisted. The array is returned in Session detail, but not in
+the history list response.
 
 The default request limit for this route is `25MB`. `SESSION_SNAPSHOT_MAX_BYTES`
 can override it. Oversized requests return `413 request_too_large`.
@@ -1152,6 +1164,12 @@ Handling requirements:
 TODO: Confirm exact SDK session close/end event names.
 
 ## Transcript Polishing Translation Commands
+
+`POST /api/translation-outputs` accepts a source transcript snapshot for the
+final output. Its default JSON request limit is `25MB`, configurable with
+`TRANSLATION_OUTPUT_MAX_BYTES`. Other translation command routes retain the
+default `10KB` JSON request limit. Oversized requests return
+`413 request_too_large`.
 
 Transcript polishing reuses `POST /api/translation-requests` and
 `POST /api/translation-executions`. A polishing request sets

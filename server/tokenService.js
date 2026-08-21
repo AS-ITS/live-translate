@@ -30,7 +30,12 @@ export function normalizeTokenRequest(body = {}) {
     throw error;
   }
 
-  return { targetLanguageCode, sourceLanguageCode, echoTargetLanguage, meetingId };
+  return {
+    targetLanguageCode,
+    sourceLanguageCode,
+    echoTargetLanguage,
+    ...(meetingId === undefined ? {} : { meetingId })
+  };
 }
 
 export function buildTokenConfig({
@@ -50,6 +55,11 @@ export function buildTokenConfig({
     responseModalities: ['AUDIO'],
     inputAudioTranscription: {},
     outputAudioTranscription: {},
+    realtimeInputConfig: {
+      // Keep the provider contract explicit. audioStreamEnd is valid only
+      // when automatic activity detection is enabled.
+      automaticActivityDetection: {}
+    },
     generationConfig: {
       translationConfig
     },

@@ -1,6 +1,7 @@
 import { transcriptPolishingInputHash } from './transcriptPolishing.js';
 import { cueRefinementInputHash, cueRefinementItem } from './cueContent.js';
 import { stableSubtitleGroup, subtitleResegmentationInputHash } from './subtitleResegmentation.js';
+import { refinementTargetsForItems } from './refinementTargets.js';
 
 export const TRANSCRIPT_POLISHING_MODEL = 'gemini-3.5-flash-lite';
 export const TRANSCRIPT_POLISHING_PROVIDER_KEY = 'gemini';
@@ -12,7 +13,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
   const states = new Map();
 
   return Object.freeze({
-    submitStableGroup({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange } = {}) {
+    submitStableGroup({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange, connectionEpoch } = {}) {
       const items = stableSubtitleGroup(cues);
       if (!sessionId || !targetLanguageCode || items.length === 0) return Promise.resolve(null);
       const hash = inputHash || subtitleResegmentationInputHash(items);
@@ -25,6 +26,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
         inputHash: hash,
         sourceLanguageCode,
         targetLanguageCode,
+        refinementTargets: refinementTargetsForItems(items, { sessionId, requestId, refinementJobId: executionId, connectionEpoch, fields: ['source', 'translation'] }),
         items: items.map((cue) => ({
           cueId: cue.cueId,
           sequence: cue.sequence,
@@ -50,7 +52,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
           return { requestId, executionId, inputHash: hash, mode: 'subtitle_resegment', items };
         });
     },
-    submitCue({ sessionId, targetLanguageCode, sourceLanguageCode, cue, contextCues = [] } = {}) {
+    submitCue({ sessionId, targetLanguageCode, sourceLanguageCode, cue, contextCues = [], connectionEpoch } = {}) {
       if (!sessionId || !targetLanguageCode || !cue?.cueId) return Promise.resolve(null);
       const refinement = cueRefinementItem(cue);
       const hash = refinement.inputHash || cueRefinementInputHash(cue);
@@ -67,6 +69,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
         sourceLanguageCode,
         targetLanguageCode
       };
+      snapshot.refinementTargets = refinementTargetsForItems([cue], { sessionId, segmentId: cue.segmentId, requestId, refinementJobId: executionId, connectionEpoch, fields: ['source', 'translation'] });
       return Promise.resolve()
         .then(() => apiClient.createTranslationRequest({
           id: requestId,
@@ -94,7 +97,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
           throw error;
         });
     },
-    submit({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange } = {}) {
+    submit({ sessionId, targetLanguageCode, sourceLanguageCode, cues, inputHash, segmentRange, connectionEpoch } = {}) {
       if (!sessionId || !targetLanguageCode || !Array.isArray(cues) || cues.length === 0) return Promise.resolve(null);
       const hash = inputHash || transcriptPolishingInputHash(cues);
       const state = stateFor(sessionId);
@@ -113,6 +116,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
         inputHash: hash,
         segmentRange,
         sourceLanguageCode,
+        refinementTargets: refinementTargetsForItems(cues, { sessionId, requestId, refinementJobId: executionId, connectionEpoch, fields: ['translation'] }),
         sourceText,
         polishingItems: cues.map((cue) => ({
           cueId: cue.cueId,

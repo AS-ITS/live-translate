@@ -63,7 +63,12 @@ function applyLateFinalTranscriptEvent(state, event) {
     finalizedAt,
     ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
-    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {}),
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
+    ...(event.providerEndMethod ? { providerEndMethod: event.providerEndMethod } : {}),
+    ...(event.providerEndResult ? { providerEndResult: event.providerEndResult } : {})
   };
   return {
     ...state,
@@ -497,7 +502,12 @@ function createTranscriptItem(state, event, status, now) {
     finalizedAt: status === 'final' ? now : undefined,
     ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
-    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {}),
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
+    ...(event.providerEndMethod ? { providerEndMethod: event.providerEndMethod } : {}),
+    ...(event.providerEndResult ? { providerEndResult: event.providerEndResult } : {})
   };
 }
 
@@ -509,7 +519,12 @@ function finalizeTranscriptItem(item, event, now) {
     finalizedAt: now,
     ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
-    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {})
+    ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {}),
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
+    ...(event.providerEndMethod ? { providerEndMethod: event.providerEndMethod } : {}),
+    ...(event.providerEndResult ? { providerEndResult: event.providerEndResult } : {})
   };
 }
 

@@ -173,6 +173,26 @@ test('segment filtering keeps old chunks and cues out of the current payload', a
   assert.deepEqual(calls[0].cueCheckpoint, { nextSequence: 2 });
 });
 
+test('checkpoint queue keeps the newer refinement for the same cueId', async () => {
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  const base = { cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', status: 'final', sequence: 1 };
+  coordinator.enqueueCues([{ ...base, refinement: { status: 'completed', version: 1 }, refinedTranslation: 'revised' }]);
+  coordinator.enqueueCues([{ ...base, refinement: { status: 'pending', version: 1 } }]);
+
+  await coordinator.flush();
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].finalCues.length, 1);
+  assert.equal(calls[0].finalCues[0].refinement.status, 'completed');
+  assert.equal(calls[0].finalCues[0].refinedTranslation, 'revised');
+});
+
 test('checkpointChunksForTranscriptItems maps final transcript items only', () => {
   const chunks = checkpointChunksForTranscriptItems({
     meetingId: 'meeting-1',

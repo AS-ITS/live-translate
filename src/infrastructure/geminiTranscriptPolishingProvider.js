@@ -1,6 +1,7 @@
 import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
 import { normalizeGeminiTranscriptPolishingItems } from '../lib/geminiTranscriptPolishing.js';
 import { validateSubtitleResegmentationResponse } from '../lib/subtitleResegmentation.js';
+import { normalizeRefinementTargets, targetForCue } from '../lib/refinementTargets.js';
 
 
 export const TRANSCRIPT_POLISHING_OPERATION = 'transcript_polishing';
@@ -21,8 +22,10 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
       const response = await withTimeout(Promise.resolve().then(() => client.generateContent(request)), timeoutMs);
       const result = normalizeTranscriptPolishingResponse(response, input.items || input.refinementItems || input.polishingItems, {
         refinement: Array.isArray(input.refinementItems) && input.mode !== 'subtitle_resegment',
-        resegment: input.mode === 'subtitle_resegment'
+        resegment: input.mode === 'subtitle_resegment',
+        refinementTargets: input.refinementTargets
       });
+      const refinementTargets = normalizeRefinementTargets(input.refinementTargets, input);
       if (input.mode === 'subtitle_resegment') {
         const refinedCues = validateSubtitleResegmentationResponse(result, (input.items || []).map((item) => ({
           ...item,
@@ -30,7 +33,7 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
           sourceText: item.rawSource ?? item.sourceText,
           translatedText: item.rawTranslation ?? item.translatedText
         })));
-        return Object.freeze({ refinedCues, detectedSourceLanguageCode: input.sourceLanguageCode });
+        return Object.freeze({ refinedCues, ...(refinementTargets.length ? { refinementTargets } : {}), detectedSourceLanguageCode: input.sourceLanguageCode });
       }
       if (Array.isArray(input.refinementItems)) {
         const item = result.refinedItems?.[0];
@@ -38,12 +41,14 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
           refinedSource: item?.refinedSource,
           refinedTranslation: applyGlossaryReplacements(item?.refinedTranslation, glossaryEntries),
           refinedItems: result.refinedItems,
+          ...(refinementTargets.length ? { refinementTargets } : {}),
           detectedSourceLanguageCode: input.sourceLanguageCode
         });
       }
       return Object.freeze({
         translatedText: applyGlossaryReplacements(result.refinedText, glossaryEntries),
         ...(result.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
+        ...(refinementTargets.length ? { refinementTargets } : {}),
         detectedSourceLanguageCode: input.sourceLanguageCode
       });
     }
@@ -93,7 +98,7 @@ export function buildTranscriptPolishingRequest({ input, model, glossaryEntries 
   });
 }
 
-export function normalizeTranscriptPolishingResponse(response, inputItems = []) {
+export function normalizeTranscriptPolishingResponse(response, inputItems = [], options = {}) {
   const value = typeof response?.text === 'string'
     ? response.text
     : response?.candidates?.[0]?.content?.parts?.find((part) => typeof part?.text === 'string')?.text;
@@ -107,14 +112,14 @@ export function normalizeTranscriptPolishingResponse(response, inputItems = []) 
   } catch {
     return Object.freeze({ refinedText });
   }
-  if (arguments[2]?.resegment) {
+  if (options.resegment) {
     if (!Array.isArray(parsed?.refinedCues)) throw providerInvalidResponse('structured resegmentation response');
     return Object.freeze({ refinedCues: parsed.refinedCues });
   }
-  if (arguments[2]?.refinement) {
+  if (options.refinement) {
     if (!Array.isArray(parsed?.refinedItems)) throw providerInvalidResponse('structured refinement response');
     return Object.freeze({
-      refinedItems: normalizeRefinedItems(parsed.refinedItems, inputItems)
+      refinedItems: normalizeRefinedItems(parsed.refinedItems, inputItems, options.refinementTargets)
     });
   }
   if (!Array.isArray(parsed?.polishedItems)) throw providerInvalidResponse('structured response');
@@ -125,7 +130,7 @@ export function normalizeTranscriptPolishingResponse(response, inputItems = []) 
   });
 }
 
-function normalizeRefinedItems(items, inputItems) {
+function normalizeRefinedItems(items, inputItems, refinementTargets = []) {
   if (!Array.isArray(items) || items.length !== inputItems.length) throw providerInvalidResponse('refinedItems mapping');
   const expected = new Map(inputItems.map((item) => [item.cueId, item]));
   const seen = new Set();
@@ -137,7 +142,9 @@ function normalizeRefinedItems(items, inputItems) {
       throw providerInvalidResponse('invalid refined item mapping');
     }
     seen.add(item.cueId);
+    const target = targetForCue(refinementTargets, item.cueId);
     return { cueId: item.cueId, sequence: item.sequence, version: item.version, inputHash: item.inputHash,
+      ...(target ? { targetCueId: target.targetCueId } : {}),
       refinedSource: item.refinedSource.trim(), refinedTranslation: item.refinedTranslation.trim() };
   });
 }

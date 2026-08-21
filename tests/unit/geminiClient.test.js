@@ -481,6 +481,102 @@ test('polishing REST request uses plain text and no structured output fields', (
   assert.equal(Object.hasOwn(request.body, 'config'), false);
 });
 
+test('subtitle resegmentation prompt includes raw cue data and refined-cue contract', () => {
+  const prompt = buildDefaultGeminiExecutionPrompt(executionInput({
+    operation: 'transcript_polishing',
+    mode: 'subtitle_resegment',
+    items: [{ cueId: 'cue-1', sequence: 1, rawSource: '原文', rawTranslation: 'Hello' }]
+  }));
+
+  assert.match(prompt.systemInstruction, /refinedCues/);
+  assert.match(prompt.systemInstruction, /exactly once/);
+  assert.match(prompt.systemInstruction, /non-empty readable/);
+  assert.match(prompt.systemInstruction, /Never return null/);
+  assert.match(prompt.systemInstruction, /copy the corresponding rawSource and rawTranslation exactly/);
+  assert.match(prompt.parts.at(-1), /原文/);
+  assert.match(prompt.parts.at(-1), /Hello/);
+});
+
+test('client parses and validates subtitle resegmentation refinedCues', async () => {
+  const client = createClient({
+    httpClient: httpClient({ body: { text: JSON.stringify({ refinedCues: [
+      { sourceCueIds: ['cue-1', 'cue-2'], refinedSource: '合併原文', refinedTranslation: 'Combined translation.' }
+    ] }) } })
+  });
+
+  const result = await client.execute(executionInput({
+    operation: 'transcript_polishing',
+    mode: 'subtitle_resegment',
+    items: [
+      { cueId: 'cue-1', sequence: 1, rawSource: '原文一', rawTranslation: 'One' },
+      { cueId: 'cue-2', sequence: 2, rawSource: '原文二', rawTranslation: 'Two' }
+    ]
+  }));
+
+  assert.deepEqual(result, {
+    translatedText: 'Combined translation.',
+    refinedCues: [{ sourceCueIds: ['cue-1', 'cue-2'], refinedSource: '合併原文', refinedTranslation: 'Combined translation.', sequence: 1 }],
+    detectedSourceLanguageCode: 'en'
+  });
+});
+
+test('client safely falls back to raw subtitle cues for invalid model responses', async () => {
+  for (const refinedCues of [
+    [{ sourceCueIds: ['cue-1'], refinedSource: '一', refinedTranslation: 'One' }],
+    [
+      { sourceCueIds: ['cue-1'], refinedSource: '一', refinedTranslation: 'One' },
+      { sourceCueIds: ['cue-1', 'cue-2'], refinedSource: '重複', refinedTranslation: 'Duplicate' }
+    ]
+  ]) {
+    const client = createClient({ httpClient: httpClient({ body: { text: JSON.stringify({ refinedCues }) } }) });
+    assert.deepEqual(await client.execute(executionInput({
+      operation: 'transcript_polishing',
+      mode: 'subtitle_resegment',
+      items: [
+        { cueId: 'cue-1', sequence: 1, rawSource: '一', rawTranslation: 'One' },
+        { cueId: 'cue-2', sequence: 2, rawSource: '二', rawTranslation: 'Two' }
+      ]
+    })), {
+      translatedText: 'One\nTwo',
+      refinedCues: [
+        { sourceCueIds: ['cue-1'], refinedSource: '一', refinedTranslation: 'One', sequence: 1 },
+        { sourceCueIds: ['cue-2'], refinedSource: '二', refinedTranslation: 'Two', sequence: 2 }
+      ],
+      detectedSourceLanguageCode: 'en'
+    });
+  }
+});
+
+test('client safely falls back to raw subtitle cues when refinedCues are missing', async () => {
+  const client = createClient({ httpClient: httpClient({ body: { text: 'One\nTwo' } }) });
+
+  assert.deepEqual(await client.execute(executionInput({
+    operation: 'transcript_polishing',
+    mode: 'subtitle_resegment',
+    items: [
+      { cueId: 'cue-1', sequence: 1, rawSource: '一', rawTranslation: 'One' },
+      { cueId: 'cue-2', sequence: 2, rawSource: '二', rawTranslation: 'Two' }
+    ]
+  })), {
+    translatedText: 'One\nTwo',
+    refinedCues: [
+      { sourceCueIds: ['cue-1'], refinedSource: '一', refinedTranslation: 'One', sequence: 1 },
+      { sourceCueIds: ['cue-2'], refinedSource: '二', refinedTranslation: 'Two', sequence: 2 }
+    ],
+    detectedSourceLanguageCode: 'en'
+  });
+});
+
+test('client still fails when raw subtitle input cannot produce a valid fallback', async () => {
+  const client = createClient({ httpClient: httpClient({ body: { text: 'not JSON' } }) });
+
+  await assert.rejects(client.execute(executionInput({
+    operation: 'transcript_polishing',
+    mode: 'subtitle_resegment',
+    items: [{ cueId: 'cue-1', sequence: 1, rawSource: '', rawTranslation: '' }]
+  })), /provider_invalid_response/);
+});
+
 test('HTTP 400 polishing error preserves safe provider diagnostics without exposing the API key', async () => {
   const client = createClient({
     httpClient: {

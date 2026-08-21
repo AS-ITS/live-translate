@@ -1,6 +1,24 @@
 const DEFAULT_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_CHECKPOINT_RETRY_DELAY_MS = 5000;
 
+function refinementVersion(cue) {
+  return Number.isInteger(cue?.refinement?.version) ? cue.refinement.version : 0;
+}
+
+function refinementStatusRank(cue) {
+  return { pending: 0, queued: 1, running: 2, failed: 3, completed: 4 }[cue?.refinement?.status] ?? 0;
+}
+
+function preferCue(incoming, existing) {
+  const versionDelta = refinementVersion(incoming) - refinementVersion(existing);
+  if (versionDelta !== 0) return versionDelta > 0 ? incoming : existing;
+  const statusDelta = refinementStatusRank(incoming) - refinementStatusRank(existing);
+  if (statusDelta !== 0) return statusDelta > 0 ? incoming : existing;
+  return (incoming?.refinedSource || incoming?.refinedTranslation) && !(existing?.refinedSource || existing?.refinedTranslation)
+    ? incoming
+    : existing;
+}
+
 export function createMeetingCheckpointSyncCoordinator({
   updateCheckpoint,
   onStatusChange,
@@ -48,7 +66,10 @@ export function createMeetingCheckpointSyncCoordinator({
 
     enqueueCues(cues = [], checkpoint = null) {
       if (!context) return;
-      for (const cue of cues) if (cue?.status === 'final' && cue.cueId) pendingCues.set(cue.cueId, cue);
+      for (const cue of cues) {
+        if (cue?.status !== 'final' || !cue.cueId) continue;
+        pendingCues.set(cue.cueId, pendingCues.has(cue.cueId) ? preferCue(cue, pendingCues.get(cue.cueId)) : cue);
+      }
       if (checkpoint) pendingCueCheckpoint = { checkpoint, generation: context.generation };
       if ((pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) && !timer && !retryTimer) {
         const scheduledGeneration = context.generation;

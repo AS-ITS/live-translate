@@ -1,5 +1,6 @@
 import { isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
 import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
 
@@ -90,13 +91,12 @@ export function createMeetingCheckpointService({
       }
 
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
-      if (segments.some((segment) => segment.status === 'active')) {
-        throw codedError('meeting_complete_not_allowed', 'Meetings with an active recording cannot be completed.');
-      }
-
       const now = clock();
-      for (const segment of segments.filter((item) => item.status === 'created')) {
-        await meetingRepository.updateMeetingSegment(segment.complete({ endedAt: now, liveSessionId: null }));
+      for (const segment of segments.filter((item) => ['active', 'created'].includes(item.status))) {
+        await meetingRepository.updateMeetingSegment(segment.complete({
+          endedAt: now,
+          liveSessionId: segment.status === 'created' ? null : segment.liveSessionId
+        }));
       }
 
       const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now));
@@ -327,12 +327,17 @@ export function createMeetingCheckpointService({
   });
 }
 
-function meetingSettingsSnapshot(meeting) {
+export function meetingSettingsSnapshot(meeting) {
   return meeting ? {
     name: meeting.name,
     sourceLanguageCode: meeting.sourceLanguageCode,
     targetLanguageCode: meeting.targetLanguageCode,
-    glossaryEntries: meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...entry.replacementAliases] }))
+    glossaryEntries: Array.isArray(meeting.glossaryEntries)
+      ? meeting.glossaryEntries.map((entry) => ({
+        ...entry,
+        replacementAliases: normalizeMeetingGlossaryAliases(entry?.replacementAliases)
+      }))
+      : []
   } : null;
 }
 

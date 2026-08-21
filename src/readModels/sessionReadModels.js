@@ -80,6 +80,9 @@ function mapSessionRecordToDetailSession(sessionRecord) {
     durationMs: sessionRecord.durationMs ?? null,
     failureReason: sessionRecord.failureReason ?? null,
     failureCategory: sessionRecord.failureCategory ?? null,
+    failureDiagnostics: Array.isArray(sessionRecord.failureDiagnostics)
+      ? sessionRecord.failureDiagnostics.map((diagnostic) => ({ ...diagnostic }))
+      : [],
     sourceLanguageCode: sessionRecord.sourceLanguageCode ?? null,
     selectedInputDeviceId: sessionRecord.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: sessionRecord.inputDeviceLabelSnapshot ?? null,

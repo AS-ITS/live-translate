@@ -4,20 +4,29 @@ import {
 import {
   formatTranscriptExport as defaultFormatTranscriptExport
 } from '../lib/transcriptExport.js';
-import { exportCuesToSrt as defaultExportCuesToSrt, exportCuesToVtt as defaultExportCuesToVtt } from '../lib/subtitleCueExport.js';
+import {
+  exportCuesToSrt as defaultExportCuesToSrt,
+  exportCuesToTxt as defaultExportCuesToTxt,
+  exportCuesToVtt as defaultExportCuesToVtt
+} from '../lib/subtitleCueExport.js';
 
 export function createExportApplicationService({
   formatTranscriptExport = defaultFormatTranscriptExport,
   formatSavedSessionExport = defaultFormatSavedSessionExport,
+  exportCuesToTxt = defaultExportCuesToTxt,
   exportCuesToSrt = defaultExportCuesToSrt,
   exportCuesToVtt = defaultExportCuesToVtt
 } = {}) {
   assertFunction(formatTranscriptExport, 'formatTranscriptExport');
   assertFunction(formatSavedSessionExport, 'formatSavedSessionExport');
+  assertFunction(exportCuesToTxt, 'exportCuesToTxt');
   assertFunction(exportCuesToSrt, 'exportCuesToSrt');
   assertFunction(exportCuesToVtt, 'exportCuesToVtt');
 
   function exportTranscript({ items, cues = [], options = {} } = {}) {
+    if (Array.isArray(cues) && cues.length > 0 && options.format === 'txt') {
+      return exportCuesToTxt(cues, { ...options });
+    }
     if (Array.isArray(cues) && cues.length > 0 && options.format === 'srt') {
       return exportCuesToSrt(cues, { ...options });
     }

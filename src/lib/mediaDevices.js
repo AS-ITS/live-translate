@@ -44,7 +44,11 @@ export function buildAudioInputConstraints(inputDeviceId = '') {
 }
 
 export function isMissingSelectedInputError(error) {
-  return error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError';
+  if (error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError') {
+    return true;
+  }
+
+  return error?.name === 'TypeError' && /invalid constraint/i.test(error?.message || '');
 }
 
 export function supportsOutputDeviceSelection() {

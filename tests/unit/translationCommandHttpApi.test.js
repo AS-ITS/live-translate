@@ -261,6 +261,76 @@ test('POST /api/translation-outputs delegates once and returns HTTP 201 with con
   assert.deepEqual(calls, [['createTranslationOutput', body]]);
 });
 
+test('POST /api/translation-outputs accepts a large source transcript snapshot', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    sessionReadController: sessionReadController(),
+    translationCommandController: translationCommandController({
+      createTranslationOutput(input) {
+        calls.push(input);
+        return { id: input.id, stored: true };
+      }
+    })
+  });
+  const body = {
+    id: 'output-large',
+    executionId: 'execution-1',
+    targetLanguageCode: 'en',
+    translatedText: 'Hello.',
+    sourceTranscriptMetadata: {
+      revisionId: 'source-revision:session-1:final',
+      snapshot: { items: [{ id: 'item-1', stream: 'source', status: 'final', text: 'a'.repeat(12_000) }] }
+    }
+  };
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-outputs',
+    body: JSON.stringify(body)
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(response.json(), { id: 'output-large', stored: true });
+  assert.equal(calls[0].sourceTranscriptMetadata.snapshot.items[0].text.length, 12_000);
+});
+
+test('translation output requests still honor their dedicated configured limit', async () => {
+  const handler = createRequestHandler({
+    sessionReadController: sessionReadController(),
+    translationCommandController: translationCommandController(),
+    translationOutputMaxBytes: 100
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-outputs',
+    body: JSON.stringify({ id: 'output-large', targetLanguageCode: 'en', translatedText: 'a'.repeat(200) })
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.json().error.code, 'request_too_large');
+});
+
+test('other translation command routes retain the default 10 KB request limit', async () => {
+  const calls = [];
+  const handler = createHandler({
+    createTranslationRequest(input) {
+      calls.push(input);
+      return input;
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/translation-requests',
+    body: JSON.stringify({ id: 'request-large', targetLanguageCode: 'en', sourceTranscriptSnapshot: 'a'.repeat(12_000) })
+  });
+
+  assert.equal(response.status, 413);
+  assert.equal(response.json().error.code, 'request_too_large');
+  assert.deepEqual(calls, []);
+});
+
 test('translation command routes preserve synchronous and Promise-based controller results', async () => {
   const asyncResult = { id: 'async-output' };
   const handler = createHandler({

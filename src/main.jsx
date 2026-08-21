@@ -5421,10 +5421,6 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     () => Array.isArray(detail?.cues) ? detail.cues : [],
     [detail?.cues]
   );
-  const timeline = useMemo(
-    () => Array.isArray(detail?.timeline) ? detail.timeline : [],
-    [detail?.timeline]
-  );
   const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
   useEffect(() => {
@@ -5511,53 +5507,12 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         <div><dt>逐字稿</dt><dd>{transcriptSummaryLabel(detail.meeting?.transcriptSummary)}</dd></div>
       </dl>
 
-      {Array.isArray(sessionRecord.failureDiagnostics) && sessionRecord.failureDiagnostics.length > 0 ? (
-        <section className="session-failure-diagnostics" aria-label="連線診斷">
-          <h4>連線診斷（最近 {sessionRecord.failureDiagnostics.length} 次）</h4>
-          <div className="failure-diagnostic-list">
-            {sessionRecord.failureDiagnostics.map((diagnostic, index) => (
-              <div className="failure-diagnostic-item" key={`${diagnostic.at || 'failure'}-${index}`}>
-                <span>{formatRecordTime(diagnostic.at)}</span>
-                <span>來源：{diagnostic.source || 'unknown'}</span>
-                {diagnostic.stage ? <span>階段：{diagnostic.stage}</span> : null}
-                <span>原因：{diagnostic.reason || 'unknown_error'}</span>
-                {diagnostic.code !== null && diagnostic.code !== undefined ? <span>代碼：{diagnostic.code}</span> : null}
-                {diagnostic.status !== null && diagnostic.status !== undefined ? <span>狀態：{diagnostic.status}</span> : null}
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
       <AudioArtifactDownloads
         title="整場語音紀錄下載"
         audioArtifacts={detail.audioArtifacts}
         inputLabel="下載整場原始語音"
         translationLabel="下載整場翻譯語音"
       />
-
-      <section className="meeting-timeline" aria-label="會議段落時間軸">
-        <h4>段落時間軸</h4>
-        {timeline.length === 0 ? (
-          <p className="history-empty">尚無段落資料。</p>
-        ) : (
-          <ol>
-            {timeline.map((segment) => (
-              <li key={segment.id}>
-                <div className="meeting-timeline-marker" aria-hidden="true" />
-                <div>
-                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
-                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
-                  <p>{formatRecordTime(segment.startedAt)} · {formatDuration(segment.durationMs)}</p>
-                  {segment.errorInfo?.reason ? <p className="history-reason">原因：{segment.errorInfo.reason}</p> : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
-
-      <MeetingSegmentTranscriptList segments={timeline} transcriptItems={transcriptItems} />
 
       <ReadingContentTabs
         content={readingContent}
@@ -5601,69 +5556,6 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
       </section>
     </section>
   );
-}
-
-function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
-  const transcriptItemsBySegment = useMemo(
-    () => groupTranscriptItemsBySegment(transcriptItems),
-    [transcriptItems]
-  );
-
-  return (
-    <section className="meeting-segment-content" aria-label="會議段落內容">
-      <h4>段落內容</h4>
-      {segments.length === 0 ? (
-        <p className="history-empty">尚無段落內容。</p>
-      ) : (
-        <ol>
-          {segments.map((segment) => {
-            const items = transcriptItemsBySegment.get(segment.id) || [];
-            const sourceItems = finalTranscriptItemsForStream(items, 'source');
-            const translationItems = finalTranscriptItemsForStream(items, 'translation');
-            return (
-              <li key={segment.id}>
-                <div className="meeting-segment-content-header">
-                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
-                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
-                </div>
-                <div className="meeting-segment-streams">
-                  <section aria-label={`段落 ${segment.sequence + 1} 原文`}>
-                    <h5>原文</h5>
-                    {sourceItems.length === 0 ? (
-                      <p className="history-empty">此段尚無原文。</p>
-                    ) : (
-                      sourceItems.map((item) => <p key={item.id}>{toTraditionalChineseText(item.text)}</p>)
-                    )}
-                  </section>
-                  <section aria-label={`段落 ${segment.sequence + 1} 翻譯`}>
-                    <h5>翻譯</h5>
-                    {translationItems.length === 0 ? (
-                      <p className="history-empty">此段尚無翻譯。</p>
-                    ) : (
-                      translationItems.map((item) => <p key={item.id}>{item.text}</p>)
-                    )}
-                  </section>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-    </section>
-  );
-}
-
-function groupTranscriptItemsBySegment(transcriptItems = []) {
-  const groups = new Map();
-  for (const item of transcriptItems) {
-    if (!item?.segmentId) {
-      continue;
-    }
-    const items = groups.get(item.segmentId) || [];
-    items.push(item);
-    groups.set(item.segmentId, items);
-  }
-  return groups;
 }
 
 function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
@@ -6840,7 +6732,7 @@ function AudioArtifactDownloads({
   const translationArtifact = audioArtifacts?.translation;
 
   return (
-    <section className="saved-export-panel" aria-label={title}>
+    <section className="saved-export-panel audio-artifact-downloads" aria-label={title}>
       <h4>{title}</h4>
       <div className="recording-downloads">
         <a

@@ -1072,14 +1072,17 @@ test('meeting history detail uses an independent page with timeline, article vie
   expect(detailLayout.pageCanScroll).toBe(false);
   expect(detailLayout.detailPageVisible).toBe(true);
   expect(detailLayout.detailScrollEnabled).toBe(true);
-  const timeline = detail.getByLabel('會議段落時間軸');
-  await expect(timeline.getByText('段落 1')).toBeVisible();
-  await expect(timeline.getByText('段落 2')).toBeVisible();
-  await expect(timeline.getByText('段落 3')).toBeVisible();
-  await expect(timeline.getByText('已中斷')).toBeVisible();
-  await expect(timeline.locator('.history-status-failed').getByText('失敗', { exact: true })).toBeVisible();
-  await expect(detail.getByLabel('段落 2 原文').getByText('第二段原文')).toBeVisible();
-  await expect(detail.getByLabel('段落 2 翻譯').getByText('第二段翻譯')).toBeVisible();
+  const audioDownloads = detail.locator('.audio-artifact-downloads');
+  const audioLayout = await audioDownloads.evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    columns: getComputedStyle(element).gridTemplateColumns,
+    pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+  }));
+  expect(audioLayout.height).toBeLessThanOrEqual(120);
+  expect(audioLayout.columns.split(' ').length).toBe(2);
+  expect(audioLayout.pageHasHorizontalOverflow).toBe(false);
+  await expect(detail.getByLabel('會議段落時間軸')).toHaveCount(0);
+  await expect(detail.getByText('段落內容', { exact: true })).toHaveCount(0);
   await expect(detail.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
 
   await detail.getByRole('tab', { name: '原始逐字稿' }).click();
@@ -1117,6 +1120,50 @@ test('meeting history detail uses an independent page with timeline, article vie
   await page.goto('/#meeting-detail?meetingId=meeting-1&from=history');
   await expect(page.locator('.meeting-detail-page')).toBeVisible();
   await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+});
+
+test('completed meeting opens translation history from meeting management without a blank page', async ({ page }) => {
+  const detail = meetingDetailResponse();
+  detail.meeting = { ...detail.meeting, status: 'completed' };
+
+  await page.route('**/api/meetings**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([meetingHistoryRecord({ status: 'completed' })])
+      });
+      return;
+    }
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-1') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(detail)
+      });
+      return;
+    }
+
+    await route.fallback();
+  });
+
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error));
+  await page.goto('/#meeting');
+
+  const row = page.locator('.meeting-management-page .meeting-management-data-grid .ag-row').first();
+  await expect(row).toContainText('已完成');
+  await row.getByRole('button', { name: '前往翻譯紀錄' }).click();
+
+  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=history$/);
+  await expect(page.locator('.meeting-detail-page')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '會議詳細資料' })).toBeVisible();
+  await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  expect(pageErrors).toEqual([]);
 });
 
 test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
@@ -1387,7 +1434,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect(historyItems(page)).toHaveCount(1);
   await translatedAudioUploadStarted;
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await expect(sessionDetail(page).getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
+  await expect(sessionDetail(page).locator('.audio-artifact-downloads').getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
   await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
   await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
 

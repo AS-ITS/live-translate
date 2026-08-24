@@ -4,7 +4,7 @@ const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
 const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
-export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
+export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 5000;
 export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
 import { cueRefinementInputHash } from './cueContent.js';
 
@@ -329,8 +329,8 @@ function findFinalRevisionCue(state, event, options = {}) {
   const index = state.finalCues.length - 1;
   const cue = state.finalCues[index];
   if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
-    || !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason)
-    || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
+    || (!event.isLateTranscript && !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason))
+    || (!event.isLateTranscript && !isWithinFinalRevisionWindow(state, cue, event, options))) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const existingText = normalizeText(cue[field]);
   const incomingText = normalizeText(event.text);

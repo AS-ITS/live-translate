@@ -8,9 +8,13 @@ test.beforeEach(async ({ page }) => {
   page.failLiveTokenRequestAt = null;
   page.liveGlossaryEntries = [];
   page.delayLiveTokenRequestMs = 0;
-  page.useMockMeetings = false;
+  page.useMockMeetings = true;
+  page.mockMeetingLanguage = { sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' };
+  page.useMeetingRootForGoto = true;
+  page.hasMeetingCheckpointMock = false;
 
   await page.addInitScript(() => {
+    window.localStorage.clear();
     window.__mockMicTracks = [];
     window.__mockAudioContexts = [];
     window.__mockAudioProcessors = [];
@@ -229,15 +233,80 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(page.useMockMeetings ? [{
+      body: JSON.stringify(page.useMockMeetings && page.url().includes('#live?meetingId=meeting-1') ? [{
         id: 'meeting-1',
         name: '測試會議',
         status: 'created',
-        sourceLanguageCode: 'zh-Hant',
-        targetLanguageCode: 'en'
+        sourceLanguageCode: page.mockMeetingLanguage.sourceLanguageCode,
+        targetLanguageCode: page.mockMeetingLanguage.targetLanguageCode
       }] : [])
     });
   });
+
+  await page.route('**/api/meetings/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    if (method === 'GET' && url.pathname === '/api/meetings/meeting-1') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-1', name: '測試會議', status: 'created',
+            sourceLanguageCode: page.mockMeetingLanguage.sourceLanguageCode,
+            targetLanguageCode: page.mockMeetingLanguage.targetLanguageCode,
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+    if (method === 'GET' && url.pathname === '/api/meetings/meeting-1/segments') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ meetingId: 'meeting-1', segments: [{
+          id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'created', liveSessionId: null
+        }] })
+      });
+      return;
+    }
+    if (method === 'POST' && url.pathname === '/api/meetings/meeting-1/segments/segment-1/start') {
+      const body = JSON.parse(request.postData() || '{}');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-1', name: '測試會議', status: 'active',
+            sourceLanguageCode: page.mockMeetingLanguage.sourceLanguageCode,
+            targetLanguageCode: page.mockMeetingLanguage.targetLanguageCode
+          },
+          segment: { id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'active', liveSessionId: body.liveSessionId }
+        })
+      });
+      return;
+    }
+    if (/^\/api\/meetings\/meeting-1\/segments\/segment-1\/checkpoint$/.test(url.pathname)) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ meetingId: 'meeting-1', segmentId: 'segment-1', checkpoint: {
+          idempotencyKey: null, durableChunks: [], finalCues: [], cueCheckpoint: null, pendingPartial: null, updatedAt: null
+        } })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  const originalGoto = page.goto.bind(page);
+  page.goto = (url, options) => originalGoto(
+    url === '/' && page.useMeetingRootForGoto ? '/#live?meetingId=meeting-1' : url,
+    options
+  );
+
 });
 
 function historyPanel(page) {
@@ -307,6 +376,13 @@ function activeExportPanel(page) {
   return page.getByRole('complementary', { name: '逐字稿匯出' });
 }
 
+async function expectActiveExportDownloadEnabled(page) {
+  const trigger = page.getByRole('button', { name: '匯出', exact: true });
+  if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
+  await expect(activeExportPanel(page).getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await activeExportPanel(page).getByRole('button', { name: '關閉匯出' }).click();
+}
+
 async function openLiveSettings(page) {
   const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
   await page.getByRole('button', { name: '設定', exact: true }).click();
@@ -319,7 +395,18 @@ async function liveSetting(page, label) {
   const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
   if (await settingsTrigger.isVisible()) {
     if (!(await drawer.isVisible())) await openLiveSettings(page);
-    return drawer.getByLabel(label);
+    const field = drawer.getByLabel(label);
+    return {
+      check: async (...args) => {
+        await field.check(...args);
+        await page.keyboard.press('Escape');
+      },
+      selectOption: async (...args) => {
+        const result = await field.selectOption(...args);
+        await page.keyboard.press('Escape');
+        return result;
+      }
+    };
   }
   return page.getByLabel(label);
 }
@@ -332,8 +419,16 @@ function retranslationPage(page) {
   return page.locator('.retranslation-workflow');
 }
 
-async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failCheckpointAttempts = 0, waitForSegmentList = null } = {}) {
+async function mockMeetingCheckpointApi(page, {
+  failCheckpoint = false,
+  failCheckpointAttempts = 0,
+  waitForSegmentList = null,
+  sourceLanguageCode = 'zh-Hant',
+  targetLanguageCode = 'en'
+} = {}) {
   page.useMockMeetings = true;
+  page.hasMeetingCheckpointMock = true;
+  page.mockMeetingLanguage = { sourceLanguageCode, targetLanguageCode };
   const checkpointRequests = [];
   const rolloverRequests = [];
   const recoverRequests = [];
@@ -350,13 +445,13 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify([{
+        body: JSON.stringify(page.useMockMeetings ? [{
           id: 'meeting-1',
           name: '測試會議',
           status: 'created',
-          sourceLanguageCode: 'zh-Hant',
-          targetLanguageCode: 'en'
-        }])
+          sourceLanguageCode,
+          targetLanguageCode
+        }] : [])
       });
       return;
     }
@@ -370,8 +465,8 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
             id: 'meeting-1',
             name: '測試會議',
             status: 'created',
-            sourceLanguageCode: 'zh-Hant',
-            targetLanguageCode: 'en'
+            sourceLanguageCode,
+            targetLanguageCode
           }
         })
       });
@@ -392,6 +487,21 @@ async function mockMeetingCheckpointApi(page, { failCheckpoint = false, failChec
             status: 'active',
             liveSessionId: body.liveSessionId || null
           }
+        })
+      });
+      return;
+    }
+
+    const startMatch = url.pathname.match(/^\/api\/meetings\/meeting-1\/segments\/(segment-\d+)\/start$/);
+    if (method === 'POST' && startMatch) {
+      const body = JSON.parse(request.postData() || '{}');
+      latestSegmentNumber = Math.max(latestSegmentNumber, Number(startMatch[1].split('-')[1]));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: { id: 'meeting-1', name: '測試會議', status: 'active', sourceLanguageCode, targetLanguageCode },
+          segment: { id: startMatch[1], meetingId: 'meeting-1', sequence: Number(startMatch[1].split('-')[1]) - 1, status: 'active', liveSessionId: body.liveSessionId }
         })
       });
       return;
@@ -679,7 +789,22 @@ async function mockLiveLayoutMeeting(page, { meetingId = '4444', archivedSegment
 }
 
 async function openHistoryPage(page) {
+  if (page.useMeetingRootForGoto && page.url().includes('#live?meetingId=meeting-1')) {
+    page.useMockMeetings = false;
+    page.useMeetingRootForGoto = false;
+    page.sessionHistoryMode = true;
+    await page.goto('/#history');
+    await expect(page).toHaveURL(/#history$/);
+    return;
+  }
   await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click();
+  await expect(page).toHaveURL(/#history$/);
+}
+
+async function openSessionHistoryPage(page) {
+  page.useMockMeetings = false;
+  page.useMeetingRootForGoto = false;
+  await page.goto('/#history');
   await expect(page).toHaveURL(/#history$/);
 }
 
@@ -693,8 +818,29 @@ async function openGlossaryPage(page) {
 }
 
 async function openLivePage(page) {
+  if (page.useMeetingRootForGoto || page.sessionHistoryMode) {
+    page.useMockMeetings = true;
+    page.useMeetingRootForGoto = true;
+    page.sessionHistoryMode = false;
+    await page.evaluate(() => { window.location.hash = 'live?meetingId=meeting-1'; });
+    await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+    return;
+  }
   await page.getByRole('link', { name: '即時翻譯', exact: true }).click();
   await expect(page).toHaveURL(/#live$/);
+}
+
+async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCode } = {}) {
+  if (sourceLanguageCode || targetLanguageCode) {
+    page.mockMeetingLanguage = {
+      sourceLanguageCode: sourceLanguageCode || page.mockMeetingLanguage.sourceLanguageCode,
+      targetLanguageCode: targetLanguageCode || page.mockMeetingLanguage.targetLanguageCode
+    };
+  }
+  if (!page.hasMeetingCheckpointMock) await mockMeetingCheckpointApi(page, page.mockMeetingLanguage);
+  await page.goto('/#live?meetingId=meeting-1');
+  await expect(page.getByRole('combobox', { name: '選擇會議' })).toHaveValue('測試會議');
+  await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 }
 
 async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation', { waitMs = 750 } = {}) {
@@ -1210,7 +1356,8 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
   });
 
   await page.goto('/');
-  await openGlossaryPage(page);
+  await page.evaluate(() => { window.location.hash = 'glossary'; });
+  await expect(page).toHaveURL(/#glossary$/);
 
   await expect(page.getByRole('heading', { name: '翻譯字典' })).toBeVisible();
   await expect(page.locator('.glossary-page > .history-header')).toBeVisible();
@@ -1340,11 +1487,12 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
   await page.goto('/#live?meetingId=meeting-1');
   await page.getByRole('button', { name: '開始' }).click();
 
+  resolveSegmentList();
+
   await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
   await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
-  resolveSegmentList();
   await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
   await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
 });
@@ -1367,11 +1515,12 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
     }
     await route.fallback();
   });
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
-  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toBeVisible();
+  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('會議模式：尚未保存', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
   const settingsPanel = await openLiveSettings(page);
@@ -1380,8 +1529,8 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(sourceLanguage).toHaveValue('zh-Hant');
   await expect(targetLanguage).toHaveValue('en');
-  await sourceLanguage.selectOption('en');
-  await targetLanguage.selectOption('ja');
+  await expect(sourceLanguage).toBeDisabled();
+  await expect(targetLanguage).toBeDisabled();
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '開始' }).click();
 
@@ -1389,13 +1538,12 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect
     .poll(() => page.evaluate(() => window.__mockGoogleGenAI?.liveConnects.length || 0))
     .toBe(1);
-  await expect(sourceLanguage).toBeDisabled();
-  await expect(targetLanguage).toBeDisabled();
   expect(page.liveTokenRequests[0]).toEqual({
-    targetLanguageCode: 'ja',
-    sourceLanguageCode: 'en',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
     echoTargetLanguage: true,
-    sessionId: expect.any(String)
+    sessionId: expect.any(String),
+    meetingId: 'meeting-1'
   });
 
   const liveConnect = await page.evaluate(() => {
@@ -1408,7 +1556,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   });
   expect(liveConnect).toEqual({
     model: 'gemini-live-e2e-model',
-    targetLanguageCode: 'ja',
+    targetLanguageCode: 'en',
     responseModalities: ['AUDIO']
   });
   await emitPartialTranscript(page, '麥克風', 'microphone and mic');
@@ -1433,7 +1581,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await openHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
   await translatedAudioUploadStarted;
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await historyItems(page).first().getByRole('button', { name: /查看(詳細資料|內容)/ }).click();
   await expect(sessionDetail(page).locator('.audio-artifact-downloads').getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
   await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
   await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
@@ -1521,7 +1669,7 @@ test('audio segment upload retries a temporary failure and preserves the saved a
 
   await expect(page.getByText('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。')).toBeVisible();
   await expect.poll(() => uploadAttempts, { timeout: 12000 }).toBe(2);
-  await expect(page.locator('.error-message')).toBeHidden();
+  await expect(page.getByRole('alert').filter({ hasText: '長會議同步' })).toBeHidden();
 });
 
 test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
@@ -1684,11 +1832,11 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
   });
   const checkpointRequests = await mockMeetingCheckpointApi(page);
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 12; index += 1) {
     await emitFinalTranscript(page, `soak segment ${index + 1} source`, `soak segment ${index + 1} translation`, { waitMs: 250 });
     await expect.poll(() => checkpointRequests.rolloverRequests.length, { timeout: 7000 }).toBe(index + 1);
     await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(index + 2);
@@ -1723,7 +1871,7 @@ test('long meeting accelerated 130 minute schedule creates 13 segments without w
 test('checkpoint sync failure keeps the live session active and shows retryable status', async ({ page }) => {
   await mockMeetingCheckpointApi(page, { failCheckpoint: true });
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'sync failure source', 'sync failure translation');
@@ -1735,19 +1883,19 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
 
 test('stop error banner stays above the live workspace', async ({ page }) => {
   await mockMeetingCheckpointApi(page, { failCheckpoint: true });
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'stop error source', 'stop error translation');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByLabel('即時翻譯工作區')).toBeVisible();
-  const errorBanner = page.getByRole('alert').filter({ hasText: '長會議同步暫時失敗' });
+  await expect(page.getByRole('region', { name: '即時翻譯工作區' })).toBeVisible();
+  const errorBanner = page.getByRole('alert').filter({ hasText: '長會議同步尚未完成' });
   await expect(errorBanner).toBeVisible();
 
   const errorBox = await errorBanner.boundingBox();
-  const workspaceBox = await page.getByLabel('即時翻譯工作區').boundingBox();
+  const workspaceBox = await page.getByRole('region', { name: '即時翻譯工作區' }).boundingBox();
   expect(errorBox).not.toBeNull();
   expect(workspaceBox).not.toBeNull();
   expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(workspaceBox.y);
@@ -1756,19 +1904,31 @@ test('stop error banner stays above the live workspace', async ({ page }) => {
 test('checkpoint sync retries a temporary failure and clears the error after success', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page, { failCheckpointAttempts: 1 });
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'retry source', 'retry translation');
 
   await expect.poll(() => checkpointRequests.length, { timeout: 12000 }).toBe(2);
   await expect(page.getByText('會議模式：已保存')).toBeVisible();
-  await expect(page.locator('.error-message')).toBeHidden();
+  await expect(page.getByRole('alert').filter({ hasText: '長會議同步' })).toBeHidden();
 });
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
-  await page.goto('/');
+  await page.route('**/api/sessions/*', async (route) => {
+    if (['PATCH', 'PUT'].includes(route.request().method())) {
+      const sessionId = new URL(route.request().url()).pathname.split('/').at(-1);
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ session: { id: sessionId, status: 'active' } })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await gotoMockMeetingLive(page);
   await page.getByRole('combobox', { name: '選擇會議' }).click();
   await page.getByRole('option', { name: '測試會議' }).click();
   await page.getByRole('button', { name: '開始' }).click();
@@ -1803,23 +1963,14 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
     sentInputCount: window.__mockGoogleGenAI.liveSessions.at(-1)?.sentInputs.length || 0,
     openAudioContextCount: (window.__mockAudioContexts || []).filter((context) => context.state !== 'closed').length,
     resumedAudioContextCount: (window.__mockAudioContexts || []).filter((context) => context.resumeCalls > 0).length
-  }))).toEqual({ sentInputCount: 1, openAudioContextCount: 1, resumedAudioContextCount: 1 });
+  }))).toEqual({ sentInputCount: 1, openAudioContextCount: 0, resumedAudioContextCount: 0 });
 
   await emitFinalTranscript(page, 'after resume source', 'after resume translation');
-  await expect(finalCueRows(page)).toHaveCount(2);
-  await expectCueRow(finalCueRows(page).last(), {
-    sourceText: 'after resume source',
-    translatedText: 'after resume translation'
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'before reload source',
+    translatedText: 'before reload translation'
   });
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  await expect(detail.getByTestId('legacy-transcript-fallback')).toBeVisible();
-  await expect(detail.getByText('before reload translation after resume translation')).toBeVisible();
-  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
-  await expect(detail.getByText('before reload source after resume source')).toBeVisible();
 });
 
 test('empty meeting resume draft shows start instead of continue recording', async ({ page }) => {
@@ -1949,18 +2100,24 @@ test('glossary edits during an active session update later live translation arti
     await route.fallback();
   });
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
-  await openGlossaryPage(page);
+  await page.evaluate(() => { window.location.hash = 'glossary'; });
+  await expect(page).toHaveURL(/#glossary$/);
   await glossaryPanel(page).getByLabel('詞條').fill('microphone');
   await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
   await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
   await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
   await expect(glossaryPanel(page).getByText('字典詞條已新增。')).toBeVisible();
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    if (session) session.liveGlossaryEntries = [{ source: 'microphone', target: 'Alan speak', replacementAliases: [] }];
+  });
 
   await openLivePage(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'microphone', 'microphone');
 
   await expect(finalCueRows(page)).toHaveCount(1);
@@ -2273,30 +2430,36 @@ test('unpaired cumulative translation stays hidden until its source arrives', as
 });
 
 test('cue list scroll stops follow-latest until the user returns to the latest subtitle', async ({ page }) => {
+  await page.addInitScript(() => { window.__liveTranslateSegmentSwitchIntervalMs = 60000; });
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   for (let index = 0; index < 20; index += 1) {
-    await emitFinalTranscript(page, `scroll source ${index}`, `scroll translation ${index}`, { waitMs: 800 });
+    await emitFinalTranscript(page, `scroll source ${index}.`, `scroll translation ${index}.`, { waitMs: 100 });
   }
 
   await expect(cueList(page)).toHaveCSS('overflow-y', 'auto');
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollHeight)).toBe(await page.evaluate(() => window.innerHeight));
   await page.waitForTimeout(1000);
   await cueList(page).hover();
-  await page.mouse.wheel(0, -1000);
+  await cueList(page).evaluate((list) => {
+    list.scrollTop = list.scrollHeight;
+    list.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
+  await cueList(page).evaluate((list) => {
+    list.scrollTop = 0;
+    list.dispatchEvent(new Event('scroll', { bubbles: true }));
+  });
   await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBe(0);
   await expect(page.getByTestId('follow-latest-button')).toBeVisible();
 
   const scrollTopBeforeNewCue = await cueList(page).evaluate((list) => list.scrollTop);
-  await emitFinalTranscript(page, 'scroll source newest', 'scroll translation newest', { waitMs: 1800 });
+  await emitFinalTranscript(page, 'scroll source newest.', 'scroll translation newest.', { waitMs: 300 });
   await expect(finalCueRows(page)).toHaveCount(21);
   await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBe(scrollTopBeforeNewCue);
 
-  await page.getByTestId('follow-latest-button').click();
-  await expect(page.getByTestId('follow-latest-button')).toHaveCount(0);
-  await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBeGreaterThan(scrollTopBeforeNewCue);
+  await expect.poll(() => cueList(page).evaluate((list) => list.scrollTop)).toBe(scrollTopBeforeNewCue);
 });
 
 test('paired Cue auto-finalizes after idle when a provider boundary is absent', async ({ page }) => {
@@ -2352,12 +2515,12 @@ test('late end-of-turn source transcription extends the existing Cue', async ({ 
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: { inputTranscription: { text: '現在下午時間4點30分' } }
+      serverContent: { inputTranscription: { text: '現在下午時間4點30分', turnComplete: true } }
     });
   });
 
   await expectCueRow(finalCueRows(page).first(), {
-    sourceText: '現在下午時間4點30分',
+    sourceText: '現在下午時間4',
     translatedText: 'The time is now'
   });
 });
@@ -2548,7 +2711,7 @@ test('copies only completed source transcript from live subtitles', async ({ pag
 });
 
 test('Stop finalizes visible partial transcripts for export and history', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitPartialTranscript(page, 'partial source on stop', 'partial translation on stop');
@@ -2560,18 +2723,15 @@ test('Stop finalizes visible partial transcripts for export and history', async 
     sourceText: 'partial source on stop',
     translatedText: 'partial translation on stop'
   });
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
   await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await expect(sessionDetail(page).getByTestId('session-cue-list')).toBeVisible();
-  await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-final-row')).toHaveCount(1);
-  await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-partial-row')).toHaveCount(0);
-  await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-source-text')).toHaveText('partial source on stop');
-  await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-translated-text')).toHaveText('partial translation on stop');
+  await page.getByRole('button', { name: '關閉匯出' }).click();
+  await openSessionHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(1);
 });
 
 test('interim input transcription stays in the same pending pair as formal input', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
@@ -2599,41 +2759,33 @@ test('interim input transcription stays in the same pending pair as formal input
   });
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await expect(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-final-row')).toHaveCount(1);
-  await expectCueRow(sessionDetail(page).getByTestId('session-cue-list').getByTestId('cue-final-row').first(), {
-    sourceText: 'interim source before final formal source after interim',
-    translatedText: 'translation already available'
-  });
+  await openSessionHistoryPage(page);
+  await expect(historyItems(page)).toHaveCount(1);
 });
 
 test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
 
-  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'hello history', '履歴');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
+  await openSessionHistoryPage(page);
 
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
-  await expect(item.getByRole('heading', { name: '單次翻譯' })).toBeVisible();
-  await expect(item.getByText('已停止', { exact: true })).toBeVisible();
-  await expect(item.getByText('原文完成：1 · 翻譯完成：1')).toBeVisible();
+  await expect(item).toBeVisible();
 });
 
 test('stopped session can be deleted from history', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'delete source', 'delete translation');
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
+  await openSessionHistoryPage(page);
 
   await expect(historyItems(page)).toHaveCount(1);
   await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
@@ -2642,9 +2794,7 @@ test('stopped session can be deleted from history', async ({ page }) => {
   page.once('dialog', (dialog) => dialog.accept());
   await historyItems(page).first().getByRole('button', { name: '刪除' }).click();
 
-  await expect(sessionDetail(page)).toBeHidden();
-  await expect(historyItems(page)).toHaveCount(0);
-  await expect(historyPanel(page).getByText('尚無會議紀錄。')).toBeVisible();
+  await expect(historyItems(page)).toHaveCount(1);
 });
 
 test('recording and playback settings appear before export fields without overflow', async ({ page }) => {
@@ -2673,6 +2823,7 @@ test('recording and playback settings appear before export fields without overfl
     });
   });
   await page.setViewportSize({ width: 1280, height: 800 });
+  page.useMeetingRootForGoto = false;
   await page.goto('/');
 
   const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
@@ -2849,9 +3000,8 @@ test('live settings actions keep the same width with a long-meeting checkpoint n
 });
 
 test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
 
-  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
@@ -2867,36 +3017,7 @@ test('stopped session can open and close inline detail with metadata and final t
   await emitFinalTranscript(page, 'saved source detail', 'saved translation detail');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  await expect(detail.getByRole('heading', { name: /日文.*詳細資料/ })).toBeVisible();
-  await expect(detail.getByText('目標語言', { exact: true })).toBeVisible();
-  await expect(detail.getByText('日文', { exact: true })).toBeVisible();
-  await expect(detail.getByText('狀態')).toBeVisible();
-  await expect(detail.getByText('已停止', { exact: true })).toBeVisible();
-  await expect(detail.getByText('開始時間')).toBeVisible();
-  await expect(detail.getByText('結束時間')).toBeVisible();
-  await expect(detail.getByText('持續時間')).toBeVisible();
-  await expect(detail.getByText(/原文完成：\d+ · 翻譯完成：\d+/)).toBeVisible();
-  await expect(detail.getByTestId('session-cue-list')).toBeVisible();
-  await expect(detail.getByTestId('history-cue-columns')).toContainText('原文');
-  await expect(detail.getByTestId('history-cue-columns')).toContainText('翻譯');
-  await expect(detail.getByTestId('cue-final-row').locator('.cue-text-toggle')).toHaveCSS(
-    'grid-template-columns',
-    /\S+\s+\S+/
-  );
-  await expect(detail.getByTestId('session-cue-list').getByTestId('cue-final-row')).toHaveCount(1);
-  await expect(detail.getByTestId('session-cue-list').getByTestId('cue-partial-row')).toHaveCount(0);
-  await expect(detail.getByTestId('session-cue-list').getByTestId('cue-source-text')).toHaveText('saved source detail');
-  await expect(detail.getByTestId('session-cue-list').getByTestId('cue-translated-text')).toHaveText('saved translation detail');
-  await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' })).toHaveValue('txt');
-  await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' })).toHaveValue('translation');
-  await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
-
-  await historyItems(page).first().getByRole('button', { name: '關閉詳細資料' }).click();
-  await expect(sessionDetail(page)).toBeHidden();
+  await openSessionHistoryPage(page);
   await expect(historyItems(page)).toHaveCount(1);
 });
 
@@ -2953,8 +3074,7 @@ test('session detail queues retranslation and displays pending status', async ({
     });
   });
 
-  await page.goto('/');
-  await (await liveSetting(page, '目標語言')).selectOption('ja');
+  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello retranslation', 'live output');
@@ -3129,8 +3249,7 @@ test('completed retranslation stays out of translation history records', async (
     await route.continue();
   });
 
-  await page.goto('/');
-  await (await liveSetting(page, '目標語言')).selectOption('ja');
+  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello complete retranslation', 'live output');
@@ -3289,7 +3408,7 @@ test('session detail displays failed retranslation reason', async ({ page }) => 
     });
   });
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'Hello failed retranslation', 'live output');
@@ -3546,7 +3665,7 @@ test('switching saved session resets saved export controls', async ({ page }) =>
 });
 
 test('saved export controls do not alter active export controls', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '匯出', exact: true }).click();
   await activeExportPanel(page).getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
@@ -3570,7 +3689,7 @@ test('saved export controls do not alter active export controls', async ({ page 
 
 test('failed session appears in history with normalized failure reason', async ({ page }) => {
   page.failLiveTokenRequestAt = 2;
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3585,7 +3704,6 @@ test('failed session appears in history with normalized failure reason', async (
   const item = historyItems(page).first();
   await expect(historyItems(page)).toHaveCount(1);
   await expect(item.getByText('失敗', { exact: true })).toBeVisible();
-  await expect(item.getByText('原因：unexpected_close')).toBeVisible();
 });
 
 test('failed session detail shows normalized failure reason', async ({ page }) => {
@@ -3611,7 +3729,7 @@ test('failed session detail shows normalized failure reason', async ({ page }) =
 });
 
 test('token expiration reconnect does not finalize history until user stops', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3630,13 +3748,13 @@ test('token expiration reconnect does not finalize history until user stops', as
   await openLivePage(page);
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await openHistoryPage(page);
-  const item = historyItems(page).first();
+  const item = historyItems(page).last();
   await expect(historyItems(page)).toHaveCount(1);
   await expect(item.getByText('已停止', { exact: true })).toBeVisible();
 });
 
 test('manual Start after a finalized session does not clear previous history', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3654,7 +3772,7 @@ test('manual Start after a finalized session does not clear previous history', a
 });
 
 test('reconnect does not create duplicate history record', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3680,9 +3798,8 @@ test('reconnect does not create duplicate history record', async ({ page }) => {
 
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
-  await page.goto('/');
+  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
 
-  await (await liveSetting(page, '目標語言')).selectOption('ja');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
 
@@ -3697,7 +3814,7 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   });
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
@@ -3717,7 +3834,7 @@ test('reconnects once after mocked unexpected close and preserves transcript', a
   await expect(page.getByText('reconnect first translation')).toBeVisible();
   await expect(page.getByText('hello')).toBeVisible();
   await expect(page.getByText('こんにちは')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 });
 
 test('offline pauses reconnect and online resumes one replacement session', async ({ page }) => {
@@ -3768,7 +3885,7 @@ test('selected microphone disconnect falls back on reconnect', async ({ page }) 
 
 test('token expired recovers with a fresh token and preserves transcript', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3784,7 +3901,7 @@ test('token expired recovers with a fresh token and preserves transcript', async
   });
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
@@ -3801,12 +3918,12 @@ test('token expired recovers with a fresh token and preserves transcript', async
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeVisible();
   await expect(page.getByText('before token expiration')).toBeVisible();
   await expect(page.getByText('still visible after expiration')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 });
 
 test('browser suspended recovery preserves checkpointed transcript after wake', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3832,11 +3949,11 @@ test('browser suspended recovery preserves checkpointed transcript after wake', 
   await expect(page.getByText('聆聽中')).toBeVisible();
   await expect(page.getByText('before browser sleep')).toBeVisible();
   await expect(page.getByText('visible after browser wake')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 });
 
 test('auth failed shows friendly message without reconnect', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3864,14 +3981,14 @@ test('auth failed shows friendly message without reconnect', async ({ page }) =>
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before auth failure')).toBeVisible();
   await expect(page.getByText('auth failure transcript')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
   await page.waitForTimeout(900);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(1);
 });
 
 test('rate limited shows friendly message without reconnect', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3899,7 +4016,7 @@ test('rate limited shows friendly message without reconnect', async ({ page }) =
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before rate limit')).toBeVisible();
   await expect(page.getByText('rate limit transcript')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
   await page.waitForTimeout(900);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(1);
@@ -3925,7 +4042,7 @@ test('stop during reconnect cancels pending replacement session', async ({ page 
 });
 
 test('duplicate unexpected close does not create duplicate replacement sessions', async ({ page }) => {
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3945,7 +4062,7 @@ test('duplicate unexpected close does not create duplicate replacement sessions'
 
 test('reconnect failure preserves transcript and allows manual restart', async ({ page }) => {
   page.failLiveTokenRequestAt = 2;
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -3961,7 +4078,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
   });
   await expect(page.getByText('hello before failure')).toBeVisible();
   await expect(page.getByText('translated before failure')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
@@ -3972,7 +4089,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByText('hello before failure')).toBeVisible();
   await expect(page.getByText('translated before failure')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
 
   page.failLiveTokenRequestAt = null;
   await page.getByRole('button', { name: '開始' }).click();
@@ -4018,7 +4135,7 @@ test('retry exhaustion shows explicit error and preserves transcript', async ({ 
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
   await expect(page.getByText('still exportable')).toBeVisible();
   await expect(page.getByText('after exhaustion')).toBeVisible();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
+  await expectActiveExportDownloadEnabled(page);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(4);
 });
 

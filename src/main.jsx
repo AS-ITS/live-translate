@@ -4603,9 +4603,9 @@ function LiveCuePanel({
           </div>
           <div className="cue-section-list" data-testid="cue-source-list">
             {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
-            {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" showRefinementStatus={cue.cueId === cues.at(-1)?.cueId} />
-              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="source" />)}
+            {cues.map((cue, index) => cue.status === 'final'
+              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="source" showRefinementStatus={index === cues.length - 1} />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="source" />)}
           </div>
         </section>
         <section className="cue-language-section" aria-label="即時字幕翻譯">
@@ -4618,9 +4618,9 @@ function LiveCuePanel({
           </div>
           <div className="cue-section-list" data-testid="cue-translation-list">
             {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
-            {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" showRefinementStatus={cue.cueId === cues.at(-1)?.cueId} />
-              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
+            {cues.map((cue, index) => cue.status === 'final'
+              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="translation" showRefinementStatus={index === cues.length - 1} />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="translation" />)}
           </div>
         </section>
         </> : null}

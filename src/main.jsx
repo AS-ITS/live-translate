@@ -758,9 +758,20 @@ function App() {
 
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
-    if (currentPage !== 'live' || !meetingId || status !== 'idle') {
+    if (currentPage !== 'live') {
       return;
     }
+    if (!meetingId) {
+      if (!isActive && !sessionRef.current) {
+        meetingResumeDraftRequestIdRef.current += 1;
+        activeMeetingCheckpointRef.current = null;
+        setResumeDraft(null);
+        setMeetingCheckpointStatus('idle');
+        setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
+      }
+      return;
+    }
+    if (status !== 'idle') return;
 
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
@@ -1096,7 +1107,8 @@ function App() {
   }
 
   async function completeResumableMeeting() {
-    if (!resumeDraft || isActive || status !== 'idle') return;
+    const currentMeetingId = pageInfoFromLocation().meetingId;
+    if (!resumeDraft || !currentMeetingId || resumeDraft.meetingId !== currentMeetingId || isActive || status !== 'idle') return;
     if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return;
 
     setError('');
@@ -3495,7 +3507,7 @@ function App() {
                       結束本次工作階段
                     </button>
                   </>
-                ) : hasSelectedResumableMeeting || resumeDraft?.hasTranscript ? (
+                ) : hasSelectedResumableMeeting || (routeMeetingId && resumeDraft?.meetingId === routeMeetingId && resumeDraft?.hasTranscript) ? (
                   <button
                     className="button primary meeting-live-action-button"
                     type="button"
@@ -3506,7 +3518,7 @@ function App() {
                     {isActive ? '正在開始' : resumeDraft?.hasTranscript ? '繼續錄製' : '開始'}
                   </button>
                 ) : null}
-                {resumeDraft && !isActive && status === 'idle' ? (
+                {routeMeetingId && resumeDraft?.meetingId === routeMeetingId && !isActive && status === 'idle' ? (
                   <button className="button secondary meeting-live-action-button" type="button" onClick={completeResumableMeeting}>
                     結束會議
                   </button>

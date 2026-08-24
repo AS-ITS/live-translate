@@ -1895,6 +1895,19 @@ test('empty meeting resume draft shows start instead of continue recording', asy
   await expect(page).toHaveURL(/#meeting$/);
 });
 
+test('clears the meeting actions when live translation has no selected meeting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
+
+  await page.goto('/#live');
+
+  await expect(page.getByText('請先選擇一個已建立的會議。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '結束會議' })).toBeHidden();
+  await expect(page.getByRole('button', { name: '開始' })).toBeHidden();
+});
+
 test('live glossary replacement is applied to final translation article text only', async ({ page }) => {
   page.liveGlossaryEntries = [
     { source: 'microphone', target: 'Alan speak', replacementAliases: [] }

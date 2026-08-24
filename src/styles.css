@@ -557,7 +557,7 @@ input {
   display: grid;
   grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
   gap: clamp(14px, 1.7vw, 24px);
-  align-items: stretch;
+  align-items: start;
   min-height: 0;
   height: 100%;
 }
@@ -572,10 +572,12 @@ input {
 .live-settings-card {
   display: grid;
   align-content: start;
+  align-self: start;
+  height: auto;
   min-width: 0;
   min-height: 0;
   padding: 20px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .live-settings-card h2 {
@@ -2956,6 +2958,66 @@ input:disabled {
   .live-settings-card {
     align-content: start;
     overflow-x: hidden;
+    overflow-y: auto;
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .live-settings-card .live-settings-controls {
+    min-height: auto;
+    overflow: visible;
+    align-content: start;
+    padding-inline-end: 0;
+  }
+
+  .live-settings-card .control-status-row {
+    display: contents;
+  }
+
+  .live-settings-card .control-status-messages {
+    grid-row: 3;
+  }
+
+  .live-settings-card .control-actions {
+    grid-row: 4;
+    min-height: 0;
+  }
+
+  .live-settings-card .title-block,
+  .live-settings-card .control-status-messages,
+  .meeting-management-page .title-block,
+  .meeting-management-page .history-header > div,
+  .history-page .history-header > div,
+  .retranslation-page .history-header > div,
+  .glossary-page .history-header > div {
+    min-width: 0;
+  }
+
+  .live-settings-card h2,
+  .live-settings-card p,
+  .live-settings-card .device-note,
+  .live-settings-card .checkpoint-note,
+  .meeting-management-page h2,
+  .meeting-management-page h3,
+  .meeting-management-page p,
+  .history-page h2,
+  .history-page p,
+  .retranslation-page h2,
+  .retranslation-page p,
+  .glossary-page h2,
+  .glossary-page p {
+    overflow-wrap: anywhere;
+  }
+
+  .live-settings-card .button,
+  .meeting-management-page .button,
+  .history-page .button,
+  .retranslation-page .button,
+  .glossary-page .button {
+    min-width: 0;
+    height: auto;
+    line-height: 1.35;
+    white-space: normal;
+    text-align: center;
   }
 
   .live-settings-card .title-block-header,
@@ -2972,8 +3034,61 @@ input:disabled {
     border-radius: 14px;
   }
 
+  .meeting-management-page .control-panel {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .meeting-management-data-grid .ag-cell,
+  .meeting-management-data-grid .meeting-name-cell,
+  .meeting-management-data-grid .meeting-actions {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .meeting-management-data-grid .meeting-actions {
+    white-space: normal;
+  }
+
   .history-page > .history-panel.has-history-detail {
     grid-template-rows: auto minmax(160px, 1fr) minmax(160px, 1fr);
+  }
+}
+
+/* Short desktop/laptop viewports must let the page grow instead of forcing
+   the settings card into the transcript panel's fixed-height grid track. */
+@media (min-width: 761px) and (max-height: 700px) {
+  .live-app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .live-app-shell > .feature-page,
+  .live-page {
+    height: auto;
+    min-height: 0;
+  }
+
+  .live-workspace-grid {
+    height: auto;
+    align-items: start;
+  }
+
+  .live-settings-card {
+    height: auto;
+    overflow: visible;
+  }
+
+  .live-settings-card .live-settings-controls {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .live-transcript-column,
+  .live-transcript-column .cue-panel {
+    height: auto;
+    min-height: calc(100dvh - 120px);
   }
 }
 

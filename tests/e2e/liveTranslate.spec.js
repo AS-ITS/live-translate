@@ -2727,24 +2727,71 @@ test('recording and playback settings appear before export fields without overfl
     const cardRect = card.getBoundingClientRect();
     const startRect = startButton.getBoundingClientRect();
     const controls = card.querySelector('.live-settings-controls');
-    const statusRow = card.querySelector('.control-status-row');
-    const statusRect = statusRow?.getBoundingClientRect();
+    const statusMessages = card.querySelector('.control-status-messages');
+    const actions = card.querySelector('.control-actions');
+    const controlsRect = controls?.getBoundingClientRect();
+    const statusRect = statusMessages?.getBoundingClientRect();
+    const actionsRect = actions?.getBoundingClientRect();
     return {
       cardOverflowY: getComputedStyle(card).overflowY,
       controlsOverflowY: getComputedStyle(controls).overflowY,
-      startButtonVisible: startRect.top >= cardRect.top && startRect.bottom <= cardRect.bottom,
-      statusRowVisible: statusRect.top >= cardRect.top && statusRect.bottom <= cardRect.bottom,
+      cardContentFits: card.scrollHeight <= card.clientHeight + 1,
+      pageCanScroll: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight,
+      controlsDoNotOverlapStatus: controlsRect.bottom <= statusRect.top + 1,
+      statusDoesNotOverlapActions: statusRect.bottom <= actionsRect.top + 1,
       hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
     };
   }, await laptopStartButton.elementHandle());
-  expect(laptopLayoutBeforeScroll.cardOverflowY).toBe('hidden');
+  expect(laptopLayoutBeforeScroll.cardOverflowY).toBe('visible');
   expect(laptopLayoutBeforeScroll.controlsOverflowY).toBe('visible');
-  expect(laptopLayoutBeforeScroll.startButtonVisible).toBe(true);
-  expect(laptopLayoutBeforeScroll.statusRowVisible).toBe(true);
+  expect(laptopLayoutBeforeScroll.cardContentFits).toBe(true);
+  expect(laptopLayoutBeforeScroll.pageCanScroll).toBe(true);
+  expect(laptopLayoutBeforeScroll.controlsDoNotOverlapStatus).toBe(true);
+  expect(laptopLayoutBeforeScroll.statusDoesNotOverlapActions).toBe(true);
   expect(laptopLayoutBeforeScroll.hasHorizontalOverflow).toBe(false);
 
+  await laptopCard.evaluate((card) => card.scrollIntoView({ block: 'start' }));
   await expect(laptopStartButton).toBeInViewport();
   await expect(laptopCard.getByRole('button', { name: '開始', exact: true })).toBeVisible();
+  await expect(laptopCard.getByText(/會議模式：/)).toBeInViewport();
+
+  const laptopTextLayout = await laptopCard.evaluate((card) => {
+    const textElements = [...card.querySelectorAll('h2, p, label > span, button')];
+    return {
+      textWrapEnabled: textElements.every((element) => getComputedStyle(element).overflowWrap === 'anywhere' || getComputedStyle(element).whiteSpace !== 'nowrap'),
+      clippedText: textElements.some((element) => element.scrollWidth > element.clientWidth + 1 && getComputedStyle(element).overflow === 'hidden')
+    };
+  });
+  expect(laptopTextLayout.textWrapEnabled).toBe(true);
+  expect(laptopTextLayout.clippedText).toBe(false);
+
+  await page.setViewportSize({ width: 1280, height: 550 });
+  await page.reload();
+  const desktopShortLayout = await page.locator('.live-settings-card').evaluate((card) => {
+    const cardRect = card.getBoundingClientRect();
+    const controls = [...card.querySelectorAll('.live-settings-controls button, .live-settings-controls a.button, .control-actions button, .control-actions a.button')]
+      .filter((element) => element.getClientRects().length > 0)
+      .map((element) => ({ text: element.textContent.trim(), rect: element.getBoundingClientRect() }));
+    const overlaps = controls.some((current, index) => controls.slice(index + 1).some((other) => (
+      current.rect.left < other.rect.right && current.rect.right > other.rect.left
+      && current.rect.top < other.rect.bottom && current.rect.bottom > other.rect.top
+    )));
+    return {
+      cardHeight: cardRect.height,
+      cardContentFits: card.scrollHeight <= card.clientHeight + 1,
+      pageCanScroll: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight,
+      overflowY: getComputedStyle(card).overflowY,
+      controlsOverflowY: getComputedStyle(card.querySelector('.live-settings-controls')).overflowY,
+      controlsOverlap: overlaps,
+      controlsRemainInCardFlow: controls.every(({ rect }) => rect.top >= cardRect.top && rect.left >= cardRect.left && rect.right <= cardRect.right + 1)
+    };
+  });
+  expect(desktopShortLayout.cardContentFits).toBe(true);
+  expect(desktopShortLayout.pageCanScroll).toBe(true);
+  expect(desktopShortLayout.overflowY).toBe('visible');
+  expect(desktopShortLayout.controlsOverflowY).toBe('visible');
+  expect(desktopShortLayout.controlsOverlap).toBe(false);
+  expect(desktopShortLayout.controlsRemainInCardFlow).toBe(true);
 });
 
 test('live settings actions keep the same width without a long-meeting checkpoint note', async ({ page }) => {
@@ -4109,6 +4156,20 @@ test('meeting management uses the live workspace layout and preserves create flo
   expect(meetingGridLayout.cellAlignItems).toBe('center');
   expect(meetingGridLayout.rootHeight).toBeLessThanOrEqual(meetingGridLayout.scrollRect.height);
   expect(meetingGridLayout.scrollRect.height).toBeGreaterThan(0);
+
+  await page.setViewportSize({ width: 1024, height: 600 });
+  const laptopMeetingLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
+    const mainText = [...element.querySelectorAll('.meeting-name-cell')];
+    return {
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      mainTextCanWrap: mainText.every((cell) => getComputedStyle(cell).overflowWrap === 'anywhere'),
+      clippedMainText: mainText.some((cell) => cell.scrollWidth > cell.clientWidth + 1 && getComputedStyle(cell).overflow === 'hidden')
+    };
+  });
+  expect(laptopMeetingLayout.pageHasHorizontalOverflow).toBe(false);
+  expect(laptopMeetingLayout.mainTextCanWrap).toBe(true);
+  expect(laptopMeetingLayout.clippedMainText).toBe(false);
+  await page.setViewportSize({ width: 1280, height: 720 });
 
   await page.getByRole('row', { name: /既有產品會議/ }).getByRole('button', { name: '編輯' }).click();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();

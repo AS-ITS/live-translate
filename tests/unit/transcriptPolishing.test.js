@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createCueRefinementCoordinator,
   createTranscriptPolishingCoordinator,
   mergePolishedItemsFromOutputs,
   mergeStableCues,
@@ -126,4 +127,77 @@ test('polishing lifecycle persists an explicit target contract in the request sn
   ]);
   assert.equal(targets[0].refinementJobId, `polishing-execution:session-1:${requests[0].inputHash}`);
   assert.equal(targets[0].requestId, `polishing-request:session-1:${requests[0].inputHash}`);
+});
+
+test('Cue refinement coordinator submits each Cue with at most two preceding context Cues', async () => {
+  const submissions = [];
+  const coordinator = createCueRefinementCoordinator({
+    submit: async (job) => submissions.push(job)
+  });
+  const cues = [1, 2, 3, 4].map((sequence) => cue({ cueId: `cue-${sequence}`, sequence }));
+
+  coordinator.enqueue(cues);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(submissions.map(({ cue: submittedCue, contextCues }) => ({
+    cueId: submittedCue.cueId,
+    context: contextCues.map((item) => item.cueId)
+  })), [
+    { cueId: 'cue-1', context: [] },
+    { cueId: 'cue-2', context: ['cue-1'] },
+    { cueId: 'cue-3', context: ['cue-1', 'cue-2'] },
+    { cueId: 'cue-4', context: ['cue-2', 'cue-3'] }
+  ]);
+});
+
+test('Cue refinement coordinator deduplicates identical versions and enforces RPM', async () => {
+  let now = 0;
+  const scheduled = [];
+  const submissions = [];
+  const coordinator = createCueRefinementCoordinator({
+    maxRequestsPerMinute: 1,
+    now: () => now,
+    scheduler: {
+      set(callback, delayMs) { scheduled.push({ callback, delayMs }); return scheduled.length; },
+      clear() {}
+    },
+    submit: async ({ cue: submittedCue }) => submissions.push(submittedCue.cueId)
+  });
+  const first = cue({ cueId: 'cue-1', sequence: 1 });
+  const second = cue({ cueId: 'cue-2', sequence: 2 });
+
+  coordinator.enqueue([first, first, second]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(submissions, ['cue-1']);
+  assert.equal(coordinator.state().pendingCount, 1);
+  assert.equal(scheduled[0].delayMs, 60000);
+
+  now = 60000;
+  scheduled[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(submissions, ['cue-1', 'cue-2']);
+});
+
+test('submitCue request targets only the current Cue while context remains in refinementItems', async () => {
+  const requests = [];
+  const lifecycle = createTranscriptPolishingLifecycle({
+    now: () => '2026-08-24T00:00:00.000Z',
+    apiClient: {
+      async createTranslationRequest(request) { requests.push(request); },
+      async createTranslationExecution() {}
+    }
+  });
+  await lifecycle.submitCue({
+    sessionId: 'session-1',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    cue: cue({ cueId: 'cue-3', sequence: 3, segmentId: 'segment-1' }),
+    contextCues: [cue({ cueId: 'cue-1', sequence: 1 }), cue({ cueId: 'cue-2', sequence: 2 })]
+  });
+
+  assert.deepEqual(requests[0].sourceTranscriptSnapshot.refinementItems.map((item) => item.cueId), ['cue-1', 'cue-2', 'cue-3']);
+  assert.deepEqual(requests[0].sourceTranscriptSnapshot.refinementTargets.map((target) => target.targetCueId), ['cue-3']);
 });

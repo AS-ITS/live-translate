@@ -85,6 +85,12 @@
 
 ## Unreleased
 
+- #27 finalized Cue refinement now queues one asynchronous request per Cue with
+  at most two preceding finalized Cues as context. Only the addressed Cue is
+  updated; subtitle resegmentation remains a separate batch capability, and
+  transcript polishing provider execution is rate-limited by the configured
+  RPM with durable queue deferral.
+
 - 修正逐句潤飾結果的 target identity 與 canonical Cue persistence；polished/refined output 現在依 `cueId` 原地更新，不會因輸出順序覆寫其他 Cue 或在 reload 後退回 pending。
 
 - DEV 模式新增 Live session 端到端事件證據與 `window.__liveTranslateDebug.getSnapshot()`；明確記錄 PCM 產生、SDK send 的 void/sync throw/async reject，以及 input-end outcome。Token config 明確啟用 automatic activity detection，並支援依 provider config 使用 `activityStart/activityEnd`；移除 live transcript 的 3 秒 idle 偽 finalization。E2E 測試 backend 改用獨立 3100 port。

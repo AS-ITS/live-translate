@@ -133,6 +133,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
     translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
     translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+    transcriptPolishingMaxRpm = positiveIntegerEnv(env.TRANSCRIPT_POLISHING_MAX_RPM, 15),
     translationHistoryQueryServiceFactory = createTranslationHistoryQueryService,
     translationHistoryControllerFactory = createDefaultTranslationHistoryController,
     translationApplicationService,
@@ -239,6 +240,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunnerFactory,
     translationExecutionWorkerFactory,
     translationExecutionWorkerRuntimeFactory,
+    transcriptPolishingMaxRpm,
     retranslationSessionMaterializerFactory: createDefaultRetranslationSessionMaterializer
   });
   const shouldCreateSavedTranscriptRetranslationService =
@@ -807,6 +809,7 @@ export function createTranslationCommandDependencies({
   translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
   translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
   translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+  transcriptPolishingMaxRpm = 15,
   retranslationSessionMaterializerFactory
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
@@ -891,7 +894,8 @@ export function createTranslationCommandDependencies({
                 translationExecutionRetryErrorClassifier
               }
             : {}),
-          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {})
+          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {}),
+          transcriptPolishingMaxRpm
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =
@@ -1036,7 +1040,7 @@ function createWorkerTranslationExecutionRunner({ translationExecutionRunner, tr
       const results = [
         ...(Array.isArray(output.polishedItems) ? output.polishedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['translation'] })) : []),
         ...(Array.isArray(output.refinedItems) ? output.refinedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['source', 'translation'] })) : [])
-      ].map((item) => ({
+      ].filter((item) => item.targetCueId && targetByCueId.has(item.targetCueId)).map((item) => ({
         ...item,
         sessionId: targetByCueId.get(item.targetCueId)?.sessionId || output.sessionId,
         segmentId: targetByCueId.get(item.targetCueId)?.segmentId || snapshot.segmentId || snapshot.items?.find((candidate) => candidate.cueId === item.targetCueId)?.segmentId,
@@ -1339,6 +1343,11 @@ function assertProviderConfiguration(configuration) {
   if (!configuration || typeof configuration !== 'object' || !Object.hasOwn(configuration, 'defaultProviderKey')) {
     throw new TypeError('configuration.defaultProviderKey is required.');
   }
+}
+
+function positiveIntegerEnv(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function assertFactory(factory, name) {

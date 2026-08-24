@@ -35,7 +35,7 @@ import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
-import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
 import { applyCueRefinementExecutionStates, applyRefinementResultToCues, completedCueRefinementOutputs, markCuesCompletedByRefinedOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from './lib/cueRefinement.js';
 import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from './lib/cueContent.js';
 import {
@@ -676,7 +676,7 @@ function App() {
         ...(Array.isArray(output.polishedItems) ? output.polishedItems : [])
       ];
       for (const item of items) {
-        const target = targetByCueId.get(item.targetCueId);
+        const target = targetByCueId.get(item.targetCueId || item.cueId);
         const targetCueId = item.targetCueId || target?.targetCueId;
         if (!targetCueId) {
           if (import.meta.env?.DEV) console.debug('[Cue refinement] missing targetCueId', { sessionId: output.sessionId, refinementJobId: output.executionId, item });
@@ -2047,15 +2047,38 @@ function App() {
 
   function transcriptPolishingCoordinator() {
     if (!transcriptPolishingCoordinatorRef.current) {
-      transcriptPolishingCoordinatorRef.current = createTranscriptPolishingCoordinator({
-        intervalMs: Number.isInteger(TRANSCRIPT_POLISHING_INTERVAL_MS) && TRANSCRIPT_POLISHING_INTERVAL_MS > 0 ? TRANSCRIPT_POLISHING_INTERVAL_MS : 30000,
-        minChars: Number.isInteger(TRANSCRIPT_POLISHING_MIN_CHARS) && TRANSCRIPT_POLISHING_MIN_CHARS > 0 ? TRANSCRIPT_POLISHING_MIN_CHARS : 200,
+      transcriptPolishingCoordinatorRef.current = createCueRefinementCoordinator({
         maxRequestsPerMinute: Number.isInteger(TRANSCRIPT_POLISHING_MAX_RPM) && TRANSCRIPT_POLISHING_MAX_RPM > 0 ? TRANSCRIPT_POLISHING_MAX_RPM : 15,
-        submit: (input) => transcriptPolishingLifecycle().submit({
+        submit: ({ cue, contextCues }) => transcriptPolishingLifecycle().submitCue({
           sessionId: activeSessionRecordIdRef.current,
           targetLanguageCode,
           sourceLanguageCode,
-          ...input
+          cue,
+          contextCues
+        }).then((result) => {
+          const current = subtitleCueStateRef.current;
+          const nextCues = current.finalCues.map((candidate) => candidate.cueId === cue.cueId
+            ? {
+              ...candidate,
+              refinement: {
+                ...(candidate.refinement || {}),
+                status: 'queued',
+                version: result.version,
+                inputHash: result.inputHash,
+                executionId: result.executionId,
+                requestedAt: new Date().toISOString()
+              }
+            }
+            : candidate);
+          const next = nextCues.every((candidate, index) => candidate === current.finalCues[index])
+            ? current
+            : { ...current, finalCues: nextCues };
+          if (next !== current) {
+            subtitleCueStateRef.current = next;
+            setSubtitleCueState(next);
+            enqueueCuePersistence(current, next);
+          }
+          return result;
         }),
         onStateChange: (next) => setPolishingState((current) => ({ ...current, status: next.status, error: next.error?.message || '' }))
       });
@@ -2063,34 +2086,11 @@ function App() {
     return transcriptPolishingCoordinatorRef.current;
   }
 
-  function scheduleTranscriptPolishing(finalCues = [], { force = false } = {}) {
+  function scheduleTranscriptPolishing(finalCues = []) {
     if (!TRANSCRIPT_POLISHING_ENABLED) return;
     const cues = finalCues.filter((cue) => cue?.status === 'final' && rawSourceForCue(cue) && rawTranslationForCue(cue));
     if (!activeSessionRecordIdRef.current || cues.length === 0) return;
-    if (subtitleRefinementTimerRef.current) window.clearTimeout(subtitleRefinementTimerRef.current);
-    const dispatch = () => {
-      subtitleRefinementTimerRef.current = null;
-      const group = [...cues].sort((left, right) => left.sequence - right.sequence).slice(-12);
-      const sessionId = activeSessionRecordIdRef.current;
-      void transcriptPolishingLifecycle().submitStableGroup({
-        sessionId,
-        targetLanguageCode,
-        sourceLanguageCode,
-        cues: group
-      }).then((result) => {
-        if (result) {
-          const current = subtitleCueStateRef.current;
-          const next = { ...current, refinedSubtitleInputHash: result.inputHash, refinedSubtitleStatus: 'queued' };
-          subtitleCueStateRef.current = next;
-          setSubtitleCueState(next);
-          enqueueCuePersistence(current, next);
-          pollRefinedSubtitleResult(sessionId, result.inputHash, 0);
-          setPolishingState((state) => ({ ...state, status: 'queued', executionId: result.executionId, error: '' }));
-        }
-      }).catch((nextError) => setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' })));
-    };
-    if (force) dispatch();
-    else subtitleRefinementTimerRef.current = window.setTimeout(dispatch, 1500);
+    transcriptPolishingCoordinator().enqueue(cues);
   }
 
   function pollRefinedSubtitleResult(sessionId, inputHash, attempt) {
@@ -2120,7 +2120,18 @@ function App() {
   async function retryPolishingExecution(executionId) {
     if (!executionId) return;
     try {
-      await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
+      const response = await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
+      const retryExecution = response?.execution || response;
+      const current = subtitleCueStateRef.current;
+      const nextCues = current.finalCues.map((cue) => cue.refinement?.executionId === executionId
+        ? { ...cue, refinement: { ...(cue.refinement || {}), status: 'queued', executionId: retryExecution?.id || executionId } }
+        : cue);
+      if (!nextCues.every((cue, index) => cue === current.finalCues[index])) {
+        const next = { ...current, finalCues: nextCues };
+        subtitleCueStateRef.current = next;
+        setSubtitleCueState(next);
+        enqueueCuePersistence(current, next);
+      }
       setPolishingState((current) => ({ ...current, status: 'queued', error: '' }));
     } catch {
       setPolishingState((current) => ({ ...current, status: 'failed', error: '翻譯潤飾重試失敗，請稍後再試。' }));

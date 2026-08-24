@@ -1,5 +1,116 @@
+import { cueRefinementInputHash } from './cueContent.js';
+
 export const DEFAULT_TRANSCRIPT_POLISHING_INTERVAL_MS = 30000;
 export const DEFAULT_TRANSCRIPT_POLISHING_MIN_CHARS = 200;
+
+export function createCueRefinementCoordinator({
+  maxRequestsPerMinute = 15,
+  now = () => Date.now(),
+  scheduler = DEFAULT_COORDINATOR_SCHEDULER,
+  submit,
+  onStateChange
+} = {}) {
+  if (!Number.isInteger(maxRequestsPerMinute) || maxRequestsPerMinute <= 0) throw new TypeError('maxRequestsPerMinute must be a positive integer.');
+  if (typeof now !== 'function') throw new TypeError('now must be a function.');
+  if (!scheduler || typeof scheduler.set !== 'function' || typeof scheduler.clear !== 'function') throw new TypeError('scheduler must provide set and clear.');
+  if (typeof submit !== 'function') throw new TypeError('submit must be a function.');
+
+  const jobs = new Map();
+  const queuedKeys = new Set();
+  const submissionTimes = [];
+  let inFlight = false;
+  let timerHandle;
+
+  function enqueue(cues = []) {
+    const ordered = [...(Array.isArray(cues) ? cues : [])]
+      .filter((cue) => eligibleCue(cue))
+      .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0));
+    for (const cue of ordered) {
+      if (cue.refinement?.status === 'completed' || cue.refinement?.status === 'failed') continue;
+      const key = cueJobKey(cue);
+      if (queuedKeys.has(key)) continue;
+      queuedKeys.add(key);
+      jobs.set(key, {
+        key,
+        cue,
+        contextCues: ordered.filter((candidate) => candidate.sequence < cue.sequence).slice(-2)
+      });
+    }
+    emit('queued');
+    void pump();
+  }
+
+  function reset() {
+    if (timerHandle !== undefined) scheduler.clear(timerHandle);
+    timerHandle = undefined;
+    jobs.clear();
+    queuedKeys.clear();
+    submissionTimes.length = 0;
+    inFlight = false;
+    emit('idle');
+  }
+
+  async function pump() {
+    if (inFlight || jobs.size === 0) return;
+    const currentTime = now();
+    while (submissionTimes[0] !== undefined && currentTime - submissionTimes[0] >= 60000) submissionTimes.shift();
+    if (submissionTimes.length >= maxRequestsPerMinute) {
+      scheduleAt(Math.max(1, 60000 - (currentTime - submissionTimes[0])));
+      emit('rate_limited');
+      return;
+    }
+
+    const job = jobs.values().next().value;
+    jobs.delete(job.key);
+    inFlight = true;
+    submissionTimes.push(currentTime);
+    emit('running', job);
+    try {
+      await submit(job);
+      emit('submitted', job);
+    } catch (error) {
+      queuedKeys.delete(job.key);
+      emit('failed', { ...job, error });
+    } finally {
+      inFlight = false;
+      void pump();
+    }
+  }
+
+  function scheduleAt(delayMs) {
+    if (timerHandle !== undefined) return;
+    timerHandle = scheduler.set(() => {
+      timerHandle = undefined;
+      void pump();
+    }, delayMs);
+  }
+
+  function emit(status, detail = {}) {
+    onStateChange?.({ status, inFlight, pendingCount: jobs.size, ...detail });
+  }
+
+  return Object.freeze({ enqueue, reset, state: () => ({ inFlight, pendingCount: jobs.size, submittedCount: submissionTimes.length }) });
+}
+
+const DEFAULT_COORDINATOR_SCHEDULER = Object.freeze({
+  set(callback, delayMs) { return setTimeout(callback, delayMs); },
+  clear(handle) { clearTimeout(handle); }
+});
+
+function eligibleCue(cue) {
+  return cue?.status === 'final'
+    && cue?.cueId
+    && meaningfulText(cue.rawSource ?? cue.sourceText)
+    && meaningfulText(cue.rawTranslation ?? cue.translatedText ?? cue.translationText);
+}
+
+function cueJobKey(cue) {
+  return `${cue.cueId}:v${cue.refinement?.version ?? 1}:${cue.refinement?.inputHash || cueRefinementInputHash(cue)}`;
+}
+
+function meaningfulText(value) {
+  return /[^\s\p{P}\p{S}]/u.test(String(value || '').trim());
+}
 
 export function createTranscriptPolishingCoordinator({
   intervalMs = DEFAULT_TRANSCRIPT_POLISHING_INTERVAL_MS,

@@ -201,6 +201,29 @@ test('durable queue claim is persisted before runner starts', async () => {
   }]);
 });
 
+test('transcript polishing is deferred by the provider RPM gate without running the provider', async () => {
+  const calls = [];
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    translationRepository: repository({
+      calls,
+      request: translationRequest({ operation: 'transcript_polishing' })
+    }),
+    durableTranslationExecutionQueueRepository: durableRepository({
+      calls,
+      retryClaim(executionId, retry) { calls.push(['durable.retryClaim', executionId, retry]); }
+    }),
+    transcriptPolishingRateLimiter: {
+      tryAcquire() { return { allowed: false, availableAtMs: Date.parse('2026-08-24T00:01:00.000Z') }; }
+    },
+    clock: () => '2026-08-24T00:00:00.000Z'
+  }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'rate_limited', executionId: 'execution-1' });
+  assert.equal(calls.some(([name]) => name === 'runner.run'), false);
+  assert.equal(calls.some(([name]) => name === 'durable.retryClaim'), true);
+});
+
 test('durable worker propagates the claimed lease and fence token to runner', async () => {
   let runnerInput;
   const worker = createTranslationExecutionWorker(workerDependencies({
@@ -838,7 +861,8 @@ function workerDependencies(options = {}) {
     ...(options.translationExecutionRetryPolicy !== undefined ? { translationExecutionRetryPolicy: options.translationExecutionRetryPolicy } : {}),
     ...(options.translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier: options.translationExecutionRetryErrorClassifier } : {}),
     ...(options.metrics !== undefined ? { metrics: options.metrics } : {}),
-    ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {})
+    ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {}),
+    ...(options.transcriptPolishingRateLimiter !== undefined ? { transcriptPolishingRateLimiter: options.transcriptPolishingRateLimiter } : {})
   };
 }
 

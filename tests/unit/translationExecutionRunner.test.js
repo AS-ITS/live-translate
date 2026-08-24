@@ -51,6 +51,63 @@ test('runner reuses an execution idempotency key for every retry', async () => {
   );
 });
 
+test('transcript polishing acquires one RPM slot for each provider attempt', async () => {
+  const acquisitions = [];
+  let providerCalls = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository(),
+    transcriptPolishingRateLimiter: { async acquire() { acquisitions.push(providerCalls); } },
+    translationExecutionProvider: {
+      async execute() {
+        providerCalls += 1;
+        if (providerCalls === 1) throw new Error('retry once');
+        return providerResult();
+      }
+    },
+    retryPolicy: createRetryPolicy({ maxRetries: 1 })
+  });
+
+  await runner.execute(runnerInput({ payload: executionPayload({ operation: 'transcript_polishing' }) }));
+
+  assert.deepEqual(acquisitions, [0, 1]);
+});
+
+test('transcript polishing waits before marking the provider attempt in flight', async () => {
+  const calls = [];
+  let release;
+  const waitForSlot = new Promise((resolve) => { release = resolve; });
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository({ calls }),
+    transcriptPolishingRateLimiter: { acquire() { return waitForSlot; } },
+    translationExecutionProvider: {
+      async execute() {
+        calls.push(['provider.execute']);
+        return providerResult();
+      }
+    }
+  });
+
+  const pending = runner.execute(runnerInput({ payload: executionPayload({ operation: 'transcript_polishing' }) }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls.some(([name]) => name === 'updateTranslationExecution'), false);
+  assert.equal(calls.some(([name]) => name === 'provider.execute'), false);
+  release();
+  await pending;
+  assert.equal(calls.some(([name]) => name === 'provider.execute'), true);
+});
+
+test('non-polishing executions do not acquire the transcript polishing limiter', async () => {
+  let acquisitions = 0;
+  const runner = createTranslationExecutionRunner({
+    translationRepository: translationRepository(),
+    transcriptPolishingRateLimiter: { async acquire() { acquisitions += 1; } },
+    translationExecutionProvider: provider()
+  });
+
+  await runner.execute(runnerInput());
+  assert.equal(acquisitions, 0);
+});
+
 test('successful execution creates one TranslationOutput', async () => {
   const calls = [];
   const runner = createTranslationExecutionRunner({

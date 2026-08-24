@@ -27,6 +27,13 @@ Provider failures, timeouts, rate limits, and retries are isolated from the
 Gemini Live session. Queue retry, backoff, durable recovery, and failure
 metadata use the existing translation execution infrastructure.
 
+The authoritative `TRANSCRIPT_POLISHING_MAX_RPM` gate is in the server
+translation execution runner, immediately before each polishing provider
+attempt. Every attempt, including retry attempts, consumes one slot. Waiting
+for a slot is not a provider failure and does not enter the DLQ path. The
+front-end coordinator may perform early throttling for responsiveness, but it
+is not the authoritative provider limit.
+
 ## Configuration
 
 ```env
@@ -40,8 +47,13 @@ The provider receives finalized source/translation context and returns both
 refined source and translation. Its prompt requires preservation of meaning,
 numbers, dates, names, terminology, negation, commitments, and glossary rules.
 A provider failure leaves raw Cue content unchanged and remains retryable
-through the existing execution flow. Queue admission respects the configured
-RPM limit and uses existing timeout, retry, backoff, recovery, and DLQ paths.
+through the existing execution flow. Provider attempts respect the configured
+RPM limit and use existing timeout, retry, backoff, recovery, and DLQ paths.
+
+The runner uses a sliding 60-second window and is process-local for the current
+single-Node deployment. The durable queue preserves pending work across server
+restart; the in-memory RPM window starts fresh after restart. Multi-process
+shared limiting would require a separate capability.
 
 The response is addressable by `cueId` and `sequence`; legacy outputs that only
 contain translation text remain readable and do not change source text.

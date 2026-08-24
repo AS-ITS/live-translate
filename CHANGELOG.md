@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 完成 #27 的潤飾 RPM 與長會議可靠性收尾：RPM authoritative gate 現在位於實際 provider attempt 邊界，retry attempt 也會計入；worker 僅負責 durable claim、lease heartbeat、retry/recovery 與 DLQ，rate-limit 等待不再反覆重排 queue item。
+
 - 修正即時翻譯左側設定卡被右側字幕卡強制同高而裁切內容的問題；短視窗現在由頁面自然垂直捲動，設定卡依內容撐高，會議模式與操作按鈕不再重疊。
 
 - 改善整個工作區的筆電版響應式版面；主要標題、說明、欄位與操作文字會正常換行，不再被面板或相鄰元件遮住，低高度視窗也可在設定卡與會議設定卡內捲動。

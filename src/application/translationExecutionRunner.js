@@ -1,6 +1,7 @@
 import { TranslationExecution, TranslationOutput } from '../domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
 import { createRetryPolicy } from './translation/retryPolicy.js';
+import { createTranscriptPolishingRateLimiter } from './translation/transcriptPolishingRateLimiter.js';
 
 export function createTranslationExecutionRunner({
   translationRepository,
@@ -8,7 +9,8 @@ export function createTranslationExecutionRunner({
   retryPolicy = createRetryPolicy(),
   executionFenceGuard,
   logger = (event) => console.error(JSON.stringify(event)),
-  clock = () => new Date().toISOString()
+  clock = () => new Date().toISOString(),
+  transcriptPolishingRateLimiter = createTranscriptPolishingRateLimiter()
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
@@ -16,6 +18,9 @@ export function createTranslationExecutionRunner({
   assertOptionalExecutionFenceGuard(executionFenceGuard);
   if (typeof logger !== 'function') throw new TypeError('logger must be a function.');
   assertClock(clock);
+  if (!transcriptPolishingRateLimiter || typeof transcriptPolishingRateLimiter.acquire !== 'function') {
+    throw new TypeError('transcriptPolishingRateLimiter.acquire must be a function.');
+  }
 
   return Object.freeze({
     async execute(input = {}) {
@@ -35,7 +40,8 @@ export function createTranslationExecutionRunner({
           payload,
           executionFenceGuard,
           executionFence,
-          clock
+          clock,
+          transcriptPolishingRateLimiter
         }));
       } catch (error) {
         if (error.providerExecutionError !== true) throw error;
@@ -204,12 +210,16 @@ async function executeProviderWithRetry({
   payload,
   executionFenceGuard,
   executionFence,
-  clock
+  clock,
+  transcriptPolishingRateLimiter
 }) {
   let providerAttemptExecution = execution;
   let attempt = 1;
 
   while (true) {
+    if (payload.operation === 'transcript_polishing') {
+      await transcriptPolishingRateLimiter.acquire();
+    }
     const inFlightExecution = providerAttemptExecution.markProviderAttemptInFlight(clock());
     await assertWritable(executionFenceGuard, execution, executionFence);
     await translationRepository.updateTranslationExecution(inFlightExecution);

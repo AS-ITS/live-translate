@@ -201,7 +201,7 @@ test('durable queue claim is persisted before runner starts', async () => {
   }]);
 });
 
-test('transcript polishing is deferred by the provider RPM gate without running the provider', async () => {
+test('worker does not perform transcript polishing RPM admission', async () => {
   const calls = [];
   const worker = createTranslationExecutionWorker(workerDependencies({
     calls,
@@ -209,19 +209,13 @@ test('transcript polishing is deferred by the provider RPM gate without running 
       calls,
       request: translationRequest({ operation: 'transcript_polishing' })
     }),
-    durableTranslationExecutionQueueRepository: durableRepository({
-      calls,
-      retryClaim(executionId, retry) { calls.push(['durable.retryClaim', executionId, retry]); }
-    }),
-    transcriptPolishingRateLimiter: {
-      tryAcquire() { return { allowed: false, availableAtMs: Date.parse('2026-08-24T00:01:00.000Z') }; }
-    },
+    durableTranslationExecutionQueueRepository: durableRepository({ calls }),
     clock: () => '2026-08-24T00:00:00.000Z'
   }));
 
-  assert.deepEqual(await worker.processNext(), { status: 'rate_limited', executionId: 'execution-1' });
-  assert.equal(calls.some(([name]) => name === 'runner.run'), false);
-  assert.equal(calls.some(([name]) => name === 'durable.retryClaim'), true);
+  assert.deepEqual(await worker.processNext(), { status: 'processed', executionId: 'execution-1' });
+  assert.equal(calls.some(([name]) => name === 'runner.run'), true);
+  assert.equal(calls.some(([name]) => name === 'durable.retryClaim'), false);
 });
 
 test('durable worker propagates the claimed lease and fence token to runner', async () => {
@@ -862,7 +856,6 @@ function workerDependencies(options = {}) {
     ...(options.translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier: options.translationExecutionRetryErrorClassifier } : {}),
     ...(options.metrics !== undefined ? { metrics: options.metrics } : {}),
     ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {}),
-    ...(options.transcriptPolishingRateLimiter !== undefined ? { transcriptPolishingRateLimiter: options.transcriptPolishingRateLimiter } : {})
   };
 }
 

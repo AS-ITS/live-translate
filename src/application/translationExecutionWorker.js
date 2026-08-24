@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { assertDurableTranslationExecutionQueueRepository } from './translation/durableTranslationExecutionQueueRepository.js';
 import { assertTranslationExecutionQueue } from './translation/translationExecutionQueue.js';
 import { createTranslationExecutionLeaseHeartbeat } from './translation/translationExecutionLeaseHeartbeat.js';
-import { createTranscriptPolishingRateLimiter } from './translation/transcriptPolishingRateLimiter.js';
 import {
   assertTranslationExecutionMetrics,
   createNoopTranslationExecutionMetrics,
@@ -31,15 +30,12 @@ export function createTranslationExecutionWorker({
   leaseRenewalMs = 100000,
   clock = () => new Date().toISOString(),
   leaseIdFactory = randomUUID,
-  leaseHeartbeatScheduler = DEFAULT_LEASE_HEARTBEAT_SCHEDULER,
-  transcriptPolishingMaxRpm = 15,
-  transcriptPolishingRateLimiter = createTranscriptPolishingRateLimiter({ maxRequestsPerMinute: transcriptPolishingMaxRpm })
+  leaseHeartbeatScheduler = DEFAULT_LEASE_HEARTBEAT_SCHEDULER
 } = {}) {
   assertTranslationExecutionQueue(translationExecutionQueue);
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionRunner(translationExecutionRunner);
   assertTranslationExecutionMetrics(metrics);
-  if (!transcriptPolishingRateLimiter || typeof transcriptPolishingRateLimiter.tryAcquire !== 'function') throw new TypeError('transcriptPolishingRateLimiter.tryAcquire must be a function.');
   assertOptionalDurableQueueRepository(durableTranslationExecutionQueueRepository);
   if (durableTranslationExecutionQueueRepository !== undefined) {
     assertLeaseConfiguration(leaseDurationMs, leaseRenewalMs, clock, leaseIdFactory, leaseHeartbeatScheduler);
@@ -103,20 +99,6 @@ export function createTranslationExecutionWorker({
           job.executionId,
           createLease({ clock, leaseIdFactory, leaseDurationMs })
         );
-      }
-
-      if (request.operation === 'transcript_polishing' && claimedDurableItem !== undefined) {
-        const admission = transcriptPolishingRateLimiter.tryAcquire(Date.parse(clock()));
-        if (!admission.allowed) {
-          await durableTranslationExecutionQueueRepository.retryClaim(job.executionId, {
-            leaseId: claimedDurableItem.leaseId,
-            fenceToken: claimedDurableItem.fenceToken,
-            attempt: claimedDurableItem.attempt,
-            availableAt: new Date(admission.availableAtMs).toISOString(),
-            lastFailure: null
-          });
-          return { status: 'rate_limited', executionId: job.executionId };
-        }
       }
 
       const leaseHeartbeat = durableTranslationExecutionQueueRepository !== undefined

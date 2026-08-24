@@ -21,6 +21,7 @@ import { createTranslationExecutionFenceGuard as createDefaultTranslationExecuti
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
 import { assertTranslationExecutionQueue } from '../src/application/translation/translationExecutionQueue.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
+import { createTranscriptPolishingRateLimiter } from '../src/application/translation/transcriptPolishingRateLimiter.js';
 import { createTranslationExecutionRetryPolicy } from '../src/application/translation/translationExecutionRetryPolicy.js';
 import { createTranslationExecutionRetryErrorClassifier } from '../src/application/translation/translationExecutionRetryErrorClassifier.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
@@ -847,6 +848,7 @@ export function createTranslationCommandDependencies({
             resolvedTranslationExecutionProviderResolver
           ),
           retryPolicy: resolvedRetryPolicy,
+          transcriptPolishingRateLimiter: createTranscriptPolishingRateLimiter({ maxRequestsPerMinute: transcriptPolishingMaxRpm }),
           ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
@@ -895,7 +897,6 @@ export function createTranslationCommandDependencies({
               }
             : {}),
           ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {}),
-          transcriptPolishingMaxRpm
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =

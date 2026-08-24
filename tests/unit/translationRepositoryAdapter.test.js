@@ -527,6 +527,12 @@ function legacySessionRepository({ sessions = [sessionRecord()], asyncMethods = 
 
     listSessionRecords() {
       return maybeAsync('listSessionRecords', Array.from(records.values(), clone));
+    },
+
+    deleteSessionRecord(id) {
+      records.delete(id);
+      transcriptItems.delete(id);
+      return maybeAsync('deleteSessionRecord', true);
     }
   };
 }

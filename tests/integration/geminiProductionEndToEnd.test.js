@@ -122,6 +122,7 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
         sourceTranscriptRevisionId: 'source-revision:session-wp6:final',
         sourceTranscriptSnapshot: {
           revisionId: 'source-revision:session-wp6:final',
+          glossaryEntries: [],
           items: [
             {
               id: 'source-1',
@@ -216,6 +217,7 @@ test('production HTTP translation flow resolves and invokes the default Gemini p
         sourceTranscriptRevisionId: 'source-revision:session-wp6:final',
         sourceTranscriptSnapshot: {
           revisionId: 'source-revision:session-wp6:final',
+          glossaryEntries: [],
           items: [
             {
               id: 'source-1',

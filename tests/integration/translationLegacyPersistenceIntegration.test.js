@@ -374,6 +374,12 @@ function legacySessionRepository({ records = [], transcriptItems = {} } = {}) {
       return Array.from(storedRecords.values(), clone);
     },
 
+    deleteSessionRecord(sessionId) {
+      storedRecords.delete(sessionId);
+      storedTranscriptItems.delete(sessionId);
+      return true;
+    },
+
     updateSessionRecord(sessionId, patch = {}) {
       const record = storedRecords.get(sessionId);
 

@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- 完成 #29「會議中心 UI 整併與即時字幕直播分享」規格：定義 Meeting 管理首頁、單一 Meeting Workspace、全域／會議專用字典隔離、Meeting-level Viewer 分享、Final Cue 廣播、重連補洞與本地延遲 SLA 驗證。此項目目前僅完成規格文件，尚未修改產品程式或 API。
+- 完成 #29 Milestone 1：`#meetings` 現在是 Meeting Management 首頁，提供會議名稱／語言／狀態搜尋、狀態篩選、最後更新時間與依 Meeting 狀態顯示的操作；保留既有錄音、設定與資料流程，Viewer、Workspace 與 Cue 廣播留待後續 Milestone。
+
+- 完成 #29「會議中心 UI 整併與即時字幕直播分享」規格：定義 Meeting 管理首頁、單一 Meeting Workspace、全域／會議專用字典隔離、Meeting-level Viewer 分享、Final Cue 廣播、重連補洞與本地延遲 SLA 驗證；目前已完成 Milestone 1，後續能力仍依交付階段進行。
 
 - 完成 #27 的潤飾 RPM 與長會議可靠性收尾：RPM authoritative gate 現在位於實際 provider attempt 邊界，retry attempt 也會計入；worker 僅負責 durable claim、lease heartbeat、retry/recovery 與 DLQ，rate-limit 等待不再反覆重排 queue item。
 

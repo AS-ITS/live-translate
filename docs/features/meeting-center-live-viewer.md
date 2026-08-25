@@ -2,8 +2,10 @@
 
 ## Status
 
-Specification only. This document defines the implementation boundary for
-issue #29; it does not mean that the capability is implemented.
+Milestone 1 is implemented: Meeting Management is the canonical application
+home with client-side search, status filtering, and status-aware actions.
+Meeting Workspace, Viewer sharing, Cue broadcast, and reconnect recovery remain
+planned for later delivery phases.
 
 ## Capability Overview
 

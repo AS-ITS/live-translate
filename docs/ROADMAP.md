@@ -18,6 +18,10 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
+Issue #29 Milestone 1 is completed: `#meetings` is the canonical Meeting
+Management home with client-side name/status filtering and status-aware actions.
+Meeting Workspace and Viewer broadcast phases remain pending.
+
 Execution status push is now available through a process-local authenticated
 WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay
 remain deferred.

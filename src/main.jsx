@@ -29,6 +29,12 @@ import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { selectedMeetingGlossaryEntries } from './lib/meetingGlossary.js';
 import { createMeetingManagementApiClient } from './lib/meetingManagementApiClient.js';
 import { createDeadLetterQueueApiClient } from './lib/deadLetterQueueApiClient.js';
+import {
+  filterMeetingManagementItems,
+  meetingManagementLastUpdated,
+  meetingManagementStatusLabel,
+  MEETING_STATUS_FILTERS
+} from './lib/meetingManagement.js';
 import { authenticatedFetch } from './lib/accessToken.js';
 import { applyGlossaryReplacements } from './lib/glossaryReplacement.js';
 import { missingNumericIntegrity } from './lib/numericIntegrity.js';
@@ -203,7 +209,7 @@ function pageFromLocation() {
 function pageInfoFromLocation() {
   const rawHash = window.location.hash.replace('#', '');
   const [pageName, queryString = ''] = rawHash.split('?');
-  const page = FEATURE_PAGES.has(pageName) ? pageName : 'live';
+  const page = FEATURE_PAGES.has(pageName) ? pageName : pageName ? 'live' : 'meetings';
   const params = new URLSearchParams(queryString);
   return {
     page,
@@ -3320,7 +3326,7 @@ function App() {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
-  const usesWorkspaceNavigation = ['live', 'meeting', 'meeting-detail', 'history', 'meetings', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
+  const usesWorkspaceNavigation = ['live', 'meeting', 'meeting-detail', 'history', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
 
   return (
     <main className={`app-shell ${usesWorkspaceNavigation ? 'live-app-shell' : ''}`}>
@@ -3331,7 +3337,7 @@ function App() {
             <h1>即時翻譯</h1>
           </a>
           <nav className="live-sidebar-navigation" aria-label="主要導覽">
-            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meeting', event)}><Play size={18} aria-hidden="true" />會議管理</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meetings" aria-current={['meeting', 'meetings'].includes(page) ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meetings', event)}><Play size={18} aria-hidden="true" />會議管理</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#live" aria-current={page === 'live' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#history" aria-current={page === 'history' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#retranslate" aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
@@ -3344,8 +3350,8 @@ function App() {
           <h1>即時翻譯</h1>
           <p>由 Gemini Live API 驅動的即時語音翻譯。</p>
         </div>
-        <nav className="feature-navigation" aria-label="主要導覽">
-          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meeting" aria-current={page === 'meeting' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meeting', event)}>會議管理</a>
+        <nav className="feature-navigation" aria-label="主要導覽" hidden={page === 'meetings'}>
+          <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meetings" aria-current={['meeting', 'meetings'].includes(page) ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meetings', event)}>會議管理</a>
           <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#live" aria-current={page === 'live' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}>即時翻譯</a>
           <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#history" aria-current={page === 'history' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('history', event)}>翻譯紀錄</a>
           <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#retranslate" aria-current={page === 'retranslate' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('retranslate', event)}>重新翻譯</a>
@@ -3356,7 +3362,7 @@ function App() {
       {page === 'meeting' && navigationNotice ? <p className="error-message" role="alert">{navigationNotice}</p> : null}
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
-      {page === 'meeting' ? (
+      {page === 'meeting' || page === 'meetings' ? (
         <MeetingManagementPage
           onOpenLive={openMeetingLiveWorkspace}
           onOpenHistory={(meetingId) => { window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`; }}
@@ -3686,23 +3692,6 @@ function App() {
           replayingExecutionId={replayingDeadLetterExecutionId}
           onReplay={replayDeadLetterItem}
           onRefresh={refreshDeadLetterQueue}
-        />
-      </section>
-      ) : null}
-
-      {page === 'meetings' ? (
-      <section className="feature-page meetings-page" aria-labelledby="meetings-page-title">
-        <MeetingPanel
-          titleId="meetings-page-title"
-          records={meetingRecords}
-          selectedMeetingId={selectedMeetingId}
-          selectedDetail={selectedMeetingDetail}
-          onViewDetails={openMeetingDetail}
-          detailError={meetingDetailError}
-          onRetryDetail={() => refreshSelectedMeetingDetail(selectedMeetingId)}
-          loadError={meetingLoadError}
-          isLoading={isLoadingMeetings}
-          onRetryLoad={refreshMeetingRecords}
         />
       </section>
       ) : null}
@@ -5051,6 +5040,13 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
   const [notice, setNotice] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isGlossaryDrawerOpen, setIsGlossaryDrawerOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+
+  const filteredMeetings = useMemo(() => filterMeetingManagementItems(meetings, {
+    query,
+    status: statusFilter
+  }), [meetings, query, statusFilter]);
 
   useEffect(() => {
     const routeMeetingId = pageInfoFromLocation().meetingId;
@@ -5205,7 +5201,7 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
       wrapText: false,
       autoHeight: false,
       valueGetter: ({ data }) => data?.status || '',
-      cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingStatusLabel(data?.status)}</span>
+      cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingManagementStatusLabel(data?.status)}</span>
     },
     {
       headerName: '主要輸入語言',
@@ -5226,14 +5222,14 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
       valueGetter: ({ data }) => targetLanguageLabelFor(data?.targetLanguageCode) || data?.targetLanguageCode || '未設定'
     },
     {
-      headerName: '建立時間',
-      colId: 'created-time',
+      headerName: '最後更新',
+      colId: 'updated-time',
       minWidth: 180,
       flex: 1.25,
       wrapText: false,
       autoHeight: false,
-      valueGetter: ({ data }) => data?.createdAt || data?.startedAt || '',
-      cellRenderer: ({ data }) => formatRecordTime(data?.createdAt || data?.startedAt)
+      valueGetter: ({ data }) => meetingManagementLastUpdated(data),
+      cellRenderer: ({ data }) => formatRecordTime(meetingManagementLastUpdated(data))
     },
     {
       headerName: '操作',
@@ -5264,7 +5260,7 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
   ], []);
 
   return (
-    <section className="feature-page meeting-management-page" aria-labelledby="meeting-management-title">
+    <section className="feature-page meeting-management-page meetings-page" aria-labelledby="meeting-management-title">
       <div className="history-header">
         <div><h2 className="workspace-page-heading" id="meeting-management-title">會議管理</h2><p className="history-description">先建立會議並完成設定，再分享給參與者錄音。</p></div>
         {viewMode === 'form' ? (
@@ -5328,14 +5324,26 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
       ) : null}
       {viewMode === 'list' ? <section className="history-panel" aria-label="會議列表">
         <div className="meeting-table-toolbar">
+          <label className="field meeting-search-field">
+            <span>搜尋會議</span>
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋名稱、語言或狀態" />
+          </label>
+          <label className="field meeting-status-filter-field">
+            <span>篩選狀態</span>
+            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+              {MEETING_STATUS_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
+            </select>
+          </label>
           <button className="button primary" type="button" onClick={openCreateForm}>建立新會議</button>
         </div>
+        {meetings.length === 0 ? <p className="history-empty">尚無會議。建立第一場會議開始使用。</p> : null}
+        {meetings.length > 0 && filteredMeetings.length === 0 ? <p className="history-empty">找不到符合條件的會議。</p> : null}
         <div className="meeting-table-scroll">
           <AgGridReact
             {...dataGridProps('meeting-management-data-grid', { fixedHeight: true })}
             aria-label="既有會議列表"
             columnDefs={meetingColumnDefs}
-            rowData={meetings}
+            rowData={filteredMeetings}
             getRowId={({ data }) => data.id}
           />
         </div>

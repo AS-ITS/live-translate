@@ -4640,3 +4640,38 @@ test('live route redirects when the meeting does not exist', async ({ page }) =>
   await openHistoryPage(page);
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
+
+test('Meeting home searches by name and filters by status', async ({ page }) => {
+  await page.unroute('**/api/meetings');
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: 'meeting-active', name: '產品評審', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', updatedAt: 1700000000000 },
+        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: 1700000001000 },
+        { id: 'meeting-completed', name: '已完成簡報', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: 1700000002000 }
+      ])
+    });
+  });
+
+  await page.goto('/#meetings');
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理' })).toBeVisible();
+  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(3);
+
+  await page.getByLabel('搜尋會議').fill('產品');
+  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
+  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText('進行中');
+
+  await page.getByLabel('搜尋會議').fill('');
+  await page.getByLabel('篩選狀態').selectOption('interrupted');
+  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
+  await expect(page.getByRole('row', { name: /客戶訪談/ })).toContainText('已暫停／可繼續');
+  await expect(page.getByRole('row', { name: /客戶訪談/ }).getByRole('button', { name: '繼續錄製' })).toBeVisible();
+});

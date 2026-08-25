@@ -94,9 +94,11 @@ stop, recover, or mutate Live sessions.
 ## `GET /api/meetings/:meetingId`
 
 Returns one composed Meeting detail read model with ordered Segments, a Segment
-timeline, final checkpoint transcript items, and article-style reading content.
-Transcript items are ordered by Segment sequence and chunk time while retaining
-Segment identity and status metadata.
+timeline, final checkpoint transcript items, persisted Final Cues, and
+article-style reading content. Transcript items are ordered by Segment sequence
+and chunk time while retaining Segment identity and status metadata. `cues`
+contains final bilingual subtitle Cues aggregated from Segment checkpoints and
+is the preferred source for SRT/VTT export.
 
 Missing Meetings return `404`.
 
@@ -180,6 +182,22 @@ Missing Meetings return `404`.
       "finalizedAt": 1720000100000
     }
   ],
+  "cues": [
+    {
+      "cueId": "cue:session-1:segment-1:1",
+      "sessionId": "session-1",
+      "segmentId": "segment-1",
+      "sequence": 1,
+      "startTimeMs": 1000,
+      "endTimeMs": 2800,
+      "sourceLanguageCode": "zh-Hant",
+      "targetLanguageCode": "en",
+      "sourceText": "確認的原文。",
+      "translatedText": "confirmed source text.",
+      "status": "final",
+      "finalizedReason": "turnComplete"
+    }
+  ],
   "readingContent": {
     "sourceTranscript": {
       "kind": "sourceTranscript",
@@ -239,7 +257,8 @@ Returns `201 Created`:
 
 Updates Meeting name, source/target languages, and glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
-boundary; the current Segment keeps its settings snapshot.
+boundary; the current Segment keeps its settings snapshot. Completed Meetings
+are read-only and return `409 meeting_settings_locked`.
 
 ## `DELETE /api/meetings/:meetingId`
 
@@ -248,15 +267,24 @@ started. The Meeting's created Segments and Recorder shares are removed with
 it. Active, completed, interrupted, or failed Meetings return `409
 meeting_delete_not_allowed`.
 
+## `POST /api/meetings/:meetingId/complete`
+
+Completes a Meeting that has no active Live recording. Existing checkpoints,
+transcripts, and audio artifacts are preserved. Any not-yet-started trailing
+Segment is finalized as an empty completed Segment. Active recordings return
+`409 meeting_complete_not_allowed`.
+
 ## `GET|POST /api/meetings/:meetingId/shares`
 
 Lists active Recorder shares or creates a Recorder share after Meeting settings
 are saved. `POST` returns the opaque token and short-code URLs once; later list
-responses contain metadata only.
+responses contain metadata only. Completed Meetings keep existing shares
+available for viewing, but `POST` returns `409 meeting_share_locked`.
 
 ## `DELETE /api/meetings/:meetingId/shares/:shareId`
 
-Revokes one Meeting Recorder share.
+Revokes one Meeting Recorder share. Completed Meetings are read-only; revocation
+returns `409 meeting_share_locked`.
 
 ## `GET /api/meetings/:meetingId/segments`
 
@@ -366,6 +394,11 @@ Persists confirmed transcript or translation chunks for one Segment.
       "timestamp": 1720000000000
     }
   ],
+  "finalCues": [],
+  "refinedSubtitleCues": [],
+  "refinedSubtitleRevision": 0,
+  "refinedSubtitleInputHash": null,
+  "refinedSubtitleStatus": "pending",
   "pendingPartial": null
 }
 ```
@@ -388,6 +421,11 @@ Returns the Segment checkpoint:
   "checkpoint": {
     "idempotencyKey": "checkpoint:segment-1:12",
     "durableChunks": [],
+    "finalCues": [],
+    "refinedSubtitleCues": [],
+    "refinedSubtitleRevision": 0,
+    "refinedSubtitleInputHash": null,
+    "refinedSubtitleStatus": "pending",
     "pendingPartial": null,
     "updatedAt": 1720000000000
   }
@@ -598,9 +636,10 @@ output still fall back to server-side projection from persisted final transcript
 items so older history remains readable:
 
 The same Session detail also includes `cues`, containing only final subtitle
-Cues merged from all persisted Segments and sorted by `sequence`. Partial Cue
-checkpoint state is never exposed through this read model; legacy transcript
-fields remain available for backward compatibility.
+Cues merged from all persisted Segments and sorted by `sequence`. Each Cue
+contains `rawSource`, `rawTranslation`, optional `refinedSource` and
+`refinedTranslation`, plus versioned `refinement` status metadata. Partial Cue
+checkpoint state is never exposed through this read model.
 
 ```js
 {
@@ -639,7 +678,11 @@ Persists a live Session snapshot. The request body is JSON:
 
 ```json
 {
-  "session": { "id": "session-id", "status": "active" },
+  "session": {
+    "id": "session-id",
+    "status": "active",
+    "failureDiagnostics": []
+  },
   "transcriptItems": []
 }
 ```
@@ -649,6 +692,14 @@ newly finalized transcript items; the server appends them idempotently by item
 id and updates session metadata/status from the `session` object. This supports
 incremental long-session syncing, so Stop does not need to resend the complete
 transcript item list.
+
+`failureDiagnostics` is an optional array containing the latest safe connection
+failure summaries. The server keeps at most the most recent 10 entries. Each
+entry may include `at`, `source`, `stage`, `reason`, `category`, `code`,
+`status`, `connectionEpoch`, `liveSessionId`, `segmentId`, and audio transport
+counters. Tokens, API keys, authorization values, stack traces, and raw provider
+messages are not persisted. The array is returned in Session detail, but not in
+the history list response.
 
 The default request limit for this route is `25MB`. `SESSION_SNAPSHOT_MAX_BYTES`
 can override it. Oversized requests return `413 request_too_large`.
@@ -715,8 +766,10 @@ Missing Sessions or missing artifacts return `404 session_not_found`.
 ## `GET /api/meetings/:meetingId/audio/:kind`
 
 Downloads the whole-meeting audio artifact for a Long Meeting. The backend
-resolves the SessionRecord associated with the Meeting and serves its persisted
-`input` or `translation` artifact. Missing Meetings or missing artifacts return
+resolves all persisted SessionRecords associated with the Meeting, orders them by
+Meeting Segment sequence, and composes their `input` or `translation` WAV payloads
+into one download. Session-level segmented manifests are composed before the
+Meeting-level composition. Missing Meetings or missing artifacts return
 `404 session_not_found`.
 
 The detailed session-scoped history is also available from `GET
@@ -747,9 +800,11 @@ outputs return `404 translation_output_not_found`. Malformed identifiers return
 ## `DELETE /api/sessions/:sessionId`
 
 Deletes one finalized Session history record, its related transcript items, and
-any persisted audio artifacts. The endpoint is intended for history consumers
-only; it does not affect any active Live API session, microphone resource, token
-flow, language preference, or current transcript state.
+any persisted audio artifacts. When the Session belongs to a Meeting, deletion
+is Meeting-scoped: all finalized Session records, Meeting Segments, transcript
+checkpoints, audio artifacts, and Meeting Recorder shares are deleted together.
+The endpoint rejects deletion while the Meeting or any related Session is active.
+Sessions without a `meetingId` retain the legacy single-Session behavior.
 
 Successful deletion returns:
 
@@ -757,7 +812,20 @@ Successful deletion returns:
 { "deleted": true, "sessionId": "session-1" }
 ```
 
+For a Meeting-linked Session, the response also includes the cascade summary:
+
+```json
+{
+  "deleted": true,
+  "sessionId": "session-1",
+  "meetingId": "meeting-1",
+  "deletedSessionCount": 2,
+  "deletedSegmentCount": 2
+}
+```
+
 Missing records and non-finalized records return `404 session_not_found`.
+Active Meeting-linked records return `409 meeting_delete_active_not_allowed`.
 Malformed session identifiers return `400 invalid_request`.
 
 ## Access control
@@ -1097,24 +1165,28 @@ TODO: Confirm exact SDK session close/end event names.
 
 ## Transcript Polishing Translation Commands
 
+`POST /api/translation-outputs` accepts a source transcript snapshot for the
+final output. Its default JSON request limit is `25MB`, configurable with
+`TRANSLATION_OUTPUT_MAX_BYTES`. Other translation command routes retain the
+default `10KB` JSON request limit. Oversized requests return
+`413 request_too_large`.
+
 Transcript polishing reuses `POST /api/translation-requests` and
 `POST /api/translation-executions`. A polishing request sets
 `operation: "transcript_polishing"` and includes `segmentRange`, `inputHash`,
-`model`, and a `sourceTranscriptSnapshot.polishingItems` array containing only
-paired final Cue data. The execution remains asynchronous and returns `202`.
+`model`, and a `sourceTranscriptSnapshot.refinementItems` array containing the
+current finalized Cue plus up to two preceding Cues. The execution remains
+asynchronous and returns `202`.
 
 The existing `POST /api/translation-executions/:executionId/retry` endpoint is
 used for failed polishing executions. Session detail translation history
 includes completed polishing outputs with `operation`, `segmentRange`,
-`inputHash`, `model`, `version`, completion timestamps, and `polishedItems`.
-Each item contains `cueId`, `sequence`, and `polishedText`. Clients render these
-items through an independent `polishedArticle` field; they must not merge them
-into `cues`, `sourceTranscript`, `translationArticle`, session transcript
-items, or the Live prompt. Legacy outputs containing source-polishing fields
-are ignored for canonical field replacement.
+`inputHash`, `model`, completion timestamps, and `refinedItems`. Each item
+contains `cueId`, `sequence`, `version`, `inputHash`, `refinedSource`, and
+`refinedTranslation`. Clients apply only the current Cue item after version
+validation; context Cues are never updated.
 
-Current transcript polishing uses one plain-text provider result. The result is
-returned through the existing `translatedText` output field and does not use
-structured-output configuration. Failed executions retain safe provider
+Current transcript polishing uses a structured source-and-translation result.
+Failed executions retain safe provider
 diagnostics (`status`, provider code/status/message, model, and config field
 names) without prompt text, transcript content, API keys, or tokens.

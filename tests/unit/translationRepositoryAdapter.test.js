@@ -113,7 +113,11 @@ test('request missing session, missing entity, duplicate, and conflicting identi
   assert.equal(repository.updateTranslationRequest(requestPayload({ id: 'missing-request' })), null);
 
   repository.createTranslationRequest(requestPayload());
-  assert.throws(() => repository.createTranslationRequest(requestPayload()), /TranslationRequest already exists: request-1/);
+  assert.equal(repository.createTranslationRequest(requestPayload()).id, 'request-1');
+  assert.throws(
+    () => repository.createTranslationRequest(requestPayload({ targetLanguageCode: 'de' })),
+    /TranslationRequest already exists: request-1/
+  );
   assert.throws(
     () => repository.updateTranslationRequest(requestPayload({ sessionId: 'session-2' })),
     /cannot change sessionId/
@@ -235,9 +239,11 @@ test('execution missing request, missing entity, duplicate, and conflicting iden
   assert.equal(repository.findExecutionById('missing-execution'), null);
   assert.equal(repository.updateTranslationExecution(executionPayload({ id: 'missing-execution' })), null);
 
+  repository.createTranslationRequest(requestPayload({ id: 'request-2' }));
   repository.createTranslationExecution(executionPayload());
+  assert.equal(repository.createTranslationExecution(executionPayload()).id, 'execution-1');
   assert.throws(
-    () => repository.createTranslationExecution(executionPayload()),
+    () => repository.createTranslationExecution(executionPayload({ translationRequestId: 'request-2' })),
     /TranslationExecution already exists: execution-1/
   );
   assert.throws(
@@ -521,6 +527,12 @@ function legacySessionRepository({ sessions = [sessionRecord()], asyncMethods = 
 
     listSessionRecords() {
       return maybeAsync('listSessionRecords', Array.from(records.values(), clone));
+    },
+
+    deleteSessionRecord(id) {
+      records.delete(id);
+      transcriptItems.delete(id);
+      return maybeAsync('deleteSessionRecord', true);
     }
   };
 }

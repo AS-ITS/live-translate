@@ -173,6 +173,7 @@ test('GET /api/sessions/:sessionId returns mapped legacy detail through producti
       durationMs: 4000,
       failureReason: null,
       failureCategory: null,
+      failureDiagnostics: [],
       sourceLanguageCode: null,
       selectedInputDeviceId: 'device-1',
       inputDeviceLabelSnapshot: 'Studio Mic',
@@ -336,6 +337,7 @@ test('GET /api/sessions/:sessionId materializes meeting checkpoint transcript de
     createMeeting() {},
     getMeeting() {},
     updateMeeting() {},
+    deleteMeeting() {},
     listMeetings() {
       return [];
     },

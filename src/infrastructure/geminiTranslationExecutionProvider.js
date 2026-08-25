@@ -10,6 +10,11 @@ export function createGeminiTranslationExecutionProvider({ client } = {}) {
       return Object.freeze({
         translatedText: result?.translatedText,
         ...(result?.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
+        ...(result?.refinedItems === undefined ? {} : { refinedItems: result.refinedItems }),
+        ...(result?.refinedSource === undefined ? {} : { refinedSource: result.refinedSource }),
+        ...(result?.refinedTranslation === undefined ? {} : { refinedTranslation: result.refinedTranslation }),
+        ...(result?.refinedCues === undefined ? {} : { refinedCues: result.refinedCues }),
+        ...(result?.refinementTargets === undefined ? {} : { refinementTargets: result.refinementTargets }),
         detectedSourceLanguageCode: result?.detectedSourceLanguageCode
       });
     }
@@ -34,7 +39,11 @@ function mapProviderInputToGeminiRequest(input) {
   return Object.freeze({
     sourceText: input?.sourceText,
     ...(input?.operation === undefined ? {} : { operation: input.operation }),
+    ...(input?.mode === undefined ? {} : { mode: input.mode }),
+    ...(input?.items === undefined ? {} : { items: input.items }),
     ...(input?.polishingItems === undefined ? {} : { polishingItems: input.polishingItems }),
+    ...(input?.refinementItems === undefined ? {} : { refinementItems: input.refinementItems }),
+    ...(input?.refinementTargets === undefined ? {} : { refinementTargets: input.refinementTargets }),
     ...(input?.model === undefined ? {} : { model: input.model }),
     ...(input?.sourceLanguageCode === undefined ? {} : { sourceLanguageCode: input.sourceLanguageCode }),
     targetLanguageCode: input?.targetLanguageCode,

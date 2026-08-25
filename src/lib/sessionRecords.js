@@ -32,6 +32,7 @@ export function createSessionRecord(input = {}, options = {}) {
     status: input.status || 'active',
     failureReason: null,
     failureCategory: null,
+    failureDiagnostics: sanitizeFailureDiagnostics(input.failureDiagnostics),
     lastLifecycleState: 'listening',
     selectedInputDeviceId: input.selectedInputDeviceId || null,
     inputDeviceLabelSnapshot: input.inputDeviceLabelSnapshot || null,
@@ -53,6 +54,29 @@ function sanitizeAudioArtifacts(artifacts = {}) {
   return result;
 }
 
+function sanitizeFailureDiagnostics(diagnostics) {
+  if (!Array.isArray(diagnostics)) return [];
+  return diagnostics
+    .filter((diagnostic) => diagnostic && typeof diagnostic === 'object' && !Array.isArray(diagnostic))
+    .slice(-10)
+    .map((diagnostic) => ({
+      at: typeof diagnostic.at === 'string' || typeof diagnostic.at === 'number' ? diagnostic.at : null,
+      source: typeof diagnostic.source === 'string' ? diagnostic.source.slice(0, 80) : 'unknown',
+      stage: typeof diagnostic.stage === 'string' ? diagnostic.stage.slice(0, 80) : null,
+      reason: typeof diagnostic.reason === 'string' ? diagnostic.reason.slice(0, 80) : 'unknown_error',
+      category: typeof diagnostic.category === 'string' ? diagnostic.category.slice(0, 80) : null,
+      code: typeof diagnostic.code === 'string' || typeof diagnostic.code === 'number' ? diagnostic.code : null,
+      status: Number.isInteger(diagnostic.status) ? diagnostic.status : null,
+      connectionEpoch: Number.isInteger(diagnostic.connectionEpoch) ? diagnostic.connectionEpoch : null,
+      liveSessionId: typeof diagnostic.liveSessionId === 'string' ? diagnostic.liveSessionId.slice(0, 160) : null,
+      segmentId: typeof diagnostic.segmentId === 'string' ? diagnostic.segmentId.slice(0, 160) : null,
+      audioCallbackCount: Number.isInteger(diagnostic.audioCallbackCount) ? diagnostic.audioCallbackCount : null,
+      pcmSendAttemptCount: Number.isInteger(diagnostic.pcmSendAttemptCount) ? diagnostic.pcmSendAttemptCount : null,
+      pcmSendSyncThrowCount: Number.isInteger(diagnostic.pcmSendSyncThrowCount) ? diagnostic.pcmSendSyncThrowCount : null,
+      pcmSendAsyncRejectCount: Number.isInteger(diagnostic.pcmSendAsyncRejectCount) ? diagnostic.pcmSendAsyncRejectCount : null
+    }));
+}
+
 function clonePlain(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
@@ -68,6 +92,9 @@ export function updateSessionRecord(record, patch = {}, options = {}) {
     if (!isSessionStatus(from) || !isSessionStatus(to)) return {
       ...record,
       ...patch,
+      failureDiagnostics: patch.failureDiagnostics === undefined
+        ? sanitizeFailureDiagnostics(record.failureDiagnostics)
+        : sanitizeFailureDiagnostics(patch.failureDiagnostics),
       id: record.id,
       createdAt: record.createdAt,
       updatedAt
@@ -86,6 +113,9 @@ export function updateSessionRecord(record, patch = {}, options = {}) {
   return {
     ...record,
     ...patch,
+    ...(patch.failureDiagnostics !== undefined
+      ? { failureDiagnostics: sanitizeFailureDiagnostics(patch.failureDiagnostics) }
+      : { failureDiagnostics: sanitizeFailureDiagnostics(record.failureDiagnostics) }),
     id: record.id,
     createdAt: record.createdAt,
     updatedAt
@@ -107,6 +137,9 @@ export function finalizeSessionRecord(record, patch = {}, options = {}) {
   return {
     ...record,
     ...patch,
+    failureDiagnostics: patch.failureDiagnostics === undefined
+      ? sanitizeFailureDiagnostics(record.failureDiagnostics)
+      : sanitizeFailureDiagnostics(patch.failureDiagnostics),
     id: record.id,
     createdAt: record.createdAt,
     status,

@@ -197,7 +197,7 @@ function sanitizeMetadata(metadata) {
   }
   return {
     kind,
-    storageMode: metadata.storageMode === 'single' ? 'single' : 'single',
+    storageMode: metadata.storageMode === 'meeting-composed' ? 'meeting-composed' : 'single',
     mimeType: metadata.mimeType === AUDIO_MIME_TYPE ? AUDIO_MIME_TYPE : AUDIO_MIME_TYPE,
     byteLength: Number.isFinite(metadata.byteLength) ? metadata.byteLength : 0,
     fileName: sanitizeFileName(metadata.fileName) || `${kind}.wav`,

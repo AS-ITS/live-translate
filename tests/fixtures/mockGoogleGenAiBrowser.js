@@ -15,6 +15,10 @@ export class GoogleGenAI {
       connect: async (request) => {
         window.__mockGoogleGenAI.liveConnects.push(request);
 
+        if (window.__mockLiveConnectDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, window.__mockLiveConnectDelayMs));
+        }
+
         const session = {
           closed: false,
           sentInputs: [],

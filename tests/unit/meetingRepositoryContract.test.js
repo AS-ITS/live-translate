@@ -6,6 +6,7 @@ const EXPECTED_METHODS = [
   'createMeeting',
   'getMeeting',
   'updateMeeting',
+  'deleteMeeting',
   'listMeetings',
   'createMeetingSegment',
   'getMeetingSegment',

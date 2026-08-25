@@ -17,12 +17,19 @@ behavior.
 This feature does not add a backend endpoint, persistence, or real Gemini API
 validation.
 
-For persisted Sessions with final `cues`, TXT, SRT, and VTT exports use the
-same normalized Cue list: final-only filtering, cueId de-duplication,
+For persisted Sessions and Meetings with final `cues`, TXT, SRT, and VTT exports
+use the same normalized Cue list: final-only filtering, cueId de-duplication,
 sequence ordering, session-relative timeline validation, and export-time
-language-aware wrapping. Partial Cues are never exported. Live subtitle
-exports now use the same in-memory bilingual Cue list, so source and
-translation downloads preserve identical Cue numbers and time windows.
+language-aware wrapping. Partial Cues are never exported. Refined source and
+translation values are the default when available; the UI can explicitly
+choose the raw values. Both variants preserve identical Cue numbers and time
+windows.
+
+Meeting detail exports use persisted `finalCues` as the canonical subtitle
+source. This keeps subtitle text and time windows stable after reload and avoids
+exporting each durable transcript chunk as a separate flashing subtitle. Older
+Meetings without persisted Cues retain a conservative transcript fallback that
+groups adjacent fragments until sentence punctuation or a clear pause.
 
 When an older Session, Meeting, or re-translation has no persisted Cues,
 timed export derives one shared set of Cue windows from the source transcript
@@ -41,6 +48,7 @@ finalized in the browser.
 - Preserve transcript ordering by `sequence`.
 - Support source and translated transcript streams.
 - Export only available transcript text; do not require persistence.
+- Prefer refined Cue values by default and support explicit raw export.
 - Handle missing timing data gracefully.
 - Keep export behavior deterministic and unit-testable.
 - Preserve the existing Start / Stop flow.

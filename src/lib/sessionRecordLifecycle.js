@@ -1,4 +1,5 @@
 import { transcriptItemsForStream } from './transcript.js';
+import { meetingGlossaryAliasesForTarget } from './meetingGlossary.js';
 
 const STREAMS = ['source', 'translation'];
 
@@ -15,7 +16,10 @@ export function buildSessionRecordInput(options = {}) {
     segmentId: options.segmentId || null,
     ...(Object.hasOwn(options, 'meetingGlossaryEntries')
       ? { meetingGlossaryEntries: Array.isArray(options.meetingGlossaryEntries)
-        ? options.meetingGlossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        ? options.meetingGlossaryEntries.map((entry) => ({
+          ...entry,
+          replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, options.targetLanguageCode)
+        }))
         : [] }
       : {}),
     selectedInputDeviceId: options.selectedInputDeviceId || null,

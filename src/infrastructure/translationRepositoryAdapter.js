@@ -23,7 +23,7 @@ export function createTranslationRepositoryAdapter({ sessionRepository, executio
 
         const existingRequest = state.requests.find((storedRequest) => storedRequest.id === translationRequest.id);
         if (existingRequest) {
-          if (translationRequest.operation !== 'transcript_polishing' || existingRequest.inputHash !== translationRequest.inputHash) {
+          if (!sameTranslationRequestIdentity(existingRequest, translationRequest)) {
             throw new Error(`TranslationRequest already exists: ${translationRequest.id}`);
           }
           return toTranslationRequest(existingRequest);
@@ -101,10 +101,10 @@ export function createTranslationRepositoryAdapter({ sessionRepository, executio
 
           const existingExecution = state.executions.find((storedExecution) => storedExecution.id === translationExecution.id);
           if (existingExecution) {
-            const request = state.requests.find((item) => item.id === translationExecution.translationRequestId);
-            if (request?.operation !== 'transcript_polishing' || existingExecution.translationRequestId !== translationExecution.translationRequestId) {
+            if (existingExecution.translationRequestId !== translationExecution.translationRequestId) {
               throw new Error(`TranslationExecution already exists: ${translationExecution.id}`);
             }
+            const request = state.requests.find((item) => item.id === translationExecution.translationRequestId);
             const persistedExecution = toTranslationExecution(existingExecution);
             publishExecutionEvent(executionEventBroadcaster, request, persistedExecution);
             return persistedExecution;
@@ -400,6 +400,28 @@ function serializeTranslationRequest(request) {
   };
 }
 
+function sameTranslationRequestIdentity(existingRequest, nextRequest) {
+  return JSON.stringify({
+    sessionId: existingRequest.sessionId,
+    sourceTranscriptRevisionId: existingRequest.sourceTranscriptRevisionId,
+    sourceTranscriptSnapshot: existingRequest.sourceTranscriptSnapshot ?? null,
+    targetLanguageCode: existingRequest.targetLanguageCode,
+    operation: existingRequest.operation ?? null,
+    segmentRange: existingRequest.segmentRange ?? null,
+    inputHash: existingRequest.inputHash ?? null,
+    model: existingRequest.model ?? null
+  }) === JSON.stringify({
+    sessionId: nextRequest.sessionId,
+    sourceTranscriptRevisionId: nextRequest.sourceTranscriptRevisionId,
+    sourceTranscriptSnapshot: nextRequest.sourceTranscriptSnapshot ?? null,
+    targetLanguageCode: nextRequest.targetLanguageCode,
+    operation: nextRequest.operation ?? null,
+    segmentRange: nextRequest.segmentRange ?? null,
+    inputHash: nextRequest.inputHash ?? null,
+    model: nextRequest.model ?? null
+  });
+}
+
 function serializeTranslationExecution(execution) {
   return {
     id: execution.id,
@@ -424,6 +446,11 @@ function serializeTranslationOutput(output) {
     sequence: output.sequence,
     translatedText: output.translatedText,
     ...(output.polishedItems === undefined ? {} : { polishedItems: clonePlain(output.polishedItems) }),
+    ...(output.refinedItems === undefined ? {} : { refinedItems: clonePlain(output.refinedItems) }),
+    ...(output.refinedCues === undefined ? {} : { refinedCues: clonePlain(output.refinedCues) }),
+    ...(output.refinementTargets === undefined ? {} : { refinementTargets: clonePlain(output.refinementTargets) }),
+    ...(output.refinedSource === undefined ? {} : { refinedSource: output.refinedSource }),
+    ...(output.refinedTranslation === undefined ? {} : { refinedTranslation: output.refinedTranslation }),
     targetLanguageCode: output.targetLanguageCode,
     ...(output.operation === undefined ? {} : { operation: output.operation }),
     ...(output.segmentRange === undefined ? {} : { segmentRange: clonePlain(output.segmentRange) }),
@@ -455,6 +482,11 @@ function enrichOutputForPersistence(output, request, existingOutputs) {
     sequence: output.sequence,
     translatedText: output.translatedText,
     polishedItems: output.polishedItems,
+    refinedItems: output.refinedItems,
+    refinedCues: output.refinedCues,
+    refinementTargets: output.refinementTargets,
+    refinedSource: output.refinedSource,
+    refinedTranslation: output.refinedTranslation,
     targetLanguageCode: request.targetLanguageCode,
     providerMetadata: output.providerMetadata,
     createdAt: output.createdAt,

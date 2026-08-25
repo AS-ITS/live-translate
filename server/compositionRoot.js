@@ -6,6 +6,7 @@ import { createSessionApplicationService } from '../src/application/sessionAppli
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createTranslationApplicationService } from '../src/application/translationApplicationService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
+import { createMeetingDeletionService } from '../src/application/meetingDeletionService.js';
 import { createMeetingReadQueryService as createDefaultMeetingReadQueryService } from '../src/application/meetingReadQueryService.js';
 import { createSavedTranscriptRetranslationService as createDefaultSavedTranscriptRetranslationService } from '../src/application/translation/index.js';
 import { createSessionRetranslationCommandService as createDefaultSessionRetranslationCommandService } from '../src/application/translation/sessionRetranslationCommandService.js';
@@ -20,6 +21,7 @@ import { createTranslationExecutionFenceGuard as createDefaultTranslationExecuti
 import { createTranslationExecutionWorker as createDefaultTranslationExecutionWorker } from '../src/application/translationExecutionWorker.js';
 import { assertTranslationExecutionQueue } from '../src/application/translation/translationExecutionQueue.js';
 import { createRetryPolicy } from '../src/application/translation/retryPolicy.js';
+import { createTranscriptPolishingRateLimiter } from '../src/application/translation/transcriptPolishingRateLimiter.js';
 import { createTranslationExecutionRetryPolicy } from '../src/application/translation/translationExecutionRetryPolicy.js';
 import { createTranslationExecutionRetryErrorClassifier } from '../src/application/translation/translationExecutionRetryErrorClassifier.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
@@ -60,6 +62,7 @@ import { createInMemoryDomainEventBus } from '../src/infrastructure/inMemoryDoma
 import { createTranslationRepositoryAdapter } from '../src/infrastructure/translationRepositoryAdapter.js';
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
+import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
@@ -131,6 +134,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
     translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
     translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+    transcriptPolishingMaxRpm = positiveIntegerEnv(env.TRANSCRIPT_POLISHING_MAX_RPM, 15),
     translationHistoryQueryServiceFactory = createTranslationHistoryQueryService,
     translationHistoryControllerFactory = createDefaultTranslationHistoryController,
     translationApplicationService,
@@ -208,6 +212,7 @@ export function createApplicationDependencies(options = {}) {
   const translationCommandDependencies = createTranslationCommandDependencies({
     translationRepository: executionEventTranslationRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
+    meetingRepository: resolvedMeetingRepository,
     domainEventPublisher,
     translationExecutionDispatcher,
     translationExecutionQueue,
@@ -236,6 +241,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRunnerFactory,
     translationExecutionWorkerFactory,
     translationExecutionWorkerRuntimeFactory,
+    transcriptPolishingMaxRpm,
     retranslationSessionMaterializerFactory: createDefaultRetranslationSessionMaterializer
   });
   const shouldCreateSavedTranscriptRetranslationService =
@@ -313,6 +319,14 @@ export function createApplicationDependencies(options = {}) {
         fileSystem: sessionAudioArtifactFileSystem,
         clock
       });
+  const meetingDeletionService = createMeetingDeletionService({
+    meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository,
+    sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    revokeMeetingShares: sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function'
+      ? (meetingId) => sessionShareService.revokeMeetingShares(meetingId)
+      : undefined
+  });
   const requestHandler = requestHandlerFactory
     ? requestHandlerFactory({
       sessionReadController: sessionReadDependencies.sessionReadController,
@@ -325,6 +339,7 @@ export function createApplicationDependencies(options = {}) {
       meetingRepository: resolvedMeetingRepository,
       meetingReadController,
       meetingCheckpointService,
+      meetingDeletionService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
@@ -361,6 +376,7 @@ export function createApplicationDependencies(options = {}) {
     recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
+    meetingDeletionService,
     glossaryController: resolvedGlossaryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),
@@ -765,6 +781,7 @@ export function createSessionReadDependencies({ sessionRepository, sessionReadRe
 export function createTranslationCommandDependencies({
   translationRepository,
   sessionRepository,
+  meetingRepository,
   domainEventPublisher,
   translationExecutionDispatcher,
   translationExecutionQueue,
@@ -793,6 +810,7 @@ export function createTranslationCommandDependencies({
   translationExecutionRunnerFactory = createDefaultTranslationExecutionRunner,
   translationExecutionWorkerFactory = createDefaultTranslationExecutionWorker,
   translationExecutionWorkerRuntimeFactory = createDefaultTranslationExecutionWorkerRuntime,
+  transcriptPolishingMaxRpm = 15,
   retranslationSessionMaterializerFactory
 } = {}) {
   assertFactory(translationCommandServiceFactory, 'translationCommandServiceFactory');
@@ -830,6 +848,7 @@ export function createTranslationCommandDependencies({
             resolvedTranslationExecutionProviderResolver
           ),
           retryPolicy: resolvedRetryPolicy,
+          transcriptPolishingRateLimiter: createTranscriptPolishingRateLimiter({ maxRequestsPerMinute: transcriptPolishingMaxRpm }),
           ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
@@ -843,7 +862,8 @@ export function createTranslationCommandDependencies({
           translationExecutionRunner: resolvedTranslationExecutionRunner,
           translationRepository,
           translationExecutionProviderResolver: resolvedTranslationExecutionProviderResolver,
-          retranslationSessionMaterializer
+          retranslationSessionMaterializer,
+          ...(meetingRepository !== undefined ? { subtitleCueRepository: createSubtitleCueRepository({ sessionRepository, meetingRepository }) } : {})
         });
   const resolvedTranslationExecutionWorker =
     translationExecutionWorker ??
@@ -876,7 +896,7 @@ export function createTranslationCommandDependencies({
                 translationExecutionRetryErrorClassifier
               }
             : {}),
-          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {})
+          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {}),
         })
       : undefined);
   const resolvedTranslationExecutionWorkerRuntime =
@@ -1011,10 +1031,50 @@ function createResolverBackedTranslationExecutionProvider(translationExecutionPr
   });
 }
 
-function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer }) {
-  const onTranslationOutputCreated = retranslationSessionMaterializer === undefined
-    ? undefined
-    : ({ output }) => retranslationSessionMaterializer.materialize({ output });
+function createWorkerTranslationExecutionRunner({ translationExecutionRunner, translationRepository, translationExecutionProviderResolver, retranslationSessionMaterializer, subtitleCueRepository }) {
+  const onTranslationOutputCreated = async ({ output }) => {
+    if (retranslationSessionMaterializer !== undefined) await retranslationSessionMaterializer.materialize({ output });
+    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && output.sessionId) {
+      const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
+      const targets = output.refinementTargets || snapshot.refinementTargets || [];
+      const targetByCueId = new Map(targets.map((target) => [target.targetCueId, target]));
+      const results = [
+        ...(Array.isArray(output.polishedItems) ? output.polishedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['translation'] })) : []),
+        ...(Array.isArray(output.refinedItems) ? output.refinedItems.map((item) => ({ ...item, targetCueId: item.targetCueId || targetByCueId.get(item.cueId)?.targetCueId, fields: item.fields || targetByCueId.get(item.targetCueId || item.cueId)?.fields || ['source', 'translation'] })) : [])
+      ].filter((item) => item.targetCueId && targetByCueId.has(item.targetCueId)).map((item) => ({
+        ...item,
+        sessionId: targetByCueId.get(item.targetCueId)?.sessionId || output.sessionId,
+        segmentId: targetByCueId.get(item.targetCueId)?.segmentId || snapshot.segmentId || snapshot.items?.find((candidate) => candidate.cueId === item.targetCueId)?.segmentId,
+        refinementJobId: targetByCueId.get(item.targetCueId)?.refinementJobId || output.executionId,
+        requestId: targetByCueId.get(item.targetCueId)?.requestId || output.requestId,
+        connectionEpoch: targetByCueId.get(item.targetCueId)?.connectionEpoch ?? null,
+        version: item.version ?? targetByCueId.get(item.targetCueId)?.version,
+        inputHash: item.inputHash ?? targetByCueId.get(item.targetCueId)?.inputHash
+      }));
+      if (results.length > 0) {
+        await subtitleCueRepository.applyRefinementResults({
+          sessionId: output.sessionId,
+          refinementJobId: output.executionId,
+          requestId: output.requestId,
+          connectionEpoch: targets[0]?.connectionEpoch ?? null,
+          results,
+          completedAt: output.completedAt
+        });
+      }
+    }
+    if (subtitleCueRepository !== undefined && output?.operation === 'transcript_polishing' && Array.isArray(output.refinedCues)) {
+      const snapshot = output.sourceTranscriptMetadata?.sourceTranscriptSnapshot || {};
+      if (output.sessionId) {
+        await subtitleCueRepository.saveRefinedSubtitleCues({
+          sessionId: output.sessionId,
+          sourceCueIds: snapshot.items?.map((item) => item.cueId) || [],
+          refinedCues: output.refinedCues,
+          inputHash: output.inputHash,
+          completedAt: output.completedAt
+        });
+      }
+    }
+  };
 
   return Object.freeze({
     execute(input) {
@@ -1082,6 +1142,11 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     sourceText: sourceTextFromSnapshot(sourceTranscriptSnapshot),
     operation: request.operation,
     polishingItems: sourceTranscriptSnapshot.polishingItems,
+    refinementItems: sourceTranscriptSnapshot.refinementItems,
+    refinementTargets: sourceTranscriptSnapshot.refinementTargets,
+    items: sourceTranscriptSnapshot.items,
+    mode: sourceTranscriptSnapshot.mode,
+    refinementVersion: sourceTranscriptSnapshot.refinementVersion,
     segmentRange: request.segmentRange,
     inputHash: request.inputHash,
     model: request.model ?? (request.operation === 'transcript_polishing' ? transcriptPolishingModelFor(process.env) : undefined),
@@ -1101,6 +1166,12 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
 }
 
 function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
+  if (Array.isArray(sourceTranscriptSnapshot.refinementItems)) {
+    return sourceTranscriptSnapshot.refinementItems
+      .map((item) => item?.rawSource || item?.sourceText || item?.text)
+      .filter((text) => typeof text === 'string' && text.length > 0)
+      .join('\n');
+  }
   if (Array.isArray(sourceTranscriptSnapshot.polishingItems)) {
     return sourceTranscriptSnapshot.polishingItems
       .map((item) => item?.translationText || item?.text)
@@ -1117,7 +1188,7 @@ function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
 
   if (Array.isArray(sourceTranscriptSnapshot.items)) {
     return sourceTranscriptSnapshot.items
-      .map((item) => item?.text)
+      .map((item) => item?.rawSource || item?.sourceText || item?.text)
       .filter((text) => typeof text === 'string' && text.length > 0)
       .join('\n');
   }
@@ -1273,6 +1344,11 @@ function assertProviderConfiguration(configuration) {
   if (!configuration || typeof configuration !== 'object' || !Object.hasOwn(configuration, 'defaultProviderKey')) {
     throw new TypeError('configuration.defaultProviderKey is required.');
   }
+}
+
+function positiveIntegerEnv(value, fallback) {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function assertFactory(factory, name) {

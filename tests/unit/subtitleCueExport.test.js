@@ -10,6 +10,7 @@ import {
   normalizeExportableCues,
   wrapSubtitleText
 } from '../../src/lib/subtitleCueExport.js';
+import { cueListForDisplay } from '../../src/lib/cueUi.js';
 
 const cue = (overrides = {}) => ({
   cueId: 'cue-1',
@@ -149,4 +150,20 @@ test('source and translation exports preserve the same Cue timeline', () => {
     [...source.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)].map((match) => match.slice(1)),
     [...translation.matchAll(/^(\d+)\n([^\n]+) --> ([^\n]+)$/gmu)].map((match) => match.slice(1))
   );
+});
+
+test('refined export is default and raw export remains explicit', () => {
+  const refinedCue = cue({ rawSource: 'raw source', rawTranslation: 'raw translation', refinedSource: 'refined source', refinedTranslation: 'refined translation' });
+  assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation' }), 'refined translation\n');
+  assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation', variant: 'raw' }), 'raw translation\n');
+});
+
+test('exports merged identical adjacent Cues with the first start and last end time', () => {
+  const cues = [
+    cue({ cueId: 'cue-1', sequence: 1, startTimeMs: 1000, endTimeMs: 1800, sourceText: 'same', translatedText: 'same translation' }),
+    cue({ cueId: 'cue-2', sequence: 2, startTimeMs: 1800, endTimeMs: 2600, sourceText: 'same', translatedText: 'same translation' })
+  ];
+
+  const displayed = cueListForDisplay({ finalCues: cues }, { includePartial: false, mergeRepeatedFinalCues: true });
+  assert.equal(exportCuesToVtt(displayed, { stream: 'translation' }), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.600\nsame translation\n');
 });

@@ -2,14 +2,22 @@ const STREAMS = new Set(['source', 'translation']);
 const DEFAULT_MINIMUM_GAP_MS = 1;
 const DEFAULT_MINIMUM_CUE_DURATION_MS = 300;
 const DEFAULT_ADJACENT_CUE_MAX_GAP_MS = 1200;
+const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
-export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 1500;
+export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 5000;
+export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
+import { cueRefinementInputHash } from './cueContent.js';
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
+  const refinedSubtitleCues = Array.isArray(input.refinedSubtitleCues) ? input.refinedSubtitleCues.map(copyCue) : [];
   const pendingCues = Array.isArray(input.pendingCues) ? input.pendingCues.map(copyCue) : [];
   return {
     finalCues,
+    refinedSubtitleCues,
+    refinedSubtitleRevision: Number.isInteger(input.refinedSubtitleRevision) ? input.refinedSubtitleRevision : 0,
+    refinedSubtitleInputHash: input.refinedSubtitleInputHash || null,
+    refinedSubtitleStatus: input.refinedSubtitleStatus || 'pending',
     currentCue: input.currentCue ? copyCue(input.currentCue) : null,
     pendingCues,
     pendingBoundary: {
@@ -31,6 +39,26 @@ export function createSubtitleCueState(input = {}) {
 
 export function resetSubtitleCueState() {
   return createSubtitleCueState();
+}
+
+// Recovery checkpoints may contain an in-flight Cue from the previous
+// Segment. Finalize only complete pairs, then discard all recovery-only
+// partial/boundary state before the next Live session starts.
+export function prepareSubtitleCueStateForNewSegment(stateInput, options = {}) {
+  const state = createSubtitleCueState(stateInput);
+  const flushed = finalizePendingSubtitleCue(state, options);
+  return {
+    ...flushed,
+    currentCue: null,
+    pendingCues: [],
+    pendingBoundary: { turnComplete: false, generationComplete: false },
+    pendingBoundaryAtMs: null,
+    processedEventIds: [],
+    lastFinalizedCueId: null,
+    lastFinalizedAtMs: null,
+    lastFinalizedStream: null,
+    lastFinalizedReason: null
+  };
 }
 
 export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {}) {
@@ -127,11 +155,22 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
   }
 
   if (cue.sourceText && !cue.translatedText) {
-    if (cue.retranslationRequested || options.retry) {
-      return { state: stateInput, action: 'waiting-for-translation' };
+    if (cue.retranslationFailed) return { state: stateInput, action: 'translation-failed', cue };
+    const maxAttempts = Number.isInteger(options.maxRetranslationAttempts) && options.maxRetranslationAttempts > 0
+      ? options.maxRetranslationAttempts
+      : DEFAULT_MAX_RETRANSLATION_ATTEMPTS;
+    const attempts = Number.isInteger(cue.retranslationAttempts) ? cue.retranslationAttempts : 0;
+    if (attempts >= maxAttempts) {
+      const failed = updateCandidate(state, candidate, {
+        translationStatus: 'failed',
+        retranslationFailed: true,
+        updatedTimeMs: options.sessionTimeMs
+      });
+      return { state: failed, action: 'translation-failed', cue: cueForState(failed, candidate.key) };
     }
     const requested = updateCandidate(state, candidate, {
       retranslationRequested: true,
+      retranslationAttempts: attempts + 1,
       updatedTimeMs: options.sessionTimeMs
     });
     return { state: requested, action: 'needs-retranslation', cue: cueForState(requested, candidate.key) };
@@ -290,8 +329,8 @@ function findFinalRevisionCue(state, event, options = {}) {
   const index = state.finalCues.length - 1;
   const cue = state.finalCues[index];
   if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
-    || !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason)
-    || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
+    || (!event.isLateTranscript && !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason))
+    || (!event.isLateTranscript && !isWithinFinalRevisionWindow(state, cue, event, options))) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const existingText = normalizeText(cue[field]);
   const incomingText = normalizeText(event.text);
@@ -419,6 +458,9 @@ function addCue(state, event) {
     sourceText: event.stream === 'source' ? event.text : '',
     translatedText: event.stream === 'translation' ? event.text : '',
     status: 'partial',
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     updatedTimeMs: event.sessionTimeMs,
     providerEventSequence: Number.isFinite(event.eventSequence) ? event.eventSequence : null,
     boundaryAtMs: event.turnComplete || event.generationComplete
@@ -451,6 +493,9 @@ function updateCue(state, target, event) {
       ? event.eventSequence
       : cue.providerEventSequence,
     status: 'partial',
+    ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
+    ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
+    ...(event.audioTurnId ? { audioTurnId: event.audioTurnId } : {}),
     boundaryAtMs: event.turnComplete || event.generationComplete
       ? event.sessionTimeMs
       : cue.boundaryAtMs,
@@ -515,6 +560,19 @@ function finalizeCue(state, cue, options = {}) {
     ...cue,
     sourceText: normalizeText(cue.sourceText),
     translatedText: normalizeText(cue.translatedText),
+    rawSource: normalizeText(cue.rawSource || cue.sourceText),
+    rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
+    refinedSource: cue.refinedSource || null,
+    refinedTranslation: cue.refinedTranslation || null,
+    refinement: {
+      status: 'pending',
+      version: 1,
+      inputHash: cueRefinementInputHash({
+        ...cue,
+        rawSource: normalizeText(cue.rawSource || cue.sourceText),
+        rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText)
+      })
+    },
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };
@@ -571,6 +629,16 @@ function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
     ...previousCue,
     sourceText: mergeCueText(previousCue.sourceText, nextCue.sourceText),
     translatedText: mergeCueText(previousCue.translatedText, nextCue.translatedText),
+    rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
+    rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText),
+    refinedSource: null,
+    refinedTranslation: null,
+    refinement: { status: 'pending', version: 1, inputHash: cueRefinementInputHash({
+      cueId: previousCue.cueId,
+      sequence: previousCue.sequence,
+      rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
+      rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText)
+    }) },
     endTimeMs: Math.max(previousCue.endTimeMs, options.observedEndTimeMs || nextCue.endTimeMs),
     updatedTimeMs: Math.max(previousCue.updatedTimeMs || 0, nextCue.updatedTimeMs || 0),
     finalizedReason: nextCue.finalizedReason === 'length' ? 'length' : 'merged'
@@ -584,8 +652,7 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
   if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
   if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
-  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)
-    || endsSentence(nextCue.sourceText) || endsSentence(nextCue.translatedText)) return false;
+  if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
   const adjacentTexts = [previousCue.sourceText, previousCue.translatedText, nextCue.sourceText, nextCue.translatedText];
   if (!adjacentTexts.some(endsFragment) && !adjacentTexts.some(isNumericFragment)) return false;
 
@@ -594,10 +661,13 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
 
   const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
   const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
-  // Cue boundaries come from the provider turn/sentence lifecycle. Do not
-  // invent a second boundary merely because a language-specific character
-  // budget was reached.
-  return Boolean(sourceText && translatedText);
+  const maxLength = DEFAULT_MAX_CUE_TEXT_LENGTH;
+  // Prefer a complete sentence over provider turn boundaries. The length cap
+  // is only a safety valve so an absent punctuation event cannot grow one Cue
+  // without limit.
+  return Boolean(sourceText && translatedText)
+    && sourceText.length <= maxLength
+    && translatedText.length <= maxLength;
 }
 
 function containsCjk(text) {

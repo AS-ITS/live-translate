@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
+import { createMeetingCheckpointService, meetingSettingsSnapshot } from '../../src/application/meetingCheckpointService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 import { transcriptItemsFromSegments } from '../../src/readModels/meetingReadModels.js';
 import {
@@ -22,6 +22,52 @@ test('creates an active meeting with the first active segment', async () => {
   assert.equal(segment.meetingId, meeting.id);
   assert.equal(segment.sequence, 0);
   assert.equal(segment.status, 'active');
+});
+
+test('meeting settings snapshots normalize legacy glossary aliases for recovered segments', async () => {
+  const baseRepository = createMemoryMeetingRepository();
+  const repository = {
+    ...baseRepository,
+    getMeeting(meetingId) {
+      const meeting = baseRepository.getMeeting(meetingId);
+      return meeting
+        ? { ...meeting, glossaryEntries: [{ ...meeting.glossaryEntries[0], replacementAliases: { en: ['legacy'] } }] }
+        : null;
+    }
+  };
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({
+    glossaryEntries: [{ source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }],
+    liveSessionId: 'live-session-1'
+  });
+
+  const result = await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recovery: recovery({ nextLiveSessionId: 'live-session-2' })
+  });
+
+  assert.deepEqual(result.segment.settingsSnapshot.glossaryEntries, [{
+    source: 'microphone',
+    target: 'Alan speak',
+    replacementAliases: []
+  }]);
+  assert.deepEqual(meetingSettingsSnapshot({
+    ...meeting,
+    glossaryEntries: [{ source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }]
+  }).glossaryEntries[0].replacementAliases, ['mic']);
+});
+
+test('completed meeting settings are locked', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting } = await service.createMeeting({ draft: true });
+  await service.completeMeeting({ meetingId: meeting.id });
+
+  await assert.rejects(
+    service.updateMeeting({ meetingId: meeting.id, settings: { name: '不應修改' } }),
+    (error) => error.code === 'meeting_settings_locked'
+  );
 });
 
 test('checkpoint updates merge out-of-order chunks and read them back sorted', async () => {
@@ -271,6 +317,45 @@ test('terminal interruption marks the meeting interrupted and creates a resumabl
   assert.equal(duplicate.segment.id, first.segment.id);
   assert.equal(storedMeeting.status, 'interrupted');
   assert.deepEqual(segments.map((item) => item.status), ['interrupted', 'created']);
+});
+
+test('completes an interrupted meeting and finalizes its empty resumable segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+  await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    recovery: recovery({
+      idempotencyKey: 'interrupt-complete-1',
+      checkpoint: checkpoint({ durableChunks: [chunk({ sequence: 1, text: 'hello' })] }),
+      nextLiveSessionId: null,
+      outcome: 'interrupted'
+    })
+  });
+
+  const result = await service.completeMeeting({ meetingId: meeting.id });
+  const segments = await repository.listMeetingSegments(meeting.id);
+
+  assert.equal(result.meeting.status, 'completed');
+  assert.deepEqual(segments.map((item) => item.status), ['interrupted', 'completed']);
+  assert.equal(segments[0].checkpoint.durableChunks.length, 1);
+  assert.equal(segments[1].startedAt, 1000);
+});
+
+test('completes an active meeting and its current segment', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({ liveSessionId: 'live-session-1' });
+
+  const result = await service.completeMeeting({ meetingId: meeting.id });
+  const segments = await repository.listMeetingSegments(meeting.id);
+
+  assert.equal(result.meeting.status, 'completed');
+  assert.equal(segments[0].id, segment.id);
+  assert.equal(segments[0].status, 'completed');
+  assert.equal(segments[0].endedAt, 1000);
+  assert.equal(segments[0].liveSessionId, 'live-session-1');
 });
 
 test('failed recovery terminalizes current segment without creating next segment', async () => {

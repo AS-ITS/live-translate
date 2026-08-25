@@ -1,5 +1,7 @@
 import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
 import { normalizeGeminiTranscriptPolishingItems } from '../lib/geminiTranscriptPolishing.js';
+import { validateSubtitleResegmentationResponse } from '../lib/subtitleResegmentation.js';
+import { normalizeRefinementTargets, targetForCue } from '../lib/refinementTargets.js';
 
 
 export const TRANSCRIPT_POLISHING_OPERATION = 'transcript_polishing';
@@ -18,10 +20,35 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
         : undefined;
       const request = buildTranscriptPolishingRequest({ input, model, glossaryEntries });
       const response = await withTimeout(Promise.resolve().then(() => client.generateContent(request)), timeoutMs);
-      const result = normalizeTranscriptPolishingResponse(response, input.polishingItems);
+      const result = normalizeTranscriptPolishingResponse(response, input.items || input.refinementItems || input.polishingItems, {
+        refinement: Array.isArray(input.refinementItems) && input.mode !== 'subtitle_resegment',
+        resegment: input.mode === 'subtitle_resegment',
+        refinementTargets: input.refinementTargets
+      });
+      const refinementTargets = normalizeRefinementTargets(input.refinementTargets, input);
+      if (input.mode === 'subtitle_resegment') {
+        const refinedCues = validateSubtitleResegmentationResponse(result, (input.items || []).map((item) => ({
+          ...item,
+          status: 'final',
+          sourceText: item.rawSource ?? item.sourceText,
+          translatedText: item.rawTranslation ?? item.translatedText
+        })));
+        return Object.freeze({ refinedCues, ...(refinementTargets.length ? { refinementTargets } : {}), detectedSourceLanguageCode: input.sourceLanguageCode });
+      }
+      if (Array.isArray(input.refinementItems)) {
+        const item = result.refinedItems?.[0];
+        return Object.freeze({
+          refinedSource: item?.refinedSource,
+          refinedTranslation: applyGlossaryReplacements(item?.refinedTranslation, glossaryEntries),
+          refinedItems: result.refinedItems,
+          ...(refinementTargets.length ? { refinementTargets } : {}),
+          detectedSourceLanguageCode: input.sourceLanguageCode
+        });
+      }
       return Object.freeze({
         translatedText: applyGlossaryReplacements(result.refinedText, glossaryEntries),
         ...(result.polishedItems === undefined ? {} : { polishedItems: result.polishedItems }),
+        ...(refinementTargets.length ? { refinementTargets } : {}),
         detectedSourceLanguageCode: input.sourceLanguageCode
       });
     }
@@ -30,18 +57,33 @@ export function createGeminiTranscriptPolishingProvider({ client, model = 'gemin
 
 export function buildTranscriptPolishingRequest({ input, model, glossaryEntries } = {}) {
   assertInput(input);
-  const items = Array.isArray(input.polishingItems) ? input.polishingItems : [];
+  const resegment = input.mode === 'subtitle_resegment';
+  const refinement = Array.isArray(input.refinementItems) && !resegment;
+  const items = refinement ? input.refinementItems : (Array.isArray(input.polishingItems) ? input.polishingItems : []);
+  const resegmentItems = resegment ? (input.items || []) : items;
   const prompt = [
     `Target language: ${input.targetLanguageCode}`,
-    'Polish each translation item using the source transcript as context.',
+    resegment
+      ? 'Understand the complete stable cue group before correcting source and translation. You may merge or split subtitles, but must preserve every source cue id exactly once.'
+      : refinement
+      ? 'Correct the current source transcript conservatively, then refine its translation using that corrected source.'
+      : 'Polish each translation item using the source transcript as context.',
     'Do not add facts that are not present in the source or translation.',
     'Preserve meaning, numbers, dates, names, and proper nouns.',
-    'Only improve sentence boundaries, punctuation, filler words, and spoken repetition in the translation.',
-    'Return JSON: {"polishedItems":[{"cueId":"...","sequence":1,"polishedText":"..."}]} and no other text.',
-    'Polish the existing translation only; never rewrite or return source transcript text.',
+    'Only correct clear homophones, broken word boundaries, missing words, punctuation, and sentence boundaries.',
+    resegment
+      ? 'Return JSON: {"refinedCues":[{"sourceCueIds":["cue-1"],"refinedSource":"...","refinedTranslation":"..."}]} and no other text.'
+      : refinement
+      ? 'Return JSON: {"refinedItems":[{"cueId":"...","sequence":1,"version":1,"inputHash":"...","refinedSource":"...","refinedTranslation":"..."}]} and no other text.'
+      : 'Return JSON: {"polishedItems":[{"cueId":"...","sequence":1,"polishedText":"..."}]} and no other text.',
+    resegment || refinement ? 'When uncertain, retain the raw wording.' : 'Polish the existing translation only; never rewrite or return source transcript text.',
     'Do not add facts or remove meaning.',
     ...(Array.isArray(glossaryEntries) ? glossaryEntries.map((entry) => `Glossary: ${entry.source} => ${entry.target}`) : []),
-    JSON.stringify(items.map((item) => ({ cueId: item.cueId, sequence: item.sequence, source: item.sourceText, translation: item.translationText })))
+    JSON.stringify(resegmentItems.map((item) => resegment
+      ? ({ cueId: item.cueId, sequence: item.sequence, rawSource: item.rawSource ?? item.sourceText, rawTranslation: item.rawTranslation ?? item.translatedText })
+      : refinement
+      ? ({ cueId: item.cueId, sequence: item.sequence, version: item.version, inputHash: item.inputHash, rawSource: item.rawSource, rawTranslation: item.rawTranslation })
+      : ({ cueId: item.cueId, sequence: item.sequence, source: item.sourceText, translation: item.translationText })))
   ].join('\n');
 
   return Object.freeze({
@@ -56,7 +98,7 @@ export function buildTranscriptPolishingRequest({ input, model, glossaryEntries 
   });
 }
 
-export function normalizeTranscriptPolishingResponse(response, inputItems = []) {
+export function normalizeTranscriptPolishingResponse(response, inputItems = [], options = {}) {
   const value = typeof response?.text === 'string'
     ? response.text
     : response?.candidates?.[0]?.content?.parts?.find((part) => typeof part?.text === 'string')?.text;
@@ -70,6 +112,16 @@ export function normalizeTranscriptPolishingResponse(response, inputItems = []) 
   } catch {
     return Object.freeze({ refinedText });
   }
+  if (options.resegment) {
+    if (!Array.isArray(parsed?.refinedCues)) throw providerInvalidResponse('structured resegmentation response');
+    return Object.freeze({ refinedCues: parsed.refinedCues });
+  }
+  if (options.refinement) {
+    if (!Array.isArray(parsed?.refinedItems)) throw providerInvalidResponse('structured refinement response');
+    return Object.freeze({
+      refinedItems: normalizeRefinedItems(parsed.refinedItems, inputItems, options.refinementTargets)
+    });
+  }
   if (!Array.isArray(parsed?.polishedItems)) throw providerInvalidResponse('structured response');
   const polishedItems = normalizeGeminiTranscriptPolishingItems(parsed.polishedItems, inputItems);
   return Object.freeze({
@@ -78,14 +130,35 @@ export function normalizeTranscriptPolishingResponse(response, inputItems = []) 
   });
 }
 
+function normalizeRefinedItems(items, inputItems, refinementTargets = []) {
+  if (!Array.isArray(items) || items.length !== inputItems.length) throw providerInvalidResponse('refinedItems mapping');
+  const expected = new Map(inputItems.map((item) => [item.cueId, item]));
+  const seen = new Set();
+  return items.map((item) => {
+    const source = expected.get(item?.cueId);
+    if (!source || seen.has(item.cueId) || item.sequence !== source.sequence || item.version !== source.version || item.inputHash !== source.inputHash
+      || typeof item.refinedSource !== 'string' || !item.refinedSource.trim()
+      || typeof item.refinedTranslation !== 'string' || !item.refinedTranslation.trim()) {
+      throw providerInvalidResponse('invalid refined item mapping');
+    }
+    seen.add(item.cueId);
+    const target = targetForCue(refinementTargets, item.cueId);
+    return { cueId: item.cueId, sequence: item.sequence, version: item.version, inputHash: item.inputHash,
+      ...(target ? { targetCueId: target.targetCueId } : {}),
+      refinedSource: item.refinedSource.trim(), refinedTranslation: item.refinedTranslation.trim() };
+  });
+}
+
 function providerInvalidResponse(detail) {
   return Object.assign(new TypeError(`provider_invalid_response: ${detail}`), { code: 'provider_invalid_response' });
 }
 
 function assertInput(input) {
-  if (!input || typeof input !== 'object' || !Array.isArray(input.polishingItems) || input.polishingItems.length === 0) {
-    throw new TypeError('polishingItems must be a non-empty array.');
+  if (!input || typeof input !== 'object' || (!Array.isArray(input.polishingItems) && !Array.isArray(input.refinementItems) && !Array.isArray(input.items))) {
+    throw new TypeError('polishingItems or refinementItems must be a non-empty array.');
   }
+  const items = input.items || input.refinementItems || input.polishingItems;
+  if (items.length === 0) throw new TypeError('polishingItems or refinementItems must be a non-empty array.');
   for (const field of ['targetLanguageCode']) {
     if (typeof input[field] !== 'string' || input[field].trim() === '') throw new TypeError(`${field} must be a non-empty string.`);
   }

@@ -56,6 +56,24 @@ test('meeting checkpoint API client lists meeting segments and reads checkpoints
   ]);
 });
 
+test('meeting checkpoint API client completes a meeting', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      return ok({ meeting: { id: 'meeting-1', status: 'completed' } });
+    }
+  });
+
+  const result = await client.completeMeeting({ meetingId: 'meeting-1' });
+
+  assert.equal(result.meeting.status, 'completed');
+  assert.deepEqual(calls, [{
+    url: '/api/meetings/meeting-1/complete',
+    options: { method: 'POST', headers: {} }
+  }]);
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({

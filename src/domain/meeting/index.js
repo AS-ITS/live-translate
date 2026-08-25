@@ -4,14 +4,14 @@ export const MEETING_SEGMENT_STATUSES = Object.freeze(['created', 'active', 'com
 const TERMINAL_MEETING_STATUSES = new Set(['completed', 'failed']);
 const TERMINAL_SEGMENT_STATUSES = new Set(['completed', 'failed']);
 const ALLOWED_MEETING_TRANSITIONS = Object.freeze({
-  created: Object.freeze(['active', 'failed']),
+  created: Object.freeze(['active', 'completed', 'failed']),
   active: Object.freeze(['completed', 'interrupted', 'failed']),
-  interrupted: Object.freeze(['active', 'failed']),
+  interrupted: Object.freeze(['active', 'completed', 'failed']),
   completed: Object.freeze([]),
   failed: Object.freeze([])
 });
 const ALLOWED_SEGMENT_TRANSITIONS = Object.freeze({
-  created: Object.freeze(['active', 'failed']),
+  created: Object.freeze(['active', 'completed', 'failed']),
   active: Object.freeze(['completed', 'interrupted', 'failed']),
   interrupted: Object.freeze(['active', 'failed']),
   completed: Object.freeze([]),
@@ -48,6 +48,7 @@ export class Meeting {
 
   complete(endedAt) {
     return this.transitionTo('completed', {
+      startedAt: this.startedAt ?? this.createdAt,
       endedAt: assertTimestamp(endedAt, 'endedAt'),
       failureInfo: null
     });
@@ -134,6 +135,7 @@ export class MeetingSegment {
 
   complete({ endedAt, checkpoint = this.checkpoint, liveSessionId = this.liveSessionId } = {}) {
     return this.transitionTo('completed', {
+      startedAt: this.startedAt ?? this.createdAt,
       endedAt: assertTimestamp(endedAt, 'endedAt'),
       checkpoint,
       liveSessionId,

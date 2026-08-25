@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+- 完成 #27 的潤飾 RPM 與長會議可靠性收尾：RPM authoritative gate 現在位於實際 provider attempt 邊界，retry attempt 也會計入；worker 僅負責 durable claim、lease heartbeat、retry/recovery 與 DLQ，rate-limit 等待不再反覆重排 queue item。
+
+- 修正即時翻譯左側設定卡被右側字幕卡強制同高而裁切內容的問題；短視窗現在由頁面自然垂直捲動，設定卡依內容撐高，會議模式與操作按鈕不再重疊。
+
+- 改善整個工作區的筆電版響應式版面；主要標題、說明、欄位與操作文字會正常換行，不再被面板或相鄰元件遮住，低高度視窗也可在設定卡與會議設定卡內捲動。
+
+- 從會議管理前往新的即時翻譯工作區時，會清空上一場的即時字幕、潤飾預覽與音訊暫存；既有歷史紀錄與 Meeting checkpoint 不受影響，續錄仍會重新載入保存內容。
+
+- 修正共享錄音停止後會議仍顯示進行中的問題；停止錄音現在會同步完成目前錄音段落並將 Meeting 標記為已完成。
+
+- 即時翻譯重連失敗現在會將最近 10 次安全診斷摘要保存到 Session 詳情，包含來源、階段、原因與 provider code/status，不保存 token、API key 或原始錯誤內容。
+
+- 修正長時間錄音結束時保存最終翻譯結果可能因完整 source transcript snapshot 超過 10KB 而回傳 413；`/api/translation-outputs` 現在使用獨立的 25MB 請求上限。
+
+- 修正麥克風音訊捕捉鏈：恢復 suspended AudioContext、重建失效 capture graph，並將 PCM 傳送失敗轉為可恢復錯誤。
+
+- 修正潤飾完成後即時字幕仍顯示「等待修正」：success result 現在以 targetCueId 原地更新 active Cue，並以 refinement version 保護 polling 與 checkpoint merge。
+
+- Fixed paused and recovered Meeting continuation so a successful resume clears
+  stale session-save errors.
+- Marked source Cues complete when restored or completed polishing outputs are
+  available, preventing finished Cues from remaining in 「等待修正」.
+
+- 即時字幕匯出統一使用畫面相同的修正版 Final Cue 清單；排除 partial、合併相鄰完全相同字幕，並讓 TXT、SRT、VTT 共用相同 Cue 匯出路徑。
+
+- 會議字幕匯出優先使用已保存的 Final Cue；停止、分段切換與完成會議前會強制同步最後的字幕 Cue，沒有 Final Cue 的舊紀錄則使用保守分組 fallback。
+
+- 完成會議現在為唯讀；設定不可修改，既有分享可查看但不可新增或撤銷。
+
+- 已完成會議不再導向即時翻譯；會議管理與舊的已完成即時連結都會直接開啟翻譯紀錄詳細內容。
+
+- 修正即時字幕過度切碎與逐句修正狀態長期停留「修正中」的問題；短片段會優先合併為自然句，修正版完成後會正確更新，失敗時保留原始翻譯。
+
+- 即時錄製刪除現在會與會議管理同步；刪除任一已完成錄音段落會一併刪除整場會議的所有段落、逐字稿、音檔與錄音分享。會議多段錄音也會依段落順序合併成單一下載音檔。
+
+- 修正錄音結束時仍有非同步即時翻譯流程回報麥克風擷取錯誤的問題；主動結束後會取消過期的啟動、重連與分段切換流程，並維持已停止狀態。
+
 - 修正即時翻譯斷線且重連耗盡後，會議仍停留在「進行中」並無法重新進入的問題；現在會保存 checkpoint、標記為「已中斷」，並可從會議管理續錄。
 
 - 保留完整 OpenCC 初始載入，並將 AG Grid、QR Code 與 Downshift 拆分為獨立 vendor chunks，避免 build 出現 large file warning。
@@ -47,6 +86,41 @@
   Session.
 
 ## Unreleased
+
+- #27 finalized Cue refinement now queues one asynchronous request per Cue with
+  at most two preceding finalized Cues as context. Only the addressed Cue is
+  updated; subtitle resegmentation remains a separate batch capability, and
+  transcript polishing provider execution is rate-limited by the configured
+  RPM with durable queue deferral.
+
+- 修正逐句潤飾結果的 target identity 與 canonical Cue persistence；polished/refined output 現在依 `cueId` 原地更新，不會因輸出順序覆寫其他 Cue 或在 reload 後退回 pending。
+
+- DEV 模式新增 Live session 端到端事件證據與 `window.__liveTranslateDebug.getSnapshot()`；明確記錄 PCM 產生、SDK send 的 void/sync throw/async reject，以及 input-end outcome。Token config 明確啟用 automatic activity detection，並支援依 provider config 使用 `activityStart/activityEnd`；移除 live transcript 的 3 秒 idle 偽 finalization。E2E 測試 backend 改用獨立 3100 port。
+
+- 修正 Live Translate 首段語音在重連或 Pause → Resume 後卡在「辨識中」的問題；mic ready 與 provider ready 現在分離，只有目前 Gemini Live session ready 後才 attach audio graph 並送 PCM，舊 session 的 audio/transcript callback 會依 connection epoch 丟棄，Pause、reconnect、rollover、Stop 會先執行 protocol-level input flush。
+
+- 修正暫停或重新載入後繼續錄音的啟動空窗；新 Live Session 完成音訊管線與 callback 初始化後才啟用字幕，並重設字幕時間原點與清除舊 partial Cue。
+
+- 修正續錄後字幕 partial Cue 卡住：新 Segment 開始前會完成可配對的舊 Cue、清除無法配對的 recovery partial 與事件 metadata，並讓 source-only retranslation 在有限次數後明確失敗，不再永久等待。
+
+- 修正重新載入會議後繼續錄製沒有新增字幕的問題；續錄現在會同步初始化字幕時間原點，讓新的雙語 Cue 正常顯示。
+
+- 修正續錄時指定麥克風回報 `Invalid constraint` 會中止錄音的問題；現在會安全改用瀏覽器預設麥克風並繼續錄製。
+
+- 修正重啟後續錄遇到 legacy 字典 alias 非陣列資料時的 `Symbol.iterator` 錯誤，現在會安全忽略無效 alias。
+
+- 修正長會議續錄時重複建立既有翻譯 request／execution 導致 HTTP 500 的問題；相同命令現在可安全重試且不會重複啟動已執行的翻譯。
+
+- 修正即時翻譯在暫停或結束前收到的最後一批字幕未更新到畫面的問題；terminal flush 現在會保留並完成顯示最後的雙語 Cue。
+
+- 修正字幕重分段潤飾 worker 未讀取 `items[].rawSource`，導致有效字幕被誤判為空白原文而失敗。
+
+- 即時翻譯會依續錄資料自動顯示單一「繼續錄製」或「開始」按鈕；待續錄會議可選擇「結束會議」封存，既有逐字稿與 checkpoints 會保留。
+
+- #27 finalized Cue refinement now runs asynchronously per Cue, preserves raw
+  source/translation values, applies version-fenced refined source and
+  translation values to the same Cue row, and supports refined-default or
+  explicit raw transcript exports.
 
 - 改善筆電版重新翻譯 Session 清單：隱藏次要結束時間欄、縮窄欄位與操作區，避免重新翻譯按鈕被裁切。
 

@@ -46,7 +46,11 @@ async function parseMeeting(response) {
 }
 
 async function assertOk(response) {
-  if (!response?.ok) throw new Error(`Meeting management request failed with HTTP ${response?.status}.`);
+  if (!response?.ok) {
+    const error = new Error(`Meeting management request failed with HTTP ${response?.status}.`);
+    error.status = response?.status;
+    throw error;
+  }
 }
 
 function buildUrl(baseUrl, path) {

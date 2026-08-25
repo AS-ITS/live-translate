@@ -71,6 +71,7 @@ function createEvent({ payload = {}, stream, eventType, text, providerEventId, e
     liveSessionId: context.liveSessionId || null,
     sessionId: context.sessionId || null,
     segmentId: context.segmentId || null,
+    connectionEpoch: context.connectionEpoch ?? null,
     stream,
     eventType,
     text: normalizeText(text),

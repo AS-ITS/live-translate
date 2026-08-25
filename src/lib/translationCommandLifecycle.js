@@ -29,15 +29,17 @@ export function createTranslationCommandLifecycle({
             sourceTranscriptSnapshot: null,
             createdAt: timestampOrNow(sessionRecord?.createdAt, now)
           });
-          await translationCommandApiClient.createTranslationExecution({
+          const execution = await translationCommandApiClient.createTranslationExecution({
             id: ids.executionId,
             translationRequestId: ids.requestId,
             startedAt
           });
-          await translationCommandApiClient.updateTranslationExecution(ids.executionId, {
-            transition: 'start',
-            startedAt
-          });
+          if (executionMayStart(execution)) {
+            await translationCommandApiClient.updateTranslationExecution(ids.executionId, {
+              transition: 'start',
+              startedAt
+            });
+          }
 
           state.executionId = ids.executionId;
         });
@@ -240,6 +242,10 @@ function sequenceValue(item) {
 
 function targetLanguageCodeFor(sessionRecord) {
   return sessionRecord?.targetLanguageCode || 'unknown-language';
+}
+
+function executionMayStart(execution) {
+  return !execution?.status || execution.status === 'created' || execution.status === 'queued';
 }
 
 function timestampOrNow(timestamp, now) {

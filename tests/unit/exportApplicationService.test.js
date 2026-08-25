@@ -12,6 +12,10 @@ test('export application service delegates source, translation, and combined exp
     formatSavedSessionExport(detail, options) {
       calls.push(['saved-session', detail, options]);
       return 'saved-session-result';
+    },
+    exportCuesToTxt(cues, options) {
+      calls.push(['txt-cues', cues, options]);
+      return 'txt-cues-result';
     }
   });
   const items = [{ id: 'item-1' }];
@@ -61,6 +65,10 @@ test('generic transcript export delegates Cue SRT/VTT and transcript fallback pa
     exportCuesToVtt(cues, options) {
       calls.push(['vtt', cues, options]);
       return 'vtt-result';
+    },
+    exportCuesToTxt(cues, options) {
+      calls.push(['txt', cues, options]);
+      return 'txt-result';
     }
   });
   const cues = [{ cueId: 'cue-1' }];
@@ -68,11 +76,11 @@ test('generic transcript export delegates Cue SRT/VTT and transcript fallback pa
 
   assert.equal(service.exportTranscript({ items, cues, options: { format: 'srt', stream: 'source' } }), 'srt-result');
   assert.equal(service.exportTranscript({ items, cues, options: { format: 'vtt', stream: 'translation' } }), 'vtt-result');
-  assert.equal(service.exportTranscript({ items, cues, options: { format: 'txt', stream: 'both' } }), 'transcript-result');
+  assert.equal(service.exportTranscript({ items, cues, options: { format: 'txt', stream: 'both' } }), 'txt-result');
   assert.deepEqual(calls, [
     ['srt', cues, { format: 'srt', stream: 'source' }],
     ['vtt', cues, { format: 'vtt', stream: 'translation' }],
-    ['transcript', items, { format: 'txt', stream: 'both' }]
+    ['txt', cues, { format: 'txt', stream: 'both' }]
   ]);
 });
 
@@ -93,4 +101,5 @@ test('factory rejects missing or invalid export helpers deterministically', () =
   assert.throws(() => createExportApplicationService({ formatSavedSessionExport: null }), /formatSavedSessionExport must be a function/);
   assert.throws(() => createExportApplicationService({ exportCuesToSrt: null }), /exportCuesToSrt must be a function/);
   assert.throws(() => createExportApplicationService({ exportCuesToVtt: null }), /exportCuesToVtt must be a function/);
+  assert.throws(() => createExportApplicationService({ exportCuesToTxt: null }), /exportCuesToTxt must be a function/);
 });

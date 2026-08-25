@@ -39,6 +39,77 @@ test('Gemini mock event flow produces one final cue from input/output partials',
   assert.equal(cueState.currentCue, null);
 });
 
+test('terminal transcript flush emits final Cue events for pending subtitles', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-terminal-flush',
+    sessionId: 'session-terminal-flush',
+    segmentId: 'segment-terminal-flush',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => (clock += 50),
+    onCueEvent: (event) => {
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  session.handleMessage({
+    eventId: 'pending-source',
+    serverContent: { inputTranscription: { text: '最後一句原文' } }
+  });
+  session.handleMessage({
+    eventId: 'pending-translation',
+    serverContent: { outputTranscription: { text: 'the final source sentence' } }
+  });
+
+  session.flushPendingTranscripts();
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: clock + 700, reason: 'pause' });
+
+  assert.equal(cueState.finalCues.length, 1);
+  assert.deepEqual(
+    [cueState.finalCues[0].sourceText, cueState.finalCues[0].translatedText],
+    ['最後一句原文', 'the final source sentence']
+  );
+});
+
+test('local silence finalize commits a complete Cue immediately without ending provider audio', async () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const providerCalls = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-local-silence',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    silenceFinalizeMs: 20,
+    sessionClock: () => (clock += 50),
+    onCueEvent: (event) => {
+      cueState = applySubtitleCueEvent(cueState, event);
+      if (event.localFinalize) {
+        cueState = finalizePendingSubtitleCue(cueState, {
+          sessionTimeMs: clock + 1,
+          reason: event.finalizedReason
+        });
+      }
+    }
+  });
+  session.session = { sendRealtimeInput(payload) { providerCalls.push(payload); } };
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({ eventId: 'local-source', serverContent: { inputTranscription: { text: '第一句原文' } } });
+  session.handleMessage({ eventId: 'local-translation', serverContent: { outputTranscription: { text: 'first translation' } } });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+
+  assert.equal(cueState.finalCues.length, 1);
+  assert.deepEqual(
+    [cueState.finalCues[0].sourceText, cueState.finalCues[0].translatedText, cueState.finalCues[0].finalizedReason],
+    ['第一句原文', 'first translation', 'localSilence']
+  );
+  assert.equal(cueState.currentCue, null);
+  assert.deepEqual(providerCalls, []);
+  await session.cleanup({ closeSession: false });
+});
+
 test('Gemini incremental fragments without turnIndex remain one final cue', () => {
   let cueState = createSubtitleCueState();
   let clock = 0;

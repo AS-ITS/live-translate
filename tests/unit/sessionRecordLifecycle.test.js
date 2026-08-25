@@ -33,6 +33,22 @@ test('build session record input', () => {
   );
 });
 
+test('build session record input normalizes legacy glossary aliases for the target language', () => {
+  const result = buildSessionRecordInput({
+    startedAt: 1000,
+    targetLanguageCode: 'en',
+    meetingGlossaryEntries: [
+      { source: 'microphone', target: 'Alan speak', replacementAliases: { en: ['mic'], ja: ['マイク'] } },
+      { source: 'legacy', target: 'Legacy', replacementAliases: null }
+    ]
+  });
+
+  assert.deepEqual(result.meetingGlossaryEntries, [
+    { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] },
+    { source: 'legacy', target: 'Legacy', replacementAliases: [] }
+  ]);
+});
+
 test('create active session record', () => {
   const repository = createMemorySessionRepository({ now: 1000, idFactory: () => 'session-1' });
   const record = createActiveSessionRecord(

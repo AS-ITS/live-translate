@@ -50,13 +50,14 @@ input {
   overflow: hidden;
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: clamp(18px, 2.4vw, 36px);
   align-items: start;
   background: #f3f6f9;
 }
 
 .live-sidebar {
+  grid-row: 1 / -1;
   position: sticky;
   top: 24px;
   display: grid;
@@ -134,6 +135,14 @@ input {
 .live-app-shell > .feature-page {
   grid-column: 2;
   min-width: 0;
+}
+
+.live-app-shell > .error-message {
+  grid-row: 1;
+}
+
+.live-app-shell > .feature-page {
+  grid-row: 2;
 }
 
 .live-page {
@@ -548,7 +557,7 @@ input {
   display: grid;
   grid-template-columns: minmax(270px, 320px) minmax(0, 1fr);
   gap: clamp(14px, 1.7vw, 24px);
-  align-items: stretch;
+  align-items: start;
   min-height: 0;
   height: 100%;
 }
@@ -562,11 +571,13 @@ input {
 
 .live-settings-card {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  align-content: start;
+  align-self: start;
+  height: auto;
   min-width: 0;
   min-height: 0;
   padding: 20px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .live-settings-card h2 {
@@ -583,7 +594,7 @@ input {
   grid-template-columns: 1fr;
   gap: 16px;
   min-height: 0;
-  overflow-y: auto;
+  overflow-y: visible;
 }
 
 .live-audio-settings {
@@ -606,17 +617,40 @@ input {
 
 .live-settings-card .control-status-row {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
   gap: 16px;
 }
 
-.live-settings-card .control-actions,
-.live-settings-card .session-actions {
+.control-actions,
+.session-actions {
+  width: 100%;
+  min-width: 0;
   justify-content: stretch;
+  align-items: stretch;
+  justify-self: stretch;
+  align-self: stretch;
 }
 
-.live-settings-card .session-actions .button,
-.live-settings-card .control-actions > .button {
+.live-settings-action-wrapper {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
+  min-width: 0;
+  align-items: stretch;
+  justify-self: stretch;
+}
+
+.live-settings-action-wrapper > .button,
+.meeting-live-action-button {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  justify-self: stretch;
+  display: flex;
+  justify-content: center;
 }
 
 .meeting-settings-edit-link {
@@ -807,18 +841,18 @@ input {
 }
 
 .control-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   flex: 0 0 auto;
-  justify-content: flex-end;
-  gap: 12px;
+  justify-content: stretch;
+  gap: 16px;
 }
 
 .session-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-content: stretch;
+  gap: 16px;
 }
 
 .language-controls {
@@ -1048,6 +1082,73 @@ input:disabled {
   opacity: 0;
   pointer-events: none;
   transition: opacity 180ms ease;
+}
+
+.live-settings-drawer-backdrop {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  background: rgba(23, 32, 42, 0.34);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease;
+}
+
+.live-settings-drawer-backdrop.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.live-settings-drawer {
+  position: fixed;
+  z-index: 90;
+  top: 0;
+  right: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(420px, 100vw);
+  height: 100dvh;
+  border-left: 1px solid #d8dee6;
+  background: #ffffff;
+  box-shadow: -16px 0 36px rgba(23, 32, 42, 0.16);
+  transform: translateX(100%);
+  transition: transform 220ms ease;
+  visibility: hidden;
+}
+
+.live-settings-drawer.is-open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.live-settings-drawer-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e4e8ed;
+  padding: 22px 24px;
+}
+
+.live-settings-drawer-header h2 {
+  margin: 0;
+  color: #314152;
+  font-size: 1.15rem;
+}
+
+.live-settings-drawer-header p:not(.eyebrow) {
+  max-width: 34ch;
+  margin: 8px 0 0;
+  color: #6b7886;
+  line-height: 1.5;
+}
+
+.live-settings-drawer-body {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 22px 24px;
 }
 
 .export-drawer-backdrop.is-open {
@@ -2242,6 +2343,36 @@ input:disabled {
   line-height: 1.4;
 }
 
+.session-failure-diagnostics {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  border: 1px solid #f0caca;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff8f8;
+}
+
+.session-failure-diagnostics h4 {
+  margin: 0;
+  color: #8f2020;
+  font-size: 0.875rem;
+}
+
+.failure-diagnostic-list {
+  display: grid;
+  gap: 6px;
+}
+
+.failure-diagnostic-item {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: #5d3b3b;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
 .meeting-detail-metadata {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2478,6 +2609,28 @@ input:disabled {
   background: #ffffff;
 }
 
+.audio-artifact-downloads {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 10px 12px;
+}
+
+.audio-artifact-downloads h4 {
+  margin: 0;
+}
+
+.audio-artifact-downloads .recording-downloads {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.audio-artifact-downloads .export-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .saved-export-controls {
   grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
 }
@@ -2703,9 +2856,11 @@ input:disabled {
     display: grid;
   }
 
-  .control-actions,
-  .session-actions {
-    justify-content: flex-start;
+  .live-settings-card .control-status-row {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    justify-self: stretch;
   }
 
   .retranslation-result-workspace {
@@ -2803,6 +2958,66 @@ input:disabled {
   .live-settings-card {
     align-content: start;
     overflow-x: hidden;
+    overflow-y: auto;
+    grid-template-rows: auto auto auto auto;
+  }
+
+  .live-settings-card .live-settings-controls {
+    min-height: auto;
+    overflow: visible;
+    align-content: start;
+    padding-inline-end: 0;
+  }
+
+  .live-settings-card .control-status-row {
+    display: contents;
+  }
+
+  .live-settings-card .control-status-messages {
+    grid-row: 3;
+  }
+
+  .live-settings-card .control-actions {
+    grid-row: 4;
+    min-height: 0;
+  }
+
+  .live-settings-card .title-block,
+  .live-settings-card .control-status-messages,
+  .meeting-management-page .title-block,
+  .meeting-management-page .history-header > div,
+  .history-page .history-header > div,
+  .retranslation-page .history-header > div,
+  .glossary-page .history-header > div {
+    min-width: 0;
+  }
+
+  .live-settings-card h2,
+  .live-settings-card p,
+  .live-settings-card .device-note,
+  .live-settings-card .checkpoint-note,
+  .meeting-management-page h2,
+  .meeting-management-page h3,
+  .meeting-management-page p,
+  .history-page h2,
+  .history-page p,
+  .retranslation-page h2,
+  .retranslation-page p,
+  .glossary-page h2,
+  .glossary-page p {
+    overflow-wrap: anywhere;
+  }
+
+  .live-settings-card .button,
+  .meeting-management-page .button,
+  .history-page .button,
+  .retranslation-page .button,
+  .glossary-page .button {
+    min-width: 0;
+    height: auto;
+    line-height: 1.35;
+    white-space: normal;
+    text-align: center;
   }
 
   .live-settings-card .title-block-header,
@@ -2819,8 +3034,61 @@ input:disabled {
     border-radius: 14px;
   }
 
+  .meeting-management-page .control-panel {
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+
+  .meeting-management-data-grid .ag-cell,
+  .meeting-management-data-grid .meeting-name-cell,
+  .meeting-management-data-grid .meeting-actions {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .meeting-management-data-grid .meeting-actions {
+    white-space: normal;
+  }
+
   .history-page > .history-panel.has-history-detail {
     grid-template-rows: auto minmax(160px, 1fr) minmax(160px, 1fr);
+  }
+}
+
+/* Short desktop/laptop viewports must let the page grow instead of forcing
+   the settings card into the transcript panel's fixed-height grid track. */
+@media (min-width: 761px) and (max-height: 700px) {
+  .live-app-shell {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+
+  .live-app-shell > .feature-page,
+  .live-page {
+    height: auto;
+    min-height: 0;
+  }
+
+  .live-workspace-grid {
+    height: auto;
+    align-items: start;
+  }
+
+  .live-settings-card {
+    height: auto;
+    overflow: visible;
+  }
+
+  .live-settings-card .live-settings-controls {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .live-transcript-column,
+  .live-transcript-column .cue-panel {
+    height: auto;
+    min-height: calc(100dvh - 120px);
   }
 }
 
@@ -2890,6 +3158,7 @@ input:disabled {
   }
 
   .live-sidebar {
+    grid-row: auto;
     position: static;
     min-height: 0;
     gap: 14px;
@@ -2909,6 +3178,7 @@ input:disabled {
   .live-app-shell > .error-message,
   .live-app-shell > .feature-page {
     grid-column: 1;
+    grid-row: auto;
     min-width: 0;
   }
 
@@ -2999,7 +3269,6 @@ input:disabled {
   }
 
   .live-settings-card {
-    grid-template-rows: auto auto auto;
     min-height: 0;
     overflow: visible;
   }
@@ -3019,7 +3288,13 @@ input:disabled {
 
   .live-settings-controls {
     grid-template-columns: 1fr;
+    grid-auto-rows: max-content;
     min-height: auto;
+    row-gap: 12px;
+    align-items: start;
+    align-content: start;
+    align-self: start;
+    height: max-content;
     overflow: visible;
   }
 
@@ -3083,11 +3358,26 @@ input:disabled {
     justify-content: flex-start;
   }
 
+  .audio-artifact-downloads {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .audio-artifact-downloads .recording-downloads {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
   .control-actions,
   .session-actions {
     display: grid;
     grid-template-columns: 1fr;
     justify-content: stretch;
+  }
+
+  .live-settings-card .control-status-row,
+  .live-settings-card .control-actions,
+  .live-settings-card .session-actions {
+    width: 100%;
   }
 
   .article-actions {
@@ -3126,6 +3416,22 @@ input:disabled {
     transform: translateY(100%);
   }
 
+  .live-settings-drawer {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    height: min(86dvh, 720px);
+    border-top: 1px solid #d8dee6;
+    border-left: 0;
+    border-radius: 16px 16px 0 0;
+    transform: translateY(100%);
+  }
+
+  .live-settings-drawer.is-open {
+    transform: translateY(0);
+  }
+
   .export-drawer.is-open {
     transform: translateY(0);
   }
@@ -3135,6 +3441,14 @@ input:disabled {
   }
 
   .export-drawer-body {
+    padding: 18px 20px;
+  }
+
+  .live-settings-drawer-header {
+    padding: 18px 20px;
+  }
+
+  .live-settings-drawer-body {
     padding: 18px 20px;
   }
 
@@ -3214,6 +3528,8 @@ input:disabled {
 @media (prefers-reduced-motion: reduce) {
   .glossary-drawer,
   .glossary-drawer-backdrop,
+  .live-settings-drawer,
+  .live-settings-drawer-backdrop,
   .export-drawer,
   .export-drawer-backdrop {
     transition: none;

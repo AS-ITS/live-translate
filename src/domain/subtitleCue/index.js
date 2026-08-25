@@ -1,4 +1,5 @@
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
+import { cueRefinementInputHash } from '../../lib/cueContent.js';
 
 const LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map(({ code }) => code));
 const PUNCTUATION_ONLY = /^[\s\p{P}\p{S}]+$/u;
@@ -14,6 +15,9 @@ export const CUE_ERROR_CODES = Object.freeze({
 
 export function validateFinalCue(input, { previousCue = null } = {}) {
   if (!isRecord(input)) return invalid('Cue must be an object.');
+  const rawSource = text(input.rawSource ?? input.sourceText, 'rawSource');
+  const rawTranslation = optionalText(input.rawTranslation ?? input.translatedText, 'rawTranslation');
+  const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'refinement');
   const cue = {
     cueId: requiredString(input.cueId, 'cueId'),
     sessionId: requiredString(input.sessionId, 'sessionId'),
@@ -23,8 +27,15 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     endTimeMs: finite(input.endTimeMs, 'endTimeMs'),
     sourceLanguageCode: languageCode(input.sourceLanguageCode, 'sourceLanguageCode'),
     targetLanguageCode: languageCode(input.targetLanguageCode, 'targetLanguageCode'),
-    sourceText: text(input.sourceText, 'sourceText'),
-    translatedText: optionalText(input.translatedText, 'translatedText'),
+    sourceText: rawSource,
+    translatedText: rawTranslation,
+    ...(hasRefinementContract ? {
+      rawSource,
+      rawTranslation,
+      refinedSource: optionalNullableText(input.refinedSource, 'refinedSource'),
+      refinedTranslation: optionalNullableText(input.refinedTranslation, 'refinedTranslation'),
+      refinement: normalizeRefinement(input, { rawSource, rawTranslation })
+    } : {}),
     status: input.status,
     finalizedReason: requiredString(input.finalizedReason || 'final', 'finalizedReason')
   };
@@ -42,6 +53,10 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   const existingById = normalizedExisting.find((cue) => cue.cueId === input?.cueId);
   if (existingById) {
     const incoming = validateFinalCue(input);
+    if (isPreferredRefinementUpdate(existingById, incoming)) {
+      const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
+      return { cue: clone(incoming), appended: false, updated: true, cues };
+    }
     if (sameCue(existingById, incoming)) return { cue: clone(existingById), appended: false, cues: normalizedExisting };
     if (isMonotonicMergedCue(existingById, incoming)) {
       const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
@@ -96,6 +111,28 @@ function sameCue(left, right) {
   return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);
 }
 
+function isPreferredRefinementUpdate(existing, incoming) {
+  const existingRefinement = existing.refinement;
+  const incomingRefinement = incoming.refinement;
+  if (!existingRefinement || !incomingRefinement) return false;
+  const sameIdentity = existing.sessionId === incoming.sessionId
+    && existing.segmentId === incoming.segmentId
+    && existing.sequence === incoming.sequence
+    && existing.startTimeMs === incoming.startTimeMs
+    && existing.endTimeMs === incoming.endTimeMs
+    && existing.rawSource === incoming.rawSource
+    && existing.rawTranslation === incoming.rawTranslation;
+  if (!sameIdentity) return false;
+  const existingVersion = Number.isInteger(existingRefinement.version) ? existingRefinement.version : 0;
+  const incomingVersion = Number.isInteger(incomingRefinement.version) ? incomingRefinement.version : 0;
+  const statusRank = { pending: 0, queued: 1, running: 2, failed: 3, completed: 4 };
+  return incomingVersion > existingVersion
+    || (incomingVersion === existingVersion
+      && ((statusRank[incomingRefinement.status] || 0) > (statusRank[existingRefinement.status] || 0)
+        || (incomingRefinement.status === 'completed'
+          && (incoming.refinedSource !== existing.refinedSource || incoming.refinedTranslation !== existing.refinedTranslation))));
+}
+
 function isMonotonicMergedCue(existing, incoming) {
   return incoming.finalizedReason === 'merged' &&
     incoming.sessionId === existing.sessionId &&
@@ -124,6 +161,24 @@ function nonNegativeFinite(value, field) { if (!Number.isFinite(value) || value 
 function languageCode(value, field) { if (!LANGUAGE_CODES.has(value)) return invalid(`${field} is not supported.`); return value; }
 function text(value, field) { if (typeof value !== 'string' || value.trim() === '' || PUNCTUATION_ONLY.test(value.trim())) return invalid(`${field} must contain non-punctuation text.`); return value.trim(); }
 function optionalText(value, field) { if (value === '') return ''; return text(value, field); }
+function optionalNullableText(value, field) { if (value === undefined || value === null || value === '') return null; return text(value, field); }
+function normalizeRefinement(input, { rawSource, rawTranslation }) {
+  const expectedHash = cueRefinementInputHash({ cueId: input.cueId, sequence: input.sequence, rawSource, rawTranslation });
+  const current = isRecord(input.refinement) ? input.refinement : {};
+  const version = Number.isInteger(current.version) && current.version > 0 ? current.version : 1;
+  const status = ['pending', 'queued', 'running', 'completed', 'failed'].includes(current.status) ? current.status : 'pending';
+  return {
+    status,
+    version,
+    inputHash: current.inputHash || expectedHash,
+    ...(current.executionId ? { executionId: current.executionId } : {}),
+    ...(current.requestedAt ? { requestedAt: current.requestedAt } : {}),
+    ...(current.startedAt ? { startedAt: current.startedAt } : {}),
+    ...(current.completedAt ? { completedAt: current.completedAt } : {}),
+    ...(current.failedAt ? { failedAt: current.failedAt } : {}),
+    ...(current.failure ? { failure: clone(current.failure) } : {})
+  };
+}
 function invalid(message) { const error = new TypeError(message); error.code = CUE_ERROR_CODES.invalid; throw error; }
 function conflict(message) { const error = new Error(message); error.code = CUE_ERROR_CODES.conflict; throw error; }
 function sequenceConflict(message) { const error = new Error(message); error.code = CUE_ERROR_CODES.sequenceConflict; throw error; }

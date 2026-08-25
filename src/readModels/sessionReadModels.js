@@ -15,6 +15,7 @@ const UNKNOWN_TARGET_LANGUAGE_CODE = 'unknown-language';
 export function mapSessionRecordToHistoryListItem(sessionRecord = {}) {
   return {
     id: sessionRecord.id,
+    ...(sessionRecord.meetingId != null ? { meetingId: sessionRecord.meetingId } : {}),
     ...(sessionRecord.name !== undefined ? { name: sessionRecord.name } : {}),
     status: sessionRecord.status,
     startedAt: sessionRecord.startedAt ?? null,
@@ -79,6 +80,9 @@ function mapSessionRecordToDetailSession(sessionRecord) {
     durationMs: sessionRecord.durationMs ?? null,
     failureReason: sessionRecord.failureReason ?? null,
     failureCategory: sessionRecord.failureCategory ?? null,
+    failureDiagnostics: Array.isArray(sessionRecord.failureDiagnostics)
+      ? sessionRecord.failureDiagnostics.map((diagnostic) => ({ ...diagnostic }))
+      : [],
     sourceLanguageCode: sessionRecord.sourceLanguageCode ?? null,
     selectedInputDeviceId: sessionRecord.selectedInputDeviceId ?? null,
     inputDeviceLabelSnapshot: sessionRecord.inputDeviceLabelSnapshot ?? null,

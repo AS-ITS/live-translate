@@ -1,5 +1,6 @@
 import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
 import { sanitizeAudioArtifactsForDTO } from '../infrastructure/sessionAudioArtifacts.js';
+import { meetingGlossaryAliasesForTarget } from '../lib/meetingGlossary.js';
 
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -33,13 +34,17 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
 export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts = {} } = {}) {
   const normalizedSegments = sortedSegments(segments);
   const transcriptItems = transcriptItemsFromSegments({ meeting, segments: normalizedSegments });
+  const cues = finalCuesFromSegments(normalizedSegments);
   const summary = mapMeetingToHistoryListItem({ meeting, segments: normalizedSegments });
 
   return {
     meeting: {
       ...summary,
       glossaryEntries: Array.isArray(meeting?.glossaryEntries)
-        ? meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        ? meeting.glossaryEntries.map((entry) => ({
+          ...entry,
+          replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, meeting?.targetLanguageCode)
+        }))
         : [],
       name: meeting?.name ?? null,
       sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
@@ -48,10 +53,28 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
     segments: normalizedSegments.map(mapSegmentToDTO),
     timeline: normalizedSegments.map(mapSegmentToTimelineItem),
     transcriptItems,
+    cues,
     audioArtifacts: sanitizeAudioArtifactsForDTO(audioArtifacts, { meetingId: meeting?.id }),
     readingContent: buildReadingContent(transcriptItems),
     recordKind: 'meeting'
   };
+}
+
+function finalCuesFromSegments(segments = []) {
+  return segments
+    .flatMap((segment) => (segment?.checkpoint?.refinedSubtitleStatus === 'completed' && Array.isArray(segment?.checkpoint?.refinedSubtitleCues) && segment.checkpoint.refinedSubtitleCues.length > 0
+      ? segment.checkpoint.refinedSubtitleCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))
+      : Array.isArray(segment?.checkpoint?.finalCues)
+        ? segment.checkpoint.finalCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))
+      : []))
+    .filter((cue) => cue?.status === 'final')
+    .sort((left, right) => (
+      left.segmentSequence - right.segmentSequence ||
+      left.startTimeMs - right.startTimeMs ||
+      left.sequence - right.sequence ||
+      left.cueId.localeCompare(right.cueId)
+    ))
+    .map(({ segmentSequence, ...cue }) => cue);
 }
 
 export function transcriptItemsFromSegments({ meeting, segments = [] } = {}) {
@@ -92,7 +115,7 @@ function mapSegmentToDTO(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
-    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
+    settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo),
     checkpointUpdatedAt: segment.checkpoint?.updatedAt ?? null,
     transcriptSummary: {
@@ -113,8 +136,21 @@ function mapSegmentToTimelineItem(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
-    settingsSnapshot: segment.settingsSnapshot ? { ...segment.settingsSnapshot, glossaryEntries: [...(segment.settingsSnapshot.glossaryEntries || [])] } : null,
+    settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo)
+  };
+}
+
+function meetingSettingsSnapshotDTO(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
+  return {
+    ...snapshot,
+    glossaryEntries: Array.isArray(snapshot.glossaryEntries)
+      ? snapshot.glossaryEntries.map((entry) => ({
+        ...entry,
+        replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, snapshot.targetLanguageCode)
+      }))
+      : []
   };
 }
 

@@ -1,4 +1,5 @@
 export const CUE_FOLLOW_BOTTOM_THRESHOLD_PX = 80;
+import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
 
 export function formatCueTimecode(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--:--.---';
@@ -22,14 +23,14 @@ export function sortFinalCues(cues = []) {
 
 export function sourceTextForCopy(cues = []) {
   return sortFinalCues(cues)
-    .map((cue) => String(cue?.sourceText || '').trim())
+    .map((cue) => effectiveSourceForCue(cue))
     .filter(Boolean)
     .join('\n');
 }
 
 export function translationTextForCopy(cues = []) {
   return sortFinalCues(cues)
-    .map((cue) => String(cue?.translatedText || '').trim())
+    .map((cue) => effectiveTranslationForCue(cue))
     .filter(Boolean)
     .join('\n');
 }
@@ -69,11 +70,46 @@ function hasMeaningfulPartialText(text) {
   return Boolean(normalized) && !/^[\s\p{P}\p{S}]+$/u.test(normalized);
 }
 
-export function cueListForDisplay(state = {}, { includePartial = true, requireSourceTextForPartial = false } = {}) {
-  const final = sortFinalCues(state.finalCues);
+export function cueListForDisplay(state = {}, {
+  includePartial = true,
+  requireSourceTextForPartial = false,
+  mergeRepeatedFinalCues = false
+} = {}) {
+  const final = sortFinalCues(state.refinedSubtitleCues?.length ? state.refinedSubtitleCues : state.finalCues);
   const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
-  const cues = partial ? [...final, partial] : final;
+  const displayedFinal = mergeRepeatedFinalCues ? mergeAdjacentFinalCues(final) : final;
+  const cues = partial ? [...displayedFinal, partial] : displayedFinal;
   return includePartial ? mergeRepeatedLiveCues(cues) : cues;
+}
+
+function mergeAdjacentFinalCues(cues) {
+  const merged = [];
+
+  for (const cue of cues) {
+    const previous = merged.at(-1);
+    if (!previous || !areIdenticalAdjacentFinalCues(previous, cue)) {
+      merged.push(cue);
+      continue;
+    }
+
+    merged[merged.length - 1] = {
+      ...previous,
+      endTimeMs: Math.max(previous.endTimeMs || 0, cue.endTimeMs || 0),
+      updatedTimeMs: Math.max(previous.updatedTimeMs || 0, cue.updatedTimeMs || 0),
+      ...(cue.finalizedReason ? { finalizedReason: cue.finalizedReason } : {})
+    };
+  }
+
+  return merged;
+}
+
+function areIdenticalAdjacentFinalCues(previous, next) {
+  return previous.status === 'final' &&
+    next.status === 'final' &&
+    previous.sessionId === next.sessionId &&
+    previous.segmentId === next.segmentId &&
+    effectiveSourceForCue(previous) === effectiveSourceForCue(next) &&
+    effectiveTranslationForCue(previous) === effectiveTranslationForCue(next);
 }
 
 function mergeRepeatedLiveCues(cues) {

@@ -1,4 +1,5 @@
 import { isTerminalSessionStatus } from '../lib/sessionRecords.js';
+import { meetingGlossaryAliasesForTarget } from '../lib/meetingGlossary.js';
 
 export function createSessionSnapshotSyncService({ sessionRepository } = {}) {
   assertSessionRepository(sessionRepository);
@@ -52,6 +53,7 @@ function applySessionPatch(repository, session) {
         status: session.status,
         failureReason: session.failureReason ?? null,
         failureCategory: session.failureCategory ?? null,
+        failureDiagnostics: Array.isArray(session.failureDiagnostics) ? session.failureDiagnostics.slice(-10) : [],
         endedAt: session.endedAt,
         transcriptSummary: session.transcriptSummary
       });
@@ -95,11 +97,17 @@ function sessionMetadata(session) {
     segmentId: session.segmentId ?? null,
     ...(Object.hasOwn(session, 'meetingGlossaryEntries')
       ? { meetingGlossaryEntries: Array.isArray(session.meetingGlossaryEntries)
-        ? session.meetingGlossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...(entry.replacementAliases || [])] }))
+        ? session.meetingGlossaryEntries.map((entry) => ({
+          ...entry,
+          replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, session.targetLanguageCode)
+        }))
         : [] }
       : {}),
     selectedInputDeviceId: session.selectedInputDeviceId ?? null,
-    inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null
+    inputDeviceLabelSnapshot: session.inputDeviceLabelSnapshot ?? null,
+    ...(Object.hasOwn(session, 'failureDiagnostics')
+      ? { failureDiagnostics: Array.isArray(session.failureDiagnostics) ? session.failureDiagnostics.slice(-10) : [] }
+      : {})
   };
 }
 

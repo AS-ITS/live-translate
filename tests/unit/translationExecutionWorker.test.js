@@ -201,6 +201,23 @@ test('durable queue claim is persisted before runner starts', async () => {
   }]);
 });
 
+test('worker does not perform transcript polishing RPM admission', async () => {
+  const calls = [];
+  const worker = createTranslationExecutionWorker(workerDependencies({
+    calls,
+    translationRepository: repository({
+      calls,
+      request: translationRequest({ operation: 'transcript_polishing' })
+    }),
+    durableTranslationExecutionQueueRepository: durableRepository({ calls }),
+    clock: () => '2026-08-24T00:00:00.000Z'
+  }));
+
+  assert.deepEqual(await worker.processNext(), { status: 'processed', executionId: 'execution-1' });
+  assert.equal(calls.some(([name]) => name === 'runner.run'), true);
+  assert.equal(calls.some(([name]) => name === 'durable.retryClaim'), false);
+});
+
 test('durable worker propagates the claimed lease and fence token to runner', async () => {
   let runnerInput;
   const worker = createTranslationExecutionWorker(workerDependencies({
@@ -838,7 +855,7 @@ function workerDependencies(options = {}) {
     ...(options.translationExecutionRetryPolicy !== undefined ? { translationExecutionRetryPolicy: options.translationExecutionRetryPolicy } : {}),
     ...(options.translationExecutionRetryErrorClassifier !== undefined ? { translationExecutionRetryErrorClassifier: options.translationExecutionRetryErrorClassifier } : {}),
     ...(options.metrics !== undefined ? { metrics: options.metrics } : {}),
-    ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {})
+    ...(options.retryRandom !== undefined ? { retryRandom: options.retryRandom } : {}),
   };
 }
 

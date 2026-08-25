@@ -1,5 +1,6 @@
 import { isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
 import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
+import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
 
@@ -54,6 +55,9 @@ export function createMeetingCheckpointService({
       const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
       const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
       if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      if (meeting.status === 'completed') {
+        throw codedError('meeting_settings_locked', 'Completed meeting settings cannot be changed.');
+      }
       const now = clock();
       const updated = await meetingRepository.updateMeeting(meeting.withSettings({
         ...settings,
@@ -75,6 +79,28 @@ export function createMeetingCheckpointService({
 
       const deleted = await meetingRepository.deleteMeeting(normalizedMeetingId);
       return { meeting: deleted };
+    },
+
+    async completeMeeting({ meetingId } = {}) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      if (!meeting) throw codedError('meeting_not_found', `Meeting not found: ${normalizedMeetingId}`);
+      if (meeting.status === 'completed') return { meeting };
+      if (meeting.status === 'failed') {
+        throw codedError('meeting_complete_not_allowed', 'Failed meetings cannot be completed.');
+      }
+
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
+      const now = clock();
+      for (const segment of segments.filter((item) => ['active', 'created'].includes(item.status))) {
+        await meetingRepository.updateMeetingSegment(segment.complete({
+          endedAt: now,
+          liveSessionId: segment.status === 'created' ? null : segment.liveSessionId
+        }));
+      }
+
+      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now));
+      return { meeting: completedMeeting };
     },
 
     async startMeeting({ meetingId, segmentId, liveSessionId } = {}) {
@@ -301,12 +327,17 @@ export function createMeetingCheckpointService({
   });
 }
 
-function meetingSettingsSnapshot(meeting) {
+export function meetingSettingsSnapshot(meeting) {
   return meeting ? {
     name: meeting.name,
     sourceLanguageCode: meeting.sourceLanguageCode,
     targetLanguageCode: meeting.targetLanguageCode,
-    glossaryEntries: meeting.glossaryEntries.map((entry) => ({ ...entry, replacementAliases: [...entry.replacementAliases] }))
+    glossaryEntries: Array.isArray(meeting.glossaryEntries)
+      ? meeting.glossaryEntries.map((entry) => ({
+        ...entry,
+        replacementAliases: normalizeMeetingGlossaryAliases(entry?.replacementAliases)
+      }))
+      : []
   } : null;
 }
 
@@ -330,6 +361,10 @@ export function validateCheckpointInput(input, meetingId, segmentId) {
     idempotencyKey,
     durableChunks: sortChunks(durableChunks),
     finalCues,
+    refinedSubtitleCues: normalizeRefinedSubtitleCues(input.refinedSubtitleCues),
+    refinedSubtitleRevision: positiveOrZero(input.refinedSubtitleRevision),
+    refinedSubtitleInputHash: optionalString(input.refinedSubtitleInputHash),
+    refinedSubtitleStatus: validRefinedSubtitleStatus(input.refinedSubtitleStatus),
     cueCheckpoint: normalizeCueCheckpoint(input.cueCheckpoint),
     pendingPartial: null
   };
@@ -382,6 +417,10 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
     idempotencyKey: incoming.idempotencyKey,
     durableChunks: sortChunks(Array.from(chunksByKey.values())),
     finalCues: mergedCues.sort((left, right) => left.sequence - right.sequence),
+    refinedSubtitleCues: incoming.refinedSubtitleCues?.length ? incoming.refinedSubtitleCues : normalizedExisting.refinedSubtitleCues,
+    refinedSubtitleRevision: incoming.refinedSubtitleRevision > 0 ? incoming.refinedSubtitleRevision : normalizedExisting.refinedSubtitleRevision,
+    refinedSubtitleInputHash: incoming.refinedSubtitleInputHash || normalizedExisting.refinedSubtitleInputHash,
+    refinedSubtitleStatus: incoming.refinedSubtitleStatus !== 'pending' ? incoming.refinedSubtitleStatus : normalizedExisting.refinedSubtitleStatus,
     cueCheckpoint: incoming.cueCheckpoint ?? normalizedExisting.cueCheckpoint,
     pendingPartial: null,
     updatedAt
@@ -394,6 +433,10 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
       idempotencyKey: null,
       durableChunks: [],
       finalCues: [],
+      refinedSubtitleCues: [],
+      refinedSubtitleRevision: 0,
+      refinedSubtitleInputHash: null,
+      refinedSubtitleStatus: 'pending',
       cueCheckpoint: null,
       pendingPartial: null,
       updatedAt: null
@@ -408,6 +451,10 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
     idempotencyKey: checkpoint.idempotencyKey ?? null,
     durableChunks: sortChunks(checkpoint.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId))),
     finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues.map((cue) => validateFinalCue(cue)) : [],
+    refinedSubtitleCues: normalizeRefinedSubtitleCues(checkpoint.refinedSubtitleCues),
+    refinedSubtitleRevision: positiveOrZero(checkpoint.refinedSubtitleRevision),
+    refinedSubtitleInputHash: optionalString(checkpoint.refinedSubtitleInputHash),
+    refinedSubtitleStatus: validRefinedSubtitleStatus(checkpoint.refinedSubtitleStatus),
     cueCheckpoint: normalizeCueCheckpoint(checkpoint.cueCheckpoint),
     pendingPartial: null,
     updatedAt: checkpoint.updatedAt ?? null
@@ -538,6 +585,21 @@ function sameChunk(left, right) {
 function sameErrorInfo(left, right) {
   return left?.reason === right?.reason && left?.category === right?.category;
 }
+
+function normalizeRefinedSubtitleCues(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) invalid('refinedSubtitleCues must be an array');
+  return value.map((cue) => {
+    if (!isRecord(cue) || typeof cue.cueId !== 'string' || !Array.isArray(cue.sourceCueIds) || cue.sourceCueIds.length === 0 ||
+      typeof cue.sourceText !== 'string' || !cue.sourceText.trim() || typeof cue.translatedText !== 'string' || !cue.translatedText.trim() ||
+      !Number.isFinite(cue.startTimeMs) || !Number.isFinite(cue.endTimeMs) || cue.endTimeMs <= cue.startTimeMs || cue.status !== 'final') invalid('refinedSubtitleCue is invalid');
+    return { ...cue, sourceCueIds: [...cue.sourceCueIds] };
+  });
+}
+
+function positiveOrZero(value) { return Number.isInteger(value) && value >= 0 ? value : 0; }
+function optionalString(value) { return typeof value === 'string' && value.trim() ? value : null; }
+function validRefinedSubtitleStatus(value) { return ['pending', 'queued', 'running', 'completed', 'failed'].includes(value) ? value : 'pending'; }
 
 function assertMeetingRepository(repository) {
   for (const method of ['createMeeting', 'getMeeting', 'updateMeeting', 'listMeetingSegments', 'createMeetingSegment', 'getMeetingSegment', 'updateMeetingSegment']) {

@@ -389,7 +389,7 @@ test('SRT translation export removes CJK spacing when aligned to source cues', (
   assert.equal(output, '1\n00:00:01,000 --> 00:00:01,800\n愛克風測試。\n');
 });
 
-test('SRT translation export remains item-based when source cues are unavailable', () => {
+test('SRT translation export groups fragments when source cues are unavailable', () => {
   const output = formatTranscriptExport(
     [
       { ...translationFinal, id: 'translation-1', text: 'one', sequence: 1, startedAt: 2000, finalizedAt: 2400 },
@@ -400,8 +400,20 @@ test('SRT translation export remains item-based when source cues are unavailable
 
   assert.equal(
     output,
-    '1\n00:00:01,000 --> 00:00:01,400\none\n\n2\n00:00:01,450 --> 00:00:01,800\ntwo.\n'
+    '1\n00:00:01,000 --> 00:00:01,800\none two.\n'
   );
+});
+
+test('VTT translation export groups repeated short fragments for legacy meeting records', () => {
+  const output = formatTranscriptExport(
+    [
+      { ...translationFinal, id: 'translation-1', text: 'Voice test,', sequence: 1, startedAt: 12231, finalizedAt: 15251 },
+      { ...translationFinal, id: 'translation-2', text: 'voice test.', sequence: 2, startedAt: 15251, finalizedAt: 20244 }
+    ],
+    { format: 'vtt', stream: 'translation', timeOrigin: 0 }
+  );
+
+  assert.equal(output, 'WEBVTT\n\n00:00:12.231 --> 00:00:20.244\nVoice test, voice test.\n');
 });
 
 test('SRT translation export falls back to length splitting without useful punctuation', () => {

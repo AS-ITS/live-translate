@@ -1,6 +1,7 @@
 import { TranslationExecution, TranslationOutput } from '../domain/translation/index.js';
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
 import { createRetryPolicy } from './translation/retryPolicy.js';
+import { createTranscriptPolishingRateLimiter } from './translation/transcriptPolishingRateLimiter.js';
 
 export function createTranslationExecutionRunner({
   translationRepository,
@@ -8,7 +9,8 @@ export function createTranslationExecutionRunner({
   retryPolicy = createRetryPolicy(),
   executionFenceGuard,
   logger = (event) => console.error(JSON.stringify(event)),
-  clock = () => new Date().toISOString()
+  clock = () => new Date().toISOString(),
+  transcriptPolishingRateLimiter = createTranscriptPolishingRateLimiter()
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
@@ -16,6 +18,9 @@ export function createTranslationExecutionRunner({
   assertOptionalExecutionFenceGuard(executionFenceGuard);
   if (typeof logger !== 'function') throw new TypeError('logger must be a function.');
   assertClock(clock);
+  if (!transcriptPolishingRateLimiter || typeof transcriptPolishingRateLimiter.acquire !== 'function') {
+    throw new TypeError('transcriptPolishingRateLimiter.acquire must be a function.');
+  }
 
   return Object.freeze({
     async execute(input = {}) {
@@ -35,7 +40,8 @@ export function createTranslationExecutionRunner({
           payload,
           executionFenceGuard,
           executionFence,
-          clock
+          clock,
+          transcriptPolishingRateLimiter
         }));
       } catch (error) {
         if (error.providerExecutionError !== true) throw error;
@@ -62,8 +68,14 @@ export function createTranslationExecutionRunner({
         id: payload.outputId ?? `${execution.id}-output-0`,
         executionId: execution.id,
         sequence: payload.outputSequence ?? 0,
-        translatedText: providerAttemptExecution.providerResult.translatedText,
+        translatedText: providerAttemptExecution.providerResult.translatedText || providerAttemptExecution.providerResult.refinedTranslation || providerAttemptExecution.providerResult.refinedCues?.map((cue) => cue.refinedTranslation).join('\n') || ' ',
         polishedItems: providerAttemptExecution.providerResult.polishedItems,
+        refinedItems: providerAttemptExecution.providerResult.refinedItems,
+        refinedCues: providerAttemptExecution.providerResult.refinedCues,
+        refinedSource: providerAttemptExecution.providerResult.refinedSource,
+        refinedTranslation: providerAttemptExecution.providerResult.refinedTranslation,
+        refinementTargets: providerAttemptExecution.providerResult.refinementTargets ?? payload.refinementTargets,
+        version: providerAttemptExecution.providerResult.version ?? payload.refinementVersion ?? payload.version,
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
         sessionId: payload.sessionId,
@@ -122,8 +134,14 @@ export function createTranslationExecutionRunner({
         id: payload.outputId ?? `${execution.id}-output-0`,
         executionId: execution.id,
         sequence: payload.outputSequence ?? 0,
-        translatedText: execution.providerResult.translatedText,
+        translatedText: execution.providerResult.translatedText || execution.providerResult.refinedTranslation || execution.providerResult.refinedCues?.map((cue) => cue.refinedTranslation).join('\n') || ' ',
         polishedItems: execution.providerResult.polishedItems,
+        refinedItems: execution.providerResult.refinedItems,
+        refinedCues: execution.providerResult.refinedCues,
+        refinedSource: execution.providerResult.refinedSource,
+        refinedTranslation: execution.providerResult.refinedTranslation,
+        refinementTargets: execution.providerResult.refinementTargets ?? payload.refinementTargets,
+        version: execution.providerResult.version ?? payload.refinementVersion ?? payload.version,
         targetLanguageCode: payload.targetLanguageCode,
         createdAt: payload.outputCreatedAt ?? payload.completedAt ?? execution.startedAt,
         sessionId: payload.sessionId,
@@ -192,12 +210,16 @@ async function executeProviderWithRetry({
   payload,
   executionFenceGuard,
   executionFence,
-  clock
+  clock,
+  transcriptPolishingRateLimiter
 }) {
   let providerAttemptExecution = execution;
   let attempt = 1;
 
   while (true) {
+    if (payload.operation === 'transcript_polishing') {
+      await transcriptPolishingRateLimiter.acquire();
+    }
     const inFlightExecution = providerAttemptExecution.markProviderAttemptInFlight(clock());
     await assertWritable(executionFenceGuard, execution, executionFence);
     await translationRepository.updateTranslationExecution(inFlightExecution);
@@ -207,7 +229,11 @@ async function executeProviderWithRetry({
       providerResult = await translationExecutionProvider.execute({
         sourceText: payload.sourceText,
         ...(payload.operation === undefined ? {} : { operation: payload.operation }),
+        ...(payload.mode === undefined ? {} : { mode: payload.mode }),
+        ...(payload.items === undefined ? {} : { items: payload.items }),
         ...(payload.polishingItems === undefined ? {} : { polishingItems: payload.polishingItems }),
+        ...(payload.refinementItems === undefined ? {} : { refinementItems: payload.refinementItems }),
+        ...(payload.refinementTargets === undefined ? {} : { refinementTargets: payload.refinementTargets }),
         ...(payload.model === undefined ? {} : { model: payload.model }),
         sourceLanguageCode: payload.sourceLanguageCode,
         targetLanguageCode: payload.targetLanguageCode,

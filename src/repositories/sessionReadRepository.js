@@ -117,7 +117,9 @@ function transcriptItemsFromMeetingSegments({ segments = [], sessionId, meetingI
 
 function finalCuesFromMeetingSegments({ segments = [], sessionId } = {}) {
   return segments
-    .flatMap((segment) => Array.isArray(segment?.checkpoint?.finalCues) ? segment.checkpoint.finalCues : [])
+    .flatMap((segment) => segment?.checkpoint?.refinedSubtitleStatus === 'completed' && Array.isArray(segment?.checkpoint?.refinedSubtitleCues) && segment.checkpoint.refinedSubtitleCues.length > 0
+      ? segment.checkpoint.refinedSubtitleCues
+      : (Array.isArray(segment?.checkpoint?.finalCues) ? segment.checkpoint.finalCues : []))
     .filter((cue) => cue?.status === 'final' &&
       typeof cue.sourceText === 'string' && cue.sourceText.trim() &&
       typeof cue.translatedText === 'string' && cue.translatedText.trim())

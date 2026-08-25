@@ -445,6 +445,62 @@ test('POST queued execution is processed successfully by worker through producti
   );
 });
 
+test('subtitle resegmentation polishing uses rawSource when worker rebuilds sourceText', async () => {
+  const translationRepository = createTranslationRepositoryFixture({
+    requests: [
+      new TranslationRequest(
+        translationRequestPayload({
+          id: 'polishing-request-1',
+          sessionId: 'session-polishing-1',
+          targetLanguageCode: 'en',
+          operation: 'transcript_polishing',
+          segmentRange: { fromSequence: 1, toSequence: 1, segmentIds: ['segment-1'] },
+          inputHash: 'polishing-hash-1',
+          sourceTranscriptSnapshot: {
+            operation: 'transcript_polishing',
+            mode: 'subtitle_resegment',
+            sourceLanguageCode: 'zh-Hant',
+            items: [{ cueId: 'cue-1', sequence: 1, rawSource: '你好', rawTranslation: 'Hello' }]
+          }
+        })
+      )
+    ]
+  });
+  const providerCalls = [];
+  const provider = createFakeTranslationExecutionProvider({ calls: providerCalls });
+  const input = translationExecutionPayload({
+    id: 'polishing-execution-1',
+    translationRequestId: 'polishing-request-1',
+    providerKey: 'fake'
+  });
+
+  await withProductionTranslationCommandServer(
+    translationRepository,
+    async (baseUrl, dependencies) => {
+      const response = await postJson(`${baseUrl}/api/translation-executions`, input);
+      assertQueuedExecutionResponse(response, {
+        executionId: 'polishing-execution-1',
+        requestId: 'polishing-request-1',
+        providerKey: 'fake'
+      });
+
+      const queuedJob = dependencies.translationExecutionQueue.dequeue();
+      dependencies.translationExecutionQueue.enqueue(queuedJob);
+      assert.deepEqual(await dependencies.translationExecutionWorker.processNext(), {
+        status: 'processed',
+        executionId: 'polishing-execution-1'
+      });
+    },
+    { translationExecutionProvider: provider }
+  );
+
+  assert.equal(providerCalls.length, 1);
+  assert.equal(providerCalls[0].sourceText, '你好');
+  assert.equal(providerCalls[0].operation, 'transcript_polishing');
+  assert.equal(translationRepository.translationExecutions.get('polishing-execution-1').status, 'completed');
+  assert.equal(translationRepository.translationOutputs.get('polishing-execution-1-output-0').sourceText, '你好');
+});
+
 test('production worker runtime completes queued execution after start', async () => {
   const scheduler = createFakeScheduler();
   const translationRepository = createTranslationRepositoryFixture({

@@ -24,6 +24,7 @@ const baseSessionRecord = Object.freeze({
   targetLanguageLabel: 'French',
   failureReason: null,
   failureCategory: null,
+  failureDiagnostics: [],
   selectedInputDeviceId: 'device-1',
   inputDeviceLabelSnapshot: 'Studio Mic',
   transcriptSummary
@@ -111,6 +112,16 @@ test('detail DTO exposes audio artifact download metadata without storage paths'
     createdAt: 1234,
     downloadUrl: '/api/sessions/session-1/audio/translation'
   });
+});
+
+test('detail DTO exposes safe failure diagnostics but history list does not', () => {
+  const diagnostics = [{ at: 1000, source: 'reconnect_session', stage: 'connect_live_session', reason: 'provider_error', category: 'provider', code: 1011, status: null }];
+  const sessionRecord = { ...baseSessionRecord, failureDiagnostics: diagnostics };
+  const detailDto = mapSessionRecordDetailToDTO({ sessionRecord, transcriptItems: [] });
+  const historyItem = mapSessionRecordToHistoryListItem(sessionRecord);
+
+  assert.deepEqual(detailDto.session.failureDiagnostics, diagnostics);
+  assert.equal(Object.hasOwn(historyItem, 'failureDiagnostics'), false);
 });
 
 test('defaults missing transcriptSummary to an empty summary', () => {
@@ -337,6 +348,7 @@ test('detail DTO exposes expected legacy shapes', () => {
     durationMs: 4000,
     failureReason: null,
     failureCategory: null,
+    failureDiagnostics: [],
     sourceLanguageCode: null,
     selectedInputDeviceId: 'device-1',
     inputDeviceLabelSnapshot: 'Studio Mic',

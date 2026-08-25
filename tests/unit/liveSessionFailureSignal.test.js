@@ -24,6 +24,38 @@ test('unexpected close triggers connection failure after cleanup', async () => {
   assert.equal(failures[0].reasonHint, 'unexpected_close');
   assert.equal(failures[0].afterCleanup, true);
   assert.deepEqual(failures[0].rawEvent, { reason: 'provider closed', code: 1011 });
+  assert.deepEqual(failures[0].diagnostic, {
+    at: failures[0].diagnostic.at,
+    source: 'unexpected_close',
+    reasonHint: 'unexpected_close',
+    code: 1011,
+    status: null,
+    providerReason: 'provider closed',
+    connectionEpoch: 0,
+    liveSessionId: failures[0].diagnostic.liveSessionId,
+    segmentId: failures[0].diagnostic.segmentId,
+    audioCallbackCount: 0,
+    pcmSendAttemptCount: 0,
+    pcmSendSyncThrowCount: 0,
+    pcmSendAsyncRejectCount: 0
+  });
+});
+
+test('failure diagnostics expose provider codes without exposing credentials', async () => {
+  const failures = [];
+  const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
+
+  await session.handleSessionClose({
+    reason: 'token=secret-token-value',
+    code: 1008,
+    status: 401
+  });
+
+  assert.equal(failures[0].diagnostic.code, 1008);
+  assert.equal(failures[0].diagnostic.status, 401);
+  assert.equal(failures[0].diagnostic.providerReason, '[redacted]');
+  assert.equal(session.getDebugSnapshot().failureDiagnostics.length, 1);
+  assert.equal(JSON.stringify(session.getDebugSnapshot()).includes('secret-token-value'), false);
 });
 
 test('expected user stop does not trigger connection failure', async () => {
@@ -96,6 +128,88 @@ test('microphone track ending emits selected-device failure after cleanup', asyn
   assert.equal(failures[0].afterCleanup, true);
 });
 
+test('selected microphone Invalid constraint falls back to the browser default', async () => {
+  const previousMediaDevices = globalThis.navigator?.mediaDevices;
+  const calls = [];
+  const fallbackStream = { getTracks: () => [] };
+  Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: async (constraints) => {
+        calls.push(constraints);
+        if (calls.length === 1) {
+          throw new TypeError('Invalid constraint');
+        }
+        return fallbackStream;
+      }
+    }
+  });
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en', inputDeviceId: 'mic-1' });
+    const stream = await session.openInputStream();
+
+    assert.equal(stream, fallbackStream);
+    assert.deepEqual(calls, [
+      {
+        audio: {
+          deviceId: { exact: 'mic-1' },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        }
+      },
+      {
+        audio: {
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+          channelCount: 1
+        }
+      }
+    ]);
+  } finally {
+    if (previousMediaDevices === undefined) {
+      delete globalThis.navigator.mediaDevices;
+    } else {
+      Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+        configurable: true,
+        value: previousMediaDevices
+      });
+    }
+  }
+});
+
+test('microphone permission errors do not fall back to the browser default', async () => {
+  const previousMediaDevices = globalThis.navigator?.mediaDevices;
+  let callCount = 0;
+  Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: async () => {
+        callCount += 1;
+        throw new DOMException('Permission denied', 'NotAllowedError');
+      }
+    }
+  });
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en', inputDeviceId: 'mic-1' });
+    await assert.rejects(() => session.openInputStream(), { name: 'NotAllowedError' });
+    assert.equal(callCount, 1);
+  } finally {
+    if (previousMediaDevices === undefined) {
+      delete globalThis.navigator.mediaDevices;
+    } else {
+      Object.defineProperty(globalThis.navigator, 'mediaDevices', {
+        configurable: true,
+        value: previousMediaDevices
+      });
+    }
+  }
+});
+
 test('offline signal emits a recoverable failure after cleanup', async () => {
   const failures = [];
   const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
@@ -157,14 +271,97 @@ test('turn completion finalizes preceding input and output transcript partials',
   });
   session.handleMessage({ serverContent: { turnComplete: true } });
 
-  assert.deepEqual(inputEvents, [
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'first source sentence', isFinal: false },
     { text: 'first source sentence', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents, [
+  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'first translated sentence', isFinal: false },
     { text: 'first translated sentence', isFinal: true }
   ]);
+});
+
+test('local silence finalization completes pending transcripts without provider input-end control', async () => {
+  const inputEvents = [];
+  const outputEvents = [];
+  const cueEvents = [];
+  const providerCalls = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    silenceFinalizeMs: 20,
+    onInputTranscript: (event) => inputEvents.push(event),
+    onOutputTranscript: (event) => outputEvents.push(event),
+    onCueEvent: (event) => cueEvents.push(event)
+  });
+  session.session = { sendRealtimeInput(payload) { providerCalls.push(payload); } };
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({ serverContent: {
+    inputTranscription: { text: 'first source' },
+    outputTranscription: { text: 'first translation' }
+  } });
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
+    { text: 'first source', isFinal: false },
+    { text: 'first source', isFinal: true }
+  ]);
+  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
+    { text: 'first translation', isFinal: false },
+    { text: 'first translation', isFinal: true }
+  ]);
+  assert.equal(cueEvents.filter((event) => event.isFinal).length, 2);
+  assert.equal(cueEvents.filter((event) => event.localFinalize).length, 1);
+  assert.deepEqual(providerCalls, []);
+  await session.cleanup({ closeSession: false });
+});
+
+test('local silence finalization does nothing without pending transcripts and provider boundaries do not duplicate it', async () => {
+  const inputEvents = [];
+  const providerCalls = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    silenceFinalizeMs: 20,
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+  session.session = { sendRealtimeInput(payload) { providerCalls.push(payload); } };
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(inputEvents, []);
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({ serverContent: { inputTranscription: { text: 'one sentence' } } });
+  session.handleMessage({ serverContent: { turnComplete: true } });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
+    { text: 'one sentence', isFinal: false },
+    { text: 'one sentence', isFinal: true }
+  ]);
+  assert.deepEqual(providerCalls, []);
+  await session.cleanup({ closeSession: false });
+});
+
+test('new speech resets local silence finalization and cleanup cancels its timer', async () => {
+  const inputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    silenceFinalizeMs: 30,
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+  session.handleMessage({ serverContent: { inputTranscription: { text: 'reset sentence' } } });
+  await session.cleanup({ closeSession: false });
+  await new Promise((resolve) => setTimeout(resolve, 35));
+
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
+    { text: 'reset sentence', isFinal: false }
+  ]);
+  assert.equal(session.silenceFinalizeTimer, null);
 });
 
 test('interim input transcription emits a non-final source transcript without turn completion finalization', () => {
@@ -182,7 +379,7 @@ test('interim input transcription emits a non-final source transcript without tu
   });
   session.handleMessage({ serverContent: { turnComplete: true } });
 
-  assert.deepEqual(inputEvents, [
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'interim source text', isFinal: false }
   ]);
 });
@@ -229,6 +426,8 @@ test('stop flushes buffered input audio before ending the realtime stream', asyn
     sendRealtimeInput(payload) { calls.push(payload); },
     close() {}
   };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
   session.chunker = {
     flush() { return [new Uint8Array([1, 2])]; },
     reset() {}
@@ -239,6 +438,189 @@ test('stop flushes buffered input audio before ending the realtime stream', asyn
   assert.equal(calls.length, 2);
   assert.ok(calls[0].audio?.data);
   assert.deepEqual(calls[1], { audioStreamEnd: true });
+});
+
+test('manual activity detection sends activityStart before PCM and activityEnd on stop', async () => {
+  const calls = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  session.session = { sendRealtimeInput(payload) { calls.push(payload); }, close() {} };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+  session.inputTurnMode = 'manual';
+  session.chunker = { flush() { return [new Uint8Array([1, 2])]; }, reset() {} };
+
+  session.sendInputAudioChunk(new Uint8Array([3, 4]));
+  await session.stop();
+
+  assert.deepEqual(calls.map((payload) => Object.keys(payload)[0]), ['activityStart', 'audio', 'audio', 'activityEnd']);
+  assert.deepEqual(calls.at(-1), { activityEnd: {} });
+});
+
+test('void provider send is recorded as invocation evidence, not server acknowledgement', () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  session.session = { sendRealtimeInput() {} };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+
+  session.sendInputAudioChunk(new Uint8Array([1, 2, 3]));
+
+  assert.equal(session.pcmSendAttemptCount, 1);
+  assert.equal(session.pcmSendAcceptedCount, 1);
+  assert.equal(session.pcmSendAsyncRejectCount, 0);
+});
+
+test('provider sync send failure emits an audio transport failure after cleanup', async () => {
+  const failures = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.session = {
+    sendRealtimeInput() { throw new Error('send failed'); },
+    close() {}
+  };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+
+  session.sendInputAudioChunk(new Uint8Array([1, 2]));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(session.pcmSendSyncThrowCount, 1);
+  assert.equal(failures[0].source, 'pcm_send_failed');
+  assert.equal(failures[0].reasonHint, 'pcm_send_failed');
+  assert.equal(failures[0].afterCleanup, true);
+});
+
+test('provider async send rejection emits one audio transport failure', async () => {
+  const failures = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.session = {
+    sendRealtimeInput() { return Promise.reject(new Error('async send failed')); },
+    close() {}
+  };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+
+  session.sendInputAudioChunk(new Uint8Array([1, 2]));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(session.pcmSendAsyncRejectCount, 1);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reasonHint, 'pcm_send_failed');
+});
+
+test('suspended audio context is resumed before capture continues', async () => {
+  let resumeCount = 0;
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  session.audioContext = {
+    state: 'suspended',
+    resume: async () => { resumeCount += 1; session.audioContext.state = 'running'; }
+  };
+
+  assert.equal(await session.ensureAudioContextRunning(), true);
+  assert.equal(resumeCount, 1);
+});
+
+test('input audio callback before provider session is ready is buffered and drained later', () => {
+  const sent = [];
+  const captured = [];
+  const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+  const source = { connect() {}, disconnect() {} };
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: true,
+    onInputAudioChunk: (chunk) => captured.push(chunk)
+  });
+  session.audioContext = { destination: {} };
+  session.mediaStream = {};
+  session.chunker = {
+    push() { return [new Uint8Array([1, 2, 3, 4])]; },
+    reset() {}
+  };
+  session.audioContext.createMediaStreamSource = () => source;
+  session.audioContext.createScriptProcessor = () => processor;
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+
+  session.setupAudioCapture();
+  processor.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+
+  assert.equal(captured.length, 1);
+  assert.equal(session.pendingInputAudioChunks.length, 1);
+
+  session.session = { sendRealtimeInput(payload) { sent.push(payload); } };
+  processor.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+
+  assert.equal(captured.length, 2);
+  assert.equal(sent.length, 1);
+  session.drainPreRoll();
+  assert.equal(sent.length, 2);
+  assert.equal(session.pendingInputAudioChunks.length, 0);
+});
+
+test('stale provider callbacks from an older connection epoch are ignored', async () => {
+  const events = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    connectionEpoch: 2,
+    onInputTranscript: (event) => events.push(['input', event]),
+    onOutputTranscript: (event) => events.push(['output', event]),
+    onClose: () => events.push(['close']),
+    onError: () => events.push(['error'])
+  });
+
+  session.handleMessage({
+    serverContent: {
+      inputTranscription: { text: 'stale source' },
+      outputTranscription: { text: 'stale translation' },
+      turnComplete: true
+    }
+  }, 1);
+  await session.handleSessionError(new Error('stale error'), 1);
+  await session.handleSessionClose({ reason: 'stale close' }, 1);
+
+  assert.deepEqual(events, []);
+});
+
+test('old audio processor closure cannot send after the connection epoch changes', () => {
+  const sent = [];
+  const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en', connectionEpoch: 4 });
+  session.audioContext = {
+    sampleRate: 16000,
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => processor
+  };
+  session.mediaStream = {};
+  session.chunker = {
+    push() { return [new Uint8Array([1, 2])]; },
+    flush() { return []; },
+    reset() {}
+  };
+  session.session = { sendRealtimeInput(payload) { sent.push(payload); } };
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
+  session.setupAudioCapture();
+  session.connectionEpoch = 5;
+
+  processor.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+
+  assert.deepEqual(sent, []);
+});
+
+test('pending input audio keeps only the bounded newest window', () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en', echoTargetLanguage: true });
+  for (let index = 0; index < 70; index += 1) {
+    session.queuePendingInputAudioChunk(new Uint8Array([index]));
+  }
+
+  assert.equal(session.pendingInputAudioChunks.length, 64);
+  assert.equal(session.pendingInputAudioChunks[0].bytes[0], 6);
+  assert.equal(session.pendingInputAudioChunks.at(-1).bytes[0], 69);
 });
 
 test('polishing configuration cannot change PCM chunks sent to Gemini Live', () => {
@@ -283,7 +665,7 @@ test('final input transcription replaces interim source while preserving transla
     { text: 'interim source', isFinal: false },
     { text: 'final source', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents, [
+  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'translated text', isFinal: false },
     { text: 'translated text', isFinal: true }
   ]);
@@ -458,14 +840,32 @@ test('session stop flushes pending source and translation transcripts once', asy
   await session.stop();
   await session.stop();
 
-  assert.deepEqual(inputEvents, [
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'last source', isFinal: false },
     { text: 'last source', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents, [
+  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'last translation', isFinal: false },
     { text: 'last translation', isFinal: true }
   ]);
+});
+
+test('stop marks unconfirmed provider partials as saved-pending terminal state', () => {
+  const inputEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+  session.pendingInputTranscript = { text: '最後一句', isFinal: false };
+  session.lastInputEnd = { method: 'audioStreamEnd', result: 'sdk-returned-void' };
+
+  session.flushPendingTranscripts();
+
+  assert.equal(inputEvents[0].isFinal, true);
+  assert.equal(inputEvents[0].terminalStatus, 'saved-pending');
+  assert.equal(inputEvents[0].terminalReason, 'provider-final-unconfirmed');
+  assert.equal(inputEvents[0].providerEndMethod, 'audioStreamEnd');
+  assert.equal(inputEvents[0].providerEndResult, 'sdk-returned-void');
 });
 
 test('session stop flush applies glossary replacement to pending output without changing input', async () => {
@@ -490,11 +890,11 @@ test('session stop flush applies glossary replacement to pending output without 
   });
   await session.stop();
 
-  assert.deepEqual(inputEvents, [
+  assert.deepEqual(inputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'microphone source', isFinal: false },
     { text: 'microphone source', isFinal: true }
   ]);
-  assert.deepEqual(outputEvents, [
+  assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'Alan speak', isFinal: false },
     { text: 'Alan speak', isFinal: true }
   ]);
@@ -558,6 +958,8 @@ test('cleanup releases audio resources and handlers idempotently', async () => {
   session.processor = processor;
   session.session = liveSession;
   session.chunker = chunker;
+  session.providerReady = true;
+  session.inputSendingEnabled = true;
   session.pendingInputTranscript = { text: 'pending source' };
   session.pendingOutputTranscript = { text: 'pending output' };
   session.awaitingInputTranscriptAfterTurnComplete = true;
@@ -568,15 +970,15 @@ test('cleanup releases audio resources and handlers idempotently', async () => {
   await session.cleanup({ closeSession: true, signalAudioEnd: true });
 
   assert.deepEqual(calls, [
-    'chunker.reset',
-    'playback.stop',
-    'playback.disconnect',
     ['sendRealtimeInput', { audioStreamEnd: true }],
+    'chunker.reset',
+    'track.stop',
     'processor.disconnect',
     'source.disconnect',
-    'track.stop',
     'session.close',
-    'audioContext.close'
+    'audioContext.close',
+    'playback.stop',
+    'playback.disconnect'
   ]);
   assert.equal(processor.onaudioprocess, null);
   assert.equal(playbackSource.onended, null);

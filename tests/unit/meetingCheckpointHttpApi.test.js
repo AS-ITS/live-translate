@@ -6,6 +6,7 @@ import { createMeetingReadController } from '../../server/meetingReadController.
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
+import { createSessionShareService } from '../../src/application/sessionShareService.js';
 
 test('POST /api/meetings creates an active meeting and first segment', async () => {
   const response = await request(createHandler(), { method: 'POST', url: '/api/meetings' });
@@ -54,6 +55,66 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(started.meeting.status, 'active');
   assert.equal(started.segment.status, 'active');
   assert.equal(started.segment.liveSessionId, 'live-session-management-1');
+});
+
+test('completed meetings reject settings changes and share mutations', async () => {
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true })
+  })).json();
+  const share = shareService.createMeetingShare(created.meeting.id);
+
+  const completed = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/complete` });
+  assert.equal(completed.status, 200);
+
+  const update = await request(handler, {
+    method: 'PATCH',
+    url: `/api/meetings/${created.meeting.id}`,
+    body: JSON.stringify({ name: '不應修改' })
+  });
+  assert.equal(update.status, 409);
+  assert.equal(update.json().error.code, 'meeting_settings_locked');
+
+  const createShare = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({})
+  });
+  assert.equal(createShare.status, 409);
+  assert.equal(createShare.json().error.code, 'meeting_share_locked');
+
+  const revokeShare = await request(handler, {
+    method: 'DELETE',
+    url: `/api/meetings/${created.meeting.id}/shares/${share.id}`
+  });
+  assert.equal(revokeShare.status, 409);
+  assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
+});
+
+test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
+  const handler = createHandler();
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ liveSessionId: 'live-session-1' })
+  })).json();
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/complete`
+  });
+  const body = response.json();
+  const segments = (await request(handler, {
+    method: 'GET',
+    url: `/api/meetings/${created.meeting.id}/segments`
+  })).json();
+
+  assert.equal(response.status, 200);
+  assert.equal(body.meeting.status, 'completed');
+  assert.equal(segments.segments[0].status, 'completed');
 });
 
 test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects started meetings', async () => {
@@ -136,6 +197,15 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
       checkpoint: checkpoint({
         meetingId: meeting.id,
         segmentId: segment.id,
+        finalCues: [finalCue({
+          cueId: 'cue:meeting:segment-1:1',
+          segmentId: segment.id,
+          sessionId: 'session-meeting-1',
+          sourceText: 'segment one source',
+          translatedText: 'segment one translation',
+          startTimeMs: 100,
+          endTimeMs: 800
+        })],
         durableChunks: [
           chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'source', sequence: 1, text: 'segment one source' }),
           chunk({ meetingId: meeting.id, segmentId: segment.id, stream: 'translation', sequence: 2, text: 'segment one translation' })
@@ -191,6 +261,9 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
   );
   assert.equal(body.readingContent.sourceTranscript.status, 'available');
   assert.equal(body.readingContent.translationArticle.status, 'available');
+  assert.deepEqual(body.cues.map(({ cueId, segmentId, translatedText }) => ({ cueId, segmentId, translatedText })), [
+    { cueId: 'cue:meeting:segment-1:1', segmentId: 'segment-1', translatedText: 'segment one translation' }
+  ]);
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
@@ -447,7 +520,33 @@ test('missing meeting or segment returns HTTP 404', async () => {
   assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
 });
 
-function createHandler({ meetingCheckpointMaxBytes } = {}) {
+test('completes an interrupted meeting through the HTTP API', async () => {
+  const handler = createHandler();
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const recovered = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/segments/${created.segment.id}/recover`,
+    body: JSON.stringify({
+      idempotencyKey: 'http-interrupt-1',
+      checkpoint: { idempotencyKey: 'http-checkpoint-1', durableChunks: [], pendingPartial: null },
+      nextLiveSessionId: null,
+      failureReason: 'unexpected_close',
+      failureCategory: 'provider',
+      outcome: 'interrupted'
+    })
+  });
+  assert.equal(recovered.status, 201);
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/complete`
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().meeting.status, 'completed');
+});
+
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -466,8 +565,10 @@ function createHandler({ meetingCheckpointMaxBytes } = {}) {
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
+    meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
+    ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }

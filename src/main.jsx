@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { useCombobox } from 'downshift';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { BookOpen, ChevronDown, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Square, Trash2, X } from 'lucide-react';
+import { BookOpen, ChevronDown, Copy, Download, Mic, MicOff, Pause, Play, Radio, RefreshCw, Settings, Square, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -26,6 +26,7 @@ import { createSegmentSwitchOrchestrator } from './lib/segmentSwitchOrchestrator
 import { createTranslationCommandApiClient } from './lib/translationCommandApiClient.js';
 import { createSessionRetranslationApiClient } from './lib/sessionRetranslationApiClient.js';
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
+import { selectedMeetingGlossaryEntries } from './lib/meetingGlossary.js';
 import { createMeetingManagementApiClient } from './lib/meetingManagementApiClient.js';
 import { createDeadLetterQueueApiClient } from './lib/deadLetterQueueApiClient.js';
 import { authenticatedFetch } from './lib/accessToken.js';
@@ -34,7 +35,9 @@ import { missingNumericIntegrity } from './lib/numericIntegrity.js';
 import { createTranslationCommandLifecycle } from './lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
-import { createTranscriptPolishingCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
+import { applyCueRefinementExecutionStates, applyRefinementResultToCues, completedCueRefinementOutputs, markCuesCompletedByRefinedOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from './lib/cueRefinement.js';
+import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from './lib/cueContent.js';
 import {
   compactTranslationHistoryForDetail,
   mergeRetranslationHistoryIntoDetail,
@@ -77,6 +80,7 @@ import {
   applySubtitleCueEvent,
   createSubtitleCueState,
   finalizePendingSubtitleCue,
+  prepareSubtitleCueStateForNewSegment,
   resetSubtitleCueState,
   resolveIdleSubtitleCue,
   markNumericCorrectionRequested,
@@ -162,7 +166,6 @@ const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成�
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
 const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
-const PENDING_TRANSCRIPT_IDLE_FINALIZE_MS = 3000;
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
@@ -350,6 +353,7 @@ function App() {
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [isLiveGlossaryDrawerOpen, setIsLiveGlossaryDrawerOpen] = useState(false);
   const [isLiveExportDrawerOpen, setIsLiveExportDrawerOpen] = useState(false);
+  const [isLiveSettingsDrawerOpen, setIsLiveSettingsDrawerOpen] = useState(false);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
@@ -400,6 +404,7 @@ function App() {
   const runtimeMeetingIdsRef = useRef(new Set());
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
+  const sessionStopRequestedRef = useRef(false);
   const sessionReadApiClientRef = useRef(createSessionReadApiClient());
   const sessionShareApiClientRef = useRef(createSessionShareApiClient());
   const translationCommandApiClientRef = useRef(createTranslationCommandApiClient());
@@ -414,6 +419,7 @@ function App() {
   const sessionControlLeaseRef = useRef(null);
   const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
+  const reconnectFailureDiagnosticRef = useRef(null);
   const detailRequestIdRef = useRef(0);
   const selectedHistoryRecordIdRef = useRef(null);
   const meetingDetailRequestIdRef = useRef(0);
@@ -421,6 +427,10 @@ function App() {
   const meetingResumeDraftRequestIdRef = useRef(0);
   const liveCueUpdatesAllowedRef = useRef(false);
   const liveCueIdleTimersRef = useRef(new Map());
+  const refinementDispatchingRef = useRef(new Set());
+  const refinementSubmissionTimesRef = useRef([]);
+  const subtitleRefinementTimerRef = useRef(null);
+  const refinementRateLimitTimerRef = useRef(null);
 
   const routeSessionId = pageInfoFromLocation().sessionId;
   const routeMeetingId = pageInfoFromLocation().meetingId;
@@ -578,6 +588,15 @@ function App() {
   }, [isLiveGlossaryDrawerOpen]);
 
   useEffect(() => {
+    if (!isLiveSettingsDrawerOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setIsLiveSettingsDrawerOpen(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isLiveSettingsDrawerOpen]);
+
+  useEffect(() => {
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
     const poll = async () => {
@@ -585,6 +604,10 @@ function App() {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
         const detail = await getSessionDetailWithTranslationHistory(sessionId);
         const outputs = completedPolishingOutputs(detail);
+        applyRefinementExecutionStates(detail);
+        applyRefinedOutputs(detail);
+        applyPersistedRefinedSubtitleCues(detail);
+        applyPersistedFinalCues(rawCuesFromDetail(detail?.cues));
         const output = latestPolishingOutput(detail);
         const latestExecution = latestPolishingExecution(detail);
         const pendingExecution = latestExecution && ['queued', 'processing', 'running'].includes(latestExecution.status)
@@ -599,13 +622,16 @@ function App() {
             executionId: pendingExecution.id
           });
         } else if (!cancelled && outputs.length > 0) {
-          const polishedItems = mergePolishedItemsFromOutputs(outputs);
-          applyPolishedOutput({
-            ...output,
-            polishedItems,
-            translatedText: polishedItems.map((item) => item.polishedText).join('\n')
-          });
-          setPolishingState({ status: 'completed', text: output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
+          const hasRefinedItems = outputs.some((item) => Array.isArray(item.refinedItems) && item.refinedItems.length > 0);
+          if (!hasRefinedItems) {
+            const polishedItems = mergePolishedItemsFromOutputs(outputs);
+            applyPolishedOutput({
+              ...output,
+              polishedItems,
+              translatedText: polishedItems.map((item) => item.polishedText).join('\n')
+            });
+          }
+          setPolishingState({ status: 'completed', text: hasRefinedItems ? '已完成逐句修正' : output.translatedText || '', version: output.version ?? null, updatedAt: output.completedAt || output.createdAt || null, error: '', executionId: output.executionId || null });
         } else {
           if (!cancelled && latestExecution) setPolishingState({
             status: latestExecution.status,
@@ -637,15 +663,123 @@ function App() {
     setPolishingState((current) => ({ ...current, text, version: output.version ?? current.version, updatedAt: output.completedAt || output.createdAt || current.updatedAt }));
   }
 
+  function applyRefinedOutputs(detail) {
+    const outputs = completedPolishingOutputs(detail);
+    if (outputs.length === 0) return;
+    const previous = subtitleCueStateRef.current;
+    let nextCues = previous.finalCues;
+    for (const output of outputs) {
+      const targets = Array.isArray(output.refinementTargets) ? output.refinementTargets : [];
+      const targetByCueId = new Map(targets.filter((target) => target?.targetCueId).map((target) => [target.targetCueId, target]));
+      const items = [
+        ...(Array.isArray(output.refinedItems) ? output.refinedItems : []),
+        ...(Array.isArray(output.polishedItems) ? output.polishedItems : [])
+      ];
+      for (const item of items) {
+        const target = targetByCueId.get(item.targetCueId || item.cueId);
+        const targetCueId = item.targetCueId || target?.targetCueId;
+        if (!targetCueId) {
+          if (import.meta.env?.DEV) console.debug('[Cue refinement] missing targetCueId', { sessionId: output.sessionId, refinementJobId: output.executionId, item });
+          continue;
+        }
+        const result = applyRefinementResultToCues(nextCues, {
+          ...item,
+          targetCueId,
+          fields: item.fields || target?.fields || (typeof item.polishedText === 'string' ? ['translation'] : ['source', 'translation']),
+          sessionId: item.sessionId || target?.sessionId || output.sessionId,
+          segmentId: item.segmentId || target?.segmentId,
+          connectionEpoch: item.connectionEpoch ?? target?.connectionEpoch,
+          refinementJobId: item.refinementJobId || target?.refinementJobId || output.executionId,
+          completedAt: output.completedAt || output.createdAt,
+          version: item.version ?? target?.version,
+          inputHash: item.inputHash ?? target?.inputHash
+        }, {
+          sessionId: output.sessionId,
+          logger: (event) => { if (import.meta.env?.DEV) console.debug('[Cue refinement]', event); }
+        });
+        if (result.applied) nextCues = result.cues;
+      }
+    }
+    nextCues = markCuesCompletedByRefinedOutputs(nextCues, outputs);
+    nextCues = mergeCuesByIdPreferRefinement(previous.finalCues, nextCues);
+    if (nextCues.every((cue, index) => cue === previous.finalCues[index])) return;
+    const next = { ...previous, finalCues: nextCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(previous, next);
+    const refinedText = nextCues.map((cue) => effectiveTranslationForCue(cue)).filter(Boolean).join('\n');
+    setPolishedArticle({ text: refinedText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });
+  }
+
+  function applyRefinementExecutionStates(detail) {
+    const current = subtitleCueStateRef.current;
+    const nextCues = applyCueRefinementExecutionStates(current.finalCues, detail?.translationHistory?.executions);
+    if (nextCues.every((cue, index) => cue === current.finalCues[index])) return;
+    const next = { ...current, finalCues: nextCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
+  function applyPersistedRefinedSubtitleCues(detail) {
+    const current = subtitleCueStateRef.current;
+    const refinedCues = refinedSubtitleCuesForDisplay(detail?.cues, {
+      inputHash: current.refinedSubtitleInputHash
+    });
+    if (refinedCues.length === 0) return false;
+    if (JSON.stringify(refinedCues) === JSON.stringify(current.refinedSubtitleCues || [])) {
+      return true;
+    }
+    const next = {
+      ...current,
+      refinedSubtitleCues: refinedCues,
+      refinedSubtitleStatus: 'completed',
+      refinedSubtitleRevision: Math.max(
+        current.refinedSubtitleRevision || 0,
+        Number(detail?.refinedSubtitleRevision) || 0
+      ) || (current.refinedSubtitleRevision || 0) + 1
+    };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+    return true;
+  }
+
+  function applyPersistedFinalCues(persistedCues = []) {
+    if (!Array.isArray(persistedCues) || persistedCues.length === 0) return;
+    const current = subtitleCueStateRef.current;
+    const mergedCues = mergeCuesByIdPreferRefinement(current.finalCues, persistedCues);
+    if (mergedCues.every((cue, index) => cue === current.finalCues[index])) return;
+    const next = { ...current, finalCues: mergedCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+  }
+
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
-    if (currentPage !== 'live' || !meetingId || status !== 'idle') {
+    if (currentPage !== 'live') {
       return;
     }
+    if (!meetingId) {
+      if (!isActive && !sessionRef.current) {
+        meetingResumeDraftRequestIdRef.current += 1;
+        activeMeetingCheckpointRef.current = null;
+        setResumeDraft(null);
+        setMeetingCheckpointStatus('idle');
+        setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
+      }
+      return;
+    }
+    if (status !== 'idle') return;
 
     void meetingReadApiClientRef.current.getMeetingDetail(meetingId)
       .then((detail) => {
         const meeting = detail?.meeting;
+        if (meeting?.status === 'completed') {
+          window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meeting.id)}&from=history`;
+          return;
+        }
         if (!meeting || !['created', 'active', 'interrupted'].includes(meeting.status)) {
           redirectToMeetingWithError();
           return;
@@ -675,6 +809,8 @@ function App() {
     reconnectSessionRef.current = null;
     sessionSnapshotSyncCoordinatorRef.current?.cancel();
     meetingCheckpointSyncCoordinatorRef.current?.cancel();
+    if (refinementRateLimitTimerRef.current) window.clearTimeout(refinementRateLimitTimerRef.current);
+    refinementRateLimitTimerRef.current = null;
     cancelAudioUploadRetries();
     segmentSwitchOrchestratorRef.current?.cancel();
     for (const session of sessions) {
@@ -686,16 +822,6 @@ function App() {
   useEffect(() => {
     updateActiveSessionGlossaryEntries(glossaryEntries);
   }, [glossaryEntries, targetLanguageCode]);
-
-  useEffect(() => schedulePendingTranscriptIdleFinalize('source', transcript.source.currentPartial), [
-    transcript.source.currentPartial?.id,
-    transcript.source.currentPartial?.text
-  ]);
-
-  useEffect(() => schedulePendingTranscriptIdleFinalize('translation', transcript.translation.currentPartial), [
-    transcript.translation.currentPartial?.id,
-    transcript.translation.currentPartial?.text
-  ]);
 
   useEffect(() => {
     cancelLiveCueIdleTimers();
@@ -777,8 +903,10 @@ function App() {
       return;
     }
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     meetingResumeDraftRequestIdRef.current += 1;
     reconnectController().reset();
+    reconnectFailureDiagnosticRef.current = null;
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
@@ -832,6 +960,7 @@ function App() {
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (sessionStopRequestedRef.current) return;
       if (record?.id) {
         sessionControlLeaseRef.current?.release(record.id);
         setHasSessionControl(false);
@@ -851,12 +980,10 @@ function App() {
   }
 
   async function pauseSession() {
-    invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
-    liveCueUpdatesAllowedRef.current = false;
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
@@ -865,6 +992,8 @@ function App() {
     await reconnectingSession?.stop().catch(() => {});
     await sessionRef.current?.stop();
     sessionRef.current = null;
+    invalidateLiveSessionCallbacks();
+    liveCueUpdatesAllowedRef.current = false;
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('pause');
     await flushMeetingCheckpointSync();
@@ -877,28 +1006,42 @@ function App() {
     if (status !== 'paused') return;
 
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     reconnectController().reset();
+    reconnectFailureDiagnosticRef.current = null;
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
-    liveCueUpdatesAllowedRef.current = true;
+    liveCueUpdatesAllowedRef.current = false;
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     setError('');
     pendingMicrophoneStreamRef.current = null;
+    const preparedCueState = prepareSubtitleCueStateForNewSegment(subtitleCueStateRef.current, {
+      sessionTimeMs: sessionTimeForSubtitleCues(),
+      reason: 'continue'
+    });
+    subtitleCueStateRef.current = preparedCueState;
+    setSubtitleCueState(preparedCueState);
 
     let session;
     try {
       session = await createSession({ preserveTranscript: true, liveSessionId: generateLiveSessionId() });
       sessionRef.current = session;
       await session.start();
-      activateLiveSessionCallbacks(session.callbackGeneration);
+      setTranscriptTimeOriginValue();
+      if (!activateLiveSessionCallbacks(session.callbackGeneration)) {
+        throw new Error('即時翻譯 callback 啟動失敗。');
+      }
       await resumeRawAudioRecording();
+      liveCueUpdatesAllowedRef.current = true;
       await updateCurrentSessionStatus('active', { lastLifecycleState: 'listening' });
+      clearSessionSnapshotSyncError();
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (sessionStopRequestedRef.current) return;
       sessionRef.current = null;
       applyStartFailure(nextError, '無法繼續即時翻譯。');
     }
@@ -916,26 +1059,39 @@ function App() {
       ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
       : classification.safeMessage || nextError?.message || fallbackMessage;
 
+    const diagnostic = safeReconnectDiagnostic({
+      source: 'startup',
+      stage: 'start_session',
+      rawError: nextError,
+      reasonHint: classification.reason
+    }, classification);
+    reconnectFailureDiagnosticRef.current = diagnostic;
+    void appendSessionFailureDiagnostic(diagnostic, classification);
+
     setStatusLabelOverride('');
     setError(message);
     setStatus('error');
   }
 
   async function endCurrentSession() {
-    invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = true;
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = true;
     suppressReconnectErrorRef.current = false;
-    liveCueUpdatesAllowedRef.current = false;
     cancelLiveCueIdleTimers();
     setStatusLabelOverride('');
     const reconnectingSession = reconnectSessionRef.current;
+    const activeSession = sessionRef.current;
     reconnectSessionRef.current = null;
+    sessionRef.current = null;
     const inputAudioState = await finalizeRawAudioRecording();
     await reconnectingSession?.stop().catch(() => {});
-    await sessionRef.current?.stop().catch(() => {});
-    sessionRef.current = null;
+    if (activeSession !== reconnectingSession) {
+      await activeSession?.stop().catch(() => {});
+    }
+    invalidateLiveSessionCallbacks();
+    liveCueUpdatesAllowedRef.current = false;
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('stop');
     await flushMeetingCheckpointSync();
@@ -950,13 +1106,33 @@ function App() {
     setStatus('stopped');
   }
 
+  async function completeResumableMeeting() {
+    const currentMeetingId = pageInfoFromLocation().meetingId;
+    if (!resumeDraft || !currentMeetingId || resumeDraft.meetingId !== currentMeetingId || isActive || status !== 'idle') return;
+    if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return;
+
+    setError('');
+    try {
+      flushSubtitleCues('complete');
+      const checkpointFlushed = await flushMeetingCheckpointSync();
+      if (!checkpointFlushed) throw new Error('Unable to flush meeting checkpoint before completion.');
+      await meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: resumeDraft.meetingId });
+      setResumeDraft(null);
+      activeMeetingCheckpointRef.current = null;
+      setMeetingCheckpointStatus('synced');
+      await refreshMeetingRecords();
+      window.location.hash = 'meeting';
+    } catch {
+      setError('無法結束會議，請稍後再試。');
+    }
+  }
+
   async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId() }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
       const sessionStartedAt = Date.now();
-      setTranscriptTimeOrigin(sessionStartedAt);
-      transcriptTimeOriginRef.current = sessionStartedAt;
+      setTranscriptTimeOriginValue(sessionStartedAt);
       const resetTranscript = resetTranscriptState();
       transcriptRef.current = resetTranscript;
       setTranscript(() => resetTranscript);
@@ -990,6 +1166,7 @@ function App() {
 
     const session = new LiveTranslateSession({
       liveSessionId,
+      connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
       meetingId: activeMeetingCheckpointRef.current?.meetingId || null,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
@@ -1016,18 +1193,35 @@ function App() {
         setStatus((current) => (
           current === 'reconnecting' || current === 'switching-segment' ? current : 'connecting'
         ));
+        setStatusLabelOverride('正在連線，已暫存音訊');
+      },
+      onCaptureStateChange: ({ state } = {}) => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        if (state === 'capturing') {
+          setStatusLabelOverride('正在連線，已暫存音訊');
+        }
+      },
+      onProviderReady: () => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        setStatusLabelOverride('');
       },
       onInputAudioChunk: (chunk) => {
-        if (isCurrentLiveSessionCallback(callbackGeneration)) handleInputAudioChunk(chunk);
+        if (isCurrentLiveSessionInstance(callbackGeneration)) handleInputAudioChunk(chunk);
       },
       onInputTranscript: (update) => {
-        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'source' });
+        if (isCurrentLiveSessionCallback(callbackGeneration) && isOwnedLiveSessionEvent(update, callbackGeneration)) {
+          applyTranscriptUpdate({ ...update, eventId: update.eventId, connectionEpoch: callbackGeneration.generation, stream: 'source' });
+        }
       },
       onOutputTranscript: (update) => {
-        if (isCurrentLiveSessionCallback(callbackGeneration)) applyTranscriptUpdate({ ...update, eventId: update.eventId, stream: 'translation' });
+        if (isCurrentLiveSessionCallback(callbackGeneration) && isOwnedLiveSessionEvent(update, callbackGeneration)) {
+          applyTranscriptUpdate({ ...update, eventId: update.eventId, connectionEpoch: callbackGeneration.generation, stream: 'translation' });
+        }
       },
       onCueEvent: (event) => {
-        if (!isCurrentLiveSessionCallback(callbackGeneration) || !liveCueUpdatesAllowedRef.current) return;
+        if (!isCurrentLiveSessionCallback(callbackGeneration)
+          || !isOwnedLiveSessionEvent(event, callbackGeneration)
+          || !liveCueUpdatesAllowedRef.current) return;
         const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
           || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
         const cueEvent = event?.stream === 'translation'
@@ -1067,6 +1261,8 @@ function App() {
           setDeviceMessage('所選麥克風已中斷，重新連線時會改用瀏覽器預設麥克風。');
         }
         const classification = classifyFailureSignal(failure);
+        reconnectFailureDiagnosticRef.current = safeReconnectDiagnostic(failure, classification);
+        void appendSessionFailureDiagnostic(reconnectFailureDiagnosticRef.current, classification);
         const failureUiState = failureUiStateForClassification(classification);
 
         if (!failureUiState.shouldReconnect) {
@@ -1095,7 +1291,7 @@ function App() {
             if (!result.scheduled && !result.ignored && !result.paused) {
               suppressReconnectErrorRef.current = false;
               setStatusLabelOverride('');
-              setError(reconnectErrorMessage(result));
+              setError(reconnectErrorMessage(result, reconnectFailureDiagnosticRef.current));
               setStatus('error');
               void finalizeFailedSession({
                 status: 'failed',
@@ -1125,6 +1321,11 @@ function App() {
 
   function isCurrentLiveSessionCallback(callbackGeneration) {
     return liveSessionCallbackGenerationRef.current === callbackGeneration && callbackGeneration.active;
+  }
+
+  function isOwnedLiveSessionEvent(event, callbackGeneration) {
+    return event?.connectionEpoch === undefined
+      || event.connectionEpoch === callbackGeneration.generation;
   }
 
   function isCurrentLiveSessionInstance(callbackGeneration) {
@@ -1312,7 +1513,7 @@ function App() {
   }
 
   async function startReconnectSession({ generationId, classification }) {
-    if (generationId !== reconnectController().currentGeneration()) {
+    if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
       return;
     }
 
@@ -1325,6 +1526,7 @@ function App() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const nextLiveSessionId = generateLiveSessionId();
     let recovery;
+    let reconnectStage = 'create_session';
     const session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     reconnectSessionRef.current = session;
 
@@ -1333,20 +1535,23 @@ function App() {
         throw new Error('Missing active meeting checkpoint.');
       }
 
+      reconnectStage = 'flush_audio';
       await pauseRawAudioRecording();
       await finalizePendingTranscriptItemsForStop();
       flushSubtitleCues('reconnect');
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
 
+      reconnectStage = 'flush_checkpoint';
       const flushed = await flushMeetingCheckpointSync();
       if (!flushed) {
         throw new Error('Unable to flush meeting checkpoint before reconnect.');
       }
       archiveActiveTranscriptSegment();
 
+      reconnectStage = 'recover_segment';
       recovery = await meetingCheckpointApiClientRef.current.recoverSegment({
         meetingId: meetingCheckpoint.meetingId,
         segmentId: meetingCheckpoint.segmentId,
@@ -1362,16 +1567,22 @@ function App() {
         outcome: 'interrupted'
       });
 
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
 
+      reconnectStage = 'connect_live_session';
       await session.start();
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
+        await session.stop().catch(() => {});
+        return;
+      }
       activateLiveSessionCallbacks(session.callbackGeneration);
+      reconnectStage = 'resume_audio';
       await resumeRawAudioRecording();
     } catch (nextError) {
-      if (generationId !== reconnectController().currentGeneration()) {
+      if (generationId !== reconnectController().currentGeneration() || sessionStopRequestedRef.current) {
         await session.stop().catch(() => {});
         return;
       }
@@ -1380,7 +1591,15 @@ function App() {
       reconnectSessionRef.current = null;
       sessionRef.current = null;
       setStatusLabelOverride('');
-      setError(RECONNECT_FAILED_MESSAGE);
+      const diagnostic = safeReconnectDiagnostic({
+        source: 'reconnect_session',
+        stage: reconnectStage,
+        rawError: nextError,
+        reasonHint: classification.reason
+      }, classification);
+      reconnectFailureDiagnosticRef.current = diagnostic;
+      void appendSessionFailureDiagnostic(diagnostic, classification);
+      setError(reconnectErrorMessage({ decision: { stopReason: 'reconnect_session_failed' } }, diagnostic));
       setStatus('error');
       void finalizeFailedSession({
         status: 'failed',
@@ -1390,7 +1609,7 @@ function App() {
       return;
     }
 
-    if (generationId !== reconnectController().currentGeneration() || segmentSwitchCancelledRef.current) {
+    if (generationId !== reconnectController().currentGeneration() || segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
       await session.stop().catch(() => {});
       return;
     }
@@ -1413,20 +1632,32 @@ function App() {
     const draft = resumeDraft;
 
     reconnectController().reset();
+    reconnectFailureDiagnosticRef.current = null;
     invalidateLiveSessionCallbacks();
+    sessionStopRequestedRef.current = false;
     segmentSwitchOrchestrator().cancel();
     segmentSwitchCancelledRef.current = false;
     suppressReconnectErrorRef.current = false;
-    liveCueUpdatesAllowedRef.current = true;
+    liveCueUpdatesAllowedRef.current = false;
     setStatusLabelOverride('');
     setError('');
     setResumeDraft(null);
     resetTranslatedAudioDownload();
 
     let session;
+    let recoveredMeetingCheckpoint = null;
+    let resumedSessionRecordId = null;
+    let resumedLiveSessionId = null;
     try {
       const nextLiveSessionId = generateLiveSessionId();
+      resumedLiveSessionId = nextLiveSessionId;
       setStatus('reconnecting');
+      const preparedCueState = prepareSubtitleCueStateForNewSegment(subtitleCueStateRef.current, {
+        sessionTimeMs: sessionTimeForSubtitleCues(),
+        reason: 'resume'
+      });
+      subtitleCueStateRef.current = preparedCueState;
+      setSubtitleCueState(preparedCueState);
       const segmentsResult = await meetingCheckpointApiClientRef.current.listSegments({ meetingId: draft.meetingId });
       const currentSegment = segmentsResult.segments.find((segment) => segment.id === draft.segmentId);
       const recovery = currentSegment?.status === 'created'
@@ -1442,7 +1673,9 @@ function App() {
           checkpoint: {
             idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
             durableChunks: [],
-            pendingPartial: null
+            pendingPartial: null,
+            finalCues: preparedCueState.finalCues.filter((cue) => cue.segmentId === draft.segmentId),
+            cueCheckpoint: cueCheckpointForState(preparedCueState)
           },
           nextLiveSessionId,
           failureReason: 'manual_resume',
@@ -1453,24 +1686,73 @@ function App() {
         meetingId: draft.meetingId,
         segmentId: recovery.segment.id
       };
+      recoveredMeetingCheckpoint = nextMeetingCheckpoint;
       activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-      await createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
+      const resumedRecord = await createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
+      resumedSessionRecordId = resumedRecord.id;
       resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
       session = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
       sessionRef.current = session;
       await session.start();
-      activateLiveSessionCallbacks(session.callbackGeneration);
+      setTranscriptTimeOriginValue();
+      if (!activateLiveSessionCallbacks(session.callbackGeneration)) {
+        throw new Error('即時翻譯 callback 啟動失敗。');
+      }
+      liveCueUpdatesAllowedRef.current = true;
       sessionRepositoryRef.current.updateSessionRecord(activeSessionRecordIdRef.current, {
         status: 'active',
         startedAt: Date.now(),
         lastLifecycleState: 'listening'
       });
-      await flushSessionSnapshot(activeSessionRecordIdRef.current);
+      const snapshotSynced = await flushSessionSnapshot(activeSessionRecordIdRef.current);
+      if (snapshotSynced) clearSessionSnapshotSyncError();
       setStatus('listening');
       segmentSwitchOrchestrator().start();
     } catch (nextError) {
       await session?.stop().catch(() => {});
+      if (recoveredMeetingCheckpoint) {
+        await meetingCheckpointApiClientRef.current.recoverSegment({
+          meetingId: recoveredMeetingCheckpoint.meetingId,
+          segmentId: recoveredMeetingCheckpoint.segmentId,
+          idempotencyKey: `resume-failed:${recoveredMeetingCheckpoint.segmentId}:${resumedLiveSessionId || 'unknown'}`,
+          checkpoint: {
+            idempotencyKey: `checkpoint:${recoveredMeetingCheckpoint.segmentId}:resume-failed`,
+            durableChunks: [],
+            pendingPartial: null
+          },
+          nextLiveSessionId: null,
+          failureReason: 'resume_start_failed',
+          failureCategory: 'startup',
+          outcome: 'interrupted'
+        }).catch(() => {});
+      }
+      const failedSessionRecordId = resumedSessionRecordId || activeSessionRecordIdRef.current;
+      if (failedSessionRecordId) {
+        const classification = classifyFailureSignal({
+          source: 'startup',
+          rawError: nextError,
+          reasonHint: 'live_connect_failed'
+        });
+        const diagnostic = safeReconnectDiagnostic({
+          source: 'startup',
+          stage: 'resume_session',
+          rawError: nextError,
+          reasonHint: classification.reason
+        }, classification);
+        const current = sessionRepositoryRef.current.getSessionRecord(failedSessionRecordId)?.sessionRecord;
+        sessionControlLeaseRef.current?.release(failedSessionRecordId);
+        setHasSessionControl(false);
+        sessionRepositoryRef.current.updateSessionRecord(failedSessionRecordId, {
+          status: 'failed',
+          failureReason: 'live_connect_failed',
+          failureCategory: 'provider',
+          failureDiagnostics: [...(current?.failureDiagnostics || []), diagnostic].slice(-10)
+        });
+        await flushSessionSnapshot(failedSessionRecordId).catch(() => {});
+        activeSessionRecordIdRef.current = null;
+      }
+      if (sessionStopRequestedRef.current) return;
       sessionRef.current = null;
       activeMeetingCheckpointRef.current = null;
       meetingCheckpointSyncCoordinatorRef.current?.cancel();
@@ -1483,7 +1765,7 @@ function App() {
   async function switchMeetingSegment() {
     const meetingCheckpoint = activeMeetingCheckpointRef.current;
     const previousSession = sessionRef.current;
-    if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current) return;
+    if (!meetingCheckpoint || !previousSession || segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     invalidateLiveSessionCallbacks();
     setError('');
@@ -1492,11 +1774,11 @@ function App() {
 
     await finalizePendingTranscriptItemsForStop();
     flushSubtitleCues('segment-rollover');
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     const flushed = await flushMeetingCheckpointSync();
     if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
     archiveActiveTranscriptSegment();
 
     const nextLiveSessionId = generateLiveSessionId();
@@ -1512,7 +1794,7 @@ function App() {
       nextLiveSessionId
     });
 
-    if (segmentSwitchCancelledRef.current) return;
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) return;
 
     await pauseRawAudioRecording();
     await previousSession.stop().catch(() => {});
@@ -1524,6 +1806,10 @@ function App() {
     const nextSession = await createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
     try {
       await nextSession.start();
+      if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
+        await nextSession.stop().catch(() => {});
+        return;
+      }
       activateLiveSessionCallbacks(nextSession.callbackGeneration);
       await resumeRawAudioRecording();
     } catch (error) {
@@ -1531,7 +1817,7 @@ function App() {
       throw error;
     }
 
-    if (segmentSwitchCancelledRef.current) {
+    if (segmentSwitchCancelledRef.current || sessionStopRequestedRef.current) {
       await nextSession.stop().catch(() => {});
       return;
     }
@@ -1579,6 +1865,7 @@ function App() {
   }
 
   function reportSegmentSwitchError(error) {
+    if (sessionStopRequestedRef.current) return;
     console.error('Meeting segment switch failed.', error);
     setStatusLabelOverride('切換失敗');
     setError('長會議分段切換失敗。已保留目前逐字稿，請停止後重新開始。');
@@ -1665,6 +1952,8 @@ function App() {
   }
 
   function applyTranscriptUpdate(update) {
+    if (update?.connectionEpoch !== undefined
+      && update.connectionEpoch !== liveSessionCallbackGenerationRef.current.generation) return;
     const current = transcriptRef.current;
     const segmentDecision = describeTranscriptSegmentDecision(current, update);
     const next = applyTranscriptEvent(current, update);
@@ -1690,14 +1979,24 @@ function App() {
   }
 
   function applyLiveSubtitleCueEvent(event) {
+    if (event?.connectionEpoch !== undefined
+      && event.connectionEpoch !== liveSessionCallbackGenerationRef.current.generation) return;
     const current = subtitleCueStateRef.current;
-    const next = applySubtitleCueEvent(current, event, {
+    let next = applySubtitleCueEvent(current, event, {
       targetLanguageCode,
       sourceLanguageCode,
       sessionId: activeSessionRecordIdRef.current,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || null,
       sessionClock: () => sessionTimeForSubtitleCues()
     });
+    if (event?.localFinalize) {
+      next = finalizePendingSubtitleCue(next, {
+        sessionTimeMs: sessionTimeForSubtitleCues(),
+        reason: event.finalizedReason || 'localSilence',
+        targetLanguageCode,
+        sourceLanguageCode
+      });
+    }
     if (next === current) return;
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
@@ -1748,15 +2047,38 @@ function App() {
 
   function transcriptPolishingCoordinator() {
     if (!transcriptPolishingCoordinatorRef.current) {
-      transcriptPolishingCoordinatorRef.current = createTranscriptPolishingCoordinator({
-        intervalMs: Number.isInteger(TRANSCRIPT_POLISHING_INTERVAL_MS) && TRANSCRIPT_POLISHING_INTERVAL_MS > 0 ? TRANSCRIPT_POLISHING_INTERVAL_MS : 30000,
-        minChars: Number.isInteger(TRANSCRIPT_POLISHING_MIN_CHARS) && TRANSCRIPT_POLISHING_MIN_CHARS > 0 ? TRANSCRIPT_POLISHING_MIN_CHARS : 200,
+      transcriptPolishingCoordinatorRef.current = createCueRefinementCoordinator({
         maxRequestsPerMinute: Number.isInteger(TRANSCRIPT_POLISHING_MAX_RPM) && TRANSCRIPT_POLISHING_MAX_RPM > 0 ? TRANSCRIPT_POLISHING_MAX_RPM : 15,
-        submit: (input) => transcriptPolishingLifecycle().submit({
+        submit: ({ cue, contextCues }) => transcriptPolishingLifecycle().submitCue({
           sessionId: activeSessionRecordIdRef.current,
           targetLanguageCode,
           sourceLanguageCode,
-          ...input
+          cue,
+          contextCues
+        }).then((result) => {
+          const current = subtitleCueStateRef.current;
+          const nextCues = current.finalCues.map((candidate) => candidate.cueId === cue.cueId
+            ? {
+              ...candidate,
+              refinement: {
+                ...(candidate.refinement || {}),
+                status: 'queued',
+                version: result.version,
+                inputHash: result.inputHash,
+                executionId: result.executionId,
+                requestedAt: new Date().toISOString()
+              }
+            }
+            : candidate);
+          const next = nextCues.every((candidate, index) => candidate === current.finalCues[index])
+            ? current
+            : { ...current, finalCues: nextCues };
+          if (next !== current) {
+            subtitleCueStateRef.current = next;
+            setSubtitleCueState(next);
+            enqueueCuePersistence(current, next);
+          }
+          return result;
         }),
         onStateChange: (next) => setPolishingState((current) => ({ ...current, status: next.status, error: next.error?.message || '' }))
       });
@@ -1764,21 +2086,52 @@ function App() {
     return transcriptPolishingCoordinatorRef.current;
   }
 
-  function scheduleTranscriptPolishing(finalCues = [], { force = false } = {}) {
+  function scheduleTranscriptPolishing(finalCues = []) {
     if (!TRANSCRIPT_POLISHING_ENABLED) return;
-    const cues = finalCues
-      .filter((cue) => cue?.status === 'final' && cue?.sourceText && cue?.translatedText)
-      .map((cue) => ({ ...cue, translationText: cue.translatedText }));
+    const cues = finalCues.filter((cue) => cue?.status === 'final' && rawSourceForCue(cue) && rawTranslationForCue(cue));
     if (!activeSessionRecordIdRef.current || cues.length === 0) return;
-    void transcriptPolishingCoordinator().add(cues, { force }).catch((nextError) => {
-      setPolishingState((current) => ({ ...current, status: 'failed', error: nextError?.message || '翻譯潤飾失敗。' }));
-    });
+    transcriptPolishingCoordinator().enqueue(cues);
+  }
+
+  function pollRefinedSubtitleResult(sessionId, inputHash, attempt) {
+    if (!sessionId || !inputHash || attempt > 5) return;
+    window.setTimeout(async () => {
+      try {
+        const detail = await sessionReadApiClientRef.current.getSessionDetail(sessionId);
+        const current = subtitleCueStateRef.current;
+        const cues = refinedSubtitleCuesForDisplay(detail?.cues, { inputHash });
+        if (cues.length > 0 && applyPersistedRefinedSubtitleCues({ ...detail, cues })) {
+          const next = {
+            ...subtitleCueStateRef.current,
+            finalCues: markCuesCompletedByRefinedSubtitleCues(current.finalCues, cues)
+          };
+          subtitleCueStateRef.current = next;
+          setSubtitleCueState(next);
+          enqueueCuePersistence(current, next);
+          return;
+        }
+      } catch {
+        // Raw final Cues remain visible while the asynchronous refinement is pending.
+      }
+      pollRefinedSubtitleResult(sessionId, inputHash, attempt + 1);
+    }, 1000);
   }
 
   async function retryPolishingExecution(executionId) {
     if (!executionId) return;
     try {
-      await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
+      const response = await createTranslationCommandApiClient().retryFailedTranslationExecution(executionId);
+      const retryExecution = response?.execution || response;
+      const current = subtitleCueStateRef.current;
+      const nextCues = current.finalCues.map((cue) => cue.refinement?.executionId === executionId
+        ? { ...cue, refinement: { ...(cue.refinement || {}), status: 'queued', executionId: retryExecution?.id || executionId } }
+        : cue);
+      if (!nextCues.every((cue, index) => cue === current.finalCues[index])) {
+        const next = { ...current, finalCues: nextCues };
+        subtitleCueStateRef.current = next;
+        setSubtitleCueState(next);
+        enqueueCuePersistence(current, next);
+      }
       setPolishingState((current) => ({ ...current, status: 'queued', error: '' }));
     } catch {
       setPolishingState((current) => ({ ...current, status: 'failed', error: '翻譯潤飾重試失敗，請稍後再試。' }));
@@ -1810,13 +2163,23 @@ function App() {
       lastFinalizedStream: state?.lastFinalizedStream || null,
       lastFinalizedReason: state?.lastFinalizedReason || null,
       lastCommittedCueSequence: lastCue?.sequence || 0,
-      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null
+      lastCommittedEndTimeMs: lastCue?.endTimeMs ?? null,
+      refinedSubtitleCues: state?.refinedSubtitleCues || [],
+      refinedSubtitleRevision: state?.refinedSubtitleRevision || 0,
+      refinedSubtitleInputHash: state?.refinedSubtitleInputHash || null,
+      refinedSubtitleStatus: state?.refinedSubtitleStatus || 'pending'
     };
   }
 
   function sessionTimeForSubtitleCues() {
     const origin = transcriptTimeOriginRef.current;
     return Number.isFinite(origin) ? Math.max(0, Date.now() - origin) : null;
+  }
+
+  function setTranscriptTimeOriginValue(origin = Date.now()) {
+    setTranscriptTimeOrigin(origin);
+    transcriptTimeOriginRef.current = origin;
+    return origin;
   }
 
   async function finalizeCurrentSessionRecord(options) {
@@ -2047,22 +2410,6 @@ function App() {
     await finalizePendingTranscriptItemsForStreams();
   }
 
-  function schedulePendingTranscriptIdleFinalize(stream, partial) {
-    if (!partial) {
-      return undefined;
-    }
-
-    const expectedPartial = { id: partial.id, text: partial.text };
-    const timer = window.setTimeout(() => {
-      void finalizePendingTranscriptItemsForStreams({
-        streams: [stream],
-        expectedPartialByStream: { [stream]: expectedPartial }
-      });
-    }, PENDING_TRANSCRIPT_IDLE_FINALIZE_MS);
-
-    return () => window.clearTimeout(timer);
-  }
-
   async function finalizePendingTranscriptItemsForStreams(options = {}) {
     const currentTranscript = transcriptRef.current;
 
@@ -2174,8 +2521,31 @@ function App() {
       status: nextStatus,
       ...patch
     });
+    const synced = await flushSessionSnapshot(sessionId);
+    if (synced) clearSessionSnapshotSyncError();
+    return updated;
+  }
+
+  async function appendSessionFailureDiagnostic(diagnostic, classification = {}) {
+    const sessionId = activeSessionRecordIdRef.current;
+    if (!sessionId || !diagnostic) return null;
+    const current = sessionRepositoryRef.current.getSessionRecord(sessionId)?.sessionRecord;
+    if (!current) return null;
+    const failureDiagnostics = [...(current.failureDiagnostics || []), diagnostic].slice(-10);
+    const updated = sessionRepositoryRef.current.updateSessionRecord(sessionId, {
+      failureDiagnostics,
+      failureReason: classification.reason || diagnostic.reason || 'unknown_error',
+      failureCategory: classification.category || diagnostic.category || 'unknown',
+      lastLifecycleState: 'reconnecting'
+    });
     await flushSessionSnapshot(sessionId);
     return updated;
+  }
+
+  function clearSessionSnapshotSyncError() {
+    setError((current) => current.startsWith('無法儲存翻譯紀錄') || current.startsWith('翻譯紀錄內容超過伺服器保存上限')
+      ? ''
+      : current);
   }
 
   function reportSessionSnapshotSyncError(error) {
@@ -2382,15 +2752,26 @@ function App() {
       const persistedCues = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.finalCues || []
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.sequence - right.sequence);
+      const refinedSubtitleCues = checkpoints.flatMap((checkpointResult) => (
+        checkpointResult?.checkpoint?.refinedSubtitleCues || []
+      )).filter((cue) => cue?.status === 'final').sort((left, right) => left.startTimeMs - right.startTimeMs);
       const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
       if (persistedCues.length > 0 || latestCueCheckpoint) {
         const restoredCueState = createSubtitleCueState({
           ...(latestCueCheckpoint || {}),
           finalCues: persistedCues,
+          refinedSubtitleCues,
           nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
         });
-        subtitleCueStateRef.current = restoredCueState;
-        setSubtitleCueState(restoredCueState);
+        const restoredFinalCues = markCuesCompletedByRefinedSubtitleCues(
+          restoredCueState.finalCues,
+          restoredCueState.refinedSubtitleCues
+        );
+        const restoredState = restoredFinalCues === restoredCueState.finalCues
+          ? restoredCueState
+          : { ...restoredCueState, finalCues: restoredFinalCues };
+        subtitleCueStateRef.current = restoredState;
+        setSubtitleCueState(restoredState);
       }
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
       const archivedSegments = transcriptSegmentsFromCheckpoints({ segments, checkpoints });
@@ -2399,7 +2780,7 @@ function App() {
       archivedTranscriptRef.current = archivedResumeTranscript;
       setArchivedTranscript(() => archivedResumeTranscript);
       resetActiveTranscriptForNextSegment(resumeTranscript.nextSequence);
-      setTranscriptTimeOrigin(Date.now());
+      setTranscriptTimeOriginValue();
       setCopiedArticleStream('');
       activeMeetingCheckpointRef.current = {
         meetingId,
@@ -2626,16 +3007,31 @@ function App() {
     window.location.hash = `#${returnPage}`;
   }
 
-  async function deleteHistoryRecord(id) {
-    if (!window.confirm('確定要刪除此翻譯紀錄？')) {
+  async function deleteHistoryRecord(recordOrId) {
+    const record = typeof recordOrId === 'object' ? recordOrId : historyRecords.find((item) => item.id === recordOrId);
+    const id = record?.id || recordOrId;
+    if (!id) return;
+    const message = record?.meetingId
+      ? '此筆錄音屬於一場會議。刪除後會一併刪除該會議的所有錄音段落、逐字稿與音檔，確定要繼續嗎？'
+      : '確定要刪除此翻譯紀錄？';
+    if (!window.confirm(message)) {
       return;
     }
 
     try {
-      await sessionReadApiClientRef.current.deleteSessionRecord(id);
+      const result = await sessionReadApiClientRef.current.deleteSessionRecord(id);
       setError('');
       sessionDetailCacheRef.current.delete(id);
-      setHistoryRecords((records) => records.filter((record) => record.id !== id));
+      const deletedMeetingId = result?.meetingId || record?.meetingId;
+      setHistoryRecords((records) => records.filter((item) => (
+        item.id !== id && (!deletedMeetingId || item.meetingId !== deletedMeetingId)
+      )));
+      if (deletedMeetingId) {
+        setMeetingRecords((meetings) => meetings.filter((meeting) => meeting.id !== deletedMeetingId));
+        meetingDetailCacheRef.current.delete(deletedMeetingId);
+        if (selectedMeetingIdRef.current === deletedMeetingId) closeMeetingDetail();
+      }
+      await Promise.all([refreshHistoryRecords(), refreshMeetingRecords()]);
 
       if (selectedHistoryRecordIdRef.current === id) {
         closeHistoryRecordDetail();
@@ -2675,9 +3071,72 @@ function App() {
     window.location.hash = nextPage;
   }
 
+  async function resetLiveMeetingWorkspace() {
+    invalidateLiveSessionCallbacks();
+    reconnectController().cancel();
+    segmentSwitchOrchestrator().cancel();
+    segmentSwitchCancelledRef.current = true;
+    suppressReconnectErrorRef.current = false;
+    liveCueUpdatesAllowedRef.current = false;
+    meetingResumeDraftRequestIdRef.current += 1;
+    cancelLiveCueIdleTimers();
+    cancelAudioUploadRetries();
+    await recordingController().cleanup({ discard: true }).catch(() => {});
+
+    const resetTranscript = resetTranscriptState();
+    transcriptRef.current = resetTranscript;
+    setTranscript(resetTranscript);
+    const resetCues = resetSubtitleCueState();
+    subtitleCueStateRef.current = resetCues;
+    setSubtitleCueState(resetCues);
+    const resetArchivedTranscript = resetTranscriptState();
+    archivedTranscriptRef.current = resetArchivedTranscript;
+    archivedTranscriptSegmentsRef.current = [];
+    setArchivedTranscript(resetArchivedTranscript);
+    transcriptTimeOriginRef.current = null;
+    setTranscriptTimeOrigin(null);
+    setPolishingState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
+    setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
+    transcriptPolishingLifecycleRef.current?.reset(polishingSessionIdRef.current);
+    transcriptPolishingCoordinatorRef.current?.reset();
+    polishingSessionIdRef.current = null;
+    resetInputAudioDownload();
+    resetTranslatedAudioDownload();
+    setRecordingState(shouldRecordInputAudio ? { status: 'idle', blob: null, mimeType: '', extension: '', fileName: '', errorMessage: '' } : INPUT_AUDIO_RECORDING_SKIPPED_STATE);
+    pendingMicrophoneStreamRef.current = null;
+    activeMeetingCheckpointRef.current = null;
+    runtimeMeetingIdsRef.current.clear();
+    setResumeDraft(null);
+    setMeetingCheckpointStatus('idle');
+    setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
+    setCopiedArticleStream('');
+    setError('');
+    setNavigationNotice('');
+    setStatusLabelOverride('');
+    setStatus('idle');
+    activeSessionRecordIdRef.current = null;
+    setHasSessionControl(false);
+  }
+
+  async function openMeetingLiveWorkspace(meetingId) {
+    if (!meetingId) return;
+
+    if (isNavigationLocked) {
+      setError('錄音進行中，請先結束目前工作階段後再切換目錄。');
+      return;
+    }
+
+    await resetLiveMeetingWorkspace();
+    window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`;
+  }
+
   function selectLiveTranslationMode(value) {
     const meetingId = value.replace(/^meeting:/, '');
-    if (meetingId) window.location.hash = `live?meetingId=${encodeURIComponent(meetingId)}`;
+    if (!meetingId || isNavigationLocked) return;
+    if (pageInfoFromLocation().meetingId) {
+      void resetLiveMeetingWorkspace();
+    }
+    window.location.hash = `live?meetingId=${encodeURIComponent(meetingId)}`;
   }
 
   function redirectToMeetingWithError() {
@@ -2703,7 +3162,7 @@ function App() {
     try {
       const content = exportApplicationService.exportTranscript({
         items: transcriptItems,
-        cues: subtitleCueState.finalCues,
+        cues: liveExportCues,
         options: {
           format: exportFormat,
           stream: exportStream,
@@ -2780,8 +3239,12 @@ function App() {
   ];
   const sourceArticleParagraphs = buildTranscriptArticleParagraphs(completedSourceSegments).map(toTraditionalChineseText);
   const translationArticleParagraphs = buildTranscriptArticleParagraphs(completedTranslationSegments);
-  const canDownloadTranscript = exportFormat !== 'txt' && subtitleCueState.finalCues.length > 0
-    ? canExportCues(subtitleCueState.finalCues, { format: exportFormat, stream: exportStream })
+  const liveExportCues = cueListForDisplay(subtitleCueState, {
+    includePartial: false,
+    mergeRepeatedFinalCues: true
+  });
+  const canDownloadTranscript = liveExportCues.length > 0
+    ? canExportCues(liveExportCues, { format: exportFormat, stream: exportStream })
     : canExportTranscript(transcriptItems, {
       format: exportFormat,
       stream: exportStream,
@@ -2793,6 +3256,55 @@ function App() {
     : null;
   const hasSelectedResumableMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
   const meetingSettingsReadOnly = Boolean(routeMeetingId);
+
+  function liveSettingsFields(isDrawerOpen = false) {
+    const tabIndex = isDrawerOpen ? 0 : undefined;
+    return (
+      <>
+        <label className="field">
+          <span>我主要說的語言</span>
+          <select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly} tabIndex={tabIndex}>
+            {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>目標語言</span>
+          <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly} tabIndex={tabIndex}>
+            {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
+          </select>
+        </label>
+
+        <label className="field">
+          <span>麥克風</span>
+          <select
+            value={selectedInputDeviceId}
+            onChange={(event) => {
+              setSelectedInputDeviceId(event.target.value);
+              setDeviceMessage('');
+            }}
+            disabled={controlsLocked}
+            tabIndex={tabIndex}
+          >
+            <option value="">瀏覽器預設麥克風</option>
+            {inputDevices.map((device) => <option key={device.deviceId || device.label} value={device.deviceId}>{device.label}</option>)}
+          </select>
+        </label>
+
+        <div className="live-audio-settings" aria-label="錄音與播放設定">
+          <label className="toggle">
+            <input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={controlsLocked} tabIndex={tabIndex} />
+            <span>播放翻譯聲音</span>
+          </label>
+
+          <label className="toggle">
+            <input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={controlsLocked} tabIndex={tabIndex} />
+            <span>錄下原始聲音</span>
+          </label>
+        </div>
+      </>
+    );
+  }
 
   if (page === 'watch') {
     const watchInfo = pageInfoFromLocation();
@@ -2845,7 +3357,10 @@ function App() {
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
       {page === 'meeting' ? (
-        <MeetingManagementPage onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }} />
+        <MeetingManagementPage
+          onOpenLive={openMeetingLiveWorkspace}
+          onOpenHistory={(meetingId) => { window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`; }}
+        />
       ) : null}
 
       {page === 'meeting-detail' ? (
@@ -2875,51 +3390,30 @@ function App() {
               controlsLocked={controlsLocked}
               onChange={selectLiveTranslationMode}
             />
-            <label className="field">
-              <span>我主要說的語言</span>
-              <select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly}>
-                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
-              </select>
-            </label>
 
-            <label className="field">
-              <span>目標語言</span>
-              <select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={controlsLocked || meetingSettingsReadOnly}>
-                {SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}
-              </select>
-            </label>
-
-            <label className="field">
-              <span>麥克風</span>
-              <select
-                value={selectedInputDeviceId}
-                onChange={(event) => {
-                  setSelectedInputDeviceId(event.target.value);
-                  setDeviceMessage('');
-                }}
-                disabled={controlsLocked}
-              >
-                <option value="">瀏覽器預設麥克風</option>
-                {inputDevices.map((device) => <option key={device.deviceId || device.label} value={device.deviceId}>{device.label}</option>)}
-              </select>
-            </label>
-
-            <div className="live-audio-settings" aria-label="錄音與播放設定">
-              <label className="toggle">
-                <input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={controlsLocked} />
-                <span>播放翻譯聲音</span>
-              </label>
-
-              <label className="toggle">
-                <input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={controlsLocked} />
-                <span>錄下原始聲音</span>
-              </label>
-            </div>
+            <button
+              className="button secondary live-settings-trigger"
+              type="button"
+              onClick={() => {
+                setIsLiveSettingsDrawerOpen(true);
+                setIsLiveGlossaryDrawerOpen(false);
+                setIsLiveExportDrawerOpen(false);
+              }}
+              aria-haspopup="dialog"
+              aria-expanded={isLiveSettingsDrawerOpen}
+            >
+              <Settings size={18} aria-hidden="true" />
+              設定
+            </button>
 
             <button
               className="button secondary glossary-drawer-trigger"
               type="button"
-              onClick={() => setIsLiveGlossaryDrawerOpen(true)}
+              onClick={() => {
+                setIsLiveGlossaryDrawerOpen(true);
+                setIsLiveSettingsDrawerOpen(false);
+                setIsLiveExportDrawerOpen(false);
+              }}
               aria-haspopup="dialog"
               aria-expanded={isLiveGlossaryDrawerOpen}
             >
@@ -2934,16 +3428,22 @@ function App() {
               <a className="button secondary meeting-settings-edit-link" href={`#meeting?meetingId=${encodeURIComponent(routeMeetingId)}`}>回會議管理修改</a>
             ) : null}
 
-            <button
-              className="button secondary live-export-trigger"
-              type="button"
-              onClick={() => setIsLiveExportDrawerOpen(true)}
-              aria-haspopup="dialog"
-              aria-expanded={isLiveExportDrawerOpen}
-            >
-              <Download size={18} aria-hidden="true" />
-              匯出
-            </button>
+            <div className="live-settings-action-wrapper">
+              <button
+                className="button secondary live-export-trigger"
+                type="button"
+                onClick={() => {
+                  setIsLiveExportDrawerOpen(true);
+                  setIsLiveSettingsDrawerOpen(false);
+                  setIsLiveGlossaryDrawerOpen(false);
+                }}
+                aria-haspopup="dialog"
+                aria-expanded={isLiveExportDrawerOpen}
+              >
+                <Download size={18} aria-hidden="true" />
+                匯出
+              </button>
+            </div>
           </div>
 
           <div className="control-status-row">
@@ -2989,14 +3489,8 @@ function App() {
             </div>
 
             <div className="control-actions">
-              {resumeDraft?.hasTranscript && !isActive && status === 'idle' ? (
-                <button className="button secondary" type="button" onClick={resumeMeetingSession}>
-                  <RefreshCw size={18} aria-hidden="true" />
-                  繼續錄製
-                </button>
-              ) : null}
-
-              <div className="session-actions">
+              <div className="live-settings-action-wrapper">
+                <div className="session-actions">
                 {status === 'listening' ? (
                   <>
                     <button className="button secondary" type="button" onClick={pauseSession}>
@@ -3024,12 +3518,23 @@ function App() {
                       結束本次工作階段
                     </button>
                   </>
-                ) : hasSelectedResumableMeeting || resumeDraft?.hasTranscript ? (
-                  <button className="button primary" type="button" onClick={startSession} disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}>
+                ) : hasSelectedResumableMeeting || (routeMeetingId && resumeDraft?.meetingId === routeMeetingId && resumeDraft?.hasTranscript) ? (
+                  <button
+                    className="button primary meeting-live-action-button"
+                    type="button"
+                    onClick={resumeDraft?.hasTranscript ? resumeMeetingSession : startSession}
+                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}
+                  >
                     {isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {isActive ? '正在開始' : '開始'}
+                    {isActive ? '正在開始' : resumeDraft?.hasTranscript ? '繼續錄製' : '開始'}
                   </button>
                 ) : null}
+                {routeMeetingId && resumeDraft?.meetingId === routeMeetingId && !isActive && status === 'idle' ? (
+                  <button className="button secondary meeting-live-action-button" type="button" onClick={completeResumableMeeting}>
+                    結束會議
+                  </button>
+                ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -3055,6 +3560,23 @@ function App() {
       </section>
 
       <>
+        <div className={`live-settings-drawer-backdrop${isLiveSettingsDrawerOpen ? ' is-open' : ''}`} onClick={() => setIsLiveSettingsDrawerOpen(false)} aria-hidden="true" />
+        <aside className={`live-settings-drawer${isLiveSettingsDrawerOpen ? ' is-open' : ''}`} aria-label="即時翻譯設定" aria-hidden={!isLiveSettingsDrawerOpen}>
+          <div className="live-settings-drawer-header">
+            <div>
+              <p className="eyebrow">即時翻譯</p>
+              <h2>翻譯與音訊設定</h2>
+              <p>開始錄音前，可調整語言、麥克風與播放選項。</p>
+            </div>
+            <button className="icon-button" type="button" onClick={() => setIsLiveSettingsDrawerOpen(false)} aria-label="關閉設定" tabIndex={isLiveSettingsDrawerOpen ? 0 : -1}>
+              <X size={20} aria-hidden="true" />
+            </button>
+          </div>
+          <div className="live-settings-drawer-body">
+            {liveSettingsFields(isLiveSettingsDrawerOpen)}
+          </div>
+        </aside>
+
         <div className={`export-drawer-backdrop${isLiveExportDrawerOpen ? ' is-open' : ''}`} onClick={() => setIsLiveExportDrawerOpen(false)} aria-hidden="true" />
         <aside className={`export-drawer${isLiveExportDrawerOpen ? ' is-open' : ''}`} aria-label="逐字稿匯出" aria-hidden={!isLiveExportDrawerOpen}>
           <div className="export-drawer-header">
@@ -3667,6 +4189,17 @@ function RecorderPage({ token, code = '' }) {
       setRecording(false);
       setPaused(false);
       await syncSnapshot('stopped');
+      if (detail?.session?.meetingId) {
+        const completionResponse = await authenticatedFetch(fetch)(
+          `/api/meetings/${encodeURIComponent(detail.session.meetingId)}/complete`,
+          { method: 'POST' }
+        );
+        if (!completionResponse.ok) {
+          throw new Error((await completionResponse.json().catch(() => null))?.error?.message || '結束會議失敗。');
+        }
+        const completionBody = await completionResponse.json();
+        setDetail((current) => ({ ...current, meeting: completionBody?.meeting || current.meeting }));
+      }
       await fetch(`/api/shared-sessions/${sharePath}/recorder-lease`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ leaseId: lease.leaseId, fenceToken: lease.fenceToken }) });
       setLease(null);
       setRecorderGrant('');
@@ -3834,12 +4367,41 @@ function activeSegmentTranscriptCount(transcriptState) {
     (transcriptState?.translation?.currentPartial ? 1 : 0);
 }
 
-function reconnectErrorMessage(result) {
+function reconnectErrorMessage(result, diagnostic = null) {
+  const detail = diagnostic ? `（來源：${diagnostic.source}；原因：${diagnostic.reason}${diagnostic.code ? `；代碼：${diagnostic.code}` : ''}${diagnostic.status ? `；狀態：${diagnostic.status}` : ''}）` : '';
   if (result?.decision?.stopReason === 'max_attempts_exceeded') {
-    return RECONNECT_EXHAUSTED_MESSAGE;
+    return `${RECONNECT_EXHAUSTED_MESSAGE}${detail}`;
   }
 
-  return RECONNECT_FAILED_MESSAGE;
+  return `${RECONNECT_FAILED_MESSAGE}${detail}`;
+}
+
+function safeReconnectDiagnostic(failure = {}, classification = {}) {
+  const sourceDiagnostic = failure.diagnostic || {};
+  return {
+    at: sourceDiagnostic.at || new Date().toISOString(),
+    source: failure.source || 'unknown',
+    stage: failure.stage || sourceDiagnostic.stage || null,
+    reason: classification.reason || failure.reasonHint || 'unknown_error',
+    category: classification.category || null,
+    code: safeDiagnosticValue(sourceDiagnostic.code || failure.rawEvent?.code),
+    status: safeDiagnosticStatus(sourceDiagnostic.status || failure.rawError?.status || failure.rawError?.response?.status),
+    connectionEpoch: sourceDiagnostic.connectionEpoch ?? null,
+    liveSessionId: sourceDiagnostic.liveSessionId || null,
+    segmentId: sourceDiagnostic.segmentId || null,
+    audioCallbackCount: sourceDiagnostic.audioCallbackCount ?? null,
+    pcmSendAttemptCount: sourceDiagnostic.pcmSendAttemptCount ?? null,
+    pcmSendSyncThrowCount: sourceDiagnostic.pcmSendSyncThrowCount ?? null,
+    pcmSendAsyncRejectCount: sourceDiagnostic.pcmSendAsyncRejectCount ?? null
+  };
+}
+
+function safeDiagnosticValue(value) {
+  return typeof value === 'string' || typeof value === 'number' ? value : null;
+}
+
+function safeDiagnosticStatus(value) {
+  return Number.isInteger(value) ? value : null;
 }
 
 function articleTextForItems(items, stream) {
@@ -3907,7 +4469,7 @@ function HistoryActionsCell({ data, context }) {
       <button className="button detail-button" type="button" aria-label={selectedRecordId === record.id ? '關閉詳細資料' : '查看詳細資料'} aria-expanded={selectedRecordId === record.id} onClick={() => onViewDetails(record.id)}>
         {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
       </button>
-      <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}><Trash2 size={16} aria-hidden="true" />刪除</button>
+      <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record)}><Trash2 size={16} aria-hidden="true" />刪除</button>
     </div>
   );
 }
@@ -4041,9 +4603,9 @@ function LiveCuePanel({
           </div>
           <div className="cue-section-list" data-testid="cue-source-list">
             {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
-            {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="source" />
-              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="source" />)}
+            {cues.map((cue, index) => cue.status === 'final'
+              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="source" showRefinementStatus={index === cues.length - 1} />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="source" />)}
           </div>
         </section>
         <section className="cue-language-section" aria-label="即時字幕翻譯">
@@ -4056,9 +4618,9 @@ function LiveCuePanel({
           </div>
           <div className="cue-section-list" data-testid="cue-translation-list">
             {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
-            {cues.map((cue) => cue.status === 'final'
-              ? <FinalCueRow key={cue.cueId} cue={cue} stream="translation" />
-              : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} stream="translation" />)}
+            {cues.map((cue, index) => cue.status === 'final'
+              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="translation" showRefinementStatus={index === cues.length - 1} />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="translation" />)}
           </div>
         </section>
         </> : null}
@@ -4073,8 +4635,8 @@ function LiveCuePanel({
   );
 }
 
-function FinalCueRow({ cue, stream }) {
-  return <CueRow cue={cue} stream={stream} />;
+function FinalCueRow({ cue, stream, showRefinementStatus = true }) {
+  return <CueRow cue={cue} stream={stream} showRefinementStatus={showRefinementStatus} />;
 }
 
 function PartialCueRow({ cue, stream }) {
@@ -4119,9 +4681,16 @@ function formatPolishingTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
 }
 
-function CueRow({ cue, partial = false, stream }) {
-  const label = partial ? '辨識中／翻譯中' : `字幕 ${cue.sequence || ''}`;
-  const text = stream === 'translation' ? cue.translatedText : cue.sourceText;
+function CueRow({ cue, partial = false, stream, showRefinementStatus = true }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const label = cue.terminalStatus === 'saved-pending'
+    ? '未完成語句已保存'
+    : partial
+      ? cue.translationStatus === 'failed' ? '翻譯失敗' : '辨識中／翻譯中'
+      : `字幕 ${cue.sequence || ''}`;
+  const text = stream === 'translation'
+    ? effectiveTranslationForCue(cue, showRaw ? 'raw' : 'refined')
+    : effectiveSourceForCue(cue, showRaw ? 'raw' : 'refined');
   const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
   const languageCode = stream === 'translation' ? cue.targetLanguageCode : cue.sourceLanguageCode;
   const wrappedText = wrapSubtitleText(text, languageCode);
@@ -4133,6 +4702,9 @@ function CueRow({ cue, partial = false, stream }) {
       aria-label={label}
     >
       {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
+      {!partial && showRefinementStatus && cue.refinement?.status && cue.refinement.status !== 'completed' ? (
+        <div className="cue-row-meta"><span className="cue-partial-status">{cue.refinement.status === 'failed' ? '修正失敗，保留原文' : cue.refinement.status === 'pending' ? '等待修正' : '修正中'}</span></div>
+      ) : null}
       <div className="cue-text-toggle">
         {stream ? (
           <span className={textClassName} data-testid={stream === 'translation' ? 'cue-translated-text' : 'cue-source-text'}>{wrappedText || '—'}</span>
@@ -4143,6 +4715,11 @@ function CueRow({ cue, partial = false, stream }) {
           </>
         )}
       </div>
+      {!partial && ((stream === 'translation' ? cue.refinedTranslation : cue.refinedSource) || '').trim() ? (
+        <button className="button detail-button" type="button" onClick={() => setShowRaw((value) => !value)}>
+          {showRaw ? '顯示修正版' : '查看原始'}
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -4153,8 +4730,12 @@ function latestPolishingOutput(detail) {
 }
 
 function completedPolishingOutputs(detail) {
-  return (detail?.translationHistory?.outputs || [])
-    .filter((output) => output.operation === 'transcript_polishing' && typeof output.translatedText === 'string' && output.translatedText.trim().length > 0);
+  return completedCueRefinementOutputs(detail);
+}
+
+function rawCuesFromDetail(cues = []) {
+  return (Array.isArray(cues) ? cues : [])
+    .filter((cue) => !cue?.cueId?.startsWith('refined-subtitle:'));
 }
 
 function latestPolishingExecution(detail) {
@@ -4366,7 +4947,7 @@ function SessionHistoryItem({
             >
               {selectedRecordId === record.id ? '關閉內容' : '查看內容'}
             </button>
-            <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record.id)}>
+            <button className="button detail-button danger-button" type="button" onClick={() => onDeleteRecord(record)}>
               <Trash2 size={16} aria-hidden="true" />
               刪除
             </button>
@@ -4451,7 +5032,7 @@ function MeetingHistoryItem({ record, onViewDetails }) {
   );
 }
 
-function MeetingManagementPage({ onOpenLive }) {
+function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
   const managementClientRef = useRef(createMeetingManagementApiClient());
   const readClientRef = useRef(createMeetingReadApiClient());
   const glossaryClientRef = useRef(createGlossaryApiClient());
@@ -4542,6 +5123,7 @@ function MeetingManagementPage({ onOpenLive }) {
   }
 
   async function saveMeeting() {
+    if (selectedMeeting?.status === 'completed') return;
     setError('');
     setNotice('');
     setIsSaving(true);
@@ -4554,15 +5136,15 @@ function MeetingManagementPage({ onOpenLive }) {
       setSelectedMeeting(meeting);
       setMeetings((current) => [meeting, ...current.filter((item) => item.id !== meeting.id)]);
       setNotice(isUpdating ? '會議設定已更新。' : '會議已建立。');
-    } catch {
-      setError('無法儲存會議設定。');
+    } catch (requestError) {
+      setError(requestError?.status === 409 ? '已完成會議不可修改設定。' : '無法儲存會議設定。');
     } finally {
       setIsSaving(false);
     }
   }
 
   async function createShare() {
-    if (!selectedMeeting?.id) {
+    if (!selectedMeeting?.id || selectedMeeting.status === 'completed') {
       setError('請先儲存會議設定。');
       return;
     }
@@ -4572,12 +5154,13 @@ function MeetingManagementPage({ onOpenLive }) {
       const qrDataUrl = await QRCode.toDataURL(url, { width: 180, margin: 1 });
       setCreatedShare({ ...result, absoluteUrl: url, qrDataUrl });
       setShares((current) => [...current, result.share]);
-    } catch {
-      setError('無法建立會議分享連結。');
+    } catch (requestError) {
+      setError(requestError?.status === 409 ? '已完成會議不可新增分享連結。' : '無法建立會議分享連結。');
     }
   }
 
   async function revokeShare(shareId) {
+    if (selectedMeeting?.status === 'completed') return;
     try {
       await managementClientRef.current.revokeShare(selectedMeeting.id, shareId);
       setShares((current) => current.filter((share) => share.id !== shareId));
@@ -4662,9 +5245,12 @@ function MeetingManagementPage({ onOpenLive }) {
       sortable: false,
       cellRenderer: ({ data }) => (
         <div className="meeting-actions">
-          <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>編輯</button>
+          <button className="button detail-button" type="button" onClick={() => selectMeeting(data.id)}>{data?.status === 'completed' ? '查看設定' : '編輯'}</button>
           {['active', 'interrupted'].includes(data?.status) ? (
             <button className="button detail-button" type="button" onClick={() => onOpenLive(data.id)}>繼續錄製</button>
+          ) : null}
+          {data?.status === 'completed' ? (
+            <button className="button detail-button" type="button" onClick={() => onOpenHistory(data.id)}>前往翻譯紀錄</button>
           ) : null}
           {data?.status === 'created' ? (
             <button className="button detail-button danger-button" type="button" onClick={() => deleteMeeting(data)} title="刪除會議">
@@ -4694,19 +5280,20 @@ function MeetingManagementPage({ onOpenLive }) {
           <section className="control-panel" aria-label="會議設定">
           <div className="title-block">
             <div className="title-block-header">
-              <div><p className="eyebrow">MEETING SETUP</p><h3>{selectedMeeting ? '編輯會議設定' : '建立會議'}</h3></div>
+              <div><p className="eyebrow">MEETING SETUP</p><h3>{selectedMeeting?.status === 'completed' ? '會議設定' : selectedMeeting ? '編輯會議設定' : '建立會議'}</h3></div>
             </div>
-            <p>設定語言與會議字典，儲存後即可建立錄音分享入口。</p>
+            <p>{selectedMeeting?.status === 'completed' ? '會議已完成，設定內容僅供查看。' : '設定語言與會議字典，儲存後即可建立錄音分享入口。'}</p>
           </div>
-          <label className="field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} /></label>
-          <label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
-          <label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <label className="field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} readOnly={selectedMeeting?.status === 'completed'} /></label>
+          <label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={selectedMeeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
+          <label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={selectedMeeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((language) => <option key={language.code} value={language.code}>{language.label}</option>)}</select></label>
           <button
             className="button secondary glossary-drawer-trigger"
             type="button"
             onClick={() => setIsGlossaryDrawerOpen(true)}
             aria-haspopup="dialog"
             aria-expanded={isGlossaryDrawerOpen}
+            disabled={selectedMeeting?.status === 'completed'}
           >
             <BookOpen size={18} aria-hidden="true" />
             會議字典
@@ -4715,21 +5302,27 @@ function MeetingManagementPage({ onOpenLive }) {
             </span>
           </button>
           <div className="meeting-management-actions">
-            <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button>
-            {selectedMeeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button> : null}
+            {selectedMeeting?.status !== 'completed' ? <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button> : null}
+            {selectedMeeting ? (
+              selectedMeeting.status === 'completed'
+                ? <button className="button secondary" type="button" onClick={() => onOpenHistory(selectedMeeting.id)}>前往翻譯紀錄</button>
+                : <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時翻譯</button>
+            ) : null}
           </div>
           </section>
           {selectedMeeting ? <section className="control-panel" aria-label="會議分享">
           <div className="title-block">
             <div className="title-block-header">
-              <div><p className="eyebrow">RECORDER LINK</p><h3>分享錄音入口</h3></div>
+              <div><p className="eyebrow">RECORDER LINK</p><h3>{selectedMeeting.status === 'completed' ? '既有分享連結' : '分享錄音入口'}</h3></div>
             </div>
           </div>
-          <p className="export-note">完成設定並儲存後，產生 Recorder 連結給參與者。開啟連結不會立即取得麥克風。</p>
-          <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
-          <button className="button secondary" type="button" onClick={createShare} disabled={!selectedMeeting}>建立錄音分享連結</button>
+          <p className="export-note">{selectedMeeting.status === 'completed' ? '會議已完成，既有分享連結維持可查看，但不能新增或撤銷。' : '完成設定並儲存後，產生 Recorder 連結給參與者。開啟連結不會立即取得麥克風。'}</p>
+          {selectedMeeting.status !== 'completed' ? <>
+            <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
+            <button className="button secondary" type="button" onClick={createShare} disabled={!selectedMeeting}>建立錄音分享連結</button>
+          </> : null}
           {createdShare ? <div className="share-created">{createdShare.qrDataUrl ? <img src={createdShare.qrDataUrl} alt="會議錄音入口 QR Code" width="180" height="180" /> : null}<p className="share-url"><a href={createdShare.absoluteUrl}>{createdShare.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(createdShare.absoluteUrl)}>複製連結</button></div> : null}
-          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : null}
+          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span>{selectedMeeting.status !== 'completed' ? <button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
           </section> : null}
         </div>
       ) : null}
@@ -4847,9 +5440,9 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
     [detail?.transcriptItems]
   );
-  const timeline = useMemo(
-    () => Array.isArray(detail?.timeline) ? detail.timeline : [],
-    [detail?.timeline]
+  const finalCues = useMemo(
+    () => Array.isArray(detail?.cues) ? detail.cues : [],
+    [detail?.cues]
   );
   const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
@@ -4883,11 +5476,13 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
   }
 
   const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
-  const canDownloadMeetingTranscript = canExportTranscript(transcriptItems, {
-    format: meetingExportFormat,
-    stream: meetingExportStream,
-    timeOrigin
-  });
+  const canDownloadMeetingTranscript = meetingExportFormat !== 'txt' && finalCues.length > 0
+    ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
+    : canExportTranscript(transcriptItems, {
+        format: meetingExportFormat,
+        stream: meetingExportStream,
+        timeOrigin
+      });
   const exportUnavailableReason = meetingExportUnavailableReason({
     canExport: canDownloadMeetingTranscript,
     format: meetingExportFormat,
@@ -4900,6 +5495,7 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     try {
       const content = exportApplicationService.exportTranscript({
         items: transcriptItems,
+        cues: finalCues,
         options: {
           format: meetingExportFormat,
           stream: meetingExportStream,
@@ -4941,29 +5537,6 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         translationLabel="下載整場翻譯語音"
       />
 
-      <section className="meeting-timeline" aria-label="會議段落時間軸">
-        <h4>段落時間軸</h4>
-        {timeline.length === 0 ? (
-          <p className="history-empty">尚無段落資料。</p>
-        ) : (
-          <ol>
-            {timeline.map((segment) => (
-              <li key={segment.id}>
-                <div className="meeting-timeline-marker" aria-hidden="true" />
-                <div>
-                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
-                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
-                  <p>{formatRecordTime(segment.startedAt)} · {formatDuration(segment.durationMs)}</p>
-                  {segment.errorInfo?.reason ? <p className="history-reason">原因：{segment.errorInfo.reason}</p> : null}
-                </div>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
-
-      <MeetingSegmentTranscriptList segments={timeline} transcriptItems={transcriptItems} />
-
       <ReadingContentTabs
         content={readingContent}
         selectedTab={readingTab}
@@ -5000,75 +5573,12 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
             下載整場逐字稿
           </button>
         </div>
-        <p className="export-note">整場字幕依段落與時間順序輸出；中斷或失敗段落已保存的內容仍會保留。</p>
+        <p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；中斷或失敗段落已保存的內容仍會保留。舊紀錄沒有 Final Cue 時會使用逐字稿分組 fallback。</p>
         {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
         {meetingExportError ? <p className="error-message">{meetingExportError}</p> : null}
       </section>
     </section>
   );
-}
-
-function MeetingSegmentTranscriptList({ segments = [], transcriptItems = [] }) {
-  const transcriptItemsBySegment = useMemo(
-    () => groupTranscriptItemsBySegment(transcriptItems),
-    [transcriptItems]
-  );
-
-  return (
-    <section className="meeting-segment-content" aria-label="會議段落內容">
-      <h4>段落內容</h4>
-      {segments.length === 0 ? (
-        <p className="history-empty">尚無段落內容。</p>
-      ) : (
-        <ol>
-          {segments.map((segment) => {
-            const items = transcriptItemsBySegment.get(segment.id) || [];
-            const sourceItems = finalTranscriptItemsForStream(items, 'source');
-            const translationItems = finalTranscriptItemsForStream(items, 'translation');
-            return (
-              <li key={segment.id}>
-                <div className="meeting-segment-content-header">
-                  <strong>{`段落 ${segment.sequence + 1}`}</strong>
-                  <span className={`history-status history-status-${segment.status}`}>{meetingSegmentStatusLabel(segment.status)}</span>
-                </div>
-                <div className="meeting-segment-streams">
-                  <section aria-label={`段落 ${segment.sequence + 1} 原文`}>
-                    <h5>原文</h5>
-                    {sourceItems.length === 0 ? (
-                      <p className="history-empty">此段尚無原文。</p>
-                    ) : (
-                      sourceItems.map((item) => <p key={item.id}>{toTraditionalChineseText(item.text)}</p>)
-                    )}
-                  </section>
-                  <section aria-label={`段落 ${segment.sequence + 1} 翻譯`}>
-                    <h5>翻譯</h5>
-                    {translationItems.length === 0 ? (
-                      <p className="history-empty">此段尚無翻譯。</p>
-                    ) : (
-                      translationItems.map((item) => <p key={item.id}>{item.text}</p>)
-                    )}
-                  </section>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      )}
-    </section>
-  );
-}
-
-function groupTranscriptItemsBySegment(transcriptItems = []) {
-  const groups = new Map();
-  for (const item of transcriptItems) {
-    if (!item?.segmentId) {
-      continue;
-    }
-    const items = groups.get(item.segmentId) || [];
-    items.push(item);
-    groups.set(item.segmentId, items);
-  }
-  return groups;
 }
 
 function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSession }) {
@@ -6245,7 +6755,7 @@ function AudioArtifactDownloads({
   const translationArtifact = audioArtifacts?.translation;
 
   return (
-    <section className="saved-export-panel" aria-label={title}>
+    <section className="saved-export-panel audio-artifact-downloads" aria-label={title}>
       <h4>{title}</h4>
       <div className="recording-downloads">
         <a
@@ -6809,20 +7319,6 @@ function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
       typeof entry.target === 'string' &&
       entry.target.length > 0
     ));
-}
-
-function selectedMeetingGlossaryEntries(entries, selectedIds, targetLanguageCode) {
-  const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
-  return (Array.isArray(entries) ? entries : [])
-    .filter((entry) => selected.has(entry.id))
-    .filter((entry) => typeof entry?.source === 'string' && entry.source.trim() !== '')
-    .map((entry) => ({
-      source: entry.source,
-      translations: { ...(entry.translations || {}) },
-      replacementAliases: Object.fromEntries(
-        Object.entries(entry.replacementAliases || {}).map(([languageCode, aliases]) => [languageCode, [...aliases]])
-      )
-    }));
 }
 
 function glossaryScopeLabel(scope) {

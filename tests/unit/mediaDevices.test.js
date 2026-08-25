@@ -69,8 +69,13 @@ test('isMissingSelectedInputError handles OverconstrainedError', () => {
   assert.equal(isMissingSelectedInputError({ name: 'OverconstrainedError' }), true);
 });
 
+test('isMissingSelectedInputError handles browser Invalid constraint TypeError', () => {
+  assert.equal(isMissingSelectedInputError({ name: 'TypeError', message: 'Invalid constraint' }), true);
+});
+
 test('isMissingSelectedInputError rejects unrelated errors', () => {
   assert.equal(isMissingSelectedInputError({ name: 'NotAllowedError' }), false);
+  assert.equal(isMissingSelectedInputError({ name: 'TypeError', message: 'Invalid state' }), false);
   assert.equal(isMissingSelectedInputError(null), false);
 });
 

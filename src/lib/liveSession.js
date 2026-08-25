@@ -13,8 +13,15 @@ import { authenticatedFetch } from './accessToken.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
+const MAX_PENDING_INPUT_AUDIO_CHUNKS = 64;
+const MAX_PRE_ROLL_BYTES = 480000;
+const AUDIO_CALLBACK_STALL_MS = 3000;
+const LOCAL_SILENCE_FINALIZE_MS = 1800;
+const SPEECH_ACTIVITY_RMS_THRESHOLD = 0.01;
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
+let nextAudioTurnSequence = 0;
+let activeDebugSession = null;
 
 export class LiveTranslateSession {
   constructor({
@@ -24,6 +31,8 @@ export class LiveTranslateSession {
     inputDeviceId = '',
     onInputDeviceFallback,
     onMicrophoneReady,
+    onCaptureStateChange,
+    onProviderReady,
     onConnecting,
     onInputAudioChunk,
     onInputTranscript,
@@ -39,7 +48,11 @@ export class LiveTranslateSession {
     segmentId = null,
     sessionClock = createDefaultSessionClock(),
     onCueEvent,
-    authorizationHeaders = {}
+    authorizationHeaders = {},
+    connectionEpoch = 0,
+    audioTurnId = null,
+    silenceFinalizeMs = LOCAL_SILENCE_FINALIZE_MS,
+    speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD
   }) {
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
@@ -47,6 +60,8 @@ export class LiveTranslateSession {
     this.inputDeviceId = inputDeviceId;
     this.onInputDeviceFallback = onInputDeviceFallback;
     this.onMicrophoneReady = onMicrophoneReady;
+    this.onCaptureStateChange = onCaptureStateChange;
+    this.onProviderReady = onProviderReady;
     this.onConnecting = onConnecting;
     this.onInputAudioChunk = onInputAudioChunk;
     this.onInputTranscript = onInputTranscript;
@@ -63,13 +78,44 @@ export class LiveTranslateSession {
     this.sessionClock = sessionClock;
     this.onCueEvent = onCueEvent;
     this.authorizationHeaders = { ...authorizationHeaders };
+    this.connectionEpoch = connectionEpoch;
+    this.audioTurnId = audioTurnId || `audio-turn-${connectionEpoch}-${++nextAudioTurnSequence}`;
+    this.silenceFinalizeMs = silenceFinalizeMs;
+    this.speechActivityRmsThreshold = speechActivityRmsThreshold;
+    this.inputSendingEnabled = false;
+    this.captureEnabled = false;
+    this.preRollDraining = false;
+    this.providerReady = false;
+    this.audioGraphEpoch = null;
+    this.firstPcmChunkSent = false;
     this.eventSequence = 0;
+    this.traceSequence = 0;
+    this.providerFirstServerEventSeen = false;
+    this.audioCallbackCount = 0;
+    this.pcmGeneratedCount = 0;
+    this.pcmGeneratedBytes = 0;
+    this.pcmSendAttemptCount = 0;
+    this.pcmSendAcceptedCount = 0;
+    this.pcmSendSyncThrowCount = 0;
+    this.pcmSendAsyncRejectCount = 0;
+    this.firstPcmGeneratedAt = null;
+    this.firstPcmSendAttemptAt = null;
+    this.lastPcmGeneratedAt = null;
+    this.lastPcmSendAt = null;
+    this.lastAudioStreamEnd = null;
+    this.lastInputEnd = null;
+    this.failureDiagnostics = [];
+    this.cueStateOwner = 'live-session';
+    this.lastCueTransitionReason = null;
     this.audioContext = null;
     this.mediaStream = null;
     this.source = null;
     this.processor = null;
     this.session = null;
     this.chunker = null;
+    this.pendingInputAudioChunks = [];
+    this.pendingInputAudioBytes = 0;
+    this.audioChunkSequence = 0;
     this.nextPlaybackTime = 0;
     this.playbackSources = new Set();
     this.pendingInputTranscript = null;
@@ -82,17 +128,35 @@ export class LiveTranslateSession {
     this.cleaningUp = false;
     this.microphoneTrackListeners = [];
     this.microphoneFailureSignaled = false;
+    this.inputTransportFailureSignaled = false;
+    this.lastAudioCallbackAt = null;
+    this.lastSpeechActivityAt = null;
+    this.silenceFinalizeTimer = null;
+    this.localTurnFinalizeTriggered = false;
+    this.audioContextStateHandler = null;
+    this.captureHealthTimer = null;
+    this.captureRecoveryCount = 0;
+    this.captureStartedAt = null;
     this.retranslationCueIds = new Set();
     this.activeRetranslationCueId = null;
+    this.inputTurnMode = 'automatic';
+    activeDebugSession = this;
+    exposeLiveTranslateDebug();
   }
 
   async start() {
+    this.trace('connect.invoked');
     this.mediaStream = await this.openInputStream();
     this.attachMicrophoneTrackListeners();
+    this.logLiveEvent('mic.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
     this.audioContext = new AudioContext();
+    if (!await this.ensureAudioContextRunning()) return;
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
+    this.setupAudioCapture();
+    this.onCaptureStateChange?.({ state: 'capturing', connectionEpoch: this.connectionEpoch });
+
     this.onConnecting?.();
 
     const tokenResponse = await fetchWithTimeout('/api/live-token', {
@@ -120,8 +184,12 @@ export class LiveTranslateSession {
         apiVersion: 'v1alpha'
       }
     });
+    const connectionEpoch = this.connectionEpoch;
+    this.inputTurnMode = liveConnectConfig?.realtimeInputConfig?.automaticActivityDetection?.disabled
+      ? 'manual'
+      : 'automatic';
 
-    this.session = await withTimeout(
+    const connectedSession = await withTimeout(
       ai.live.connect({
         model: liveConnectModel || 'gemini-3.5-live-translate-preview',
         config: liveConnectConfig || {
@@ -136,12 +204,12 @@ export class LiveTranslateSession {
           }
         },
         callbacks: {
-          onmessage: (message) => this.handleMessage(message),
+          onmessage: (message) => this.handleMessage(message, connectionEpoch),
           onerror: (event) => {
-            void this.handleSessionError(event);
+            void this.handleSessionError(event, connectionEpoch);
           },
           onclose: (event) => {
-            void this.handleSessionClose(event);
+            void this.handleSessionClose(event, connectionEpoch);
           }
         }
       }),
@@ -149,30 +217,323 @@ export class LiveTranslateSession {
       '即時翻譯連線逾時。請再試一次。'
     );
 
+    if (this.closed || this.connectionEpoch !== connectionEpoch) {
+      try {
+        connectedSession?.close?.();
+      } catch {
+        // The stale provider session is already unusable.
+      }
+      this.logLiveEvent('stale.provider.ignored', { connectionEpoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      return;
+    }
+
+    this.session = connectedSession;
+
+    this.trace('connect.resolved');
+    this.logLiveEvent('provider.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+    this.trace('provider.ready');
+    this.providerReady = true;
+    this.preRollDraining = true;
+    this.inputSendingEnabled = false;
+    if (!this.drainPreRoll(connectionEpoch)) {
+      return;
+    }
+    this.preRollDraining = false;
+    this.inputSendingEnabled = true;
+    this.trace('pre_roll_drained', { bufferedBytes: this.pendingInputAudioBytes });
+    this.trace('input.resume.enabled');
+    this.onProviderReady?.({ connectionEpoch: this.connectionEpoch });
+  }
+
+  setupAudioCapture() {
+    if (!this.audioContext || !this.mediaStream) return false;
+    this.disconnectAudioGraph();
+    const captureEpoch = this.connectionEpoch;
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
     // TODO: Replace ScriptProcessorNode with AudioWorklet for lower latency and non-deprecated capture.
     this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+    const processor = this.processor;
+    this.audioGraphEpoch = captureEpoch;
+    this.captureEnabled = true;
+    this.captureStartedAt = Date.now();
+    this.trace('capture_started');
+    this.logLiveEvent('audio.graph.attached', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.processor.onaudioprocess = (event) => {
-      if (this.closed || !this.session) {
+      this.audioCallbackCount += 1;
+      this.lastAudioCallbackAt = Date.now();
+      if (this.audioCallbackCount === 1) this.trace('audio.callback.first');
+      if (!this.isCurrentCaptureEpoch(captureEpoch, processor) || !this.chunker) {
+        if (this.closed || captureEpoch !== this.connectionEpoch) this.trace('stale.callback.ignored', { kind: 'audio' });
         return;
       }
 
       const input = event.inputBuffer.getChannelData(0);
+      this.trackSpeechActivity(input);
       const chunks = this.chunker.push(input);
 
       for (const chunk of chunks) {
-        this.onInputAudioChunk?.(new Uint8Array(chunk));
-        this.session.sendRealtimeInput({
-          audio: {
-            data: bytesToBase64(chunk),
-            mimeType: 'audio/pcm;rate=16000'
-          }
-        });
+        this.sendInputAudioChunk(chunk, captureEpoch);
       }
     };
 
     this.source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
+    this.audioContext?.removeEventListener?.('statechange', this.audioContextStateHandler);
+    this.audioContextStateHandler = () => {
+      if (this.closed || !this.audioContext) return;
+      if (this.audioContext.state === 'suspended') void this.ensureAudioContextRunning();
+      if (this.audioContext.state === 'closed') void this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段已停止。');
+    };
+    this.audioContext.addEventListener?.('statechange', this.audioContextStateHandler);
+    if (this.captureHealthTimer) clearInterval(this.captureHealthTimer);
+    this.captureHealthTimer = setInterval(() => { void this.checkAudioCaptureHealth(); }, 1000);
+    this.captureHealthTimer?.unref?.();
+    return true;
+  }
+
+  trackSpeechActivity(samples) {
+    if (!samples?.length || this.closed) return false;
+    let sumSquares = 0;
+    for (const sample of samples) sumSquares += sample * sample;
+    const rms = Math.sqrt(sumSquares / samples.length);
+    if (rms < this.speechActivityRmsThreshold) return false;
+
+    this.lastSpeechActivityAt = Date.now();
+    this.localTurnFinalizeTriggered = false;
+    this.scheduleSilenceFinalize();
+    return true;
+  }
+
+  scheduleSilenceFinalize() {
+    if (this.silenceFinalizeTimer) clearTimeout(this.silenceFinalizeTimer);
+    if (this.closed || !this.lastSpeechActivityAt || this.silenceFinalizeMs < 0) return;
+    const elapsed = Date.now() - this.lastSpeechActivityAt;
+    const remaining = Math.max(0, this.silenceFinalizeMs - elapsed);
+    this.silenceFinalizeTimer = setTimeout(() => {
+      this.silenceFinalizeTimer = null;
+      const silenceDuration = Date.now() - (this.lastSpeechActivityAt || Date.now());
+      if (silenceDuration < this.silenceFinalizeMs) {
+        this.scheduleSilenceFinalize();
+        return;
+      }
+      this.localFinalizePendingTranscripts();
+    }, remaining);
+    this.silenceFinalizeTimer?.unref?.();
+  }
+
+  clearSilenceFinalizeTimer() {
+    if (this.silenceFinalizeTimer) clearTimeout(this.silenceFinalizeTimer);
+    this.silenceFinalizeTimer = null;
+    this.lastSpeechActivityAt = null;
+  }
+
+  localFinalizePendingTranscripts() {
+    if (this.closed || this.localTurnFinalizeTriggered) return false;
+    if (!this.pendingInputTranscript && !this.pendingOutputTranscript) return false;
+
+    const hadPendingInput = Boolean(this.pendingInputTranscript);
+    const hadPendingOutput = Boolean(this.pendingOutputTranscript);
+    this.localTurnFinalizeTriggered = true;
+    this.clearSilenceFinalizeTimer();
+    this.flushPendingTranscripts({ localFinalize: true });
+    // Keep the late-transcript repair path open without sending a provider
+    // boundary that could interfere with the next continuous recording turn.
+    this.awaitingInputTranscriptAfterTurnComplete = hadPendingInput;
+    this.awaitingOutputTranscriptAfterTurnComplete = hadPendingOutput;
+    this.logLiveEvent('transcripts.finalized locally', {
+      connectionEpoch: this.connectionEpoch,
+      sessionId: this.liveSessionId,
+      silenceMs: this.silenceFinalizeMs
+    });
+    return true;
+  }
+
+  async checkAudioCaptureHealth(now = Date.now()) {
+    if (this.closed || !this.captureEnabled || !this.audioContext) return false;
+    const lastCallbackAt = this.lastAudioCallbackAt || this.captureStartedAt;
+    if (!lastCallbackAt || now - lastCallbackAt < AUDIO_CALLBACK_STALL_MS) return true;
+    if (this.captureRecoveryCount < 1) {
+      this.captureRecoveryCount += 1;
+      this.trace('audio.callback.stalled', { recoveryCount: this.captureRecoveryCount });
+      return this.recoverAudioCapture();
+    }
+    await this.handleAudioCaptureFailure('audio_capture_failed', '麥克風沒有產生音訊。請檢查麥克風後再試一次。');
+    return false;
+  }
+
+  async ensureAudioContextRunning() {
+    if (!this.audioContext) return false;
+    if (this.audioContext.state === 'closed') {
+      await this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段已停止。');
+      return false;
+    }
+    if (this.audioContext.state === 'suspended' && typeof this.audioContext.resume === 'function') {
+      try {
+        await this.audioContext.resume();
+      } catch (error) {
+        await this.handleAudioCaptureFailure('audio_context_lost', error?.message || '瀏覽器音訊工作階段無法恢復。');
+        return false;
+      }
+    }
+    return this.audioContext.state === undefined || this.audioContext.state === 'running';
+  }
+
+  disconnectAudioGraph() {
+    try { this.processor?.disconnect(); } catch { /* already disconnected */ }
+    try { this.source?.disconnect(); } catch { /* already disconnected */ }
+    if (this.processor) this.processor.onaudioprocess = null;
+    this.processor = null;
+    this.source = null;
+    this.audioGraphEpoch = null;
+  }
+
+  async recoverAudioCapture() {
+    if (this.closed || !this.mediaStream || !this.audioContext) return false;
+    if (!await this.ensureAudioContextRunning()) return false;
+    return this.setupAudioCapture();
+  }
+
+  queuePendingInputAudioChunk(chunk) {
+    if (!chunk || chunk.byteLength === 0) return;
+    const bytes = chunk instanceof Uint8Array ? new Uint8Array(chunk) : new Uint8Array(chunk);
+    const record = {
+      connectionEpoch: this.connectionEpoch,
+      audioTurnId: this.audioTurnId,
+      sequence: ++this.audioChunkSequence,
+      timestamp: monotonicTimestamp(),
+      bytes
+    };
+    while (
+      this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
+      || this.pendingInputAudioBytes + bytes.byteLength > MAX_PRE_ROLL_BYTES
+    ) {
+      const dropped = this.pendingInputAudioChunks.shift();
+      if (!dropped) break;
+      this.pendingInputAudioBytes -= dropped.bytes.byteLength;
+      this.trace('pre_roll_overflow', {
+        droppedSequence: dropped.sequence,
+        droppedBytes: dropped.bytes.byteLength,
+        bufferedBytes: this.pendingInputAudioBytes
+      });
+    }
+    this.pendingInputAudioChunks.push(record);
+    this.pendingInputAudioBytes += bytes.byteLength;
+    this.trace('pre_roll_enqueued', {
+      sequence: record.sequence,
+      bytes: bytes.byteLength,
+      bufferedBytes: this.pendingInputAudioBytes
+    });
+  }
+
+  flushPendingInputAudio(epoch = this.connectionEpoch) {
+    return this.drainPreRoll(epoch);
+  }
+
+  sendInputAudioChunk(chunk, epoch = this.connectionEpoch, { force = false } = {}) {
+    if ((!force
+      && !this.isCurrentCaptureEpoch(epoch)
+      && !this.isCurrentProviderInputEpoch(epoch)) || !chunk || chunk.byteLength === 0) return;
+    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+    const generatedAt = nowIso();
+    this.pcmGeneratedCount += 1;
+    this.pcmGeneratedBytes += bytes.byteLength;
+    this.firstPcmGeneratedAt ||= generatedAt;
+    this.lastPcmGeneratedAt = generatedAt;
+    const record = {
+      connectionEpoch: epoch,
+      audioTurnId: this.audioTurnId,
+      sequence: ++this.audioChunkSequence,
+      timestamp: monotonicTimestamp(),
+      bytes
+    };
+    this.trace('pcm.generated', { bytes: bytes.byteLength, sequence: record.sequence });
+    this.onInputAudioChunk?.(new Uint8Array(bytes), {
+      connectionEpoch: epoch,
+      audioTurnId: this.audioTurnId,
+      sequence: record.sequence,
+      timestamp: record.timestamp
+    });
+    if (!this.providerReady || !this.session || this.preRollDraining || !this.inputSendingEnabled) {
+      this.queuePendingInputAudioRecord(record);
+      return;
+    }
+    this.sendPcmRecord(record);
+  }
+
+  queuePendingInputAudioRecord(record) {
+    const bytes = record.bytes;
+    while (
+      this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
+      || this.pendingInputAudioBytes + bytes.byteLength > MAX_PRE_ROLL_BYTES
+    ) {
+      const dropped = this.pendingInputAudioChunks.shift();
+      if (!dropped) break;
+      this.pendingInputAudioBytes -= dropped.bytes.byteLength;
+      this.trace('pre_roll_overflow', {
+        droppedSequence: dropped.sequence,
+        droppedBytes: dropped.bytes.byteLength,
+        bufferedBytes: this.pendingInputAudioBytes
+      });
+    }
+    this.pendingInputAudioChunks.push(record);
+    this.pendingInputAudioBytes += bytes.byteLength;
+    this.trace('pre_roll_enqueued', {
+      sequence: record.sequence,
+      bytes: bytes.byteLength,
+      bufferedBytes: this.pendingInputAudioBytes
+    });
+  }
+
+  sendPcmRecord(record) {
+    if (record.connectionEpoch !== this.connectionEpoch || this.closed || !this.session) return false;
+    const bytes = record.bytes;
+    if (this.inputTurnMode === 'manual' && this.pcmSendAttemptCount === 0) {
+      this.sendProviderInput({ activityStart: {} }, 'activityStart');
+    }
+    this.sendProviderInput({
+      audio: {
+        data: bytesToBase64(bytes),
+        mimeType: 'audio/pcm;rate=16000'
+      }
+    }, 'pcm');
+    if (!this.firstPcmChunkSent) {
+      this.firstPcmChunkSent = true;
+      this.logLiveEvent('audio.firstPcmChunkSent', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      this.trace('first_pcm_sent', { sequence: record.sequence });
+    }
+    return true;
+  }
+
+  drainPreRoll(epoch = this.connectionEpoch) {
+    if (epoch !== this.connectionEpoch || this.closed || !this.providerReady || !this.session) return false;
+    while (this.pendingInputAudioChunks.length > 0) {
+      if (epoch !== this.connectionEpoch || this.closed || !this.session) return false;
+      const record = this.pendingInputAudioChunks.shift();
+      this.pendingInputAudioBytes -= record.bytes.byteLength;
+      if (record.connectionEpoch !== epoch) continue;
+      this.sendPcmRecord(record);
+    }
+    return true;
+  }
+
+  isCurrentCaptureEpoch(epoch, processor = null) {
+    return !this.closed
+      && this.captureEnabled
+      && epoch === this.connectionEpoch
+      && (this.audioGraphEpoch === null || this.audioGraphEpoch === epoch)
+      && (!processor || this.processor === processor);
+  }
+
+  isCurrentInputEpoch(epoch, processor = null) {
+    return this.isCurrentCaptureEpoch(epoch, processor) && this.providerReady && this.inputSendingEnabled;
+  }
+
+  isCurrentProviderInputEpoch(epoch) {
+    return !this.closed
+      && epoch === this.connectionEpoch
+      && this.providerReady
+      && this.inputSendingEnabled
+      && Boolean(this.session);
   }
 
   async openInputStream() {
@@ -203,12 +564,20 @@ export class LiveTranslateSession {
   async handleMicrophoneDisconnected() {
     if (this.closeExpected || this.closed || this.microphoneFailureSignaled) return;
     this.microphoneFailureSignaled = true;
+    const reasonHint = this.inputDeviceId ? 'selected_device_missing' : 'microphone_disconnected';
+    const diagnostic = this.recordFailureDiagnostic({
+      source: 'microphone_disconnected',
+      reasonHint,
+      rawError: new Error('Microphone track ended.')
+    });
+    this.finalizeInputTurn();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true });
     this.onConnectionFailure?.({
       source: 'microphone_disconnected',
       rawError: new Error('Microphone track ended.'),
-      reasonHint: this.inputDeviceId ? 'selected_device_missing' : 'microphone_disconnected',
+      reasonHint,
+      diagnostic,
       afterCleanup: true
     });
     this.onError?.(new Error('Microphone track ended.'));
@@ -216,12 +585,19 @@ export class LiveTranslateSession {
 
   async handleNetworkOffline() {
     if (this.closeExpected || this.closed) return;
+    this.finalizeInputTurn();
     this.flushPendingTranscripts();
+    const diagnostic = this.recordFailureDiagnostic({
+      source: 'network_offline',
+      reasonHint: 'network_offline',
+      rawError: new Error('Browser went offline.')
+    });
     await this.cleanup({ closeSession: true });
     this.onConnectionFailure?.({
       source: 'network_offline',
       rawError: new Error('Browser went offline.'),
       reasonHint: 'network_offline',
+      diagnostic,
       afterCleanup: true
     });
     this.onError?.(new Error('Browser went offline.'));
@@ -253,8 +629,16 @@ export class LiveTranslateSession {
     }
   }
 
-  handleMessage(message) {
+  handleMessage(message, epoch = this.connectionEpoch) {
+    if (epoch !== this.connectionEpoch || this.closed) {
+      this.logLiveEvent('stale.callback.ignored', { kind: 'message', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      return;
+    }
     const content = message.serverContent;
+    if (!this.providerFirstServerEventSeen) {
+      this.providerFirstServerEventSeen = true;
+      this.trace('provider.firstServerEvent', { kind: 'message' });
+    }
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
     const retranslationCueId = this.activeRetranslationCueId;
     const isRetranslationResponse = Boolean(retranslationCueId && (
@@ -274,6 +658,7 @@ export class LiveTranslateSession {
       segmentId: this.segmentId,
       sourceLanguageCode: this.sourceLanguageCode,
       targetLanguageCode: this.targetLanguageCode,
+      connectionEpoch: this.connectionEpoch,
       eventSequence: this.eventSequence,
       sessionClock: this.sessionClock,
       inputTranscriptIsFinal,
@@ -288,19 +673,27 @@ export class LiveTranslateSession {
     }
     this.logLiveEvent('message.received', {
       event: summarizeLiveEvent(message),
+      connectionEpoch: epoch,
+      sessionId: this.liveSessionId,
       stateBefore: this.transcriptBoundaryState()
     });
+    if (isFinal) {
+      this.logLiveEvent('turnComplete.received', { connectionEpoch: epoch, sessionId: this.liveSessionId });
+      if (content?.generationComplete) this.trace('generationComplete.received');
+    }
 
     if (content?.inputTranscription?.text && !isRetranslationResponse) {
       const transcript = withTranscriptEventId({
         text: content.inputTranscription.text,
         isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
+        connectionEpoch: this.connectionEpoch,
         ...(inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
       }, transcriptEventId);
       this.logLiveEvent('inputTranscription.callback', { transcript });
+      this.trace(transcript.isFinal ? 'input.final.received' : 'input.partial.received', { text: transcript.text });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
@@ -309,11 +702,13 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
         isFinal: false,
+        connectionEpoch: this.connectionEpoch,
         ...(content.interimInputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
       }, transcriptEventId);
       this.logLiveEvent('interimInputTranscription.callback', { transcript });
+      this.trace('input.partial.received', { text: transcript.text });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
@@ -333,6 +728,7 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
+        connectionEpoch: this.connectionEpoch,
         ...(outputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(isRetranslationResponse ? { retranslationCueId } : {})
       }, transcriptEventId);
@@ -399,15 +795,27 @@ export class LiveTranslateSession {
 
   async stop() {
     this.closeExpected = true;
-    this.flushInputAudio();
+    this.clearSilenceFinalizeTimer();
+    this.finalizeInputTurn();
     this.flushPendingTranscripts();
-    await this.cleanup({ closeSession: true, signalAudioEnd: true });
+    await this.cleanup({ closeSession: true });
     this.onClose?.({ reason: 'user-stopped' });
   }
 
-  async handleSessionError(event) {
+  async handleSessionError(event, epoch = this.connectionEpoch) {
+    if (epoch !== this.connectionEpoch || this.closed) {
+      this.logLiveEvent('stale.callback.ignored', { kind: 'error', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      return;
+    }
     const message = event?.message || event?.error?.message || 'Live API error';
     const error = event instanceof Error ? event : new Error(message);
+    const diagnostic = this.recordFailureDiagnostic({
+      source: 'live_error',
+      reasonHint: 'provider_error',
+      rawError: error,
+      rawEvent: event
+    });
+    this.finalizeInputTurn();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: true });
     this.onConnectionFailure?.({
@@ -415,19 +823,28 @@ export class LiveTranslateSession {
       rawError: error,
       rawEvent: event,
       reasonHint: 'provider_error',
+      diagnostic,
       afterCleanup: true
     });
     this.onError?.(error);
   }
 
-  async handleSessionClose(event) {
-    if (this.closeExpected || this.closed) {
+  async handleSessionClose(event, epoch = this.connectionEpoch) {
+    if (epoch !== this.connectionEpoch || this.closeExpected || this.closed) {
+      if (epoch !== this.connectionEpoch) this.logLiveEvent('stale.callback.ignored', { kind: 'close', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
 
     const reason = event?.reason ? `: ${event.reason}` : '';
     const code = event?.code ? ` (code ${event.code})` : '';
     const error = new Error(`Live API session closed unexpectedly${reason}${code}`);
+    const diagnostic = this.recordFailureDiagnostic({
+      source: 'unexpected_close',
+      reasonHint: 'unexpected_close',
+      rawError: error,
+      rawEvent: event
+    });
+    this.finalizeInputTurn();
     this.flushPendingTranscripts();
     await this.cleanup({ closeSession: false });
     this.onConnectionFailure?.({
@@ -435,32 +852,133 @@ export class LiveTranslateSession {
       rawError: error,
       rawEvent: event,
       reasonHint: 'unexpected_close',
+      diagnostic,
       afterCleanup: true
     });
     this.onError?.(error);
   }
 
-  flushPendingTranscripts() {
-    this.flushPendingTranscript('input');
-    this.flushPendingTranscript('output');
+  flushPendingTranscripts(options = {}) {
+    this.flushPendingTranscript('input', options);
+    this.flushPendingTranscript('output', options);
   }
 
   flushInputAudio() {
-    if (this.closed || !this.session || !this.chunker) return;
+    if (!this.isCurrentInputEpoch(this.connectionEpoch) || !this.chunker) return;
 
     for (const chunk of this.chunker.flush()) {
-      this.onInputAudioChunk?.(new Uint8Array(chunk));
-      this.session.sendRealtimeInput({
-        audio: {
-          data: bytesToBase64(chunk),
-          mimeType: 'audio/pcm;rate=16000'
-        }
-      });
+      this.sendInputAudioChunk(chunk, this.connectionEpoch);
     }
   }
 
-  flushPendingTranscript(kind) {
+  finalizeInputTurn() {
+    if (this.closed) return false;
+    if (this.processor) this.processor.onaudioprocess = null;
+    this.captureEnabled = false;
+    this.logLiveEvent('input.flush.requested', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+    if (typeof this.chunker?.flush === 'function') {
+      for (const chunk of this.chunker.flush()) {
+        this.sendInputAudioChunk(chunk, this.connectionEpoch, { force: true });
+      }
+    }
+    this.inputSendingEnabled = false;
+    if (!this.session || !this.providerReady) return false;
+    this.preRollDraining = true;
+    if (!this.drainPreRoll(this.connectionEpoch)) return false;
+    this.preRollDraining = false;
+    const payload = this.inputTurnMode === 'manual' ? { activityEnd: {} } : { audioStreamEnd: true };
+    const method = this.inputTurnMode === 'manual' ? 'activityEnd' : 'audioStreamEnd';
+    this.lastAudioStreamEnd = { payload, method, at: nowIso() };
+    this.sendProviderInput(payload, method, { inputEnd: true });
+    return true;
+  }
+
+  sendProviderInput(payload, method, { inputEnd = false } = {}) {
+    if (!this.session?.sendRealtimeInput) {
+      const outcome = { method, payload, result: 'unsupported', at: nowIso() };
+      if (inputEnd) {
+        this.lastInputEnd = outcome;
+        this.lastAudioStreamEnd = outcome;
+        this.trace('input.end.returned', outcome);
+      }
+      return { result: 'unsupported' };
+    }
+    if (inputEnd) this.trace('input.end.invoked', { method, payload });
+    else if (method === 'pcm') this.trace('provider.send.invoked', { bytes: payload.audio?.data ? atob(payload.audio.data).length : 0 });
+    if (method === 'pcm') {
+      this.pcmSendAttemptCount += 1;
+      this.firstPcmSendAttemptAt ||= nowIso();
+    }
+    try {
+      const result = this.session.sendRealtimeInput(payload);
+      if (inputEnd) {
+        this.lastInputEnd = { method, payload, result: result === undefined ? 'sdk-returned-void' : 'returned', at: nowIso() };
+        this.lastAudioStreamEnd = this.lastInputEnd;
+        this.trace('input.end.returned', { method, result: result === undefined ? 'sdk-returned-void' : 'returned' });
+      } else if (method === 'pcm') {
+        if (!result || typeof result.then !== 'function') this.pcmSendAcceptedCount += 1;
+        this.lastPcmSendAt = nowIso();
+        this.trace('provider.send.returned', { result: result === undefined ? 'sdk-returned-void' : 'returned' });
+      }
+      if (result && typeof result.then === 'function') {
+        void result.then(() => {
+          if (method === 'pcm') this.pcmSendAcceptedCount += 1;
+          this.trace(inputEnd ? 'input.end.returned' : 'provider.send.returned', { result: 'async-resolved' });
+        })
+          .catch((error) => {
+            if (inputEnd) {
+              this.lastInputEnd = { method, payload, result: 'async-reject', error: error?.message || String(error), at: nowIso() };
+              this.lastAudioStreamEnd = this.lastInputEnd;
+            }
+            else {
+              this.pcmSendAsyncRejectCount += 1;
+              void this.handleAudioCaptureFailure('pcm_send_failed', error?.message || 'PCM 音訊未送達 Gemini。');
+            }
+            this.trace(inputEnd ? 'input.end.asyncReject' : 'provider.send.asyncReject', { method, message: error?.message || String(error) });
+          });
+      }
+      return { result: result === undefined ? 'sdk-returned-void' : 'returned' };
+    } catch (error) {
+      if (inputEnd) {
+        this.lastInputEnd = { method, payload, result: 'sync-throw', error: error?.message || String(error), at: nowIso() };
+        this.lastAudioStreamEnd = this.lastInputEnd;
+      }
+      else if (method === 'pcm') {
+        this.pcmSendSyncThrowCount += 1;
+        void this.handleAudioCaptureFailure('pcm_send_failed', error?.message || 'PCM 音訊未送達 Gemini。');
+      }
+      this.trace(inputEnd ? 'input.end.syncThrow' : 'provider.send.syncThrow', { method, message: error?.message || String(error) });
+      return { result: 'sync-throw', error: error?.message || String(error) };
+    }
+  }
+
+  async handleAudioCaptureFailure(reasonHint, message) {
+    if (this.closeExpected || this.closed || this.inputTransportFailureSignaled) return;
+    this.inputTransportFailureSignaled = true;
+    const diagnostic = this.recordFailureDiagnostic({
+      source: reasonHint === 'pcm_send_failed' ? 'pcm_send_failed' : 'audio_capture_failed',
+      reasonHint,
+      rawError: new Error(message)
+    });
+    await this.cleanup({ closeSession: true });
+    const error = new Error(message);
+    this.onConnectionFailure?.({
+      source: reasonHint === 'pcm_send_failed' ? 'pcm_send_failed' : 'audio_capture_failed',
+      rawError: error,
+      reasonHint,
+      diagnostic,
+      afterCleanup: true
+    });
+    this.onError?.(error);
+  }
+
+  flushPendingTranscript(kind, { localFinalize = false } = {}) {
     const isInput = kind === 'input';
+    // Emit one local-final marker for the paired Cue. The translation event
+    // is flushed second, so marking only that event prevents the source event
+    // from finalizing an intermediate Cue and the translation event from
+    // creating a duplicate translation-only Cue afterward.
+    const emitLocalFinalize = localFinalize && !isInput;
     const pendingKey = isInput ? 'pendingInputTranscript' : 'pendingOutputTranscript';
     const awaitingKey = isInput
       ? 'awaitingInputTranscriptAfterTurnComplete'
@@ -469,9 +987,38 @@ export class LiveTranslateSession {
     const pending = this[pendingKey];
 
     if (pending) {
-      const transcript = withTranscriptEventId({ ...pending, isFinal: true }, pending.eventId);
+      const transcript = withTranscriptEventId({
+        ...pending,
+        isFinal: true,
+        terminalStatus: localFinalize ? 'local-final' : 'saved-pending',
+        terminalReason: localFinalize ? 'local-silence' : 'provider-final-unconfirmed',
+        providerEndMethod: this.lastInputEnd?.method || null,
+        providerEndResult: this.lastInputEnd?.result || null,
+        audioTurnId: this.audioTurnId,
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId
+      }, pending.eventId);
+      this.trace('stopped_pending', { stream: kind, text: transcript.text });
       this.logLiveEvent(`${kind}Transcription.flushPending`, { transcript });
       callback?.(transcript);
+      this.onCueEvent?.({
+        ...transcript,
+        eventId: `${transcript.eventId || `${this.liveSessionId || this.sessionId || 'live'}:pending`}:terminal-final`,
+        stream: isInput ? 'source' : 'translation',
+        eventType: isInput ? 'input' : 'output',
+        localFinalize: emitLocalFinalize,
+        finalizedReason: emitLocalFinalize ? 'localSilence' : undefined,
+        turnComplete: false,
+        generationComplete: false,
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
+        targetLanguageCode: this.targetLanguageCode,
+        connectionEpoch: this.connectionEpoch,
+        sessionTimeMs: this.sessionClock()
+      });
       this[pendingKey] = null;
     }
 
@@ -496,10 +1043,64 @@ export class LiveTranslateSession {
       return;
     }
 
-    console.debug('[Gemini Live event]', {
-      stage,
-      ...details
-    });
+    const eventSequence = details.eventSequence || ++this.traceSequence;
+    console.debug('[Gemini Live event]', { stage, ...this.traceContext(), eventSequence, ...details });
+  }
+
+  trace(stage, details = {}) {
+    this.logLiveEvent(stage, details);
+  }
+
+  traceContext() {
+    return {
+      connectionEpoch: this.connectionEpoch,
+      liveSessionId: this.liveSessionId,
+      sessionId: this.sessionId,
+      audioTurnId: this.audioTurnId,
+      timestamp: nowIso()
+    };
+  }
+
+  getDebugSnapshot() {
+    return {
+      activeConnectionEpoch: this.closed ? null : this.connectionEpoch,
+      activeSessionId: this.closed ? null : this.sessionId,
+      activeLiveSessionId: this.closed ? null : this.liveSessionId,
+      activeAudioTurnId: this.closed ? null : this.audioTurnId,
+      providerReady: this.providerReady,
+      captureStarted: this.audioGraphEpoch !== null,
+      captureEnabled: this.captureEnabled,
+      preRollBufferedChunkCount: this.pendingInputAudioChunks.length,
+      preRollBufferedBytes: this.pendingInputAudioBytes,
+      inputSendingEnabled: this.inputSendingEnabled,
+      audioGraphAttached: Boolean(this.source && this.audioContext),
+      processorAttached: Boolean(this.processor),
+      audioCallbackCount: this.audioCallbackCount,
+      lastAudioCallbackAt: this.lastAudioCallbackAt,
+      pcmGeneratedCount: this.pcmGeneratedCount,
+      pcmGeneratedBytes: this.pcmGeneratedBytes,
+      pcmSendAttemptCount: this.pcmSendAttemptCount,
+      pcmSendAcceptedCount: this.pcmSendAcceptedCount,
+      pcmSendSyncThrowCount: this.pcmSendSyncThrowCount,
+      pcmSendAsyncRejectCount: this.pcmSendAsyncRejectCount,
+      firstPcmGeneratedAt: this.firstPcmGeneratedAt,
+      firstPcmSendAttemptAt: this.firstPcmSendAttemptAt,
+      lastPcmGeneratedAt: this.lastPcmGeneratedAt,
+      lastPcmSendAt: this.lastPcmSendAt,
+      failureDiagnostics: this.failureDiagnostics.map((failure) => ({ ...failure })),
+      lastAudioStreamEnd: this.lastAudioStreamEnd,
+      pendingInputTranscript: this.pendingInputTranscript?.text || '',
+      pendingOutputTranscript: this.pendingOutputTranscript?.text || '',
+      cueStateOwner: this.cueStateOwner,
+      lastCueTransitionReason: this.lastCueTransitionReason
+    };
+  }
+
+  recordFailureDiagnostic(failure = {}) {
+    const diagnostic = safeFailureDiagnostic(failure, this);
+    this.failureDiagnostics = [...this.failureDiagnostics, diagnostic].slice(-10);
+    this.trace('failure.diagnostic', diagnostic);
+    return diagnostic;
   }
 
   async cleanup({ closeSession = true, signalAudioEnd = false } = {}) {
@@ -507,39 +1108,26 @@ export class LiveTranslateSession {
       return;
     }
 
+    if (signalAudioEnd) {
+      this.finalizeInputTurn();
+    }
     this.cleaningUp = true;
     try {
+      this.clearSilenceFinalizeTimer();
       this.closed = true;
+      this.captureEnabled = false;
+      this.inputSendingEnabled = false;
+      this.providerReady = false;
+      this.connectionEpoch += 1;
+      this.audioContext?.removeEventListener?.('statechange', this.audioContextStateHandler);
+      this.audioContextStateHandler = null;
+      if (this.captureHealthTimer) clearInterval(this.captureHealthTimer);
+      this.captureHealthTimer = null;
       for (const { track, onEnded } of this.microphoneTrackListeners) {
         track.removeEventListener?.('ended', onEnded);
       }
       this.microphoneTrackListeners = [];
       this.chunker?.reset();
-      this.clearPlaybackQueue();
-
-      if (signalAudioEnd) {
-        try {
-          this.session?.sendRealtimeInput({ audioStreamEnd: true });
-        } catch {
-          // The session may already be closed.
-        }
-      }
-
-      if (this.processor) {
-        this.processor.onaudioprocess = null;
-      }
-
-      try {
-        this.processor?.disconnect();
-      } catch {
-        // Audio nodes may already be disconnected during error cleanup.
-      }
-
-      try {
-        this.source?.disconnect();
-      } catch {
-        // Audio nodes may already be disconnected during error cleanup.
-      }
 
       this.mediaStream?.getTracks().forEach((track) => {
         try {
@@ -548,6 +1136,8 @@ export class LiveTranslateSession {
           // Media tracks may already be stopped by the browser.
         }
       });
+
+      this.disconnectAudioGraph();
 
       if (closeSession) {
         try {
@@ -565,18 +1155,25 @@ export class LiveTranslateSession {
         }
       }
 
+      this.clearPlaybackQueue();
+
       this.processor = null;
       this.source = null;
       this.mediaStream = null;
       this.session = null;
       this.audioContext = null;
       this.chunker = null;
+      this.audioGraphEpoch = null;
+      this.pendingInputAudioChunks = [];
+      this.pendingInputAudioBytes = 0;
+      this.localTurnFinalizeTriggered = false;
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
       this.pendingOutputTranscript = null;
       this.awaitingInputTranscriptAfterTurnComplete = false;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
       this.nextPlaybackTime = 0;
+      if (activeDebugSession === this) activeDebugSession = this;
     } finally {
       this.cleaningUp = false;
     }
@@ -634,6 +1231,13 @@ function withTranscriptEventId(transcript, eventId) {
     enumerable: false,
     configurable: true
   });
+  if (transcript.connectionEpoch !== undefined) {
+    Object.defineProperty(transcript, 'connectionEpoch', {
+      value: transcript.connectionEpoch,
+      enumerable: false,
+      configurable: true
+    });
+  }
   return transcript;
 }
 
@@ -660,6 +1264,88 @@ function summarizeLiveEvent(message) {
 
 function objectKeys(value) {
   return value && typeof value === 'object' ? Object.keys(value) : [];
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function monotonicTimestamp() {
+  return typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+}
+
+function safeFailureDiagnostic(failure, session) {
+  const rawEvent = failure.rawEvent || {};
+  const rawError = failure.rawError || {};
+  return {
+    at: nowIso(),
+    source: failure.source || 'unknown',
+    reasonHint: failure.reasonHint || 'unknown_error',
+    code: safeDiagnosticValue(rawEvent.code || rawError.code),
+    status: safeDiagnosticStatus(rawEvent.status || rawError.status || rawError.response?.status),
+    providerReason: safeDiagnosticText(rawEvent.reason || rawError.reason),
+    connectionEpoch: session.connectionEpoch,
+    liveSessionId: session.liveSessionId,
+    segmentId: session.segmentId,
+    audioCallbackCount: session.audioCallbackCount,
+    pcmSendAttemptCount: session.pcmSendAttemptCount,
+    pcmSendSyncThrowCount: session.pcmSendSyncThrowCount,
+    pcmSendAsyncRejectCount: session.pcmSendAsyncRejectCount
+  };
+}
+
+function safeDiagnosticValue(value) {
+  if (typeof value === 'string' || typeof value === 'number') return value;
+  return null;
+}
+
+function safeDiagnosticStatus(value) {
+  return Number.isInteger(value) ? value : null;
+}
+
+function safeDiagnosticText(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  return value
+    .replace(/(?:token|key|authorization|bearer)[^\s:=]*\s*[:=]?\s*[^\s,;]+/gi, '[redacted]')
+    .slice(0, 160);
+}
+
+function exposeLiveTranslateDebug() {
+  if (typeof window === 'undefined' || !LIVE_EVENT_LOG_ENABLED) return;
+  window.__liveTranslateDebug = window.__liveTranslateDebug || {};
+  window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.() || {
+    activeConnectionEpoch: null,
+    activeSessionId: null,
+    activeLiveSessionId: null,
+    activeAudioTurnId: null,
+    providerReady: false,
+    captureStarted: false,
+    captureEnabled: false,
+    preRollBufferedChunkCount: 0,
+    preRollBufferedBytes: 0,
+    inputSendingEnabled: false,
+    audioGraphAttached: false,
+    processorAttached: false,
+    audioCallbackCount: 0,
+    pcmGeneratedCount: 0,
+    pcmGeneratedBytes: 0,
+    pcmSendAttemptCount: 0,
+    pcmSendAcceptedCount: 0,
+    pcmSendSyncThrowCount: 0,
+    pcmSendAsyncRejectCount: 0,
+    firstPcmGeneratedAt: null,
+    firstPcmSendAttemptAt: null,
+    lastPcmGeneratedAt: null,
+    lastPcmSendAt: null,
+    lastAudioStreamEnd: null,
+    failureDiagnostics: [],
+    pendingInputTranscript: '',
+    pendingOutputTranscript: '',
+    cueStateOwner: null,
+    lastCueTransitionReason: null
+  };
 }
 
 function createDefaultSessionClock() {

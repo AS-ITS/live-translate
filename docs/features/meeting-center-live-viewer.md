@@ -2,10 +2,12 @@
 
 ## Status
 
-Milestone 1 is implemented: Meeting Management is the canonical application
-home with client-side search, status filtering, and status-aware actions.
-Meeting Workspace, Viewer sharing, Cue broadcast, and reconnect recovery remain
-planned for later delivery phases.
+Milestone 2 is implemented: Meeting Management remains the canonical
+application home and opens a status-aware Meeting Workspace with Live
+Subtitles, Meeting Glossary, Export, and completed-history tabs. Legacy
+`#live`, `#history`, and related routes remain available as compatibility
+entrypoints. Viewer sharing, private glossary data, Cue broadcast, and
+reconnect recovery remain planned for later delivery phases.
 
 ## Capability Overview
 
@@ -228,7 +230,7 @@ full benchmark report.
 ## Delivery Phases
 
 1. Meeting Management home, route consolidation, search, and status actions.
-2. Meeting Workspace tabs and completed-history default behavior.
+2. Meeting Workspace tabs and completed-history default behavior. **Completed.**
 3. Global/private glossary data and UI isolation.
 4. Meeting Viewer URL, QR, short code, complete Cue reading, and virtualized
    rendering.

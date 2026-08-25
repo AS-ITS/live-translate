@@ -1305,11 +1305,57 @@ test('completed meeting opens translation history from meeting management withou
   await expect(row).toContainText('已完成');
   await row.getByRole('button', { name: '前往翻譯紀錄' }).click();
 
-  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=history$/);
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '會議詳細資料' })).toBeVisible();
+  await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=history$/);
+  await expect(page.locator('.meeting-workspace-page')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
   await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
   expect(pageErrors).toEqual([]);
+});
+
+test('Meeting Workspace exposes status-specific tabs', async ({ page }) => {
+  const baseDetail = meetingDetailResponse();
+  const meetings = [
+    { id: 'workspace-created', name: '草稿會議', status: 'created' },
+    { id: 'workspace-active', name: '進行中會議', status: 'active' },
+    { id: 'workspace-interrupted', name: '中斷會議', status: 'interrupted' },
+    { id: 'workspace-completed', name: '完成會議', status: 'completed' }
+  ];
+
+  await page.unroute('**/api/meetings');
+  await page.unroute('**/api/meetings/**');
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(meetings) });
+  });
+  await page.route('**/api/meetings/**', async (route) => {
+    const id = new URL(route.request().url()).pathname.split('/')[3];
+    const meeting = meetings.find((item) => item.id === id);
+    if (!meeting || route.request().method() !== 'GET' || new URL(route.request().url()).pathname !== `/api/meetings/${id}`) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...baseDetail, meeting: { ...baseDetail.meeting, ...meeting } })
+    });
+  });
+
+  await page.goto('/#meeting-workspace?meetingId=workspace-created&tab=live');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('即時字幕');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('會議字典');
+  await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('分享觀看');
+
+  await page.goto('/#meeting-workspace?meetingId=workspace-active&tab=live');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('分享觀看');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('匯出');
+
+  await page.goto('/#meeting-workspace?meetingId=workspace-interrupted&tab=export');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('匯出');
+  await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('分享觀看');
+
+  await page.goto('/#meeting-workspace?meetingId=workspace-completed&tab=history');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('翻譯紀錄');
+  await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('即時字幕');
 });
 
 test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {

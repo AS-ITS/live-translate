@@ -317,6 +317,116 @@ input {
   padding-top: 0;
 }
 
+.meeting-workspace-page {
+  display: grid;
+  grid-template-rows: auto;
+  gap: 16px;
+  min-height: 0;
+}
+
+.meeting-workspace-header {
+  display: grid;
+  gap: 18px;
+  padding: 20px 24px 0;
+}
+
+.meeting-workspace-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.meeting-workspace-heading > div {
+  min-width: 0;
+  flex: 1;
+}
+
+.meeting-workspace-heading h2,
+.meeting-workspace-panel-heading h3 {
+  margin: 0;
+  color: #17202a;
+  font-size: clamp(1.45rem, 2.5vw, 2rem);
+}
+
+.meeting-workspace-heading p:not(.eyebrow),
+.meeting-workspace-panel-heading p:not(.eyebrow) {
+  margin: 6px 0 0;
+  color: #516070;
+  line-height: 1.5;
+}
+
+.meeting-workspace-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid #d8dee6;
+}
+
+.meeting-workspace-tab {
+  min-height: 44px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  padding: 0 14px;
+  background: transparent;
+  color: #516070;
+  font: inherit;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.meeting-workspace-tab:hover {
+  color: #156b59;
+  background: #f3f7f6;
+}
+
+.meeting-workspace-tab.is-active {
+  border-bottom-color: #156b59;
+  color: #156b59;
+}
+
+.meeting-workspace-tab:focus-visible {
+  outline: 3px solid #89b8ff;
+  outline-offset: -2px;
+}
+
+.meeting-workspace-tab-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 24px 24px;
+}
+
+.meeting-workspace-tab-panel > .meeting-detail {
+  margin-top: 0;
+}
+
+.meeting-workspace-placeholder {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  align-content: center;
+  min-height: 180px;
+  padding: 24px;
+  border: 1px dashed #b9c4d1;
+  border-radius: 14px;
+  background: #f8fafc;
+  color: #516070;
+}
+
+.meeting-workspace-placeholder strong {
+  color: #17202a;
+  font-size: 1.05rem;
+}
+
+.meeting-workspace-placeholder span {
+  max-width: 65ch;
+  line-height: 1.5;
+}
+
 .history-page .session-detail,
 .history-page .meeting-detail {
   margin-top: 20px;
@@ -3194,6 +3304,32 @@ input:disabled {
     justify-content: center;
     padding: 0 8px;
     font-size: 0.9rem;
+  }
+
+  .meeting-workspace-header {
+    padding: 8px 0 0;
+  }
+
+  .meeting-workspace-heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .meeting-workspace-heading > .button {
+    order: 2;
+  }
+
+  .meeting-workspace-heading > div {
+    order: 1;
+    flex-basis: calc(100% - 16px);
+  }
+
+  .meeting-workspace-heading > .history-status {
+    order: 3;
+  }
+
+  .meeting-workspace-tab-panel {
+    padding: 0 0 16px;
   }
 
   .live-app-shell > .error-message,

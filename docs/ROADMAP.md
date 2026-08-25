@@ -20,7 +20,11 @@ controlled manual Gemini validation.
 
 Issue #29 Milestone 1 is completed: `#meetings` is the canonical Meeting
 Management home with client-side name/status filtering and status-aware actions.
-Meeting Workspace and Viewer broadcast phases remain pending.
+Issue #29 Milestone 2 is completed: status-aware Meeting Workspace tabs now
+organize live subtitles, glossary, export, and completed Meeting history. The
+legacy `#live`, `#history`, and related routes remain available for
+compatibility. Private glossary data, Meeting Viewer sharing, Cue broadcast,
+and reconnect recovery remain pending.
 
 Execution status push is now available through a process-local authenticated
 WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay

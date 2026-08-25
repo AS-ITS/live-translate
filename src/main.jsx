@@ -170,7 +170,7 @@ function dataGridProps(className, { fixedHeight = false } = {}) {
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'meeting-workspace', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
@@ -216,9 +216,32 @@ function pageInfoFromLocation() {
     sessionId: params.get('sessionId') || '',
     meetingId: params.get('meetingId') || '',
     meetingDetailFrom: params.get('from') || '',
+    workspaceTab: params.get('tab') || 'live',
     shareToken: params.get('token') || '',
     shareCode: params.get('code') || ''
   };
+}
+
+function meetingWorkspaceTabs(status) {
+  if (status === 'completed') return [
+    { id: 'export', label: '匯出' },
+    { id: 'history', label: '翻譯紀錄' }
+  ];
+  if (status === 'interrupted') return [
+    { id: 'live', label: '即時字幕' },
+    { id: 'glossary', label: '會議字典' },
+    { id: 'export', label: '匯出' }
+  ];
+  return [
+    { id: 'live', label: '即時字幕' },
+    { id: 'glossary', label: '會議字典' },
+    ...(status === 'active' ? [{ id: 'share', label: '分享觀看' }, { id: 'export', label: '匯出' }] : [])
+  ];
+}
+
+function normalizedMeetingWorkspaceTab(status, requestedTab) {
+  const tabs = meetingWorkspaceTabs(status);
+  return tabs.some((tab) => tab.id === requestedTab) ? requestedTab : tabs[0]?.id || 'live';
 }
 
 function meetingDetailReturnPage(info = pageInfoFromLocation()) {
@@ -440,8 +463,15 @@ function App() {
 
   const routeSessionId = pageInfoFromLocation().sessionId;
   const routeMeetingId = pageInfoFromLocation().meetingId;
-  const isViewingReadOnlySession = page === 'live' && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
-  const isReadOnlyControlView = page === 'live' && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
+  const workspaceInfo = pageInfoFromLocation();
+  const isMeetingWorkspace = page === 'meeting-workspace';
+  const meetingWorkspaceStatus = selectedMeetingDetail?.meeting?.status || meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.status || 'created';
+  const meetingWorkspaceTab = isMeetingWorkspace && !selectedMeetingDetail
+    ? workspaceInfo.workspaceTab
+    : normalizedMeetingWorkspaceTab(meetingWorkspaceStatus, workspaceInfo.workspaceTab);
+  const isLiveSurface = page === 'live' || (isMeetingWorkspace && meetingWorkspaceTab === 'live');
+  const isViewingReadOnlySession = isLiveSurface && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
+  const isReadOnlyControlView = isLiveSurface && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
 
   const isActive =
     status === 'requesting-permission' ||
@@ -535,7 +565,7 @@ function App() {
   }, [page]);
 
   useEffect(() => {
-    if (page !== 'meeting-detail') return;
+    if (!['meeting-detail', 'meeting-workspace'].includes(page)) return;
 
     const info = pageInfoFromLocation();
     if (!info.meetingId) {
@@ -552,7 +582,7 @@ function App() {
   }, [page, routeMeetingId, locationVersion]);
 
   useEffect(() => {
-    if (page !== 'live') return;
+    if (!isLiveSurface) return;
     let cancelled = false;
     void refreshMeetingRecords().then((meetings) => {
       if (cancelled || !meetings) return;
@@ -565,14 +595,14 @@ function App() {
       }
     });
     return () => { cancelled = true; };
-  }, [page]);
+  }, [page, isLiveSurface]);
 
   useEffect(() => {
     if (page === 'dead-letter-queue') void refreshDeadLetterQueue();
   }, [page]);
 
   useEffect(() => {
-    if (page !== 'live') return undefined;
+    if (!isLiveSurface) return undefined;
     let cancelled = false;
     void createGlossaryApiClient().listEntries()
       .then((entries) => {
@@ -582,7 +612,7 @@ function App() {
         // The drawer reports glossary loading failures when the user opens it.
       });
     return () => { cancelled = true; };
-  }, [page]);
+  }, [page, isLiveSurface]);
 
   useEffect(() => {
     if (!isLiveGlossaryDrawerOpen) return undefined;
@@ -3133,7 +3163,15 @@ function App() {
     }
 
     await resetLiveMeetingWorkspace();
-    window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`;
+    window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=live`;
+  }
+
+  function openMeetingWorkspaceTab(meetingId, tab = 'live') {
+    if (!meetingId || isNavigationLocked) return;
+    setIsLiveSettingsDrawerOpen(false);
+    setIsLiveGlossaryDrawerOpen(false);
+    setIsLiveExportDrawerOpen(false);
+    window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=${encodeURIComponent(tab)}`;
   }
 
   function selectLiveTranslationMode(value) {
@@ -3326,7 +3364,7 @@ function App() {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
-  const usesWorkspaceNavigation = ['live', 'meeting', 'meeting-detail', 'history', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
+  const usesWorkspaceNavigation = ['live', 'meeting', 'meeting-detail', 'meeting-workspace', 'history', 'retranslate', 'glossary', 'dead-letter-queue'].includes(page);
 
   return (
     <main className={`app-shell ${usesWorkspaceNavigation ? 'live-app-shell' : ''}`}>
@@ -3337,7 +3375,7 @@ function App() {
             <h1>即時翻譯</h1>
           </a>
           <nav className="live-sidebar-navigation" aria-label="主要導覽">
-            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meetings" aria-current={['meeting', 'meetings'].includes(page) ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meetings', event)}><Play size={18} aria-hidden="true" />會議管理</a>
+            <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#meetings" aria-current={['meeting', 'meetings', 'meeting-workspace'].includes(page) ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('meetings', event)}><Play size={18} aria-hidden="true" />會議管理</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#live" aria-current={page === 'live' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('live', event)}><Mic size={18} aria-hidden="true" />即時翻譯</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#history" aria-current={page === 'history' ? 'page' : undefined} aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('history', event)}><Radio size={18} aria-hidden="true" />翻譯紀錄</a>
             <a className={isNavigationLocked ? 'is-navigation-locked' : ''} href="#retranslate" aria-disabled={isNavigationLocked ? 'true' : undefined} onClick={(event) => navigateTo('retranslate', event)}><RefreshCw size={18} aria-hidden="true" />重新翻譯</a>
@@ -3365,7 +3403,19 @@ function App() {
       {page === 'meeting' || page === 'meetings' ? (
         <MeetingManagementPage
           onOpenLive={openMeetingLiveWorkspace}
-          onOpenHistory={(meetingId) => { window.location.hash = `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=history`; }}
+          onOpenHistory={(meetingId) => openMeetingWorkspaceTab(meetingId, 'history')}
+        />
+      ) : null}
+
+      {isMeetingWorkspace ? (
+        <MeetingWorkspaceShell
+          detail={selectedMeetingDetail}
+          detailError={meetingDetailError}
+          tab={meetingWorkspaceTab}
+          tabs={meetingWorkspaceTabs(meetingWorkspaceStatus)}
+          onBack={() => { closeMeetingDetail(); window.location.hash = '#meetings'; }}
+          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+          onSelectTab={(tab) => openMeetingWorkspaceTab(routeMeetingId, tab)}
         />
       ) : null}
 
@@ -3379,7 +3429,7 @@ function App() {
         />
       ) : null}
 
-      <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={page !== 'live'}>
+      <section className="feature-page live-page" aria-label="即時翻譯工作區" hidden={!isLiveSurface}>
         <div className="live-workspace-grid">
         <section className="control-panel live-settings-card">
           <div className="title-block">
@@ -3565,7 +3615,7 @@ function App() {
         </div>
       </section>
 
-      <>
+      {isLiveSurface ? <>
         <div className={`live-settings-drawer-backdrop${isLiveSettingsDrawerOpen ? ' is-open' : ''}`} onClick={() => setIsLiveSettingsDrawerOpen(false)} aria-hidden="true" />
         <aside className={`live-settings-drawer${isLiveSettingsDrawerOpen ? ' is-open' : ''}`} aria-label="即時翻譯設定" aria-hidden={!isLiveSettingsDrawerOpen}>
           <div className="live-settings-drawer-header">
@@ -3620,7 +3670,16 @@ function App() {
             {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
           </div>
         </aside>
-      </>
+      </> : null}
+
+      {isMeetingWorkspace && meetingWorkspaceTab !== 'live' ? (
+        <MeetingWorkspaceTabPanel
+          tab={meetingWorkspaceTab}
+          detail={selectedMeetingDetail}
+          detailError={meetingDetailError}
+          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+        />
+      ) : null}
 
       <LiveGlossaryDrawer
         open={isLiveGlossaryDrawerOpen}
@@ -5435,6 +5494,99 @@ function MeetingDetailPage({ detail, detailError = '', returnPage = 'history', o
       </div>
     </section>
   );
+}
+
+function MeetingWorkspaceShell({ detail, detailError = '', tab, tabs, onBack, onRetry, onSelectTab }) {
+  const meeting = detail?.meeting;
+  const title = meetingTitle(meeting) || '會議工作區';
+
+  return (
+    <section className="feature-page meeting-workspace-page" aria-labelledby="meeting-workspace-title">
+      <header className="meeting-workspace-header">
+        <div className="meeting-workspace-heading">
+          <button className="button secondary" type="button" onClick={onBack}>返回會議管理</button>
+          <div>
+            <p className="eyebrow">MEETING WORKSPACE</p>
+            <h2 id="meeting-workspace-title">{title}</h2>
+            <p>{meeting ? `${targetLanguageLabelFor(meeting.sourceLanguageCode) || meeting.sourceLanguageCode || '未設定'} → ${targetLanguageLabelFor(meeting.targetLanguageCode) || meeting.targetLanguageCode || '未設定'}` : detailError || '正在載入會議設定…'}</p>
+          </div>
+          {meeting ? <span className={`history-status history-status-${meeting.status}`}>{meetingStatusLabel(meeting.status)}</span> : null}
+        </div>
+        {meeting ? (
+          <nav className="meeting-workspace-tabs" aria-label="會議工作區分頁">
+            {tabs.map((item) => (
+              <button
+                key={item.id}
+                className={`meeting-workspace-tab${tab === item.id ? ' is-active' : ''}`}
+                type="button"
+                aria-current={tab === item.id ? 'page' : undefined}
+                onClick={() => onSelectTab(item.id)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        ) : null}
+      </header>
+    </section>
+  );
+}
+
+function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry }) {
+  if (tab === 'export' || tab === 'history') {
+    return (
+      <section className="feature-page meeting-workspace-tab-panel" aria-label={tab === 'history' ? '翻譯紀錄' : '會議匯出'}>
+        <div className="meeting-workspace-panel-heading">
+          <div>
+            <p className="eyebrow">{tab === 'history' ? 'TRANSLATION HISTORY' : 'EXPORT'}</p>
+            <h3>{tab === 'history' ? '翻譯紀錄' : '匯出整場會議'}</h3>
+            <p>{tab === 'history' ? '查看這場會議的完整時間軸、逐字稿與語音紀錄。' : '下載整場會議的逐字稿與語音紀錄。'}</p>
+          </div>
+        </div>
+        <MeetingDetail detail={detail} detailError={detailError} onRetryDetail={onRetry} />
+      </section>
+    );
+  }
+
+  if (tab === 'glossary') {
+    return (
+      <section className="feature-page meeting-workspace-tab-panel" aria-label="會議字典">
+        <div className="meeting-workspace-panel-heading">
+          <div>
+            <p className="eyebrow">MEETING GLOSSARY</p>
+            <h3>會議字典</h3>
+            <p>會議專用字典管理將在下一個交付階段加入；目前可從會議設定維護既有詞條。</p>
+          </div>
+        </div>
+        <div className="meeting-workspace-placeholder">
+          <BookOpen size={24} aria-hidden="true" />
+          <strong>會議字典設定</strong>
+          <span>此分頁保留在 Meeting Workspace 內，下一階段會加入會議私有詞條與隔離規則。</span>
+        </div>
+      </section>
+    );
+  }
+
+  if (tab === 'share') {
+    return (
+      <section className="feature-page meeting-workspace-tab-panel" aria-label="分享觀看">
+        <div className="meeting-workspace-panel-heading">
+          <div>
+            <p className="eyebrow">VIEWER SHARING</p>
+            <h3>分享觀看</h3>
+            <p>Meeting-level Viewer 分享與即時字幕直播將在下一個交付階段加入。</p>
+          </div>
+        </div>
+        <div className="meeting-workspace-placeholder">
+          <Radio size={24} aria-hidden="true" />
+          <strong>尚未啟用 Viewer 分享</strong>
+          <span>目前保留分頁入口，不會建立分享連結或改變現有 Recorder 流程。</span>
+        </div>
+      </section>
+    );
+  }
+
+  return null;
 }
 
 function MeetingDetail({ detail, detailError = '', onRetryDetail }) {

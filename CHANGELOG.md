@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- 完成 #29 Milestone 1：`#meetings` 現在是 Meeting Management 首頁，提供會議名稱／語言／狀態搜尋、狀態篩選、最後更新時間與依 Meeting 狀態顯示的操作；保留既有錄音、設定與資料流程，Viewer、Workspace 與 Cue 廣播留待後續 Milestone。
+- 完成 #29 Milestone 2：新增 status-aware Meeting Workspace，依 Meeting 狀態提供即時字幕、會議字典、分享觀看、匯出與完成後翻譯紀錄分頁；Meeting Management 的繼續錄製與完成會議操作改由 Workspace 承接，既有 `#live`、`#history` 等 legacy 路由保留相容性。
+
+- 完成 #29 Milestone 1：`#meetings` 現在是 Meeting Management 首頁，提供會議名稱／語言／狀態搜尋、狀態篩選、最後更新時間與依 Meeting 狀態顯示的操作；保留既有錄音與設定流程，Viewer 與 Cue 廣播留待後續 Milestone。
 
 - 完成 #29「會議中心 UI 整併與即時字幕直播分享」規格：定義 Meeting 管理首頁、單一 Meeting Workspace、全域／會議專用字典隔離、Meeting-level Viewer 分享、Final Cue 廣播、重連補洞與本地延遲 SLA 驗證；目前已完成 Milestone 1，後續能力仍依交付階段進行。
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 完成 #29「會議中心 UI 整併與即時字幕直播分享」規格：定義 Meeting 管理首頁、單一 Meeting Workspace、全域／會議專用字典隔離、Meeting-level Viewer 分享、Final Cue 廣播、重連補洞與本地延遲 SLA 驗證。此項目目前僅完成規格文件，尚未修改產品程式或 API。
+
 - 完成 #27 的潤飾 RPM 與長會議可靠性收尾：RPM authoritative gate 現在位於實際 provider attempt 邊界，retry attempt 也會計入；worker 僅負責 durable claim、lease heartbeat、retry/recovery 與 DLQ，rate-limit 等待不再反覆重排 queue item。
 
 - 修正即時翻譯左側設定卡被右側字幕卡強制同高而裁切內容的問題；短視窗現在由頁面自然垂直捲動，設定卡依內容撐高，會議模式與操作按鈕不再重疊。

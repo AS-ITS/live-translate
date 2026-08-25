@@ -1,5 +1,16 @@
 # Live Translate API and Events
 
+## Meeting Center and Live Viewer
+
+Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,
+and Meeting-level `cue.append` SSE events. The complete contract and delivery
+phases are documented in
+[Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
+This capability is specification-only until its implementation phases are
+completed. Existing Session share and Meeting checkpoint routes remain the
+current implementation contract.
+
 ## Session sharing
 
 Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.

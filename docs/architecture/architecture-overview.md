@@ -34,6 +34,7 @@ Relevant background docs:
 - [docs/features/better-transcript-handling.md](../features/better-transcript-handling.md)
 - [docs/features/transcript-export.md](../features/transcript-export.md)
 - [docs/features/audio-device-selection.md](../features/audio-device-selection.md)
+- [docs/features/meeting-center-live-viewer.md](../features/meeting-center-live-viewer.md)
 
 ## 2. System Context
 
@@ -142,6 +143,15 @@ this path for controlled reconnect after unexpected close or token expiration.
 When opened with `#live?meetingId=...`, the live UI reads ordered Segment
 checkpoints, restores confirmed transcript content, and lets the user manually
 continue recording in the next recovered Segment.
+
+Issue #29 specifies the next Meeting-centered UI boundary and a Meeting-level
+Viewer broadcast path. The specification keeps the existing Meeting/Segment
+checkpoint as the durable source of complete final Cues, while a process-local
+Meeting broadcaster delivers finalized `cue.append` events without waiting for
+checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
+cursor merge; it does not change the direct browser-to-Gemini path or Recorder
+authorization model. This remains specification-only until the phased
+implementation is approved and started.
 
 ## 3. Runtime Architecture
 

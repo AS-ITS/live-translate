@@ -4,6 +4,14 @@ This project separates deterministic tests from real Gemini API validation. Unit
 integration, and E2E tests must not call the real Gemini API. The live smoke test
 is opt-in only.
 
+Issue #29 testing is specified but not yet implemented. Its future coverage is
+grouped into Meeting route/tab rules and glossary isolation (unit tests),
+Meeting share, Viewer snapshot/SSE, Cue deduplication, ordering, and reconnect
+merge (integration tests), and the Meeting Workspace plus Viewer scrolling flow
+(E2E tests). The Viewer latency SLA will first use a local deterministic
+synthetic broadcaster test; it must not call Gemini or overwrite full benchmark
+reports. See [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
 ## Test Responsibility Boundaries
 
 - Unit tests own pure rules, state transitions, input matrices, and failure

@@ -7,9 +7,18 @@ and Meeting-level `cue.append` SSE events. The complete contract and delivery
 phases are documented in
 [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
 
-This capability is specification-only until its implementation phases are
-completed. Existing Session share and Meeting checkpoint routes remain the
-current implementation contract.
+The Meeting-level Viewer capability is delivered incrementally. Existing
+Session share and Meeting checkpoint routes remain the current implementation
+contract for their respective resources.
+
+Milestone 4 Meeting Viewer sharing is available through
+`POST /api/meetings/:meetingId/shares` with
+`{ "role": "viewer", "expiresAt": null }`. Anonymous Viewer reads use
+`GET /api/shared-meetings/:token` or
+`GET /api/shared-meetings/code/:shortCode`; the response contains sanitized
+Meeting metadata and historical final Cues, but no glossary, audio artifact,
+Recorder lease, device, or credential data. Live Cue events and reconnect
+recovery remain Milestone 5.
 
 ## Session sharing
 

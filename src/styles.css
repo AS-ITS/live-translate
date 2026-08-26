@@ -544,6 +544,77 @@ input {
   line-height: 1.5;
 }
 
+.meeting-viewer-page {
+  min-height: 100vh;
+  padding: 24px clamp(16px, 4vw, 64px);
+  background: #f6f7f9;
+}
+
+.viewer-cue-panel {
+  width: min(980px, 100%);
+  margin: 24px auto 0;
+  border: 1px solid #d8dee6;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 8px 28px rgb(23 32 42 / 7%);
+  overflow: hidden;
+}
+
+.viewer-cue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e4e9ef;
+}
+
+.viewer-cue-header div {
+  display: grid;
+  gap: 4px;
+}
+
+.viewer-cue-header span {
+  color: #667384;
+  font-size: 0.875rem;
+}
+
+.viewer-cue-viewport {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.viewer-cue-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 16px;
+  padding: 14px 22px;
+  border-bottom: 1px solid #edf0f3;
+  background: #ffffff;
+}
+
+.viewer-cue-row p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.viewer-cue-time {
+  padding-top: 2px;
+  color: #718096;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8125rem;
+}
+
+.viewer-cue-source {
+  color: #314152;
+}
+
+.viewer-cue-translation {
+  margin-top: 5px !important;
+  color: #156b59;
+  font-weight: 650;
+}
+
 .meeting-management-page .share-list {
   display: grid;
   gap: 8px;

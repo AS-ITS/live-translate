@@ -94,6 +94,7 @@ import {
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
+  formatCueTimecode,
   sourceTextForCopy,
   translationTextForCopy
 } from './lib/cueUi.js';
@@ -170,7 +171,7 @@ function dataGridProps(className, { fixedHeight = false } = {}) {
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時翻譯多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
 const TERMINAL_HISTORY_STATUSES = new Set(['stopped', 'failed', 'expired', 'completed']);
-const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'meeting-workspace', 'retranslate', 'glossary', 'watch', 'record', 'dead-letter-queue']);
+const FEATURE_PAGES = new Set(['live', 'history', 'meetings', 'meeting', 'meeting-detail', 'meeting-workspace', 'retranslate', 'glossary', 'watch', 'viewer', 'record', 'dead-letter-queue']);
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
@@ -3367,6 +3368,11 @@ function App() {
     return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
   }
 
+  if (page === 'viewer') {
+    const viewerInfo = pageInfoFromLocation();
+    return <MeetingViewerPage token={viewerInfo.shareToken} code={viewerInfo.shareCode} />;
+  }
+
   if (page === 'record') {
     const recordInfo = pageInfoFromLocation();
     return <RecorderPage token={recordInfo.shareToken} code={recordInfo.shareCode} />;
@@ -3690,6 +3696,12 @@ function App() {
           detail={selectedMeetingDetail}
           detailError={meetingDetailError}
           onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+          onCreateViewerShare={async (expiresAt) => {
+            const result = await managementClientRef.current.createViewerShare(routeMeetingId, expiresAt);
+            return { ...result, absoluteUrl: new URL(result.url, window.location.href).href, qrDataUrl: await QRCode.toDataURL(new URL(result.url, window.location.href).href, { width: 180, margin: 1 }) };
+          }}
+          onListViewerShares={async () => (await managementClientRef.current.listShares(routeMeetingId)).filter((share) => share.role === 'viewer')}
+          onRevokeViewerShare={(shareId) => managementClientRef.current.revokeShare(routeMeetingId, shareId)}
         />
       ) : null}
 
@@ -4009,6 +4021,102 @@ function WatchPage({ token, code }) {
             <div><h2>原文</h2>{sourceItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
             <div><h2>翻譯</h2>{translationItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
           </div>
+        </section>
+      ) : null}
+    </main>
+  );
+}
+
+function MeetingViewerPage({ token, code }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState('');
+  const [scrollTop, setScrollTop] = useState(0);
+  const viewportRef = useRef(null);
+  const rowHeight = 88;
+  const viewportHeight = 560;
+
+  useEffect(() => {
+    const identifier = token || code;
+    if (!identifier) {
+      setError('分享連結無效或已撤銷。');
+      return undefined;
+    }
+    const basePath = token
+      ? `/api/shared-meetings/${encodeURIComponent(token)}`
+      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
+    let cancelled = false;
+    fetch(basePath)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('分享連結無效或已過期。');
+        return response.json();
+      })
+      .then((value) => { if (!cancelled) setDetail(value); })
+      .catch((value) => { if (!cancelled) setError(value.message); });
+    return () => { cancelled = true; };
+  }, [token, code]);
+
+  const cues = useMemo(() => {
+    if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
+    return (detail?.transcriptItems || [])
+      .filter((item) => item.stream === 'translation')
+      .map((item, index) => ({
+        cueId: item.id || `legacy-cue-${index}`,
+        sequence: item.sequence || index + 1,
+        sourceText: detail?.transcriptItems?.find((source) => source.stream === 'source' && source.sequence === item.sequence)?.text || '',
+        translatedText: item.text,
+        startTimeMs: item.startedAt || 0
+      }));
+  }, [detail]);
+  const visibleCount = Math.ceil(viewportHeight / rowHeight) + 12;
+  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 6);
+  const visibleCues = cues.slice(startIndex, startIndex + visibleCount);
+
+  function jumpToLatest() {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    viewport.scrollTo({ top: Math.max(0, cues.length * rowHeight - viewportHeight), behavior: 'smooth' });
+  }
+
+  return (
+    <main className="app-shell watch-page meeting-viewer-page">
+      <header className="app-header">
+        <div className="brand-block">
+          <h1>{detail?.meeting?.name || 'Meeting Viewer'}</h1>
+          <p>唯讀會議字幕 · 歷史內容</p>
+        </div>
+        <span className="status-pill">{detail?.meeting?.status || '載入中'}</span>
+      </header>
+      {error ? <p className="error-message" role="alert">{error}</p> : null}
+      {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
+      {detail ? (
+        <section className="viewer-cue-panel" aria-label="Meeting 完整字幕">
+          <div className="viewer-cue-header">
+            <div><strong>{detail.meeting?.name || '未命名會議'}</strong><span>{cues.length} 段字幕</span></div>
+            <button className="button secondary" type="button" onClick={jumpToLatest}>回到最新</button>
+          </div>
+          {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : (
+            <div
+              ref={viewportRef}
+              className="viewer-cue-viewport"
+              style={{ height: viewportHeight }}
+              onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+              data-testid="meeting-viewer-cue-viewport"
+            >
+              <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
+                {visibleCues.map((cue, index) => (
+                  <article
+                    className="viewer-cue-row"
+                    key={cue.cueId || `${cue.sequence}-${startIndex + index}`}
+                    style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }}
+                    data-testid="meeting-viewer-cue-row"
+                  >
+                    <span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span>
+                    <div><p className="viewer-cue-source">{cue.sourceText || '—'}</p><p className="viewer-cue-translation">{cue.translatedText || '—'}</p></div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          )}
         </section>
       ) : null}
     </main>
@@ -5591,7 +5699,7 @@ function MeetingWorkspaceShell({ detail, detailError = '', tab, tabs, onBack, on
   );
 }
 
-function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry }) {
+function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry, onCreateViewerShare, onListViewerShares, onRevokeViewerShare }) {
   if (tab === 'export' || tab === 'history') {
     return (
       <section className="feature-page meeting-workspace-tab-panel" aria-label={tab === 'history' ? '翻譯紀錄' : '會議匯出'}>
@@ -5632,25 +5740,73 @@ function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry }) {
   }
 
   if (tab === 'share') {
-    return (
+    return <MeetingViewerSharePanel detail={detail} onCreateViewerShare={onCreateViewerShare} onListViewerShares={onListViewerShares} onRevokeViewerShare={onRevokeViewerShare} />;
+  }
+
+  return null;
+}
+
+function MeetingViewerSharePanel({ detail, onCreateViewerShare, onListViewerShares, onRevokeViewerShare }) {
+  const [expiry, setExpiry] = useState('');
+  const [createdShare, setCreatedShare] = useState(null);
+  const [shares, setShares] = useState([]);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setCreatedShare(null);
+    setError('');
+    if (typeof onListViewerShares === 'function' && detail?.meeting?.id) {
+      onListViewerShares().then((value) => { if (!cancelled) setShares(value); }).catch(() => { if (!cancelled) setError('無法載入觀看分享連結。'); });
+    } else {
+      setShares([]);
+    }
+    return () => { cancelled = true; };
+  }, [detail?.meeting?.id]);
+
+  async function createShare() {
+    try {
+      setError('');
+      const result = await onCreateViewerShare(expiry ? Date.now() + Number(expiry) : null);
+      setCreatedShare(result);
+      setShares((current) => [...current, result.share]);
+    } catch {
+      setError('無法建立觀看分享連結。');
+    }
+  }
+
+  async function revokeShare(shareId) {
+    try {
+      await onRevokeViewerShare(shareId);
+      setShares((current) => current.filter((share) => share.id !== shareId));
+      setCreatedShare(null);
+    } catch {
+      setError('無法撤銷觀看分享連結。');
+    }
+  }
+
+  const readOnly = ['completed', 'failed'].includes(detail?.meeting?.status);
+  return (
       <section className="feature-page meeting-workspace-tab-panel" aria-label="分享觀看">
         <div className="meeting-workspace-panel-heading">
           <div>
             <p className="eyebrow">VIEWER SHARING</p>
             <h3>分享觀看</h3>
-            <p>Meeting-level Viewer 分享與即時字幕直播將在下一個交付階段加入。</p>
+            <p>{readOnly ? '已完成的 Meeting 仍可使用既有觀看連結。' : '建立唯讀觀看連結，分享完整 Meeting 字幕。'}</p>
           </div>
         </div>
         <div className="meeting-workspace-placeholder">
           <Radio size={24} aria-hidden="true" />
-          <strong>尚未啟用 Viewer 分享</strong>
-          <span>目前保留分頁入口，不會建立分享連結或改變現有 Recorder 流程。</span>
+          {error ? <p className="error-message" role="alert">{error}</p> : null}
+          {!readOnly ? <>
+            <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
+            <button className="button secondary" type="button" onClick={createShare}>建立觀看連結</button>
+          </> : null}
+          {createdShare ? <div className="share-created"><img src={createdShare.qrDataUrl} alt="會議觀看入口 QR Code" width="180" height="180" /><p className="share-url"><a href={createdShare.absoluteUrl}>{createdShare.absoluteUrl}</a></p><p>短碼：<code>{createdShare.share.shortCode}</code></p><button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(createdShare.absoluteUrl)}>複製連結</button></div> : null}
+          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span>{!readOnly ? <button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
         </div>
       </section>
     );
-  }
-
-  return null;
 }
 
 function MeetingDetail({ detail, detailError = '', onRetryDetail }) {

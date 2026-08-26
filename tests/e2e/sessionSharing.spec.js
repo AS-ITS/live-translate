@@ -52,6 +52,30 @@ test('shared Viewer shows an error for an invalid or expired link', async ({ pag
   await expect(page.getByRole('alert')).toContainText(/分享連結無效或已過期|分享連線中斷/);
 });
 
+test('Meeting Viewer renders historical bilingual Cues without owner controls', async ({ page }) => {
+  const cues = Array.from({ length: 40 }, (_, index) => ({
+    cueId: `cue-${index + 1}`,
+    sequence: index + 1,
+    startTimeMs: index * 1000,
+    sourceText: `原文 ${index + 1}`,
+    translatedText: `Translation ${index + 1}`,
+    status: 'final'
+  }));
+  await page.route('**/api/shared-meetings/meeting-viewer-token', async (route) => route.fulfill({ json: {
+    capability: { role: 'viewer', meetingId: 'meeting-1' },
+    meeting: { id: 'meeting-1', name: '產品會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+    cues
+  } }));
+
+  await page.goto('/#viewer?token=meeting-viewer-token');
+
+  await expect(page.getByRole('heading', { name: '產品會議' })).toBeVisible();
+  await expect(page.getByText('原文 1', { exact: true })).toBeVisible();
+  await expect(page.getByText('Translation 1', { exact: true })).toBeVisible();
+  expect(await page.getByTestId('meeting-viewer-cue-row').count()).toBeLessThan(40);
+  await expect(page.getByRole('button', { name: '回到最新' })).toBeVisible();
+});
+
 test('Session URL opens an authenticated read-only view without owner controls', async ({ page }) => {
   const detail = {
     session: {

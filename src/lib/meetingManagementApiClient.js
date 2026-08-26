@@ -26,8 +26,14 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
       return Array.isArray(body?.shares) ? body.shares : [];
     },
     async createShare(meetingId, expiresAt = null) {
+      return this.createShareWithRole(meetingId, 'recorder', expiresAt);
+    },
+    async createViewerShare(meetingId, expiresAt = null) {
+      return this.createShareWithRole(meetingId, 'viewer', expiresAt);
+    },
+    async createShareWithRole(meetingId, role = 'recorder', expiresAt = null) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares`), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiresAt })
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role, expiresAt })
       });
       await assertOk(response);
       return response.json();

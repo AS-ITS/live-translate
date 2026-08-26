@@ -2,14 +2,19 @@
 
 ## Status
 
+Milestone 4 is implemented: Meeting Viewer shares now support Meeting-scoped
+viewer links, short codes, QR entry, sanitized historical Cue snapshots, and a
+windowed bilingual Cue renderer. Cue broadcast, reconnect gap recovery, and
+latency validation remain planned for Milestone 5.
+
 Milestone 3 is implemented: Meeting Management remains the canonical
 application home and opens a status-aware Meeting Workspace with Live
 Subtitles, Meeting Glossary, Export, and completed-history tabs. Legacy
 `#live`, `#history`, and related routes remain available as compatibility
 entrypoints. Global glossary selections and Meeting-private glossary entries
 are isolated; private entries are stored in Meeting and Segment snapshots and
-are never included in Viewer payloads. Viewer sharing, Cue broadcast, and
-reconnect recovery remain planned for later delivery phases.
+are never included in Viewer payloads. Cue broadcast and reconnect recovery
+remain planned for later delivery phases.
 
 ## Capability Overview
 
@@ -235,7 +240,7 @@ full benchmark report.
 2. Meeting Workspace tabs and completed-history default behavior. **Completed.**
 3. Global/private glossary data and UI isolation. **Completed.**
 4. Meeting Viewer URL, QR, short code, complete Cue reading, and virtualized
-   rendering.
+   rendering. **Completed.**
 5. Meeting Cue broadcast, reconnect gap recovery, latency instrumentation, and
    SLA tests.
 

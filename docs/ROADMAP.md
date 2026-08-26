@@ -26,7 +26,10 @@ legacy `#live`, `#history`, and related routes remain available for
 compatibility. Issue #29 Milestone 3 is completed: global glossary selections
 and Meeting-private glossary entries are isolated, persisted in Meeting and
 Segment snapshots, and private entries are excluded from Viewer payloads.
-Meeting Viewer sharing, Cue broadcast, and reconnect recovery remain pending.
+Issue #29 Milestone 4 is completed: Meeting-scoped Viewer shares support token,
+short-code, QR entry, sanitized historical Cue snapshots, and windowed
+bilingual Cue rendering. Cue broadcast, reconnect gap recovery, and latency SLA
+validation remain pending for Milestone 5.
 
 Execution status push is now available through a process-local authenticated
 WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay

@@ -97,6 +97,42 @@ test('completed meetings reject settings changes and share mutations', async () 
   assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
 });
 
+test('Meeting Viewer shares expose sanitized historical detail by token and short code', async () => {
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({
+      draft: true,
+      name: '公開字幕會議',
+      glossaryEntries: [{ source: '內部詞', target: 'Internal Term' }],
+      privateGlossaryEntries: [{ source: '私有詞', translations: { en: 'Private Term' } }]
+    })
+  })).json();
+
+  const createdShare = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  });
+  const shareBody = createdShare.json();
+  assert.equal(createdShare.status, 201);
+  assert.equal(shareBody.share.role, 'viewer');
+  assert.match(shareBody.url, /^#viewer\?token=/);
+  assert.match(shareBody.codeUrl, /^#viewer\?code=/);
+
+  const byToken = await request(handler, { method: 'GET', url: `/api/shared-meetings/${shareBody.share.token}` });
+  const byCode = await request(handler, { method: 'GET', url: `/api/shared-meetings/code/${shareBody.share.shortCode}` });
+  for (const response of [byToken, byCode]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.json().capability.role, 'viewer');
+    assert.equal(response.json().meeting.glossaryEntries, undefined);
+    assert.equal(response.json().meeting.privateGlossaryEntries, undefined);
+    assert.equal(response.json().audioArtifacts, undefined);
+  }
+});
+
 test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
   const handler = createHandler();
   const created = (await request(handler, {

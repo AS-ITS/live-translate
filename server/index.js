@@ -955,15 +955,17 @@ async function handleRequestWithSessionReadController(
       } else if (req.method === 'POST') {
         await assertMeetingShareMutable(meetingId, meetingRepository);
         const body = await readJson(req);
+        const role = body?.role || 'recorder';
+        if (role !== 'viewer' && role !== 'recorder') throw createHttpError('invalid_request');
         const share = await sessionShareService.createMeetingShare(meetingId, {
-          role: 'recorder',
+          role,
           expiresAt: body?.expiresAt ?? null
         });
         statusCode = 201;
         sendJson(res, statusCode, {
           share,
-          url: `#record?token=${encodeURIComponent(share.token)}`,
-          codeUrl: `#record?code=${encodeURIComponent(share.shortCode)}`
+          url: `#${role === 'viewer' ? 'viewer' : 'record'}?token=${encodeURIComponent(share.token)}`,
+          codeUrl: `#${role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}`
         }, requestId);
       } else {
         await assertMeetingShareMutable(meetingId, meetingRepository);
@@ -1091,7 +1093,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'GET' && isSharedMeetingDetailPath(path)) {
     const share = await resolveSharedMeeting(path, sessionShareService);
-    if (!share || share.resourceType !== 'meeting' || share.role !== 'recorder') {
+    if (!share || share.resourceType !== 'meeting' || !['viewer', 'recorder'].includes(share.role)) {
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
@@ -1100,7 +1102,8 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
       return;
     }
-    sendJson(res, 200, { meeting, capability: { role: 'recorder', meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
+    const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
+    sendJson(res, 200, { ...payload, capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
     return;
   }
 
@@ -2686,6 +2689,40 @@ function publicViewerDetail(detail) {
     delete clone.session.audioArtifacts;
     delete clone.session.selectedInputDeviceId;
     delete clone.session.inputDeviceLabelSnapshot;
+  }
+  return clone;
+}
+
+function publicMeetingViewerDetail(detail) {
+  const clone = JSON.parse(JSON.stringify(detail || {}));
+  if (clone.meeting) {
+    delete clone.meeting.glossaryEntries;
+    delete clone.meeting.privateGlossaryEntries;
+  }
+  delete clone.audioArtifacts;
+  if (Array.isArray(clone.segments)) {
+    clone.segments = clone.segments.map((segment) => {
+      const safeSegment = { ...segment };
+      delete safeSegment.liveSessionId;
+      if (safeSegment.settingsSnapshot) {
+        safeSegment.settingsSnapshot = { ...safeSegment.settingsSnapshot };
+        delete safeSegment.settingsSnapshot.glossaryEntries;
+        delete safeSegment.settingsSnapshot.privateGlossaryEntries;
+      }
+      return safeSegment;
+    });
+  }
+  if (Array.isArray(clone.timeline)) {
+    clone.timeline = clone.timeline.map((segment) => {
+      const safeSegment = { ...segment };
+      delete safeSegment.liveSessionId;
+      if (safeSegment.settingsSnapshot) {
+        safeSegment.settingsSnapshot = { ...safeSegment.settingsSnapshot };
+        delete safeSegment.settingsSnapshot.glossaryEntries;
+        delete safeSegment.settingsSnapshot.privateGlossaryEntries;
+      }
+      return safeSegment;
+    });
   }
   return clone;
 }

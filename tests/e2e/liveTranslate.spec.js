@@ -4705,6 +4705,9 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   await expect(page).toHaveURL(/#meetings$/);
   await expect(page.getByRole('heading', { name: '會議管理' })).toBeVisible();
   await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(3);
+  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText('繁體中文 → 日文');
+  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
+  await expect(page.locator('.meeting-management-data-grid .ag-paging-panel')).toBeHidden();
 
   await page.getByLabel('搜尋會議').fill('產品');
   await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);

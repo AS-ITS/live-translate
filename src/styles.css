@@ -315,8 +315,15 @@ input {
   background: #f8fafc;
 }
 
+.meeting-app-shell .meeting-management-data-grid .ag-row:focus-within {
+  background: #f1f6ff;
+  outline: 2px solid #7aa2e8;
+  outline-offset: -2px;
+}
+
 .meeting-app-shell .meeting-management-data-grid .ag-cell {
-  border-color: #edf0f3;
+  border-right-color: transparent;
+  border-bottom-color: #edf0f3;
 }
 
 .meeting-app-shell .meeting-management-data-grid .primary-row-action {
@@ -865,6 +872,10 @@ input {
   overflow-x: auto;
 }
 
+.meeting-management-data-grid.is-pagination-hidden .ag-paging-panel {
+  display: none;
+}
+
 .meeting-management-data-grid .ag-cell .button {
   min-height: 36px;
   padding: 6px 12px;
@@ -878,6 +889,12 @@ input {
 .meeting-management-data-grid .ag-cell {
   padding-inline: 16px;
   line-height: 1.45;
+  white-space: nowrap;
+}
+
+.meeting-management-data-grid .ag-cell[col-id="updated-time"] time {
+  color: #516070;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
@@ -3347,16 +3364,6 @@ input:disabled {
   .meeting-app-shell .meeting-management-data-grid .ag-header-cell,
   .meeting-app-shell .meeting-management-data-grid .ag-cell {
     padding-inline: 10px;
-  }
-
-  .meeting-app-shell .meeting-management-data-grid .ag-header-cell[col-id="source-language"],
-  .meeting-app-shell .meeting-management-data-grid .ag-cell[col-id="source-language"] {
-    display: none;
-  }
-
-  .meeting-app-shell .meeting-management-data-grid .ag-header-cell[col-id="target-language"],
-  .meeting-app-shell .meeting-management-data-grid .ag-cell[col-id="target-language"] {
-    display: none;
   }
 
   .meeting-app-shell .meeting-management-data-grid .ag-header-cell[col-id="updated-time"],

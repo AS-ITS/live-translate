@@ -147,7 +147,7 @@ const DATA_GRID_DEFAULT_COL_DEF = {
   suppressHeaderMenuButton: true
 };
 
-function dataGridProps(className, { fixedHeight = false } = {}) {
+function dataGridProps(className, { fixedHeight = false, hidePaginationPanel = false } = {}) {
   const defaultColDef = fixedHeight
     ? {
       ...DATA_GRID_DEFAULT_COL_DEF,
@@ -160,7 +160,7 @@ function dataGridProps(className, { fixedHeight = false } = {}) {
     className: `data-grid ${className}`,
     theme: DATA_GRID_THEME,
     defaultColDef,
-    pagination: true,
+    pagination: !hidePaginationPanel,
     paginationPageSize: 12,
     paginationPageSizeSelector: [12, 24, 48],
     localeText: DATA_GRID_LOCALE_TEXT,
@@ -5555,32 +5555,27 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
       cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingManagementStatusLabel(data?.status)}</span>
     },
     {
-      headerName: '主要輸入語言',
-      colId: 'source-language',
-      minWidth: 140,
-      flex: 1.1,
+      headerName: '語言',
+      colId: 'meeting-language',
+      minWidth: 170,
+      flex: 1.2,
       wrapText: false,
       autoHeight: false,
-      valueGetter: ({ data }) => targetLanguageLabelFor(data?.sourceLanguageCode) || data?.sourceLanguageCode || '未設定'
-    },
-    {
-      headerName: '目標語言',
-      colId: 'target-language',
-      minWidth: 120,
-      flex: 1,
-      wrapText: false,
-      autoHeight: false,
-      valueGetter: ({ data }) => targetLanguageLabelFor(data?.targetLanguageCode) || data?.targetLanguageCode || '未設定'
+      valueGetter: ({ data }) => meetingLanguageLabel(data),
+      cellRenderer: ({ data }) => <span>{meetingLanguageLabel(data)}</span>
     },
     {
       headerName: '最後更新',
       colId: 'updated-time',
-      minWidth: 180,
-      flex: 1.25,
+      minWidth: 155,
+      flex: 1.1,
       wrapText: false,
       autoHeight: false,
       valueGetter: ({ data }) => meetingManagementLastUpdated(data),
-      cellRenderer: ({ data }) => formatRecordTime(meetingManagementLastUpdated(data))
+      cellRenderer: ({ data }) => {
+        const fullTime = formatRecordTime(meetingManagementLastUpdated(data));
+        return <time dateTime={meetingManagementLastUpdated(data) || undefined} title={fullTime}>{formatMeetingListTime(meetingManagementLastUpdated(data))}</time>;
+      }
     },
     {
       headerName: '操作',
@@ -5715,7 +5710,8 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
         {meetings.length > 0 && filteredMeetings.length === 0 ? <p className="history-empty">找不到符合條件的會議。</p> : null}
         <div className="meeting-table-scroll">
           <AgGridReact
-            {...dataGridProps('meeting-management-data-grid')}
+            {...dataGridProps('meeting-management-data-grid', { hidePaginationPanel: filteredMeetings.length <= 12 })}
+            className={`data-grid meeting-management-data-grid${filteredMeetings.length <= 12 ? ' is-pagination-hidden' : ''}`}
             aria-label="既有會議列表"
             columnDefs={meetingColumnDefs}
             rowData={filteredMeetings}
@@ -8118,6 +8114,28 @@ function formatRecordTime(value) {
   }
 
   return date.toLocaleString('zh-Hant');
+}
+
+function formatMeetingListTime(value) {
+  if (!value) return '無資料';
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+
+  return new Intl.DateTimeFormat('zh-TW', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(date).replace(/\s+/g, ' ');
+}
+
+function meetingLanguageLabel(meeting = {}) {
+  const source = targetLanguageLabelFor(meeting.sourceLanguageCode) || meeting.sourceLanguageCode || '未設定';
+  const target = targetLanguageLabelFor(meeting.targetLanguageCode) || meeting.targetLanguageCode || '未設定';
+  return `${source} → ${target}`;
 }
 
 function formatDuration(durationMs) {

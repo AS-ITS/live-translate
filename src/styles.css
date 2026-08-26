@@ -4036,6 +4036,55 @@ input:disabled {
   }
 }
 
+@media (max-width: 1023px) {
+  .meeting-app-shell .meeting-table-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 220px);
+    align-items: end;
+    justify-content: stretch;
+  }
+
+  .meeting-app-shell .meeting-table-toolbar > .button {
+    grid-column: 1 / -1;
+    justify-self: start;
+    min-height: 44px;
+  }
+
+  .meeting-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+  }
+
+  .meeting-management-data-grid {
+    flex: 0 0 820px;
+    min-width: 820px;
+  }
+
+  .meeting-management-data-grid .ag-cell .button,
+  .meeting-management-data-grid .primary-row-action {
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 760px) {
+  .meeting-app-shell .meeting-table-toolbar {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .meeting-app-shell .meeting-table-toolbar .field,
+  .meeting-app-shell .meeting-table-toolbar > .button {
+    width: 100%;
+  }
+
+  .meeting-app-shell .meeting-table-toolbar > .button {
+    align-self: stretch;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .glossary-drawer,
   .glossary-drawer-backdrop,

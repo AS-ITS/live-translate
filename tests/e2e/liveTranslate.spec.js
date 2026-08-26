@@ -4709,6 +4709,27 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   await expect(page.getByRole('row', { name: /產品評審/ })).toContainText(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
   await expect(page.locator('.meeting-management-data-grid .ag-paging-panel')).toBeHidden();
 
+  await page.setViewportSize({ width: 768, height: 800 });
+  const narrowMeetingLayout = await page.locator('.meeting-management-page').evaluate((pageElement) => {
+    const toolbar = pageElement.querySelector('.meeting-table-toolbar');
+    const search = pageElement.querySelector('.meeting-search-field');
+    const dictionaryButton = pageElement.querySelector('.meeting-table-toolbar > .button');
+    const tableScroll = pageElement.querySelector('.meeting-table-scroll');
+    const actionButton = pageElement.querySelector('.meeting-actions .button');
+    return {
+      toolbarDisplay: toolbar ? getComputedStyle(toolbar).display : '',
+      toolbarWraps: search && dictionaryButton ? dictionaryButton.getBoundingClientRect().top > search.getBoundingClientRect().bottom : false,
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      tableCanScrollHorizontally: tableScroll ? tableScroll.scrollWidth > tableScroll.clientWidth : false,
+      actionHeight: actionButton?.getBoundingClientRect().height || 0
+    };
+  });
+  expect(narrowMeetingLayout.toolbarDisplay).toBe('grid');
+  expect(narrowMeetingLayout.toolbarWraps).toBe(true);
+  expect(narrowMeetingLayout.pageHasHorizontalOverflow).toBe(false);
+  expect(narrowMeetingLayout.tableCanScrollHorizontally).toBe(true);
+  expect(narrowMeetingLayout.actionHeight).toBeGreaterThanOrEqual(44);
+
   await page.getByLabel('搜尋會議').fill('產品');
   await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
   await expect(page.getByRole('row', { name: /產品評審/ })).toContainText('進行中');

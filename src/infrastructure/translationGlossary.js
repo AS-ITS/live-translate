@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import { isSupportedLanguage } from '../../server/languages.js';
 
 const GLOSSARY_SCOPES = new Set(['live', 'history', 'both']);
+const GLOSSARY_CATEGORIES = new Set(['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
 
 export function createTranslationGlossary({ filePath, fileSystem = defaultFileSystem, idFactory = defaultIdFactory, clock = () => Date.now() } = {}) {
   assertOptionalFilePath(filePath);
@@ -17,6 +18,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
       const entries = await loadEntries();
       return Object.freeze(
         entries
+          .filter((entry) => entry.enabled !== false)
           .filter((entry) => Object.hasOwn(entry.translations, targetLanguageCode))
           .filter((entry) => scope === undefined || entry.scope === scope || entry.scope === 'both')
           .map((entry) => Object.freeze({
@@ -159,13 +161,30 @@ function normalizeMutableEntry(entry, index) {
     assertNonBlankString(translation, `Translation glossary entry ${index}.translations.${languageCode}`);
   }
   const replacementAliases = normalizeReplacementAliases(entry.replacementAliases, index);
+  const sourceLanguageCode = entry.sourceLanguageCode === undefined ? 'zh-Hant' : entry.sourceLanguageCode;
+  if (!isSupportedLanguage(sourceLanguageCode)) {
+    throw new RangeError(`Translation glossary entry ${index} has unsupported source language: ${sourceLanguageCode}`);
+  }
+  const tags = entry.tags === undefined ? [] : entry.tags;
+  if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string' || tag.trim() === '')) {
+    throw new TypeError(`Translation glossary entry ${index}.tags must be an array of non-empty strings.`);
+  }
+  const category = entry.category === undefined ? 'other' : entry.category;
+  if (!GLOSSARY_CATEGORIES.has(category)) throw new RangeError(`Translation glossary entry ${index}.category is invalid.`);
+  const enabled = entry.enabled === undefined ? true : entry.enabled;
+  if (typeof enabled !== 'boolean') throw new TypeError(`Translation glossary entry ${index}.enabled must be a boolean.`);
 
   return Object.freeze({
     id: entry.id === undefined ? legacyEntryId(index) : assertNonBlankString(entry.id, `Translation glossary entry ${index}.id`),
     source: entry.source,
+    sourceLanguageCode,
     translations: Object.freeze({ ...entry.translations }),
     replacementAliases,
     scope: normalizeEntryScope(entry.scope, index),
+    category,
+    tags: Object.freeze(tags.map((tag) => tag.trim())),
+    enabled,
+    notes: entry.notes === undefined ? '' : assertOptionalString(entry.notes, `Translation glossary entry ${index}.notes`),
     ...(entry.createdAt === undefined ? {} : { createdAt: entry.createdAt }),
     ...(entry.updatedAt === undefined ? {} : { updatedAt: entry.updatedAt })
   });
@@ -209,6 +228,11 @@ function assertFileSystem(value) {
 
 function assertNonBlankString(value, name) {
   if (typeof value !== 'string' || value.trim().length === 0) throw new TypeError(`${name} must be a non-empty string.`);
+  return value;
+}
+
+function assertOptionalString(value, name) {
+  if (typeof value !== 'string') throw new TypeError(`${name} must be a string.`);
   return value;
 }
 
@@ -258,9 +282,14 @@ function serializeStoredEntry(entry) {
   return {
     id: entry.id,
     source: entry.source,
+    sourceLanguageCode: entry.sourceLanguageCode,
     translations: entry.translations,
     ...(hasReplacementAliases(entry.replacementAliases) ? { replacementAliases: entry.replacementAliases } : {}),
     scope: entry.scope,
+    category: entry.category,
+    tags: entry.tags,
+    enabled: entry.enabled,
+    notes: entry.notes,
     ...(entry.createdAt === undefined ? {} : { createdAt: entry.createdAt }),
     ...(entry.updatedAt === undefined ? {} : { updatedAt: entry.updatedAt })
   };

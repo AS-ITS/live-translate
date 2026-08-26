@@ -484,6 +484,13 @@ not durable checkpoint content.
 
 Returns the global translation glossary.
 
+Global entries are visible to all Meetings and can be selected into an
+individual Meeting glossary snapshot. Meeting-private entries are stored on the
+Meeting and are not returned by this endpoint. Entries may include
+`sourceLanguageCode`, `category`, `tags`, `enabled`, and `notes`; legacy entries
+default to Traditional Chinese source language, `other` category, enabled, and
+empty tags/notes.
+
 When `TRANSLATION_GLOSSARY_FILE` is unset, the backend uses
 `translation-glossary.json` under `DATA_DIR`. If `DATA_DIR` is unset, it
 defaults to `./data` outside production and `/var/data` in production. If the

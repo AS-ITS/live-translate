@@ -16,6 +16,7 @@ export function selectedMeetingGlossaryEntries(entries, selectedIds, targetLangu
   const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
   return (Array.isArray(entries) ? entries : [])
     .filter((entry) => selected.has(entry.id))
+    .filter((entry) => entry?.enabled !== false)
     .filter((entry) => typeof entry?.source === 'string' && entry.source.trim() !== '')
     .map((entry) => ({
       source: entry.source,

@@ -37,8 +37,8 @@ test('glossary HTTP routes list, create, update, and delete entries', async () =
 
   assert.deepEqual(calls, [
     ['listEntries'],
-    ['createEntry', { source: 'microphone', translations: { en: 'Alan speak' }, scope: 'live' }],
-    ['updateEntry', { id: 'entry-1', source: 'Codex', translations: { ja: 'コードエックス' }, scope: 'history' }],
+    ['createEntry', { source: 'microphone', sourceLanguageCode: 'zh-Hant', translations: { en: 'Alan speak' }, scope: 'live', category: 'other', tags: [], enabled: true, notes: '' }],
+    ['updateEntry', { id: 'entry-1', source: 'Codex', sourceLanguageCode: 'zh-Hant', translations: { ja: 'コードエックス' }, scope: 'history', category: 'other', tags: [], enabled: true, notes: '' }],
     ['deleteEntry', { id: 'entry-1' }]
   ]);
 });
@@ -65,7 +65,7 @@ test('glossary HTTP routes still accept legacy replacement aliases', async () =>
 
   assert.equal(response.statusCode, 201);
   assert.deepEqual(calls, [
-    { source: 'microphone', translations: { en: 'Alan speak' }, replacementAliases: { en: ['mic'] }, scope: 'live' }
+    { source: 'microphone', sourceLanguageCode: 'zh-Hant', translations: { en: 'Alan speak' }, replacementAliases: { en: ['mic'] }, scope: 'live', category: 'other', tags: [], enabled: true, notes: '' }
   ]);
 });
 

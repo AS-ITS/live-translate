@@ -2250,10 +2250,35 @@ function validateGlossaryEntryBody(body) {
   const replacementAliases = validateGlossaryReplacementAliases(body.replacementAliases);
   return {
     source: body.source,
+    sourceLanguageCode: body.sourceLanguageCode === undefined ? 'zh-Hant' : validateSupportedTargetLanguageCode(body.sourceLanguageCode),
     translations: body.translations,
     ...(hasReplacementAliases(replacementAliases) ? { replacementAliases } : {}),
-    scope
+    scope,
+    category: body.category === undefined ? 'other' : validateGlossaryCategory(body.category),
+    tags: body.tags === undefined ? [] : validateGlossaryTags(body.tags),
+    enabled: body.enabled === undefined ? true : validateBoolean(body.enabled),
+    notes: body.notes === undefined ? '' : validateOptionalString(body.notes)
   };
+}
+
+function validateGlossaryCategory(value) {
+  if (!['product', 'department', 'abbreviation', 'meeting', 'technical', 'other'].includes(value)) throw createHttpError('invalid_request');
+  return value;
+}
+
+function validateGlossaryTags(value) {
+  if (!Array.isArray(value) || value.some((tag) => typeof tag !== 'string' || tag.trim() === '')) throw createHttpError('invalid_request');
+  return value.map((tag) => tag.trim());
+}
+
+function validateBoolean(value) {
+  if (typeof value !== 'boolean') throw createHttpError('invalid_request');
+  return value;
+}
+
+function validateOptionalString(value) {
+  if (typeof value !== 'string') throw createHttpError('invalid_request');
+  return value;
 }
 
 function validateGlossaryReplacementAliases(value) {

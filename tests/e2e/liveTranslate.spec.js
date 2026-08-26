@@ -966,18 +966,31 @@ test('legacy feature routes converge on Meeting Management and Workspace', async
   await page.goto('/#meeting');
   await expect(page.locator('.meeting-management-page:not(.history-page)')).toBeVisible();
 
+  await page.getByRole('link', { name: '全域字典' }).click();
+  await expect(page).toHaveURL(/#glossary$/);
+  await expect(page.locator('.global-glossary')).toBeVisible();
+
   await openHistoryPage(page);
   await expect(page).toHaveURL(/#meetings\?status=completed$/);
   await expect(page.locator('.meetings-page')).toBeVisible();
 });
 
-test('Meeting shell keeps only the brand and create action in the header', async ({ page }) => {
-  for (const hash of ['#history', '#retranslate', '#glossary', '#meetings', '#dead-letter-queue']) {
+test('Meeting shell switches header theme and action by page', async ({ page }) => {
+  for (const hash of ['#history', '#retranslate', '#meetings', '#dead-letter-queue']) {
     await page.goto(`/${hash}`);
     await expect(page.locator('.live-sidebar, .feature-navigation')).toHaveCount(0);
     await expect(page.locator('.meeting-app-header')).toBeVisible();
     await expect(page.getByRole('button', { name: '建立會議' }).first()).toBeVisible();
   }
+
+  await page.goto('/#glossary');
+  await expect(page.locator('.meeting-app-header')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全域字典' }).first()).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全域字典' })).toHaveCount(1);
+  await expect(page.locator('.glossary-page > .history-header')).toHaveCount(0);
+  await expect(page.getByText('管理所有會議室都可以查看並選擇的共用詞條。').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議' })).toHaveCount(0);
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
 });
 
 test('history grid uses native pagination and page size controls', async ({ page }) => {
@@ -1355,7 +1368,7 @@ test('Meeting Workspace exposes status-specific tabs', async ({ page }) => {
   await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('即時字幕');
 });
 
-test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
+test('global glossary page creates, edits, and deletes entries', async ({ page }) => {
   const requests = [];
   let entries = [];
 
@@ -1400,34 +1413,35 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
 
   await page.goto('/');
   await page.evaluate(() => { window.location.hash = 'glossary'; });
-  await expect(page).toHaveURL(/#meetings\?panel=global-glossary$/);
+  await expect(page).toHaveURL(/#glossary$/);
 
   await expect(page.getByRole('heading', { name: '全域字典' })).toBeVisible();
-  await expect(page.locator('.global-glossary-modal')).toBeVisible();
-  await glossaryPanel(page).getByLabel('詞條').fill('microphone');
-  await glossaryPanel(page).getByLabel('目標語言').selectOption('ja');
-  await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
-  await expect(glossaryPanel(page).getByLabel('字幕替換詞')).toHaveCount(0);
-  await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
-  await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
+  const glossary = page.locator('.global-glossary');
+  await glossary.getByRole('button', { name: '新增詞條' }).click();
+  const drawer = page.locator('.global-glossary-drawer');
+  await drawer.getByLabel('原文字詞').fill('microphone');
+  await drawer.getByLabel('翻譯語言').selectOption('ja');
+  await drawer.getByLabel('翻譯內容：ja').fill('Alan speak');
+  await drawer.getByLabel('分類').selectOption('technical');
+  await drawer.getByLabel('標籤（以逗號分隔）').fill('audio, product');
+  await drawer.getByRole('button', { name: '新增全域詞條' }).click();
+  await expect(glossary.locator('.glossary-card').first()).toContainText('microphone');
+  await expect(glossary.locator('.glossary-card').first()).toContainText('Alan speak');
 
-  const glossaryRow = glossaryPanel(page).locator('.glossary-data-grid .ag-row').first();
-  await expect(glossaryRow.getByText('microphone', { exact: true })).toBeVisible();
-  await expect(glossaryRow.getByText('Alan speak')).toBeVisible();
-  await expect(glossaryPanel(page).getByText('套用範圍：即時字幕')).toBeVisible();
-
-  await glossaryPanel(page).getByRole('button', { name: '編輯' }).click();
-  await glossaryPanel(page).getByLabel('套用範圍').selectOption('both');
-  await glossaryPanel(page).getByRole('button', { name: '更新詞條' }).click();
-  await expect(glossaryPanel(page).getByText('套用範圍：兩者')).toBeVisible();
+  await glossary.locator('.glossary-card').first().click();
+  await expect(page.locator('.global-glossary-drawer')).toBeVisible();
+  await page.locator('.global-glossary-drawer').getByLabel('套用範圍').selectOption('both');
+  await page.locator('.global-glossary-drawer').getByRole('button', { name: '儲存變更' }).click();
 
   page.once('dialog', (dialog) => dialog.accept());
-  await glossaryPanel(page).getByRole('button', { name: '刪除' }).click();
-  await expect(glossaryPanel(page).getByText('尚無字典詞條。')).toBeVisible();
+  await glossary.locator('.glossary-card').first().click();
+  await page.locator('.global-glossary-drawer').getByRole('button', { name: '刪除詞條' }).click();
+  await expect(glossary.locator('.glossary-empty')).toBeVisible();
 
   expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'DELETE']);
-  expect(requests[0].body.scope).toBe('live');
-  expect(requests[0].body).toEqual({ source: 'microphone', translations: { ja: 'Alan speak' }, scope: 'live' });
+  expect(requests[0].body.scope).toBe('both');
+  expect(requests[0].body.source).toBe('microphone');
+  expect(requests[0].body.tags).toEqual(['audio', 'product']);
   expect(requests[1].body.scope).toBe('both');
 });
 

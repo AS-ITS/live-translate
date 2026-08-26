@@ -162,9 +162,14 @@ test('glossary CRUD persists entries and updates cached provider entries', async
     {
       id: 'entry-1',
       source: 'Codex',
+      sourceLanguageCode: 'zh-Hant',
       translations: { ja: 'コードエックス', fr: 'Codex' },
       replacementAliases: { ja: ['コード X'] },
       scope: 'history',
+      category: 'other',
+      tags: [],
+      enabled: true,
+      notes: '',
       createdAt: 1000,
       updatedAt: 1000
     }

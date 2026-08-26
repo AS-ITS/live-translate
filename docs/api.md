@@ -236,8 +236,9 @@ retain the active Meeting behavior. This endpoint does not start, stop,
 reconnect, or segment a Gemini Live session. The optional
 `liveSessionId` request field associates the first Segment with the frontend's
 first Gemini Live connection. `name`, `sourceLanguageCode`, and
-`targetLanguageCode` store Meeting settings. `glossaryEntries` stores a complete
-meeting-owned glossary snapshot.
+`targetLanguageCode` store Meeting settings. `glossaryEntries` stores the
+selected shared-glossary snapshot for compatibility; `privateGlossaryEntries`
+stores terms owned only by this Meeting.
 
 ```json
 {
@@ -250,6 +251,13 @@ meeting-owned glossary snapshot.
       "source": "Acme",
       "translations": { "en": "Acme", "ja": "アクメ" },
       "replacementAliases": { "en": ["ACME"] }
+    }
+  ],
+  "privateGlossaryEntries": [
+    {
+      "source": "專案代號",
+      "translations": { "en": "Project Codename" },
+      "replacementAliases": { "en": ["代號"] }
     }
   ]
 }
@@ -266,7 +274,8 @@ Returns `201 Created`:
 
 ## `PATCH /api/meetings/:meetingId`
 
-Updates Meeting name, source/target languages, and glossary entries. A live
+Updates Meeting name, source/target languages, shared glossary entries, and
+private glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
 boundary; the current Segment keeps its settings snapshot. Completed Meetings
 are read-only and return `409 meeting_settings_locked`.

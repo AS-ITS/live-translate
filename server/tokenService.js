@@ -100,7 +100,7 @@ export async function createLiveToken(body, options = {}) {
     throw error;
   }
   const glossaryEntries = meeting
-    ? meeting.glossaryEntries
+    ? [...(meeting.glossaryEntries || []), ...privateGlossaryEntriesForTarget(meeting.privateGlossaryEntries, request.targetLanguageCode)]
     : options.glossary === undefined
       ? undefined
       : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
@@ -136,6 +136,14 @@ export async function createLiveToken(body, options = {}) {
     error.cause = cause;
     throw error;
   }
+}
+
+function privateGlossaryEntriesForTarget(entries, targetLanguageCode) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    source: entry.source,
+    target: entry.translations?.[targetLanguageCode],
+    replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
+  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
 }
 
 export function resolveLiveTranslateModel(env = process.env) {

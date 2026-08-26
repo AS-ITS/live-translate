@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 完成 #29 Milestone 3：新增 Meeting 私有字典，與全域字典在資料、Workspace UI、翻譯套用與 Segment snapshot 中隔離；私有字典不會出現在全域字典或 Viewer payload，既有 `glossaryEntries` 資料維持相容。
+
 - 完成 #29 Milestone 2：新增 status-aware Meeting Workspace，依 Meeting 狀態提供即時字幕、會議字典、分享觀看、匯出與完成後翻譯紀錄分頁；Meeting Management 的繼續錄製與完成會議操作改由 Workspace 承接，既有 `#live`、`#history` 等 legacy 路由保留相容性。
 
 - 完成 #29 Milestone 1：`#meetings` 現在是 Meeting Management 首頁，提供會議名稱／語言／狀態搜尋、狀態篩選、最後更新時間與依 Meeting 狀態顯示的操作；保留既有錄音與設定流程，Viewer 與 Cue 廣播留待後續 Milestone。

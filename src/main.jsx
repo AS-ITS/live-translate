@@ -380,6 +380,7 @@ function App() {
   const [retranslationSessionId, setRetranslationSessionId] = useState(() => pageInfoFromLocation().sessionId);
   const [glossaryEntries, setGlossaryEntries] = useState([]);
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
+  const [privateMeetingGlossaryEntries, setPrivateMeetingGlossaryEntries] = useState([]);
   const [isLiveGlossaryDrawerOpen, setIsLiveGlossaryDrawerOpen] = useState(false);
   const [isLiveExportDrawerOpen, setIsLiveExportDrawerOpen] = useState(false);
   const [isLiveSettingsDrawerOpen, setIsLiveSettingsDrawerOpen] = useState(false);
@@ -828,6 +829,7 @@ function App() {
           if (current.length > 0) return current;
           return glossaryEntries.filter((entry) => (meeting.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[nextTargetLanguageCode] === item.target)).map((entry) => entry.id);
         });
+        setPrivateMeetingGlossaryEntries(Array.isArray(meeting.privateGlossaryEntries) ? meeting.privateGlossaryEntries : []);
       })
       .catch(() => {})
       .finally(() => {
@@ -971,7 +973,8 @@ function App() {
       } else {
         meetingCheckpoint = await createMeetingCheckpointForSession({
           liveSessionId,
-          glossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode)
+          glossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
+          privateGlossaryEntries: privateMeetingGlossaryEntries
         });
       }
       record = await createCurrentSessionRecord(meetingCheckpoint);
@@ -1210,10 +1213,7 @@ function App() {
       targetLanguageCode,
       sourceLanguageCode,
       echoTargetLanguage,
-      liveGlossaryEntries: liveGlossaryEntriesForTarget(
-        selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
-        targetLanguageCode
-      ),
+      liveGlossaryEntries: liveGlossaryEntriesForTarget(currentMeetingGlossaryEntries(), targetLanguageCode),
       inputDeviceId: inputDeviceIdForSession,
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
@@ -1918,10 +1918,10 @@ function App() {
     return `live-session-${Date.now()}-${liveSessionIdSequenceRef.current}`;
   }
 
-  async function createMeetingCheckpointForSession({ liveSessionId, glossaryEntries = [] } = {}) {
+  async function createMeetingCheckpointForSession({ liveSessionId, glossaryEntries = [], privateGlossaryEntries = [] } = {}) {
     try {
       setMeetingCheckpointStatus('syncing');
-      const result = await meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId, glossaryEntries });
+      const result = await meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId, glossaryEntries, privateGlossaryEntries });
       const meetingCheckpoint = {
         meetingId: result.meeting.id,
         segmentId: result.segment.id
@@ -1945,7 +1945,7 @@ function App() {
       targetLanguageCode,
       targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
       sourceLanguageCode,
-      meetingGlossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
+      meetingGlossaryEntries: currentMeetingGlossaryEntries(),
       selectedInputDeviceId: selectedInputDeviceId || null,
       inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
       });
@@ -1961,7 +1961,7 @@ function App() {
         sourceLanguageCode,
         meetingId: meetingCheckpoint?.meetingId,
         segmentId: meetingCheckpoint?.segmentId || liveSessionId,
-        meetingGlossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
+        meetingGlossaryEntries: currentMeetingGlossaryEntries(),
         ...selectedInputDeviceSnapshot()
       })
     );
@@ -1977,6 +1977,18 @@ function App() {
       void translationCommandLifecycle().recordFinalTranscriptItems(record, initialItems);
     }
     return record;
+  }
+
+  function currentMeetingGlossaryEntries() {
+    const shared = selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
+    const privateEntries = (Array.isArray(privateMeetingGlossaryEntries) ? privateMeetingGlossaryEntries : [])
+      .map((entry) => ({
+        source: entry.source,
+        target: entry.translations?.[targetLanguageCode],
+        replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
+      }))
+      .filter((entry) => entry.target);
+    return [...shared, ...privateEntries];
   }
 
   function appendInitialTranscriptItems(sessionId, initialTranscript) {
@@ -5089,6 +5101,10 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
   const [viewMode, setViewMode] = useState('list');
   const [selectedMeeting, setSelectedMeeting] = useState(null);
   const [selectedGlossaryIds, setSelectedGlossaryIds] = useState([]);
+  const [privateGlossaryEntries, setPrivateGlossaryEntries] = useState([]);
+  const [privateGlossarySource, setPrivateGlossarySource] = useState('');
+  const [privateGlossaryTranslation, setPrivateGlossaryTranslation] = useState('');
+  const [editingPrivateGlossarySource, setEditingPrivateGlossarySource] = useState('');
   const [name, setName] = useState('');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
@@ -5133,6 +5149,10 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
     setSourceLanguageCode(DEFAULT_SOURCE_LANGUAGE_CODE);
     setTargetLanguageCode('en');
     setSelectedGlossaryIds([]);
+    setPrivateGlossaryEntries([]);
+    setPrivateGlossarySource('');
+    setPrivateGlossaryTranslation('');
+    setEditingPrivateGlossarySource('');
     setShares([]);
     setCreatedShare(null);
     setNotice('');
@@ -5161,6 +5181,7 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
       const meetingTargetLanguageCode = meeting?.targetLanguageCode || 'en';
       setTargetLanguageCode(meetingTargetLanguageCode);
       setSelectedGlossaryIds(availableGlossaryEntries.filter((entry) => (meeting?.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[meetingTargetLanguageCode] === item.target)).map((entry) => entry.id));
+      setPrivateGlossaryEntries(Array.isArray(meeting?.privateGlossaryEntries) ? meeting.privateGlossaryEntries : []);
       setShares(await managementClientRef.current.listShares(id));
       setCreatedShare(null);
       setViewMode('form');
@@ -5177,6 +5198,26 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
     })).filter((entry) => entry.target);
   }
 
+  function savePrivateGlossaryEntry() {
+    const source = privateGlossarySource.trim();
+    const translation = privateGlossaryTranslation.trim();
+    if (!source || !translation) return;
+    const existing = privateGlossaryEntries.find((entry) => entry.source === (editingPrivateGlossarySource || source));
+    const nextEntry = {
+      ...(existing || {}),
+      source,
+      translations: { ...(existing?.translations || {}), [targetLanguageCode]: translation },
+      replacementAliases: { ...(existing?.replacementAliases || {}) }
+    };
+    setPrivateGlossaryEntries((current) => {
+      const withoutEdited = current.filter((entry) => entry.source !== (editingPrivateGlossarySource || source));
+      return [nextEntry, ...withoutEdited];
+    });
+    setPrivateGlossarySource('');
+    setPrivateGlossaryTranslation('');
+    setEditingPrivateGlossarySource('');
+  }
+
   async function saveMeeting() {
     if (selectedMeeting?.status === 'completed') return;
     setError('');
@@ -5184,7 +5225,7 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
     setIsSaving(true);
     try {
       const isUpdating = Boolean(selectedMeeting?.id);
-      const input = { name: name.trim() || null, sourceLanguageCode, targetLanguageCode, glossaryEntries: selectedEntries() };
+      const input = { name: name.trim() || null, sourceLanguageCode, targetLanguageCode, glossaryEntries: selectedEntries(), privateGlossaryEntries };
       const meeting = isUpdating
         ? await managementClientRef.current.update(selectedMeeting.id, input)
         : await managementClientRef.current.create(input);
@@ -5356,6 +5397,24 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory }) {
               {selectedGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
             </span>
           </button>
+          <div className="meeting-private-glossary" aria-label="Meeting 私有字典">
+            <div className="title-block-header"><h4>Meeting 私有字典</h4></div>
+            <p className="export-note">只套用於目前 Meeting，不會出現在全域字典或 Viewer。</p>
+            {privateGlossaryEntries.map((entry) => (
+              <div className="glossary-choice" key={entry.source}>
+                <span><strong>{entry.source}</strong><small>{entry.translations?.[targetLanguageCode] || '尚未設定目前語言翻譯'}</small></span>
+                {selectedMeeting?.status !== 'completed' ? <span className="meeting-actions">
+                  <button className="button detail-button" type="button" onClick={() => { setEditingPrivateGlossarySource(entry.source); setPrivateGlossarySource(entry.source); setPrivateGlossaryTranslation(entry.translations?.[targetLanguageCode] || ''); }}>編輯</button>
+                  <button className="button detail-button danger-button" type="button" onClick={() => setPrivateGlossaryEntries((current) => current.filter((item) => item.source !== entry.source))}>刪除</button>
+                </span> : null}
+              </div>
+            ))}
+            {selectedMeeting?.status !== 'completed' ? <div className="glossary-quick-add">
+              <label className="field"><span>私有原文</span><input value={privateGlossarySource} onChange={(event) => setPrivateGlossarySource(event.target.value)} placeholder="例如：專案代號" disabled={isSaving} /></label>
+              <label className="field"><span>翻譯（{targetLanguageLabelFor(targetLanguageCode) || targetLanguageCode}）</span><input value={privateGlossaryTranslation} onChange={(event) => setPrivateGlossaryTranslation(event.target.value)} placeholder="例如：Project Codename" disabled={isSaving} /></label>
+              <button className="button secondary" type="button" onClick={savePrivateGlossaryEntry} disabled={!privateGlossarySource.trim() || !privateGlossaryTranslation.trim()}>{editingPrivateGlossarySource ? '更新私有詞條' : '新增私有詞條'}</button>
+            </div> : null}
+          </div>
           <div className="meeting-management-actions">
             {selectedMeeting?.status !== 'completed' ? <button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving}>{isSaving ? '儲存中…' : selectedMeeting ? '儲存變更' : '建立會議'}</button> : null}
             {selectedMeeting ? (
@@ -5549,19 +5608,24 @@ function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry }) {
   }
 
   if (tab === 'glossary') {
+    const privateEntries = Array.isArray(detail?.meeting?.privateGlossaryEntries) ? detail.meeting.privateGlossaryEntries : [];
+    const readOnly = ['completed', 'failed'].includes(detail?.meeting?.status);
     return (
       <section className="feature-page meeting-workspace-tab-panel" aria-label="會議字典">
         <div className="meeting-workspace-panel-heading">
           <div>
             <p className="eyebrow">MEETING GLOSSARY</p>
             <h3>會議字典</h3>
-            <p>會議專用字典管理將在下一個交付階段加入；目前可從會議設定維護既有詞條。</p>
+            <p>{readOnly ? '已完成的 Meeting 字典僅供查看。' : '此處查看目前 Meeting 的私有字典；新增或修改會在儲存設定後套用至下一個 Segment。'}</p>
           </div>
         </div>
         <div className="meeting-workspace-placeholder">
           <BookOpen size={24} aria-hidden="true" />
-          <strong>會議字典設定</strong>
-          <span>此分頁保留在 Meeting Workspace 內，下一階段會加入會議私有詞條與隔離規則。</span>
+          <strong>Meeting 私有字典</strong>
+          {privateEntries.length === 0 ? <span>目前沒有私有詞條。</span> : privateEntries.map((entry) => (
+            <span key={entry.source}><strong>{entry.source}</strong> → {entry.translations?.[detail?.meeting?.targetLanguageCode] || '尚未設定目前語言翻譯'}</span>
+          ))}
+          {!readOnly ? <a className="button secondary" href={`#meeting?meetingId=${encodeURIComponent(detail.meeting.id)}`}>回會議管理編輯</a> : null}
         </div>
       </section>
     );

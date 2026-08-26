@@ -22,6 +22,7 @@ export function createMeetingCheckpointService({
       name = null,
       sourceLanguageCode = null,
       targetLanguageCode = null,
+      privateGlossaryEntries = [],
       draft = false
     } = {}) {
       const now = clock();
@@ -31,7 +32,8 @@ export function createMeetingCheckpointService({
         glossaryEntries,
         name,
         sourceLanguageCode,
-        targetLanguageCode
+        targetLanguageCode,
+        privateGlossaryEntries
       });
       const activeMeeting = draft
         ? meeting
@@ -336,6 +338,13 @@ export function meetingSettingsSnapshot(meeting) {
       ? meeting.glossaryEntries.map((entry) => ({
         ...entry,
         replacementAliases: normalizeMeetingGlossaryAliases(entry?.replacementAliases)
+      }))
+      : [],
+    privateGlossaryEntries: Array.isArray(meeting.privateGlossaryEntries)
+      ? meeting.privateGlossaryEntries.map((entry) => ({
+        source: entry.source,
+        translations: { ...entry.translations },
+        replacementAliases: Object.fromEntries(Object.entries(entry.replacementAliases || {}).map(([languageCode, aliases]) => [languageCode, normalizeMeetingGlossaryAliases(aliases)]))
       }))
       : []
   } : null;

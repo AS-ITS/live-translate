@@ -34,6 +34,20 @@ test('Meeting preserves an immutable glossary snapshot across lifecycle transiti
   assert.deepEqual(meeting.activate(1100).glossaryEntries, meeting.glossaryEntries);
 });
 
+test('Meeting preserves isolated private glossary entries and rejects duplicate sources', () => {
+  const meeting = new Meeting({
+    id: 'meeting-1',
+    createdAt: 1000,
+    privateGlossaryEntries: [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: { en: ['代號'] } }]
+  });
+  assert.deepEqual(meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: { en: ['代號'] } }]);
+  assert.deepEqual(meeting.activate(1100).privateGlossaryEntries, meeting.privateGlossaryEntries);
+  assert.throws(() => new Meeting({
+    id: 'meeting-2', createdAt: 1000,
+    privateGlossaryEntries: [{ source: 'same', translations: { en: 'one' } }, { source: 'same', translations: { en: 'two' } }]
+  }), /duplicated/);
+});
+
 test('Meeting supports legal lifecycle transitions', () => {
   const created = new Meeting({ id: 'meeting-1', createdAt: 1000 });
   const active = created.activate(1100);

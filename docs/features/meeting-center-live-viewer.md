@@ -2,11 +2,13 @@
 
 ## Status
 
-Milestone 2 is implemented: Meeting Management remains the canonical
+Milestone 3 is implemented: Meeting Management remains the canonical
 application home and opens a status-aware Meeting Workspace with Live
 Subtitles, Meeting Glossary, Export, and completed-history tabs. Legacy
 `#live`, `#history`, and related routes remain available as compatibility
-entrypoints. Viewer sharing, private glossary data, Cue broadcast, and
+entrypoints. Global glossary selections and Meeting-private glossary entries
+are isolated; private entries are stored in Meeting and Segment snapshots and
+are never included in Viewer payloads. Viewer sharing, Cue broadcast, and
 reconnect recovery remain planned for later delivery phases.
 
 ## Capability Overview
@@ -231,7 +233,7 @@ full benchmark report.
 
 1. Meeting Management home, route consolidation, search, and status actions.
 2. Meeting Workspace tabs and completed-history default behavior. **Completed.**
-3. Global/private glossary data and UI isolation.
+3. Global/private glossary data and UI isolation. **Completed.**
 4. Meeting Viewer URL, QR, short code, complete Cue reading, and virtualized
    rendering.
 5. Meeting Cue broadcast, reconnect gap recovery, latency instrumentation, and

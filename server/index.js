@@ -1027,7 +1027,8 @@ async function handleRequestWithSessionReadController(
         ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
         ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
         ...(Object.hasOwn(body || {}, 'targetLanguageCode') ? { targetLanguageCode: body.targetLanguageCode } : {}),
-        ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {})
+        ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
+        ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
@@ -1123,7 +1124,14 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: meeting.targetLanguageCode || 'en',
         targetLanguageLabel: meeting.targetLanguageCode || null,
         sourceLanguageCode: meeting.sourceLanguageCode || null,
-        meetingGlossaryEntries: meeting.glossaryEntries || [],
+        meetingGlossaryEntries: [
+          ...(meeting.glossaryEntries || []),
+          ...((meeting.privateGlossaryEntries || []).map((entry) => ({
+            source: entry.source,
+            target: entry.translations?.[meeting.targetLanguageCode],
+            replacementAliases: entry.replacementAliases?.[meeting.targetLanguageCode] || []
+          })).filter((entry) => entry.target))
+        ],
         meetingId: share.meetingId,
         segmentId: started.segment.id,
         status: 'created',

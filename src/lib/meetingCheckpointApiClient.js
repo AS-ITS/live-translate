@@ -6,15 +6,17 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
 
   return Object.freeze({
     async createMeeting(input = {}) {
-      const { liveSessionId, glossaryEntries = [], name, sourceLanguageCode, targetLanguageCode, draft = false } = input;
+      const { liveSessionId, glossaryEntries = [], privateGlossaryEntries = [], name, sourceLanguageCode, targetLanguageCode, draft = false } = input;
       const options = { method: 'POST' };
-      if ((liveSessionId !== undefined && liveSessionId !== null) || Object.hasOwn(input, 'glossaryEntries')) {
+      if ((liveSessionId !== undefined && liveSessionId !== null) || Object.hasOwn(input, 'glossaryEntries') || Object.hasOwn(input, 'privateGlossaryEntries')) {
         assertNonEmptyString(liveSessionId, 'liveSessionId');
         if (!Array.isArray(glossaryEntries)) throw new TypeError('glossaryEntries must be an array.');
+        if (!Array.isArray(privateGlossaryEntries)) throw new TypeError('privateGlossaryEntries must be an array.');
         options.headers = { 'Content-Type': 'application/json' };
         options.body = JSON.stringify({
           ...(liveSessionId === undefined ? {} : { liveSessionId }),
           ...(Object.hasOwn(input, 'glossaryEntries') ? { glossaryEntries } : {}),
+          ...(Object.hasOwn(input, 'privateGlossaryEntries') ? { privateGlossaryEntries } : {}),
           ...(name !== undefined ? { name } : {}),
           ...(sourceLanguageCode !== undefined ? { sourceLanguageCode } : {}),
           ...(targetLanguageCode !== undefined ? { targetLanguageCode } : {}),

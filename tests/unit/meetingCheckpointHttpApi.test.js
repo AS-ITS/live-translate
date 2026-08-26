@@ -28,7 +28,8 @@ test('Meeting Management creates a draft, updates settings, and starts its first
       name: '產品會議',
       sourceLanguageCode: 'zh-Hant',
       targetLanguageCode: 'en',
-      glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }]
+      glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }],
+      privateGlossaryEntries: [{ source: '專案代號', translations: { en: 'Project Codename' } }]
     })
   });
   const created = createResponse.json();
@@ -36,14 +37,16 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(createResponse.status, 201);
   assert.equal(created.meeting.status, 'created');
   assert.equal(created.segment.status, 'created');
+  assert.deepEqual(created.meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: {} }]);
 
   const updateResponse = await request(handler, {
     method: 'PATCH',
     url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', glossaryEntries: [] })
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
   });
   assert.equal(updateResponse.status, 200);
   assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');
+  assert.deepEqual(updateResponse.json().meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: {} }]);
 
   const startResponse = await request(handler, {
     method: 'POST',

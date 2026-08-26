@@ -48,6 +48,7 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
           replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, meeting?.targetLanguageCode)
         }))
         : [],
+      privateGlossaryEntries: normalizePrivateGlossaryEntries(meeting?.privateGlossaryEntries, meeting?.targetLanguageCode),
       name: meeting?.name ?? null,
       sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
       targetLanguageCode: meeting?.targetLanguageCode ?? null
@@ -152,8 +153,16 @@ function meetingSettingsSnapshotDTO(snapshot) {
         ...entry,
         replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, snapshot.targetLanguageCode)
       }))
-      : []
+      : [],
+    privateGlossaryEntries: normalizePrivateGlossaryEntries(snapshot.privateGlossaryEntries, snapshot.targetLanguageCode)
   };
+}
+
+function normalizePrivateGlossaryEntries(entries, targetLanguageCode) {
+  return Array.isArray(entries) ? entries.map((entry) => ({
+    ...entry,
+    replacementAliases: meetingGlossaryAliasesForTarget(entry?.replacementAliases, targetLanguageCode)
+  })) : [];
 }
 
 function buildReadingContent(transcriptItems) {

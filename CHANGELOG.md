@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- 修正 #29 P0 會議管理版面：Header 固定於頁面頂端、移除工具列重複的「建立會議」、列表改為依內容高度呈現，並將草稿刪除移至會議設定的危險操作區。
+
+- 完成 #29 UI 整併收尾：移除五項獨立主導航，`#meetings` 成為唯一首頁；legacy `#live`／`#history`／`#retranslate`／`#glossary` 會導向 Meeting 管理或 Workspace；Meeting 列表改為單一主要操作，Workspace 依狀態顯示分頁，完成會議可撤銷既有 Viewer 分享。
+
 - 完成 #29 Milestone 5：新增獨立 Meeting Cue publish API、process-local SSE broadcaster、cursor replay／gap recovery、Viewer 去重與 refinement merge，以及 deterministic latency SLA 測試；跨程序事件傳遞與 durable replay 仍 deferred。
 
 - 完成 #29 Milestone 4：新增 Meeting Viewer token／短碼／QR 分享、歷史 Final Cue 唯讀快照與 windowed 雙語字幕渲染；即時 Cue 廣播與重連補洞留待 Milestone 5。

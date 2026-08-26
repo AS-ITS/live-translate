@@ -83,32 +83,10 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await expect(page.getByRole('button', { name: '回到最新' })).toBeVisible();
 });
 
-test('Session URL opens an authenticated read-only view without owner controls', async ({ page }) => {
-  const detail = {
-    session: {
-      id: 'session-read-only',
-      name: '正在錄製的會議',
-      status: 'active',
-      targetLanguageCode: 'en'
-    },
-    sourceTranscript: {
-      items: [{ id: 'source-1', text: 'Read-only source', status: 'final' }]
-    },
-    selectedTranslationOutput: {
-      items: [{ id: 'translation-1', text: 'Read-only translation', status: 'final' }]
-    }
-  };
-
-  await page.route('**/api/sessions/session-read-only', async (route) => route.fulfill({ json: detail }));
-  await page.route('**/api/sessions/session-read-only/translations', async (route) => route.fulfill({
-    json: { translations: [], executions: [] }
-  }));
-
+test('Legacy Session URL returns to Meeting Management without owner controls', async ({ page }) => {
   await page.goto('/#live?sessionId=session-read-only');
 
-  await expect(page.getByRole('heading', { name: '正在錄製的會議' })).toBeVisible();
-  await expect(page.getByText('Read-only source')).toBeVisible();
-  await expect(page.getByText('Read-only translation')).toBeVisible();
-  await expect(page.getByText(/不會取得麥克風/)).toBeVisible();
-  await expect(page.getByRole('button')).toHaveCount(0);
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理' })).toBeVisible();
+  await expect(page.locator('.live-sidebar, .feature-navigation')).toHaveCount(0);
 });

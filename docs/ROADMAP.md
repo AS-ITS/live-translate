@@ -22,8 +22,8 @@ Issue #29 Milestone 1 is completed: `#meetings` is the canonical Meeting
 Management home with client-side name/status filtering and status-aware actions.
 Issue #29 Milestone 2 is completed: status-aware Meeting Workspace tabs now
 organize live subtitles, glossary, export, and completed Meeting history. The
-legacy `#live`, `#history`, and related routes remain available for
-compatibility. Issue #29 Milestone 3 is completed: global glossary selections
+legacy `#live`, `#history`, and related routes now redirect to the unified
+Meeting surfaces. Issue #29 Milestone 3 is completed: global glossary selections
 and Meeting-private glossary entries are isolated, persisted in Meeting and
 Segment snapshots, and private entries are excluded from Viewer payloads.
 Issue #29 Milestone 4 is completed: Meeting-scoped Viewer shares support token,
@@ -32,6 +32,10 @@ bilingual Cue rendering. Issue #29 Milestone 5 is completed: finalized Cues are
 published through an independent authenticated path, Viewer SSE supports
 cursor replay and gap recovery, and deterministic latency SLA validation is in
 place. Cross-process delivery and durable replay remain deferred.
+Issue #29 UI consolidation is completed: Meeting Management is the only primary
+entry, legacy feature routes redirect into Meeting Management or a Meeting
+Workspace, and completed Meetings may revoke existing Viewer shares without
+changing Recorder or persistence security boundaries.
 
 Execution status push is now available through a process-local authenticated
 WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay

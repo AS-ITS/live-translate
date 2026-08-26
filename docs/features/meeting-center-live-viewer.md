@@ -13,9 +13,8 @@ windowed bilingual Cue renderer.
 
 Milestone 3 is implemented: Meeting Management remains the canonical
 application home and opens a status-aware Meeting Workspace with Live
-Subtitles, Meeting Glossary, Export, and completed-history tabs. Legacy
-`#live`, `#history`, and related routes remain available as compatibility
-entrypoints. Global glossary selections and Meeting-private glossary entries
+Subtitles, Meeting Glossary, Export, and completed-history tabs. Global glossary
+selections and Meeting-private glossary entries
 are isolated; private entries are stored in Meeting and Segment snapshots and
 are never included in Viewer payloads. Cue broadcast and reconnect recovery
 remain planned for later delivery phases.
@@ -57,7 +56,8 @@ lease model, or security model.
 ### Meeting Management home
 
 The home route displays only the Meeting Management list. The left-side feature
-navigation is removed; the product name remains in the top Header.
+navigation and legacy Header feature menu are removed; the product name and a
+single `＋ 建立會議` action remain in the top Header.
 
 The list uses the existing AG Grid Community implementation and provides:
 
@@ -66,8 +66,8 @@ The list uses the existing AG Grid Community implementation and provides:
 - Source and target languages.
 - Start time and last update time.
 - Name search and status filtering.
-- A status-appropriate action: open live subtitles, continue Meeting, or view
-  translation history.
+- A status-appropriate single primary action: open live subtitles, continue
+  live subtitles, view translation history, or edit/start a draft Meeting.
 
 The persisted `interrupted` Meeting status is presented as paused/resumable;
 no additional persisted status is introduced solely for the display label.
@@ -79,9 +79,9 @@ The Workspace is opened with a Meeting identifier and uses top-level tabs:
 | Meeting state | Visible tabs | Default tab |
 | --- | --- | --- |
 | `active` | Live Subtitles, Meeting Glossary, Share Viewer, Export | Live Subtitles |
-| `interrupted` | Live Subtitles, Meeting Glossary, Export | Live Subtitles |
+| `interrupted` | Live Subtitles, Meeting Glossary, Share Viewer, Export | Live Subtitles |
 | `completed` | Export, Translation History | Translation History |
-| `created` | Live Subtitles, Meeting Glossary | Live Subtitles |
+| `created` | Meeting Management edit/start flow | Edit/start Meeting |
 
 The existing live Cue renderer, checkpoint flow, export flow, and completed
 Meeting detail remain the implementation foundations for their respective tabs.
@@ -90,15 +90,21 @@ history, glossary, and re-translation are removed. Existing persisted
 re-translation data remains readable by the backend and data model, but no
 re-translation UI or route is exposed.
 
-Proposed SPA routes are:
+Canonical SPA routes are:
 
 - `#meetings`
 - `#meeting-workspace?meetingId=<id>`
 - `#viewer?token=<token>`
 - `#viewer?code=<shortCode>`
 
-The old independent routes are not redirected and are not compatibility entry
-points.
+Legacy routes are compatibility redirects: `#live` goes to Meeting Management,
+`#live?meetingId=...` goes to that Meeting's Live Subtitles tab, `#history` goes
+to `#meetings?status=completed`, `#retranslate` goes to Meeting Management, and
+`#glossary` opens the global glossary panel from Meeting Management. Existing
+re-translation data remains readable by the backend and is not deleted. A
+legacy live deep link may open the Live Subtitles tab for a `created` Meeting
+so existing start flows remain reachable; the Meeting list still uses the
+edit/start primary action for drafts.
 
 ## Glossary Boundaries
 

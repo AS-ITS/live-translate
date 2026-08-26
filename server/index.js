@@ -971,8 +971,8 @@ async function handleRequestWithSessionReadController(
           codeUrl: `#${role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}`
         }, requestId);
       } else {
-        await assertMeetingShareMutable(meetingId, meetingRepository);
         const shareId = parseMeetingSharePath(path).shareId;
+        await assertMeetingShareRevocable(meetingId, shareId, meetingRepository, sessionShareService);
         if (!await sessionShareService.revokeShare(meetingId, shareId)) throw createHttpError('meeting_share_invalid');
         statusCode = 204;
         res.writeHead(statusCode, { 'X-Request-Id': requestId });
@@ -2703,6 +2703,17 @@ async function assertMeetingShareMutable(meetingId, meetingRepository) {
   if (!meetingRepository || typeof meetingRepository.getMeeting !== 'function') return;
   const meeting = await meetingRepository.getMeeting(meetingId);
   if (meeting?.status === 'completed') throw createHttpError('meeting_share_locked');
+}
+
+async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository, sessionShareService) {
+  if (!meetingRepository || typeof meetingRepository.getMeeting !== 'function') return;
+  const meeting = await meetingRepository.getMeeting(meetingId);
+  if (meeting?.status !== 'completed') return;
+  const shares = typeof sessionShareService?.listShares === 'function'
+    ? await sessionShareService.listShares(meetingId)
+    : [];
+  const share = shares.find((item) => item.id === shareId);
+  if (share?.role !== 'viewer') throw createHttpError('meeting_share_locked');
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {

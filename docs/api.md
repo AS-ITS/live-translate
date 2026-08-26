@@ -325,8 +325,9 @@ available for viewing, but `POST` returns `409 meeting_share_locked`.
 
 ## `DELETE /api/meetings/:meetingId/shares/:shareId`
 
-Revokes one Meeting Recorder share. Completed Meetings are read-only; revocation
-returns `409 meeting_share_locked`.
+Revokes one Meeting share. Existing Viewer shares may be revoked after a Meeting
+is completed; completed Meetings still reject new share creation and settings
+changes.
 
 ## `GET /api/meetings/:meetingId/segments`
 

@@ -384,14 +384,14 @@ async function expectActiveExportDownloadEnabled(page) {
 }
 
 async function openLiveSettings(page) {
-  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  const drawer = page.getByRole('complementary', { name: '即時字幕設定' });
   await page.getByRole('button', { name: '設定', exact: true }).click();
   await expect(drawer).toBeVisible();
   return drawer;
 }
 
 async function liveSetting(page, label) {
-  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  const drawer = page.getByRole('complementary', { name: '即時字幕設定' });
   const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
   if (await settingsTrigger.isVisible()) {
     if (!(await drawer.isVisible())) await openLiveSettings(page);
@@ -794,18 +794,18 @@ async function openHistoryPage(page) {
     page.useMeetingRootForGoto = false;
     page.sessionHistoryMode = true;
     await page.goto('/#history');
-    await expect(page).toHaveURL(/#history$/);
+    await expect(page).toHaveURL(/#meetings\?status=completed$/);
     return;
   }
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click();
-  await expect(page).toHaveURL(/#history$/);
+  await page.goto('/#history');
+  await expect(page).toHaveURL(/#meetings\?status=completed$/);
 }
 
 async function openSessionHistoryPage(page) {
   page.useMockMeetings = false;
   page.useMeetingRootForGoto = false;
   await page.goto('/#history');
-  await expect(page).toHaveURL(/#history$/);
+  await expect(page).toHaveURL(/#meetings\?status=completed$/);
 }
 
 async function openMeetingsPage(page) {
@@ -813,8 +813,8 @@ async function openMeetingsPage(page) {
 }
 
 async function openGlossaryPage(page) {
-  await page.getByRole('link', { name: '翻譯字典' }).click();
-  await expect(page).toHaveURL(/#glossary$/);
+  await page.goto('/#glossary');
+  await expect(page).toHaveURL(/#meetings\?panel=global-glossary$/);
 }
 
 async function openLivePage(page) {
@@ -823,11 +823,11 @@ async function openLivePage(page) {
     page.useMeetingRootForGoto = true;
     page.sessionHistoryMode = false;
     await page.evaluate(() => { window.location.hash = 'live?meetingId=meeting-1'; });
-    await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+    await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=live$/);
     return;
   }
-  await page.getByRole('link', { name: '即時翻譯', exact: true }).click();
-  await expect(page).toHaveURL(/#live$/);
+  await page.goto('/#meetings');
+  await expect(page).toHaveURL(/#meetings$/);
 }
 
 async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCode } = {}) {
@@ -950,7 +950,7 @@ test('initial history shows empty state', async ({ page }) => {
   await expect(historyItems(page)).toHaveCount(0);
 });
 
-test('page-specific workspaces stay isolated', async ({ page }) => {
+test('legacy feature routes converge on Meeting Management and Workspace', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     await route.fulfill({
       status: 200,
@@ -960,26 +960,23 @@ test('page-specific workspaces stay isolated', async ({ page }) => {
   });
 
   await page.goto('/#live');
-  await expect(page.locator('.history-page')).toBeHidden();
-  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
-  await expect(page.locator('.live-page')).toBeVisible();
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.locator('.meetings-page')).toBeVisible();
 
   await page.goto('/#meeting');
-  await expect(page.locator('.history-page')).toBeHidden();
-  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
   await expect(page.locator('.meeting-management-page:not(.history-page)')).toBeVisible();
 
   await openHistoryPage(page);
-  await expect(page.locator('.history-page')).toBeVisible();
-  await expect(page.locator('.live-page')).toBeHidden();
-  await expect(page.locator('.retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
+  await expect(page).toHaveURL(/#meetings\?status=completed$/);
+  await expect(page.locator('.meetings-page')).toBeVisible();
 });
 
-test('workspace pages use the sidebar instead of the legacy header', async ({ page }) => {
+test('Meeting shell keeps only the brand and create action in the header', async ({ page }) => {
   for (const hash of ['#history', '#retranslate', '#glossary', '#meetings', '#dead-letter-queue']) {
     await page.goto(`/${hash}`);
-    await expect(page.locator('.live-sidebar')).toBeVisible();
-    await expect(page.locator('.app-header')).toBeHidden();
+    await expect(page.locator('.live-sidebar, .feature-navigation')).toHaveCount(0);
+    await expect(page.locator('.meeting-app-header')).toBeVisible();
+    await expect(page.getByRole('button', { name: '建立會議' }).first()).toBeVisible();
   }
 });
 
@@ -1303,7 +1300,7 @@ test('completed meeting opens translation history from meeting management withou
 
   const row = page.locator('.meeting-management-page .meeting-management-data-grid .ag-row').first();
   await expect(row).toContainText('已完成');
-  await row.getByRole('button', { name: '前往翻譯紀錄' }).click();
+  await row.getByRole('button', { name: '查看翻譯紀錄' }).click();
 
   await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=history$/);
   await expect(page.locator('.meeting-workspace-page')).toBeVisible();
@@ -1351,7 +1348,7 @@ test('Meeting Workspace exposes status-specific tabs', async ({ page }) => {
 
   await page.goto('/#meeting-workspace?meetingId=workspace-interrupted&tab=export');
   await expect(page.locator('.meeting-workspace-tabs')).toContainText('匯出');
-  await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('分享觀看');
+  await expect(page.locator('.meeting-workspace-tabs')).toContainText('分享觀看');
 
   await page.goto('/#meeting-workspace?meetingId=workspace-completed&tab=history');
   await expect(page.locator('.meeting-workspace-tabs')).toContainText('翻譯紀錄');
@@ -1403,10 +1400,10 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
 
   await page.goto('/');
   await page.evaluate(() => { window.location.hash = 'glossary'; });
-  await expect(page).toHaveURL(/#glossary$/);
+  await expect(page).toHaveURL(/#meetings\?panel=global-glossary$/);
 
-  await expect(page.getByRole('heading', { name: '翻譯字典' })).toBeVisible();
-  await expect(page.locator('.glossary-page > .history-header')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '全域字典' })).toBeVisible();
+  await expect(page.locator('.global-glossary-modal')).toBeVisible();
   await glossaryPanel(page).getByLabel('詞條').fill('microphone');
   await glossaryPanel(page).getByLabel('目標語言').selectOption('ja');
   await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
@@ -1417,7 +1414,7 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
   const glossaryRow = glossaryPanel(page).locator('.glossary-data-grid .ag-row').first();
   await expect(glossaryRow.getByText('microphone', { exact: true })).toBeVisible();
   await expect(glossaryRow.getByText('Alan speak')).toBeVisible();
-  await expect(glossaryPanel(page).getByText('套用範圍：即時翻譯')).toBeVisible();
+  await expect(glossaryPanel(page).getByText('套用範圍：即時字幕')).toBeVisible();
 
   await glossaryPanel(page).getByRole('button', { name: '編輯' }).click();
   await glossaryPanel(page).getByLabel('套用範圍').selectOption('both');
@@ -1510,12 +1507,10 @@ test('active session locks workspace navigation while listening', async ({ page 
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
-
-  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=live$/);
   await expect(page.locator('.history-page')).toHaveCount(0);
-  await expect(page.getByRole('alert')).toContainText('錄音進行中');
-  await expect(page.locator('.live-sidebar-navigation a[aria-disabled="true"]')).toHaveCount(5);
+  await expect(page.locator('.live-sidebar, .feature-navigation')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '建立會議' })).toBeDisabled();
 });
 
 test('missing microphone keeps a retryable error visible', async ({ page }) => {
@@ -1565,7 +1560,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
 
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
-  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toBeVisible();
   await expect(page.getByText('會議模式：尚未保存', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
@@ -4297,7 +4292,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(page.locator('.app-header')).toBeHidden();
   await expect(page.getByText('MEETING SETUP')).toBeHidden();
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議', exact: true }).last()).toBeVisible();
   await expect(page.locator('.meeting-management-page > .history-panel')).toBeVisible();
 
   await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
@@ -4352,10 +4347,10 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(page.getByLabel('會議名稱')).toHaveValue('既有產品會議');
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeVisible();
   await page.getByRole('button', { name: '返回會議清單' }).click();
-  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議', exact: true }).last()).toBeVisible();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: '建立新會議', exact: true }).click();
+  await page.getByRole('button', { name: '建立會議', exact: true }).last().click();
   await expect(page.getByText('MEETING SETUP')).toBeVisible();
   await expect(page.getByRole('heading', { name: '建立會議' })).toBeVisible();
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
@@ -4487,7 +4482,7 @@ test('opening a meeting live workspace clears the previous live preview', async 
   });
   await page.goto('/#meeting');
   await page.getByRole('row', { name: /新測試會議/ }).getByRole('button', { name: '編輯' }).click();
-  await page.getByRole('button', { name: '前往即時翻譯' }).click();
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
 
   await expect(page).toHaveURL(/#live\?meetingId=meeting-2$/);
   await expect(page.getByTestId('cue-empty-state')).toBeVisible();
@@ -4719,5 +4714,5 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   await page.getByLabel('篩選狀態').selectOption('interrupted');
   await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
   await expect(page.getByRole('row', { name: /客戶訪談/ })).toContainText('已暫停／可繼續');
-  await expect(page.getByRole('row', { name: /客戶訪談/ }).getByRole('button', { name: '繼續錄製' })).toBeVisible();
+  await expect(page.getByRole('row', { name: /客戶訪談/ }).getByRole('button', { name: '繼續即時字幕' })).toBeVisible();
 });

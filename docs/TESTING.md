@@ -16,6 +16,10 @@ bounded replay, Cue publish HTTP authorization, Meeting Viewer SSE delivery,
 snapshot gap recovery, duplicate/refinement merge, and deterministic latency
 measurements.
 
+Issue #29 UI consolidation coverage includes canonical migration of legacy
+hash routes, a Meeting-only application shell, status-aware Meeting Workspace
+tabs/actions, and global/private glossary boundaries.
+
 Run the focused realtime tests:
 
 ```bash

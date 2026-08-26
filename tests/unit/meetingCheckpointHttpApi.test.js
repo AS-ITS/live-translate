@@ -60,7 +60,7 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(started.segment.liveSessionId, 'live-session-management-1');
 });
 
-test('completed meetings reject settings changes and share mutations', async () => {
+test('completed meetings reject settings changes and new shares but allow revoking existing Viewer shares', async () => {
   const shareService = createSessionShareService();
   const handler = createHandler({ sessionShareService: shareService });
   const created = (await request(handler, {
@@ -68,7 +68,7 @@ test('completed meetings reject settings changes and share mutations', async () 
     url: '/api/meetings',
     body: JSON.stringify({ draft: true })
   })).json();
-  const share = shareService.createMeetingShare(created.meeting.id);
+  const share = shareService.createMeetingShare(created.meeting.id, { role: 'viewer' });
 
   const completed = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/complete` });
   assert.equal(completed.status, 200);
@@ -93,8 +93,7 @@ test('completed meetings reject settings changes and share mutations', async () 
     method: 'DELETE',
     url: `/api/meetings/${created.meeting.id}/shares/${share.id}`
   });
-  assert.equal(revokeShare.status, 409);
-  assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
+  assert.equal(revokeShare.status, 204);
 });
 
 test('Meeting Viewer shares expose sanitized historical detail by token and short code', async () => {

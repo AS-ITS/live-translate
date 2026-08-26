@@ -1298,9 +1298,9 @@ test('completed meeting opens translation history from meeting management withou
   page.on('pageerror', (error) => pageErrors.push(error));
   await page.goto('/#meeting');
 
-  const row = page.locator('.meeting-management-page .meeting-management-data-grid .ag-row').first();
-  await expect(row).toContainText('已完成');
-  await row.getByRole('button', { name: '查看翻譯紀錄' }).click();
+  const card = page.locator('.meeting-management-page .meeting-card').first();
+  await expect(card).toContainText('已完成');
+  await card.getByRole('button', { name: '查看翻譯紀錄' }).click();
 
   await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=history$/);
   await expect(page.locator('.meeting-workspace-page')).toBeVisible();
@@ -4220,6 +4220,24 @@ test('meeting management uses the live workspace layout and preserves create flo
       return;
     }
 
+    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-created') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-created',
+            name: '產品會議',
+            status: 'created',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en',
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+
     if (request.method() === 'POST' && url.pathname === '/api/meetings') {
       await route.fulfill({
         status: 201,
@@ -4287,62 +4305,47 @@ test('meeting management uses the live workspace layout and preserves create flo
 
   await page.goto('/#meeting');
 
-  await expect(page.locator('.live-app-shell')).toBeVisible();
-  await expect(page.getByRole('link', { name: '會議管理' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.locator('.app-header')).toBeHidden();
+  await expect(page.locator('.meeting-app-shell')).toBeVisible();
+  await expect(page.locator('.meeting-app-header')).toBeVisible();
+  await expect(page.locator('.live-sidebar')).toHaveCount(0);
   await expect(page.getByText('MEETING SETUP')).toBeHidden();
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立會議', exact: true }).last()).toBeVisible();
   await expect(page.locator('.meeting-management-page > .history-panel')).toBeVisible();
 
-  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(page.locator('.meeting-management-page ul.history-list')).toHaveCount(0);
-  await expect(page.getByRole('row', { name: /既有產品會議/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /既有產品會議/ })).toBeVisible();
 
-  const meetingGridLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
+  const meetingCardLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     const gridRect = element.getBoundingClientRect();
-    const scrollRect = element.parentElement.getBoundingClientRect();
     const panelRect = element.closest('.history-panel').getBoundingClientRect();
-    const root = element.querySelector('.ag-root-wrapper');
-    const scroll = element.parentElement;
-    const cell = element.querySelector('.ag-cell');
     return {
-      gridFitsPanel: gridRect.bottom <= panelRect.bottom + 1,
-      pageFitsViewport: document.scrollingElement.scrollHeight <= document.scrollingElement.clientHeight,
-      layout: root?.className || '',
-      overflowY: getComputedStyle(scroll).overflowY,
-      overflowX: getComputedStyle(scroll).overflowX,
-      cellAlignItems: cell ? getComputedStyle(cell).alignItems : '',
-      rootHeight: root?.getBoundingClientRect().height || 0,
+      gridFitsPanel: gridRect.left >= panelRect.left && gridRect.right <= panelRect.right,
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      columnCount: getComputedStyle(element).gridTemplateColumns.split(' ').length,
       gridRect: { top: gridRect.top, bottom: gridRect.bottom, height: gridRect.height },
-      scrollRect: { top: scrollRect.top, bottom: scrollRect.bottom, height: scrollRect.height },
       panelRect: { top: panelRect.top, bottom: panelRect.bottom, height: panelRect.height }
     };
   });
-  expect(meetingGridLayout.gridFitsPanel).toBe(true);
-  expect(meetingGridLayout.pageFitsViewport).toBe(true);
-  expect(meetingGridLayout.layout).toContain('ag-layout-normal');
-  expect(meetingGridLayout.overflowY).toBe('auto');
-  expect(meetingGridLayout.overflowX).toBe('auto');
-  expect(meetingGridLayout.cellAlignItems).toBe('center');
-  expect(meetingGridLayout.rootHeight).toBeLessThanOrEqual(meetingGridLayout.scrollRect.height);
-  expect(meetingGridLayout.scrollRect.height).toBeGreaterThan(0);
+  expect(meetingCardLayout.gridFitsPanel).toBe(true);
+  expect(meetingCardLayout.pageHasHorizontalOverflow).toBe(false);
+  expect(meetingCardLayout.columnCount).toBe(3);
 
-  await page.setViewportSize({ width: 1024, height: 600 });
-  const laptopMeetingLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
-    const mainText = [...element.querySelectorAll('.meeting-name-cell')];
+  await page.setViewportSize({ width: 1023, height: 600 });
+  const laptopMeetingLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     return {
       pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-      mainTextCanWrap: mainText.every((cell) => getComputedStyle(cell).overflowWrap === 'anywhere'),
-      clippedMainText: mainText.some((cell) => cell.scrollWidth > cell.clientWidth + 1 && getComputedStyle(cell).overflow === 'hidden')
+      columnCount: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+      cardFitsViewport: [...element.querySelectorAll('.meeting-card')].every((card) => card.getBoundingClientRect().right <= window.innerWidth)
     };
   });
   expect(laptopMeetingLayout.pageHasHorizontalOverflow).toBe(false);
-  expect(laptopMeetingLayout.mainTextCanWrap).toBe(true);
-  expect(laptopMeetingLayout.clippedMainText).toBe(false);
+  expect(laptopMeetingLayout.columnCount).toBe(1);
+  expect(laptopMeetingLayout.cardFitsViewport).toBe(true);
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  await page.getByRole('row', { name: /既有產品會議/ }).getByRole('button', { name: '編輯' }).click();
+  await page.locator('.meeting-card').filter({ hasText: '既有產品會議' }).getByRole('button', { name: '編輯並開始會議' }).click();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
   await expect(page.getByLabel('會議名稱')).toHaveValue('既有產品會議');
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeVisible();
@@ -4417,7 +4420,7 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(glossaryDrawer).toBeHidden();
 
   await page.getByLabel('會議名稱').fill('產品會議');
-  await page.getByRole('button', { name: '建立會議', exact: true }).click();
+  await page.getByLabel('會議設定').getByRole('button', { name: '建立會議', exact: true }).click();
 
   await expect(page.getByRole('status')).toHaveText('會議已建立。');
   await expect(page.getByRole('button', { name: '儲存變更', exact: true })).toBeVisible();
@@ -4430,9 +4433,11 @@ test('meeting management uses the live workspace layout and preserves create flo
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole('button', { name: '返回會議清單' }).click();
   page.once('dialog', (dialog) => dialog.accept());
-  const createdMeetingRow = page.getByRole('row').filter({ has: page.getByText('產品會議', { exact: true }) });
-  await createdMeetingRow.getByRole('button', { name: '刪除' }).click();
-  await expect(createdMeetingRow).toHaveCount(0);
+  const createdMeetingCard = page.locator('.meeting-card').filter({ has: page.getByText('產品會議', { exact: true }) });
+  await createdMeetingCard.click({ position: { x: 12, y: 12 } });
+  await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
+  await page.getByRole('button', { name: '刪除會議' }).click();
+  await expect(createdMeetingCard).toHaveCount(0);
   await expect(page.getByRole('status')).toHaveText('會議已刪除。');
 });
 
@@ -4481,10 +4486,10 @@ test('opening a meeting live workspace clears the previous live preview', async 
     await route.fallback();
   });
   await page.goto('/#meeting');
-  await page.getByRole('row', { name: /新測試會議/ }).getByRole('button', { name: '編輯' }).click();
+  await page.locator('.meeting-card').filter({ hasText: '新測試會議' }).getByRole('button', { name: '編輯並開始會議' }).click();
   await page.getByRole('button', { name: '前往即時字幕' }).click();
 
-  await expect(page).toHaveURL(/#live\?meetingId=meeting-2$/);
+  await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-2&tab=live$/);
   await expect(page.getByTestId('cue-empty-state')).toBeVisible();
   await expect(finalCueRows(page)).toHaveCount(0);
   await expect(partialCueRows(page)).toHaveCount(0);
@@ -4703,40 +4708,89 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
 
   await page.goto('/#meetings');
   await expect(page).toHaveURL(/#meetings$/);
-  await expect(page.getByRole('heading', { name: '會議管理' })).toBeVisible();
-  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(3);
-  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText('繁體中文 → 日文');
-  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}/);
-  await expect(page.locator('.meeting-management-data-grid .ag-paging-panel')).toBeHidden();
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
+  await expect(page.locator('.meeting-app-header .brand-block p')).toHaveText('先建立會議並完成設定，再分享給參與者錄音。');
+  await expect(page.locator('.meeting-management-page > .history-header')).toHaveCount(0);
+  const desktopMeetingLayout = await page.locator('.meeting-management-shell').evaluate((shell) => {
+    const header = shell.querySelector('.meeting-app-header')?.getBoundingClientRect();
+    const panel = shell.querySelector('.meeting-management-page > .history-panel')?.getBoundingClientRect();
+    const shellRect = shell.getBoundingClientRect();
+    return {
+      shellWidth: shellRect.width,
+      headerLeft: header?.left ?? 0,
+      headerRight: header?.right ?? 0,
+      headerToPanelGap: panel && header ? panel.top - header.bottom : Infinity
+    };
+  });
+  expect(desktopMeetingLayout.shellWidth).toBeGreaterThanOrEqual(1279);
+  expect(desktopMeetingLayout.headerLeft).toBeLessThanOrEqual(1);
+  expect(desktopMeetingLayout.headerRight).toBeGreaterThanOrEqual(1279);
+  expect(desktopMeetingLayout.headerToPanelGap).toBeLessThan(40);
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(3);
+  const activeCard = page.locator('.meeting-card').filter({ hasText: '產品評審' });
+  await expect(activeCard).toContainText('繁體中文 → 日文');
+  await expect(activeCard.locator('time')).toHaveCount(1);
 
   await page.setViewportSize({ width: 768, height: 800 });
   const narrowMeetingLayout = await page.locator('.meeting-management-page').evaluate((pageElement) => {
     const toolbar = pageElement.querySelector('.meeting-table-toolbar');
     const search = pageElement.querySelector('.meeting-search-field');
     const dictionaryButton = pageElement.querySelector('.meeting-table-toolbar > .button');
-    const tableScroll = pageElement.querySelector('.meeting-table-scroll');
-    const actionButton = pageElement.querySelector('.meeting-actions .button');
+    const cards = pageElement.querySelector('.meeting-card-grid');
+    const actionButton = pageElement.querySelector('.meeting-card-action');
     return {
       toolbarDisplay: toolbar ? getComputedStyle(toolbar).display : '',
       toolbarWraps: search && dictionaryButton ? dictionaryButton.getBoundingClientRect().top > search.getBoundingClientRect().bottom : false,
       pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-      tableCanScrollHorizontally: tableScroll ? tableScroll.scrollWidth > tableScroll.clientWidth : false,
+      cardColumnCount: cards ? getComputedStyle(cards).gridTemplateColumns.split(' ').length : 0,
       actionHeight: actionButton?.getBoundingClientRect().height || 0
     };
   });
   expect(narrowMeetingLayout.toolbarDisplay).toBe('grid');
   expect(narrowMeetingLayout.toolbarWraps).toBe(true);
   expect(narrowMeetingLayout.pageHasHorizontalOverflow).toBe(false);
-  expect(narrowMeetingLayout.tableCanScrollHorizontally).toBe(true);
+  expect(narrowMeetingLayout.cardColumnCount).toBe(1);
   expect(narrowMeetingLayout.actionHeight).toBeGreaterThanOrEqual(44);
 
   await page.getByLabel('搜尋會議').fill('產品');
-  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
-  await expect(page.getByRole('row', { name: /產品評審/ })).toContainText('進行中');
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
+  await expect(activeCard).toContainText('進行中');
 
   await page.getByLabel('搜尋會議').fill('');
   await page.getByLabel('篩選狀態').selectOption('interrupted');
-  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
-  await expect(page.getByRole('row', { name: /客戶訪談/ })).toContainText('已暫停／可繼續');
-  await expect(page.getByRole('row', { name: /客戶訪談/ }).getByRole('button', { name: '繼續即時字幕' })).toBeVisible();
+  const interruptedCard = page.locator('.meeting-card').filter({ hasText: '客戶訪談' });
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
+  await expect(interruptedCard).toContainText('可續錄');
+  await expect(interruptedCard.getByRole('button', { name: '繼續即時字幕' })).toBeVisible();
+});
+
+test('Meeting home card layout captures desktop viewport references', async ({ page }) => {
+  await page.unroute('**/api/meetings');
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: 'meeting-active', name: '董事會策略會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 120000 },
+        { id: 'meeting-ready', name: '產品發布簡報', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 1080000 },
+        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 3600000 },
+        { id: 'meeting-completed', name: '每週團隊同步', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', updatedAt: Date.now() - 86400000 }
+      ])
+    });
+  });
+
+  await page.goto('/#meetings');
+  await page.locator('.meeting-card').first().waitFor();
+
+  for (const [width, height, name, expectedColumns] of [
+    [1920, 900, 'wide-desktop', 4],
+    [1440, 900, 'desktop', 3],
+    [1280, 800, '13-inch', 3],
+    [1279, 768, 'compact-desktop', 2]
+  ]) {
+    await page.setViewportSize({ width, height });
+    await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
+  }
 });

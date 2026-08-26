@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { useCombobox } from 'downshift';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { BookOpen, ChevronDown, Copy, Download, Mic, MicOff, Pause, Play, Plus, Radio, RefreshCw, Settings, Square, Trash2, X } from 'lucide-react';
+import { Activity, ArrowRight, BookOpen, CalendarDays, CheckCircle2, ChevronDown, Clock3, Copy, Download, FileText, Globe2, Mic, MicOff, Pause, Play, Plus, Radio, RefreshCw, Search, Settings, SlidersHorizontal, Square, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -107,7 +107,7 @@ import {
   buildTranslatedAudioFileName,
   pcm16ChunksToWavBlob
 } from './lib/audio.js';
-import './styles.css';
+import './styles/app.css';
 import QRCode from 'qrcode';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -230,6 +230,7 @@ function pageInfoFromLocation() {
     meetingDetailFrom: params.get('from') || '',
     workspaceTab: params.get('tab') || (requestedPage === 'meeting-detail' ? 'history' : 'live'),
     panel: params.get('panel') || (requestedPage === 'glossary' ? 'global-glossary' : ''),
+    createMeeting: params.get('create') === '1',
     statusFilter: params.get('status') || (requestedPage === 'history' ? 'completed' : 'all'),
     shareToken: params.get('token') || '',
     shareCode: params.get('code') || ''
@@ -3456,15 +3457,16 @@ function App() {
   }
 
   const usesMeetingShell = ['live', 'meeting', 'meeting-detail', 'meeting-workspace', 'history', 'retranslate', 'glossary', 'meetings', 'dead-letter-queue'].includes(page);
+  const isMeetingManagementPage = page === 'meeting' || page === 'meetings';
 
   return (
-    <main className={`app-shell ${usesMeetingShell ? 'meeting-app-shell' : ''}`}>
+    <main className={`app-shell ${usesMeetingShell ? 'meeting-app-shell' : ''}${isMeetingManagementPage ? ' meeting-management-shell' : ''}`}>
       {usesMeetingShell ? <header className="app-header meeting-app-header">
         <div className="brand-block">
-          <h1>即時翻譯</h1>
-          <p>會議字幕工作台</p>
+          <h1 id={isMeetingManagementPage ? 'meeting-management-title' : undefined}>{isMeetingManagementPage ? '會議管理' : '即時翻譯'}</h1>
+          <p>{isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : '會議字幕工作台'}</p>
         </div>
-        <button className="button primary meeting-create-header-button" type="button" onClick={() => { window.location.hash = '#meeting'; }} disabled={isNavigationLocked}>
+        <button className="button primary meeting-create-header-button" type="button" onClick={() => { window.location.hash = '#meeting?create=1'; }} disabled={isNavigationLocked}>
           <Plus size={18} aria-hidden="true" />
           建立會議
         </button>
@@ -3479,6 +3481,7 @@ function App() {
           onOpenHistory={(meetingId) => openMeetingWorkspaceTab(meetingId, 'history')}
           initialStatusFilter={workspaceInfo.statusFilter}
           initialPanel={workspaceInfo.panel}
+          initialCreate={workspaceInfo.createMeeting}
         />
       ) : null}
 
@@ -3504,7 +3507,7 @@ function App() {
         />
       ) : null}
 
-      <section className="feature-page live-page" aria-label="即時字幕工作區" hidden={!isLiveSurface}>
+      <section className={`feature-page live-page meeting-workspace-live-surface${isLiveSurface ? ' is-active' : ''}`} aria-label="即時字幕工作區" hidden={!isLiveSurface}>
         <div className="live-workspace-grid">
         <section className="control-panel live-settings-card">
           <div className="title-block">
@@ -3783,7 +3786,7 @@ function App() {
       />
 
       {page === 'history' ? (
-      <section className="feature-page history-page meeting-management-page" aria-labelledby="history-page-title">
+      <section className="feature-page meeting-center-page history-page meeting-management-page" aria-labelledby="history-page-title">
         <div className="history-header">
           <div>
             <h2 className="workspace-page-heading" id="history-page-title">翻譯紀錄</h2>
@@ -3822,7 +3825,7 @@ function App() {
       ) : null}
 
       {page === 'dead-letter-queue' ? (
-      <section className="feature-page dead-letter-queue-page" aria-labelledby="dead-letter-queue-page-title">
+      <section className="feature-page meeting-center-page dead-letter-queue-page" aria-labelledby="dead-letter-queue-page-title">
         <DeadLetterQueuePanel
           items={deadLetterQueue.items}
           size={deadLetterQueue.size}
@@ -3837,7 +3840,7 @@ function App() {
       ) : null}
 
       {page === 'retranslate' ? (
-      <section className="feature-page retranslation-page" aria-labelledby="retranslation-page-title">
+      <section className="feature-page meeting-center-page retranslation-page" aria-labelledby="retranslation-page-title">
         <RetranslationWorkflow
           titleId="retranslation-page-title"
           records={historyRecords}
@@ -3848,7 +3851,7 @@ function App() {
       ) : null}
 
       {page === 'glossary' ? (
-      <section className="feature-page glossary-page" aria-labelledby="glossary-page-title">
+      <section className="feature-page meeting-center-page glossary-page" aria-labelledby="glossary-page-title">
         <div className="history-header">
           <div>
             <h2 className="workspace-page-heading" id="glossary-page-title">翻譯字典</h2>
@@ -4062,7 +4065,7 @@ function WatchPage({ token, code }) {
   const sourceItems = detail?.sourceTranscript?.items || [];
   const translationItems = detail?.selectedTranslationOutput?.items || [];
   return (
-    <main className="app-shell watch-page">
+    <main className="app-shell watch-page live-viewer-page">
       <header className="app-header">
         <div className="brand-block">
           <h1>即時翻譯觀看</h1>
@@ -4180,7 +4183,7 @@ function MeetingViewerPage({ token, code }) {
   }
 
   return (
-    <main className="app-shell watch-page meeting-viewer-page">
+    <main className="app-shell watch-page live-viewer-page meeting-viewer-page">
       <header className="app-header">
         <div className="brand-block">
           <h1>{detail?.meeting?.name || 'Meeting Viewer'}</h1>
@@ -4535,7 +4538,7 @@ function RecorderPage({ token, code = '' }) {
       });
     }
   }, [token]);
-  return <main className="app-shell watch-page">
+  return <main className="app-shell watch-page recorder-page">
     <header className="app-header"><div className="brand-block"><h1>{detail?.session?.name || '會議錄音'}</h1><p>Recorder · {detail?.session?.sourceLanguageCode || ''} → {detail?.session?.targetLanguageCode || ''}</p></div><span className="status-pill">{lease ? '已取得錄音控制權' : '尚未開始錄音'}</span></header>
     {loading ? <p className="history-empty">正在載入會議…</p> : null}
     {error ? <p className="error-message" role="alert">{error}</p> : null}
@@ -5325,7 +5328,7 @@ function MeetingHistoryItem({ record, onViewDetails }) {
   );
 }
 
-function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter = 'all', initialPanel = '' }) {
+function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter = 'all', initialPanel = '', initialCreate = false }) {
   const managementClientRef = useRef(createMeetingManagementApiClient());
   const readClientRef = useRef(createMeetingReadApiClient());
   const glossaryClientRef = useRef(createGlossaryApiClient());
@@ -5359,6 +5362,10 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
   useEffect(() => {
     if (initialPanel === 'global-glossary') setIsGlobalGlossaryPanelOpen(true);
   }, [initialPanel]);
+
+  useEffect(() => {
+    if (initialCreate) openCreateForm();
+  }, [initialCreate]);
 
   const filteredMeetings = useMemo(() => filterMeetingManagementItems(meetings, {
     query,
@@ -5533,80 +5540,46 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
     }
   }
 
-  const meetingColumnDefs = useMemo(() => [
-    {
-      headerName: '會議名稱',
-      colId: 'meeting-name',
-      minWidth: 180,
-      flex: 1.5,
-      wrapText: false,
-      autoHeight: false,
-      valueGetter: ({ data }) => data?.name || data?.id || '未命名會議',
-      cellRenderer: ({ data }) => <strong className="meeting-name-cell">{data?.name || data?.id || '未命名會議'}</strong>
-    },
-    {
-      headerName: '狀態',
-      colId: 'meeting-status',
-      minWidth: 110,
-      flex: 0.85,
-      wrapText: false,
-      autoHeight: false,
-      valueGetter: ({ data }) => data?.status || '',
-      cellRenderer: ({ data }) => <span className={`history-status history-status-${data?.status || 'unknown'}`}>{meetingManagementStatusLabel(data?.status)}</span>
-    },
-    {
-      headerName: '語言',
-      colId: 'meeting-language',
-      minWidth: 170,
-      flex: 1.2,
-      wrapText: false,
-      autoHeight: false,
-      valueGetter: ({ data }) => meetingLanguageLabel(data),
-      cellRenderer: ({ data }) => <span>{meetingLanguageLabel(data)}</span>
-    },
-    {
-      headerName: '最後更新',
-      colId: 'updated-time',
-      minWidth: 155,
-      flex: 1.1,
-      wrapText: false,
-      autoHeight: false,
-      valueGetter: ({ data }) => meetingManagementLastUpdated(data),
-      cellRenderer: ({ data }) => {
-        const fullTime = formatRecordTime(meetingManagementLastUpdated(data));
-        return <time dateTime={meetingManagementLastUpdated(data) || undefined} title={fullTime}>{formatMeetingListTime(meetingManagementLastUpdated(data))}</time>;
-      }
-    },
-    {
-      headerName: '操作',
-      colId: 'meeting-actions',
-      minWidth: 190,
-      flex: 1.2,
-      wrapText: false,
-      autoHeight: false,
-      sortable: false,
-      cellRenderer: ({ data }) => (
-        <div className="meeting-actions">
-            <button className="button detail-button primary-row-action" type="button" onClick={() => {
-            if (data?.status === 'created') selectMeeting(data.id);
-            else if (data?.status === 'completed') onOpenHistory(data.id);
-            else onOpenLive(data.id);
-          }}>
-            {data?.status === 'active' ? '開啟即時字幕' : data?.status === 'interrupted' ? '繼續即時字幕' : data?.status === 'completed' ? '查看翻譯紀錄' : '編輯並開始會議'}
-          </button>
-        </div>
-      )
-    }
-  ], []);
+  function openMeetingCard(meeting) {
+    if (!meeting?.id) return;
+    if (meeting.status === 'created') selectMeeting(meeting.id);
+    else if (meeting.status === 'completed') onOpenHistory(meeting.id);
+    else onOpenLive(meeting.id);
+  }
+
+  function meetingCardActionLabel(status) {
+    if (status === 'active') return '開啟即時字幕';
+    if (status === 'interrupted') return '繼續即時字幕';
+    if (status === 'completed') return '查看翻譯紀錄';
+    return '編輯並開始會議';
+  }
+
+  function meetingCardStatusLabel(status) {
+    if (status === 'interrupted') return '可續錄';
+    return meetingManagementStatusLabel(status);
+  }
+
+  function meetingCardDescription(status) {
+    if (status === 'active') return '即時字幕正在進行中，可開啟工作區查看。';
+    if (status === 'interrupted') return '會議已暫停，現有字幕與翻譯可繼續錄製。';
+    if (status === 'completed') return '會議已完成，翻譯紀錄與字幕已保存。';
+    return '會議設定已建立，準備好後即可開始。';
+  }
+
+  function meetingCardStatusIcon(status) {
+    if (status === 'active') return Activity;
+    if (status === 'completed') return CheckCircle2;
+    if (status === 'created' || status === 'interrupted') return CalendarDays;
+    return FileText;
+  }
 
   return (
-    <section className="feature-page meeting-management-page meetings-page" aria-labelledby="meeting-management-title">
-      <div className="history-header">
-        <div><h2 className="workspace-page-heading" id="meeting-management-title">會議管理</h2><p className="history-description">先建立會議並完成設定，再分享給參與者錄音。</p></div>
-        {viewMode === 'form' ? (
+    <section className="feature-page meeting-center-page meeting-management-page meetings-page" aria-labelledby="meeting-management-title">
+      {viewMode === 'form' ? (
+        <div className="meeting-management-back-row">
           <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       <div className="meeting-management-status">
         {error ? <p className="error-message" role="alert">{error}</p> : null}
         {notice ? <p className="success-message" role="status">{notice}</p> : null}
@@ -5696,33 +5669,77 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
         <div className="meeting-table-toolbar">
           <label className="field meeting-search-field">
             <span>搜尋會議</span>
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋名稱、語言或狀態" />
+            <div className="meeting-toolbar-input">
+              <Search size={20} aria-hidden="true" />
+              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋名稱、語言或狀態" />
+            </div>
           </label>
           <label className="field meeting-status-filter-field">
             <span>篩選狀態</span>
-            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              {MEETING_STATUS_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
-            </select>
+            <div className="meeting-toolbar-input meeting-toolbar-select">
+              <SlidersHorizontal size={20} aria-hidden="true" />
+              <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                {MEETING_STATUS_FILTERS.map((filter) => <option key={filter.value} value={filter.value}>{filter.label}</option>)}
+              </select>
+            </div>
           </label>
-          <button className="button secondary" type="button" onClick={() => setIsGlobalGlossaryPanelOpen(true)}>全域字典</button>
+          <button className="button secondary meeting-glossary-toolbar-button" type="button" onClick={() => setIsGlobalGlossaryPanelOpen(true)}>
+            <BookOpen size={19} aria-hidden="true" />
+            全域字典
+          </button>
         </div>
         {meetings.length === 0 ? <p className="history-empty">尚無會議。建立第一場會議開始使用。</p> : null}
         {meetings.length > 0 && filteredMeetings.length === 0 ? <p className="history-empty">找不到符合條件的會議。</p> : null}
-        <div className="meeting-table-scroll">
-          <AgGridReact
-            {...dataGridProps('meeting-management-data-grid', { hidePaginationPanel: filteredMeetings.length <= 12 })}
-            className={`data-grid meeting-management-data-grid${filteredMeetings.length <= 12 ? ' is-pagination-hidden' : ''}`}
-            aria-label="既有會議列表"
-            columnDefs={meetingColumnDefs}
-            rowData={filteredMeetings}
-            onRowClicked={({ data }) => {
-              if (!data?.id) return;
-              if (data.status === 'created') selectMeeting(data.id);
-              else if (data.status === 'completed') onOpenHistory(data.id);
-              else onOpenLive(data.id);
-            }}
-            getRowId={({ data }) => data.id}
-          />
+        <div className="meeting-card-grid" aria-label="既有會議列表">
+          {filteredMeetings.map((meeting) => {
+            const StatusIcon = meetingCardStatusIcon(meeting.status);
+            const updatedAt = meetingManagementLastUpdated(meeting);
+            const fullTime = formatRecordTime(updatedAt);
+            return (
+              <article
+                className={`meeting-card meeting-card-${meeting.status || 'unknown'}`}
+                key={meeting.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => openMeetingCard(meeting)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    openMeetingCard(meeting);
+                  }
+                }}
+                aria-label={`${meeting.name || meeting.id || '未命名會議'}，${meetingCardStatusLabel(meeting.status)}`}
+              >
+                <div className="meeting-card-topline">
+                  <span className="meeting-status-badge">
+                    <span className="meeting-status-dot" aria-hidden="true" />
+                    {meetingCardStatusLabel(meeting.status)}
+                  </span>
+                  <span className="meeting-card-icon" aria-hidden="true"><StatusIcon size={27} strokeWidth={1.8} /></span>
+                </div>
+                <h3>{meeting.name || meeting.id || '未命名會議'}</h3>
+                <div className="meeting-card-metadata">
+                  <span><Globe2 size={18} aria-hidden="true" />{meetingLanguageLabel(meeting)}</span>
+                  <span><Clock3 size={18} aria-hidden="true" /><time dateTime={updatedAt || undefined} title={fullTime}>{formatMeetingListTime(updatedAt)}</time></span>
+                </div>
+                <div className="meeting-card-divider" />
+                <div className="meeting-card-footer">
+                  <p><StatusIcon size={19} aria-hidden="true" />{meetingCardDescription(meeting.status)}</p>
+                  <button
+                    className="button meeting-card-action"
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openMeetingCard(meeting);
+                    }}
+                  >
+                    {meetingCardActionLabel(meeting.status)}
+                    <ArrowRight size={18} aria-hidden="true" />
+                  </button>
+                </div>
+              </article>
+            );
+          })}
         </div>
       </section> : null}
       <LiveGlossaryDrawer

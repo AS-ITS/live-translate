@@ -1,0 +1,10 @@
+.recorder-page { width: min(100%, 72rem); min-height: 100dvh; margin: 0 auto; padding: var(--space-6) var(--page-gutter); }
+.recorder-page .app-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
+.recorder-page > .button { margin: 0 var(--space-2) var(--space-3) 0; }
+.recorder-page .device-note { margin: var(--space-2) 0 var(--space-5); }
+.recorder-page .transcript-panel { display: grid; gap: var(--space-5); margin-top: var(--space-5); }
+.recorder-page .cue-list { max-height: min(50dvh, 32rem); overflow: auto; }
+.recorder-page .transcript-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+.recorder-page .transcript-columns h2 { margin: 0 0 var(--space-3); font-size: var(--text-md); }
+.recorder-page .transcript-columns p { margin: 0 0 var(--space-2); line-height: 1.7; white-space: pre-wrap; }
+@media (max-width: 600px) { .recorder-page { padding-inline: var(--space-3); } .recorder-page .app-header, .recorder-page .transcript-columns { align-items: flex-start; grid-template-columns: 1fr; flex-direction: column; } }

@@ -59,18 +59,27 @@ The home route displays only the Meeting Management list. The left-side feature
 navigation and legacy Header feature menu are removed; the product name and a
 single `＋ 建立會議` action remain in the top Header.
 
-The list uses the existing AG Grid Community implementation and provides:
+The list uses a responsive light card grid. AG Grid Community remains available
+for other management views and is not removed from the frontend dependencies.
+Each Meeting card provides:
 
 - Meeting name.
-- Display status: in progress, paused/resumable, or completed.
-- Source and target languages.
-- Start time and last update time.
+- Display status: in progress, resumable, created, or completed. The persisted
+  `interrupted` status is displayed as paused/resumable because the domain does
+  not persist a separate `paused` state.
+- Source and target languages, plus the last updated time.
+- A concise status explanation backed only by the Meeting read model.
 - Name search and status filtering.
 - A status-appropriate single primary action: open live subtitles, continue
   live subtitles, view translation history, or edit/start a draft Meeting.
 
-The persisted `interrupted` Meeting status is presented as paused/resumable;
-no additional persisted status is introduced solely for the display label.
+Cards are arranged in two columns on desktop and one column below 1024px. The
+entire card opens the appropriate Meeting Workspace or edit flow; its primary
+button stops event propagation so it does not trigger the card navigation twice.
+Draft deletion remains in the Meeting settings danger zone rather than on the
+card. The home route keeps only the product brand and the single `＋ 建立會議`
+Header action; the existing search, status filter, and global glossary controls
+remain in the toolbar.
 
 ### Meeting Workspace
 

@@ -28,8 +28,10 @@ and Meeting-private glossary entries are isolated, persisted in Meeting and
 Segment snapshots, and private entries are excluded from Viewer payloads.
 Issue #29 Milestone 4 is completed: Meeting-scoped Viewer shares support token,
 short-code, QR entry, sanitized historical Cue snapshots, and windowed
-bilingual Cue rendering. Cue broadcast, reconnect gap recovery, and latency SLA
-validation remain pending for Milestone 5.
+bilingual Cue rendering. Issue #29 Milestone 5 is completed: finalized Cues are
+published through an independent authenticated path, Viewer SSE supports
+cursor replay and gap recovery, and deterministic latency SLA validation is in
+place. Cross-process delivery and durable replay remain deferred.
 
 Execution status push is now available through a process-local authenticated
 WebSocket broadcaster. Cross-process pub/sub, durable event history, and replay

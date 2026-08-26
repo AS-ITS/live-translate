@@ -150,8 +150,10 @@ checkpoint as the durable source of complete final Cues, while a process-local
 Meeting broadcaster delivers finalized `cue.append` events without waiting for
 checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
 cursor merge; it does not change the direct browser-to-Gemini path or Recorder
-authorization model. This remains specification-only until the phased
-implementation is approved and started.
+authorization model. Milestone 5 implements this path with an independent Cue
+publish endpoint, bounded in-memory replay, SSE gap recovery, and deterministic
+Viewer latency validation. Cross-process delivery and durable replay remain
+deferred.
 
 ## 3. Runtime Architecture
 

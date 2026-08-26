@@ -64,14 +64,21 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await page.route('**/api/shared-meetings/meeting-viewer-token', async (route) => route.fulfill({ json: {
     capability: { role: 'viewer', meetingId: 'meeting-1' },
     meeting: { id: 'meeting-1', name: '產品會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
-    cues
+    cues: [cues[0]],
+    cursor: { eventId: 0, cueSequence: 1 }
   } }));
+  await page.route('**/api/shared-meetings/meeting-viewer-token/events**', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `id: 1\nevent: cue.append\ndata: ${JSON.stringify({ eventId: 1, type: 'cue.append', meetingId: 'meeting-1', segmentId: 'segment-1', cue: cues[1] })}\n\n`
+  }));
 
   await page.goto('/#viewer?token=meeting-viewer-token');
 
   await expect(page.getByRole('heading', { name: '產品會議' })).toBeVisible();
   await expect(page.getByText('原文 1', { exact: true })).toBeVisible();
   await expect(page.getByText('Translation 1', { exact: true })).toBeVisible();
+  await expect(page.getByText('Translation 2', { exact: true })).toBeVisible();
   expect(await page.getByTestId('meeting-viewer-cue-row').count()).toBeLessThan(40);
   await expect(page.getByRole('button', { name: '回到最新' })).toBeVisible();
 });

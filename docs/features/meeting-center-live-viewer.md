@@ -2,10 +2,14 @@
 
 ## Status
 
+Milestone 5 is implemented: Meeting Viewer now receives process-local Final Cue
+events through SSE, recovers snapshot gaps on reconnect, merges duplicate and
+refined Cues deterministically, and has local deterministic latency SLA
+validation. Cross-process event delivery and durable replay remain deferred.
+
 Milestone 4 is implemented: Meeting Viewer shares now support Meeting-scoped
 viewer links, short codes, QR entry, sanitized historical Cue snapshots, and a
-windowed bilingual Cue renderer. Cue broadcast, reconnect gap recovery, and
-latency validation remain planned for Milestone 5.
+windowed bilingual Cue renderer.
 
 Milestone 3 is implemented: Meeting Management remains the canonical
 application home and opens a status-aware Meeting Workspace with Live
@@ -242,7 +246,7 @@ full benchmark report.
 4. Meeting Viewer URL, QR, short code, complete Cue reading, and virtualized
    rendering. **Completed.**
 5. Meeting Cue broadcast, reconnect gap recovery, latency instrumentation, and
-   SLA tests.
+   SLA tests. **Completed.**
 
 Each phase must preserve existing recording, sharing, checkpoint, export, and
 historical data behavior before the next phase begins.

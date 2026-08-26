@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 完成 #29 Milestone 5：新增獨立 Meeting Cue publish API、process-local SSE broadcaster、cursor replay／gap recovery、Viewer 去重與 refinement merge，以及 deterministic latency SLA 測試；跨程序事件傳遞與 durable replay 仍 deferred。
+
 - 完成 #29 Milestone 4：新增 Meeting Viewer token／短碼／QR 分享、歷史 Final Cue 唯讀快照與 windowed 雙語字幕渲染；即時 Cue 廣播與重連補洞留待 Milestone 5。
 
 - 完成 #29 Milestone 3：新增 Meeting 私有字典，與全域字典在資料、Workspace UI、翻譯套用與 Segment snapshot 中隔離；私有字典不會出現在全域字典或 Viewer payload，既有 `glossaryEntries` 資料維持相容。

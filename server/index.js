@@ -12,6 +12,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies,
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
+import { createMeetingEventBroadcaster } from '../src/infrastructure/meetingEventBroadcaster.js';
 import { createRecorderGrantService } from '../src/application/recorderGrantService.js';
 import { authorizeRecorderRequest, hasRecorderHeaders } from '../src/application/recorderAuthorization.js';
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
@@ -532,6 +533,7 @@ export function createRequestHandler(options = {}) {
     recorderLeaseService,
     recorderGrantService = createRecorderGrantService(),
     sessionEventBroadcaster = createSessionEventBroadcaster(),
+    meetingEventBroadcaster = createMeetingEventBroadcaster(),
     executionEventBroadcaster,
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
@@ -571,6 +573,7 @@ export function createRequestHandler(options = {}) {
       recorderLeaseService,
       recorderGrantService,
       sessionEventBroadcaster,
+      meetingEventBroadcaster,
       sessionSnapshotMaxBytes,
       meetingCheckpointMaxBytes,
       sessionAudioMaxBytes,
@@ -586,7 +589,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1103,7 +1106,57 @@ async function handleRequestWithSessionReadController(
       return;
     }
     const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
+    if (share.role === 'viewer') {
+      const cursor = meetingEventBroadcaster.cursor(share.meetingId);
+      payload.cursor = {
+        eventId: cursor.eventId,
+        cueSequence: Math.max(cursor.cueSequence, ...((payload.cues || []).map((cue) => Number(cue.sequence) || 0)))
+      };
+    }
     sendJson(res, 200, { ...payload, capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
+    try {
+      if (!meetingEventBroadcaster || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
+      const body = await readJson(req, { maxBytes: 100_000 });
+      const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+      if (!existing?.sessionRecord || existing.sessionRecord.meetingId !== meetingId || existing.sessionRecord.segmentId !== segmentId) {
+        throw createHttpError('recorder_session_mismatch');
+      }
+      if (hasRecorderHeaders(req)) {
+        await authorizeRecorderMeetingWrite({
+          req,
+          meetingId,
+          segmentId,
+          sessionRepository,
+          sessionShareService,
+          recorderGrantService,
+          recorderLeaseService
+        });
+      }
+      const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
+      const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
+      statusCode = 202;
+      sendJson(res, statusCode, { eventId: event.eventId, cueSequence: event.cue.sequence }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isSharedMeetingEventsPath(path)) {
+    const share = await resolveSharedMeeting(path, sessionShareService);
+    if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
+      sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
+      return;
+    }
+    openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
     return;
   }
 
@@ -1832,7 +1885,8 @@ function isPublicApiPath(method, path) {
   return (method === 'GET' && (
     isSharedSessionDetailPath(path) ||
     isSharedSessionEventsPath(path) ||
-    isSharedMeetingDetailPath(path)
+    isSharedMeetingDetailPath(path) ||
+    isSharedMeetingEventsPath(path)
   )) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
@@ -1843,6 +1897,7 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;
   if (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) return true;
+  if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
   return false;
 }
@@ -1981,6 +2036,16 @@ function isMeetingShareCollectionPath(path) {
 
 function isMeetingSharePath(path) {
   return /^\/api\/meetings\/[^/]+\/shares\/[^/]+$/.test(path);
+}
+
+function isMeetingCuePublishPath(path) {
+  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/.test(path);
+}
+
+function parseMeetingCuePublishPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/cues$/);
+  if (!match) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(match[1]), segmentId: safeDecodePathComponent(match[2]) };
 }
 
 function parseMeetingShareCollectionPath(path) {
@@ -2620,7 +2685,13 @@ function isSharedSessionEventsPath(path) {
 
 function isSharedMeetingDetailPath(path) {
   return path.startsWith('/api/shared-meetings/') && !path.endsWith('/start') &&
+    !path.endsWith('/events') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
+}
+
+function isSharedMeetingEventsPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
 }
 
 function isSharedMeetingStartPath(path) {
@@ -2635,7 +2706,7 @@ async function assertMeetingShareMutable(meetingId, meetingRepository) {
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/start$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }
@@ -2679,6 +2750,73 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
     writeSseEvent(res, { id: event.id, type: event.type, data: publicViewerDetail(event.data) });
   });
   req.on('close', unsubscribe);
+}
+
+function openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, afterEventId = 0) {
+  const replay = meetingEventBroadcaster.eventsSince(share.meetingId, afterEventId);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'X-Content-Type-Options': 'nosniff'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (replay.gap) {
+    writeSseEvent(res, { id: replay.cursor.eventId, type: 'meeting.gap', data: { meetingId: share.meetingId, cursor: replay.cursor } });
+  }
+  for (const event of replay.events) writeSseEvent(res, { id: event.eventId, type: event.type, data: publicMeetingCueEvent(event) });
+  if (replay.events.length === 0 && !replay.gap) res.write(': keep-alive\n\n');
+  const unsubscribe = meetingEventBroadcaster.subscribe(share.meetingId, (event) => {
+    writeSseEvent(res, { id: event.eventId, type: event.type, data: publicMeetingCueEvent(event) });
+  });
+  req.on('close', unsubscribe);
+}
+
+function parseAfterEventId(req) {
+  const url = new URL(req.url || '/', 'http://localhost');
+  const queryValue = url.searchParams.get('after');
+  const headerValue = req.headers?.['last-event-id'];
+  const parsed = Number.parseInt(queryValue || headerValue || '0', 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw createHttpError('subtitle_cue_invalid');
+  const cue = {
+    cueId: value.cueId,
+    sessionId,
+    segmentId,
+    sequence: value.sequence,
+    startTimeMs: value.startTimeMs,
+    endTimeMs: value.endTimeMs,
+    sourceLanguageCode: value.sourceLanguageCode || null,
+    targetLanguageCode: value.targetLanguageCode || null,
+    sourceText: value.sourceText,
+    translatedText: value.translatedText,
+    status: value.status,
+    finalizedReason: value.finalizedReason || null,
+    ...(value.refinement ? { refinement: value.refinement } : {})
+  };
+  if (typeof cue.cueId !== 'string' || !cue.cueId || cue.status !== 'final' ||
+      !Number.isInteger(cue.sequence) || cue.sequence < 1 ||
+      !Number.isFinite(cue.startTimeMs) || cue.startTimeMs < 0 ||
+      (cue.endTimeMs !== null && cue.endTimeMs !== undefined && (!Number.isFinite(cue.endTimeMs) || cue.endTimeMs < cue.startTimeMs)) ||
+      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string') {
+    throw createHttpError('subtitle_cue_invalid');
+  }
+  return { ...cue, meetingId };
+}
+
+function publicMeetingCueEvent(event) {
+  return {
+    eventId: event.eventId,
+    type: event.type,
+    meetingId: event.meetingId,
+    segmentId: event.segmentId,
+    cue: event.cue,
+    timing: event.timing
+  };
 }
 
 function publicViewerDetail(detail) {

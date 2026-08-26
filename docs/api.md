@@ -18,7 +18,20 @@ Milestone 4 Meeting Viewer sharing is available through
 `GET /api/shared-meetings/code/:shortCode`; the response contains sanitized
 Meeting metadata and historical final Cues, but no glossary, audio artifact,
 Recorder lease, device, or credential data. Live Cue events and reconnect
-recovery remain Milestone 5.
+recovery are provided by the Milestone 5 SSE contract below.
+
+Milestone 5 adds `POST /api/meetings/:meetingId/segments/:segmentId/cues` for
+finalized Cue publication. Owner requests use the existing Access Token gate;
+Recorder requests use the existing Recorder grant, lease, fence, and session
+headers. The endpoint validates the Meeting／Segment／Session relationship,
+publishes without waiting for checkpoint persistence, and returns the Meeting
+event cursor.
+
+Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
+variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
+Events are process-local and replayable only within the bounded in-memory
+history. When the cursor is too old, the stream emits `meeting.gap` and the
+Viewer refetches the REST snapshot.
 
 ## Session sharing
 

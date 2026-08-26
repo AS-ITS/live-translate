@@ -11,6 +11,18 @@ and reconnect merge. The Viewer latency SLA will use a local deterministic
 synthetic broadcaster test; it must not call Gemini or overwrite full benchmark
 reports. See [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
 
+Milestone 5 realtime coverage includes Meeting broadcaster sequencing and
+bounded replay, Cue publish HTTP authorization, Meeting Viewer SSE delivery,
+snapshot gap recovery, duplicate/refinement merge, and deterministic latency
+measurements.
+
+Run the focused realtime tests:
+
+```bash
+node --test tests/unit/meetingEventBroadcaster.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingCheckpointHttpApi.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/sessionSharing.spec.js
+```
+
 ## Test Responsibility Boundaries
 
 - Unit tests own pure rules, state transitions, input matrices, and failure

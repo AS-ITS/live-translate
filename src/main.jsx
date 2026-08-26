@@ -18,6 +18,9 @@ import { createSessionSnapshotApiClient } from './lib/sessionSnapshotApiClient.j
 import { createSessionCommandApiClient } from './lib/sessionCommandApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
+import { createMeetingCueApiClient } from './lib/meetingCueApiClient.js';
+import { applyMeetingCueEvent, meetingEventGapDetected, mergeMeetingViewerSnapshot } from './lib/meetingViewerState.js';
+import { viewerLatencySample } from './lib/meetingViewerLatency.js';
 import {
   checkpointChunksForTranscriptItems,
   createMeetingCheckpointSyncCoordinator
@@ -429,6 +432,7 @@ function App() {
   const sessionSnapshotSyncCoordinatorRef = useRef(null);
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
+  const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
   const meetingCheckpointSyncCoordinatorRef = useRef(null);
   const segmentSwitchOrchestratorRef = useRef(null);
   const activeMeetingCheckpointRef = useRef(null);
@@ -2194,7 +2198,21 @@ function App() {
       return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
     });
     const checkpoint = cueCheckpointForState(next);
+    void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
     meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
+  }
+
+  async function publishMeetingCues(cues, meetingCheckpoint, sessionId) {
+    if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
+    await Promise.all(cues.filter((cue) => cue?.status === 'final').map((cue) => (
+      meetingCueApiClientRef.current.publish({
+        meetingId: meetingCheckpoint.meetingId,
+        segmentId: meetingCheckpoint.segmentId,
+        sessionId,
+        cue,
+        producedAt: cue.finalizedAt || Date.now()
+      }).catch(() => null)
+    )));
   }
 
   function cueCheckpointForState(state) {
@@ -4032,6 +4050,9 @@ function MeetingViewerPage({ token, code }) {
   const [error, setError] = useState('');
   const [scrollTop, setScrollTop] = useState(0);
   const viewportRef = useRef(null);
+  const detailRef = useRef(null);
+  const eventSourceRef = useRef(null);
+  const latencySamplesRef = useRef([]);
   const rowHeight = 88;
   const viewportHeight = 560;
 
@@ -4045,14 +4066,56 @@ function MeetingViewerPage({ token, code }) {
       ? `/api/shared-meetings/${encodeURIComponent(token)}`
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     let cancelled = false;
-    fetch(basePath)
-      .then(async (response) => {
-        if (!response.ok) throw new Error('分享連結無效或已過期。');
-        return response.json();
-      })
-      .then((value) => { if (!cancelled) setDetail(value); })
-      .catch((value) => { if (!cancelled) setError(value.message); });
-    return () => { cancelled = true; };
+    async function fetchSnapshot() {
+      const response = await fetch(basePath);
+      if (!response.ok) throw new Error('分享連結無效或已過期。');
+      const value = await response.json();
+      if (cancelled) return value;
+      const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
+      detailRef.current = merged;
+      setDetail(merged);
+      return merged;
+    }
+    function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
+      if (cancelled) return;
+      eventSourceRef.current?.close();
+      const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
+      eventSourceRef.current = events;
+      events.onopen = () => setError('');
+      events.addEventListener('cue.append', (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          const receivedAt = Date.now();
+          if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
+            void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+            return;
+          }
+          const next = applyMeetingCueEvent(detailRef.current, payload);
+          detailRef.current = next;
+          setDetail(next);
+          requestAnimationFrame(() => {
+            const sample = viewerLatencySample({ ...payload, timing: { ...(payload.timing || {}), receivedAt } }, { renderedAt: Date.now() });
+            if (sample) latencySamplesRef.current.push(sample);
+          });
+        } catch {
+          if (!cancelled) setError('無法讀取即時字幕。');
+        }
+      });
+      events.addEventListener('meeting.gap', () => {
+        void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+      });
+      events.onerror = () => {
+        if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+      };
+    }
+    void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
+      if (!cancelled) setError(value.message);
+    });
+    return () => {
+      cancelled = true;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    };
   }, [token, code]);
 
   const cues = useMemo(() => {
@@ -4143,6 +4206,7 @@ function RecorderPage({ token, code = '' }) {
   const leaseRef = useRef(null);
   const grantRef = useRef('');
   const cueStateRef = useRef(createSubtitleCueState());
+  const meetingCueApiClientRef = useRef(createMeetingCueApiClient());
   const cueTimeOriginRef = useRef(Date.now());
   useEffect(() => {
     if (!token && !code) { setError('錄音連結無效或已過期。'); setLoading(false); return undefined; }
@@ -4287,6 +4351,7 @@ function RecorderPage({ token, code = '' }) {
     transcriptSyncTimerRef.current = window.setTimeout(() => { void syncSnapshot('active'); }, 250);
   }
   function applyRecorderCueEvent(event) {
+    const current = cueStateRef.current;
     const next = applySubtitleCueEvent(cueStateRef.current, event, {
       sessionId: detail?.session?.id,
       segmentId: detail?.session?.segmentId || null,
@@ -4295,8 +4360,10 @@ function RecorderPage({ token, code = '' }) {
     if (next === cueStateRef.current) return;
     cueStateRef.current = next;
     setCueState(next);
+    void publishRecorderCues(current, next);
   }
   function finalizeRecorderCues(reason) {
+    const current = cueStateRef.current;
     const next = finalizePendingSubtitleCue(cueStateRef.current, {
       sessionId: detail?.session?.id,
       segmentId: detail?.session?.segmentId || null,
@@ -4305,6 +4372,25 @@ function RecorderPage({ token, code = '' }) {
     });
     cueStateRef.current = next;
     setCueState(next);
+    void publishRecorderCues(current, next);
+  }
+  async function publishRecorderCues(previous, next) {
+    if (!detail?.session?.meetingId || !detail?.session?.segmentId || !detail?.session?.id) return;
+    const previousById = new Map((previous?.finalCues || []).map((cue) => [cue.cueId, cue]));
+    const changed = (next?.finalCues || []).filter((cue) => {
+      const previousCue = previousById.get(cue.cueId);
+      return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
+    });
+    await Promise.all(changed.filter((cue) => cue.status === 'final').map((cue) => (
+      meetingCueApiClientRef.current.publish({
+        meetingId: detail.session.meetingId,
+        segmentId: detail.session.segmentId,
+        sessionId: detail.session.id,
+        cue,
+        producedAt: cue.finalizedAt || Date.now(),
+        headers: recorderHeaders()
+      }).catch(() => null)
+    )));
   }
   async function startRecording() {
     setError('');

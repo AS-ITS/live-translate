@@ -133,6 +133,37 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   }
 });
 
+test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persistence', async () => {
+  let meetingId = null;
+  const sessionRepository = {
+    async getSessionRecord() {
+      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
+    }
+  };
+  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService, sessionRepository, meetingEventBroadcaster });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
+  meetingId = created.meeting.id;
+  const share = (await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  })).json().share;
+  const published = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/segment-1/cues`,
+    body: JSON.stringify({ sessionId: 'session-live', producedAt: 10, cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-1' }) })
+  });
+  assert.equal(published.status, 202);
+  assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
+
+  const events = await request(handler, { method: 'GET', url: `/api/shared-meetings/${share.token}/events?after=0` });
+  assert.equal(events.status, 200);
+  assert.match(events.body, /event: cue\.append/);
+  assert.match(events.body, /"translatedText":"hello"/);
+});
+
 test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
   const handler = createHandler();
   const created = (await request(handler, {
@@ -585,7 +616,7 @@ test('completes an interrupted meeting through the HTTP API', async () => {
   assert.equal(response.json().meeting.status, 'completed');
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -604,10 +635,12 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) 
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
+    ...(sessionRepository ? { sessionRepository } : {}),
     meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
     ...(sessionShareService ? { sessionShareService } : {}),
+    ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }
@@ -680,6 +713,9 @@ async function request(handler, { method = 'GET', url = '/', body = '', headers 
     writeHead(status, responseHeaders) {
       this.statusCode = status;
       this.headers = responseHeaders;
+    },
+    write(chunk) {
+      chunks.push(Buffer.from(chunk));
     },
     end(chunk) {
       if (chunk) chunks.push(Buffer.from(chunk));

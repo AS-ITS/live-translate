@@ -1681,3 +1681,4 @@ These items are intentionally deferred:
 # Unreleased
 
 - Added meeting-scoped glossary snapshots. Users can select live glossary terms before starting a meeting; the snapshot is reused across meeting segments, reconnects, and saved transcript re-translation without following later global glossary changes.
+- 修正 Meeting 分享設定頁重新整理或重新進入後分享連結消失的問題。分享服務現在持久化短碼（仍只保存 token hash），管理端可重建短碼 URL 與 QR Code；匿名分享回應不暴露短碼，舊資料會在沒有可顯示連結時補建新的分享。

@@ -38,6 +38,13 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
       await assertOk(response);
       return response.json();
     },
+    async ensureShareWithRole(meetingId, role = 'recorder', expiresAt = null) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ role, expiresAt, ensureExisting: true })
+      });
+      await assertOk(response);
+      return response.json();
+    },
     async revokeShare(meetingId, shareId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares/${encodeURIComponent(shareId)}`), { method: 'DELETE' });
       await assertOk(response);

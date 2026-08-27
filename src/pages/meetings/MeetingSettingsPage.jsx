@@ -40,6 +40,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [isSaving, setIsSaving] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
   const settingsSectionRefs = useRef([]);
+  const shareSectionRef = useRef(null);
+  const shareEnsurePromiseRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +66,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   useEffect(() => {
     if (isLoading || typeof window === 'undefined' || !('IntersectionObserver' in window)) return undefined;
-    const sections = settingsSectionRefs.current.filter(Boolean);
+    const sections = [...settingsSectionRefs.current.filter(Boolean), shareSectionRef.current].filter(Boolean);
     if (!sections.length) return undefined;
     const headerOffset = 112;
     const initialStepLockDistance = 80;
@@ -88,7 +90,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     }, { rootMargin: `-${headerOffset}px 0px -60% 0px`, threshold: [0, 0.25, 0.5] });
     sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
-  }, [isLoading]);
+  }, [isLoading, meeting]);
 
   function applyMeeting(current, glossaryEntries) {
     const target = current.targetLanguageCode || 'en';
@@ -102,7 +104,13 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       .filter((entry) => (current.glossaryEntries || []).some((item) => item.source === entry.source && item.target === entry.translations?.[target]))
       .map((entry) => entry.id));
     setPrivateGlossaryEntries(Array.isArray(current.privateGlossaryEntries) ? current.privateGlossaryEntries : []);
-    void managementClient.listShares(current.id).then(setShares).catch(() => setShares([]));
+    void managementClient.listShares(current.id).then(async (loadedShares) => {
+      setShares(loadedShares);
+      const displayableShares = await Promise.all(loadedShares.filter((share) => share.codeUrl).map(prepareShareForDisplay));
+      setCreatedShares(displayableShares);
+      if (displayableShares.length === 0 && current.status !== 'completed') void createSharesWithRetry(current.id);
+      else setShareState('ready');
+    }).catch(() => setShares([]));
   }
 
   function selectedEntries() {
@@ -134,38 +142,53 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   }
 
   async function createShare(meetingId, role) {
-    const result = await managementClient.createShareWithRole(meetingId, role, null);
-    const shareUrl = new URL(result.url, window.location.href).href;
+    const result = await managementClient.ensureShareWithRole(meetingId, role, null);
+    const shareUrl = new URL(result.codeUrl || result.url, window.location.href).href;
     const qrDataUrl = await QRCode.toDataURL(shareUrl, { width: 180, margin: 1 });
     return { ...result, role, absoluteUrl: shareUrl, qrDataUrl };
   }
 
+  async function prepareShareForDisplay(share) {
+    const shareUrl = new URL(share.codeUrl, window.location.href).href;
+    const qrDataUrl = await QRCode.toDataURL(shareUrl, { width: 180, margin: 1 });
+    return { share, role: share.role, absoluteUrl: shareUrl, qrDataUrl };
+  }
+
   async function createSharesWithRetry(meetingId = meeting?.id) {
-    setShareState('loading');
-    const results = [];
-    const roles = ['viewer', 'recorder'];
-    for (const role of roles) {
-      let lastError = null;
-      for (let attempt = 0; attempt < 3; attempt += 1) {
-        try {
-          results.push(await createShare(meetingId, role));
-          lastError = null;
-          break;
-        } catch (requestError) {
-          lastError = requestError;
-          if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+    if (shareEnsurePromiseRef.current) return shareEnsurePromiseRef.current;
+    const promise = (async () => {
+      setShareState('loading');
+      const results = [];
+      const roles = ['viewer', 'recorder'];
+      for (const role of roles) {
+        let lastError = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            results.push(await createShare(meetingId, role));
+            lastError = null;
+            break;
+          } catch (requestError) {
+            lastError = requestError;
+            if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 250 * (attempt + 1)));
+          }
+        }
+        if (lastError) {
+          setShareState('error');
+          setError('會議已建立，但分享連結產生失敗；請稍後重試。');
+          setCreatedShares(results);
+          return;
         }
       }
-      if (lastError) {
-        setShareState('error');
-        setError('會議已建立，但分享連結產生失敗；請稍後重試。');
-        setCreatedShares(results);
-        return;
-      }
+      setCreatedShares(results);
+      setShares((current) => [...current.filter((share) => !results.some((item) => item.share?.id === share.id)), ...results.map((item) => item.share)]);
+      setShareState('ready');
+    })();
+    shareEnsurePromiseRef.current = promise;
+    try {
+      return await promise;
+    } finally {
+      if (shareEnsurePromiseRef.current === promise) shareEnsurePromiseRef.current = null;
     }
-    setCreatedShares(results);
-    setShares((current) => [...current, ...results.map((item) => item.share)]);
-    setShareState('ready');
   }
 
   async function saveMeeting() {
@@ -202,18 +225,6 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     await createSharesWithRetry();
   }
 
-  async function createSingleShare(role) {
-    setError('');
-    try {
-      const result = await createShare(meeting.id, role);
-      setCreatedShares((current) => [...current.filter((item) => item.role !== role), result]);
-      setShares((current) => [...current, result.share]);
-      setShareState('ready');
-    } catch {
-      setError('無法建立分享連結。');
-    }
-  }
-
   async function revokeShare(shareId) {
     try {
       await managementClient.revokeShare(meeting.id, shareId);
@@ -235,7 +246,9 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const settingsSummary = `${sourceLanguageLabel} → ${targetLanguageLabel} · ${echoTargetLanguage ? '播放翻譯聲音' : '不播放翻譯聲音'} · 私有詞彙 ${privateGlossaryEntries.length} 筆`;
 
   function scrollToSettingsStep(index) {
-    const section = settingsSectionRefs.current[index];
+    const section = index === MEETING_SETTINGS_STEPS.length
+      ? shareSectionRef.current
+      : settingsSectionRefs.current[index];
     if (!section) return;
     setActiveStep(index);
     section.scrollIntoView({
@@ -253,6 +266,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       <div className="meeting-settings-layout meeting-management-grid">
         <nav className="meeting-settings-steps" aria-label="會議設定步驟">
           {MEETING_SETTINGS_STEPS.map((label, index) => <button className={`meeting-settings-step${index === activeStep ? ' is-active' : ''}`} type="button" aria-current={index === activeStep ? 'step' : undefined} onClick={() => scrollToSettingsStep(index)} key={label}><span>{index + 1}</span><strong>{label}</strong></button>)}
+          {meeting ? <button className={`meeting-settings-step${activeStep === MEETING_SETTINGS_STEPS.length ? ' is-active' : ''}`} type="button" aria-current={activeStep === MEETING_SETTINGS_STEPS.length ? 'step' : undefined} onClick={() => scrollToSettingsStep(MEETING_SETTINGS_STEPS.length)}><span>{MEETING_SETTINGS_STEPS.length + 1}</span><strong>分享會議</strong></button> : null}
         </nav>
         <section className="meeting-settings-form control-panel" aria-label="會議設定表單">
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[0] = node; }} aria-labelledby="meeting-basic-settings-title">
@@ -285,14 +299,30 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             </div>
           </section>
 
+          {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} /> : null}
           <div className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenWorkspace(meeting.id)}>前往會議工作區</button> : null}</div></div>
         </section>
-        {meeting ? <ShareResults shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onCreateShare={createSingleShare} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} /> : null}
       </div>
     </section>
   );
 }
 
-function ShareResults({ shares, existingShares, state, onRetry, onCreateShare, onRevokeShare, onCopy, locked }) {
-  return <section className="control-panel meeting-share-results" aria-label="會議分享連結"><div className="title-block"><p className="eyebrow">SHARE LINKS</p><h3>分享會議</h3><p>觀看連結為唯讀；錄音連結會在參與者明確開始後才使用麥克風。</p></div>{state === 'loading' ? <p>正在產生分享連結…</p> : null}{state === 'error' ? <><p className="error-message">部分分享連結尚未產生。</p><button className="button secondary" type="button" onClick={onRetry}>重新產生分享</button></> : null}{shares.map((item) => <article className="share-result" key={item.role}><h4>{item.role === 'viewer' ? '觀看連結' : '錄音連結'}</h4><img src={item.qrDataUrl} alt={`${item.role === 'viewer' ? '觀看' : '錄音'}入口 QR Code`} width="180" height="180" /><p className="share-url"><a href={item.absoluteUrl}>{item.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => onCopy(item.absoluteUrl)}><Copy size={15} aria-hidden="true" />複製連結</button></article>)}{!locked ? <div className="meeting-settings-actions"><button className="button secondary" type="button" onClick={() => onCreateShare('viewer')}>建立觀看連結</button><button className="button secondary" type="button" onClick={() => onCreateShare('recorder')}>建立錄音分享連結</button></div> : null}{shares.length === 0 && state === 'ready' ? <p className="export-note">尚未產生新的分享連結。</p> : null}{existingShares.length > 0 ? <ul className="share-list">{existingShares.map((share) => <li key={share.id}><span>{share.role === 'viewer' ? '觀看連結' : '錄音連結'} · {share.expiresAt ? `到期：${new Date(share.expiresAt).toLocaleString('zh-TW')}` : '永久有效'}</span>{!locked ? <button className="button detail-button danger-button" type="button" onClick={() => onRevokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}</section>;
+function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRevokeShare, onCopy, locked }) {
+  return (
+    <section ref={sectionRef} className="control-panel meeting-settings-card meeting-share-results" aria-labelledby="meeting-share-results-title">
+      <div className="meeting-settings-card-header">
+        <div>
+          <p className="eyebrow">STEP 5</p>
+          <h3 id="meeting-share-results-title">分享會議</h3>
+          <p className="meeting-settings-card-description">觀看連結為唯讀；錄音連結會在參與者明確開始後才使用麥克風。</p>
+        </div>
+        <span className="meeting-settings-card-number">5</span>
+      </div>
+      {state === 'loading' ? <p>正在產生分享連結…</p> : null}
+      {state === 'error' ? <><p className="error-message">部分分享連結尚未產生。</p><button className="button secondary" type="button" onClick={onRetry}>重新產生分享</button></> : null}
+      {shares.length > 0 ? <div className="meeting-share-links">{shares.map((item) => <article className="share-result" key={item.role}><h4>{item.role === 'viewer' ? '觀看連結' : '錄音連結'}</h4><img src={item.qrDataUrl} alt={`${item.role === 'viewer' ? '觀看' : '錄音'}入口 QR Code`} width="180" height="180" /><p className="share-url"><a href={item.absoluteUrl}>{item.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => onCopy(item.absoluteUrl)}><Copy size={15} aria-hidden="true" />複製連結</button></article>)}</div> : null}
+      {shares.length === 0 && state === 'ready' ? <p className="export-note">尚未產生新的分享連結。</p> : null}
+      {existingShares.length > 0 ? <ul className="share-list">{existingShares.map((share) => <li key={share.id}><span>{share.role === 'viewer' ? '觀看連結' : '錄音連結'} · {share.expiresAt ? `到期：${new Date(share.expiresAt).toLocaleString('zh-TW')}` : '永久有效'}</span>{!locked ? <button className="button detail-button danger-button" type="button" onClick={() => onRevokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
+    </section>
+  );
 }

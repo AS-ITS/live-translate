@@ -20,7 +20,7 @@ test('file session share service resolves a token after service reload', async (
   assert.equal(await second.resolveShare(created.token), null);
 });
 
-test('file session share service persists only the token hash and uses schema version 1', async () => {
+test('file session share service persists the short code with the token hash but never the plaintext token', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'live-translate-share-service-'));
   const filePath = join(directory, 'shares.json');
   const fs = await import('node:fs/promises');
@@ -32,7 +32,38 @@ test('file session share service persists only the token hash and uses schema ve
   assert.equal(stored.schemaVersion, 1);
   assert.equal(stored.shares.length, 1);
   assert.equal(stored.shares[0].tokenHash.length, 64);
+  assert.equal(stored.shares[0].shortCode, created.shortCode);
+  assert.equal(stored.shares[0].shortCodeHash.length, 64);
   assert.equal(JSON.stringify(stored).includes(created.token), false);
+});
+
+test('file session share service exposes a persisted Meeting short code only through the management list', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-share-service-meeting-'));
+  const filePath = join(directory, 'shares.json');
+  const fs = await import('node:fs/promises');
+  const first = createFileSessionShareService({ filePath, fileSystem: fs, clock: () => 1000 });
+  const created = await first.createMeetingShare('meeting-1', { role: 'viewer' });
+  const second = createFileSessionShareService({ filePath, fileSystem: fs, clock: () => 1000 });
+
+  const listed = await second.listMeetingShares('meeting-1');
+  assert.equal(listed[0].shortCode, created.shortCode);
+  assert.equal((await second.resolveCode(created.shortCode)).shortCode, undefined);
+});
+
+test('file session share service ensures one Meeting share per role across repeated calls and reloads', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-share-service-ensure-'));
+  const filePath = join(directory, 'shares.json');
+  const fs = await import('node:fs/promises');
+  const first = createFileSessionShareService({ filePath, fileSystem: fs, clock: () => 1000 });
+  const created = await first.ensureMeetingShare('meeting-1', { role: 'recorder' });
+  const reused = await first.ensureMeetingShare('meeting-1', { role: 'recorder' });
+  const second = createFileSessionShareService({ filePath, fileSystem: fs, clock: () => 1000 });
+  const reloaded = await second.ensureMeetingShare('meeting-1', { role: 'recorder' });
+
+  assert.equal(created.id, reused.id);
+  assert.equal(created.id, reloaded.id);
+  assert.equal(reused.token, undefined);
+  assert.equal((await second.listMeetingShares('meeting-1')).length, 1);
 });
 
 test('file session share service serializes concurrent mutations without losing shares', async () => {

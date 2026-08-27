@@ -31,3 +31,15 @@ test('event broadcaster sequences snapshots per session and supports unsubscribe
   assert.deepEqual(events.map((event) => event.id), [1, 2]);
   assert.equal(broadcaster.snapshot('session-1').sequence, 3);
 });
+
+test('ensure Meeting share reuses the persisted short-code share without returning its token', () => {
+  const service = createSessionShareService({ clock: () => 1000 });
+  const first = service.ensureMeetingShare('meeting-1', { role: 'viewer' });
+  const second = service.ensureMeetingShare('meeting-1', { role: 'viewer' });
+
+  assert.equal(first.id, second.id);
+  assert.equal(first.shortCode, second.shortCode);
+  assert.ok(first.token);
+  assert.equal(second.token, undefined);
+  assert.equal(service.listMeetingShares('meeting-1').length, 1);
+});

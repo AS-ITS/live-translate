@@ -19,6 +19,7 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
         sessionId,
         role,
         tokenHash: hashToken(token),
+        shortCode,
         shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
         expiresAt
@@ -33,6 +34,35 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       share.resourceType = 'meeting';
       share.meetingId = meetingId;
       return { ...publicShare(share), token: created.token, shortCode: created.shortCode };
+    },
+
+    ensureMeetingShare(meetingId, options = {}) {
+      assertSessionId(meetingId);
+      const { role = 'viewer', expiresAt = null } = options;
+      assertRole(role);
+      if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= clock())) {
+        throw new RangeError('Share expiry must be in the future.');
+      }
+      const existing = [...shares.values()].find((share) => share.resourceType === 'meeting' && share.meetingId === meetingId && share.role === role && share.shortCode);
+      if (existing && (existing.expiresAt === null || existing.expiresAt > clock())) {
+        return { ...managementShare(existing), reused: true };
+      }
+      const token = randomBytes(32).toString('base64url');
+      const shortCode = createShortCode();
+      const share = {
+        id: `share-${randomBytes(12).toString('hex')}`,
+        sessionId: meetingId,
+        role,
+        tokenHash: hashToken(token),
+        shortCode,
+        shortCodeHash: hashShortCode(shortCode),
+        createdAt: clock(),
+        expiresAt,
+        resourceType: 'meeting',
+        meetingId
+      };
+      shares.set(share.id, share);
+      return { ...publicShare(share), token, shortCode, created: true };
     },
 
     bindShareToSession(shareId, sessionId) {
@@ -69,6 +99,12 @@ export function createSessionShareService({ clock = () => Date.now() } = {}) {
       return [...shares.values()]
         .filter((share) => share.sessionId === sessionId && (share.expiresAt === null || share.expiresAt > clock()))
         .map(publicShare);
+    },
+
+    listMeetingShares(meetingId) {
+      return [...shares.values()]
+        .filter((share) => share.resourceType === 'meeting' && share.meetingId === meetingId && (share.expiresAt === null || share.expiresAt > clock()))
+        .map(managementShare);
     },
 
     revokeShare(sessionId, shareId) {
@@ -117,6 +153,13 @@ function publicShare(share) {
     ...(share.meetingId ? { meetingId: share.meetingId } : {}),
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
+  };
+}
+
+function managementShare(share) {
+  return {
+    ...publicShare(share),
+    ...(share.shortCode ? { shortCode: share.shortCode } : {})
   };
 }
 

@@ -31,6 +31,7 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
         sessionId,
         role,
         tokenHash: hashToken(token),
+        shortCode,
         shortCodeHash: hashShortCode(shortCode),
         createdAt: clock(),
         expiresAt
@@ -50,6 +51,34 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
         share.meetingId = meetingId;
       });
       return { ...created, resourceType: 'meeting', meetingId };
+    },
+
+    async ensureMeetingShare(meetingId, { role = 'viewer', expiresAt = null } = {}) {
+      assertSessionId(meetingId);
+      assertRole(role);
+      if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= clock())) {
+        throw new RangeError('Share expiry must be in the future.');
+      }
+      return mutate((storage) => {
+        const existing = storage.shares.find((share) => share.resourceType === 'meeting' && share.meetingId === meetingId && share.role === role && share.shortCode && (share.expiresAt === null || share.expiresAt > clock()));
+        if (existing) return { ...managementShare(existing), reused: true };
+        const token = randomBytes(32).toString('base64url');
+        const shortCode = createShortCode();
+        const share = {
+          id: `share-${randomBytes(12).toString('hex')}`,
+          sessionId: meetingId,
+          role,
+          tokenHash: hashToken(token),
+          shortCode,
+          shortCodeHash: hashShortCode(shortCode),
+          createdAt: clock(),
+          expiresAt,
+          resourceType: 'meeting',
+          meetingId
+        };
+        storage.shares.push(share);
+        return { ...publicShare(share), token, shortCode, created: true };
+      });
     },
 
     async bindShareToSession(shareId, sessionId) {
@@ -84,6 +113,13 @@ export function createFileSessionShareService({ filePath, fileSystem, clock = ()
       return storage.shares
         .filter((share) => share.sessionId === sessionId && (share.expiresAt === null || share.expiresAt > clock()))
         .map(publicShare);
+    },
+
+    async listMeetingShares(meetingId) {
+      const storage = await readCachedStorage();
+      return storage.shares
+        .filter((share) => share.resourceType === 'meeting' && share.meetingId === meetingId && (share.expiresAt === null || share.expiresAt > clock()))
+        .map(managementShare);
     },
 
     async revokeShare(sessionId, shareId) {
@@ -168,6 +204,7 @@ function normalizeStorage(value) {
       if (!isRecord(share) || typeof share.id !== 'string' || share.id.trim().length === 0 ||
           typeof share.sessionId !== 'string' || share.sessionId.trim().length === 0 ||
           typeof share.tokenHash !== 'string' || share.tokenHash.length !== 64 ||
+          (share.shortCode !== undefined && share.shortCode !== null && !isValidShortCode(share.shortCode)) ||
           (share.shortCodeHash !== undefined && share.shortCodeHash !== null && (typeof share.shortCodeHash !== 'string' || share.shortCodeHash.length !== 64)) ||
           typeof share.createdAt !== 'number' || !Number.isFinite(share.createdAt) ||
           (share.expiresAt !== null && (typeof share.expiresAt !== 'number' || !Number.isFinite(share.expiresAt))) ||
@@ -176,7 +213,7 @@ function normalizeStorage(value) {
           (share.meetingId !== undefined && typeof share.meetingId !== 'string')) {
         throw storageError(`Session share ${index} is invalid.`);
       }
-      return clonePlain({ ...share, role: share.role || 'viewer', resourceType: share.resourceType || 'session', shortCodeHash: share.shortCodeHash || null });
+      return clonePlain({ ...share, role: share.role || 'viewer', resourceType: share.resourceType || 'session', shortCode: share.shortCode || null, shortCodeHash: share.shortCodeHash || null });
     })
   };
 }
@@ -190,6 +227,13 @@ function publicShare(share) {
     ...(share.meetingId ? { meetingId: share.meetingId } : {}),
     createdAt: share.createdAt,
     expiresAt: share.expiresAt
+  };
+}
+
+function managementShare(share) {
+  return {
+    ...publicShare(share),
+    ...(share.shortCode ? { shortCode: share.shortCode } : {})
   };
 }
 

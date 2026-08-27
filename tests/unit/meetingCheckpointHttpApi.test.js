@@ -138,6 +138,30 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   }
 });
 
+test('Meeting share management list rebuilds a stable code URL after the share service is reloaded', async () => {
+  const directory = await (await import('node:fs/promises')).mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(), 'live-translate-meeting-share-list-'));
+  const fileSystem = await import('node:fs/promises');
+  const filePath = (await import('node:path')).join(directory, 'shares.json');
+  const created = (await request(createHandler(), { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
+  const firstHandler = createHandler({ sessionShareService: (await import('../../src/infrastructure/fileSessionShareService.js')).createFileSessionShareService({ filePath, fileSystem, clock: () => 1000 }) });
+  const createdShare = (await request(firstHandler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/shares`, body: JSON.stringify({ role: 'viewer' }) })).json();
+  const secondHandler = createHandler({ sessionShareService: (await import('../../src/infrastructure/fileSessionShareService.js')).createFileSessionShareService({ filePath, fileSystem, clock: () => 1000 }) });
+
+  const listed = await request(secondHandler, { method: 'GET', url: `/api/meetings/${created.meeting.id}/shares` });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.json().shares[0], {
+    id: createdShare.share.id,
+    sessionId: created.meeting.id,
+    role: 'viewer',
+    resourceType: 'meeting',
+    meetingId: created.meeting.id,
+    createdAt: 1000,
+    expiresAt: null,
+    shortCode: createdShare.share.shortCode,
+    codeUrl: `#viewer?code=${createdShare.share.shortCode}`
+  });
+});
+
 test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persistence', async () => {
   let meetingId = null;
   const sessionRepository = {

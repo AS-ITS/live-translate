@@ -956,22 +956,28 @@ async function handleRequestWithSessionReadController(
       if (!sessionShareService) throw createHttpError('meeting_share_invalid');
       if (req.method === 'GET') {
         statusCode = 200;
-        sendJson(res, statusCode, { shares: await sessionShareService.listShares(meetingId) }, requestId);
+        const shares = typeof sessionShareService.listMeetingShares === 'function'
+          ? await sessionShareService.listMeetingShares(meetingId)
+          : await sessionShareService.listShares(meetingId);
+        sendJson(res, statusCode, { shares: shares.map((share) => ({
+          ...share,
+          ...(share.shortCode ? { codeUrl: `#${share.role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}` } : {})
+        })) }, requestId);
       } else if (req.method === 'POST') {
         await assertMeetingShareMutable(meetingId, meetingRepository);
         const body = await readJson(req);
         const role = body?.role || 'recorder';
         if (role !== 'viewer' && role !== 'recorder') throw createHttpError('invalid_request');
-        const share = await sessionShareService.createMeetingShare(meetingId, {
-          role,
-          expiresAt: body?.expiresAt ?? null
-        });
+        const share = body?.ensureExisting === true && typeof sessionShareService.ensureMeetingShare === 'function'
+          ? await sessionShareService.ensureMeetingShare(meetingId, { role, expiresAt: body?.expiresAt ?? null })
+          : await sessionShareService.createMeetingShare(meetingId, { role, expiresAt: body?.expiresAt ?? null });
         statusCode = 201;
-        sendJson(res, statusCode, {
+        const payload = {
           share,
-          url: `#${role === 'viewer' ? 'viewer' : 'record'}?token=${encodeURIComponent(share.token)}`,
-          codeUrl: `#${role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}`
-        }, requestId);
+          ...(share.token ? { url: `#${role === 'viewer' ? 'viewer' : 'record'}?token=${encodeURIComponent(share.token)}` } : {}),
+          ...(share.shortCode ? { codeUrl: `#${role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}` } : {})
+        };
+        sendJson(res, statusCode, payload, requestId);
       } else {
         const shareId = parseMeetingSharePath(path).shareId;
         await assertMeetingShareRevocable(meetingId, shareId, meetingRepository, sessionShareService);

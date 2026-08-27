@@ -12,6 +12,11 @@
   --color-primary: #0b6670;
   --color-primary-hover: #084e56;
   --color-primary-soft: #e7f3f2;
+  --color-slate-primary: #365b87;
+  --color-slate-primary-hover: #29486d;
+  --color-slate-primary-active: #213d5e;
+  --color-slate-primary-soft: #e8eef6;
+  --color-slate-focus-ring: rgb(54 91 135 / 22%);
   --color-success: #16704a;
   --color-success-soft: #ecfdf5;
   --color-warning: #9a6400;
@@ -45,6 +50,7 @@
   --container-max: 1440px;
   --page-gutter: clamp(1rem, 3vw, 3.5rem);
   --content-gutter: clamp(1rem, 2.2vw, 2rem);
+  --control-height: 3rem;
   --z-header: 20;
   --z-overlay: 1000;
 }

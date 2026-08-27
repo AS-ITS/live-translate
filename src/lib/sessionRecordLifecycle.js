@@ -12,6 +12,8 @@ export function buildSessionRecordInput(options = {}) {
     targetLanguageCode: options.targetLanguageCode,
     targetLanguageLabel: options.targetLanguageLabel || null,
     sourceLanguageCode: options.sourceLanguageCode || null,
+    ...(Object.hasOwn(options, 'echoTargetLanguage') ? { echoTargetLanguage: options.echoTargetLanguage !== false } : {}),
+    ...(Object.hasOwn(options, 'shouldRecordInputAudio') ? { shouldRecordInputAudio: options.shouldRecordInputAudio === true } : {}),
     meetingId: options.meetingId || null,
     segmentId: options.segmentId || null,
     ...(Object.hasOwn(options, 'meetingGlossaryEntries')

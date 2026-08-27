@@ -23,6 +23,8 @@ export function createSessionRecord(input = {}, options = {}) {
     targetLanguageCode: input.targetLanguageCode,
     targetLanguageLabel: input.targetLanguageLabel || null,
     sourceLanguageCode: input.sourceLanguageCode || null,
+    ...(Object.hasOwn(input, 'echoTargetLanguage') ? { echoTargetLanguage: input.echoTargetLanguage !== false } : {}),
+    ...(Object.hasOwn(input, 'shouldRecordInputAudio') ? { shouldRecordInputAudio: input.shouldRecordInputAudio === true } : {}),
     meetingId: input.meetingId || null,
     segmentId: input.segmentId || null,
     ...(Object.hasOwn(input, 'meetingGlossaryEntries')

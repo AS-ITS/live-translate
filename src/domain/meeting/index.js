@@ -32,6 +32,8 @@ export class Meeting {
     this.name = normalizeOptionalString(input.name);
     this.sourceLanguageCode = normalizeOptionalString(input.sourceLanguageCode);
     this.targetLanguageCode = normalizeOptionalString(input.targetLanguageCode);
+    this.echoTargetLanguage = input.echoTargetLanguage !== false;
+    this.shouldRecordInputAudio = input.shouldRecordInputAudio === true;
     this.glossaryEntries = normalizeGlossaryEntries(input.glossaryEntries);
     this.privateGlossaryEntries = normalizePrivateGlossaryEntries(input.privateGlossaryEntries);
 
@@ -87,6 +89,8 @@ export class Meeting {
       name: Object.hasOwn(patch, 'name') ? normalizeOptionalString(patch.name) : this.name,
       sourceLanguageCode: Object.hasOwn(patch, 'sourceLanguageCode') ? normalizeOptionalString(patch.sourceLanguageCode) : this.sourceLanguageCode,
       targetLanguageCode: Object.hasOwn(patch, 'targetLanguageCode') ? normalizeOptionalString(patch.targetLanguageCode) : this.targetLanguageCode,
+      echoTargetLanguage: Object.hasOwn(patch, 'echoTargetLanguage') ? patch.echoTargetLanguage !== false : this.echoTargetLanguage,
+      shouldRecordInputAudio: Object.hasOwn(patch, 'shouldRecordInputAudio') ? patch.shouldRecordInputAudio === true : this.shouldRecordInputAudio,
       glossaryEntries: Object.hasOwn(patch, 'glossaryEntries')
         ? normalizeGlossaryEntries(patch.glossaryEntries)
         : this.glossaryEntries,

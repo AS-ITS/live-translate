@@ -258,7 +258,8 @@ retain the active Meeting behavior. This endpoint does not start, stop,
 reconnect, or segment a Gemini Live session. The optional
 `liveSessionId` request field associates the first Segment with the frontend's
 first Gemini Live connection. `name`, `sourceLanguageCode`, and
-`targetLanguageCode` store Meeting settings. `glossaryEntries` stores the
+`targetLanguageCode` store Meeting settings. `echoTargetLanguage` defaults to
+`true` and `shouldRecordInputAudio` defaults to `false`. `glossaryEntries` stores the
 selected shared-glossary snapshot for compatibility; `privateGlossaryEntries`
 stores terms owned only by this Meeting.
 
@@ -268,6 +269,8 @@ stores terms owned only by this Meeting.
   "name": "產品會議",
   "sourceLanguageCode": "zh-Hant",
   "targetLanguageCode": "en",
+  "echoTargetLanguage": true,
+  "shouldRecordInputAudio": false,
   "glossaryEntries": [
     {
       "source": "Acme",
@@ -296,7 +299,8 @@ Returns `201 Created`:
 
 ## `PATCH /api/meetings/:meetingId`
 
-Updates Meeting name, source/target languages, shared glossary entries, and
+Updates Meeting name, source/target languages, translated-audio playback,
+original-audio recording, shared glossary entries, and
 private glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
 boundary; the current Segment keeps its settings snapshot. Completed Meetings

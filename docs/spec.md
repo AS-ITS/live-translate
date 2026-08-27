@@ -100,8 +100,10 @@ The MVP includes:
 - The backend rejects unsupported target languages.
 - The backend never exposes `GEMINI_API_KEY` to the browser.
 - A Meeting can be created and configured before recording. The creator can set
-  its name, source/target languages, and meeting glossary before generating a
-  recorder entry link and QR code; opening the link does not request a
+  its name, source/target languages, meeting glossary, translated-audio
+  playback, and original-audio recording settings in the independent Meeting
+  Settings page before generating Viewer and Recorder entry links and QR codes;
+  opening either link does not request a
   microphone or create a live Session until the user explicitly starts
   recording.
 - Active recording Sessions do not expose a control for creating new shares.
@@ -142,6 +144,12 @@ Meeting share flow:
 5. The recipient explicitly prepares and starts recording.
 6. Only then does the backend activate the Meeting, create the first Session, and the browser request
   microphone access and connect to Gemini Live API.
+
+Meeting creation and editing use a dedicated settings route and layout. The
+settings page is separate from the Meeting Management list and automatically
+creates permanent Viewer and Recorder shares after a new Meeting is saved.
+Share creation retries up to three times; a failed share does not roll back the
+saved Meeting.
 
 Meeting settings may be edited after sharing. If recording is active, a language
 or glossary change takes effect at the next Segment boundary by stopping the

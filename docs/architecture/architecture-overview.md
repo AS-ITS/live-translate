@@ -66,8 +66,8 @@ per-user identity or permission system.
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
-`main.jsx` application orchestration, page components, and a Gemini/browser-
-specific `LiveTranslateSession`. Hash route parsing is isolated in
+`main.jsx` application orchestration, grouped page components under
+`src/pages/`, and a Gemini/browser-specific `LiveTranslateSession`. Hash route parsing is isolated in
 `src/app/routes.js`; shared application and public-session shells are provided
 by `src/layouts/AppLayout.jsx`. These layout components own presentation
 composition only and do not own Session lifecycle or API state.
@@ -81,7 +81,9 @@ records are file-backed and survive backend restart.
 
 Meeting-first recorder sharing creates a configurable Meeting draft and its
 first empty Segment before recording. The creator saves the name, languages,
-and meeting glossary before issuing the Meeting share link and QR code; the
+meeting glossary, translated-audio playback, and original-audio recording
+settings in the independent Meeting Settings layout before issuing Viewer and
+Recorder share links and QR codes; the
 shared recorder page does not activate the Meeting, create a Session, claim a
 lease, or request microphone access until the recipient explicitly starts
 recording. Editing settings during recording takes effect at the next Segment

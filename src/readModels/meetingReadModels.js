@@ -21,6 +21,8 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
     name: meeting?.name ?? null,
     sourceLanguageCode: meeting?.sourceLanguageCode ?? null,
     targetLanguageCode: meeting?.targetLanguageCode ?? null,
+    echoTargetLanguage: meeting?.echoTargetLanguage !== false,
+    shouldRecordInputAudio: meeting?.shouldRecordInputAudio === true,
     createdAt: meeting?.createdAt ?? null,
     updatedAt: meeting?.updatedAt ?? null,
     startedAt,

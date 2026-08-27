@@ -1,3 +1,5 @@
+import { ArrowRight } from 'lucide-react';
+
 export function AppLayout({
   children,
   className = '',
@@ -41,6 +43,22 @@ export function MeetingLayout({
       subtitle={subtitle}
       headerAction={headerAction}
       headerClassName="meeting-app-header"
+    >
+      {children}
+    </AppLayout>
+  );
+}
+
+export function MeetingSettingsLayout({ children, mode = 'create', onBack }) {
+  const isEdit = mode === 'edit';
+  return (
+    <AppLayout
+      className="meeting-app-shell meeting-settings-shell meeting-management-shell"
+      title={isEdit ? '編輯會議設定' : '建立會議'}
+      titleId="meeting-settings-title"
+      subtitle="設定完成後即可取得分享連結。"
+      headerAction={<button className="button secondary meeting-header-action" type="button" onClick={onBack}><ArrowRight size={18} aria-hidden="true" />返回會議管理</button>}
+      headerClassName="meeting-app-header meeting-settings-header"
     >
       {children}
     </AppLayout>

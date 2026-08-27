@@ -22,6 +22,8 @@ export function createMeetingCheckpointService({
       name = null,
       sourceLanguageCode = null,
       targetLanguageCode = null,
+      echoTargetLanguage = true,
+      shouldRecordInputAudio = false,
       privateGlossaryEntries = [],
       draft = false
     } = {}) {
@@ -33,6 +35,8 @@ export function createMeetingCheckpointService({
         name,
         sourceLanguageCode,
         targetLanguageCode,
+        echoTargetLanguage,
+        shouldRecordInputAudio,
         privateGlossaryEntries
       });
       const activeMeeting = draft
@@ -334,6 +338,8 @@ export function meetingSettingsSnapshot(meeting) {
     name: meeting.name,
     sourceLanguageCode: meeting.sourceLanguageCode,
     targetLanguageCode: meeting.targetLanguageCode,
+    echoTargetLanguage: meeting.echoTargetLanguage,
+    shouldRecordInputAudio: meeting.shouldRecordInputAudio,
     glossaryEntries: Array.isArray(meeting.glossaryEntries)
       ? meeting.glossaryEntries.map((entry) => ({
         ...entry,

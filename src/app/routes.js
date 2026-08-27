@@ -3,6 +3,7 @@ export const FEATURE_PAGES = new Set([
   'history',
   'meetings',
   'meeting',
+  'meeting-settings',
   'meeting-detail',
   'meeting-workspace',
   'retranslate',
@@ -29,7 +30,7 @@ export function pageInfoFromLocation() {
       ? 'meetings'
       : requestedPage === 'meeting-detail' && meetingId
         ? 'meeting-workspace'
-        : requestedPage;
+      : requestedPage === 'meeting' ? 'meeting-settings' : requestedPage;
 
   return {
     page,
@@ -39,6 +40,7 @@ export function pageInfoFromLocation() {
     workspaceTab: params.get('tab') || (requestedPage === 'meeting-detail' ? 'history' : 'live'),
     panel: params.get('panel') || (requestedPage === 'glossary' ? 'global-glossary' : ''),
     createMeeting: params.get('create') === '1',
+    settingsMode: params.get('mode') || (params.get('meetingId') ? 'edit' : 'create'),
     statusFilter: params.get('status') || (requestedPage === 'history' ? 'completed' : 'all'),
     shareToken: params.get('token') || '',
     shareCode: params.get('code') || ''

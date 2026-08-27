@@ -24,6 +24,21 @@ test('creates an active meeting with the first active segment', async () => {
   assert.equal(segment.status, 'active');
 });
 
+test('persists Meeting audio settings in the Meeting and Segment snapshot', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({
+    draft: true,
+    echoTargetLanguage: false,
+    shouldRecordInputAudio: true
+  });
+
+  assert.equal(meeting.echoTargetLanguage, false);
+  assert.equal(meeting.shouldRecordInputAudio, true);
+  assert.equal(segment.settingsSnapshot.echoTargetLanguage, false);
+  assert.equal(segment.settingsSnapshot.shouldRecordInputAudio, true);
+});
+
 test('meeting settings snapshots normalize legacy glossary aliases for recovered segments', async () => {
   const baseRepository = createMemoryMeetingRepository();
   const repository = {

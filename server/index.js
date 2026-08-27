@@ -717,6 +717,8 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: body?.targetLanguageCode || 'en',
         targetLanguageLabel: body?.targetLanguageLabel || null,
         sourceLanguageCode: body?.sourceLanguageCode || null,
+        echoTargetLanguage: body?.echoTargetLanguage !== false,
+        shouldRecordInputAudio: body?.shouldRecordInputAudio === true,
         ...(Object.hasOwn(body || {}, 'meetingGlossaryEntries')
           ? { meetingGlossaryEntries: Array.isArray(body.meetingGlossaryEntries) ? body.meetingGlossaryEntries : [] }
           : {}),
@@ -1032,6 +1034,8 @@ async function handleRequestWithSessionReadController(
         ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
         ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
         ...(Object.hasOwn(body || {}, 'targetLanguageCode') ? { targetLanguageCode: body.targetLanguageCode } : {}),
+        ...(Object.hasOwn(body || {}, 'echoTargetLanguage') ? { echoTargetLanguage: body.echoTargetLanguage !== false } : {}),
+        ...(Object.hasOwn(body || {}, 'shouldRecordInputAudio') ? { shouldRecordInputAudio: body.shouldRecordInputAudio === true } : {}),
         ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
         ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
@@ -1180,6 +1184,8 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: meeting.targetLanguageCode || 'en',
         targetLanguageLabel: meeting.targetLanguageCode || null,
         sourceLanguageCode: meeting.sourceLanguageCode || null,
+        echoTargetLanguage: meeting.echoTargetLanguage !== false,
+        shouldRecordInputAudio: meeting.shouldRecordInputAudio === true,
         meetingGlossaryEntries: [
           ...(meeting.glossaryEntries || []),
           ...((meeting.privateGlossaryEntries || []).map((entry) => ({

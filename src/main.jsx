@@ -110,7 +110,10 @@ import {
 import './styles/app.css';
 import QRCode from 'qrcode';
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from './app/routes.js';
-import { MeetingLayout, PublicSessionLayout } from './layouts/AppLayout.jsx';
+import { MeetingLayout, MeetingSettingsLayout, PublicSessionLayout } from './layouts/AppLayout.jsx';
+import { MeetingPageGroup } from './pages/meetings/MeetingPageGroup.jsx';
+import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
+import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -846,6 +849,8 @@ function App() {
         setSessionName(meeting.name || '');
         setSourceLanguageCode(meeting.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE);
         setTargetLanguageCode(nextTargetLanguageCode);
+        setEchoTargetLanguage(meeting.echoTargetLanguage !== false);
+        setShouldRecordInputAudio(meeting.shouldRecordInputAudio === true);
         setSelectedMeetingGlossaryIds((current) => {
           if (current.length > 0) return current;
           return glossaryEntries.filter((entry) => (meeting.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[nextTargetLanguageCode] === item.target)).map((entry) => entry.id);
@@ -1966,6 +1971,8 @@ function App() {
       targetLanguageCode,
       targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
       sourceLanguageCode,
+      echoTargetLanguage,
+      shouldRecordInputAudio,
       meetingGlossaryEntries: currentMeetingGlossaryEntries(),
       selectedInputDeviceId: selectedInputDeviceId || null,
       inputDeviceLabelSnapshot: selectedInputDeviceSnapshot().inputDeviceLabelSnapshot
@@ -1980,6 +1987,8 @@ function App() {
         targetLanguageCode,
         targetLanguageLabel: targetLanguageLabelFor(targetLanguageCode),
         sourceLanguageCode,
+        echoTargetLanguage,
+        shouldRecordInputAudio,
         meetingId: meetingCheckpoint?.meetingId,
         segmentId: meetingCheckpoint?.segmentId || liveSessionId,
         meetingGlossaryEntries: currentMeetingGlossaryEntries(),
@@ -3412,6 +3421,23 @@ function App() {
     return <RecorderPage token={recordInfo.shareToken} code={recordInfo.shareCode} />;
   }
 
+  if (page === 'meeting-settings') {
+    const settingsInfo = pageInfoFromLocation();
+    return (
+      <MeetingSettingsLayout
+        mode={settingsInfo.settingsMode}
+        onBack={() => { window.location.hash = '#meetings'; }}
+      >
+        <MeetingSettingsPage
+          mode={settingsInfo.settingsMode}
+          meetingId={settingsInfo.meetingId}
+          onBack={() => { window.location.hash = '#meetings'; }}
+          onOpenWorkspace={(meetingId) => { window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=live`; }}
+        />
+      </MeetingSettingsLayout>
+    );
+  }
+
   if (isReadOnlyControlView) {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
@@ -3427,12 +3453,12 @@ function App() {
       titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : undefined}
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : '會議字幕工作台'}
       headerAction={isGlobalGlossaryPage ? (
-        <a className="button secondary meeting-create-header-button" href="#meetings">
+        <a className="button secondary meeting-header-action" href="#meetings">
           <ArrowRight size={18} aria-hidden="true" />
           返回會議管理
         </a>
       ) : (
-        <button className="button primary meeting-create-header-button" type="button" onClick={() => { window.location.hash = '#meeting?create=1'; }} disabled={isNavigationLocked}>
+        <button className="button primary meeting-create-header-button" type="button" onClick={() => { window.location.hash = '#meeting-settings?mode=create'; }} disabled={isNavigationLocked}>
           <Plus size={18} aria-hidden="true" />
           建立會議
         </button>
@@ -3442,38 +3468,37 @@ function App() {
       {page === 'meeting' && navigationNotice ? <p className="error-message" role="alert">{navigationNotice}</p> : null}
       {error ? <p className="error-message" role="alert">{error}</p> : null}
 
-      {page === 'meeting' || page === 'meetings' ? (
-        <MeetingManagementPage
-          onOpenLive={openMeetingLiveWorkspace}
-          onOpenHistory={(meetingId) => openMeetingWorkspaceTab(meetingId, 'history')}
-          initialStatusFilter={workspaceInfo.statusFilter}
-          initialPanel={workspaceInfo.panel}
-          initialCreate={workspaceInfo.createMeeting}
-        />
-      ) : null}
-
-      {isMeetingWorkspace ? (
-        <MeetingWorkspaceShell
-          detail={selectedMeetingDetail}
-          detailError={meetingDetailError}
-          tab={meetingWorkspaceTab}
-          tabs={meetingWorkspaceTabsForDisplay}
-          onBack={() => { closeMeetingDetail(); window.location.hash = '#meetings'; }}
-          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
-          onSelectTab={(tab) => openMeetingWorkspaceTab(routeMeetingId, tab)}
-        />
-      ) : null}
-
-      {page === 'meeting-detail' ? (
-        <MeetingDetailPage
-          detail={selectedMeetingDetail}
-          detailError={meetingDetailError}
-          returnPage={meetingDetailReturnPage()}
-          onBack={returnFromMeetingDetail}
-          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
-        />
-      ) : null}
-
+      <MeetingPageGroup
+        page={page}
+        isMeetingWorkspace={isMeetingWorkspace}
+        ManagementPage={MeetingManagementPage}
+        managementProps={{
+          onOpenLive: openMeetingLiveWorkspace,
+          onOpenHistory: (meetingId) => openMeetingWorkspaceTab(meetingId, 'history'),
+          initialStatusFilter: workspaceInfo.statusFilter,
+          initialPanel: workspaceInfo.panel,
+          initialCreate: false,
+          onOpenSettings: (meetingId) => { window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(meetingId)}`; }
+        }}
+        WorkspacePage={MeetingWorkspaceShell}
+        workspaceProps={{
+          detail: selectedMeetingDetail,
+          detailError: meetingDetailError,
+          tab: meetingWorkspaceTab,
+          tabs: meetingWorkspaceTabsForDisplay,
+          onBack: () => { closeMeetingDetail(); window.location.hash = '#meetings'; },
+          onRetry: () => refreshSelectedMeetingDetail(routeMeetingId),
+          onSelectTab: (tab) => openMeetingWorkspaceTab(routeMeetingId, tab)
+        }}
+        DetailPage={MeetingDetailPage}
+        detailProps={{
+          detail: selectedMeetingDetail,
+          detailError: meetingDetailError,
+          returnPage: meetingDetailReturnPage(),
+          onBack: returnFromMeetingDetail,
+          onRetry: () => refreshSelectedMeetingDetail(routeMeetingId)
+        }}
+      >
       <section className={`feature-page live-page meeting-workspace-live-surface${isLiveSurface ? ' is-active' : ''}`} aria-label="即時字幕工作區" hidden={!isLiveSurface}>
         <div className="live-workspace-grid">
         <section className="control-panel live-settings-card">
@@ -3816,16 +3841,12 @@ function App() {
         />
       </section>
       ) : null}
+      </MeetingPageGroup>
 
       {page === 'glossary' ? (
-      <section className="feature-page meeting-center-page glossary-page" aria-labelledby="glossary-page-title">
-        <div className="glossary-page-content">
-          <GlobalGlossaryPanel
-            entries={glossaryEntries}
-            onEntriesChange={setGlossaryEntries}
-          />
-        </div>
-      </section>
+      <GlobalGlossaryPage>
+        <GlobalGlossaryPanel entries={glossaryEntries} onEntriesChange={setGlossaryEntries} />
+      </GlobalGlossaryPage>
       ) : null}
     </MeetingLayout>
   );
@@ -4399,7 +4420,8 @@ function RecorderPage({ token, code = '' }) {
         sessionId: detail.session.id,
         targetLanguageCode: detail.session.targetLanguageCode,
         sourceLanguageCode: detail.session.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE,
-        echoTargetLanguage: true,
+        echoTargetLanguage: detail.session.echoTargetLanguage !== false,
+        shouldRecordInputAudio: detail.session.shouldRecordInputAudio === true,
         authorizationHeaders: recorderHeaders(),
         onInputAudioChunk: (chunk) => {
           audioChunksRef.current.input.push(new Uint8Array(chunk));
@@ -5289,7 +5311,7 @@ function MeetingHistoryItem({ record, onViewDetails }) {
   );
 }
 
-function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter = 'all', initialPanel = '', initialCreate = false }) {
+function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSettings, initialStatusFilter = 'all', initialPanel = '', initialCreate = false }) {
   const managementClientRef = useRef(createMeetingManagementApiClient());
   const readClientRef = useRef(createMeetingReadApiClient());
   const glossaryClientRef = useRef(createGlossaryApiClient());
@@ -5503,7 +5525,7 @@ function MeetingManagementPage({ onOpenLive, onOpenHistory, initialStatusFilter 
 
   function openMeetingCard(meeting) {
     if (!meeting?.id) return;
-    if (meeting.status === 'created') selectMeeting(meeting.id);
+    if (meeting.status === 'created') onOpenSettings?.(meeting.id);
     else if (meeting.status === 'completed') onOpenHistory(meeting.id);
     else onOpenLive(meeting.id);
   }

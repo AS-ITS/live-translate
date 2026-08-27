@@ -28,6 +28,8 @@ test('Meeting Management creates a draft, updates settings, and starts its first
       name: '產品會議',
       sourceLanguageCode: 'zh-Hant',
       targetLanguageCode: 'en',
+      echoTargetLanguage: false,
+      shouldRecordInputAudio: true,
       glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }],
       privateGlossaryEntries: [{ source: '專案代號', translations: { en: 'Project Codename' } }]
     })
@@ -37,15 +39,19 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(createResponse.status, 201);
   assert.equal(created.meeting.status, 'created');
   assert.equal(created.segment.status, 'created');
+  assert.equal(created.meeting.echoTargetLanguage, false);
+  assert.equal(created.meeting.shouldRecordInputAudio, true);
   assert.deepEqual(created.meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: {} }]);
 
   const updateResponse = await request(handler, {
     method: 'PATCH',
     url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
   });
   assert.equal(updateResponse.status, 200);
   assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');
+  assert.equal(updateResponse.json().meeting.echoTargetLanguage, true);
+  assert.equal(updateResponse.json().meeting.shouldRecordInputAudio, false);
   assert.deepEqual(updateResponse.json().meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: {} }]);
 
   const startResponse = await request(handler, {

@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { useCombobox } from 'downshift';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, ChevronDown, Clock3, Copy, Download, FileText, Filter, Globe2, MoreHorizontal, Mic, MicOff, Pause, Play, Plus, Radio, RefreshCw, Search, Settings, SlidersHorizontal, Square, Tag, Trash2, X } from 'lucide-react';
+import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, Copy, Download, FileText, Filter, Globe2, MoreHorizontal, Mic, MicOff, Pause, Play, Plus, Radio, RefreshCw, Search, Settings, SlidersHorizontal, Square, Tag, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -114,6 +113,7 @@ import { MeetingLayout, MeetingSettingsLayout, PublicSessionLayout } from './lay
 import { MeetingPageGroup } from './pages/meetings/MeetingPageGroup.jsx';
 import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
 import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
+import { LiveRecordingPage } from './pages/live/LiveRecordingPage.jsx';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -258,87 +258,28 @@ function meetingDetailReturnPage(info = pageInfoFromLocation()) {
 
 const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請重新選擇已建立的會議。';
 
-function LiveTranslationModeCombobox({ meetingRecords = [], routeMeetingId = '', controlsLocked = false, onChange }) {
-  const items = useMemo(() => meetingRecords
-      .filter((meeting) => ['created', 'active', 'interrupted'].includes(meeting.status))
-      .map((meeting) => ({
-        value: `meeting:${meeting.id}`,
-        label: meeting.name || meeting.id,
-        searchText: `${meeting.name || ''} ${meeting.id || ''}`
-      })),
-    [meetingRecords]);
-  const selectedItem = items.find((item) => item.value === `meeting:${routeMeetingId}`) || null;
-  const [inputValue, setInputValue] = useState(selectedItem?.label || '');
-  const filteredItems = useMemo(() => {
-    const normalizedQuery = inputValue.trim().toLocaleLowerCase();
-    if (!normalizedQuery || inputValue === selectedItem?.label) return items;
-    return items.filter((item) => item.searchText.toLocaleLowerCase().includes(normalizedQuery));
-  }, [inputValue, items, selectedItem?.label]);
-  const {
-    isOpen,
-    getLabelProps,
-    getMenuProps,
-    getInputProps,
-    getItemProps,
-    getToggleButtonProps,
-    highlightedIndex
-  } = useCombobox({
-    items: filteredItems,
-    itemToString: (item) => item?.label || '',
-    selectedItem,
-    inputValue,
-    isOpen: controlsLocked ? false : undefined,
-    onInputValueChange: ({ inputValue: nextValue }) => setInputValue(nextValue || ''),
-    onSelectedItemChange: ({ selectedItem: nextItem }) => {
-      if (!nextItem) return;
-      setInputValue(nextItem.label);
-      onChange(nextItem.value);
-    }
-  });
-
-  useEffect(() => {
-    setInputValue(selectedItem?.label || '');
-  }, [selectedItem?.label]);
+function LiveMeetingPicker({ meetings = [], selectedMeetingId = '', disabled = false, onChange }) {
+  const availableMeetings = meetings.filter((meeting) => ['created', 'active', 'interrupted'].includes(meeting.status));
 
   return (
-    <div className="field live-translation-mode-field">
-      <label {...getLabelProps()}>選擇會議</label>
-      <div className="combobox-wrapper">
-        <div className="combobox-input-wrapper">
-          <input
-            {...getInputProps({
-              'aria-describedby': 'live-translation-mode-help',
-              disabled: controlsLocked,
-              placeholder: '搜尋已建立的會議'
-            })}
-          />
-          <button
-            {...getToggleButtonProps({
-              type: 'button',
-              'aria-label': isOpen ? '收合會議選單' : '展開會議選單',
-              className: `combobox-toggle${isOpen ? ' is-open' : ''}`,
-              disabled: controlsLocked
-            })}
-          >
-            <ChevronDown size={18} strokeWidth={2.25} aria-hidden="true" />
-          </button>
-        </div>
-        <ul {...getMenuProps()} className="combobox-menu">
-          {isOpen ? filteredItems.map((item, index) => (
-            <li
-              key={item.value}
-              {...getItemProps({ item, index })}
-              className={`combobox-option${highlightedIndex === index ? ' is-highlighted' : ''}`}
-            >
-              {item.label}
-            </li>
-          )) : null}
-          {isOpen && filteredItems.length === 0 ? <li className="combobox-empty">找不到符合的會議。</li> : null}
-        </ul>
-      </div>
-      <span id="live-translation-mode-help" className="field-help">請先選擇一個已建立的會議。</span>
-    </div>
+    <label className="live-meeting-picker">
+      <span>目前會議</span>
+      <select aria-label="選擇會議" value={selectedMeetingId} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+        <option value="">尚未選擇會議</option>
+        {availableMeetings.map((meeting) => <option key={meeting.id} value={meeting.id}>{meeting.name || meeting.id}</option>)}
+      </select>
+    </label>
   );
+}
+
+function liveMeetingStatusLabel(meeting) {
+  return meeting?.status === 'active'
+    ? '進行中'
+    : meeting?.status === 'interrupted'
+      ? '已暫停'
+      : meeting
+        ? '準備就緒'
+        : '尚未選擇會議';
 }
 
 function App() {
@@ -483,7 +424,7 @@ function App() {
     : (meetingWorkspaceTabsForDisplay.some((item) => item.id === workspaceInfo.workspaceTab)
       ? workspaceInfo.workspaceTab
       : meetingWorkspaceTabsForDisplay[0]?.id || 'live');
-  const isLiveSurface = page === 'live' || (isMeetingWorkspace && meetingWorkspaceTab === 'live');
+  const isLiveSurface = page === 'live-recording';
   const isViewingReadOnlySession = isLiveSurface && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
   const isReadOnlyControlView = isLiveSurface && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
 
@@ -557,7 +498,7 @@ function App() {
         window.history.replaceState(null, '', canonicalHash);
       }
       const next = pageInfoFromLocation();
-      if (next.page === 'meeting-workspace' && selectedMeetingIdRef.current !== next.meetingId) {
+      if ((next.page === 'meeting-workspace' || next.page === 'live-recording') && selectedMeetingIdRef.current !== next.meetingId) {
         selectedMeetingIdRef.current = null;
         setSelectedMeetingId(null);
         setSelectedMeetingDetail(null);
@@ -590,14 +531,14 @@ function App() {
   }, [page]);
 
   useEffect(() => {
-    if (!['meeting-detail', 'meeting-workspace'].includes(page)) return;
+    if (!['meeting-detail', 'meeting-workspace', 'live-recording'].includes(page)) return;
 
     const info = pageInfoFromLocation();
     if (!info.meetingId) {
       selectedMeetingIdRef.current = null;
       setSelectedMeetingId(null);
       setSelectedMeetingDetail(null);
-      setMeetingDetailError('缺少會議識別碼，請從會議列表重新選擇。');
+      setMeetingDetailError('');
       return;
     }
 
@@ -615,8 +556,6 @@ function App() {
       const currentMeetingId = pageInfoFromLocation().meetingId;
       if (currentMeetingId && !resumableMeetings.some((meeting) => meeting.id === currentMeetingId)) {
         redirectToMeetingWithError();
-      } else if (!currentMeetingId && resumableMeetings.length === 0) {
-        window.location.hash = 'meeting';
       }
     });
     return () => { cancelled = true; };
@@ -819,7 +758,7 @@ function App() {
 
   useEffect(() => {
     const { page: currentPage, meetingId } = pageInfoFromLocation();
-    if (currentPage !== 'live') {
+    if (currentPage !== 'live-recording') {
       return;
     }
     if (!meetingId) {
@@ -859,7 +798,7 @@ function App() {
       })
       .catch(() => {})
       .finally(() => {
-        if (pageFromLocation() === 'live' && pageInfoFromLocation().meetingId === meetingId) {
+        if (pageFromLocation() === 'live-recording' && pageInfoFromLocation().meetingId === meetingId) {
           loadMeetingResumeDraft(meetingId);
         }
       });
@@ -3219,11 +3158,15 @@ function App() {
     }
 
     await resetLiveMeetingWorkspace();
-    window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=live`;
+    window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`;
   }
 
   function openMeetingWorkspaceTab(meetingId, tab = 'live') {
     if (!meetingId || isNavigationLocked) return;
+    if (tab === 'live') {
+      void openMeetingLiveWorkspace(meetingId);
+      return;
+    }
     setIsLiveSettingsDrawerOpen(false);
     setIsLiveGlossaryDrawerOpen(false);
     setIsLiveExportDrawerOpen(false);
@@ -3355,6 +3298,7 @@ function App() {
     ? historyRecords.find((historyRecord) => historyRecord.id === selectedHistoryRecordId) || null
     : null;
   const hasSelectedResumableMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
+  const liveMeeting = selectedMeetingDetail?.meeting || meetingRecords.find((meeting) => meeting.id === routeMeetingId) || null;
   const meetingSettingsReadOnly = Boolean(routeMeetingId);
 
   function liveSettingsFields(isDrawerOpen = false) {
@@ -3432,7 +3376,7 @@ function App() {
           mode={settingsInfo.settingsMode}
           meetingId={settingsInfo.meetingId}
           onBack={() => { window.location.hash = '#meetings'; }}
-          onOpenWorkspace={(meetingId) => { window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=live`; }}
+          onOpenWorkspace={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }}
         />
       </MeetingSettingsLayout>
     );
@@ -3444,15 +3388,16 @@ function App() {
 
   const isMeetingManagementPage = page === 'meeting' || page === 'meetings';
   const isGlobalGlossaryPage = page === 'glossary';
-  const usesMeetingManagementShell = isMeetingManagementPage || isGlobalGlossaryPage;
+  const usesMeetingManagementShell = isMeetingManagementPage || isGlobalGlossaryPage || isLiveSurface;
 
   return (
     <MeetingLayout
       managementShell={usesMeetingManagementShell}
-      title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : '即時翻譯'}
+      className={isLiveSurface ? 'live-recording-app-shell' : ''}
+      title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : '即時字幕'}
       titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : undefined}
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : '會議字幕工作台'}
-      headerAction={isGlobalGlossaryPage ? (
+      headerAction={isGlobalGlossaryPage || isLiveSurface ? (
         <a className="button secondary meeting-header-action" href="#meetings">
           <ArrowRight size={18} aria-hidden="true" />
           返回會議管理
@@ -3499,81 +3444,20 @@ function App() {
           onRetry: () => refreshSelectedMeetingDetail(routeMeetingId)
         }}
       >
-      <section className={`feature-page live-page meeting-workspace-live-surface${isLiveSurface ? ' is-active' : ''}`} aria-label="即時字幕工作區" hidden={!isLiveSurface}>
-        <div className="live-workspace-grid">
-        <section className="control-panel live-settings-card">
-          <div className="title-block">
-            <div className="title-block-header">
-              <div><p className="eyebrow">LIVE SUBTITLES</p><h2>本次會議設定</h2></div>
-            </div>
-            <p>設定語言與音訊來源，準備好後開始即時字幕。</p>
-          </div>
-
-          <div className="controls live-settings-controls" aria-label="翻譯控制項">
-            <LiveTranslationModeCombobox
-              meetingRecords={meetingRecords}
-              routeMeetingId={routeMeetingId}
-              controlsLocked={controlsLocked}
-              onChange={selectLiveTranslationMode}
-            />
-
-            <button
-              className="button secondary live-settings-trigger"
-              type="button"
-              onClick={() => {
-                setIsLiveSettingsDrawerOpen(true);
-                setIsLiveGlossaryDrawerOpen(false);
-                setIsLiveExportDrawerOpen(false);
-              }}
-              aria-haspopup="dialog"
-              aria-expanded={isLiveSettingsDrawerOpen}
-            >
-              <Settings size={18} aria-hidden="true" />
-              設定
-            </button>
-
-            <button
-              className="button secondary glossary-drawer-trigger"
-              type="button"
-              onClick={() => {
-                setIsLiveGlossaryDrawerOpen(true);
-                setIsLiveSettingsDrawerOpen(false);
-                setIsLiveExportDrawerOpen(false);
-              }}
-              aria-haspopup="dialog"
-              aria-expanded={isLiveGlossaryDrawerOpen}
-            >
-              <BookOpen size={18} aria-hidden="true" />
-              字典
-              <span className="glossary-count-badge">
-                {selectedMeetingGlossaryIds.filter((id) => liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode).some((entry) => entry.id === id)).length}
-              </span>
-            </button>
-
-            {meetingSettingsReadOnly ? (
-              <a className="button secondary meeting-settings-edit-link" href={`#meeting?meetingId=${encodeURIComponent(routeMeetingId)}`}>回會議管理修改</a>
-            ) : null}
-
-            <div className="live-settings-action-wrapper">
-              <button
-                className="button secondary live-export-trigger"
-                type="button"
-                onClick={() => {
-                  setIsLiveExportDrawerOpen(true);
-                  setIsLiveSettingsDrawerOpen(false);
-                  setIsLiveGlossaryDrawerOpen(false);
-                }}
-                aria-haspopup="dialog"
-                aria-expanded={isLiveExportDrawerOpen}
-              >
-                <Download size={18} aria-hidden="true" />
-                匯出
-              </button>
-            </div>
-          </div>
-
+      {isLiveSurface ? <LiveRecordingPage>
+        <div className="live-workspace-stack">
+        <div className="live-session-toolbar meeting-settings-card" data-testid="live-session-toolbar">
           <div className="control-status-row">
             <div className="control-status-messages">
+              <div className="live-meeting-summary">
+                <div className="live-meeting-summary-main">
+                  <p className="eyebrow">MEETING CONTROL</p>
+                  <h2>{liveMeeting?.name || (routeMeetingId ? '正在載入會議…' : '尚未選擇會議')}</h2>
+                  <p className="live-meeting-language">{liveMeeting ? `${targetLanguageLabelFor(liveMeeting.sourceLanguageCode) || liveMeeting.sourceLanguageCode} → ${targetLanguageLabelFor(liveMeeting.targetLanguageCode) || liveMeeting.targetLanguageCode}` : '請先選擇一場可錄音的會議'}</p>
+                </div>
+                <span className="live-meeting-status status-pill">{liveMeetingStatusLabel(liveMeeting)}</span>
+              </div>
+              {!routeMeetingId ? <LiveMeetingPicker meetings={meetingRecords} selectedMeetingId="" disabled={controlsLocked} onChange={(meetingId) => selectLiveTranslationMode(`meeting:${meetingId}`)} /> : null}
               {controlLeaseSnapshot && !hasSessionControl ? (
                 <p className="device-note">目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p>
               ) : null}
@@ -3615,8 +3499,7 @@ function App() {
             </div>
 
             <div className="control-actions">
-              <div className="live-settings-action-wrapper">
-                <div className="session-actions">
+              <div className="session-actions">
                 {status === 'listening' ? (
                   <>
                     <button className="button secondary" type="button" onClick={pauseSession}>
@@ -3660,11 +3543,10 @@ function App() {
                     結束會議
                   </button>
                 ) : null}
-                </div>
               </div>
             </div>
           </div>
-        </section>
+        </div>
 
         <div className="live-transcript-column">
         <LiveCuePanel
@@ -3683,7 +3565,7 @@ function App() {
         />
         </div>
         </div>
-      </section>
+      </LiveRecordingPage> : null}
 
       {isLiveSurface ? <>
         <div className={`live-settings-drawer-backdrop${isLiveSettingsDrawerOpen ? ' is-open' : ''}`} onClick={() => setIsLiveSettingsDrawerOpen(false)} aria-hidden="true" />
@@ -4214,6 +4096,8 @@ function RecorderPage({ token, code = '' }) {
   const [paused, setPaused] = useState(false);
   const [transcript, setTranscript] = useState({ source: [], translation: [] });
   const [cueState, setCueState] = useState(createSubtitleCueState);
+  const [copiedSource, setCopiedSource] = useState(false);
+  const [copiedTranslation, setCopiedTranslation] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const liveSessionRef = useRef(null);
@@ -4517,20 +4401,72 @@ function RecorderPage({ token, code = '' }) {
       });
     }
   }, [token]);
+  const meetingName = detail?.meeting?.name || detail?.session?.name;
+  const sourceLanguageCode = detail?.meeting?.sourceLanguageCode || detail?.session?.sourceLanguageCode;
+  const targetLanguageCode = detail?.meeting?.targetLanguageCode || detail?.session?.targetLanguageCode;
+  const hasStoppedContent = !lease && cueState.finalCues.length > 0;
+  const cueStatus = recording ? 'listening' : paused ? 'paused' : hasStoppedContent ? 'stopped' : 'idle';
+  async function copyRecorderText(stream) {
+    const text = stream === 'source' ? sourceTextForCopy(cueState.finalCues) : translationTextForCopy(cueState.finalCues);
+    if (!text || !navigator.clipboard?.writeText) return;
+    await navigator.clipboard.writeText(text);
+    if (stream === 'source') {
+      setCopiedSource(true);
+      window.setTimeout(() => setCopiedSource(false), 1500);
+    } else {
+      setCopiedTranslation(true);
+      window.setTimeout(() => setCopiedTranslation(false), 1500);
+    }
+  }
   return <PublicSessionLayout
     className="recorder-page"
-    title={detail?.session?.name || '會議錄音'}
-    subtitle={`Recorder · ${detail?.session?.sourceLanguageCode || ''} → ${detail?.session?.targetLanguageCode || ''}`}
-    status={lease ? '已取得錄音控制權' : '尚未開始錄音'}
+    title="分享錄音"
+    subtitle="使用分享連結錄製此會議，不需管理端設定。"
+    status={null}
   >
-    {loading ? <p className="history-empty">正在載入會議…</p> : null}
-    {error ? <p className="error-message" role="alert">{error}</p> : null}
-    {detail && !lease ? <button className="button primary" type="button" onClick={claim}>準備錄音</button> : null}
-    {lease && !recording ? <button className="button primary" type="button" onClick={startRecording}>開始錄音</button> : null}
-    {recording ? <><button className="button secondary" type="button" onClick={pauseRecording}>暫停錄音</button><button className="button danger-button" type="button" onClick={stopRecording}>停止錄音</button></> : null}
-    {lease && paused ? <button className="button primary" type="button" onClick={startRecording}>繼續錄音</button> : null}
-    {lease ? <p className="device-note">{recording ? '正在錄音並同步到此 Session。' : paused ? '錄音已暫停，內容已同步。' : '已取得錄音控制權，開始前才會要求麥克風權限。'}</p> : null}
-    {recording || paused ? <section className="transcript-panel" aria-label="Recorder transcript"><div className="cue-list">{cueListForDisplay(cueState, { includePartial: recording }).map((cue) => <FinalCueRow key={cue.cueId} cue={cue} />)}</div><div className="transcript-columns"><div><h2>原文</h2>{transcript.source.map((item) => <p key={item}>{item}</p>)}</div><div><h2>翻譯</h2>{transcript.translation.map((item) => <p key={item}>{item}</p>)}</div></div></section> : null}
+    <LiveRecordingPage>
+      <div className="live-workspace-stack">
+        <div className="live-session-toolbar meeting-settings-card" data-testid="recorder-session-toolbar">
+          <div className="control-status-row">
+            <div className="control-status-messages">
+              <div className="live-meeting-summary">
+                <div className="live-meeting-summary-main">
+                  <p className="eyebrow">RECORDER CONTROL</p>
+                  <h2>{loading ? '正在載入會議…' : meetingName || '分享錄音'}</h2>
+                  <p className="live-meeting-language">{sourceLanguageCode && targetLanguageCode ? `${targetLanguageLabelFor(sourceLanguageCode) || sourceLanguageCode} → ${targetLanguageLabelFor(targetLanguageCode) || targetLanguageCode}` : '語言方向載入中'}</p>
+                </div>
+                <span className="live-meeting-status status-pill">{loading ? '載入中' : recording ? '錄音中' : paused ? '已暫停' : lease ? '已準備錄音' : '尚未取得控制權'}</span>
+              </div>
+              {error ? <p className="error-message" role="alert">{error}</p> : null}
+              {lease ? <p className="device-note">{recording ? '正在錄音並同步到此 Session。' : paused ? '錄音已暫停，內容已同步。' : '已取得錄音控制權，開始前才會要求麥克風權限。'}</p> : null}
+            </div>
+            <div className="control-actions">
+              <div className="session-actions">
+                {detail && !lease ? <button className="button primary" type="button" onClick={claim}>準備錄音</button> : null}
+                {lease && !recording && !paused ? <button className="button primary" type="button" onClick={startRecording}>開始錄音</button> : null}
+                {recording ? <button className="button secondary" type="button" onClick={pauseRecording}><Pause size={18} aria-hidden="true" />暫停錄音</button> : null}
+                {paused ? <button className="button primary" type="button" onClick={startRecording}><Play size={18} aria-hidden="true" />繼續錄音</button> : null}
+                {recording || paused ? <button className="button danger-button" type="button" onClick={stopRecording}><Square size={18} aria-hidden="true" />停止錄音</button> : null}
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="live-transcript-column">
+          <LiveCuePanel
+            cueState={cueState}
+            status={cueStatus}
+            isPaused={paused}
+            isStopped={hasStoppedContent}
+            polishingState={null}
+            polishedArticle={null}
+            copiedSource={copiedSource}
+            copiedTranslation={copiedTranslation}
+            onCopySource={() => copyRecorderText('source')}
+            onCopyTranslation={() => copyRecorderText('translation')}
+          />
+        </div>
+      </div>
+    </LiveRecordingPage>
   </PublicSessionLayout>;
 }
 
@@ -4819,6 +4755,7 @@ function LiveCuePanel({
   const panelRef = useRef(null);
   const cueListRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
+  const [showSource, setShowSource] = useState(true);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
   const hasContent = cues.length > 0 || Boolean(polishedArticle?.text);
 
@@ -4849,18 +4786,36 @@ function LiveCuePanel({
     setIsFollowingLatest(true);
   }
 
+  function toggleSourceVisibility(nextValue) {
+    const list = cueListRef.current;
+    const scrollTop = list?.scrollTop || 0;
+    setShowSource(nextValue);
+    window.requestAnimationFrame(() => {
+      if (cueListRef.current) cueListRef.current.scrollTop = scrollTop;
+    });
+  }
+
   return (
-    <section className="cue-panel" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
-      <div className="cue-panel-header">
+    <section className="cue-panel meeting-settings-card" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
+      <div className="cue-panel-header meeting-settings-card-header">
         <div>
           <h2>即時字幕</h2>
-          <p>{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : hasContent ? '原文與譯文會依句子同步顯示。' : '開始翻譯後，原文與翻譯字幕會顯示在這裡'}</p>
+          <p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '翻譯是主要閱讀內容；可隨時收合原文核對欄。'}</p>
         </div>
         <div className="cue-panel-actions">
           <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時字幕狀態：${statusLabel(status, statusLabelOverride)}`}>
             <Radio size={15} aria-hidden="true" />
             {statusLabel(status, statusLabelOverride)}
           </span>
+          <label className="source-visibility-toggle">
+            <input
+              type="checkbox"
+              checked={showSource}
+              onChange={(event) => toggleSourceVisibility(event.target.checked)}
+              data-testid="source-visibility-toggle"
+            />
+            <span>顯示原文</span>
+          </label>
           {hasContent ? <>
           <TranscriptPolishingStatus polishingState={polishingState} onRetry={onPolishingRetry} />
           {!isFollowingLatest ? (
@@ -4872,7 +4827,8 @@ function LiveCuePanel({
       <div ref={cueListRef} onScroll={(event) => setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget))} className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
         {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始翻譯後，原文與翻譯字幕會顯示在這裡</p> : null}
         {hasContent ? <>
-        <section className="cue-language-section" aria-label="即時字幕原文">
+        <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}`}>
+        {showSource ? <section className="cue-language-section cue-source-column" aria-label="即時字幕原文">
           <div className="cue-section-header">
             <h3>輸入／原文</h3>
             <button className="button detail-button" type="button" onClick={onCopySource} disabled={!sourceTextForCopy(cueState.finalCues)}>
@@ -4881,13 +4837,12 @@ function LiveCuePanel({
             </button>
           </div>
           <div className="cue-section-list" data-testid="cue-source-list">
-            {cues.length === 0 ? <p className="cue-empty" data-testid="cue-empty-state">開始說話後，字幕會顯示在這裡</p> : null}
             {cues.map((cue, index) => cue.status === 'final'
               ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="source" showRefinementStatus={index === cues.length - 1} />
               : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="source" />)}
           </div>
-        </section>
-        <section className="cue-language-section" aria-label="即時字幕翻譯">
+        </section> : null}
+        <section className="cue-language-section cue-translation-column" aria-label="即時字幕翻譯">
           <div className="cue-section-header">
             <h3>翻譯</h3>
             <button className="button detail-button" type="button" onClick={onCopyTranslation} disabled={!translationTextForCopy(cueState.finalCues)}>
@@ -4896,12 +4851,12 @@ function LiveCuePanel({
             </button>
           </div>
           <div className="cue-section-list" data-testid="cue-translation-list">
-            {cues.length === 0 ? <p className="cue-empty">開始說話後，字幕會顯示在這裡</p> : null}
             {cues.map((cue, index) => cue.status === 'final'
-              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="translation" showRefinementStatus={index === cues.length - 1} />
-              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="translation" />)}
+              ? <FinalCueRow key={`${cue.cueId}-${index}`} cue={cue} stream="translation" showRefinementStatus={index === cues.length - 1} latest={index === cues.length - 1} />
+              : <PartialCueRow key={`partial-${cue.cueId || 'current'}-${index}`} cue={cue} stream="translation" latest={index === cues.length - 1} />)}
           </div>
         </section>
+        </div>
         </> : null}
       </div>
       {polishedArticle?.text ? (
@@ -4914,12 +4869,12 @@ function LiveCuePanel({
   );
 }
 
-function FinalCueRow({ cue, stream, showRefinementStatus = true }) {
-  return <CueRow cue={cue} stream={stream} showRefinementStatus={showRefinementStatus} />;
+function FinalCueRow({ cue, stream, showRefinementStatus = true, latest = false }) {
+  return <CueRow cue={cue} stream={stream} showRefinementStatus={showRefinementStatus} latest={latest} />;
 }
 
-function PartialCueRow({ cue, stream }) {
-  return <CueRow cue={cue} partial stream={stream} />;
+function PartialCueRow({ cue, stream, latest = false }) {
+  return <CueRow cue={cue} partial stream={stream} latest={latest} />;
 }
 
 function TranscriptPolishingStatus({ polishingState, onRetry }) {
@@ -4960,7 +4915,7 @@ function formatPolishingTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
 }
 
-function CueRow({ cue, partial = false, stream, showRefinementStatus = true }) {
+function CueRow({ cue, partial = false, stream, showRefinementStatus = true, latest = false }) {
   const [showRaw, setShowRaw] = useState(false);
   const label = cue.terminalStatus === 'saved-pending'
     ? '未完成語句已保存'
@@ -4975,7 +4930,7 @@ function CueRow({ cue, partial = false, stream, showRefinementStatus = true }) {
   const wrappedText = wrapSubtitleText(text, languageCode);
   return (
     <article
-      className={`cue-row${partial ? ' cue-row-partial' : ''}`}
+      className={`cue-row${partial ? ' cue-row-partial' : ''}${latest ? ' cue-row-latest' : ''}`}
       data-testid={partial ? 'cue-partial-row' : 'cue-final-row'}
       data-cue-id={cue.cueId || undefined}
       aria-label={label}

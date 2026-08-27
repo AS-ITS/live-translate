@@ -3,5 +3,6 @@
 @import url('./components.css');
 @import url('./meeting-center.css');
 @import url('./meeting-workspace.css');
+@import url('./live-recording.css');
 @import url('./live-viewer.css');
 @import url('./recorder.css');

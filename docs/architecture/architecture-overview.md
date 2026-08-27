@@ -67,7 +67,8 @@ Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
 `main.jsx` application orchestration, grouped page components under
-`src/pages/`, and a Gemini/browser-specific `LiveTranslateSession`. Hash route parsing is isolated in
+`src/pages/` including the independent `LiveRecordingPage`, and a Gemini/browser-specific
+`LiveTranslateSession`. Hash route parsing is isolated in
 `src/app/routes.js`; shared application and public-session shells are provided
 by `src/layouts/AppLayout.jsx`. These layout components own presentation
 composition only and do not own Session lifecycle or API state.
@@ -212,6 +213,8 @@ Dependency direction is intentionally one-way:
 
 - UI orchestration owns composition and state wiring; page components own
   feature-level rendering, while Layout components own shared visual shells.
+- `LiveRecordingPage` owns the independent live-recording surface; the
+  Meeting Workspace owns history, glossary, sharing, and saved export views.
 - LiveTranslateSession owns one low-level browser-to-Gemini session attempt.
 - Transcript Engine owns normalization of transcript items.
 - Session Record Lifecycle maps session state into record updates.
@@ -847,6 +850,7 @@ them.
 | Module | Responsibility | Must Not Own |
 | ------ | -------------- | ------------ |
 | `main.jsx` | UI orchestration, session composition, history/detail wiring, reconnect adapter | Gemini SDK internals, repository implementation, export formatting rules |
+| `src/pages/live/LiveRecordingPage.jsx` | Independent live-recording page surface and route boundary | Session lifecycle implementation, repository persistence, Gemini SDK internals |
 | `src/app/routes.js` | Hash route parsing and canonical URL normalization | Session lifecycle, data fetching, rendering |
 | `src/layouts/AppLayout.jsx` | Shared application, meeting, and public-session shells | Feature state, API calls, Session lifecycle |
 | `SessionApplicationService` | Phase 2B target session use-case boundary for create/start/reconnect/stop/complete/fail/list/detail | React rendering, Gemini SDK internals, legacy `SessionRecord` storage shape |

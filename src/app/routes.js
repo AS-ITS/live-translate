@@ -1,5 +1,6 @@
 export const FEATURE_PAGES = new Set([
   'live',
+  'live-recording',
   'history',
   'meetings',
   'meeting',
@@ -24,8 +25,8 @@ export function pageInfoFromLocation() {
   const params = new URLSearchParams(queryString);
   const requestedPage = FEATURE_PAGES.has(pageName) ? pageName : pageName ? 'live' : 'meetings';
   const meetingId = params.get('meetingId') || '';
-  const page = requestedPage === 'live'
-    ? (meetingId ? 'meeting-workspace' : 'meetings')
+  const page = requestedPage === 'live' || requestedPage === 'live-recording'
+    ? 'live-recording'
     : ['history', 'retranslate'].includes(requestedPage)
       ? 'meetings'
       : requestedPage === 'meeting-detail' && meetingId
@@ -52,10 +53,13 @@ export function canonicalHashForLocation() {
   const [pageName, queryString = ''] = rawHash.split('?');
   const params = new URLSearchParams(queryString);
   const meetingId = params.get('meetingId') || '';
-  if (pageName === 'live') {
+  if (pageName === 'live' || pageName === 'live-recording') {
     return meetingId
-      ? `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=live`
-      : '#meetings';
+      ? `#live?meetingId=${encodeURIComponent(meetingId)}`
+      : '#live';
+  }
+  if (pageName === 'meeting-workspace' && params.get('tab') === 'live' && meetingId) {
+    return `#live?meetingId=${encodeURIComponent(meetingId)}`;
   }
   if (pageName === 'history') return '#meetings?status=completed';
   if (pageName === 'retranslate') return '#meetings';

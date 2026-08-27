@@ -34,6 +34,7 @@
 .control-panel, .history-panel, .transcript-panel, .glossary-panel, .cue-panel, .dead-letter-queue-panel {
   min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-card);
 }
+.transcript-panel { min-height: 20rem; padding: var(--space-5); }
 .control-panel { display: grid; gap: var(--space-5); padding: var(--space-6); }
 .title-block { display: grid; gap: var(--space-2); }
 .title-block h2, .title-block h3 { margin: 0; line-height: 1.25; }

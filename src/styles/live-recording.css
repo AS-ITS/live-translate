@@ -1,10 +1,17 @@
 .live-recording-app-shell { --control-height: 3.5rem; }
 .live-recording-page { min-width: 0; }
+.live-recording-page .live-recording-page-content { display: grid; gap: var(--space-2); min-width: 0; }
+.live-error-message { display: flex; align-items: center; align-self: start; gap: var(--space-3); min-height: 0; padding-block: 0; }
+.live-error-message > p { min-width: 0; margin: 0; }
+.live-error-icon { flex: 0 0 auto; }
+.live-error-retry { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
 .live-recording-page .live-workspace-stack { display: grid; gap: var(--space-4); min-width: 0; }
 .live-recording-page .live-session-toolbar { display: block; min-height: 5.5rem; padding: var(--space-4) var(--space-5); }
 .live-recording-page .control-status-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); }
-.live-recording-page .control-status-messages { display: grid; flex: 1 1 auto; min-width: 0; gap: var(--space-2); }
-.live-recording-page .control-status-messages > p { margin: 0; }
+.live-recording-page .live-meeting-summary-column { min-width: 16rem; flex: 1 1 auto; }
+.live-recording-page .live-session-status { min-width: 0; flex: 0 1 28rem; }
+.live-recording-page .live-session-status { display: grid; gap: var(--space-2); }
+.live-recording-page .live-session-status > p { margin: 0; }
 .live-recording-page .live-meeting-summary { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
 .live-recording-page .live-meeting-summary-main { min-width: 0; }
 .live-recording-page .live-meeting-summary h2 { margin: var(--space-1) 0 0; overflow-wrap: anywhere; font-size: var(--text-lg); line-height: 1.25; }
@@ -17,48 +24,61 @@
 .live-recording-page .session-actions { justify-content: flex-end; }
 .live-recording-page .control-actions .button { min-height: 2.75rem; }
 .live-recording-page .live-transcript-column { display: grid; min-width: 0; min-height: 0; }
-.live-recording-page .cue-panel { min-height: clamp(20rem, 50dvh, 42rem); overflow: hidden; }
+.live-recording-page .cue-panel { grid-template-rows: auto auto auto; align-content: start; row-gap: 0; min-height: clamp(20rem, 50dvh, 42rem); overflow: hidden; }
 .live-recording-page .cue-panel-header { padding-bottom: 0; }
 .live-recording-page .cue-panel-header h2 { margin: var(--space-1) 0 0; font-size: var(--text-lg); }
 .live-recording-page .cue-panel-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); }
 .live-recording-page .source-visibility-toggle { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; color: var(--color-text); font-size: var(--text-sm); font-weight: 700; white-space: nowrap; cursor: pointer; }
 .live-recording-page .source-visibility-toggle input { width: 1.125rem; height: 1.125rem; accent-color: var(--color-slate-primary); }
-.live-recording-page .cue-list { display: grid; min-height: 0; max-height: min(62dvh, 42rem); overflow-y: auto; overscroll-behavior: contain; }
+.live-recording-page .cue-list { display: grid; min-height: 0; max-height: min(62dvh, 42rem); margin-top: var(--space-5); overflow-y: auto; overscroll-behavior: contain; }
+.live-recording-page .cue-panel > .transcript-panel { margin-top: var(--space-5); }
 .live-recording-page .cue-list-empty { min-height: 18rem; place-items: center; }
 .live-recording-page .cue-empty-prominent { display: grid; justify-items: center; gap: var(--space-2); margin: 0; color: var(--color-text-subtle); text-align: center; }
-.live-recording-page .cue-reading-layout { display: grid; grid-template-columns: minmax(0, .3fr) minmax(0, .7fr); align-items: start; }
+.live-recording-page .cue-reading-layout { display: grid; grid-template-columns: minmax(0, .3fr) minmax(0, .7fr); align-items: start; align-content: start; }
 .live-recording-page .cue-reading-layout.is-source-hidden { grid-template-columns: minmax(0, 1fr); }
 .live-recording-page .cue-language-section { display: contents; min-width: 0; }
-.live-recording-page .cue-section-header { display: flex; align-items: center; justify-content: space-between; min-height: 2.75rem; padding: var(--space-2) var(--space-3); }
+.live-recording-page .cue-section-header { display: flex; align-items: center; justify-content: space-between; min-height: 2.25rem; padding: var(--space-1) var(--space-3); }
 .live-recording-page .cue-source-column .cue-section-header { grid-column: 1; }
 .live-recording-page .cue-translation-column .cue-section-header { grid-column: 2; }
-.live-recording-page .cue-section-header h3 { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); font-weight: 700; }
+.live-recording-page .cue-section-header h3 { margin: 0; color: var(--color-text-muted); font-size: var(--text-lg); font-weight: 800; }
 .live-recording-page .cue-section-list { display: contents; }
-.live-recording-page .cue-row { display: grid; grid-column: 2; gap: var(--space-2); min-width: 0; min-height: 4.5rem; margin-top: var(--space-2); padding: var(--space-4) var(--space-3); border-radius: 0; background: transparent; }
-.live-recording-page .cue-source-column .cue-row { grid-column: 1; padding-right: var(--space-5); }
+.live-recording-page .cue-row { display: grid; grid-column: 1 / -1; grid-template-columns: minmax(0, .3fr) minmax(0, .7fr); gap: var(--space-6); min-width: 0; margin-top: 0; padding: var(--space-2) var(--space-3); border-radius: 0; background: transparent; }
+.live-recording-page .cue-row > .cue-row-meta { grid-column: 1 / -1; }
+.live-recording-page .cue-row-meta { color: var(--color-text-subtle); font-size: var(--text-xs); line-height: 1.3; }
+.live-recording-page .cue-partial-status { color: inherit; font-weight: 600; }
+.live-recording-page .cue-row > .cue-text-toggle { display: contents; }
+.live-recording-page .cue-row > .cue-text-toggle > .cue-source { grid-column: 1; padding-right: var(--space-3); }
+.live-recording-page .cue-row > .cue-text-toggle > .cue-translation { grid-column: 2; }
+.live-recording-page .cue-row > .detail-button { grid-column: 1 / -1; justify-self: start; }
 .live-recording-page .cue-row-latest { border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-slate-primary-soft) 52%, transparent); }
-.live-recording-page .cue-source { color: var(--color-text-muted); font-size: var(--text-sm); line-height: 1.65; }
-.live-recording-page .cue-translation { color: var(--color-text); font-size: clamp(1.15rem, 1.8vw, 1.45rem); font-weight: 650; line-height: 1.65; }
-.live-recording-page .cue-reading-layout.is-source-hidden .cue-translation-column .cue-section-header,
-.live-recording-page .cue-reading-layout.is-source-hidden .cue-translation-column .cue-row { grid-column: 1; }
-.live-recording-page .cue-reading-layout.is-source-hidden .cue-translation { font-size: clamp(1.25rem, 2vw, 1.6rem); }
+.live-recording-page .cue-source { color: var(--color-text-muted); font-size: var(--text-sm); line-height: var(--leading-copy); }
+.live-recording-page .cue-translation { color: var(--color-text); font-size: clamp(1.15rem, 1.8vw, 1.45rem); font-weight: 650; line-height: 1.55; }
+.live-recording-page .cue-reading-layout.is-source-hidden .cue-translation-column .cue-section-header { grid-column: 1; }
+.live-recording-page .cue-reading-layout.is-source-hidden .cue-row { grid-template-columns: minmax(0, 1fr); }
+.live-recording-page .cue-reading-layout.is-source-hidden .cue-row > .cue-text-toggle > .cue-translation { grid-column: 1; }
+.live-recording-page .cue-reading-layout.is-source-hidden .cue-translation { font-size: clamp(1.2rem, 2vw, 1.6rem); }
 
 @media (max-width: 900px) {
   .live-recording-page .control-status-row { align-items: stretch; flex-direction: column; }
+  .live-recording-page .live-meeting-summary-column { min-width: 0; }
   .live-recording-page .control-actions { justify-content: flex-start; }
   .live-recording-page .session-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 760px) {
+  .live-error-message { align-items: flex-start; }
+  .live-error-retry { margin-top: .125rem; }
   .live-recording-page .live-session-toolbar { padding: var(--space-4); }
   .live-recording-page .live-meeting-summary { align-items: flex-start; flex-direction: column; gap: var(--space-2); }
   .live-recording-page .live-meeting-picker { width: 100%; }
   .live-recording-page .control-actions, .live-recording-page .session-actions { width: 100%; }
   .live-recording-page .control-actions .button { flex: 1 1 9rem; }
   .live-recording-page .cue-reading-layout { grid-template-columns: 1fr; }
-  .live-recording-page .cue-source-column .cue-section-header, .live-recording-page .cue-source-column .cue-row,
-  .live-recording-page .cue-translation-column .cue-section-header, .live-recording-page .cue-translation-column .cue-row { grid-column: 1; }
+  .live-recording-page .cue-source-column .cue-section-header, .live-recording-page .cue-translation-column .cue-section-header { grid-column: 1; }
+  .live-recording-page .cue-row { grid-template-columns: 1fr; gap: var(--space-2); }
+  .live-recording-page .cue-row > .cue-text-toggle > .cue-source,
+  .live-recording-page .cue-row > .cue-text-toggle > .cue-translation { grid-column: 1; }
+  .live-recording-page .cue-row > .cue-text-toggle > .cue-source { padding-right: 0; }
   .live-recording-page .cue-source-column .cue-section-header { margin-top: var(--space-3); }
-  .live-recording-page .cue-source-column .cue-row { padding-right: var(--space-3); }
   .live-recording-page .cue-reading-layout.is-source-hidden { grid-template-columns: 1fr; }
 }

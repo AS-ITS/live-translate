@@ -66,8 +66,9 @@ per-user identity or permission system.
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
-`main.jsx` application orchestration, grouped page components under
-`src/pages/` including the independent `LiveRecordingPage`, and a Gemini/browser-specific
+`main.jsx` application orchestration, and page components under `src/pages/`
+that own route-level composition including the independent `LiveRecordingPage`,
+and a Gemini/browser-specific
 `LiveTranslateSession`. Hash route parsing is isolated in
 `src/app/routes.js`; shared application and public-session shells are provided
 by `src/layouts/AppLayout.jsx`. These layout components own presentation
@@ -211,8 +212,9 @@ flowchart LR
 
 Dependency direction is intentionally one-way:
 
-- UI orchestration owns composition and state wiring; page components own
-  feature-level rendering, while Layout components own shared visual shells.
+- UI orchestration owns cross-page state wiring; page components own route-level
+  composition and feature rendering, while Layout components own shared visual
+  shells.
 - `LiveRecordingPage` owns the independent live-recording surface; the
   Meeting Workspace owns history, glossary, sharing, and saved export views.
 - LiveTranslateSession owns one low-level browser-to-Gemini session attempt.

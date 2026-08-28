@@ -338,15 +338,15 @@ function cueList(page) {
 }
 
 function translationCueList(page) {
-  return liveCuePanel(page).getByTestId('cue-translation-list');
+  return liveCuePanel(page).getByTestId('cue-paired-list');
 }
 
 function finalCueRows(page) {
-  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-final-row');
+  return liveCuePanel(page).getByTestId('cue-paired-list').getByTestId('cue-final-row');
 }
 
 function partialCueRows(page) {
-  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-partial-row');
+  return liveCuePanel(page).getByTestId('cue-paired-list').getByTestId('cue-partial-row');
 }
 
 function cueRow(page, cueId) {
@@ -359,10 +359,6 @@ async function expectCueRow(row, { sourceText, translatedText, timecode } = {}) 
     const pairedTranslation = row.getByTestId('cue-translated-text');
     if (await pairedTranslation.count() > 0) {
       await expect(pairedTranslation).toHaveText(translatedText);
-    } else {
-      const rowIndex = await row.evaluate((element) => Array.from(element.parentElement.children).indexOf(element));
-      const panel = row.locator('xpath=ancestor::*[@data-testid="live-cue-panel"]');
-      await expect(panel.getByTestId('cue-translation-list').locator('.cue-row').nth(rowIndex).getByTestId('cue-translated-text')).toHaveText(translatedText);
     }
   }
   if (timecode !== undefined) await expect(row.getByTestId('cue-timecode')).toHaveText(timecode);
@@ -1462,7 +1458,7 @@ test('recorder share uses the live subtitle reading layout across lifecycle stat
   expect(columns).toHaveLength(2);
   expect(columns[0] / (columns[0] + columns[1])).toBeCloseTo(0.3, 1);
   await panel.getByTestId('source-visibility-toggle').uncheck();
-  await expect(panel.getByTestId('cue-source-list')).toHaveCount(0);
+  await expect(panel.getByRole('region', { name: '即時字幕原文' })).toHaveCount(0);
   expect(await panel.locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
 
   await page.getByRole('button', { name: '暫停錄音' }).click();
@@ -2046,15 +2042,16 @@ test('stop error banner stays above the live workspace', async ({ page }) => {
   await emitFinalTranscript(page, 'stop error source', 'stop error translation');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByRole('region', { name: '即時翻譯工作區' })).toBeVisible();
+  await expect(page.getByTestId('live-session-toolbar')).toBeVisible();
   const errorBanner = page.getByRole('alert').filter({ hasText: '長會議同步尚未完成' });
   await expect(errorBanner).toBeVisible();
 
   const errorBox = await errorBanner.boundingBox();
-  const workspaceBox = await page.getByRole('region', { name: '即時翻譯工作區' }).boundingBox();
+  const workspaceBox = await page.getByTestId('live-session-toolbar').boundingBox();
   expect(errorBox).not.toBeNull();
   expect(workspaceBox).not.toBeNull();
   expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(workspaceBox.y);
+  expect(workspaceBox.y - (errorBox.y + errorBox.height)).toBeLessThanOrEqual(16);
 });
 
 test('checkpoint sync retries a temporary failure and clears the error after success', async ({ page }) => {
@@ -2479,23 +2476,34 @@ test('live subtitles prioritize translation and can collapse the source column',
   const panel = liveCuePanel(page);
   const toggle = panel.getByTestId('source-visibility-toggle');
   await expect(toggle).toBeChecked();
-  await expect(panel.getByTestId('cue-source-list')).toBeVisible();
-  await expect(panel.getByTestId('cue-translation-list').getByText('translated sentence')).toBeVisible();
+  await expect(panel.getByRole('region', { name: '即時字幕原文' })).toBeVisible();
+  await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('live-subtitles-source-visible.png'), fullPage: true });
 
   const visibleLayout = await panel.getByTestId('cue-list').locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   expect(visibleLayout.split(' ').length).toBe(2);
+  const translationHeading = await panel.getByRole('heading', { name: '翻譯', exact: true }).boundingBox();
+  const firstCueRow = await panel.getByTestId('cue-paired-list').locator('.cue-row').first().boundingBox();
+  const description = await panel.locator('.meeting-settings-card-description').boundingBox();
+  expect(translationHeading).not.toBeNull();
+  expect(firstCueRow).not.toBeNull();
+  expect(description).not.toBeNull();
+  expect(translationHeading.y - (description.y + description.height)).toBeGreaterThanOrEqual(24);
+  expect(translationHeading.y - (description.y + description.height)).toBeLessThanOrEqual(32);
+  expect(firstCueRow.y - (translationHeading.y + translationHeading.height)).toBeLessThan(48);
 
   await toggle.uncheck();
   await expect(toggle).not.toBeChecked();
-  await expect(panel.getByTestId('cue-source-list')).toHaveCount(0);
-  await expect(panel.getByTestId('cue-translation-list').getByText('translated sentence')).toBeVisible();
+  await expect(panel.getByRole('region', { name: '即時字幕原文' })).toHaveCount(0);
+  await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
+  await expect(panel.getByTestId('cue-source-text')).toHaveCount(0);
+  await expect(panel.getByText('source sentence', { exact: true })).toHaveCount(0);
   await page.screenshot({ path: test.info().outputPath('live-subtitles-source-hidden.png'), fullPage: true });
   const hiddenLayout = await panel.getByTestId('cue-list').locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   expect(hiddenLayout.split(' ').length).toBe(1);
 
   await toggle.check();
-  await expect(panel.getByTestId('cue-source-list').getByText('source sentence')).toBeVisible();
+  await expect(panel.getByTestId('cue-paired-list').getByText('source sentence')).toBeVisible();
 });
 
 test('live recording reuses the meeting design system at desktop widths', async ({ page }) => {
@@ -2504,7 +2512,13 @@ test('live recording reuses the meeting design system at desktop widths', async 
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'visual source', 'visual translation');
 
-  for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 800 }, { width: 1024, height: 768 }]) {
+  for (const viewport of [
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+    { width: 1280, height: 800 },
+    { width: 1024, height: 768 }
+  ]) {
     await page.setViewportSize(viewport);
     await page.screenshot({ path: test.info().outputPath(`live-recording-${viewport.width}.png`) });
 
@@ -2536,6 +2550,37 @@ test('live recording reuses the meeting design system at desktop widths', async 
     expect(layout.panelWidth).toBeGreaterThan(0);
     expect(layout.readingColumns).toBe(2);
   }
+
+  await page.setViewportSize({ width: 640, height: 800 });
+  const mobileLayout = await page.evaluate(() => {
+    const row = document.querySelector('[data-testid="cue-paired-list"] .cue-row');
+    const styles = row ? getComputedStyle(row) : null;
+    return {
+      rowColumns: styles?.gridTemplateColumns.split(' ').length || 0,
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+    };
+  });
+  expect(mobileLayout.rowColumns).toBe(1);
+  expect(mobileLayout.hasHorizontalOverflow).toBe(false);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const typography = await page.evaluate(() => {
+    const source = document.querySelector('[data-testid="cue-paired-list"] .cue-source');
+    const translation = document.querySelector('[data-testid="cue-paired-list"] .cue-translation');
+    const sourceHeading = document.querySelector('.cue-source-column .cue-section-header h3');
+    const sourceStyle = source ? getComputedStyle(source) : null;
+    const translationStyle = translation ? getComputedStyle(translation) : null;
+    const headingStyle = sourceHeading ? getComputedStyle(sourceHeading) : null;
+    return {
+      sourceFontSize: sourceStyle?.fontSize || '',
+      translationFontSize: translationStyle?.fontSize || '',
+      headingFontSize: headingStyle?.fontSize || '',
+      firstRowBorder: document.querySelector('[data-testid="cue-paired-list"] .cue-row') ? getComputedStyle(document.querySelector('[data-testid="cue-paired-list"] .cue-row')).borderBottomWidth : ''
+    };
+  });
+  expect(parseFloat(typography.translationFontSize)).toBeGreaterThan(parseFloat(typography.sourceFontSize));
+  expect(parseFloat(typography.headingFontSize)).toBeGreaterThan(parseFloat(typography.sourceFontSize));
+  expect(typography.firstRowBorder).toBe('0px');
 });
 
 test('final repeated number turn keeps its complete source and translation', async ({ page }) => {
@@ -2930,7 +2975,7 @@ test('copies only completed source transcript from live subtitles', async ({ pag
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段翻譯\n第二段翻譯');
 });
 
-test('Stop finalizes visible partial transcripts for export and history', async ({ page }) => {
+test('Stop finalizes visible partial transcripts without active export controls', async ({ page }) => {
   await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2943,11 +2988,8 @@ test('Stop finalizes visible partial transcripts for export and history', async 
     sourceText: 'partial source on stop',
     translatedText: 'partial translation on stop'
   });
-  await page.getByRole('button', { name: '匯出', exact: true }).click();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: '關閉匯出' }).click();
-  await openSessionHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
 });
 
 test('interim input transcription stays in the same pending pair as formal input', async ({ page }) => {

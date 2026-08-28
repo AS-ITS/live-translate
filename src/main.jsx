@@ -113,6 +113,7 @@ import { MeetingLayout, MeetingSettingsLayout, PublicSessionLayout } from './lay
 import { MeetingPageGroup } from './pages/meetings/MeetingPageGroup.jsx';
 import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
 import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
+import { TranslationHistoryPage } from './pages/history/TranslationHistoryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from './pages/live/LiveRecordingPage.jsx';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -477,6 +478,17 @@ function App() {
       }
       setPage(next.page);
       setLocationVersion((current) => current + 1);
+      if (next.page === 'translation-history' && next.recordId) {
+        if (next.recordType === 'meeting') {
+          closeHistoryRecordDetail();
+          if (selectedMeetingIdRef.current !== next.recordId) void loadMeetingDetail(next.recordId);
+        } else {
+          closeMeetingDetail();
+          if (selectedHistoryRecordIdRef.current !== next.recordId) {
+          void openHistoryRecordDetail(next.recordId);
+          }
+        }
+      }
       if (next.page !== 'meeting') {
         setNavigationNotice('');
       }
@@ -490,13 +502,13 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (page === 'history' || page === 'retranslate') {
+    if (page === 'history' || page === 'translation-history' || page === 'retranslate') {
       void refreshHistoryRecords();
     }
   }, [page]);
 
   useEffect(() => {
-    if (page === 'history' || page === 'meetings') {
+    if (page === 'history' || page === 'translation-history' || page === 'meetings') {
       void refreshMeetingRecords();
     }
   }, [page]);
@@ -2855,6 +2867,35 @@ function App() {
     }
   }
 
+  function openTranslationHistoryEntry(entry, section = 'overview') {
+    if (!entry?.record?.id) return;
+    if (entry.kind === 'meeting') {
+      openTranslationHistoryMeeting(entry.record.id, section);
+      return;
+    }
+    const recordId = entry.record.id;
+    closeMeetingDetail();
+    if (selectedHistoryRecordIdRef.current !== recordId) void openHistoryRecordDetail(recordId);
+    window.location.hash = `#translation-history?recordType=session&recordId=${encodeURIComponent(recordId)}&section=${encodeURIComponent(section)}`;
+  }
+
+  function openTranslationHistoryMeeting(meetingId, section = 'overview') {
+    if (!meetingId) return;
+    const meetingRecord = meetingRecords.find((record) => record.id === meetingId);
+    if (!meetingRecord && !meetingDetailCacheRef.current.has(meetingId)) return;
+    closeHistoryRecordDetail();
+    if (selectedMeetingIdRef.current !== meetingId) {
+      void loadMeetingDetail(meetingId);
+    }
+    window.location.hash = `#translation-history?recordType=meeting&recordId=${encodeURIComponent(meetingId)}&section=${encodeURIComponent(section)}`;
+  }
+
+  function closeTranslationHistoryEntry() {
+    closeHistoryRecordDetail();
+    closeMeetingDetail();
+    window.location.hash = '#translation-history';
+  }
+
   async function refreshSelectedHistoryRecordDetail(id) {
     if (!id || selectedHistoryRecordIdRef.current !== id) {
       return false;
@@ -2903,6 +2944,7 @@ function App() {
   }
 
   async function loadMeetingDetail(id) {
+    closeHistoryRecordDetail();
     const requestId = meetingDetailRequestIdRef.current + 1;
     meetingDetailRequestIdRef.current = requestId;
     selectedMeetingIdRef.current = id;
@@ -3217,6 +3259,10 @@ function App() {
     : null;
   const hasSelectedResumableMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
   const liveMeeting = selectedMeetingDetail?.meeting || meetingRecords.find((meeting) => meeting.id === routeMeetingId) || null;
+  const translationHistoryEntries = combinedHistoryEntries(historyRecords, meetingRecords);
+  const selectedTranslationHistoryEntry = workspaceInfo.recordId
+    ? translationHistoryEntries.find((entry) => entry.kind === workspaceInfo.recordType && entry.record.id === workspaceInfo.recordId) || null
+    : null;
   if (page === 'watch') {
     const watchInfo = pageInfoFromLocation();
     return <WatchPage token={watchInfo.shareToken} code={watchInfo.shareCode} />;
@@ -3253,18 +3299,52 @@ function App() {
     return <ReadOnlySessionPage sessionId={routeSessionId || activeSessionRecordIdRef.current} />;
   }
 
+  if (page === 'translation-history') {
+    return (
+      <MeetingLayout
+        managementShell
+        title="翻譯紀錄"
+        titleId="translation-history-page-title"
+        subtitle="查看已完成的會議、原文、翻譯內容與匯出檔案。"
+        headerAction={<a className="button secondary meeting-header-action" href="#meetings"><ArrowRight size={18} aria-hidden="true" />返回會議管理</a>}
+      >
+        <TranslationHistoryPage
+          entries={translationHistoryEntries}
+          selectedEntry={selectedTranslationHistoryEntry}
+          selectedSessionDetail={selectedHistoryDetail}
+          selectedMeetingDetail={selectedMeetingDetail}
+          selectedSection={workspaceInfo.historySection}
+          isLoading={isLoadingHistory || isLoadingMeetings}
+          loadError={historyLoadError || meetingLoadError}
+          detailError={historyDetailError || meetingDetailError}
+          onOpenEntry={openTranslationHistoryEntry}
+          onCloseEntry={closeTranslationHistoryEntry}
+          onDeleteRecord={deleteHistoryRecord}
+          onRetry={() => {
+            if (workspaceInfo.recordType === 'meeting') return refreshSelectedMeetingDetail(workspaceInfo.recordId);
+            return refreshSelectedHistoryRecordDetail(workspaceInfo.recordId);
+          }}
+          helpers={{ historyEntryMatches, historyEntryTitle, historyEntrySummary, meetingStatusLabel, historyStatusLabel, formatRecordTime, formatDuration }}
+          SessionDetail={SessionDetail}
+          MeetingDetail={MeetingDetail}
+        />
+      </MeetingLayout>
+    );
+  }
+
   const isMeetingManagementPage = page === 'meeting' || page === 'meetings';
   const isGlobalGlossaryPage = page === 'glossary';
+  const isMeetingDetailPage = page === 'meeting-detail';
   const usesMeetingManagementShell = isMeetingManagementPage || isGlobalGlossaryPage || isLiveSurface;
 
   return (
     <MeetingLayout
       managementShell={usesMeetingManagementShell}
-      className={isLiveSurface ? 'live-recording-app-shell' : ''}
-      title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : '即時字幕'}
-      titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : undefined}
-      subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : '會議字幕工作台'}
-      headerAction={isGlobalGlossaryPage || isLiveSurface ? (
+      className={isLiveSurface ? 'live-recording-app-shell' : isMeetingDetailPage ? 'meeting-detail-app-shell' : ''}
+      title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : isMeetingDetailPage ? '會議紀錄' : '即時字幕'}
+      titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : isMeetingDetailPage ? 'meeting-detail-page-title' : undefined}
+      subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : isMeetingDetailPage ? '查看這場會議的完整時間軸、逐字稿與匯出內容。' : '會議字幕工作台'}
+      headerAction={isGlobalGlossaryPage || isLiveSurface || isMeetingDetailPage ? (
         <a className="button secondary meeting-header-action" href="#meetings">
           <ArrowRight size={18} aria-hidden="true" />
           返回會議管理
@@ -3286,7 +3366,7 @@ function App() {
         ManagementPage={MeetingManagementPage}
         managementProps={{
           onOpenLive: openMeetingLiveWorkspace,
-          onOpenHistory: (meetingId) => openMeetingWorkspaceTab(meetingId, 'history'),
+          onOpenHistory: (meetingId) => openMeetingDetail(meetingId, 'meetings'),
           initialStatusFilter: workspaceInfo.statusFilter,
           initialPanel: workspaceInfo.panel,
           initialCreate: false,
@@ -5509,23 +5589,148 @@ function MeetingPanel({ titleId, records, selectedMeetingId, selectedDetail, onV
   );
 }
 
-function MeetingDetailPage({ detail, detailError = '', returnPage = 'history', onBack, onRetry }) {
-  const returnLabel = returnPage === 'meetings' ? '返回會議列表' : '返回翻譯紀錄';
+function MeetingDetailPage({ detail, detailError = '', onRetry }) {
+  const [activeSection, setActiveSection] = useState('record');
+
+  useEffect(() => {
+    setActiveSection('record');
+  }, [detail?.meeting?.id]);
+
+  const sections = [
+    ['record', '紀錄'],
+    ['translation', '翻譯內容'],
+    ['export', '匯出']
+  ];
 
   return (
-    <section className="feature-page meeting-detail-page" aria-labelledby="meeting-detail-page-title">
-      <div className="meeting-detail-page-header">
-        <button className="button secondary" type="button" onClick={onBack}>{returnLabel}</button>
-        <div>
-          <p className="eyebrow">MEETING RECORD</p>
-          <h2 id="meeting-detail-page-title">會議詳細資料</h2>
+    <section className="feature-page meeting-detail-page glossary-page" aria-labelledby="meeting-detail-page-title">
+      <div className="meeting-detail-layout">
+        <aside className="meeting-detail-directory" aria-label="會議內容">
+          <div className="meeting-detail-directory-heading"><strong>會議內容</strong></div>
+          <nav aria-label="會議內容目錄">
+            {sections.map(([id, label]) => (
+              <button
+                key={id}
+                className={activeSection === id ? 'is-active' : ''}
+                type="button"
+                aria-current={activeSection === id ? 'page' : undefined}
+                onClick={() => setActiveSection(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+        <div className="meeting-detail-page-scroll">
+          <MeetingRecordDetail detail={detail} detailError={detailError} activeSection={activeSection} onRetry={onRetry} />
         </div>
-      </div>
-      <div className="meeting-detail-page-scroll">
-        <MeetingDetail detail={detail} detailError={detailError} onRetryDetail={onRetry} />
       </div>
     </section>
   );
+}
+
+function MeetingRecordDetail({ detail, detailError = '', activeSection, onRetry }) {
+  if (activeSection === 'translation') {
+    return <MeetingTranslationSection detail={detail} detailError={detailError} onRetry={onRetry} />;
+  }
+
+  if (activeSection === 'export') {
+    return <MeetingExportSection detail={detail} detailError={detailError} onRetry={onRetry} />;
+  }
+
+  if (detail === undefined) {
+    return <MeetingDetailState title="正在載入會議詳細資料"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
+  }
+
+  if (!detail) {
+    return <MeetingDetailState title="無法取得會議詳細資料"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
+  }
+
+  return (
+    <section className="meeting-record-section" aria-label="會議紀錄">
+      <div className="meeting-record-section-heading">
+        <div>
+          <p className="eyebrow">MEETING RECORD</p>
+          <h2>{meetingTitle(detail.meeting)}</h2>
+          <p>會議基本資訊與完成狀態。</p>
+        </div>
+      </div>
+      <dl className="session-detail-metadata meeting-detail-metadata">
+        <div><dt>會議名稱</dt><dd>{meetingTitle(detail.meeting)}</dd></div>
+        <div><dt>狀態</dt><dd>{meetingStatusLabel(detail.meeting?.status)}</dd></div>
+        <div><dt>開始時間</dt><dd>{formatRecordTime(detail.meeting?.startedAt)}</dd></div>
+        <div><dt>結束時間</dt><dd>{formatRecordTime(detail.meeting?.endedAt)}</dd></div>
+        <div><dt>持續時間</dt><dd>{formatDuration(detail.meeting?.durationMs)}</dd></div>
+        <div><dt>段落數</dt><dd>{detail.meeting?.segmentSummary?.totalSegments || 0}</dd></div>
+        <div><dt>原文完成</dt><dd>{detail.meeting?.transcriptSummary?.sourceFinalCount || 0}</dd></div>
+        <div><dt>翻譯完成</dt><dd>{detail.meeting?.transcriptSummary?.translationFinalCount || 0}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
+function MeetingTranslationSection({ detail, detailError = '', onRetry }) {
+  const [translationTab, setTranslationTab] = useState('source');
+
+  if (detail === undefined) return <MeetingDetailState title="正在載入翻譯內容"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
+  if (!detail) return <MeetingDetailState title="無法取得翻譯內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
+
+  const readingContent = meetingReadingContent(detail);
+  const content = translationTab === 'source' ? readingContent.sourceTranscript : readingContent.translationArticle;
+  const contentTitle = translationTab === 'source' ? '原始逐字稿' : '翻譯內容';
+  return (
+    <section className="meeting-record-section" aria-label="翻譯內容">
+      <div className="meeting-record-section-heading"><div><p className="eyebrow">TRANSLATION</p><h2>翻譯內容</h2><p>查看這場會議完成的翻譯結果。</p></div></div>
+      <div className="reading-tabs" role="tablist" aria-label="原文與翻譯內容切換">
+        <button className={`reading-tab${translationTab === 'source' ? ' active' : ''}`} type="button" role="tab" aria-selected={translationTab === 'source'} onClick={() => setTranslationTab('source')}>原文</button>
+        <button className={`reading-tab${translationTab === 'translation' ? ' active' : ''}`} type="button" role="tab" aria-selected={translationTab === 'translation'} onClick={() => setTranslationTab('translation')}>翻譯</button>
+      </div>
+      <ReadingContentMetadata content={content} />
+      <section className="meeting-record-content-block" aria-label={contentTitle}>
+        <div className="meeting-detail-section-heading"><h3>{contentTitle}</h3></div>
+        {content.paragraphs.length > 0 ? <div className="session-transcript-article article-content">{content.paragraphs.map((paragraph, index) => <p key={`meeting-${translationTab}-${index}`}>{paragraph}</p>)}</div> : <p className="history-empty">{translationTab === 'source' ? '尚無原始逐字稿。' : '尚無翻譯內容。'}</p>}
+      </section>
+    </section>
+  );
+}
+
+function MeetingExportSection({ detail, detailError = '', onRetry }) {
+  const [meetingExportFormat, setMeetingExportFormat] = useState('txt');
+  const [meetingExportStream, setMeetingExportStream] = useState('translation');
+  const [meetingExportError, setMeetingExportError] = useState('');
+
+  if (detail === undefined) return <MeetingDetailState title="正在載入匯出內容"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
+  if (!detail) return <MeetingDetailState title="無法取得匯出內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
+
+  const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
+  const finalCues = Array.isArray(detail.cues) ? detail.cues : [];
+  const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
+  const canDownload = meetingExportFormat !== 'txt' && finalCues.length > 0
+    ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
+    : canExportTranscript(transcriptItems, { format: meetingExportFormat, stream: meetingExportStream, timeOrigin });
+  const unavailableReason = meetingExportUnavailableReason({ canExport: canDownload, format: meetingExportFormat, stream: meetingExportStream });
+
+  function downloadMeetingTranscript() {
+    setMeetingExportError('');
+    try {
+      const content = exportApplicationService.exportTranscript({ items: transcriptItems, cues: finalCues, options: { format: meetingExportFormat, stream: meetingExportStream, timeOrigin } });
+      downloadTextFile(content, buildMeetingTranscriptFileName(detail.meeting, { format: meetingExportFormat, stream: meetingExportStream }), contentTypeForFormat(meetingExportFormat));
+    } catch {
+      setMeetingExportError('所選選項無法匯出整場會議逐字稿。');
+    }
+  }
+
+  return (
+    <section className="meeting-record-section meeting-export-section" aria-label="匯出">
+      <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
+      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
+      <section className="meeting-export-block" aria-label="字幕匯出"><h3>字幕匯出</h3><div className="meeting-export-controls"><label className="field"><span>字幕匯出格式</span><select value={meetingExportFormat} onChange={(event) => setMeetingExportFormat(event.target.value)}><option value="txt">TXT</option><option value="srt">SRT</option><option value="vtt">VTT</option></select></label><label className="field"><span>匯出內容</span><select value={meetingExportStream} onChange={(event) => setMeetingExportStream(event.target.value)}><option value="translation">翻譯</option><option value="source">原文</option><option value="both">兩者</option></select></label><button className="button primary" type="button" onClick={downloadMeetingTranscript} disabled={!canDownload}><Download size={16} aria-hidden="true" />下載字幕檔案</button></div><p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；舊紀錄沒有 Final Cue 時會使用逐字稿 fallback。</p>{unavailableReason ? <p className="export-note">{unavailableReason}</p> : null}{meetingExportError ? <p className="error-message" role="alert">{meetingExportError}</p> : null}</section>
+    </section>
+  );
+}
+
+function MeetingDetailState({ title, children }) {
+  return <section className="meeting-record-section" aria-label={title}><div className="meeting-record-section-heading"><h2>{title}</h2></div>{children}</section>;
 }
 
 function MeetingWorkspaceShell({ detail, detailError = '', tab, tabs, onBack, onRetry, onSelectTab }) {
@@ -5674,7 +5879,7 @@ function MeetingViewerSharePanel({ detail, onCreateViewerShare, onListViewerShar
     );
 }
 
-function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
+function MeetingDetail({ detail, detailError = '', activeSection = 'overview', onRetryDetail }) {
   const [meetingExportFormat, setMeetingExportFormat] = useState('txt');
   const [meetingExportStream, setMeetingExportStream] = useState('translation');
   const [meetingExportError, setMeetingExportError] = useState('');
@@ -5697,6 +5902,17 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
     setMeetingExportError('');
     setReadingTab('translationArticle');
   }, [meetingId]);
+
+  useEffect(() => {
+    if (!meetingId || activeSection === 'overview') return undefined;
+    if (activeSection === 'source' || activeSection === 'translation') {
+      setReadingTab(activeSection === 'source' ? 'sourceTranscript' : 'translationArticle');
+    }
+    const timer = window.setTimeout(() => {
+      document.querySelector(`[data-history-section="${activeSection === 'translation' ? 'source' : activeSection}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, meetingId]);
 
   if (detail === undefined) {
     return (
@@ -5766,7 +5982,7 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         <h3>{meetingTitle(detail.meeting)}詳細資料</h3>
       </div>
 
-      <dl className="session-detail-metadata meeting-detail-metadata">
+      <dl className="session-detail-metadata meeting-detail-metadata" data-history-section="overview">
         <div><dt>狀態</dt><dd>{meetingStatusLabel(detail.meeting?.status)}</dd></div>
         <div><dt>開始時間</dt><dd>{formatRecordTime(detail.meeting?.startedAt)}</dd></div>
         <div><dt>結束時間</dt><dd>{formatRecordTime(detail.meeting?.endedAt)}</dd></div>
@@ -5786,9 +6002,10 @@ function MeetingDetail({ detail, detailError = '', onRetryDetail }) {
         content={readingContent}
         selectedTab={readingTab}
         onSelectTab={setReadingTab}
+        historySection="source"
       />
 
-      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出">
+      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出" data-history-section="export">
         <div className="controls saved-export-controls">
           <label className="field">
             <span>整場匯出格式</span>
@@ -6739,7 +6956,7 @@ function GlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
   );
 }
 
-function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, onRetryExecution, retryingExecutionId = '', detailError = '', onRetryDetail }) {
+function SessionDetail({ detail, historyRecord, activeSection = 'overview', onRetranslationSubmitted, onOpenRetranslationWorkflow, onPolishingRetry, onRetryExecution, retryingExecutionId = '', detailError = '', onRetryDetail }) {
   const [savedExportFormat, setSavedExportFormat] = useState('txt');
   const [savedExportStream, setSavedExportStream] = useState('translation');
   const [savedExportError, setSavedExportError] = useState('');
@@ -6757,6 +6974,17 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
     setReadingTab('translationArticle');
     setTrackedRetranslations([]);
   }, [sessionRecordId]);
+
+  useEffect(() => {
+    if (!sessionRecordId || activeSection === 'overview') return undefined;
+    if (activeSection === 'source' || activeSection === 'translation') {
+      setReadingTab(activeSection === 'source' ? 'sourceTranscript' : 'translationArticle');
+    }
+    const timer = window.setTimeout(() => {
+      document.querySelector(`[data-history-section="${activeSection === 'translation' ? 'source' : activeSection}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSection, sessionRecordId]);
 
   useEffect(() => {
     if (!sessionRecordId) return undefined;
@@ -6867,7 +7095,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         ) : null}
       </div>
 
-      <dl className="session-detail-metadata">
+      <dl className="session-detail-metadata" data-history-section="overview">
         <div>
           <dt>目標語言</dt>
           <dd>{targetLanguageLabelFor(sessionRecord.targetLanguageCode) || sessionRecord.targetLanguageLabel || sessionRecord.targetLanguageCode || '未知語言'}</dd>
@@ -6947,6 +7175,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
           content={readingContent}
           selectedTab={readingTab}
           onSelectTab={setReadingTab}
+          historySection="source"
         />
       )}
       <section className="saved-export-panel" aria-label="重新翻譯">
@@ -6959,7 +7188,7 @@ function SessionDetail({ detail, historyRecord, onRetranslationSubmitted, onOpen
         />
       </section>
 
-      <section className="saved-export-panel" aria-label="已儲存逐字稿匯出">
+      <section className="saved-export-panel" aria-label="已儲存逐字稿匯出" data-history-section="export">
         <div className="controls saved-export-controls">
           <label className="field">
             <span>已儲存逐字稿匯出格式</span>
@@ -7080,41 +7309,54 @@ function AudioArtifactDownloads({
   title,
   audioArtifacts = {},
   inputLabel = '下載原始語音',
-  translationLabel = '下載翻譯語音'
+  translationLabel = '下載翻譯語音',
+  hideUnavailableLinks = false
 }) {
   const inputArtifact = audioArtifacts?.input;
   const translationArtifact = audioArtifacts?.translation;
+  const hasInputAudio = Boolean(inputArtifact?.downloadUrl);
+  const hasTranslationAudio = Boolean(translationArtifact?.downloadUrl);
 
   return (
     <section className="saved-export-panel audio-artifact-downloads" aria-label={title}>
-      <h4>{title}</h4>
+    {title ? <h4>{title}</h4> : null}
       <div className="recording-downloads">
-        <a
-          className={`button detail-button${inputArtifact?.downloadUrl ? '' : ' disabled-link'}`}
-          href={inputArtifact?.downloadUrl || '#'}
-          download={inputArtifact?.fileName || undefined}
-          aria-disabled={!inputArtifact?.downloadUrl}
-          onClick={(event) => {
-            if (!inputArtifact?.downloadUrl) event.preventDefault();
-          }}
-        >
-          <Download size={16} aria-hidden="true" />
-          {inputLabel}
-        </a>
-        <a
-          className={`button detail-button${translationArtifact?.downloadUrl ? '' : ' disabled-link'}`}
-          href={translationArtifact?.downloadUrl || '#'}
-          download={translationArtifact?.fileName || undefined}
-          aria-disabled={!translationArtifact?.downloadUrl}
-          onClick={(event) => {
-            if (!translationArtifact?.downloadUrl) event.preventDefault();
-          }}
-        >
-          <Download size={16} aria-hidden="true" />
-          {translationLabel}
-        </a>
+        {hideUnavailableLinks ? (
+          hasInputAudio ? <a className="button detail-button" href={inputArtifact.downloadUrl} download={inputArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{inputLabel}</a> : null
+        ) : (
+          <a
+            className={`button detail-button${hasInputAudio ? '' : ' disabled-link'}`}
+            href={inputArtifact?.downloadUrl || '#'}
+            download={inputArtifact?.fileName || undefined}
+            aria-disabled={!hasInputAudio}
+            onClick={(event) => {
+              if (!hasInputAudio) event.preventDefault();
+            }}
+          >
+            <Download size={16} aria-hidden="true" />
+            {inputLabel}
+          </a>
+        )}
+        {hideUnavailableLinks ? (
+          hasTranslationAudio ? <a className="button detail-button" href={translationArtifact.downloadUrl} download={translationArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{translationLabel}</a> : null
+        ) : (
+          <a
+            className={`button detail-button${hasTranslationAudio ? '' : ' disabled-link'}`}
+            href={translationArtifact?.downloadUrl || '#'}
+            download={translationArtifact?.fileName || undefined}
+            aria-disabled={!hasTranslationAudio}
+            onClick={(event) => {
+              if (!hasTranslationAudio) event.preventDefault();
+            }}
+          >
+            <Download size={16} aria-hidden="true" />
+            {translationLabel}
+          </a>
+        )}
       </div>
-      {!inputArtifact?.downloadUrl || !translationArtifact?.downloadUrl ? (
+      {hideUnavailableLinks && !hasInputAudio && !hasTranslationAudio ? (
+        <p className="export-note">目前沒有可下載的語音紀錄。</p>
+      ) : !hideUnavailableLinks && (!hasInputAudio || !hasTranslationAudio) ? (
         <p className="export-note">只有已成功儲存的語音紀錄可下載。</p>
       ) : null}
     </section>
@@ -7193,14 +7435,14 @@ function RetranslationExecutionItem({ execution, nowMs, onRetry, retryingExecuti
   );
 }
 
-function ReadingContentTabs({ content, selectedTab, onSelectTab }) {
+function ReadingContentTabs({ content, selectedTab, onSelectTab, historySection = '' }) {
   const selectedContent = selectedTab === 'sourceTranscript'
     ? content.sourceTranscript
     : content.translationArticle;
   const selectedTitle = selectedTab === 'sourceTranscript' ? '原始逐字稿' : '翻譯內容';
 
   return (
-    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback">
+    <section className="session-reading-panel" aria-label="歷史紀錄閱讀內容" data-testid="legacy-transcript-fallback" data-history-section={historySection || undefined}>
       <div className="reading-tabs" role="tablist" aria-label="歷史紀錄內容切換">
         <button
           className={`reading-tab${selectedTab === 'translationArticle' ? ' active' : ''}`}
@@ -7844,7 +8086,7 @@ function buildMeetingTranscriptFileName(meeting = {}, options = {}) {
 }
 
 function meetingTitle(record = {}) {
-  return `長會議 · ${formatRecordTime(record.startedAt)}`;
+  return record.name || `長會議 · ${formatRecordTime(record.startedAt)}`;
 }
 
 function meetingStatusLabel(status) {

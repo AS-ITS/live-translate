@@ -31,6 +31,10 @@ exporting each durable transcript chunk as a separate flashing subtitle. Older
 Meetings without persisted Cues retain a conservative transcript fallback that
 groups adjacent fragments until sentence punctuation or a clear pause.
 
+Meeting audio download controls are rendered only for successfully stored audio
+artifacts. If neither original nor translated audio is available, the detail
+page shows an explicit no-audio message instead of disabled download controls.
+
 When an older Session, Meeting, or re-translation has no persisted Cues,
 timed export derives one shared set of Cue windows from the source transcript
 and distributes translation text across those windows. If no source timing is

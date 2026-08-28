@@ -2,6 +2,7 @@ export const FEATURE_PAGES = new Set([
   'live',
   'live-recording',
   'history',
+  'translation-history',
   'meetings',
   'meeting',
   'meeting-settings',
@@ -27,11 +28,13 @@ export function pageInfoFromLocation() {
   const meetingId = params.get('meetingId') || '';
   const page = requestedPage === 'live' || requestedPage === 'live-recording'
     ? 'live-recording'
-    : ['history', 'retranslate'].includes(requestedPage)
-      ? 'meetings'
-      : requestedPage === 'meeting-detail' && meetingId
-        ? 'meeting-workspace'
-      : requestedPage === 'meeting' ? 'meeting-settings' : requestedPage;
+    : requestedPage === 'history'
+      ? 'translation-history'
+      : requestedPage === 'retranslate'
+        ? 'meetings'
+        : requestedPage === 'meeting-detail' && meetingId
+          ? 'meeting-detail'
+          : requestedPage === 'meeting' ? 'meeting-settings' : requestedPage;
 
   return {
     page,
@@ -40,9 +43,12 @@ export function pageInfoFromLocation() {
     meetingDetailFrom: params.get('from') || '',
     workspaceTab: params.get('tab') || (requestedPage === 'meeting-detail' ? 'history' : 'live'),
     panel: params.get('panel') || (requestedPage === 'glossary' ? 'global-glossary' : ''),
+    recordType: params.get('recordType') || 'session',
+    recordId: params.get('recordId') || '',
+    historySection: params.get('section') || 'overview',
     createMeeting: params.get('create') === '1',
     settingsMode: params.get('mode') || (params.get('meetingId') ? 'edit' : 'create'),
-    statusFilter: params.get('status') || (requestedPage === 'history' ? 'completed' : 'all'),
+    statusFilter: params.get('status') || 'all',
     shareToken: params.get('token') || '',
     shareCode: params.get('code') || ''
   };
@@ -61,11 +67,11 @@ export function canonicalHashForLocation() {
   if (pageName === 'meeting-workspace' && params.get('tab') === 'live' && meetingId) {
     return `#live?meetingId=${encodeURIComponent(meetingId)}`;
   }
-  if (pageName === 'history') return '#meetings?status=completed';
+  if (pageName === 'history') return window.location.hash.replace(/^#history/, '#translation-history');
   if (pageName === 'retranslate') return '#meetings';
   if (pageName === 'glossary') return '#glossary';
   if (pageName === 'meeting-detail' && meetingId) {
-    return `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=${encodeURIComponent(params.get('tab') || 'history')}`;
+    return `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=${encodeURIComponent(params.get('from') || 'meetings')}`;
   }
   return window.location.hash || '#meetings';
 }

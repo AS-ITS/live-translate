@@ -310,11 +310,11 @@ test.beforeEach(async ({ page }) => {
 });
 
 function historyPanel(page) {
-  return page.locator('.history-page > .history-panel:not(.meeting-panel)');
+  return page.locator('.translation-history-page');
 }
 
 function historyItems(page) {
-  return historyPanel(page).locator('.history-data-grid .ag-row');
+  return historyPanel(page).locator('.translation-history-card');
 }
 
 function meetingsPanel(page) {
@@ -322,7 +322,7 @@ function meetingsPanel(page) {
 }
 
 function meetingItems(page) {
-  return meetingsPanel(page).locator('.history-data-grid .ag-row');
+  return meetingsPanel(page).locator('.translation-history-card');
 }
 
 function sessionDetail(page) {
@@ -790,18 +790,18 @@ async function openHistoryPage(page) {
     page.useMeetingRootForGoto = false;
     page.sessionHistoryMode = true;
     await page.goto('/#history');
-    await expect(page).toHaveURL(/#meetings\?status=completed$/);
+    await expect(page).toHaveURL(/#translation-history$/);
     return;
   }
   await page.goto('/#history');
-  await expect(page).toHaveURL(/#meetings\?status=completed$/);
+  await expect(page).toHaveURL(/#translation-history$/);
 }
 
 async function openSessionHistoryPage(page) {
   page.useMockMeetings = false;
   page.useMeetingRootForGoto = false;
   await page.goto('/#history');
-  await expect(page).toHaveURL(/#meetings\?status=completed$/);
+  await expect(page).toHaveURL(/#translation-history$/);
 }
 
 async function openMeetingsPage(page) {
@@ -941,9 +941,8 @@ test('initial history shows empty state', async ({ page }) => {
   await openHistoryPage(page);
 
   await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(historyPanel(page).getByText('尚無會議紀錄。')).toHaveCount(0);
-  await expect(historyPanel(page).getByText('完成一次即時翻譯後，會議摘要會出現在這裡。')).toHaveCount(0);
-  await expect(historyPanel(page).locator('.history-data-grid')).toBeVisible();
+  await expect(historyPanel(page).getByText('尚無翻譯紀錄')).toBeVisible();
+  await expect(historyPanel(page).locator('.history-directory')).toBeVisible();
   await expect(historyItems(page)).toHaveCount(0);
 });
 
@@ -962,14 +961,15 @@ test('legacy feature routes converge on Meeting Management and Workspace', async
 
   await page.goto('/#meeting');
   await expect(page.locator('.meeting-management-page:not(.history-page)')).toBeVisible();
+  await expect(page.getByRole('link', { name: '翻譯紀錄', exact: true })).toHaveCount(0);
 
   await page.getByRole('link', { name: '全域字典' }).click();
   await expect(page).toHaveURL(/#glossary$/);
   await expect(page.locator('.global-glossary')).toBeVisible();
 
   await openHistoryPage(page);
-  await expect(page).toHaveURL(/#meetings\?status=completed$/);
-  await expect(page.locator('.meetings-page')).toBeVisible();
+  await expect(page).toHaveURL(/#translation-history$/);
+  await expect(page.locator('.translation-history-page')).toBeVisible();
 });
 
 test('Meeting shell switches header theme and action by page', async ({ page }) => {
@@ -1173,7 +1173,7 @@ test('retranslation picker uses compact columns on laptop viewports', async ({ p
   expect(layout.gridHasHorizontalOverflow).toBe(false);
 });
 
-test('meeting history detail uses an independent page with timeline, article views, and export controls', async ({ page }) => {
+test('meeting record page uses the glossary layout with record, translation, and export sections', async ({ page }) => {
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1205,48 +1205,73 @@ test('meeting history detail uses an independent page with timeline, article vie
   await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
   await expect(meetingItems(page)).toHaveCount(1);
   await expect(meetingItems(page).first().getByText('3 段（完成 1、中斷 1、失敗 1）')).toBeVisible();
-  await meetingItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
+  await page.goto('/#meeting-detail?meetingId=meeting-1&from=history');
 
   await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=history$/);
   await expect(page.locator('.history-page')).toHaveCount(0);
   await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '會議詳細資料' })).toBeVisible();
-  const detail = page.locator('.meeting-detail-page .meeting-detail');
+  await expect(page.getByRole('heading', { name: '會議紀錄', exact: true })).toBeVisible();
+  await expect(page.locator('.meeting-detail-page-header')).toHaveCount(0);
+  const detail = page.locator('.meeting-detail-page');
   const detailLayout = await page.evaluate(() => {
-    const detailPage = document.querySelector('.meeting-detail-page');
-    const detailScroll = document.querySelector('.meeting-detail-page-scroll');
-    const pageScroll = document.scrollingElement;
+    const detailLayout = document.querySelector('.meeting-detail-layout');
+    const directory = document.querySelector('.meeting-detail-directory');
+    const pageScroll = document.querySelector('.meeting-detail-page-scroll');
     return {
-      pageCanScroll: pageScroll.scrollHeight > pageScroll.clientHeight,
-      detailPageVisible: Boolean(detailPage),
-      detailScrollEnabled: Boolean(detailScroll && ['auto', 'scroll'].includes(getComputedStyle(detailScroll).overflowY))
+      detailLayoutVisible: Boolean(detailLayout),
+      directoryCard: {
+        borderRadius: getComputedStyle(directory).borderRadius,
+        boxShadow: getComputedStyle(directory).boxShadow
+      },
+      pageScrollCard: {
+        borderRadius: getComputedStyle(pageScroll).borderRadius,
+        boxShadow: getComputedStyle(pageScroll).boxShadow
+      },
+      directoryColumns: getComputedStyle(detailLayout).gridTemplateColumns
     };
   });
-  expect(detailLayout.pageCanScroll).toBe(false);
-  expect(detailLayout.detailPageVisible).toBe(true);
-  expect(detailLayout.detailScrollEnabled).toBe(true);
-  const audioDownloads = detail.locator('.audio-artifact-downloads');
-  const audioLayout = await audioDownloads.evaluate((element) => ({
-    height: element.getBoundingClientRect().height,
-    columns: getComputedStyle(element).gridTemplateColumns,
-    pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
-  }));
-  expect(audioLayout.height).toBeLessThanOrEqual(120);
-  expect(audioLayout.columns.split(' ').length).toBe(2);
-  expect(audioLayout.pageHasHorizontalOverflow).toBe(false);
-  await expect(detail.getByLabel('會議段落時間軸')).toHaveCount(0);
-  await expect(detail.getByText('段落內容', { exact: true })).toHaveCount(0);
-  await expect(detail.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  expect(detailLayout.detailLayoutVisible).toBe(true);
+  expect(detailLayout.directoryCard.borderRadius).not.toBe('0px');
+  expect(detailLayout.directoryCard.boxShadow).not.toBe('none');
+  expect(detailLayout.pageScrollCard.borderRadius).not.toBe('0px');
+  expect(detailLayout.pageScrollCard.boxShadow).not.toBe('none');
+  expect(detailLayout.directoryColumns.split(' ').length).toBe(2);
+  await expect(detail.getByRole('button', { name: '紀錄', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '下載原始語音' })).toHaveCount(0);
+  await expect(detail.getByRole('button', { name: '下載字幕檔案' })).toHaveCount(0);
 
-  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
+  await detail.getByRole('button', { name: '翻譯內容', exact: true }).click();
+  await expect(detail.getByRole('button', { name: '翻譯內容', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(detail.getByRole('tab', { name: '原文' })).toHaveAttribute('aria-selected', 'true');
   await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toBeVisible();
+  await detail.getByRole('tab', { name: '翻譯' }).click();
+  await expect(detail.getByRole('tab', { name: '翻譯' })).toHaveAttribute('aria-selected', 'true');
+  await expect(detail.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toHaveCount(0);
 
-  const exportPanel = detail.getByLabel('整場會議逐字稿匯出');
-  await expect(exportPanel.getByRole('button', { name: '下載整場逐字稿' })).toBeEnabled();
-  await exportPanel.getByRole('combobox', { name: '整場匯出格式' }).selectOption('srt');
+  await detail.getByRole('button', { name: '匯出', exact: true }).click();
+  await expect(detail.getByRole('button', { name: '匯出', exact: true })).toHaveAttribute('aria-current', 'page');
+  const exportPanel = detail.getByLabel('字幕匯出');
+  await expect(exportPanel.getByRole('button', { name: '下載字幕檔案' })).toBeEnabled();
+  await expect(detail.getByText('目前沒有可下載的語音紀錄。')).toBeVisible();
+  await expect(detail.getByRole('link', { name: '下載原始語音' })).toHaveCount(0);
+  await expect(detail.getByRole('link', { name: '下載翻譯語音' })).toHaveCount(0);
+  const exportControlLayout = await exportPanel.locator('.meeting-export-controls').evaluate((element) => {
+    const button = element.querySelector('button');
+    const selects = [...element.querySelectorAll('select')];
+    return {
+      buttonWidth: button.getBoundingClientRect().width,
+      controlsWidth: element.getBoundingClientRect().width,
+      selectHeights: selects.map((select) => getComputedStyle(select).height)
+    };
+  });
+  expect(exportControlLayout.buttonWidth).toBeLessThan(exportControlLayout.controlsWidth);
+  expect(exportControlLayout.selectHeights).toEqual(['56px', '56px']);
+  await exportPanel.getByRole('combobox', { name: '字幕匯出格式' }).selectOption('srt');
 
   const downloadPromise = page.waitForEvent('download');
-  await exportPanel.getByRole('button', { name: '下載整場逐字稿' }).click();
+  await exportPanel.getByRole('button', { name: '下載字幕檔案' }).click();
   const download = await downloadPromise;
   const downloadPath = await download.path();
   const content = await readFile(downloadPath, 'utf8');
@@ -1258,26 +1283,35 @@ test('meeting history detail uses an independent page with timeline, article vie
   expect(content.indexOf('第一段翻譯')).toBeLessThan(content.indexOf('第二段翻譯'));
   expect(content.indexOf('第二段翻譯')).toBeLessThan(content.indexOf('第三段翻譯'));
 
-  await page.getByRole('button', { name: '返回翻譯紀錄' }).click();
-  await expect(page).toHaveURL(/#history$/);
-  await expect(page.locator('.meeting-detail-page')).toHaveCount(0);
-
-  await page.goto('/#meetings');
-  await expect(page.locator('.meetings-page')).toBeVisible();
-  await page.locator('.meetings-page .meeting-item').first().getByRole('button', { name: '查看會議詳細資料' }).click();
-  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=meetings$/);
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await page.getByRole('button', { name: '返回會議列表' }).click();
-  await expect(page).toHaveURL(/#meetings$/);
-
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto('/#meeting-detail?meetingId=meeting-1&from=history');
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  await expect(page.locator('.meeting-detail-directory')).toBeVisible();
+  const mobileLayout = await page.locator('.meeting-detail-layout').evaluate((element) => ({
+    display: getComputedStyle(element).display,
+    directoryDisplay: getComputedStyle(element.querySelector('.meeting-detail-directory')).display,
+    directoryNavDisplay: getComputedStyle(element.querySelector('.meeting-detail-directory nav')).display,
+    directoryNavOverflowX: getComputedStyle(element.querySelector('.meeting-detail-directory nav')).overflowX,
+    pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+  }));
+  expect(mobileLayout.display).toBe('block');
+  expect(mobileLayout.directoryDisplay).toBe('grid');
+  expect(mobileLayout.directoryNavDisplay).toBe('flex');
+  expect(mobileLayout.directoryNavOverflowX).toBe('auto');
+  expect(mobileLayout.pageHasHorizontalOverflow).toBe(false);
+
+  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await expect(page).toHaveURL(/#meetings$/);
 });
 
-test('completed meeting opens translation history from meeting management without a blank page', async ({ page }) => {
+test('completed meeting opens its record directly from meeting management', async ({ page }) => {
   const detail = meetingDetailResponse();
   detail.meeting = { ...detail.meeting, status: 'completed' };
+  detail.audioArtifacts = {
+    input: {
+      downloadUrl: '/api/meetings/meeting-1/audio/input',
+      fileName: 'meeting-input.wav'
+    }
+  };
 
   await page.route('**/api/meetings**', async (route) => {
     const request = route.request();
@@ -1306,16 +1340,27 @@ test('completed meeting opens translation history from meeting management withou
 
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error));
-  await page.goto('/#meeting');
+  await page.goto('/#meetings');
 
   const card = page.locator('.meeting-management-page .meeting-card').first();
   await expect(card).toContainText('已完成');
   await card.getByRole('button', { name: '查看翻譯紀錄' }).click();
 
-  await expect(page).toHaveURL(/#meeting-workspace\?meetingId=meeting-1&tab=history$/);
-  await expect(page.locator('.meeting-workspace-page')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=meetings$/);
+  await expect(page.locator('.meeting-detail-page')).toBeVisible();
+  await expect(page.locator('.translation-history-page')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '會議紀錄', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議' })).toHaveCount(0);
+  await expect(page.locator('.meeting-detail-page').getByRole('heading', { name: '會議詳細資料', exact: true })).toHaveCount(0);
+  await expect(page.getByText('會議名稱', { exact: true })).toBeVisible();
+  await expect(page.getByText('第一段原文 第二段原文 第三段原文')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toBeVisible();
+  await page.getByRole('button', { name: '翻譯內容', exact: true }).click();
+  await expect(page.getByText('第一段原文 第二段原文 第三段原文')).toBeVisible();
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
+  await expect(page.getByRole('button', { name: '下載字幕檔案' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '下載原始語音' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '下載翻譯語音' })).toHaveCount(0);
   expect(pageErrors).toEqual([]);
 });
 
@@ -3713,6 +3758,7 @@ function historyRecord(overrides = {}) {
 function meetingHistoryRecord(overrides = {}) {
   return {
     id: overrides.id || 'meeting-1',
+    name: overrides.name || '產品會議',
     status: overrides.status || 'active',
     startedAt: overrides.startedAt ?? 1000,
     endedAt: overrides.endedAt ?? 190000,

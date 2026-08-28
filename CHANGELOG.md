@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- 會議匯出區只顯示已成功儲存的原始／翻譯語音下載按鈕；兩者皆不存在時顯示無語音提示，並縮窄字幕下載按鈕、提高格式與內容下拉選單高度。
+
+- 會議紀錄頁的「會議內容」改為獨立的全域字典風格分類卡片，桌面維持兩欄、手機改為上方橫向選單；紀錄、翻譯內容與匯出行為不變。
+
+- 獨立會議記錄頁改為全域字典風格的「紀錄／翻譯內容／匯出」兩欄版型；原文與翻譯改在「翻譯內容」內以 tab 切換，下載與字幕匯出集中於匯出區。
+
+- 已完成會議從會議管理點選「查看翻譯紀錄」時，直接開啟該會議的單一紀錄畫面，不再先進入翻譯紀錄管理頁。
+- 會議紀錄頁改用全域字典相同的卡片版型，移除重複的頁內標題與返回操作，保留完整逐字稿、音訊下載與匯出功能。
+
 - 修正即時字幕控制列與 Cue 渲染：移除即時頁設定、字典與匯出功能，並讓隱藏原文時 source JSX 完全不掛載，翻譯欄維持單欄且不混入原文。
 
 - 修正即時字幕說明文字下方的過大留白，讓雙欄標題與字幕內容以 24px 間距自然銜接並增加首屏可讀字幕數量。
@@ -1689,6 +1698,9 @@ These items are intentionally deferred:
   default, with `SESSION_SHARES_FILE` as an override, so existing share links
   remain valid after backend restart.
 # Unreleased
+
+- 新增獨立 `#translation-history` 翻譯紀錄頁。紀錄列表改用卡片式工作區，選取紀錄後可透過「紀錄／原文／翻譯／匯出」小目錄切換內容；既有 `#history` 連結會相容導向新頁面。
+- 會議管理中的已完成會議入口統一導向 `#translation-history`，並保留舊 Meeting Workspace history tab 作為相容功能。
 
 - Completed Session sharing handoff: Viewer SSE snapshots now use the same
   sanitized read model as detail reads, share URLs use SPA hash routes, and

@@ -94,8 +94,16 @@ The Workspace is opened with a Meeting identifier and uses top-level tabs:
 
 The existing live Cue renderer, checkpoint flow, export flow, and completed
 Meeting detail remain the implementation foundations for their respective tabs.
-The old independent navigation entries for live translation, translation
-history, glossary, and re-translation are removed. Existing persisted
+The old independent navigation entries for live translation, glossary, and
+re-translation are removed. Translation History now has an independent
+`#translation-history` page with a record list and detail directory for
+`紀錄`、`原文`、`翻譯`、`匯出`; the legacy `#history` route redirects to it.
+Completed Meeting actions in Meeting Management open the single Meeting record
+page at `#meeting-detail?meetingId=<id>&from=meetings`; the legacy Meeting
+Workspace history tab remains available for compatibility.
+The standalone Meeting record uses the same page-card shell as the Global
+Glossary page; its page header owns the title and return action.
+Existing persisted
 re-translation data remains readable by the backend and data model, but no
 re-translation UI or route is exposed.
 
@@ -108,7 +116,7 @@ Canonical SPA routes are:
 
 Legacy routes are compatibility redirects: `#live` goes to Meeting Management,
 `#live?meetingId=...` goes to that Meeting's Live Subtitles tab, `#history` goes
-to `#meetings?status=completed`, `#retranslate` goes to Meeting Management, and
+to `#translation-history`, `#retranslate` goes to Meeting Management, and
 `#glossary` opens the global glossary panel from Meeting Management. Existing
 re-translation data remains readable by the backend and is not deleted. A
 legacy live deep link may open the Live Subtitles tab for a `created` Meeting

@@ -6,16 +6,24 @@ Session Records & Translation History is a Phase 2 capability for defining the
 session record model, translation history foundation, session-to-transcript
 relationship, and repository abstraction.
 
-Status: Slice 5 implemented with a finalized history list, inline session
-detail, independent Meeting detail view, saved-session export,
+Status: Slice 6 implemented with an independent translation history page,
+finalized history list, session detail directory, independent Meeting detail view, saved-session export,
 finalized-record delete, and saved-retranslation output delete backed by the
-repository boundary. The UI exposes translation history through `#history` as
-a Meeting Management-style workspace: Meeting records and standalone Sessions
-are shown in one meeting-oriented table, with standalone Sessions labelled as
-`單次翻譯`. Meeting detail opens at
+repository boundary. The canonical UI route is `#translation-history`; the
+legacy `#history` route redirects to it. Meeting records and standalone Sessions
+are shown in one card-based workspace, with standalone Sessions labelled as
+`單次翻譯`. A selected record uses a small directory for `紀錄`, `原文`,
+`翻譯`, and `匯出` sections. Meeting detail remains available at
 `#meeting-detail?meetingId=...&from=history|meetings` and returns to its source
 list. Existing detail, export, delete, resume, and re-translation actions
 remain available, while live translation remains on `#live`.
+
+Completed Meeting entries in Meeting Management now open the single Meeting
+record page at `#meeting-detail?meetingId=...&from=meetings`, without first
+opening the translation-history management page. The legacy Meeting Workspace
+`history` tab remains available for compatibility.
+The record page follows the Global Glossary layout with one shared page header,
+an independent directory card, and an independent main content card.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,

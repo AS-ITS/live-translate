@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgGridReact } from 'ag-grid-react';
-import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
+import { dataGridProps } from './lib/dataGrid.js';
 import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, Copy, Download, FileText, Filter, Globe2, MoreHorizontal, Mic, MicOff, Pause, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Square, Tag, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
@@ -82,6 +82,7 @@ import { HISTORY_REFRESH_MS, selectedOutputFor } from './lib/sessionHistoryState
 import { subscribeToExecutionEvents } from './lib/executionEventsWebSocket.js';
 import { hasPendingRetranslationItems, retranslationProgressFor } from './lib/retranslationProgress.js';
 import { createMicrophoneRecordingController } from './lib/microphoneRecording.js';
+import { createAudioUploadController } from './lib/audioUploadController.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
@@ -115,67 +116,9 @@ import { TranslationHistoryPage } from './pages/history/TranslationHistoryPage.j
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from './pages/live/LiveRecordingPage.jsx';
 import { LiveCuePanel as LiveCuePanelView } from './pages/live/LiveCuePanel.jsx';
 import { applyCompletedRefinementOutputs } from './pages/live/liveRecordingController.js';
-
-ModuleRegistry.registerModules([AllCommunityModule]);
-
-const DATA_GRID_LOCALE_TEXT = {
-  page: '頁',
-  more: '更多',
-  to: '至',
-  of: '共',
-  nextPage: '下一頁',
-  lastPage: '最後一頁',
-  firstPage: '第一頁',
-  previousPage: '上一頁',
-  pageSizeSelectorLabel: '每頁顯示：',
-  noRowsToShow: '尚無資料。',
-  noMatches: '找不到符合條件的資料。'
-};
-
-const DATA_GRID_THEME = themeQuartz.withParams({
-  borderColor: '#d8dee6',
-  headerBackgroundColor: '#f3f6f9',
-  headerFontSize: 15,
-  headerFontWeight: 700,
-  rowBorder: { color: '#e4e8ed' },
-  rowHoverColor: '#f8fafc',
-  fontSize: 15,
-  rowHeight: 64,
-  headerHeight: 56,
-  paginationPanelHeight: 56
-});
-
-const DATA_GRID_DEFAULT_COL_DEF = {
-  sortable: true,
-  resizable: false,
-  wrapText: true,
-  autoHeight: true,
-  suppressHeaderMenuButton: true
-};
-
-function dataGridProps(className, { fixedHeight = false, hidePaginationPanel = false } = {}) {
-  const defaultColDef = fixedHeight
-    ? {
-      ...DATA_GRID_DEFAULT_COL_DEF,
-      wrapText: false,
-      autoHeight: false
-    }
-    : DATA_GRID_DEFAULT_COL_DEF;
-
-  return {
-    className: `data-grid ${className}`,
-    theme: DATA_GRID_THEME,
-    defaultColDef,
-    pagination: !hidePaginationPanel,
-    paginationPageSize: 12,
-    paginationPageSizeSelector: [12, 24, 48],
-    localeText: DATA_GRID_LOCALE_TEXT,
-    domLayout: fixedHeight ? 'normal' : 'autoHeight',
-    rowHeight: fixedHeight ? 64 : undefined,
-    animateRows: false,
-    suppressCellFocus: false
-  };
-}
+import { DeadLetterQueuePanel } from './pages/admin/DeadLetterQueuePanel.jsx';
+import { AudioArtifactDownloads } from './pages/history/AudioArtifactDownloads.jsx';
+import { RetranslationProgress } from './pages/history/RetranslationProgress.jsx';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時字幕。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時字幕多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
@@ -193,9 +136,6 @@ const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
-const AUDIO_SEGMENT_UPLOAD_INTERVAL_MS = 5 * 60 * 1000;
-const AUDIO_UPLOAD_RETRY_DELAY_MS = 5000;
-const AUDIO_UPLOAD_RETRY_MAX_DELAY_MS = 60000;
 const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';
@@ -300,6 +240,7 @@ function App() {
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
   const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
+  const audioUploadControllerRef = useRef(null);
   const transcriptRef = useRef(transcript);
   const subtitleCueStateRef = useRef(subtitleCueState);
   const transcriptTimeOriginRef = useRef(null);
@@ -2285,127 +2226,55 @@ function App() {
     }
   }
 
-  async function flushAudioSegmentIfDue(kind) {
-    const segment = audioUploadSegmentsRef.current[kind];
-    if (!segment || Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return;
-    try {
-      await flushAudioSegment(kind);
-    } catch (error) {
-      scheduleAudioUploadRetry(kind, audioUploadSessionId(kind));
+  function audioUploadController() {
+    if (!audioUploadControllerRef.current) {
+      audioUploadControllerRef.current = createAudioUploadController({
+        chunks: { input: inputAudioUploadChunksRef, translation: translatedAudioUploadChunksRef },
+        metadata: { input: inputAudioMetadataRef, translation: translatedAudioMetadataRef },
+        segments: audioUploadSegmentsRef,
+        retryTimers: audioUploadRetryTimersRef,
+        retryAttempts: audioUploadRetryAttemptsRef,
+        getActiveSessionId: () => activeSessionRecordIdRef.current,
+        setError
+      });
     }
+    return audioUploadControllerRef.current;
   }
 
-  async function flushAudioSegment(kind, { force = false, sessionId = activeSessionRecordIdRef.current } = {}) {
-    const chunksRef = kind === 'input' ? inputAudioUploadChunksRef : translatedAudioUploadChunksRef;
-    const metadata = kind === 'input' ? inputAudioMetadataRef.current : translatedAudioMetadataRef.current;
-    const segment = audioUploadSegmentsRef.current[kind];
-    if (!sessionId || !segment) return null;
-    if (segment.inFlight) {
-      if (!force) return null;
-      await segment.currentPromise?.catch(() => {});
-    }
-    if (chunksRef.current.length === 0) return null;
-    if (!force && Date.now() - segment.lastFlushedAt < AUDIO_SEGMENT_UPLOAD_INTERVAL_MS) return null;
+  function flushAudioSegmentIfDue(kind) {
+    return audioUploadController().flushIfDue(kind);
+  }
 
-    const uploadChunks = chunksRef.current.slice();
-    chunksRef.current = [];
-    segment.inFlight = true;
-    const uploadPromise = (async () => {
-      const blob = pcm16ChunksToWavBlob(uploadChunks, {
-        sampleRate: kind === 'input' ? INPUT_SAMPLE_RATE : undefined,
-        normalizePeak: true
-      });
-      await uploadSessionAudioSegment(sessionId, kind, {
-        blob,
-        segmentIndex: segment.nextIndex,
-        fileName: kind === 'input' ? buildInputAudioFileName(metadata) : buildTranslatedAudioFileName({
-          sessionId: metadata.sessionId || sessionId,
-          startedAt: metadata.startedAt
-        })
-      });
-      segment.nextIndex += 1;
-      segment.lastFlushedAt = Date.now();
-      clearAudioUploadRetry(kind);
-      setError((current) => current.startsWith('語音紀錄暫時無法同步') ? '' : current);
-      return true;
-    })();
-    segment.currentPromise = uploadPromise;
-    try {
-      return await uploadPromise;
-    } catch (nextError) {
-      chunksRef.current = uploadChunks.concat(chunksRef.current);
-      if (isRetryableAudioUploadError(nextError)) scheduleAudioUploadRetry(kind, sessionId);
-      throw nextError;
-    } finally {
-      segment.inFlight = false;
-      if (segment.currentPromise === uploadPromise) {
-        segment.currentPromise = null;
-      }
-    }
+  function flushAudioSegment(kind, options) {
+    return audioUploadController().flush(kind, options);
   }
 
   function resetAudioUploadSegment(kind) {
-    clearAudioUploadRetry(kind);
-    audioUploadSegmentsRef.current[kind] = {
-      nextIndex: 0,
-      lastFlushedAt: Date.now(),
-      inFlight: false,
-      currentPromise: null
-    };
+    audioUploadController().resetSegment(kind);
   }
 
   function audioUploadSessionId(kind) {
-    return (kind === 'input' ? inputAudioMetadataRef : translatedAudioMetadataRef).current.sessionId
-      || activeSessionRecordIdRef.current;
+    return audioUploadController().sessionIdFor(kind);
   }
 
   function scheduleAudioUploadRetry(kind, sessionId) {
-    if (!sessionId || audioUploadRetryTimersRef.current[kind]) return;
-    const attempt = audioUploadRetryAttemptsRef.current[kind] + 1;
-    audioUploadRetryAttemptsRef.current[kind] = attempt;
-    const delay = Math.min(
-      AUDIO_UPLOAD_RETRY_DELAY_MS * (2 ** Math.max(0, attempt - 1)),
-      AUDIO_UPLOAD_RETRY_MAX_DELAY_MS
-    );
-    audioUploadRetryTimersRef.current[kind] = window.setTimeout(() => {
-      audioUploadRetryTimersRef.current[kind] = null;
-      void flushAudioSegment(kind, { force: true, sessionId }).catch(() => {});
-    }, delay);
+    audioUploadController().scheduleRetry(kind, sessionId);
   }
 
   function clearAudioUploadRetry(kind) {
-    const timer = audioUploadRetryTimersRef.current[kind];
-    if (timer) window.clearTimeout(timer);
-    audioUploadRetryTimersRef.current[kind] = null;
-    audioUploadRetryAttemptsRef.current[kind] = 0;
+    audioUploadController().clearRetry(kind);
   }
 
   function cancelAudioUploadRetries() {
-    clearAudioUploadRetry('input');
-    clearAudioUploadRetry('translation');
+    audioUploadController().cancelRetries();
   }
 
   function isRetryableAudioUploadError(error) {
-    const status = Number(error?.status);
-    if (status === 404 || status === 409 || status === 413) return false;
-    return !Number.isFinite(status) || status === 408 || status === 425 || status === 429 || status >= 500;
+    return audioUploadController().isRetryableError(error);
   }
 
   async function uploadSessionAudioSegment(sessionId, kind, { blob, segmentIndex, fileName }) {
-    const response = await authenticatedFetch(fetch)(`/api/sessions/${encodeURIComponent(sessionId)}/audio/${kind}/segments/${segmentIndex}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'audio/wav',
-        'X-File-Name': fileName || ''
-      },
-      body: blob
-    });
-
-    if (!response.ok) {
-      const error = new Error(`Session audio segment upload failed with HTTP ${response.status}.`);
-      error.status = response.status;
-      throw error;
-    }
+    return audioUploadController().uploadSegment(sessionId, kind, { blob, segmentIndex, fileName });
   }
 
   async function finalizePendingTranscriptItemsForStop() {
@@ -3527,80 +3396,6 @@ function App() {
   );
 }
 
-function DeadLetterQueuePanel({ items, size, isLoading, loadError, notice, replayingExecutionId, onReplay, onRefresh }) {
-  return (
-    <div className="dead-letter-queue-panel">
-      <div className="history-header">
-        <div>
-          <h2 id="dead-letter-queue-page-title">Dead-letter queue</h2>
-          <p className="history-description">受保護的失敗翻譯工作管理頁面；此頁只透過 #dead-letter-queue 直接進入。</p>
-        </div>
-        <button className="button secondary" type="button" onClick={onRefresh} disabled={isLoading}>
-          <RefreshCw size={18} aria-hidden="true" />
-          {isLoading ? '重新整理中…' : '重新整理'}
-        </button>
-      </div>
-
-      {loadError ? <p className="error-message" role="alert">{deadLetterQueueErrorMessage(loadError)} <button className="inline-retry" type="button" onClick={onRefresh}>重試</button></p> : null}
-      {notice ? <p className="success-message" role="status">{notice}</p> : null}
-      {isLoading && items.length === 0 ? <p className="history-empty">正在載入 dead-letter queue…</p> : null}
-      {!isLoading && !loadError && items.length === 0 ? <p className="history-empty">目前沒有待處理的 dead-letter queue 項目。</p> : null}
-
-      <div className="dead-letter-queue-summary" aria-live="polite">共 {size} 筆，依 FIFO 順序顯示。</div>
-      <ol className="dead-letter-queue-list">
-        {items.map((item) => (
-          <li className="dead-letter-queue-item" key={item.executionId}>
-            <div className="history-item-header">
-              <div>
-                <h3>{item.executionId}</h3>
-                <p className="history-summary">Request ID：{item.requestId}</p>
-              </div>
-              <button className="detail-button primary" type="button" onClick={() => onReplay(item)} disabled={replayingExecutionId === item.executionId}>
-                {replayingExecutionId === item.executionId ? 'Replay 中…' : 'Replay'}
-              </button>
-            </div>
-            <dl className="history-metadata dead-letter-queue-metadata">
-              <div><dt>Attempt</dt><dd>{item.attempt}</dd></div>
-              <div><dt>Failed at</dt><dd>{item.failedAt}</dd></div>
-              <div><dt>Provider key</dt><dd>{item.providerKey || '未提供'}</dd></div>
-            </dl>
-            <div className="dead-letter-queue-failures">
-              <MetadataDisclosure label="Failure" value={item.failure} />
-              <MetadataDisclosure label="Last failure" value={item.lastFailure} />
-              <MetadataDisclosure label="Provider metadata" value={item.providerMetadata} />
-              <MetadataDisclosure label="Execution metadata" value={item.executionMetadata} />
-            </div>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function MetadataDisclosure({ label, value }) {
-  return (
-    <details className="dead-letter-queue-metadata-disclosure">
-      <summary>{label}</summary>
-      <pre>{formatDeadLetterMetadata(value)}</pre>
-    </details>
-  );
-}
-
-function formatDeadLetterMetadata(value) {
-  if (value === null || value === undefined) return '未提供';
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return '資料無法顯示。';
-  }
-}
-
-function deadLetterQueueErrorMessage(error) {
-  if (error?.status === 503 || error?.code === 'dead_letter_queue_unavailable') return 'DLQ 目前未啟用，請稍後重試。';
-  if (error?.status === 401 || error?.status === 403) return '你沒有權限查看 DLQ，請確認 Access Token 後重試。';
-  if (error?.status === 404 || error?.code === 'dead_letter_item_not_found') return '找不到這筆 DLQ 項目，請重新整理清單。';
-  return 'DLQ 載入或操作失敗，請檢查連線後重試。';
-}
 
 function ReadOnlySessionPage({ sessionId }) {
   const clientRef = useRef(createSessionReadApiClient());
@@ -5926,7 +5721,7 @@ function RetranslationWorkflow({ titleId, records, selectedSessionId, onSelectSe
 
           {detail ? (
             <>
-              <RetranslationProgress progress={{ ...retranslationProgress, outputs: [] }} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} />
+              <RetranslationProgress progress={{ ...retranslationProgress, outputs: [] }} onRetry={retryExecution} retryingExecutionId={isRetryingExecutionId} helpers={{ targetLanguageLabelFor, translationExecutionStatusLabel, translationExecutionTimingText, translationFailureReasonText, translationOutputTitle }} />
               <section className="retranslation-result-workspace" aria-label="重新翻譯結果與內容">
                 <RetranslationOutputList
                   outputs={retranslationProgress.outputs}
@@ -6671,6 +6466,7 @@ function SessionDetail({ detail, historyRecord, activeSection = 'overview', onRe
           lineages={retryLineages}
           onRetry={onRetryExecution}
           retryingExecutionId={retryingExecutionId}
+          helpers={{ targetLanguageLabelFor, translationExecutionStatusLabel, translationExecutionTimingText, translationFailureReasonText, translationOutputTitle }}
         />
       </section>
 
@@ -6788,136 +6584,6 @@ function SessionSharePanel({ sessionId }) {
       ) : null}
       {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : <p className="export-note">重新整理後只顯示仍有效的分享 metadata；既有 plaintext token 不會再次顯示。</p>}
     </section>
-  );
-}
-
-function AudioArtifactDownloads({
-  title,
-  audioArtifacts = {},
-  inputLabel = '下載原始語音',
-  translationLabel = '下載翻譯語音',
-  hideUnavailableLinks = false
-}) {
-  const inputArtifact = audioArtifacts?.input;
-  const translationArtifact = audioArtifacts?.translation;
-  const hasInputAudio = Boolean(inputArtifact?.downloadUrl);
-  const hasTranslationAudio = Boolean(translationArtifact?.downloadUrl);
-
-  return (
-    <section className="saved-export-panel audio-artifact-downloads" aria-label={title}>
-    {title ? <h4>{title}</h4> : null}
-      <div className="recording-downloads">
-        {hideUnavailableLinks ? (
-          hasInputAudio ? <a className="button detail-button" href={inputArtifact.downloadUrl} download={inputArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{inputLabel}</a> : null
-        ) : (
-          <a
-            className={`button detail-button${hasInputAudio ? '' : ' disabled-link'}`}
-            href={inputArtifact?.downloadUrl || '#'}
-            download={inputArtifact?.fileName || undefined}
-            aria-disabled={!hasInputAudio}
-            onClick={(event) => {
-              if (!hasInputAudio) event.preventDefault();
-            }}
-          >
-            <Download size={16} aria-hidden="true" />
-            {inputLabel}
-          </a>
-        )}
-        {hideUnavailableLinks ? (
-          hasTranslationAudio ? <a className="button detail-button" href={translationArtifact.downloadUrl} download={translationArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{translationLabel}</a> : null
-        ) : (
-          <a
-            className={`button detail-button${hasTranslationAudio ? '' : ' disabled-link'}`}
-            href={translationArtifact?.downloadUrl || '#'}
-            download={translationArtifact?.fileName || undefined}
-            aria-disabled={!hasTranslationAudio}
-            onClick={(event) => {
-              if (!hasTranslationAudio) event.preventDefault();
-            }}
-          >
-            <Download size={16} aria-hidden="true" />
-            {translationLabel}
-          </a>
-        )}
-      </div>
-      {hideUnavailableLinks && !hasInputAudio && !hasTranslationAudio ? (
-        <p className="export-note">目前沒有可下載的語音紀錄。</p>
-      ) : !hideUnavailableLinks && (!hasInputAudio || !hasTranslationAudio) ? (
-        <p className="export-note">只有已成功儲存的語音紀錄可下載。</p>
-      ) : null}
-    </section>
-  );
-}
-
-function RetranslationProgress({ progress, lineages = null, onRetry, retryingExecutionId = '' }) {
-  const hasTimedProgress = progress.executions.some((execution) => ['queued', 'processing', 'running'].includes(execution.status));
-  const [nowMs, setNowMs] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (!hasTimedProgress) {
-      return undefined;
-    }
-
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [hasTimedProgress]);
-
-  if (progress.outputs.length === 0 && progress.executions.length === 0) {
-    return null;
-  }
-
-  return (
-    <section className="translation-history-summary" aria-label="重新翻譯進度">
-      <h4>重新翻譯進度</h4>
-      {progress.executions.length > 0 ? (
-        lineages ? (
-          <div className="retry-lineage-list">
-            {lineages.map((lineage, index) => (
-              <section className="retry-lineage" key={lineage.requestId || `legacy-lineage-${index}`} aria-label={`重新翻譯 lineage ${lineage.requestId || 'legacy'}`}>
-                <div className="retry-lineage-header">
-                  <strong>{lineage.requestId ? `Request ${lineage.requestId}` : 'Legacy execution'}</strong>
-                  <span>{lineage.executions.length} 次 execution</span>
-                </div>
-                <ol className="translation-history-list retry-lineage-timeline">
-                  {lineage.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
-                </ol>
-              </section>
-            ))}
-          </div>
-        ) : (
-          <ol className="translation-history-list">
-            {progress.executions.map((execution) => <RetranslationExecutionItem key={execution.id} execution={execution} nowMs={nowMs} onRetry={onRetry} retryingExecutionId={retryingExecutionId} />)}
-          </ol>
-        )
-      ) : null}
-      {progress.outputs.length > 0 ? (
-        <ol className="translation-history-list">
-          {progress.outputs.map((output) => (
-            <li key={output.id}>
-              <span>{translationOutputTitle(output)}</span>
-              <span className="history-status history-status-completed">已完成</span>
-            </li>
-          ))}
-        </ol>
-      ) : null}
-    </section>
-  );
-}
-
-function RetranslationExecutionItem({ execution, nowMs, onRetry, retryingExecutionId }) {
-  return (
-    <li>
-      <span>{targetLanguageLabelFor(execution.targetLanguageCode) || execution.targetLanguageCode || '未知語言'}</span>
-      <span className={`history-status history-status-${execution.status}`}>{translationExecutionStatusLabel(execution)}</span>
-      <p className="retry-lineage-execution-id">Execution：{execution.id}</p>
-      {translationExecutionTimingText(execution, nowMs) ? <p>{translationExecutionTimingText(execution, nowMs)}</p> : null}
-      {execution.status === 'failed' ? <p>{translationFailureReasonText(execution.failureInfo)}</p> : null}
-      {execution.status === 'failed' && onRetry ? (
-        <button className="button detail-button" type="button" onClick={() => onRetry(execution)} disabled={retryingExecutionId === execution.id}>
-          {retryingExecutionId === execution.id ? '正在重試…' : '重試'}
-        </button>
-      ) : null}
-    </li>
   );
 }
 

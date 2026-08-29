@@ -22,9 +22,8 @@ remain planned for later delivery phases.
 ## Capability Overview
 
 Issue #29 consolidates the product around a Meeting as the only user-facing
-work unit. The Meeting Management list is the application home, and a Meeting
-Workspace contains live subtitles, glossary, sharing, export, and completed
-translation history.
+work unit. The Meeting Management list is the application home, with separate
+Setting, Live, History Detail, and public Viewer pages.
 
 The capability extends the existing Meeting, MeetingSegment, Final Cue,
 checkpoint, opaque share, QR code, short-code, and SSE foundations. It does not
@@ -34,7 +33,7 @@ lease model, or security model.
 ## Goals
 
 - Make the Meeting list the application home.
-- Keep all Meeting operations inside one Meeting Workspace.
+- Keep Setting, Live, History Detail, and public Viewer responsibilities separate.
 - Separate global glossary entries from Meeting-private entries.
 - Let a Viewer read the complete bilingual Cue stream through a Meeting share.
 - Broadcast finalized Cues without waiting for checkpoint persistence.
@@ -74,33 +73,24 @@ Each Meeting card provides:
   live subtitles, view translation history, or edit/start a draft Meeting.
 
 Cards are arranged in two columns on desktop and one column below 1024px. The
-entire card opens the appropriate Meeting Workspace or edit flow; its primary
+entire card opens the appropriate independent page or edit flow; its primary
 button stops event propagation so it does not trigger the card navigation twice.
 Draft deletion remains in the Meeting settings danger zone rather than on the
 card. The home route keeps only the product brand and the single `＋ 建立會議`
 Header action; the existing search, status filter, and global glossary controls
 remain in the toolbar.
 
-### Meeting Workspace
+### Independent Meeting pages
 
-The Workspace is opened with a Meeting identifier and uses top-level tabs:
+Setting owns Meeting creation/editing, glossary and audio settings, plus
+Viewer／Recorder share links and QR codes. Live owns recording and live Cue
+controls. History Detail owns saved Meeting reading and export. The public
+Viewer owns read-only historical and live Cue rendering through a Viewer share.
+Completed Meeting actions open `#meeting-detail?meetingId=<id>&from=meetings`.
 
-| Meeting state | Visible tabs | Default tab |
-| --- | --- | --- |
-| `active` | Live Subtitles, Meeting Glossary, Share Viewer, Export | Live Subtitles |
-| `interrupted` | Live Subtitles, Meeting Glossary, Share Viewer, Export | Live Subtitles |
-| `completed` | Export, Translation History | Translation History |
-| `created` | Meeting Management edit/start flow | Edit/start Meeting |
-
-The existing live Cue renderer, checkpoint flow, export flow, and completed
-Meeting detail remain the implementation foundations for their respective tabs.
-The old independent navigation entries for live translation, glossary, and
-re-translation are removed. Translation History now has an independent
-`#translation-history` page with a record list and detail directory for
-`紀錄`、`原文`、`翻譯`、`匯出`; the legacy `#history` route redirects to it.
-Completed Meeting actions in Meeting Management open the single Meeting record
-page at `#meeting-detail?meetingId=<id>&from=meetings`; the legacy Meeting
-Workspace history tab remains available for compatibility.
+Translation History remains an independent `#translation-history` page for
+session records; completed Meeting actions open the single Meeting record page
+at `#meeting-detail?meetingId=<id>&from=meetings`.
 The standalone Meeting record uses the same page-card shell as the Global
 Glossary page; its page header owns the title and return action.
 Existing persisted
@@ -110,9 +100,17 @@ re-translation UI or route is exposed.
 Canonical SPA routes are:
 
 - `#meetings`
-- `#meeting-workspace?meetingId=<id>`
+- `#meeting-settings?mode=create`
+- `#meeting-settings?mode=edit&meetingId=<id>`
+- `#live?meetingId=<id>`
+- `#meeting-detail?meetingId=<id>&from=meetings`
 - `#viewer?token=<token>`
 - `#viewer?code=<shortCode>`
+
+The application uses independent Setting, Live, History Detail, and public
+Viewer pages. Viewer share creation and QR code management remain in the
+Meeting Settings page; the public Viewer is the page opened by participants
+through `#viewer?code=<shortCode>`.
 
 Legacy routes are compatibility redirects: `#live` goes to Meeting Management,
 `#live?meetingId=...` goes to that Meeting's Live Subtitles tab, `#history` goes
@@ -264,7 +262,7 @@ full benchmark report.
 ## Delivery Phases
 
 1. Meeting Management home, route consolidation, search, and status actions.
-2. Meeting Workspace tabs and completed-history default behavior. **Completed.**
+2. Independent Setting, Live, and History Detail page boundaries. **Completed.**
 3. Global/private glossary data and UI isolation. **Completed.**
 4. Meeting Viewer URL, QR, short code, complete Cue reading, and virtualized
    rendering. **Completed.**
@@ -288,9 +286,9 @@ historical data behavior before the next phase begins.
 ## Acceptance Matrix
 
 - Home shows only the Meeting Management list and no left navigation.
-- A Meeting opens the correct Workspace and tab set for its status.
-- Live subtitles, glossary, export, and translation history are no longer
-  independent sidebar pages.
+- Meeting settings, Live recording, History Detail, and public Viewer are
+  independent pages with explicit route boundaries.
+- Share management is owned by Setting while Viewer is read-only.
 - Completed Meetings open complete historical Cue content.
 - Global and private glossary entries are fully isolated.
 - Viewer links, QR codes, short codes, and revocation work at Meeting scope.

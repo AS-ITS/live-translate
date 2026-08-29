@@ -7,7 +7,6 @@ export const FEATURE_PAGES = new Set([
   'meeting',
   'meeting-settings',
   'meeting-detail',
-  'meeting-workspace',
   'retranslate',
   'glossary',
   'watch',
@@ -41,7 +40,6 @@ export function pageInfoFromLocation() {
     sessionId: params.get('sessionId') || '',
     meetingId,
     meetingDetailFrom: params.get('from') || '',
-    workspaceTab: params.get('tab') || (requestedPage === 'meeting-detail' ? 'history' : 'live'),
     panel: params.get('panel') || (requestedPage === 'glossary' ? 'global-glossary' : ''),
     recordType: params.get('recordType') || 'session',
     recordId: params.get('recordId') || '',
@@ -63,9 +61,6 @@ export function canonicalHashForLocation() {
     return meetingId
       ? `#live?meetingId=${encodeURIComponent(meetingId)}`
       : '#live';
-  }
-  if (pageName === 'meeting-workspace' && params.get('tab') === 'live' && meetingId) {
-    return `#live?meetingId=${encodeURIComponent(meetingId)}`;
   }
   if (pageName === 'history') return window.location.hash.replace(/^#history/, '#translation-history');
   if (pageName === 'retranslate') return '#meetings';

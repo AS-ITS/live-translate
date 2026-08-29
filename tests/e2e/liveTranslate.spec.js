@@ -1364,53 +1364,6 @@ test('completed meeting opens its record directly from meeting management', asyn
   expect(pageErrors).toEqual([]);
 });
 
-test('Meeting Workspace exposes status-specific tabs', async ({ page }) => {
-  const baseDetail = meetingDetailResponse();
-  const meetings = [
-    { id: 'workspace-created', name: '草稿會議', status: 'created' },
-    { id: 'workspace-active', name: '進行中會議', status: 'active' },
-    { id: 'workspace-interrupted', name: '中斷會議', status: 'interrupted' },
-    { id: 'workspace-completed', name: '完成會議', status: 'completed' }
-  ];
-
-  await page.unroute('**/api/meetings');
-  await page.unroute('**/api/meetings/**');
-  await page.route('**/api/meetings', async (route) => {
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(meetings) });
-  });
-  await page.route('**/api/meetings/**', async (route) => {
-    const id = new URL(route.request().url()).pathname.split('/')[3];
-    const meeting = meetings.find((item) => item.id === id);
-    if (!meeting || route.request().method() !== 'GET' || new URL(route.request().url()).pathname !== `/api/meetings/${id}`) {
-      await route.fallback();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ ...baseDetail, meeting: { ...baseDetail.meeting, ...meeting } })
-    });
-  });
-
-  await page.goto('/#meeting-workspace?meetingId=workspace-created&tab=live');
-  await expect(page).toHaveURL(/#live\?meetingId=workspace-created$/);
-  await expect(page.locator('.live-recording-page')).toBeVisible();
-  await expect(page.locator('.meeting-workspace-page')).toHaveCount(0);
-
-  await page.goto('/#meeting-workspace?meetingId=workspace-active&tab=live');
-  await expect(page).toHaveURL(/#live\?meetingId=workspace-active$/);
-  await expect(page.locator('.live-recording-page')).toBeVisible();
-  await expect(page.locator('.meeting-workspace-page')).toHaveCount(0);
-
-  await page.goto('/#meeting-workspace?meetingId=workspace-interrupted&tab=export');
-  await expect(page.locator('.meeting-workspace-tabs')).toContainText('匯出');
-  await expect(page.locator('.meeting-workspace-tabs')).toContainText('分享觀看');
-
-  await page.goto('/#meeting-workspace?meetingId=workspace-completed&tab=history');
-  await expect(page.locator('.meeting-workspace-tabs')).toContainText('翻譯紀錄');
-  await expect(page.locator('.meeting-workspace-tabs')).not.toContainText('即時字幕');
-});
-
 test('live recording surface exposes meeting and session controls', async ({ page }) => {
   await gotoMockMeetingLive(page);
 

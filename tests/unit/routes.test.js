@@ -12,9 +12,6 @@ test('live recording routes resolve to the independent page', async () => {
   assert.equal(pageInfoFromLocation().page, 'live-recording');
   assert.equal(canonicalHashForLocation(), '#live?meetingId=meeting-1');
 
-  setHash('#meeting-workspace?meetingId=meeting-1&tab=live');
-  assert.equal(canonicalHashForLocation(), '#live?meetingId=meeting-1');
-
   setHash('#live-recording?meetingId=meeting-1');
   assert.equal(canonicalHashForLocation(), '#live?meetingId=meeting-1');
 });
@@ -54,4 +51,13 @@ test('meeting detail routes stay on the standalone record page', async () => {
 
   setHash('#meeting-detail?meetingId=meeting-1');
   assert.equal(canonicalHashForLocation(), '#meeting-detail?meetingId=meeting-1&from=meetings');
+});
+
+test('meeting viewer routes preserve token and short code identifiers', async () => {
+  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
+
+  setHash('#viewer?code=5BRGBZ27');
+  assert.equal(pageInfoFromLocation().page, 'viewer');
+  assert.equal(pageInfoFromLocation().shareCode, '5BRGBZ27');
+  assert.equal(canonicalHashForLocation(), '#viewer?code=5BRGBZ27');
 });

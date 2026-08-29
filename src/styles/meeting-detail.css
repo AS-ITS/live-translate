@@ -1,17 +1,3 @@
-.meeting-workspace-page { display: grid; gap: var(--space-4); min-width: 0; }
-.meeting-workspace-header { display: grid; gap: var(--space-4); }
-.meeting-workspace-heading { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
-.meeting-workspace-heading > div { min-width: 0; flex: 1; }
-.meeting-workspace-heading h2, .meeting-workspace-panel-heading h3 { margin: 0; font-size: clamp(1.45rem, 2.5vw, 2rem); line-height: 1.2; }
-.meeting-workspace-heading p:not(.eyebrow), .meeting-workspace-panel-heading p:not(.eyebrow) { margin: var(--space-2) 0 0; color: var(--color-text-muted); }
-.meeting-workspace-tabs { display: flex; gap: var(--space-2); overflow-x: auto; border-bottom: 1px solid var(--color-border); }
-.meeting-workspace-tab { min-height: 2.75rem; border: 0; border-bottom: 3px solid transparent; padding: 0 var(--space-3); background: transparent; color: var(--color-text-muted); font-weight: 700; white-space: nowrap; cursor: pointer; }
-.meeting-workspace-tab:hover, .meeting-workspace-tab.is-active { color: var(--color-primary); background: var(--color-primary-soft); }
-.meeting-workspace-tab.is-active { border-bottom-color: var(--color-primary); }
-.meeting-workspace-tab-panel { display: grid; gap: var(--space-5); min-width: 0; padding-bottom: var(--space-6); }
-.meeting-workspace-panel-heading { display: flex; justify-content: space-between; gap: var(--space-4); }
-.meeting-workspace-placeholder { display: grid; justify-items: start; gap: var(--space-3); min-height: 11rem; align-content: center; padding: var(--space-6); border: 1px dashed var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface-muted); color: var(--color-text-muted); }
-.meeting-workspace-placeholder strong { color: var(--color-text); }
 .meeting-detail-page { display: grid; gap: var(--space-5); }
 .meeting-detail-page-scroll { min-width: 0; }
 .session-detail { display: grid; gap: var(--space-4); }
@@ -55,7 +41,7 @@
 .live-settings-drawer-header h2, .export-drawer-header h2, .glossary-drawer-header h2 { margin: 0; }
 .live-settings-drawer-body, .export-drawer-body, .glossary-drawer-body { display: grid; gap: var(--space-4); margin-top: var(--space-5); }
 
-@media (max-width: 760px) { .meeting-workspace-heading { align-items: stretch; flex-direction: column; } .transcript-columns, .session-detail-metadata, .meeting-detail-metadata { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .transcript-columns, .session-detail-metadata, .meeting-detail-metadata { grid-template-columns: 1fr; } }
 @media (max-width: 600px) { .live-settings-drawer, .export-drawer, .glossary-drawer { width: 100%; height: min(90dvh, 48.75rem); padding: 1rem; border: 0; border-top: 1px solid var(--color-border); } .live-settings-drawer-header, .export-drawer-header, .glossary-drawer-header { padding-inline: 1rem; } }
 
 .meeting-detail-app-shell { width: 100%; padding-inline: 48px; }

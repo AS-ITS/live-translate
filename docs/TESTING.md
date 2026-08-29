@@ -6,7 +6,7 @@ is opt-in only.
 
 Issue #29 Milestone 1 coverage includes Meeting home route behavior, status
 mapping, search/filter rules, and Meeting Management E2E flows. Later coverage
-will add Meeting Workspace, Viewer snapshot/SSE, Cue deduplication, ordering,
+will add independent Viewer snapshot/SSE, Cue deduplication, ordering,
 and reconnect merge. The Viewer latency SLA will use a local deterministic
 synthetic broadcaster test; it must not call Gemini or overwrite full benchmark
 reports. See [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
@@ -16,9 +16,9 @@ bounded replay, Cue publish HTTP authorization, Meeting Viewer SSE delivery,
 snapshot gap recovery, duplicate/refinement merge, and deterministic latency
 measurements.
 
-Issue #29 UI consolidation coverage includes canonical migration of legacy
-hash routes, a Meeting-only application shell, status-aware Meeting Workspace
-tabs/actions, and global/private glossary boundaries.
+Issue #29 UI consolidation coverage includes canonical independent Setting,
+Live, History Detail, and Viewer routes, plus global/private glossary
+boundaries.
 
 Global glossary UI coverage includes card-grid filtering, category counts,
 multi-language editing, enabled-state batch actions, and the side drawer. The
@@ -273,7 +273,8 @@ npx playwright test --config tests/e2e/playwright.config.js tests/e2e/sessionSha
 ```
 
 This flow verifies read-only Viewer rendering, cross-Session content isolation,
-and recoverable invalid or expired share-link errors.
+and recoverable invalid or expired share-link errors through the independent
+`#viewer?code=<shortCode>` route.
 
 The Playwright flow:
 

@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AgGridReact } from 'ag-grid-react';
 import { AllCommunityModule, ModuleRegistry, themeQuartz } from 'ag-grid-community';
-import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, Copy, Download, FileText, Filter, Globe2, MoreHorizontal, Mic, MicOff, Pause, Play, Plus, Radio, RefreshCw, Search, Settings, SlidersHorizontal, Square, Tag, Trash2, X } from 'lucide-react';
+import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Clock3, Copy, Download, FileText, Filter, Globe2, MoreHorizontal, Mic, MicOff, Pause, Play, Plus, RefreshCw, Search, Settings, SlidersHorizontal, Square, Tag, Trash2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
@@ -18,8 +18,6 @@ import { createSessionCommandApiClient } from './lib/sessionCommandApiClient.js'
 import { createSessionSnapshotSyncCoordinator } from './lib/sessionSnapshotSyncCoordinator.js';
 import { createMeetingCheckpointApiClient } from './lib/meetingCheckpointApiClient.js';
 import { createMeetingCueApiClient } from './lib/meetingCueApiClient.js';
-import { applyMeetingCueEvent, meetingEventGapDetected, mergeMeetingViewerSnapshot } from './lib/meetingViewerState.js';
-import { viewerLatencySample } from './lib/meetingViewerLatency.js';
 import {
   checkpointChunksForTranscriptItems,
   createMeetingCheckpointSyncCoordinator
@@ -97,7 +95,6 @@ import {
 } from './lib/subtitleCues.js';
 import {
   cueListForDisplay,
-  formatCueTimecode,
   sourceTextForCopy,
   translationTextForCopy
 } from './lib/cueUi.js';
@@ -111,8 +108,8 @@ import './styles/app.css';
 import QRCode from 'qrcode';
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from './app/routes.js';
 import { MeetingLayout, MeetingSettingsLayout, PublicSessionLayout } from './layouts/AppLayout.jsx';
-import { MeetingPageGroup } from './pages/meetings/MeetingPageGroup.jsx';
 import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
+import { MeetingViewerPage } from './pages/viewer/MeetingViewerPage.jsx';
 import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
 import { TranslationHistoryPage } from './pages/history/TranslationHistoryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from './pages/live/LiveRecordingPage.jsx';
@@ -221,39 +218,6 @@ const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
   fileName: '',
   errorMessage: ''
 };
-
-function meetingWorkspaceTabs(status) {
-  if (status === 'completed') return [
-    { id: 'history', label: '翻譯紀錄' },
-    { id: 'export', label: '匯出' }
-  ];
-  if (status === 'interrupted') return [
-    { id: 'live', label: '即時字幕' },
-    { id: 'glossary', label: '會議字典' },
-    { id: 'share', label: '分享觀看' },
-    { id: 'export', label: '匯出' }
-  ];
-  return [
-    { id: 'live', label: '即時字幕' },
-    { id: 'glossary', label: '會議字典' },
-    ...(status === 'active' ? [{ id: 'share', label: '分享觀看' }, { id: 'export', label: '匯出' }] : [])
-  ];
-}
-
-function normalizedMeetingWorkspaceTab(status, requestedTab) {
-  const tabs = meetingWorkspaceTabs(status);
-  return tabs.some((tab) => tab.id === requestedTab) ? requestedTab : tabs[0]?.id || 'live';
-}
-
-function meetingHasExportableContent(detail) {
-  return Boolean(
-    (Array.isArray(detail?.cues) && detail.cues.length > 0) ||
-    (Array.isArray(detail?.transcriptItems) && detail.transcriptItems.length > 0) ||
-    (Array.isArray(detail?.segments) && detail.segments.some((segment) => (
-      Array.isArray(segment?.checkpoint?.finalCues) && segment.checkpoint.finalCues.length > 0
-    )))
-  );
-}
 
 function meetingDetailReturnPage(info = pageInfoFromLocation()) {
   return info.meetingDetailFrom === 'meetings' ? 'meetings' : 'history';
@@ -391,15 +355,6 @@ function App() {
   const routeSessionId = pageInfoFromLocation().sessionId;
   const routeMeetingId = pageInfoFromLocation().meetingId;
   const workspaceInfo = pageInfoFromLocation();
-  const isMeetingWorkspace = page === 'meeting-workspace';
-  const meetingWorkspaceStatus = selectedMeetingDetail?.meeting?.status || meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.status || 'created';
-  const meetingWorkspaceTabsForDisplay = meetingWorkspaceTabs(meetingWorkspaceStatus)
-    .filter((item) => item.id !== 'export' || meetingHasExportableContent(selectedMeetingDetail));
-  const meetingWorkspaceTab = isMeetingWorkspace && !selectedMeetingDetail
-    ? workspaceInfo.workspaceTab
-    : (meetingWorkspaceTabsForDisplay.some((item) => item.id === workspaceInfo.workspaceTab)
-      ? workspaceInfo.workspaceTab
-      : meetingWorkspaceTabsForDisplay[0]?.id || 'live');
   const isLiveSurface = page === 'live-recording';
   const isViewingReadOnlySession = isLiveSurface && Boolean(routeSessionId) && routeSessionId !== activeSessionRecordIdRef.current;
   const isReadOnlyControlView = isLiveSurface && !resumeDraft && !routeMeetingId && (isViewingReadOnlySession || Boolean(activeSessionRecordIdRef.current && !hasSessionControl));
@@ -474,7 +429,7 @@ function App() {
         window.history.replaceState(null, '', canonicalHash);
       }
       const next = pageInfoFromLocation();
-      if ((next.page === 'meeting-workspace' || next.page === 'live-recording') && selectedMeetingIdRef.current !== next.meetingId) {
+      if (next.page === 'live-recording' && selectedMeetingIdRef.current !== next.meetingId) {
         selectedMeetingIdRef.current = null;
         setSelectedMeetingId(null);
         setSelectedMeetingDetail(null);
@@ -521,7 +476,7 @@ function App() {
   }, [page]);
 
   useEffect(() => {
-    if (!['meeting-detail', 'meeting-workspace', 'live-recording'].includes(page)) return;
+    if (!['meeting-detail', 'live-recording'].includes(page)) return;
 
     const info = pageInfoFromLocation();
     if (!info.meetingId) {
@@ -3146,7 +3101,7 @@ function App() {
     window.location.hash = nextPage;
   }
 
-  async function resetLiveMeetingWorkspace() {
+  async function resetLiveMeetingState() {
     invalidateLiveSessionCallbacks();
     reconnectController().cancel();
     segmentSwitchOrchestrator().cancel();
@@ -3201,24 +3156,15 @@ function App() {
       return;
     }
 
-    await resetLiveMeetingWorkspace();
+    await resetLiveMeetingState();
     window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`;
-  }
-
-  function openMeetingWorkspaceTab(meetingId, tab = 'live') {
-    if (!meetingId || isNavigationLocked) return;
-    if (tab === 'live') {
-      void openMeetingLiveWorkspace(meetingId);
-      return;
-    }
-    window.location.hash = `#meeting-workspace?meetingId=${encodeURIComponent(meetingId)}&tab=${encodeURIComponent(tab)}`;
   }
 
   function selectLiveTranslationMode(value) {
     const meetingId = value.replace(/^meeting:/, '');
     if (!meetingId || isNavigationLocked) return;
     if (pageInfoFromLocation().meetingId) {
-      void resetLiveMeetingWorkspace();
+      void resetLiveMeetingState();
     }
     window.location.hash = `live?meetingId=${encodeURIComponent(meetingId)}`;
   }
@@ -3338,7 +3284,7 @@ function App() {
           mode={settingsInfo.settingsMode}
           meetingId={settingsInfo.meetingId}
           onBack={() => { window.location.hash = '#meetings'; }}
-          onOpenWorkspace={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }}
+          onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }}
         />
       </MeetingSettingsLayout>
     );
@@ -3417,37 +3363,21 @@ function App() {
       {page === 'meeting' && navigationNotice ? <p className="error-message" role="alert">{navigationNotice}</p> : null}
       {error && !isLiveSurface ? <p className="error-message" role="alert">{error}</p> : null}
 
-      <MeetingPageGroup
-        page={page}
-        isMeetingWorkspace={isMeetingWorkspace}
-        ManagementPage={MeetingManagementPage}
-        managementProps={{
-          onOpenLive: openMeetingLiveWorkspace,
-          onOpenHistory: (meetingId) => openMeetingDetail(meetingId, 'meetings'),
-          initialStatusFilter: workspaceInfo.statusFilter,
-          initialPanel: workspaceInfo.panel,
-          initialCreate: false,
-          onOpenSettings: (meetingId) => { window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(meetingId)}`; }
-        }}
-        WorkspacePage={MeetingWorkspaceShell}
-        workspaceProps={{
-          detail: selectedMeetingDetail,
-          detailError: meetingDetailError,
-          tab: meetingWorkspaceTab,
-          tabs: meetingWorkspaceTabsForDisplay,
-          onBack: () => { closeMeetingDetail(); window.location.hash = '#meetings'; },
-          onRetry: () => refreshSelectedMeetingDetail(routeMeetingId),
-          onSelectTab: (tab) => openMeetingWorkspaceTab(routeMeetingId, tab)
-        }}
-        DetailPage={MeetingDetailPage}
-        detailProps={{
-          detail: selectedMeetingDetail,
-          detailError: meetingDetailError,
-          returnPage: meetingDetailReturnPage(),
-          onBack: returnFromMeetingDetail,
-          onRetry: () => refreshSelectedMeetingDetail(routeMeetingId)
-        }}
-      >
+      {isMeetingManagementPage ? <MeetingManagementPage
+        onOpenLive={openMeetingLiveWorkspace}
+        onOpenHistory={(meetingId) => openMeetingDetail(meetingId, 'meetings')}
+        initialStatusFilter={workspaceInfo.statusFilter}
+        initialPanel={workspaceInfo.panel}
+        initialCreate={false}
+        onOpenSettings={(meetingId) => { window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(meetingId)}`; }}
+      /> : null}
+      {page === 'meeting-detail' ? <MeetingDetailPage
+        detail={selectedMeetingDetail}
+        detailError={meetingDetailError}
+        returnPage={meetingDetailReturnPage()}
+        onBack={returnFromMeetingDetail}
+        onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
+      /> : null}
       {isLiveSurface ? <LiveRecordingPage
         error={error}
         status={status}
@@ -3585,23 +3515,6 @@ function App() {
         </div>
         </div>
       </LiveRecordingPage> : null}
-
-      {isMeetingWorkspace && meetingWorkspaceTab !== 'live' ? (
-        <MeetingWorkspaceTabPanel
-          tab={meetingWorkspaceTab}
-          detail={selectedMeetingDetail}
-          detailError={meetingDetailError}
-          onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
-          onCreateViewerShare={async (expiresAt) => {
-            const result = await managementClientRef.current.createViewerShare(routeMeetingId, expiresAt);
-            return { ...result, absoluteUrl: new URL(result.url, window.location.href).href, qrDataUrl: await QRCode.toDataURL(new URL(result.url, window.location.href).href, { width: 180, margin: 1 }) };
-          }}
-          onListViewerShares={async () => (await managementClientRef.current.listShares(routeMeetingId)).filter((share) => share.role === 'viewer')}
-          onRevokeViewerShare={(shareId) => managementClientRef.current.revokeShare(routeMeetingId, shareId)}
-        />
-      ) : null}
-
-      </MeetingPageGroup>
 
       {page === 'glossary' ? (
       <GlobalGlossaryPage
@@ -3823,162 +3736,6 @@ function WatchPage({ token, code }) {
             <div><h2>原文</h2>{sourceItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
             <div><h2>翻譯</h2>{translationItems.map((item) => <p key={item.id}>{item.text}</p>)}</div>
           </div>
-        </section>
-      ) : null}
-    </PublicSessionLayout>
-  );
-}
-
-function MeetingViewerPage({ token, code }) {
-  const [detail, setDetail] = useState(null);
-  const [error, setError] = useState('');
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(560);
-  const viewportRef = useRef(null);
-  const detailRef = useRef(null);
-  const eventSourceRef = useRef(null);
-  const latencySamplesRef = useRef([]);
-  const rowHeight = 116;
-
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
-    const updateViewportHeight = () => {
-      const nextHeight = Math.round(viewport.getBoundingClientRect().height);
-      if (nextHeight > 0) setViewportHeight(nextHeight);
-    };
-    updateViewportHeight();
-    const observer = new ResizeObserver(updateViewportHeight);
-    observer.observe(viewport);
-    return () => observer.disconnect();
-  }, [detail]);
-
-  useEffect(() => {
-    const identifier = token || code;
-    if (!identifier) {
-      setError('分享連結無效或已撤銷。');
-      return undefined;
-    }
-    const basePath = token
-      ? `/api/shared-meetings/${encodeURIComponent(token)}`
-      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
-    let cancelled = false;
-    async function fetchSnapshot() {
-      const response = await fetch(basePath);
-      if (!response.ok) throw new Error('分享連結無效或已過期。');
-      const value = await response.json();
-      if (cancelled) return value;
-      const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
-      detailRef.current = merged;
-      setDetail(merged);
-      return merged;
-    }
-    function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
-      if (cancelled) return;
-      eventSourceRef.current?.close();
-      const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
-      eventSourceRef.current = events;
-      events.onopen = () => setError('');
-      events.addEventListener('cue.append', (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          const receivedAt = Date.now();
-          if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
-            void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
-            return;
-          }
-          const next = applyMeetingCueEvent(detailRef.current, payload);
-          detailRef.current = next;
-          setDetail(next);
-          requestAnimationFrame(() => {
-            const sample = viewerLatencySample({ ...payload, timing: { ...(payload.timing || {}), receivedAt } }, { renderedAt: Date.now() });
-            if (sample) latencySamplesRef.current.push(sample);
-          });
-        } catch {
-          if (!cancelled) setError('無法讀取即時字幕。');
-        }
-      });
-      events.addEventListener('meeting.gap', () => {
-        void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
-      });
-      events.onerror = () => {
-        if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
-      };
-    }
-    void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-      if (!cancelled) setError(value.message);
-    });
-    return () => {
-      cancelled = true;
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
-    };
-  }, [token, code]);
-
-  const cues = useMemo(() => {
-    if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
-    return (detail?.transcriptItems || [])
-      .filter((item) => item.stream === 'translation')
-      .map((item, index) => ({
-        cueId: item.id || `legacy-cue-${index}`,
-        sequence: item.sequence || index + 1,
-        sourceText: detail?.transcriptItems?.find((source) => source.stream === 'source' && source.sequence === item.sequence)?.text || '',
-        translatedText: item.text,
-        startTimeMs: item.startedAt || 0
-      }));
-  }, [detail]);
-  const visibleCount = Math.ceil(viewportHeight / rowHeight) + 12;
-  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 6);
-  const visibleCues = cues.slice(startIndex, startIndex + visibleCount);
-
-  return (
-    <PublicSessionLayout
-      className="live-viewer-page meeting-viewer-page"
-      title="即時字幕"
-      subtitle={detail?.meeting?.name || '會議字幕觀看'}
-    >
-      {error ? <p className="error-message" role="alert">{error}</p> : null}
-      {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
-      {detail ? (
-        <section className="viewer-cue-panel" aria-label="Meeting 完整字幕">
-          <div className="viewer-cue-header">
-            <div>
-              <p className="viewer-cue-eyebrow">MEETING</p>
-              <h2>{detail.meeting?.name || '未命名會議'}</h2>
-            </div>
-          </div>
-          {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : (
-            <>
-              <div className="viewer-cue-columns" aria-hidden="true">
-                <span>輸入／原文</span>
-                <span>翻譯</span>
-              </div>
-              <div
-                ref={viewportRef}
-                className="viewer-cue-viewport"
-                onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-                data-testid="meeting-viewer-cue-viewport"
-                role="log"
-                aria-live="polite"
-                aria-label="即時字幕列表"
-              >
-                <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
-                  {visibleCues.map((cue, index) => (
-                    <article
-                      className="viewer-cue-row"
-                      key={cue.cueId || `${cue.sequence}-${startIndex + index}`}
-                      style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }}
-                      data-testid="meeting-viewer-cue-row"
-                    >
-                      <div className="viewer-cue-row-meta"><span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span></div>
-                      <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div>
-                      <div className="viewer-cue-translation"><p>{cue.translatedText || '—'}</p></div>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
         </section>
       ) : null}
     </PublicSessionLayout>
@@ -5606,152 +5363,6 @@ function MeetingExportSection({ detail, detailError = '', onRetry }) {
 
 function MeetingDetailState({ title, children }) {
   return <section className="meeting-record-section" aria-label={title}><div className="meeting-record-section-heading"><h2>{title}</h2></div>{children}</section>;
-}
-
-function MeetingWorkspaceShell({ detail, detailError = '', tab, tabs, onBack, onRetry, onSelectTab }) {
-  const meeting = detail?.meeting;
-  const title = meetingTitle(meeting) || '會議工作區';
-
-  return (
-    <section className="feature-page meeting-workspace-page" aria-labelledby="meeting-workspace-title">
-      <header className="meeting-workspace-header">
-        <div className="meeting-workspace-heading">
-          <button className="button secondary" type="button" onClick={onBack}>返回會議管理</button>
-          <div>
-            <p className="eyebrow">MEETING WORKSPACE</p>
-            <h2 id="meeting-workspace-title">{title}</h2>
-            <p>{meeting ? `${targetLanguageLabelFor(meeting.sourceLanguageCode) || meeting.sourceLanguageCode || '未設定'} → ${targetLanguageLabelFor(meeting.targetLanguageCode) || meeting.targetLanguageCode || '未設定'}` : detailError || '正在載入會議設定…'}</p>
-          </div>
-          {meeting ? <span className={`history-status history-status-${meeting.status}`}>{meetingStatusLabel(meeting.status)}</span> : null}
-        </div>
-        {meeting ? (
-          <nav className="meeting-workspace-tabs" aria-label="會議工作區分頁">
-            {tabs.map((item) => (
-              <button
-                key={item.id}
-                className={`meeting-workspace-tab${tab === item.id ? ' is-active' : ''}`}
-                type="button"
-                aria-current={tab === item.id ? 'page' : undefined}
-                onClick={() => onSelectTab(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
-        ) : null}
-      </header>
-    </section>
-  );
-}
-
-function MeetingWorkspaceTabPanel({ tab, detail, detailError = '', onRetry, onCreateViewerShare, onListViewerShares, onRevokeViewerShare }) {
-  if (tab === 'export' || tab === 'history') {
-    return (
-      <section className="feature-page meeting-workspace-tab-panel" aria-label={tab === 'history' ? '翻譯紀錄' : '會議匯出'}>
-        <div className="meeting-workspace-panel-heading">
-          <div>
-            <p className="eyebrow">{tab === 'history' ? 'TRANSLATION HISTORY' : 'EXPORT'}</p>
-            <h3>{tab === 'history' ? '翻譯紀錄' : '匯出整場會議'}</h3>
-            <p>{tab === 'history' ? '查看這場會議的完整時間軸、逐字稿與語音紀錄。' : '下載整場會議的逐字稿與語音紀錄。'}</p>
-          </div>
-        </div>
-        <MeetingDetail detail={detail} detailError={detailError} onRetryDetail={onRetry} />
-      </section>
-    );
-  }
-
-  if (tab === 'glossary') {
-    const privateEntries = Array.isArray(detail?.meeting?.privateGlossaryEntries) ? detail.meeting.privateGlossaryEntries : [];
-    const readOnly = ['completed', 'failed'].includes(detail?.meeting?.status);
-    return (
-      <section className="feature-page meeting-workspace-tab-panel" aria-label="會議字典">
-        <div className="meeting-workspace-panel-heading">
-          <div>
-            <p className="eyebrow">MEETING GLOSSARY</p>
-            <h3>會議字典</h3>
-            <p>{readOnly ? '已完成的 Meeting 字典僅供查看。' : '此處查看目前 Meeting 的私有字典；新增或修改會在儲存設定後套用至下一個 Segment。'}</p>
-          </div>
-        </div>
-        <div className="meeting-workspace-placeholder">
-          <BookOpen size={24} aria-hidden="true" />
-          <strong>Meeting 私有字典</strong>
-          {privateEntries.length === 0 ? <span>目前沒有私有詞條。</span> : privateEntries.map((entry) => (
-            <span key={entry.source}><strong>{entry.source}</strong> → {entry.translations?.[detail?.meeting?.targetLanguageCode] || '尚未設定目前語言翻譯'}</span>
-          ))}
-          {!readOnly ? <a className="button secondary" href={`#meeting?meetingId=${encodeURIComponent(detail.meeting.id)}`}>回會議管理編輯</a> : null}
-        </div>
-      </section>
-    );
-  }
-
-  if (tab === 'share') {
-    return <MeetingViewerSharePanel detail={detail} onCreateViewerShare={onCreateViewerShare} onListViewerShares={onListViewerShares} onRevokeViewerShare={onRevokeViewerShare} />;
-  }
-
-  return null;
-}
-
-function MeetingViewerSharePanel({ detail, onCreateViewerShare, onListViewerShares, onRevokeViewerShare }) {
-  const [expiry, setExpiry] = useState('');
-  const [createdShare, setCreatedShare] = useState(null);
-  const [shares, setShares] = useState([]);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    let cancelled = false;
-    setCreatedShare(null);
-    setError('');
-    if (typeof onListViewerShares === 'function' && detail?.meeting?.id) {
-      onListViewerShares().then((value) => { if (!cancelled) setShares(value); }).catch(() => { if (!cancelled) setError('無法載入觀看分享連結。'); });
-    } else {
-      setShares([]);
-    }
-    return () => { cancelled = true; };
-  }, [detail?.meeting?.id]);
-
-  async function createShare() {
-    try {
-      setError('');
-      const result = await onCreateViewerShare(expiry ? Date.now() + Number(expiry) : null);
-      setCreatedShare(result);
-      setShares((current) => [...current, result.share]);
-    } catch {
-      setError('無法建立觀看分享連結。');
-    }
-  }
-
-  async function revokeShare(shareId) {
-    try {
-      await onRevokeViewerShare(shareId);
-      setShares((current) => current.filter((share) => share.id !== shareId));
-      setCreatedShare(null);
-    } catch {
-      setError('無法撤銷觀看分享連結。');
-    }
-  }
-
-  const readOnly = ['completed', 'failed'].includes(detail?.meeting?.status);
-  return (
-      <section className="feature-page meeting-workspace-tab-panel" aria-label="分享觀看">
-        <div className="meeting-workspace-panel-heading">
-          <div>
-            <p className="eyebrow">VIEWER SHARING</p>
-            <h3>分享觀看</h3>
-          <p>{readOnly ? '已完成的 Meeting 仍可閱讀既有觀看連結；主持人可以撤銷分享。' : '建立唯讀觀看連結，分享完整 Meeting 字幕。'}</p>
-          </div>
-        </div>
-        <div className="meeting-workspace-placeholder">
-          <Radio size={24} aria-hidden="true" />
-          {error ? <p className="error-message" role="alert">{error}</p> : null}
-          {!readOnly ? <>
-            <label className="field"><span>有效期限</span><select value={expiry} onChange={(event) => setExpiry(event.target.value)}><option value="">永久</option><option value="3600000">1 小時</option><option value="86400000">24 小時</option><option value="604800000">7 天</option></select></label>
-            <button className="button secondary" type="button" onClick={createShare}>建立觀看連結</button>
-          </> : null}
-          {createdShare ? <div className="share-created"><img src={createdShare.qrDataUrl} alt="會議觀看入口 QR Code" width="180" height="180" /><p className="share-url"><a href={createdShare.absoluteUrl}>{createdShare.absoluteUrl}</a></p><p>短碼：<code>{createdShare.share.shortCode}</code></p><button className="button detail-button" type="button" onClick={() => navigator.clipboard?.writeText(createdShare.absoluteUrl)}>複製連結</button></div> : null}
-          {shares.length > 0 ? <ul className="share-list">{shares.map((share) => <li key={share.id}><span>{share.expiresAt ? `到期：${formatRecordTime(share.expiresAt)}` : '永久有效'}</span><button className="button detail-button danger-button" type="button" onClick={() => revokeShare(share.id)}>撤銷</button></li>)}</ul> : null}
-        </div>
-      </section>
-    );
 }
 
 function MeetingDetail({ detail, detailError = '', activeSection = 'overview', onRetryDetail }) {

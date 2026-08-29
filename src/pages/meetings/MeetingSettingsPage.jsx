@@ -14,7 +14,7 @@ const MEETING_SETTINGS_STEPS = [
   '字典設定'
 ];
 
-export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, onOpenWorkspace }) {
+export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, onOpenLive }) {
   const managementClient = useMemo(() => createMeetingManagementApiClient(), []);
   const readClient = useMemo(() => createMeetingReadApiClient(), []);
   const glossaryClient = useMemo(() => createGlossaryApiClient(), []);
@@ -335,7 +335,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           </section>
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
-          <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenWorkspace(meeting.id)}>前往會議工作區</button> : null}</div></div>
+          <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(meeting.id)}>前往即時字幕</button> : null}</div></div>
         </section>
       </div>
     </section>

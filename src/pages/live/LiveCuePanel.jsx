@@ -4,14 +4,8 @@ import { effectiveSourceForCue, effectiveTranslationForCue } from '../../lib/cue
 import { cueListForDisplay, sourceTextForCopy, translationTextForCopy } from '../../lib/cueUi.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
 
-// Waiting Cues keep the normal surface color. Only a provider execution that
-// is actively running should draw attention to its row.
-const REFINING_STATUSES = new Set(['processing', 'running']);
-
-export function cueIsRefining(cue) {
-  return REFINING_STATUSES.has(cue?.refinement?.status);
-}
-
+// Refinement status is shown in the panel badge; Cue rows keep the normal
+// surface so async polishing cannot obscure live transcript content.
 export function cueHasRefinedResult(cue) {
   return cue?.refinement?.status === 'completed'
     && Boolean((cue?.refinedSource || cue?.refinedTranslation || '').trim());
@@ -19,6 +13,7 @@ export function cueHasRefinedResult(cue) {
 
 export function LiveCuePanel({
   cueState,
+  fallbackTranscriptItems = [],
   status,
   statusLabelOverride,
   isPaused,
@@ -36,7 +31,7 @@ export function LiveCuePanel({
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
   const [showSource, setShowSource] = useState(true);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
-  const hasContent = cues.length > 0 || Boolean(polishedArticle?.text);
+  const hasContent = cues.length > 0 || fallbackTranscriptItems.length > 0 || Boolean(polishedArticle?.text);
 
   useEffect(() => {
     const list = cueListRef.current;
@@ -75,6 +70,15 @@ export function LiveCuePanel({
         {hasContent ? <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}`}>
           {showSource ? <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} /> : null}
           <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} />
+          {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">
+            {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>
+              <div className="cue-row-meta"><span className="cue-partial-status">已保存逐字稿</span></div>
+              <div className="cue-text-toggle">
+                {showSource && item.stream === 'source' ? <SourceCueText text={wrapSubtitleText(item.text, item.sourceLanguageCode)} /> : null}
+                {item.stream === 'translation' ? <TranslatedCueText text={wrapSubtitleText(item.text, item.targetLanguageCode)} /> : null}
+              </div>
+            </article>)}
+          </div> : null}
           <div className="cue-section-list" data-testid="cue-paired-list">{cues.map((cue) => cue.status === 'final' ? <FinalCueRow key={cue.cueId} cue={cue} paired showSource={showSource} /> : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} paired showSource={showSource} />)}</div>
         </div> : null}
       </div>
@@ -105,7 +109,7 @@ function CueRow({ cue, partial = false, stream, paired = false, showSource = tru
   const translationText = paired || stream ? effectiveTranslationForCue(cue, showRaw ? 'raw' : 'refined') : cue.translatedText;
   const hasRefinedText = Boolean((cue.refinedTranslation || cue.refinedSource || '').trim());
   const hasRefinedResult = !partial && cueHasRefinedResult(cue);
-  return <article className={`cue-row${partial ? ' cue-row-partial' : ''}${cueIsRefining(cue) ? ' cue-row-refining' : ''}${hasRefinedResult ? ' cue-row-refined' : ''}`} data-testid={partial ? 'cue-partial-row' : 'cue-final-row'} data-cue-id={cue.cueId || undefined} aria-label={label}>
+  return <article className={`cue-row${partial ? ' cue-row-partial' : ''}${hasRefinedResult ? ' cue-row-refined' : ''}`} data-testid={partial ? 'cue-partial-row' : 'cue-final-row'} data-cue-id={cue.cueId || undefined} aria-label={label}>
     {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
     <div className="cue-text-toggle">{stream ? stream === 'source' ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : <TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} /> : <>{showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}<TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} /></>}</div>
     {hasRefinedResult ? <span className="cue-refined-indicator" data-testid="cue-refined-indicator" aria-label="已潤飾" title="已潤飾"><Check size={14} aria-hidden="true" /></span> : null}

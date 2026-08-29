@@ -258,6 +258,8 @@ export class LiveTranslateSession {
     this.audioGraphEpoch = captureEpoch;
     this.captureEnabled = true;
     this.captureStartedAt = Date.now();
+    this.lastAudioCallbackAt = null;
+    this.captureRecoveryCount = 0;
     this.trace('capture_started');
     this.logLiveEvent('audio.graph.attached', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.processor.onaudioprocess = (event) => {
@@ -268,6 +270,10 @@ export class LiveTranslateSession {
         if (this.closed || captureEpoch !== this.connectionEpoch) this.trace('stale.callback.ignored', { kind: 'audio' });
         return;
       }
+
+      // Count only consecutive stalls. A later healthy callback means the
+      // browser capture graph recovered from a transient scheduling pause.
+      this.captureRecoveryCount = 0;
 
       const input = event.inputBuffer.getChannelData(0);
       this.trackSpeechActivity(input);
@@ -1080,6 +1086,7 @@ export class LiveTranslateSession {
       audioGraphAttached: Boolean(this.source && this.audioContext),
       processorAttached: Boolean(this.processor),
       audioCallbackCount: this.audioCallbackCount,
+      captureRecoveryCount: this.captureRecoveryCount,
       lastAudioCallbackAt: this.lastAudioCallbackAt,
       pcmGeneratedCount: this.pcmGeneratedCount,
       pcmGeneratedBytes: this.pcmGeneratedBytes,
@@ -1341,6 +1348,7 @@ function exposeLiveTranslateDebug() {
     audioGraphAttached: false,
     processorAttached: false,
     audioCallbackCount: 0,
+    captureRecoveryCount: 0,
     pcmGeneratedCount: 0,
     pcmGeneratedBytes: 0,
     pcmSendAttemptCount: 0,

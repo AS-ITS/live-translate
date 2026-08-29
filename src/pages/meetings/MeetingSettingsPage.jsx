@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { ArrowRight, BookOpen, ChevronDown, Copy, Mic, Pencil, Plus, Trash2, Volume2 } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
@@ -34,6 +34,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [shares, setShares] = useState([]);
   const [createdShares, setCreatedShares] = useState([]);
   const [shareState, setShareState] = useState('idle');
+  const [shareLayoutReady, setShareLayoutReady] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [isLoading, setIsLoading] = useState(mode === 'edit');
@@ -41,7 +42,9 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [activeStep, setActiveStep] = useState(0);
   const settingsSectionRefs = useRef([]);
   const shareSectionRef = useRef(null);
+  const submitRowRef = useRef(null);
   const shareEnsurePromiseRef = useRef(null);
+  const autoScrolledMeetingIdRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,6 +94,25 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     sections.forEach((section) => observer.observe(section));
     return () => observer.disconnect();
   }, [isLoading, meeting]);
+
+  useEffect(() => {
+    const readyToScroll = shareState === 'error' || (shareState === 'ready' && shareLayoutReady);
+    if (mode !== 'create' || !meeting?.id || !readyToScroll || autoScrolledMeetingIdRef.current === meeting.id) {
+      return undefined;
+    }
+
+    autoScrolledMeetingIdRef.current = meeting.id;
+    let firstFrameId = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        scrollToSubmitRow();
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrameId);
+      firstFrameId = null;
+    };
+  }, [meeting?.id, mode, shareLayoutReady, shareState]);
 
   function applyMeeting(current, glossaryEntries) {
     const target = current.targetLanguageCode || 'en';
@@ -157,6 +179,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   async function createSharesWithRetry(meetingId = meeting?.id) {
     if (shareEnsurePromiseRef.current) return shareEnsurePromiseRef.current;
     const promise = (async () => {
+      setShareLayoutReady(false);
       setShareState('loading');
       const results = [];
       const roles = ['viewer', 'recorder'];
@@ -253,9 +276,21 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     setActiveStep(index);
     section.scrollIntoView({
       behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
-      block: 'start'
+      block: 'center'
     });
   }
+
+  function scrollToSubmitRow() {
+    const row = submitRowRef.current;
+    if (!row) return;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const bottomPadding = 24;
+    const rowBottom = row.getBoundingClientRect().bottom + window.scrollY;
+    const targetScrollTop = Math.max(0, rowBottom - window.innerHeight + bottomPadding);
+    window.scrollTo({ top: targetScrollTop, behavior: reducedMotion ? 'auto' : 'smooth' });
+  }
+
+  const handleShareLayoutReady = useCallback(() => setShareLayoutReady(true), []);
 
   if (isLoading) return <section className="feature-page meeting-settings-page"><p>正在載入會議設定…</p></section>;
 
@@ -299,15 +334,33 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             </div>
           </section>
 
-          {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} /> : null}
-          <div className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenWorkspace(meeting.id)}>前往會議工作區</button> : null}</div></div>
+          {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
+          <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenWorkspace(meeting.id)}>前往會議工作區</button> : null}</div></div>
         </section>
       </div>
     </section>
   );
 }
 
-function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRevokeShare, onCopy, locked }) {
+function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRevokeShare, onCopy, locked, onLayoutReady }) {
+  useEffect(() => {
+    if (state !== 'ready' || shares.length === 0) return undefined;
+    let cancelled = false;
+    const images = [...(sectionRef.current?.querySelectorAll('img') || [])];
+    const waitForImage = (image) => {
+      if (image.complete) return image.decode?.().catch(() => undefined) || Promise.resolve();
+      return new Promise((resolve) => {
+        const finish = () => resolve();
+        image.addEventListener('load', finish, { once: true });
+        image.addEventListener('error', finish, { once: true });
+      });
+    };
+    Promise.all(images.map(waitForImage)).then(() => {
+      if (!cancelled) onLayoutReady();
+    });
+    return () => { cancelled = true; };
+  }, [onLayoutReady, sectionRef, shares, state]);
+
   return (
     <section ref={sectionRef} className="control-panel meeting-settings-card meeting-share-results" aria-labelledby="meeting-share-results-title">
       <div className="meeting-settings-card-header">

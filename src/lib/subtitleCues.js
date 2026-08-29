@@ -6,6 +6,7 @@ const DEFAULT_MAX_CUE_TEXT_LENGTH = 120;
 export const DEFAULT_TURN_COMPLETE_DEBOUNCE_MS = 700;
 export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 5000;
 export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
+export const MAX_PROCESSED_EVENT_IDS = 1024;
 import { cueRefinementInputHash } from './cueContent.js';
 
 export function createSubtitleCueState(input = {}) {
@@ -33,7 +34,9 @@ export function createSubtitleCueState(input = {}) {
     finalizedCueKeys: Array.isArray(input.finalizedCueKeys)
       ? [...input.finalizedCueKeys]
       : finalCues.map(stableCueKey),
-    processedEventIds: Array.isArray(input.processedEventIds) ? [...input.processedEventIds] : []
+    processedEventIds: Array.isArray(input.processedEventIds)
+      ? input.processedEventIds.slice(-MAX_PROCESSED_EVENT_IDS)
+      : []
   };
 }
 
@@ -247,7 +250,22 @@ function deterministicEventId({ eventId, liveSessionId, sessionId, segmentId, tu
 }
 
 function markEventProcessed(state, eventId) {
-  return { ...state, processedEventIds: [...state.processedEventIds, eventId] };
+  return {
+    ...state,
+    processedEventIds: [...state.processedEventIds, eventId].slice(-MAX_PROCESSED_EVENT_IDS)
+  };
+}
+
+export function dismissSubtitleCue(stateInput, cueId) {
+  const state = createSubtitleCueState(stateInput);
+  if (!cueId) return stateInput;
+  if (state.currentCue?.cueId === cueId) {
+    return { ...state, currentCue: null };
+  }
+  const pendingCues = state.pendingCues.filter((cue) => cue.cueId !== cueId);
+  return pendingCues.length === state.pendingCues.length
+    ? stateInput
+    : { ...state, pendingCues };
 }
 
 function applyBoundary(state, event, options) {

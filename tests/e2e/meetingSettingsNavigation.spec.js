@@ -68,6 +68,15 @@ test('active step stays on the first step at the top and follows the 40% focus l
 
 test('shows the share meeting step after creating a meeting', async ({ page }) => {
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.addInitScript(() => {
+    const originalDecode = HTMLImageElement.prototype.decode;
+    if (!originalDecode) return;
+    HTMLImageElement.prototype.decode = function delayedDecode() {
+      return new Promise((resolve) => {
+        window.setTimeout(() => originalDecode.call(this).then(resolve).catch(resolve), 120);
+      });
+    };
+  });
   await page.route('**/api/meetings', async (route) => {
     if (route.request().method() !== 'POST') return route.fallback();
     await route.fulfill({
@@ -107,12 +116,20 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
   await expect(page.locator('.meeting-share-results')).toBeVisible();
   await expect(page.locator('.share-result')).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => {
+    const submitButton = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('儲存變更'));
+    const section = document.querySelector('.meeting-share-results');
+    if (!submitButton || !section) return false;
+    const buttonRect = submitButton.getBoundingClientRect();
+    const rect = section.getBoundingClientRect();
+    return buttonRect.top >= 0 && buttonRect.bottom <= window.innerHeight && rect.bottom > 0 && rect.top < window.innerHeight;
+  })).toBe(true);
+  await expect(page.getByRole('button', { name: '儲存變更' })).toBeInViewport();
+  await expect(page.getByRole('button', { name: '分享會議' })).toHaveAttribute('aria-current', 'step');
   await expect(page.getByRole('button', { name: '建立觀看連結' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: '分享會議' }).click();
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
-  await expect(page.getByRole('button', { name: '分享會議' })).toHaveAttribute('aria-current', 'step');
 });
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {

@@ -1,5 +1,6 @@
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { cueRefinementInputHash } from '../../lib/cueContent.js';
+import { MAX_PROCESSED_EVENT_IDS } from '../../lib/subtitleCues.js';
 
 const LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map(({ code }) => code));
 const PUNCTUATION_ONLY = /^[\s\p{P}\p{S}]+$/u;
@@ -86,7 +87,9 @@ export function normalizeCueCheckpoint(checkpoint = null) {
     pendingCues: Array.isArray(checkpoint.pendingCues) ? checkpoint.pendingCues : [],
     nextSequence: Number.isInteger(checkpoint.nextSequence) && checkpoint.nextSequence > 0 ? checkpoint.nextSequence : 1,
     finalizedCueKeys: Array.isArray(checkpoint.finalizedCueKeys) ? checkpoint.finalizedCueKeys : [],
-    processedEventIds: Array.isArray(checkpoint.processedEventIds) ? checkpoint.processedEventIds : [],
+    processedEventIds: Array.isArray(checkpoint.processedEventIds)
+      ? checkpoint.processedEventIds.slice(-MAX_PROCESSED_EVENT_IDS)
+      : [],
     pendingBoundary: {
       turnComplete: Boolean(checkpoint.pendingBoundary?.turnComplete),
       generationComplete: Boolean(checkpoint.pendingBoundary?.generationComplete)

@@ -3,6 +3,8 @@ import test from 'node:test';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
+  dismissSubtitleCue,
+  MAX_PROCESSED_EVENT_IDS,
   finalizePendingSubtitleCue,
   prepareSubtitleCueStateForNewSegment,
   resolveIdleSubtitleCue,
@@ -859,6 +861,50 @@ test('replayed eventId is a no-op and survives snapshot restore', () => {
   assert.equal(replayed, restored);
   assert.deepEqual(replayed.processedEventIds, ['provider:event:1']);
   assert.equal(replayed.currentCue.sourceText, 'hello');
+});
+
+test('dismisses an idle incomplete Cue without touching finalized Cues', () => {
+  const state = {
+    ...createSubtitleCueState({ finalCues: [{ cueId: 'final-1', sequence: 1, status: 'final' }] }),
+    currentCue: { cueId: 'partial-1', sequence: 2, status: 'partial', sourceText: '未完成', translatedText: '' }
+  };
+
+  const next = dismissSubtitleCue(state, 'partial-1');
+
+  assert.equal(next.currentCue, null);
+  assert.deepEqual(next.finalCues, state.finalCues);
+});
+
+test('processed event IDs stay bounded during long continuous input', () => {
+  let state = createSubtitleCueState();
+
+  for (let index = 0; index < MAX_PROCESSED_EVENT_IDS + 500; index += 1) {
+    state = applySubtitleCueEvent(state, {
+      eventId: `long-session-event-${index}`,
+      stream: 'source',
+      eventType: 'input',
+      text: `source ${index}`,
+      sessionTimeMs: index * 100,
+      sessionId: 'session-1',
+      segmentId: 'segment-1',
+      sourceLanguageCode: 'zh-Hant',
+      targetLanguageCode: 'en'
+    });
+  }
+
+  assert.equal(state.processedEventIds.length, MAX_PROCESSED_EVENT_IDS);
+  assert.equal(state.processedEventIds[0], 'long-session-event-500');
+  assert.equal(state.processedEventIds.at(-1), `long-session-event-${MAX_PROCESSED_EVENT_IDS + 499}`);
+});
+
+test('restored checkpoint event IDs are trimmed to the bounded window', () => {
+  const state = createSubtitleCueState({
+    processedEventIds: Array.from({ length: MAX_PROCESSED_EVENT_IDS + 10 }, (_, index) => `restored-${index}`)
+  });
+
+  assert.equal(state.processedEventIds.length, MAX_PROCESSED_EVENT_IDS);
+  assert.equal(state.processedEventIds[0], 'restored-10');
+  assert.equal(state.processedEventIds.at(-1), `restored-${MAX_PROCESSED_EVENT_IDS + 9}`);
 });
 
 test('checkpoint reload preserves debounce and late Cue revision behavior', () => {

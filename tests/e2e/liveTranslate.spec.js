@@ -1858,6 +1858,69 @@ test('captures and drains first speech while provider connect is delayed', async
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 });
 
+test('keeps capturing while a continuous turn emits many partial transcript updates', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitMicrophoneAudio(page);
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (let index = 0; index < 250; index += 1) {
+      liveSession.emitMessage({
+        serverContent: {
+          inputTranscription: { text: `連續說話原文 ${index}` },
+          outputTranscription: { text: `continuous translation ${index}` }
+        }
+      });
+    }
+  });
+
+  await page.waitForTimeout(50);
+  await expectCueRow(partialCueRows(page).first(), {
+    sourceText: '連續說話原文 249',
+    translatedText: 'continuous translation 249'
+  });
+  await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getSnapshot().pcmSendAttemptCount)).toBe(1);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
+test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (let index = 0; index < 30; index += 1) {
+      liveSession.emitMessage({
+        serverContent: {
+          turnIndex: index,
+          inputTranscription: { text: `版面測試原文 ${index}` },
+          outputTranscription: { text: `layout test translation ${index}` },
+          turnComplete: true
+        }
+      });
+    }
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const list = document.querySelector('[data-testid="cue-list"]');
+    return {
+      pageScrollable: document.scrollingElement.scrollHeight > window.innerHeight,
+      listScrollable: list ? list.scrollHeight > list.clientHeight : false
+    };
+  })).toEqual({ pageScrollable: false, listScrollable: true });
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await page.goto('/');
@@ -2412,6 +2475,8 @@ test('transcript polishing status and independent article output are visible', a
   await emitFinalTranscript(page, '常會議', 'The regular meeting.');
   const cueId = await finalCueRows(page).first().getAttribute('data-cue-id');
   expect(cueId).toBeTruthy();
+  await expect(liveCuePanel(page).getByTestId('transcript-polishing-status')).toHaveCount(0);
+  await expect(finalCueRows(page).first()).not.toHaveClass(/cue-row-refining/);
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   polishingOutput = {
@@ -2847,6 +2912,21 @@ test('paired Cue auto-finalizes after idle when a provider boundary is absent', 
     sourceText: 'idle source finalizes',
     translatedText: 'idle translation finalizes'
   });
+});
+
+test('source-only partial Cue is removed after idle retries', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { inputTranscription: { text: '沒有翻譯的暫存句子' } }
+    });
+  });
+
+  await expect(partialCueRows(page)).toHaveCount(1);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 5000 });
 });
 
 test('short paired Chinese Cue does not remain in recognition after turn completion', async ({ page }) => {

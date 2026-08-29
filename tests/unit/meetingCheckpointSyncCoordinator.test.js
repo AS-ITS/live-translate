@@ -65,6 +65,47 @@ test('meeting checkpoint sync coordinator retains chunks after failure and retri
   assert.deepEqual(errors, ['checkpoint failed']);
 });
 
+test('meeting checkpoint sync coordinator reconciles a conflict with the latest checkpoint', async () => {
+  const calls = [];
+  const errors = [];
+  let latestCheckpointCalls = 0;
+  let shouldConflict = true;
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (shouldConflict) {
+        shouldConflict = false;
+        const error = new Error('checkpoint conflict');
+        error.status = 409;
+        throw error;
+      }
+    },
+    getCheckpoint: async () => {
+      latestCheckpointCalls += 1;
+      return {
+        checkpoint: {
+          durableChunks: [chunk({ text: 'already saved' })],
+          finalCues: [],
+          cueCheckpoint: null
+        }
+      };
+    },
+    onError: (error) => errors.push(error.message),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  coordinator.enqueue([chunk()]);
+
+  assert.equal(await coordinator.flush(), false);
+  assert.equal(latestCheckpointCalls, 1);
+  assert.deepEqual(errors, []);
+
+  assert.equal(await coordinator.flush(), true);
+  assert.equal(calls.length, 1);
+});
+
 test('meeting checkpoint sync coordinator retries transient failures in the background', async () => {
   const calls = [];
   const timers = [];

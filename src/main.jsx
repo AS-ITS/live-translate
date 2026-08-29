@@ -87,6 +87,7 @@ import { createMicrophoneRecordingController } from './lib/microphoneRecording.j
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
+  dismissSubtitleCue,
   finalizePendingSubtitleCue,
   prepareSubtitleCueStateForNewSegment,
   resetSubtitleCueState,
@@ -205,7 +206,6 @@ const TRANSCRIPT_POLISHING_INTERVAL_MS = Number.parseInt(import.meta.env?.VITE_T
 const TRANSCRIPT_POLISHING_MIN_CHARS = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MIN_CHARS || '200', 10);
 const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
-const ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT = 3;
 const exportApplicationService = createExportApplicationService();
 const TRANSLATED_AUDIO_IDLE_STATE = {
   status: 'idle',
@@ -379,6 +379,8 @@ function App() {
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
   const meetingResumeDraftRequestIdRef = useRef(0);
+  const pendingLiveCueEventsRef = useRef([]);
+  const liveCueFlushTimerRef = useRef(null);
   const liveCueUpdatesAllowedRef = useRef(false);
   const liveCueIdleTimersRef = useRef(new Map());
   const refinementDispatchingRef = useRef(new Set());
@@ -786,16 +788,20 @@ function App() {
           targetLanguageCode,
           sourceLanguageCode
         });
-        if (result.state !== subtitleCueStateRef.current) {
+        let nextState = result.state;
+        if (result.action === 'translation-failed') {
+          nextState = dismissSubtitleCue(nextState, result.cue?.cueId);
+        }
+        if (nextState !== subtitleCueStateRef.current) {
           const previous = subtitleCueStateRef.current;
-          subtitleCueStateRef.current = result.state;
-          setSubtitleCueState(result.state);
-          enqueueCuePersistence(previous, result.state);
+          subtitleCueStateRef.current = nextState;
+          setSubtitleCueState(nextState);
+          enqueueCuePersistence(previous, nextState);
         }
         if (result.action === 'needs-retranslation') {
           sessionRef.current?.retranslateSourceText(result.cue?.sourceText, result.cue?.cueId);
         }
-        requestNumericCorrection(result.state);
+        requestNumericCorrection(nextState);
       }, remaining);
       liveCueIdleTimersRef.current.set(cue.cueId, timer);
     }
@@ -1182,7 +1188,7 @@ function App() {
         const cueEvent = event?.stream === 'translation'
           ? { ...event, text: applyGlossaryReplacements(event.text, activeGlossaryEntries) }
           : event;
-        applyLiveSubtitleCueEvent(cueEvent);
+        queueLiveSubtitleCueEvent(cueEvent);
       },
       onOutputAudioChunk: (chunk) => {
         if (isCurrentLiveSessionCallback(callbackGeneration)) handleTranslatedAudioChunk(chunk);
@@ -1972,8 +1978,58 @@ function App() {
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
     enqueueCuePersistence(current, next);
-    scheduleTranscriptPolishing(next.finalCues);
     requestNumericCorrection(next);
+  }
+
+  function queueLiveSubtitleCueEvent(event) {
+    if (event?.connectionEpoch !== undefined
+      && event.connectionEpoch !== liveSessionCallbackGenerationRef.current.generation) return;
+
+    const shouldFlushImmediately = Boolean(
+      event?.localFinalize
+      || event?.isFinal
+      || event?.turnComplete
+      || event?.generationComplete
+      || event?.eventType === 'boundary'
+    );
+
+    if (shouldFlushImmediately) {
+      pendingLiveCueEventsRef.current.push(event);
+      flushQueuedLiveCueEvents();
+      return;
+    }
+
+    // Partial provider updates for one turn are cumulative. Keep only the
+    // newest update for each stream/turn so a long continuous utterance does
+    // not create an ever-growing UI work queue.
+    const key = `${event?.stream || 'unknown'}:${event?.eventType || 'partial'}:${event?.turnIndex ?? 'current'}`;
+    const existingIndex = pendingLiveCueEventsRef.current.findIndex((candidate) => (
+      `${candidate?.stream || 'unknown'}:${candidate?.eventType || 'partial'}:${candidate?.turnIndex ?? 'current'}` === key
+    ));
+    if (existingIndex >= 0) {
+      pendingLiveCueEventsRef.current[existingIndex] = event;
+    } else {
+      pendingLiveCueEventsRef.current.push(event);
+    }
+
+    if (liveCueFlushTimerRef.current !== null) return;
+    liveCueFlushTimerRef.current = window.setTimeout(() => {
+      liveCueFlushTimerRef.current = null;
+      flushQueuedLiveCueEvents();
+    }, 16);
+  }
+
+  function flushQueuedLiveCueEvents() {
+    if (liveCueFlushTimerRef.current !== null) {
+      window.clearTimeout(liveCueFlushTimerRef.current);
+      liveCueFlushTimerRef.current = null;
+    }
+
+    const currentGeneration = liveSessionCallbackGenerationRef.current.generation;
+    const events = pendingLiveCueEventsRef.current.splice(0).filter((event) => (
+      event?.connectionEpoch === undefined || event.connectionEpoch === currentGeneration
+    ));
+    for (const event of events) applyLiveSubtitleCueEvent(event);
   }
 
   function requestNumericCorrection(state) {
@@ -1993,6 +2049,7 @@ function App() {
   }
 
   function flushSubtitleCues(reason) {
+    flushQueuedLiveCueEvents();
     const current = subtitleCueStateRef.current;
     const next = finalizePendingSubtitleCue(current, {
       sessionTimeMs: sessionTimeForSubtitleCues(),
@@ -2002,7 +2059,9 @@ function App() {
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
     enqueueCuePersistence(current, next);
-    scheduleTranscriptPolishing(next.finalCues, { force: true });
+    if (reason === 'stop' || reason === 'complete') {
+      scheduleTranscriptPolishing(next.finalCues);
+    }
     return next;
   }
 
@@ -2546,6 +2605,7 @@ function App() {
     if (!meetingCheckpointSyncCoordinatorRef.current) {
       meetingCheckpointSyncCoordinatorRef.current = createMeetingCheckpointSyncCoordinator({
         updateCheckpoint: (payload) => meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
+        getCheckpoint: (payload) => meetingCheckpointApiClientRef.current.getCheckpoint(payload),
         delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
         onStatusChange: (status) => {
           setMeetingCheckpointStatus(status);
@@ -2596,13 +2656,13 @@ function App() {
     const currentTranscript = transcriptRef.current;
     const finalItemCount = transcriptHasFinalItems(currentTranscript);
     if (finalItemCount > 0) {
-      archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments([
+      archivedTranscriptSegmentsRef.current = [
         ...archivedTranscriptSegmentsRef.current,
         {
           id: `active-segment-${Date.now()}-${currentTranscript.nextSequence}`,
           transcript: currentTranscript
         }
-      ]);
+      ];
       const archived = archivedTranscriptFromSegments(archivedTranscriptSegmentsRef.current, currentTranscript.nextSequence);
       archivedTranscriptRef.current = archived;
       setArchivedTranscript(() => archived);
@@ -2612,10 +2672,7 @@ function App() {
     if (finalItemCount > 0) {
       setMeetingViewStats((current) => ({
         archivedSegmentCount: current.archivedSegmentCount + 1,
-        loadedSegmentCount: Math.min(
-          ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT,
-          Math.max(current.loadedSegmentCount, current.archivedSegmentCount + 1)
-        )
+        loadedSegmentCount: Math.max(current.loadedSegmentCount, current.archivedSegmentCount + 1)
       }));
     }
   }
@@ -2760,7 +2817,7 @@ function App() {
       }
       const resumeTranscript = transcriptStateFromCheckpointChunks(chunks);
       const archivedSegments = transcriptSegmentsFromCheckpoints({ segments, checkpoints });
-      archivedTranscriptSegmentsRef.current = capArchivedTranscriptSegments(archivedSegments);
+      archivedTranscriptSegmentsRef.current = archivedSegments;
       const archivedResumeTranscript = archivedTranscriptFromSegments(archivedTranscriptSegmentsRef.current, resumeTranscript.nextSequence);
       archivedTranscriptRef.current = archivedResumeTranscript;
       setArchivedTranscript(() => archivedResumeTranscript);
@@ -3505,6 +3562,11 @@ function App() {
         <div className="live-transcript-column">
         <LiveCuePanelView
           cueState={subtitleCueState}
+          fallbackTranscriptItems={unrepresentedTranscriptItems({
+            archivedTranscript: archivedTranscript,
+            transcript,
+            cues: subtitleCueState.finalCues
+          })}
           status={status}
           statusLabelOverride={statusLabelOverride}
           isPaused={status === 'paused'}
@@ -4350,8 +4412,31 @@ function transcriptSegmentsFromCheckpoints({ segments = [], checkpoints = [] } =
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
 }
 
-function capArchivedTranscriptSegments(segments = []) {
-  return segments.slice(-ARCHIVED_TRANSCRIPT_SEGMENT_CACHE_LIMIT);
+function unrepresentedTranscriptItems({ archivedTranscript, transcript, cues = [] } = {}) {
+  const items = [
+    ...(archivedTranscript?.source?.finalItems || []),
+    ...(archivedTranscript?.translation?.finalItems || []),
+    ...(transcript?.source?.finalItems || []),
+    ...(transcript?.translation?.finalItems || [])
+  ];
+  return items
+    .filter((item) => item?.status === 'final' && typeof item.text === 'string' && item.text.trim())
+    .filter((item) => !cues.some((cue) => transcriptItemCoveredByCue(item, cue)))
+    .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+function transcriptItemCoveredByCue(item, cue) {
+  if (!cue || cue.status !== 'final' || cue.segmentId !== item.segmentId) return false;
+  const cueText = item.stream === 'source' ? cue.sourceText : cue.translatedText;
+  const itemText = normalizeFallbackText(item.text);
+  const normalizedCueText = normalizeFallbackText(cueText);
+  return Boolean(itemText && normalizedCueText && (
+    normalizedCueText.includes(itemText) || itemText.includes(normalizedCueText)
+  ));
+}
+
+function normalizeFallbackText(value) {
+  return String(value || '').replace(/\s+/gu, '').trim();
 }
 
 function archivedTranscriptFromSegments(segments = [], fallbackNextSequence = 1) {

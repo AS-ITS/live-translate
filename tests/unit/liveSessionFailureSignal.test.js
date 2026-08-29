@@ -552,6 +552,43 @@ test('suspended audio context is resumed before capture continues', async () => 
   assert.equal(resumeCount, 1);
 });
 
+test('healthy audio callbacks reset the transient capture-stall recovery budget', async () => {
+  const failures = [];
+  const processors = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.audioContext = {
+    state: 'running',
+    sampleRate: 16000,
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => {
+      const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+      processors.push(processor);
+      return processor;
+    }
+  };
+  session.mediaStream = { getTracks: () => [] };
+  session.chunker = { push() { return []; }, reset() {} };
+
+  session.setupAudioCapture();
+  processors[0].onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+  assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
+  assert.equal(processors.length, 2);
+  assert.equal(session.captureRecoveryCount, 0);
+
+  processors.at(-1).onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+  assert.equal(session.captureRecoveryCount, 0);
+  assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
+  assert.equal(processors.length, 3);
+  assert.equal(session.captureRecoveryCount, 0);
+  assert.deepEqual(failures, []);
+
+  await session.cleanup({ closeSession: false });
+});
+
 test('input audio callback before provider session is ready is buffered and drained later', () => {
   const sent = [];
   const captured = [];

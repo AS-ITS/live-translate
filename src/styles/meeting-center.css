@@ -115,7 +115,7 @@
 .meeting-private-entry .detail-button { min-width: 2.75rem; padding-inline: var(--space-2); }
 .meeting-private-entry .danger-button { border-color: color-mix(in srgb, var(--color-danger) 35%, white); }
 .meeting-add-private-button { width: 100%; }
-.meeting-settings-submit-row { align-items: center; justify-content: space-between; margin-top: 0; padding: var(--space-4) 0 var(--space-2); border-top: 1px solid var(--color-border); }
+.meeting-settings-submit-row { align-items: center; justify-content: space-between; margin-top: 0; padding: var(--space-4) 0 var(--space-2); border-top: 1px solid var(--color-border); scroll-margin-bottom: 1.5rem; }
 .meeting-settings-summary { min-width: 0; margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .meeting-settings-action-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .meeting-settings-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }

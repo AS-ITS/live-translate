@@ -7,7 +7,7 @@ import {
   pcm16ToFloat
 } from './audio.js';
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
-import { buildAudioInputConstraints, isMissingSelectedInputError } from './mediaDevices.js';
+import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
 
@@ -29,6 +29,7 @@ export class LiveTranslateSession {
     sourceLanguageCode = DEFAULT_SOURCE_LANGUAGE_CODE,
     echoTargetLanguage,
     inputDeviceId = '',
+    microphonePermissionTimeoutMs,
     onInputDeviceFallback,
     onMicrophoneReady,
     onCaptureStateChange,
@@ -58,6 +59,7 @@ export class LiveTranslateSession {
     this.sourceLanguageCode = sourceLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
     this.inputDeviceId = inputDeviceId;
+    this.microphonePermissionTimeoutMs = microphonePermissionTimeoutMs;
     this.onInputDeviceFallback = onInputDeviceFallback;
     this.onMicrophoneReady = onMicrophoneReady;
     this.onCaptureStateChange = onCaptureStateChange;
@@ -144,14 +146,14 @@ export class LiveTranslateSession {
     exposeLiveTranslateDebug();
   }
 
-  async start() {
+  async start({ inputStream = null } = {}) {
     this.trace('connect.invoked');
-    this.mediaStream = await this.openInputStream();
+    this.mediaStream = inputStream || await this.openInputStream();
     this.attachMicrophoneTrackListeners();
     this.logLiveEvent('mic.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
 
-    this.audioContext = new AudioContext();
+    this.audioContext = createAudioContext();
     if (!await this.ensureAudioContextRunning()) return;
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
     this.setupAudioCapture();
@@ -538,7 +540,9 @@ export class LiveTranslateSession {
 
   async openInputStream() {
     try {
-      return await navigator.mediaDevices.getUserMedia(buildAudioInputConstraints(this.inputDeviceId));
+      return await requestAudioInputStream(this.inputDeviceId, {
+        timeoutMs: this.microphonePermissionTimeoutMs
+      });
     } catch (error) {
       if (!this.inputDeviceId || !isMissingSelectedInputError(error)) {
         throw error;
@@ -546,7 +550,7 @@ export class LiveTranslateSession {
 
       this.inputDeviceId = '';
       this.onInputDeviceFallback?.();
-      return navigator.mediaDevices.getUserMedia(buildAudioInputConstraints());
+      return requestAudioInputStream('', { timeoutMs: this.microphonePermissionTimeoutMs });
     }
   }
 
@@ -1197,6 +1201,14 @@ export class LiveTranslateSession {
     this.playbackSources.clear();
     this.nextPlaybackTime = this.audioContext?.currentTime || 0;
   }
+}
+
+export function createAudioContext() {
+  const AudioContextImpl = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (typeof AudioContextImpl !== 'function') {
+    throw new DOMException('AudioContext is unavailable.', 'NotSupportedError');
+  }
+  return new AudioContextImpl();
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {

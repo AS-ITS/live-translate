@@ -1732,6 +1732,30 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
   await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-error-message')).toHaveCSS('padding-top', '8px');
+  await expect(page.locator('.live-error-message')).toHaveCSS('padding-bottom', '8px');
+
+  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('meeting management errors use content height', async ({ page }) => {
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { message: '會議清單暫時無法載入。' } })
+    });
+  });
+
+  await page.goto('/#meetings');
+
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText('無法載入會議或字典資料。');
+  const box = await alert.boundingBox();
+  expect(box?.height).toBeLessThan(120);
 });
 
 test('starts and stops a mocked Gemini Live translation session', async ({ page }) => {
@@ -1792,6 +1816,19 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
 
+});
+
+test('ending a live recording returns to meeting management', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockSingleMeetingList(page);
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
 });
 
 test('captures and drains first speech while provider connect is delayed', async ({ page }) => {
@@ -2396,8 +2433,15 @@ test('transcript polishing status and independent article output are visible', a
   await expect(polishingStatus).toHaveText(/潤飾完成.*v1/);
   await expect(page.locator('.live-page > [data-testid="transcript-polishing-status"]')).toHaveCount(0);
   await expect(page.getByTestId('polished-article').getByText('The long meeting.')).toBeVisible();
-  await expect(translationCueList(page).getByText('The regular meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The long meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The regular meeting.')).toHaveCount(0);
+  await expect(finalCueRows(page).first()).not.toHaveClass(/cue-row-refining/);
+  await expect(finalCueRows(page).first()).toHaveClass(/cue-row-refined/);
+  await expect(finalCueRows(page).first().getByTestId('cue-refined-indicator')).toHaveCount(1);
+  await expect(finalCueRows(page).first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(finalCueRows(page).first().getByTestId('cue-source-text')).toHaveText('常會議');
+  await expect(finalCueRows(page).first()).not.toContainText('修正中');
+  await expect(finalCueRows(page).first()).not.toContainText('等待修正');
 });
 
 test('transcript polishing retry shows the new queued execution and failure reason inline', async ({ page }) => {
@@ -2572,8 +2616,10 @@ test('live recording reuses the meeting design system at desktop widths', async 
       const toolbar = document.querySelector('.live-session-toolbar');
       const panel = document.querySelector('[data-testid="live-cue-panel"]');
       const readingLayout = document.querySelector('.cue-reading-layout');
+      const controlStatusRow = document.querySelector('.live-session-toolbar .control-status-row');
       const sessionButton = document.querySelector('.live-session-toolbar .session-actions button');
       const styles = toolbar ? getComputedStyle(toolbar) : null;
+      const controlStyles = controlStatusRow ? getComputedStyle(controlStatusRow) : null;
       return {
         shellUsesMeetingManagement: shell?.classList.contains('meeting-management-shell') || false,
         toolbarBackground: styles?.backgroundColor,
@@ -2582,7 +2628,10 @@ test('live recording reuses the meeting design system at desktop widths', async 
         hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
         toolbarWidth: toolbar?.getBoundingClientRect().width || 0,
         panelWidth: panel?.getBoundingClientRect().width || 0,
-        readingColumns: readingLayout ? getComputedStyle(readingLayout).gridTemplateColumns.split(' ').length : 0
+        controlDisplay: controlStyles?.display || '',
+        controlColumns: controlStyles ? controlStyles.gridTemplateColumns.split(' ').length : 0,
+        readingColumns: readingLayout ? getComputedStyle(readingLayout).gridTemplateColumns.split(' ').length : 0,
+        dividerContent: readingLayout ? getComputedStyle(readingLayout, '::after').content : 'none'
       };
     });
 
@@ -2593,7 +2642,10 @@ test('live recording reuses the meeting design system at desktop widths', async 
     expect(layout.hasHorizontalOverflow).toBe(false);
     expect(layout.toolbarWidth).toBeGreaterThan(0);
     expect(layout.panelWidth).toBeGreaterThan(0);
+    expect(layout.controlDisplay).toBe('grid');
+    expect(layout.controlColumns).toBe(3);
     expect(layout.readingColumns).toBe(2);
+    expect(layout.dividerContent).not.toBe('none');
   }
 
   await page.setViewportSize({ width: 640, height: 800 });
@@ -2602,29 +2654,30 @@ test('live recording reuses the meeting design system at desktop widths', async 
     const styles = row ? getComputedStyle(row) : null;
     return {
       rowColumns: styles?.gridTemplateColumns.split(' ').length || 0,
+      controlDisplay: getComputedStyle(document.querySelector('.live-session-toolbar .control-status-row')).display,
       hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
     };
   });
   expect(mobileLayout.rowColumns).toBe(1);
+  expect(mobileLayout.controlDisplay).toBe('flex');
   expect(mobileLayout.hasHorizontalOverflow).toBe(false);
 
   await page.setViewportSize({ width: 1440, height: 900 });
   const typography = await page.evaluate(() => {
     const source = document.querySelector('[data-testid="cue-paired-list"] .cue-source');
     const translation = document.querySelector('[data-testid="cue-paired-list"] .cue-translation');
-    const sourceHeading = document.querySelector('.cue-source-column .cue-section-header h3');
     const sourceStyle = source ? getComputedStyle(source) : null;
     const translationStyle = translation ? getComputedStyle(translation) : null;
-    const headingStyle = sourceHeading ? getComputedStyle(sourceHeading) : null;
     return {
       sourceFontSize: sourceStyle?.fontSize || '',
       translationFontSize: translationStyle?.fontSize || '',
-      headingFontSize: headingStyle?.fontSize || '',
+      sourceFontWeight: sourceStyle?.fontWeight || '',
+      translationFontWeight: translationStyle?.fontWeight || '',
       firstRowBorder: document.querySelector('[data-testid="cue-paired-list"] .cue-row') ? getComputedStyle(document.querySelector('[data-testid="cue-paired-list"] .cue-row')).borderBottomWidth : ''
     };
   });
-  expect(parseFloat(typography.translationFontSize)).toBeGreaterThan(parseFloat(typography.sourceFontSize));
-  expect(parseFloat(typography.headingFontSize)).toBeGreaterThan(parseFloat(typography.sourceFontSize));
+  expect(typography.translationFontSize).toBe(typography.sourceFontSize);
+  expect(typography.translationFontWeight).toBe(typography.sourceFontWeight);
   expect(typography.firstRowBorder).toBe('0px');
 });
 

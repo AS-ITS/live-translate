@@ -7,6 +7,7 @@ import {
   isMissingSelectedInputError,
   labelForDevice,
   normalizeMediaDevices,
+  requestAudioInputStream,
   supportsOutputDeviceSelection
 } from '../../src/lib/mediaDevices.js';
 
@@ -77,6 +78,24 @@ test('isMissingSelectedInputError rejects unrelated errors', () => {
   assert.equal(isMissingSelectedInputError({ name: 'NotAllowedError' }), false);
   assert.equal(isMissingSelectedInputError({ name: 'TypeError', message: 'Invalid state' }), false);
   assert.equal(isMissingSelectedInputError(null), false);
+});
+
+test('requestAudioInputStream resolves a permitted stream', async () => {
+  const stream = { getTracks: () => [] };
+  const mediaDevices = { getUserMedia: async () => stream };
+
+  assert.equal(await requestAudioInputStream('mic-1', { mediaDevices }), stream);
+});
+
+test('requestAudioInputStream rejects a stalled permission prompt and cleans up late streams', async () => {
+  const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const mediaDevices = {
+    getUserMedia: () => new Promise((resolve) => setTimeout(() => resolve({ getTracks: () => tracks }), 20))
+  };
+
+  await assert.rejects(() => requestAudioInputStream('', { mediaDevices, timeoutMs: 1 }), { name: 'TimeoutError' });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(tracks[0].stopped, true);
 });
 
 test('supportsOutputDeviceSelection returns false when setSinkId is unavailable', () => {

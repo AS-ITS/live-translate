@@ -6,7 +6,7 @@ import { Activity, ArrowRight, BookOpen, CalendarDays, Check, CheckCircle2, Cloc
 import { SUPPORTED_LANGUAGES } from './lib/languages.js';
 import { classifyConnectionFailure } from './lib/connectionFailures.js';
 import { failureUiStateForClassification } from './lib/failureUiState.js';
-import { audioInputDevices } from './lib/mediaDevices.js';
+import { audioInputDevices, requestAudioInputStream } from './lib/mediaDevices.js';
 import { createReconnectController } from './lib/reconnectController.js';
 import { createMemorySessionRepository } from './lib/sessionRepository.js';
 import { createSessionReadApiClient } from './lib/sessionReadApiClient.js';
@@ -44,7 +44,7 @@ import { createTranslationCommandLifecycle } from './lib/translationCommandLifec
 import { formatTranslationCommandPersistenceError } from './lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from './lib/transcriptPolishingLifecycle.js';
 import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from './lib/transcriptPolishing.js';
-import { applyCueRefinementExecutionStates, applyRefinementResultToCues, completedCueRefinementOutputs, markCuesCompletedByRefinedOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from './lib/cueRefinement.js';
+import { applyCueRefinementExecutionStates, completedCueRefinementOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from './lib/cueRefinement.js';
 import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from './lib/cueContent.js';
 import {
   compactTranslationHistoryForDetail,
@@ -115,6 +115,8 @@ import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
 import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
 import { TranslationHistoryPage } from './pages/history/TranslationHistoryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from './pages/live/LiveRecordingPage.jsx';
+import { LiveCuePanel as LiveCuePanelView } from './pages/live/LiveCuePanel.jsx';
+import { applyCompletedRefinementOutputs } from './pages/live/liveRecordingController.js';
 
 ModuleRegistry.registerModules([AllCommunityModule]);
 
@@ -492,6 +494,9 @@ function App() {
       if (next.page !== 'meeting') {
         setNavigationNotice('');
       }
+      if (next.page !== 'live-recording') {
+        setError('');
+      }
       if (next.page === 'retranslate') {
         setRetranslationSessionId(next.sessionId);
       }
@@ -632,48 +637,17 @@ function App() {
     const outputs = completedPolishingOutputs(detail);
     if (outputs.length === 0) return;
     const previous = subtitleCueStateRef.current;
-    let nextCues = previous.finalCues;
-    for (const output of outputs) {
-      const targets = Array.isArray(output.refinementTargets) ? output.refinementTargets : [];
-      const targetByCueId = new Map(targets.filter((target) => target?.targetCueId).map((target) => [target.targetCueId, target]));
-      const items = [
-        ...(Array.isArray(output.refinedItems) ? output.refinedItems : []),
-        ...(Array.isArray(output.polishedItems) ? output.polishedItems : [])
-      ];
-      for (const item of items) {
-        const target = targetByCueId.get(item.targetCueId || item.cueId);
-        const targetCueId = item.targetCueId || target?.targetCueId;
-        if (!targetCueId) {
-          if (import.meta.env?.DEV) console.debug('[Cue refinement] missing targetCueId', { sessionId: output.sessionId, refinementJobId: output.executionId, item });
-          continue;
-        }
-        const result = applyRefinementResultToCues(nextCues, {
-          ...item,
-          targetCueId,
-          fields: item.fields || target?.fields || (typeof item.polishedText === 'string' ? ['translation'] : ['source', 'translation']),
-          sessionId: item.sessionId || target?.sessionId || output.sessionId,
-          segmentId: item.segmentId || target?.segmentId,
-          connectionEpoch: item.connectionEpoch ?? target?.connectionEpoch,
-          refinementJobId: item.refinementJobId || target?.refinementJobId || output.executionId,
-          completedAt: output.completedAt || output.createdAt,
-          version: item.version ?? target?.version,
-          inputHash: item.inputHash ?? target?.inputHash
-        }, {
-          sessionId: output.sessionId,
-          logger: (event) => { if (import.meta.env?.DEV) console.debug('[Cue refinement]', event); }
-        });
-        if (result.applied) nextCues = result.cues;
-      }
-    }
-    nextCues = markCuesCompletedByRefinedOutputs(nextCues, outputs);
-    nextCues = mergeCuesByIdPreferRefinement(previous.finalCues, nextCues);
-    if (nextCues.every((cue, index) => cue === previous.finalCues[index])) return;
+    const refinement = applyCompletedRefinementOutputs(previous.finalCues, outputs, {
+      sessionId: activeSessionRecordIdRef.current,
+      logger: (event) => { if (import.meta.env?.DEV) console.debug('[Cue refinement]', event); }
+    });
+    if (!refinement.changed) return;
+    const nextCues = refinement.cues;
     const next = { ...previous, finalCues: nextCues };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
     enqueueCuePersistence(previous, next);
-    const refinedText = nextCues.map((cue) => effectiveTranslationForCue(cue)).filter(Boolean).join('\n');
-    setPolishedArticle({ text: refinedText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });
+    setPolishedArticle({ text: refinement.articleText, items: nextCues.map((cue) => ({ cueId: cue.cueId, sequence: cue.sequence, polishedText: effectiveTranslationForCue(cue) })), version: null, updatedAt: new Date().toISOString() });
   }
 
   function applyRefinementExecutionStates(detail) {
@@ -883,8 +857,22 @@ function App() {
     setStatusLabelOverride('');
     let session;
     let record = null;
+    setStatus('requesting-permission');
+    const inputDeviceIdForSession = inputDevicesRef.current.some((device) => device.deviceId === selectedInputDeviceIdRef.current)
+      ? selectedInputDeviceIdRef.current
+      : '';
+    const microphoneStreamPromise = requestAudioInputStream(inputDeviceIdForSession).catch((nextError) => {
+      if (inputDeviceIdForSession && (nextError?.name === 'NotFoundError' || nextError?.name === 'OverconstrainedError')) {
+        selectedInputDeviceIdRef.current = '';
+        setSelectedInputDeviceId('');
+        setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
+        return requestAudioInputStream('');
+      }
+      throw nextError;
+    });
 
     try {
+      const microphoneStream = await microphoneStreamPromise;
       await recordingController().cleanup({ discard: true });
       resetInputAudioDownload();
       resetTranslatedAudioDownload();
@@ -915,7 +903,7 @@ function App() {
       session = await createSession({ preserveTranscript: false, liveSessionId });
       sessionRef.current = session;
 
-      await session.start();
+      await session.start({ inputStream: microphoneStream });
       activateLiveSessionCallbacks(session.callbackGeneration);
       const activeRecord = sessionRepositoryRef.current.updateSessionRecord(record.id, {
         status: 'active',
@@ -1073,6 +1061,7 @@ function App() {
       audioStates: { input: inputAudioState }
     });
     setStatus('stopped');
+    window.location.hash = '#meetings';
   }
 
   async function completeResumableMeeting() {
@@ -3345,7 +3334,15 @@ function App() {
       titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : isMeetingDetailPage ? 'meeting-detail-page-title' : undefined}
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : isMeetingDetailPage ? '查看這場會議的完整時間軸、逐字稿與匯出內容。' : '會議字幕工作台'}
       headerAction={isGlobalGlossaryPage || isLiveSurface || isMeetingDetailPage ? (
-        <a className="button secondary meeting-header-action" href="#meetings">
+        <a
+          className="button secondary meeting-header-action"
+          href="#meetings"
+          onClick={isLiveSurface ? (event) => {
+            event.preventDefault();
+            setError('');
+            window.location.hash = '#meetings';
+          } : undefined}
+        >
           <ArrowRight size={18} aria-hidden="true" />
           返回會議管理
         </a>
@@ -3506,7 +3503,7 @@ function App() {
         </div>
 
         <div className="live-transcript-column">
-        <LiveCuePanel
+        <LiveCuePanelView
           cueState={subtitleCueState}
           status={status}
           statusLabelOverride={statusLabelOverride}
@@ -4270,7 +4267,7 @@ function RecorderPage({ token, code = '' }) {
           </div>
         </div>
         <div className="live-transcript-column">
-          <LiveCuePanel
+          <LiveCuePanelView
             cueState={cueState}
             status={cueStatus}
             isPaused={paused}
@@ -4554,233 +4551,6 @@ function GlossaryActionsCell({ context, data }) {
 function isCueListAtLatestPosition(list) {
   if (!list) return false;
   return list.scrollHeight - list.clientHeight - list.scrollTop <= CUE_PAGE_FOLLOW_THRESHOLD_PX;
-}
-
-function LiveCuePanel({
-  cueState,
-  status,
-  statusLabelOverride,
-  isPaused,
-  isStopped,
-  polishingState,
-  polishedArticle,
-  onPolishingRetry,
-  copiedSource,
-  copiedTranslation,
-  onCopySource,
-  onCopyTranslation
-}) {
-  const panelRef = useRef(null);
-  const cueListRef = useRef(null);
-  const [isFollowingLatest, setIsFollowingLatest] = useState(false);
-  const [showSource, setShowSource] = useState(true);
-  const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
-  const hasContent = cues.length > 0 || Boolean(polishedArticle?.text);
-
-  useEffect(() => {
-    const list = cueListRef.current;
-    if (!list) return undefined;
-
-    const updateFollowState = () => {
-      setIsFollowingLatest(isCueListAtLatestPosition(list));
-    };
-
-    updateFollowState();
-    window.addEventListener('resize', updateFollowState);
-    return () => {
-      window.removeEventListener('resize', updateFollowState);
-    };
-  }, []);
-
-  useEffect(() => {
-    const list = cueListRef.current;
-    if (!list || !isFollowingLatest || cues.length === 0) return;
-    list.scrollTo({ top: list.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
-  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
-
-  function returnToLatest() {
-    const list = cueListRef.current;
-    if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-    setIsFollowingLatest(true);
-  }
-
-  function toggleSourceVisibility(nextValue) {
-    const list = cueListRef.current;
-    const scrollTop = list?.scrollTop || 0;
-    setShowSource(nextValue);
-    window.requestAnimationFrame(() => {
-      if (cueListRef.current) cueListRef.current.scrollTop = scrollTop;
-    });
-  }
-
-  return (
-    <section className="cue-panel meeting-settings-card" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
-      <div className="cue-panel-header meeting-settings-card-header">
-        <div>
-          <h2>即時字幕</h2>
-          <p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '翻譯是主要閱讀內容；可隨時收合原文核對欄。'}</p>
-        </div>
-        <div className="cue-panel-actions">
-          <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時字幕狀態：${statusLabel(status, statusLabelOverride)}`}>
-            <Radio size={15} aria-hidden="true" />
-            {statusLabel(status, statusLabelOverride)}
-          </span>
-          <label className="source-visibility-toggle">
-            <input
-              type="checkbox"
-              checked={showSource}
-              onChange={(event) => toggleSourceVisibility(event.target.checked)}
-              data-testid="source-visibility-toggle"
-            />
-            <span>顯示原文</span>
-          </label>
-          {hasContent ? <>
-          <TranscriptPolishingStatus polishingState={polishingState} onRetry={onPolishingRetry} />
-          {!isFollowingLatest ? (
-            <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={returnToLatest}>回到最新字幕</button>
-          ) : null}
-          </> : null}
-        </div>
-      </div>
-      <div ref={cueListRef} onScroll={(event) => setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget))} className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
-        {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始翻譯後，原文與翻譯字幕會顯示在這裡</p> : null}
-        {hasContent ? <>
-        <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}`}>
-        {showSource ? <section className="cue-language-section cue-source-column" aria-label="即時字幕原文">
-          <div className="cue-section-header">
-            <h3>輸入／原文</h3>
-            <button className="button detail-button" type="button" onClick={onCopySource} disabled={!sourceTextForCopy(cueState.finalCues)}>
-              <Copy size={14} aria-hidden="true" />
-              {copiedSource ? '已複製' : '複製原文'}
-            </button>
-          </div>
-        </section> : null}
-        <section className="cue-language-section cue-translation-column" aria-label="即時字幕翻譯">
-          <div className="cue-section-header">
-            <h3>翻譯</h3>
-            <button className="button detail-button" type="button" onClick={onCopyTranslation} disabled={!translationTextForCopy(cueState.finalCues)}>
-              <Copy size={14} aria-hidden="true" />
-              {copiedTranslation ? '已複製' : '複製翻譯'}
-            </button>
-          </div>
-        </section>
-        <div className="cue-section-list" data-testid="cue-paired-list">
-          {cues.map((cue, index) => cue.status === 'final'
-            ? <FinalCueRow key={cue.cueId} cue={cue} paired showSource={showSource} showRefinementStatus={index === cues.length - 1} latest={index === cues.length - 1} />
-            : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} paired showSource={showSource} latest={index === cues.length - 1} />)}
-        </div>
-        </div>
-        </> : null}
-      </div>
-      {polishedArticle?.text ? (
-        <section className="transcript-panel" data-testid="polished-article" aria-label="潤飾文章版">
-          <div className="article-panel-header"><h3>潤飾文章版</h3></div>
-          <div className="article-content"><p>{polishedArticle.text}</p></div>
-        </section>
-      ) : null}
-    </section>
-  );
-}
-
-function FinalCueRow({ cue, stream, paired = false, showSource = true, showRefinementStatus = true, latest = false }) {
-  return <CueRow cue={cue} stream={stream} paired={paired} showSource={showSource} showRefinementStatus={showRefinementStatus} latest={latest} />;
-}
-
-function PartialCueRow({ cue, stream, paired = false, showSource = true, latest = false }) {
-  return <CueRow cue={cue} partial stream={stream} paired={paired} showSource={showSource} latest={latest} />;
-}
-
-function TranscriptPolishingStatus({ polishingState, onRetry }) {
-  const status = polishingState?.status || 'idle';
-  if (status === 'idle') return null;
-  const statusLabel = status === 'running' || status === 'dirty'
-    ? '潤飾中'
-    : status === 'processing'
-      ? '潤飾中'
-    : status === 'queued'
-      ? '等待潤飾'
-      : status === 'failed'
-        ? '潤飾失敗'
-        : status === 'completed'
-          ? '潤飾完成'
-          : '尚未開始潤飾';
-  const timestamp = polishingState?.updatedAt ? formatPolishingTimestamp(polishingState.updatedAt) : '';
-  const errorText = polishingState?.error || '';
-
-  return (
-    <span
-      className={`transcript-polishing-badge transcript-polishing-badge-${status}`}
-      aria-live="polite"
-      aria-label={`${statusLabel}${errorText ? `：${errorText}` : ''}`}
-      data-testid="transcript-polishing-status"
-      title={errorText || undefined}
-    >
-      {statusLabel}{status === 'completed' && polishingState.version ? ` · v${polishingState.version}` : ''}{timestamp ? ` · ${timestamp}` : ''}{status === 'failed' && errorText ? `：${errorText}` : ''}
-      {status === 'failed' && polishingState.executionId ? (
-        <button className="button detail-button polishing-retry-button" type="button" onClick={() => onRetry?.(polishingState.executionId)}>重試</button>
-      ) : null}
-    </span>
-  );
-}
-
-function formatPolishingTimestamp(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? '' : `最後更新 ${date.toLocaleTimeString()}`;
-}
-
-function CueRow({ cue, partial = false, stream, paired = false, showSource = true, showRefinementStatus = true, latest = false }) {
-  const [showRaw, setShowRaw] = useState(false);
-  const label = cue.terminalStatus === 'saved-pending'
-    ? '未完成語句已保存'
-    : partial
-      ? cue.translationStatus === 'failed' ? '翻譯失敗' : '辨識中／翻譯中'
-      : `字幕 ${cue.sequence || ''}`;
-  const sourceText = paired || stream ? effectiveSourceForCue(cue, showRaw ? 'raw' : 'refined') : cue.sourceText;
-  const translationText = paired || stream ? effectiveTranslationForCue(cue, showRaw ? 'raw' : 'refined') : cue.translatedText;
-  const text = stream === 'translation' ? translationText : sourceText;
-  const textClassName = stream === 'translation' ? 'cue-translation' : 'cue-source';
-  const languageCode = stream === 'translation' ? cue.targetLanguageCode : cue.sourceLanguageCode;
-  const wrappedText = wrapSubtitleText(text, languageCode);
-  return (
-    <article
-      className={`cue-row${partial ? ' cue-row-partial' : ''}${latest ? ' cue-row-latest' : ''}`}
-      data-testid={partial ? 'cue-partial-row' : 'cue-final-row'}
-      data-cue-id={cue.cueId || undefined}
-      aria-label={label}
-    >
-      {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
-      {!partial && showRefinementStatus && cue.refinement?.status && cue.refinement.status !== 'completed' ? (
-        <div className="cue-row-meta"><span className="cue-partial-status">{cue.refinement.status === 'failed' ? '修正失敗，保留原文' : cue.refinement.status === 'pending' ? '等待修正' : '修正中'}</span></div>
-      ) : null}
-      <div className="cue-text-toggle">
-        {stream ? (
-          stream === 'source'
-            ? <SourceCueText text={wrappedText} />
-            : <TranslatedCueText text={wrappedText} />
-        ) : (
-          <>
-            {showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}
-            <TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} />
-          </>
-        )}
-      </div>
-      {!partial && (paired
-        ? (showSource ? (cue.refinedTranslation || cue.refinedSource || '') : (cue.refinedTranslation || '')).trim()
-        : ((stream === 'translation' ? cue.refinedTranslation : cue.refinedSource) || '').trim()) ? (
-        <button className="button detail-button" type="button" onClick={() => setShowRaw((value) => !value)}>
-          {showRaw ? '顯示修正版' : '查看原始'}
-        </button>
-      ) : null}
-    </article>
-  );
-}
-
-function SourceCueText({ text = '' }) {
-  return <span className="cue-source" data-testid="cue-source-text">{text || '—'}</span>;
-}
-
-function TranslatedCueText({ text = '' }) {
-  return <span className="cue-translation" data-testid="cue-translated-text">{text || '—'}</span>;
 }
 
 function latestPolishingOutput(detail) {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
-import { LiveTranslateSession } from '../../src/lib/liveSession.js';
+import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
 
 test('unexpected close triggers connection failure after cleanup', async () => {
@@ -207,6 +207,34 @@ test('microphone permission errors do not fall back to the browser default', asy
         value: previousMediaDevices
       });
     }
+  }
+});
+
+test('live session uses Safari webkitAudioContext fallback', async () => {
+  const previousAudioContext = globalThis.AudioContext;
+  const previousWebkitAudioContext = globalThis.webkitAudioContext;
+  class SafariAudioContext {
+    constructor() {
+      this.sampleRate = 16000;
+      this.state = 'running';
+      this.destination = {};
+    }
+    createMediaStreamSource() { return { connect() {}, disconnect() {} }; }
+    createScriptProcessor() { return { connect() {}, disconnect() {} }; }
+    addEventListener() {}
+    removeEventListener() {}
+    async close() { this.state = 'closed'; }
+  }
+
+  Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: undefined });
+  Object.defineProperty(globalThis, 'webkitAudioContext', { configurable: true, value: SafariAudioContext });
+  try {
+    assert.ok(createAudioContext() instanceof SafariAudioContext);
+  } finally {
+    if (previousAudioContext === undefined) delete globalThis.AudioContext;
+    else Object.defineProperty(globalThis, 'AudioContext', { configurable: true, value: previousAudioContext });
+    if (previousWebkitAudioContext === undefined) delete globalThis.webkitAudioContext;
+    else Object.defineProperty(globalThis, 'webkitAudioContext', { configurable: true, value: previousWebkitAudioContext });
   }
 });
 

@@ -80,7 +80,9 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await expect(page.getByText('Translation 1', { exact: true })).toBeVisible();
   await expect(page.getByText('Translation 2', { exact: true })).toBeVisible();
   expect(await page.getByTestId('meeting-viewer-cue-row').count()).toBeLessThan(40);
-  await expect(page.getByRole('button', { name: '回到最新' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '即時字幕' })).toBeVisible();
+  await expect(page.getByText('原文')).toBeVisible();
+  await expect(page.getByText('翻譯')).toBeVisible();
 });
 
 test('Legacy Session URL returns to Meeting Management without owner controls', async ({ page }) => {

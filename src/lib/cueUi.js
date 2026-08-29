@@ -75,11 +75,24 @@ export function cueListForDisplay(state = {}, {
   requireSourceTextForPartial = false,
   mergeRepeatedFinalCues = false
 } = {}) {
-  const final = sortFinalCues(state.refinedSubtitleCues?.length ? state.refinedSubtitleCues : state.finalCues);
+  const final = sortFinalCues(mergeRefinedCuesWithRaw(state.finalCues, state.refinedSubtitleCues));
   const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
   const displayedFinal = mergeRepeatedFinalCues ? mergeAdjacentFinalCues(final) : final;
   const cues = partial ? [...displayedFinal, partial] : displayedFinal;
   return includePartial ? mergeRepeatedLiveCues(cues) : cues;
+}
+
+function mergeRefinedCuesWithRaw(rawCues = [], refinedCues = []) {
+  const raw = Array.isArray(rawCues) ? rawCues : [];
+  const refined = Array.isArray(refinedCues) ? refinedCues : [];
+  if (refined.length === 0) return raw;
+
+  const refinedById = new Map(refined.map((cue) => [cue?.cueId, cue]));
+  const merged = raw.map((cue) => refinedById.has(cue?.cueId)
+    ? { ...cue, ...refinedById.get(cue.cueId) }
+    : cue);
+  const rawIds = new Set(raw.map((cue) => cue?.cueId));
+  return merged.concat(refined.filter((cue) => cue?.cueId && !rawIds.has(cue.cueId)));
 }
 
 function mergeAdjacentFinalCues(cues) {

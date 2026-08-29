@@ -1717,6 +1717,10 @@ These items are intentionally deferred:
   remain valid after backend restart.
 # Unreleased
 
+- 更新唯讀 Meeting Viewer，改為截圖風格的滿版白底字幕工作區，只保留 Header、會議名稱與即時字幕，並使用板岩藍強調色。
+
+- 修正長會議即時字幕在部分字幕完成潤飾後隱藏其他已錄製內容的問題。潤飾結果現在只覆蓋相同 Cue，尚未潤飾的原始字幕仍會完整顯示。
+
 - 修正即時字幕與潤飾競爭問題。錄音期間不再啟動潤飾，改於工作階段停止或會議完成後送出；潤飾等待期間保留原始字幕，且不再讓字幕列持續顯示潤飾中的底色。
 
 - 新增獨立 `#translation-history` 翻譯紀錄頁。紀錄列表改用卡片式工作區，選取紀錄後可透過「紀錄／原文／翻譯／匯出」小目錄切換內容；既有 `#history` 連結會相容導向新頁面。

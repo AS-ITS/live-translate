@@ -71,6 +71,25 @@ test('history display excludes partial cues', () => {
   }, { includePartial: false }).map((cue) => cue.cueId), ['cue-1']);
 });
 
+test('live display keeps raw cues that are not included in refined subtitle results', () => {
+  const rawCues = [
+    { ...finalCue('cue-1', 1), sessionId: 'session-1', segmentId: 'segment-1' },
+    { ...finalCue('cue-2', 2), sessionId: 'session-1', segmentId: 'segment-1' },
+    { ...finalCue('cue-3', 3), sessionId: 'session-1', segmentId: 'segment-1' }
+  ];
+  const refined = [{
+    ...rawCues[0],
+    sourceText: '修正版原文',
+    translatedText: 'refined translation'
+  }];
+
+  const display = cueListForDisplay({ finalCues: rawCues, refinedSubtitleCues: refined }, { includePartial: false });
+
+  assert.deepEqual(display.map((cue) => cue.cueId), ['cue-1', 'cue-2', 'cue-3']);
+  assert.equal(display[0].sourceText, '修正版原文');
+  assert.equal(display[1].sourceText, rawCues[1].sourceText);
+});
+
 test('live display hides an unpaired translation partial without source text', () => {
   assert.deepEqual(cueListForDisplay({
     finalCues: [],

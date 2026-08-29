@@ -1053,6 +1053,9 @@ function App() {
     if (activeSession !== reconnectingSession) {
       await activeSession?.stop().catch(() => {});
     }
+    // A stop can synchronously enqueue terminal Cue events. Drain them before
+    // invalidating the callback generation so the final live view is complete.
+    flushQueuedLiveCueEvents();
     invalidateLiveSessionCallbacks();
     liveCueUpdatesAllowedRef.current = false;
     await finalizePendingTranscriptItemsForStop();
@@ -3830,12 +3833,25 @@ function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
   const [error, setError] = useState('');
   const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(560);
   const viewportRef = useRef(null);
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
   const latencySamplesRef = useRef([]);
-  const rowHeight = 88;
-  const viewportHeight = 560;
+  const rowHeight = 116;
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
+    const updateViewportHeight = () => {
+      const nextHeight = Math.round(viewport.getBoundingClientRect().height);
+      if (nextHeight > 0) setViewportHeight(nextHeight);
+    };
+    updateViewportHeight();
+    const observer = new ResizeObserver(updateViewportHeight);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [detail]);
 
   useEffect(() => {
     const identifier = token || code;
@@ -3915,49 +3931,53 @@ function MeetingViewerPage({ token, code }) {
   const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 6);
   const visibleCues = cues.slice(startIndex, startIndex + visibleCount);
 
-  function jumpToLatest() {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    viewport.scrollTo({ top: Math.max(0, cues.length * rowHeight - viewportHeight), behavior: 'smooth' });
-  }
-
   return (
     <PublicSessionLayout
       className="live-viewer-page meeting-viewer-page"
-      title={detail?.meeting?.name || 'Meeting Viewer'}
-      subtitle="唯讀會議字幕 · 歷史內容"
-      status={detail?.meeting?.status || '載入中'}
+      title="即時字幕"
+      subtitle={detail?.meeting?.name || '會議字幕觀看'}
     >
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
       {detail ? (
         <section className="viewer-cue-panel" aria-label="Meeting 完整字幕">
           <div className="viewer-cue-header">
-            <div><strong>{detail.meeting?.name || '未命名會議'}</strong><span>{cues.length} 段字幕</span></div>
-            <button className="button secondary" type="button" onClick={jumpToLatest}>回到最新</button>
+            <div>
+              <p className="viewer-cue-eyebrow">MEETING</p>
+              <h2>{detail.meeting?.name || '未命名會議'}</h2>
+            </div>
           </div>
           {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : (
-            <div
-              ref={viewportRef}
-              className="viewer-cue-viewport"
-              style={{ height: viewportHeight }}
-              onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-              data-testid="meeting-viewer-cue-viewport"
-            >
-              <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
-                {visibleCues.map((cue, index) => (
-                  <article
-                    className="viewer-cue-row"
-                    key={cue.cueId || `${cue.sequence}-${startIndex + index}`}
-                    style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }}
-                    data-testid="meeting-viewer-cue-row"
-                  >
-                    <span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span>
-                    <div><p className="viewer-cue-source">{cue.sourceText || '—'}</p><p className="viewer-cue-translation">{cue.translatedText || '—'}</p></div>
-                  </article>
-                ))}
+            <>
+              <div className="viewer-cue-columns" aria-hidden="true">
+                <span>輸入／原文</span>
+                <span>翻譯</span>
               </div>
-            </div>
+              <div
+                ref={viewportRef}
+                className="viewer-cue-viewport"
+                onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+                data-testid="meeting-viewer-cue-viewport"
+                role="log"
+                aria-live="polite"
+                aria-label="即時字幕列表"
+              >
+                <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
+                  {visibleCues.map((cue, index) => (
+                    <article
+                      className="viewer-cue-row"
+                      key={cue.cueId || `${cue.sequence}-${startIndex + index}`}
+                      style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }}
+                      data-testid="meeting-viewer-cue-row"
+                    >
+                      <div className="viewer-cue-row-meta"><span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span></div>
+                      <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div>
+                      <div className="viewer-cue-translation"><p>{cue.translatedText || '—'}</p></div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </>
           )}
         </section>
       ) : null}

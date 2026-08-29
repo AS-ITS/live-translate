@@ -63,6 +63,7 @@ import {
   canExportSavedSession
 } from './lib/sessionRecordExport.js';
 import { canExportTranscript } from './lib/transcriptExport.js';
+import { meetingExportSources } from './lib/meetingTranscriptExport.js';
 import {
   canExportCues,
   wrapSubtitleText
@@ -5130,7 +5131,8 @@ function MeetingExportSection({ detail, detailError = '', onRetry }) {
   if (!detail) return <MeetingDetailState title="無法取得匯出內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
 
   const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
-  const finalCues = Array.isArray(detail.cues) ? detail.cues : [];
+  const exportSources = meetingExportSources(detail, meetingExportFormat);
+  const finalCues = exportSources.cues;
   const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
   const canDownload = meetingExportFormat !== 'txt' && finalCues.length > 0
     ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
@@ -5171,10 +5173,11 @@ function MeetingDetail({ detail, detailError = '', activeSection = 'overview', o
     () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
     [detail?.transcriptItems]
   );
-  const finalCues = useMemo(
-    () => Array.isArray(detail?.cues) ? detail.cues : [],
-    [detail?.cues]
+  const exportSources = useMemo(
+    () => meetingExportSources(detail, meetingExportFormat),
+    [detail, meetingExportFormat]
   );
+  const finalCues = exportSources.cues;
   const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
   useEffect(() => {

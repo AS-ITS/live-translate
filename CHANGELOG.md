@@ -1719,6 +1719,8 @@ These items are intentionally deferred:
   remain valid after backend restart.
 # Unreleased
 
+- 修正會議紀錄匯出只使用部分 Final Cue，導致下載的 TXT／字幕內容少於畫面顯示內容的問題。TXT 現在會保留整場 durable transcript；不完整的 Cue 會安全回退至逐字稿匯出。
+
 - 更新唯讀 Meeting Viewer，改為截圖風格的滿版白底字幕工作區，只保留 Header、會議名稱與即時字幕，並使用板岩藍強調色。
 
 - 修正長會議即時字幕在部分字幕完成潤飾後隱藏其他已錄製內容的問題。潤飾結果現在只覆蓋相同 Cue，尚未潤飾的原始字幕仍會完整顯示。

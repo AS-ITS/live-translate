@@ -28,7 +28,7 @@ import { createSessionRetranslationApiClient } from './lib/sessionRetranslationA
 import { createGlossaryApiClient } from './lib/glossaryApiClient.js';
 import { selectedMeetingGlossaryEntries } from './lib/meetingGlossary.js';
 import { createMeetingManagementApiClient } from './lib/meetingManagementApiClient.js';
-import { createDeadLetterQueueApiClient } from './lib/deadLetterQueueApiClient.js';
+import { createDeadLetterQueueApiClient } from './features/deadLetterQueue/deadLetterQueueApiClient.js';
 import {
   filterMeetingManagementItems,
   meetingManagementLastUpdated,
@@ -112,14 +112,14 @@ import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFrom
 import { MeetingLayout, MeetingSettingsLayout, PublicSessionLayout } from './layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from './pages/meetings/MeetingSettingsPage.jsx';
 import { MeetingViewerPage } from './pages/viewer/MeetingViewerPage.jsx';
+import { DeadLetterQueuePage } from './pages/admin/DeadLetterQueuePage.jsx';
 import { GlobalGlossaryPage } from './pages/glossary/GlobalGlossaryPage.jsx';
 import { TranslationHistoryPage } from './pages/history/TranslationHistoryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from './pages/live/LiveRecordingPage.jsx';
-import { LiveCuePanel as LiveCuePanelView } from './pages/live/LiveCuePanel.jsx';
-import { applyCompletedRefinementOutputs } from './pages/live/liveRecordingController.js';
-import { DeadLetterQueuePanel } from './pages/admin/DeadLetterQueuePanel.jsx';
-import { AudioArtifactDownloads } from './pages/history/AudioArtifactDownloads.jsx';
-import { RetranslationProgress } from './pages/history/RetranslationProgress.jsx';
+import { LiveCuePanel as LiveCuePanelView } from './features/live/LiveCuePanel.jsx';
+import { applyCompletedRefinementOutputs } from './features/live/liveRecordingController.js';
+import { AudioArtifactDownloads } from './features/history/AudioArtifactDownloads.jsx';
+import { RetranslationProgress } from './features/history/RetranslationProgress.jsx';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時字幕。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時字幕多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
@@ -3141,6 +3141,29 @@ function App() {
   if (page === 'record') {
     const recordInfo = pageInfoFromLocation();
     return <RecorderPage token={recordInfo.shareToken} code={recordInfo.shareCode} />;
+  }
+
+  if (page === 'dead-letter-queue') {
+    return (
+      <MeetingLayout
+        managementShell
+        title="Dead-letter queue"
+        titleId="dead-letter-queue-title"
+        subtitle="管理失敗的翻譯工作並安全地重新排程。"
+        headerAction={<a className="button secondary meeting-header-action" href="#meetings">返回會議管理</a>}
+      >
+        <DeadLetterQueuePage
+          items={deadLetterQueue.items}
+          size={deadLetterQueue.size}
+          isLoading={isLoadingDeadLetterQueue}
+          loadError={deadLetterQueueLoadError}
+          notice={deadLetterQueueNotice}
+          replayingExecutionId={replayingDeadLetterExecutionId}
+          onReplay={replayDeadLetterItem}
+          onRefresh={refreshDeadLetterQueue}
+        />
+      </MeetingLayout>
+    );
   }
 
   if (page === 'meeting-settings') {

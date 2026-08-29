@@ -469,7 +469,16 @@ Sessions retain the existing compatibility read model and exporter.
 - The backend should not log secrets, raw audio, or transcript content.
 - The backend should not proxy, store, or inspect live audio streams in the MVP.
 
-## Suggested Project Structure
+## Frontend Project Structure
+
+Route pages are kept in `src/pages/`. Capability-specific frontend code is
+kept in `src/features/`, including feature UI, API clients, and browser-side
+orchestration. Cross-feature presentational components belong in
+`src/components/`; only genuinely shared pure helpers belong in `src/lib/`.
+Backend-facing business workflows remain in `src/application/`, domain rules
+in `src/domain/`, and external adapters in `src/infrastructure/`.
+
+The current frontend structure follows this pattern:
 
 ```text
 .
@@ -484,6 +493,18 @@ Sessions retain the existing compatibility read model and exporter.
 │   ├── languages.js
 │   └── tokenService.js
 ├── src/
+│   ├── components/
+│   ├── features/
+│   │   ├── deadLetterQueue/
+│   │   ├── history/
+│   │   └── live/
+│   ├── pages/
+│   │   ├── admin/
+│   │   ├── glossary/
+│   │   ├── history/
+│   │   ├── live/
+│   │   ├── meetings/
+│   │   └── viewer/
 │   ├── lib/
 │   │   ├── audio.js
 │   │   ├── languages.js

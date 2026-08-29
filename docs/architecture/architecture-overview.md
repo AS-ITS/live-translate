@@ -66,9 +66,11 @@ per-user identity or permission system.
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
-`main.jsx` application orchestration, and page components under `src/pages/`
-that own route-level composition including the independent `LiveRecordingPage`,
-and a Gemini/browser-specific
+`main.jsx` application orchestration, route-level page components under
+`src/pages/`, and capability-specific frontend modules under `src/features/`.
+Pages own route boundaries while feature modules own feature UI, API clients,
+and browser-side orchestration. The independent `LiveRecordingPage` and
+Gemini/browser-specific
 `LiveTranslateSession`. Hash route parsing is isolated in
 `src/app/routes.js`; shared application and public-session shells are provided
 by `src/layouts/AppLayout.jsx`. These layout components own presentation
@@ -853,6 +855,7 @@ them.
 | ------ | -------------- | ------------ |
 | `main.jsx` | UI orchestration, session composition, history/detail wiring, reconnect adapter | Gemini SDK internals, repository implementation, export formatting rules |
 | `src/pages/live/LiveRecordingPage.jsx` | Independent live-recording page surface and route boundary | Session lifecycle implementation, repository persistence, Gemini SDK internals |
+| `src/features/*` | Capability-specific frontend UI, API clients, and browser-side feature orchestration | Route parsing, backend domain rules, unrelated feature state |
 | `src/app/routes.js` | Hash route parsing and canonical URL normalization | Session lifecycle, data fetching, rendering |
 | `src/layouts/AppLayout.jsx` | Shared application, meeting, and public-session shells | Feature state, API calls, Session lifecycle |
 | `SessionApplicationService` | Phase 2B target session use-case boundary for create/start/reconnect/stop/complete/fail/list/detail | React rendering, Gemini SDK internals, legacy `SessionRecord` storage shape |

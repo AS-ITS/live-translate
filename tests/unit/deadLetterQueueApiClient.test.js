@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createDeadLetterQueueApiClient } from '../../src/lib/deadLetterQueueApiClient.js';
+import { createDeadLetterQueueApiClient } from '../../src/features/deadLetterQueue/deadLetterQueueApiClient.js';
 
 test('lists with the access token and returns the complete payload', async () => {
   const calls = [];

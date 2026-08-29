@@ -61,3 +61,11 @@ test('meeting viewer routes preserve token and short code identifiers', async ()
   assert.equal(pageInfoFromLocation().shareCode, '5BRGBZ27');
   assert.equal(canonicalHashForLocation(), '#viewer?code=5BRGBZ27');
 });
+
+test('dead-letter queue route resolves to the administration page', async () => {
+  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
+
+  setHash('#dead-letter-queue');
+  assert.equal(pageInfoFromLocation().page, 'dead-letter-queue');
+  assert.equal(canonicalHashForLocation(), '#dead-letter-queue');
+});

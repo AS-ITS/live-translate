@@ -6,7 +6,7 @@ export function DeadLetterQueuePanel({ items, size, isLoading, loadError, notice
     <div className="dead-letter-queue-panel">
       <div className="history-header">
         <div>
-          <h2 id="dead-letter-queue-page-title">Dead-letter queue</h2>
+          <h2>Dead-letter queue</h2>
           <p className="history-description">受保護的失敗翻譯工作管理頁面；此頁只透過 #dead-letter-queue 直接進入。</p>
         </div>
         <button className="button secondary" type="button" onClick={onRefresh} disabled={isLoading}>

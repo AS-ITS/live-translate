@@ -1,4 +1,4 @@
-import { authenticatedFetch } from './accessToken.js';
+import { authenticatedFetch } from '../../lib/accessToken.js';
 
 export function createDeadLetterQueueApiClient({ fetchImpl = globalThis.fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('dead-letter queue API client requires fetchImpl to be a function.');

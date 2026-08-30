@@ -102,8 +102,8 @@ The MVP includes:
 - A Meeting can be created and configured before recording. The creator can set
   its name, source/target languages, meeting glossary, translated-audio
   playback, and original-audio recording settings in the independent Meeting
-  Settings page before generating Viewer and Recorder entry links and QR codes;
-  opening either link does not request a
+  Settings page before generating a Viewer entry link and QR code; opening the
+  link does not request a
   microphone or create a live Session until the user explicitly starts
   recording.
 - Active recording Sessions do not expose a control for creating new shares.
@@ -139,15 +139,15 @@ Meeting share flow:
 
 1. The user opens Meeting Management and creates a Meeting draft.
 2. The user sets the meeting name, source/target languages, and meeting glossary.
-3. The user saves the settings and generates a recorder entry link and QR code.
-4. A recipient opens the entry link and sees a preparation page.
-5. The recipient explicitly prepares and starts recording.
+3. The user saves the settings and generates a Viewer entry link and QR code.
+4. A recipient opens the Viewer entry link and reads the meeting output.
+5. Recording is started from the authenticated Live workspace.
 6. Only then does the backend activate the Meeting, create the first Session, and the browser request
   microphone access and connect to Gemini Live API.
 
 Meeting creation and editing use a dedicated settings route and layout. The
 settings page is separate from the Meeting Management list and automatically
-creates permanent Viewer and Recorder shares after a new Meeting is saved.
+creates a permanent Viewer share after a new Meeting is saved.
 Share creation retries up to three times; a failed share does not roll back the
 saved Meeting.
 

@@ -2,9 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   compactTranslationHistoryForDetail,
-  mergeRetranslationHistoryIntoDetail,
-  removeRetranslationOutputFromDetail,
-  retryLineagesForExecutions
+  mergeRetranslationHistoryIntoDetail
 } from '../../src/lib/sessionTranslationHistory.js';
 
 test('compacts missing and malformed translation history into stable arrays', () => {
@@ -13,21 +11,6 @@ test('compacts missing and malformed translation history into stable arrays', ()
     outputs: [],
     executions: [{ id: 'execution-1' }]
   });
-});
-
-test('groups retry executions by request ID and sorts each lineage chronologically', () => {
-  const lineages = retryLineagesForExecutions([
-    { id: 'retry-1', requestId: 'request-1', createdAt: '2026-08-10T02:00:00.000Z' },
-    { id: 'request-2-execution', requestId: 'request-2', createdAt: '2026-08-10T01:00:00.000Z' },
-    { id: 'original-1', translationRequestId: 'request-1', createdAt: '2026-08-10T01:00:00.000Z' },
-    { id: 'legacy-execution', createdAt: '2026-08-10T03:00:00.000Z' }
-  ]);
-
-  assert.deepEqual(lineages.map(({ requestId, executions }) => [requestId, executions.map(({ id }) => id)]), [
-    ['request-1', ['original-1', 'retry-1']],
-    ['request-2', ['request-2-execution']],
-    [null, ['legacy-execution']]
-  ]);
 });
 
 test('merges authoritative history while formal data replaces the same legacy output', () => {
@@ -86,7 +69,7 @@ test('projects polished outputs into a readable article and preserves the latest
   });
 });
 
-test('does not replace detail without authoritative history and removes outputs immutably', () => {
+test('does not replace detail without authoritative history', () => {
   const detail = {
     id: 'session-1',
     translationHistory: {
@@ -96,9 +79,5 @@ test('does not replace detail without authoritative history and removes outputs 
   };
 
   assert.strictEqual(mergeRetranslationHistoryIntoDetail(detail, null), detail);
-  const result = removeRetranslationOutputFromDetail(detail, 'output-1');
-
-  assert.deepEqual(result.translationHistory, { outputs: [{ id: 'output-2', translatedText: 'two' }], executions: [{ id: 'execution-1' }] });
-  assert.equal(result.polishedArticle.status, 'empty');
   assert.deepEqual(detail.translationHistory.outputs, [{ id: 'output-1', translatedText: 'one' }, { id: 'output-2', translatedText: 'two' }]);
 });

@@ -13,31 +13,8 @@ test('live recording routes resolve to the independent page', async () => {
   assert.equal(canonicalHashForLocation(), '#live?meetingId=meeting-1');
 
   setHash('#live-recording?meetingId=meeting-1');
-  assert.equal(canonicalHashForLocation(), '#live?meetingId=meeting-1');
-});
-
-test('translation history routes preserve record selection and content section', async () => {
-  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
-
-  setHash('#translation-history?recordType=session&recordId=session-1&section=translation');
-  assert.equal(pageInfoFromLocation().page, 'translation-history');
-  assert.equal(pageInfoFromLocation().recordType, 'session');
-  assert.equal(pageInfoFromLocation().recordId, 'session-1');
-  assert.equal(pageInfoFromLocation().historySection, 'translation');
-  assert.equal(canonicalHashForLocation(), '#translation-history?recordType=session&recordId=session-1&section=translation');
-
-  setHash('#history?recordType=meeting&recordId=meeting-1&section=source');
-  assert.equal(pageInfoFromLocation().page, 'translation-history');
-  assert.equal(pageInfoFromLocation().recordType, 'meeting');
-  assert.equal(pageInfoFromLocation().recordId, 'meeting-1');
-  assert.equal(pageInfoFromLocation().historySection, 'source');
-  assert.equal(canonicalHashForLocation(), '#translation-history?recordType=meeting&recordId=meeting-1&section=source');
-
-  setHash('#translation-history?recordType=meeting&recordId=meeting-1&section=overview');
-  assert.equal(pageInfoFromLocation().recordType, 'meeting');
-  assert.equal(pageInfoFromLocation().recordId, 'meeting-1');
-  assert.equal(pageInfoFromLocation().historySection, 'overview');
-  assert.equal(canonicalHashForLocation(), '#translation-history?recordType=meeting&recordId=meeting-1&section=overview');
+  assert.equal(pageInfoFromLocation().page, 'meetings');
+  assert.equal(canonicalHashForLocation(), '#meetings');
 });
 
 test('meeting detail routes stay on the standalone record page', async () => {
@@ -53,6 +30,16 @@ test('meeting detail routes stay on the standalone record page', async () => {
   assert.equal(canonicalHashForLocation(), '#meeting-detail?meetingId=meeting-1&from=meetings');
 });
 
+test('removed routes fall back to meeting management', async () => {
+  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
+
+  for (const hash of ['#history', '#meeting', '#retranslate', '#live-recording', '#translation-history', '#watch', '#record', '#dead-letter-queue']) {
+    setHash(hash);
+    assert.equal(pageInfoFromLocation().page, 'meetings');
+    assert.equal(canonicalHashForLocation(), '#meetings');
+  }
+});
+
 test('meeting viewer routes preserve token and short code identifiers', async () => {
   const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
 
@@ -60,12 +47,4 @@ test('meeting viewer routes preserve token and short code identifiers', async ()
   assert.equal(pageInfoFromLocation().page, 'viewer');
   assert.equal(pageInfoFromLocation().shareCode, '5BRGBZ27');
   assert.equal(canonicalHashForLocation(), '#viewer?code=5BRGBZ27');
-});
-
-test('dead-letter queue route resolves to the administration page', async () => {
-  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
-
-  setHash('#dead-letter-queue');
-  assert.equal(pageInfoFromLocation().page, 'dead-letter-queue');
-  assert.equal(canonicalHashForLocation(), '#dead-letter-queue');
 });

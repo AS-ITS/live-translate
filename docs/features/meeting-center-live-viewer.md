@@ -83,14 +83,14 @@ remain in the toolbar.
 ### Independent Meeting pages
 
 Setting owns Meeting creation/editing, glossary and audio settings, plus
-Viewer／Recorder share links and QR codes. Live owns recording and live Cue
+Viewer share links and QR codes. Live owns recording and live Cue
 controls. History Detail owns saved Meeting reading and export. The public
 Viewer owns read-only historical and live Cue rendering through a Viewer share.
 Completed Meeting actions open `#meeting-detail?meetingId=<id>&from=meetings`.
 
-Translation History remains an independent `#translation-history` page for
-session records; completed Meeting actions open the single Meeting record page
-at `#meeting-detail?meetingId=<id>&from=meetings`.
+Translation History is no longer a standalone route. Completed Meeting actions
+open the single Meeting record page at
+`#meeting-detail?meetingId=<id>&from=meetings`.
 The standalone Meeting record uses the same page-card shell as the Global
 Glossary page; its page header owns the title and return action.
 Existing persisted
@@ -112,14 +112,11 @@ Viewer pages. Viewer share creation and QR code management remain in the
 Meeting Settings page; the public Viewer is the page opened by participants
 through `#viewer?code=<shortCode>`.
 
-Legacy routes are compatibility redirects: `#live` goes to Meeting Management,
-`#live?meetingId=...` goes to that Meeting's Live Subtitles tab, `#history` goes
-to `#translation-history`, `#retranslate` goes to Meeting Management, and
-`#glossary` opens the global glossary panel from Meeting Management. Existing
-re-translation data remains readable by the backend and is not deleted. A
-legacy live deep link may open the Live Subtitles tab for a `created` Meeting
-so existing start flows remain reachable; the Meeting list still uses the
-edit/start primary action for drafts.
+Removed legacy hashes such as `#history`, `#retranslate`, `#live-recording`,
+`#translation-history`, `#watch`, `#record`, and `#dead-letter-queue` safely
+fall back to `#meetings`. Existing re-translation and DLQ data remains readable
+by backend services and is not deleted. `#glossary` remains a supported entry
+that opens the global glossary panel from Meeting Management.
 
 ## Glossary Boundaries
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 移除已被目前 Meeting UI 取代的 `#translation-history`、`#watch`、`#record` 與 `#dead-letter-queue` 前端路由；這些舊連結現在回到 `#meetings`。Meeting Settings 僅保留 Viewer 分享入口，翻譯紀錄改由 Meeting 管理與單一會議紀錄頁進入；後端資料與 API 未刪除。
+
 - 將會議 UI 整理為獨立 Setting、History Detail、Live 與 Viewer 頁面；公開 Viewer 的 `#viewer?code=...` 顯示、SSE 即時字幕與重連邏輯已從 `main.jsx` 拆出，分享連結管理保留在 Setting 頁面。
 
 - 建立會議並產生分享卡片後，設定頁會自動捲動到最下方操作列，讓使用者能在畫面中看到分享內容與「儲存變更」按鈕；編輯既有會議不會自動跳轉。
@@ -611,6 +613,11 @@
 ## Unreleased
 
 ### Changed
+
+- Simplified `main.jsx` by removing the unused saved-session retranslation UI and
+  old route compatibility layer. Saved retranslation backend contracts and live
+  subtitle correction remain available; removed hashes now fall back to
+  `#meetings`.
 
 - Original speaker audio recording now defaults off and can be enabled before
   starting a live session; disabling it still allows live translation while

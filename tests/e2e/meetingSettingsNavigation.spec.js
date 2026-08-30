@@ -115,7 +115,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.locator('.meeting-settings-step')).toHaveCount(5);
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
   await expect(page.locator('.meeting-share-results')).toBeVisible();
-  await expect(page.locator('.share-result')).toHaveCount(2);
+  await expect(page.locator('.share-result')).toHaveCount(1);
   await expect.poll(() => page.evaluate(() => {
     const submitButton = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('儲存變更'));
     const section = document.querySelector('.meeting-share-results');
@@ -163,7 +163,7 @@ test('automatically creates shares when an existing meeting has no links', async
   await page.goto('/#meeting-settings?mode=edit&meetingId=meeting-2');
 
   await expect(page.locator('.meeting-share-results')).toBeVisible();
-  await expect(page.locator('.share-result')).toHaveCount(2);
+  await expect(page.locator('.share-result')).toHaveCount(1);
   await expect(page.getByRole('button', { name: '建立觀看連結' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
 });
@@ -176,19 +176,17 @@ test('restores Meeting share QR codes and links after reloading the edit page', 
   } } }));
   await page.route(/\/api\/meetings\/meeting-3\/shares$/, async (route) => {
     if (route.request().method() === 'GET') return route.fulfill({ json: { shares: [
-      { id: 'share-viewer', role: 'viewer', codeUrl: '#viewer?code=VIEWER2' },
-      { id: 'share-recorder', role: 'recorder', codeUrl: '#record?code=RECORDER2' }
+      { id: 'share-viewer', role: 'viewer', codeUrl: '#viewer?code=VIEWER2' }
     ] } });
     return route.fallback();
   });
 
   await page.goto('/#meeting-settings?mode=edit&meetingId=meeting-3');
-  await expect(page.locator('.share-result')).toHaveCount(2);
+  await expect(page.locator('.share-result')).toHaveCount(1);
   await expect(page.locator('.share-url a').nth(0)).toContainText('#viewer?code=VIEWER2');
-  await expect(page.locator('.share-url a').nth(1)).toContainText('#record?code=RECORDER2');
-  await expect(page.locator('.share-result img')).toHaveCount(2);
+  await expect(page.locator('.share-result img')).toHaveCount(1);
 
   await page.reload();
-  await expect(page.locator('.share-result')).toHaveCount(2);
-  await expect(page.locator('.share-result img')).toHaveCount(2);
+  await expect(page.locator('.share-result')).toHaveCount(1);
+  await expect(page.locator('.share-result img')).toHaveCount(1);
 });

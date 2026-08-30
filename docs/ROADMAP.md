@@ -21,9 +21,9 @@ controlled manual Gemini validation.
 Issue #29 Milestone 1 is completed: `#meetings` is the canonical Meeting
 Management home with client-side name/status filtering and status-aware actions.
 Issue #29 Milestone 2 is completed: status-aware Meeting Workspace tabs now
-organize live subtitles, glossary, export, and completed Meeting history. The
-legacy `#live`, `#history`, and related routes now redirect to the unified
-Meeting surfaces. Issue #29 Milestone 3 is completed: global glossary selections
+organize live subtitles, glossary, export, and completed Meeting history. Removed
+legacy hashes now fall back to `#meetings`, while the supported `#live` route
+continues to open live subtitles. Issue #29 Milestone 3 is completed: global glossary selections
 and Meeting-private glossary entries are isolated, persisted in Meeting and
 Segment snapshots, and private entries are excluded from Viewer payloads.
 Issue #29 Milestone 4 is completed: Meeting-scoped Viewer shares support token,
@@ -33,8 +33,8 @@ published through an independent authenticated path, Viewer SSE supports
 cursor replay and gap recovery, and deterministic latency SLA validation is in
 place. Cross-process delivery and durable replay remain deferred.
 Issue #29 UI consolidation is completed: Meeting Management is the only primary
-entry, legacy feature routes redirect into Meeting Management or a Meeting
-Workspace, and completed Meetings may revoke existing Viewer shares without
+entry, removed feature routes fall back to Meeting Management, and completed
+Meetings may revoke existing Viewer shares without
 changing Recorder or persistence security boundaries.
 
 Execution status push is now available through a process-local authenticated
@@ -45,10 +45,10 @@ DLQ inspection and single-item replay API is completed as a backend-only
 follow-up. Authenticated operators can list the full file-backed DLQ and create
 new queued executions without changing original failed records.
 
-DLQ management UI is completed as a direct `#dead-letter-queue` page. It uses
-the existing shared Access Token, lists the complete FIFO DLQ, supports
-confirmed single-item replay with original-item retention, and does not add a
-main-navigation entry or change queue/worker behavior.
+The DLQ inspection/replay UI and the legacy standalone history, watch, and
+recorder pages have been removed from the frontend. The DLQ API, translation
+history read model, and Recorder backend services remain available to support
+existing internal capabilities without exposing those legacy page routes.
 
 Retry lineage UI is completed in History detail. Executions are grouped by
 their existing translation request identity and shown chronologically with
@@ -176,8 +176,8 @@ unexpected close or token expiration. Reload resume is completed for
 `#live?meetingId=...`: the live UI restores Segment checkpoints into the visible
 transcript and lets the user manually continue in the next recovered Segment.
 Long Meeting WP6 meeting history/detail and export is completed: users can open
-the unified `#history` translation history page, see regular Sessions and Long
-Meeting summaries in one chronological list, inspect Segment timelines and
+Meeting history from Meeting Management, see regular Sessions and Long Meeting
+summaries in one chronological list, inspect Segment timelines and
 statuses, browse per-Segment source/translation content, view whole-meeting
 source transcript and translation article content, and export whole-meeting
 TXT/SRT/VTT without changing the existing single Session export path.

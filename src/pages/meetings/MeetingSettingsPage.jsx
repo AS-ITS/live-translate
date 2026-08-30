@@ -127,8 +127,9 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       .map((entry) => entry.id));
     setPrivateGlossaryEntries(Array.isArray(current.privateGlossaryEntries) ? current.privateGlossaryEntries : []);
     void managementClient.listShares(current.id).then(async (loadedShares) => {
-      setShares(loadedShares);
-      const displayableShares = await Promise.all(loadedShares.filter((share) => share.codeUrl).map(prepareShareForDisplay));
+      const viewerShares = loadedShares.filter((share) => share.role === 'viewer');
+      setShares(viewerShares);
+      const displayableShares = await Promise.all(viewerShares.filter((share) => share.codeUrl).map(prepareShareForDisplay));
       setCreatedShares(displayableShares);
       if (displayableShares.length === 0 && current.status !== 'completed') void createSharesWithRetry(current.id);
       else setShareState('ready');
@@ -182,7 +183,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       setShareLayoutReady(false);
       setShareState('loading');
       const results = [];
-      const roles = ['viewer', 'recorder'];
+      const roles = ['viewer'];
       for (const role of roles) {
         let lastError = null;
         for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -367,15 +368,15 @@ function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRe
         <div>
           <p className="eyebrow">STEP 5</p>
           <h3 id="meeting-share-results-title">分享會議</h3>
-          <p className="meeting-settings-card-description">觀看連結為唯讀；錄音連結會在參與者明確開始後才使用麥克風。</p>
+          <p className="meeting-settings-card-description">觀看連結提供會議字幕的唯讀檢視。</p>
         </div>
         <span className="meeting-settings-card-number">5</span>
       </div>
       {state === 'loading' ? <p>正在產生分享連結…</p> : null}
       {state === 'error' ? <><p className="error-message">部分分享連結尚未產生。</p><button className="button secondary" type="button" onClick={onRetry}>重新產生分享</button></> : null}
-      {shares.length > 0 ? <div className="meeting-share-links">{shares.map((item) => <article className="share-result" key={item.role}><h4>{item.role === 'viewer' ? '觀看連結' : '錄音連結'}</h4><img src={item.qrDataUrl} alt={`${item.role === 'viewer' ? '觀看' : '錄音'}入口 QR Code`} width="180" height="180" /><p className="share-url"><a href={item.absoluteUrl}>{item.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => onCopy(item.absoluteUrl)}><Copy size={15} aria-hidden="true" />複製連結</button></article>)}</div> : null}
-      {shares.length === 0 && state === 'ready' ? <p className="export-note">尚未產生新的分享連結。</p> : null}
-      {existingShares.length > 0 ? <ul className="share-list">{existingShares.map((share) => <li key={share.id}><span>{share.role === 'viewer' ? '觀看連結' : '錄音連結'} · {share.expiresAt ? `到期：${new Date(share.expiresAt).toLocaleString('zh-TW')}` : '永久有效'}</span>{!locked ? <button className="button detail-button danger-button" type="button" onClick={() => onRevokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
+      {shares.length > 0 ? <div className="meeting-share-links">{shares.map((item) => <article className="share-result" key={item.role}><h4>觀看連結</h4><img src={item.qrDataUrl} alt="觀看入口 QR Code" width="180" height="180" /><p className="share-url"><a href={item.absoluteUrl}>{item.absoluteUrl}</a></p><button className="button detail-button" type="button" onClick={() => onCopy(item.absoluteUrl)}><Copy size={15} aria-hidden="true" />複製連結</button></article>)}</div> : null}
+      {shares.length === 0 && state === 'ready' ? <p className="export-note">尚未產生新的觀看連結。</p> : null}
+      {existingShares.length > 0 ? <ul className="share-list">{existingShares.map((share) => <li key={share.id}><span>觀看連結 · {share.expiresAt ? `到期：${new Date(share.expiresAt).toLocaleString('zh-TW')}` : '永久有效'}</span>{!locked ? <button className="button detail-button danger-button" type="button" onClick={() => onRevokeShare(share.id)}>撤銷</button> : null}</li>)}</ul> : null}
     </section>
   );
 }

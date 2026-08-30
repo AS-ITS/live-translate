@@ -86,8 +86,8 @@ records are file-backed and survive backend restart.
 Meeting-first recorder sharing creates a configurable Meeting draft and its
 first empty Segment before recording. The creator saves the name, languages,
 meeting glossary, translated-audio playback, and original-audio recording
-settings in the independent Meeting Settings layout before issuing Viewer and
-Recorder share links and QR codes; the
+settings in the independent Meeting Settings layout before issuing a Viewer
+share link and QR code; the
 shared recorder page does not activate the Meeting, create a Session, claim a
 lease, or request microphone access until the recipient explicitly starts
 recording. Editing settings during recording takes effect at the next Segment

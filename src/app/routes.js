@@ -1,18 +1,10 @@
 export const FEATURE_PAGES = new Set([
   'live',
-  'live-recording',
-  'history',
-  'translation-history',
   'meetings',
-  'meeting',
   'meeting-settings',
   'meeting-detail',
-  'retranslate',
   'glossary',
-  'watch',
-  'viewer',
-  'record',
-  'dead-letter-queue'
+  'viewer'
 ]);
 
 export function pageFromLocation() {
@@ -23,17 +15,13 @@ export function pageInfoFromLocation() {
   const rawHash = window.location.hash.replace('#', '');
   const [pageName, queryString = ''] = rawHash.split('?');
   const params = new URLSearchParams(queryString);
-  const requestedPage = FEATURE_PAGES.has(pageName) ? pageName : pageName ? 'live' : 'meetings';
+  const requestedPage = FEATURE_PAGES.has(pageName) ? pageName : 'meetings';
   const meetingId = params.get('meetingId') || '';
-  const page = requestedPage === 'live' || requestedPage === 'live-recording'
+  const page = requestedPage === 'live'
     ? 'live-recording'
-    : requestedPage === 'history'
-      ? 'translation-history'
-      : requestedPage === 'retranslate'
-        ? 'meetings'
-        : requestedPage === 'meeting-detail' && meetingId
-          ? 'meeting-detail'
-          : requestedPage === 'meeting' ? 'meeting-settings' : requestedPage;
+    : requestedPage === 'meeting-detail' && meetingId
+      ? 'meeting-detail'
+      : requestedPage;
 
   return {
     page,
@@ -57,16 +45,25 @@ export function canonicalHashForLocation() {
   const [pageName, queryString = ''] = rawHash.split('?');
   const params = new URLSearchParams(queryString);
   const meetingId = params.get('meetingId') || '';
-  if (pageName === 'live' || pageName === 'live-recording') {
+  if (pageName === 'live') {
     return meetingId
       ? `#live?meetingId=${encodeURIComponent(meetingId)}`
       : '#live';
   }
-  if (pageName === 'history') return window.location.hash.replace(/^#history/, '#translation-history');
-  if (pageName === 'retranslate') return '#meetings';
   if (pageName === 'glossary') return '#glossary';
+  if (pageName === 'viewer') {
+    const viewerQuery = params.get('token')
+      ? `token=${encodeURIComponent(params.get('token'))}`
+      : params.get('code')
+        ? `code=${encodeURIComponent(params.get('code'))}`
+        : '';
+    return viewerQuery ? `#viewer?${viewerQuery}` : '#viewer';
+  }
+  if (pageName === 'meeting-settings') {
+    return params.toString() ? `#meeting-settings?${params.toString()}` : '#meeting-settings';
+  }
   if (pageName === 'meeting-detail' && meetingId) {
     return `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=${encodeURIComponent(params.get('from') || 'meetings')}`;
   }
-  return window.location.hash || '#meetings';
+  return '#meetings';
 }

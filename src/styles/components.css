@@ -22,6 +22,25 @@
 .button.secondary:hover:not(:disabled) { background: var(--color-surface-muted); }
 .button.danger-button { border-color: #e7aaa6; background: var(--color-danger-soft); color: var(--color-danger); }
 .button.detail-button { min-width: auto; min-height: 2.5rem; padding-inline: var(--space-3); font-size: var(--text-sm); }
+.dialog-close-button, .global-glossary-modal-header > .icon-button, .glossary-drawer-header > .icon-button, .global-glossary-dialog-header > .icon-button {
+  display: inline-flex;
+  flex: 0 0 2.75rem;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  height: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+}
+.dialog-close-button:hover, .global-glossary-modal-header > .icon-button:hover, .glossary-drawer-header > .icon-button:hover, .global-glossary-dialog-header > .icon-button:hover { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary); }
+.dialog-close-button:disabled, .global-glossary-modal-header > .icon-button:disabled, .glossary-drawer-header > .icon-button:disabled, .global-glossary-dialog-header > .icon-button:disabled { cursor: not-allowed; opacity: .55; }
 .inline-retry { border: 0; padding: 0; background: transparent; color: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
 
 .field { display: grid; gap: var(--space-2); min-width: 0; color: #314152; font-weight: 650; }

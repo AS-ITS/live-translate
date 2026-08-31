@@ -938,6 +938,9 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
     { id: 'abbreviation', label: '縮寫' },
     { id: 'meeting', label: '會議常用語' },
     { id: 'technical', label: '技術名詞' },
+    { id: 'sales', label: '銷售用語' },
+    { id: 'legal', label: '法務用語' },
+    { id: 'customer', label: '客戶名詞' },
     { id: 'other', label: '其他' }
   ];
 
@@ -1033,13 +1036,24 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await page.waitForTimeout(100);
   expect(loadRequests).toEqual({ entries: 1, categories: 1 });
   const glossary = page.locator('.global-glossary');
+  await expect(glossary.locator('.glossary-category-sidebar > button')).toHaveCount(9);
+  await glossary.getByRole('button', { name: '更多分類' }).click();
+  await expect(glossary.locator('.glossary-category-more-menu')).toContainText('客戶名詞');
+  await glossary.locator('.glossary-category-more-menu').getByRole('menuitem', { name: /客戶名詞/ }).click();
+  await glossary.locator('.glossary-category-sidebar').getByRole('button', { name: /全部分類/ }).click();
   await glossary.getByRole('button', { name: '管理分類' }).click();
   const categoryDialog = page.getByRole('dialog', { name: '管理分類' });
+  const categoryCloseButton = categoryDialog.getByRole('button', { name: '關閉分類管理' });
+  await expect(categoryCloseButton).toHaveCSS('width', '44px');
+  await expect(categoryCloseButton).toHaveCSS('height', '44px');
+  await categoryDialog.getByRole('searchbox').fill('法務');
+  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(1);
+  await categoryDialog.getByRole('searchbox').fill('');
   await categoryDialog.getByRole('textbox').fill('專案名詞');
   await categoryDialog.getByRole('button', { name: '新增分類' }).click();
-  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(7);
+  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(10);
   await categoryDialog.getByRole('button', { name: '上移 專案名詞' }).click();
-  await expect(categoryDialog.locator('.category-management-row').nth(5)).toContainText('專案名詞');
+  await expect(categoryDialog.locator('.category-management-row').nth(8)).toContainText('專案名詞');
   expect(requests.filter((request) => request.method === 'PUT' && request.body?.categoryIds).length).toBe(1);
   const projectRow = categoryDialog.locator('.category-management-row').filter({ hasText: '專案名詞' });
   await projectRow.getByRole('button', { name: '編輯' }).click();
@@ -1085,12 +1099,12 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   const finalCategoryDialog = page.getByRole('dialog', { name: '管理分類' });
   page.once('dialog', (dialog) => dialog.accept());
   await finalCategoryDialog.locator('.category-management-row').filter({ hasText: '專案詞彙' }).getByRole('button', { name: '刪除' }).click();
-  await expect(finalCategoryDialog.locator('.category-management-row')).toHaveCount(6);
+  await expect(finalCategoryDialog.locator('.category-management-row')).toHaveCount(9);
   await finalCategoryDialog.getByRole('button', { name: '關閉分類管理' }).click();
 
   expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'PUT', 'POST', 'PUT', 'DELETE', 'DELETE']);
   expect(requests[0].body.label).toBe('專案名詞');
-  expect(requests[1].body.categoryIds[5]).toBe('project');
+  expect(requests[1].body.categoryIds[8]).toBe('project');
   expect(requests[2].body.label).toBe('專案詞彙');
   expect(requests[3].body.scope).toBe('live');
   expect(requests[3].body.category).toBe('project');

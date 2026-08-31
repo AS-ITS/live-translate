@@ -237,6 +237,10 @@
 .glossary-sidebar-heading span, .glossary-category-sidebar small { color: var(--color-text-subtle); }
 .glossary-category-sidebar button { display: flex; align-items: center; justify-content: space-between; min-height: 2.75rem; padding: 0 var(--space-3); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-muted); text-align: left; cursor: pointer; }
 .glossary-category-sidebar button:hover, .glossary-category-sidebar button.is-active { background: var(--color-primary-soft); color: var(--color-primary); font-weight: 700; }
+.glossary-category-more { position: relative; }
+.glossary-category-more-menu { position: absolute; z-index: 2; inset: calc(100% + var(--space-1)) 0 auto; display: grid; min-width: 13rem; max-height: 18rem; padding: var(--space-1); overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-floating); }
+.glossary-category-more-menu button { width: 100%; }
+.glossary-mobile-category { display: none; }
 .glossary-page .glossary-category-sidebar button:hover,
 .glossary-page .glossary-category-sidebar button.is-active { background: var(--color-category-active-bg); color: var(--color-category-active-text); }
 .glossary-page .glossary-category-sidebar button.is-active small { color: var(--color-category-active-count); }
@@ -282,15 +286,21 @@
 .glossary-enabled-toggle small { color: var(--color-text-muted); }
 .global-glossary-dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--color-border); }
 .glossary-controls { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.category-management-dialog { display: block; width: min(calc(100% - 2 * var(--space-6)), 44rem); max-height: calc(100dvh - 2 * var(--space-6)); overflow: auto; }
+.category-management-dialog { display: block; width: min(calc(100% - 2 * var(--space-6)), 44rem); max-height: calc(100dvh - 2 * var(--space-6)); overflow: hidden; }
+.category-management-summary { margin: var(--space-1) 0 0; color: var(--color-text-muted); }
 .category-create-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: var(--space-3); padding: var(--space-4) 0; border-bottom: 1px solid var(--color-border); }
 .category-create-form .field { margin: 0; }
-.category-management-list { display: grid; gap: var(--space-2); padding-top: var(--space-3); }
+.category-management-search { display: grid; gap: var(--space-1); margin: var(--space-3) 0 0; }
+.category-management-search .meeting-toolbar-input { min-height: 2.75rem; }
+.category-management-search input { width: 100%; min-height: 2.75rem; padding: var(--space-2) var(--space-3); border: 0; outline: 0; background: transparent; }
+.category-management-list { display: grid; gap: var(--space-2); max-height: min(52dvh, 30rem); padding: var(--space-3) var(--space-1) var(--space-1) 0; overflow-y: auto; overscroll-behavior: contain; }
 .category-management-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-muted); }
 .category-management-row > span { display: grid; min-width: 0; gap: var(--space-1); }
+.category-management-row > span strong { overflow-wrap: anywhere; }
 .category-management-row small { color: var(--color-text-muted); }
 .category-management-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-1); }
 .category-management-actions .icon-button { min-width: 2.75rem; }
+.category-management-empty { padding: var(--space-6); color: var(--color-text-muted); text-align: center; }
 .glossary-list { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .glossary-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3); border-bottom: 1px solid var(--color-border); }
 .retranslation-page { height: 100%; overflow: hidden; }
@@ -311,9 +321,11 @@
   .global-glossary-filter-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .global-glossary-filter-row .button { grid-column: 1 / -1; width: 100%; }
   .global-glossary-layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-  .glossary-category-sidebar { position: static; order: 1; display: flex; gap: var(--space-1); padding: var(--space-2); overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; }
+  .glossary-category-sidebar { position: static; order: 1; display: flex; gap: var(--space-1); padding: var(--space-2); overflow: visible; }
   .glossary-sidebar-heading { display: none; }
-  .glossary-category-sidebar button { flex: 0 0 auto; white-space: nowrap; }
+  .glossary-category-sidebar > button { flex: 0 0 auto; white-space: nowrap; }
+  .glossary-category-more { flex: 0 0 auto; }
+  .glossary-category-more-menu { inset: calc(100% + var(--space-1)) 0 auto auto; }
   .glossary-card-region { order: 2; }
 }
 @media (min-width: 761px) and (max-width: 880px) { .glossary-card-grid { grid-template-columns: minmax(0, 1fr); } }
@@ -338,10 +350,9 @@
   .global-glossary-filter-row { grid-template-columns: 1fr; }
   .global-glossary-filter-row .button { width: 100%; }
   .glossary-card-grid { grid-template-columns: 1fr; }
-  .glossary-category-sidebar { position: static; order: 2; display: flex; gap: var(--space-1); padding: var(--space-2); overflow-x: auto; }
-  .glossary-sidebar-heading { display: none; }
-  .glossary-category-sidebar button { flex: 0 0 auto; white-space: nowrap; }
-  .glossary-card-region { order: 1; }
+  .glossary-category-sidebar { display: none; }
+  .glossary-mobile-category { display: grid; order: 1; margin: 0; }
+  .glossary-card-region { order: 2; }
   .glossary-card-region-header { align-items: flex-start; flex-direction: column; }
   .global-glossary-dialog { width: calc(100% - 2 * var(--space-3)); max-height: calc(100dvh - 2 * var(--space-3)); padding: var(--space-4); }
   .glossary-form-grid { grid-template-columns: 1fr; }

@@ -932,6 +932,14 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   const requests = [];
   const loadRequests = { entries: 0, categories: 0 };
   let entries = [];
+  let categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'department', label: '部門／職能' },
+    { id: 'abbreviation', label: '縮寫' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'technical', label: '技術名詞' },
+    { id: 'other', label: '其他' }
+  ];
 
   await page.route('**/api/glossary**', async (route) => {
     const request = route.request();
@@ -949,15 +957,41 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ categories: [
-          { id: 'product', label: '產品名稱' },
-          { id: 'department', label: '部門／職能' },
-          { id: 'abbreviation', label: '縮寫' },
-          { id: 'meeting', label: '會議常用語' },
-          { id: 'technical', label: '技術名詞' },
-          { id: 'other', label: '其他' }
-        ] })
+        body: JSON.stringify({ categories })
       });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/glossary/categories') {
+      const body = JSON.parse(request.postData() || '{}');
+      const category = { id: 'project', label: body.label };
+      categories = [...categories, category];
+      requests.push({ method, body });
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ category }) });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/glossary/categories/order') {
+      const body = JSON.parse(request.postData() || '{}');
+      categories = body.categoryIds.map((id) => categories.find((category) => category.id === id));
+      requests.push({ method, body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/glossary/categories/project') {
+      const body = JSON.parse(request.postData() || '{}');
+      categories = categories.map((category) => category.id === 'project' ? { ...category, label: body.label } : category);
+      requests.push({ method, body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ category: categories.find((category) => category.id === 'project') }) });
+      return;
+    }
+
+    if (method === 'DELETE' && url.pathname === '/api/glossary/categories/project') {
+      categories = categories.filter((category) => category.id !== 'project');
+      entries = entries.map((entry) => entry.category === 'project' ? { ...entry, category: 'other' } : entry);
+      requests.push({ method });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ category: categories.find((category) => category.id === 'other'), reassignedEntryCount: 0 }) });
       return;
     }
 
@@ -999,12 +1033,27 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await page.waitForTimeout(100);
   expect(loadRequests).toEqual({ entries: 1, categories: 1 });
   const glossary = page.locator('.global-glossary');
+  await glossary.getByRole('button', { name: '管理分類' }).click();
+  const categoryDialog = page.getByRole('dialog', { name: '管理分類' });
+  await categoryDialog.getByRole('textbox').fill('專案名詞');
+  await categoryDialog.getByRole('button', { name: '新增分類' }).click();
+  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(7);
+  await categoryDialog.getByRole('button', { name: '上移 專案名詞' }).click();
+  await expect(categoryDialog.locator('.category-management-row').nth(5)).toContainText('專案名詞');
+  expect(requests.filter((request) => request.method === 'PUT' && request.body?.categoryIds).length).toBe(1);
+  const projectRow = categoryDialog.locator('.category-management-row').filter({ hasText: '專案名詞' });
+  await projectRow.getByRole('button', { name: '編輯' }).click();
+  await categoryDialog.getByRole('textbox').fill('專案詞彙');
+  await categoryDialog.getByRole('button', { name: '儲存名稱' }).click();
+  await expect(categoryDialog.locator('.category-management-row').filter({ hasText: '專案詞彙' })).toHaveCount(1);
+  await categoryDialog.getByRole('button', { name: '關閉分類管理' }).click();
+  await expect(page.getByText('無法更新分類順序。')).toHaveCount(0);
   await glossary.getByRole('button', { name: '新增詞條' }).click();
   const dialog = page.getByRole('dialog', { name: '新增詞條' });
   await dialog.getByLabel('原文字詞').fill('microphone');
   await dialog.getByLabel('翻譯語言').selectOption('ja');
   await dialog.getByLabel('翻譯內容：ja').fill('Alan speak');
-  await dialog.getByLabel('分類').selectOption('technical');
+  await dialog.getByLabel('分類').selectOption('project');
   await dialog.getByLabel('標籤（以逗號分隔）').fill('audio, product');
   await expect(dialog.getByText('套用範圍')).toHaveCount(0);
   await expect(dialog.locator('select')).toHaveCount(3);
@@ -1032,11 +1081,22 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await page.getByRole('dialog', { name: '編輯詞條' }).getByRole('button', { name: '刪除詞條' }).click();
   await expect(glossary.locator('.glossary-empty')).toBeVisible();
 
-  expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'DELETE']);
-  expect(requests[0].body.scope).toBe('live');
-  expect(requests[0].body.source).toBe('microphone');
-  expect(requests[0].body.tags).toEqual(['audio', 'product']);
-  expect(requests[1].body.scope).toBe('live');
+  await glossary.getByRole('button', { name: '管理分類' }).click();
+  const finalCategoryDialog = page.getByRole('dialog', { name: '管理分類' });
+  page.once('dialog', (dialog) => dialog.accept());
+  await finalCategoryDialog.locator('.category-management-row').filter({ hasText: '專案詞彙' }).getByRole('button', { name: '刪除' }).click();
+  await expect(finalCategoryDialog.locator('.category-management-row')).toHaveCount(6);
+  await finalCategoryDialog.getByRole('button', { name: '關閉分類管理' }).click();
+
+  expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'PUT', 'POST', 'PUT', 'DELETE', 'DELETE']);
+  expect(requests[0].body.label).toBe('專案名詞');
+  expect(requests[1].body.categoryIds[5]).toBe('project');
+  expect(requests[2].body.label).toBe('專案詞彙');
+  expect(requests[3].body.scope).toBe('live');
+  expect(requests[3].body.category).toBe('project');
+  expect(requests[3].body.source).toBe('microphone');
+  expect(requests[3].body.tags).toEqual(['audio', 'product']);
+  expect(requests[4].body.scope).toBe('live');
 });
 
 test.skip('live translation meeting glossary is read-only', async ({ page }) => {

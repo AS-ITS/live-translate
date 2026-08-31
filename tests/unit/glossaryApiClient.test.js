@@ -27,8 +27,8 @@ test('glossary API client lists, creates, updates, and deletes entries', async (
 });
 
 test('glossary API client rejects malformed responses and failed requests', async () => {
-  const client = createGlossaryApiClient({ fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({}) }) });
-  await assert.rejects(client.listEntries(), /HTTP 503/);
+  const client = createGlossaryApiClient({ fetchImpl: async () => ({ ok: false, status: 503, json: async () => ({ error: { code: 'glossary_not_configured', message: '字典未設定。' } }) }) });
+  await assert.rejects(client.listEntries(), (error) => error.status === 503 && error.code === 'glossary_not_configured' && error.message === '字典未設定。');
 
   const malformed = createGlossaryApiClient({ fetchImpl: async () => ok({ entries: {} }) });
   await assert.rejects(malformed.listEntries(), /entries array/);

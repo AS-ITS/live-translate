@@ -1,5 +1,14 @@
 import { authenticatedFetch } from './accessToken.js';
 
+export class GlossaryApiError extends Error {
+  constructor({ status, code, message }) {
+    super(message);
+    this.name = 'GlossaryApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 export function createGlossaryApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('glossary API client requires fetchImpl to be a function.');
   fetchImpl = authenticatedFetch(fetchImpl);
@@ -80,7 +89,18 @@ function buildUrl(baseUrl, path) {
 
 async function assertOkResponse(response) {
   if (!response || typeof response !== 'object') throw new Error('Glossary API request did not return a response.');
-  if (!response.ok) throw new Error(`Glossary API request failed with HTTP ${response.status}.`);
+  if (response.ok) return;
+  let body;
+  try {
+    body = typeof response.json === 'function' ? await response.json() : undefined;
+  } catch {
+    body = undefined;
+  }
+  throw new GlossaryApiError({
+    status: response.status,
+    code: body?.error?.code,
+    message: body?.error?.message || `Glossary API request failed with HTTP ${response.status}.`
+  });
 }
 
 async function parseEntriesResponse(response) {

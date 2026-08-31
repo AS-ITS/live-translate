@@ -245,7 +245,7 @@ function getClientIp(req) {
 
 function isAllowedOrigin(req) {
   const origin = req.headers?.origin;
-  return !origin || origin === ALLOWED_ORIGIN;
+  return !origin || origin === RESOLVED_ORIGIN;
 }
 
 const accessControl = createAccessControl();

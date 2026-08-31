@@ -529,7 +529,8 @@ writes the file.
 persists the order; and `DELETE /api/glossary/categories/:categoryId` deletes a
 category and reassigns its entries to `other`. Labels cannot be blank or
 duplicated, category IDs remain stable after creation, and `other` cannot be
-deleted. Legacy files containing only `entries` are upgraded in memory with the
+deleted. Entry create/update requests may use any ID returned by this endpoint;
+an unknown category ID returns `400 invalid_request`. Legacy files containing only `entries` are upgraded in memory with the
 default categories and are written in the new `{ categories, entries }` shape
 on the next successful mutation.
 

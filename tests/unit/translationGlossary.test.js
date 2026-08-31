@@ -194,6 +194,10 @@ test('glossary categories support stable IDs, ordering, and reassignment on dele
   const deleted = await glossary.deleteCategory('project');
   assert.equal(deleted.reassignedEntryCount, 1);
   assert.equal((await glossary.listEntries())[0].category, 'other');
+  await assert.rejects(
+    glossary.createEntry({ source: 'invalid', translations: { en: 'invalid' }, category: 'project' }),
+    (error) => error.code === 'invalid_request'
+  );
   assert.deepEqual((await glossary.listCategories()).map((category) => category.id), ['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
 });
 

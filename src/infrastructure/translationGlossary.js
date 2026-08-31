@@ -287,7 +287,11 @@ function normalizeMutableEntry(entry, index, categoryIds = new Set(DEFAULT_CATEG
     throw new TypeError(`Translation glossary entry ${index}.tags must be an array of non-empty strings.`);
   }
   const category = entry.category === undefined ? 'other' : entry.category;
-  if (!categoryIds.has(category)) throw new RangeError(`Translation glossary entry ${index}.category is invalid.`);
+  if (!categoryIds.has(category)) {
+    const error = new RangeError(`Translation glossary entry ${index}.category is invalid.`);
+    error.code = 'invalid_request';
+    throw error;
+  }
   const enabled = entry.enabled === undefined ? true : entry.enabled;
   if (typeof enabled !== 'boolean') throw new TypeError(`Translation glossary entry ${index}.enabled must be a boolean.`);
 

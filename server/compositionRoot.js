@@ -451,7 +451,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const translationGlossary = translationGlossaryFactory({
     filePath: translationGlossaryFilePathFor(env),
     fileSystem: translationGlossaryFileSystem,
-    idFactory: () => randomUUID(),
+    idFactory: () => `glossary-${randomUUID()}`,
     clock: () => Date.now()
   });
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')

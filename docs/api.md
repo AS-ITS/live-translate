@@ -520,6 +520,19 @@ writes the file.
 }
 ```
 
+## Glossary category management
+
+`GET /api/glossary/categories` returns the ordered category list. `POST
+/api/glossary/categories` creates a category from `{ "label": "專案名詞" }`;
+`PUT /api/glossary/categories/:categoryId` edits its label;
+`PUT /api/glossary/categories/order` accepts `{ "categoryIds": [...] }` and
+persists the order; and `DELETE /api/glossary/categories/:categoryId` deletes a
+category and reassigns its entries to `other`. Labels cannot be blank or
+duplicated, category IDs remain stable after creation, and `other` cannot be
+deleted. Legacy files containing only `entries` are upgraded in memory with the
+default categories and are written in the new `{ categories, entries }` shape
+on the next successful mutation.
+
 ## `POST /api/glossary/entries`
 
 Creates one manually maintained global glossary entry.

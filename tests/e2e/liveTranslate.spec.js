@@ -930,6 +930,7 @@ test('live recording shows an actionable unselected meeting state', async ({ pag
 
 test('global glossary page creates, edits, and deletes entries', async ({ page }) => {
   const requests = [];
+  const loadRequests = { entries: 0, categories: 0 };
   let entries = [];
 
   await page.route('**/api/glossary**', async (route) => {
@@ -938,7 +939,25 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
     const method = request.method();
 
     if (method === 'GET' && url.pathname === '/api/glossary') {
+      loadRequests.entries += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/glossary/categories') {
+      loadRequests.categories += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ categories: [
+          { id: 'product', label: '產品名稱' },
+          { id: 'department', label: '部門／職能' },
+          { id: 'abbreviation', label: '縮寫' },
+          { id: 'meeting', label: '會議常用語' },
+          { id: 'technical', label: '技術名詞' },
+          { id: 'other', label: '其他' }
+        ] })
+      });
       return;
     }
 
@@ -971,38 +990,53 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
     await route.fallback();
   });
 
-  await page.goto('/');
-  await page.evaluate(() => { window.location.hash = 'glossary'; });
+  await page.goto('/#glossary');
   await expect(page).toHaveURL(/#glossary$/);
 
   await expect(page.getByRole('heading', { name: '全域字典' })).toBeVisible();
+  await expect.poll(() => loadRequests.entries).toBe(1);
+  await expect.poll(() => loadRequests.categories).toBe(1);
+  await page.waitForTimeout(100);
+  expect(loadRequests).toEqual({ entries: 1, categories: 1 });
   const glossary = page.locator('.global-glossary');
   await glossary.getByRole('button', { name: '新增詞條' }).click();
-  const drawer = page.locator('.global-glossary-drawer');
-  await drawer.getByLabel('原文字詞').fill('microphone');
-  await drawer.getByLabel('翻譯語言').selectOption('ja');
-  await drawer.getByLabel('翻譯內容：ja').fill('Alan speak');
-  await drawer.getByLabel('分類').selectOption('technical');
-  await drawer.getByLabel('標籤（以逗號分隔）').fill('audio, product');
-  await drawer.getByRole('button', { name: '新增全域詞條' }).click();
+  const dialog = page.getByRole('dialog', { name: '新增詞條' });
+  await dialog.getByLabel('原文字詞').fill('microphone');
+  await dialog.getByLabel('翻譯語言').selectOption('ja');
+  await dialog.getByLabel('翻譯內容：ja').fill('Alan speak');
+  await dialog.getByLabel('分類').selectOption('technical');
+  await dialog.getByLabel('標籤（以逗號分隔）').fill('audio, product');
+  await expect(dialog.getByText('套用範圍')).toHaveCount(0);
+  await expect(dialog.locator('select')).toHaveCount(3);
+  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['44px', '44px', '44px']);
+  await expect(dialog.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '新增全域詞條' })).toBeVisible();
+  await dialog.getByRole('button', { name: '新增全域詞條' }).click();
   await expect(glossary.locator('.glossary-card').first()).toContainText('microphone');
   await expect(glossary.locator('.glossary-card').first()).toContainText('Alan speak');
 
   await glossary.locator('.glossary-card').first().click();
-  await expect(page.locator('.global-glossary-drawer')).toBeVisible();
-  await page.locator('.global-glossary-drawer').getByLabel('套用範圍').selectOption('both');
-  await page.locator('.global-glossary-drawer').getByRole('button', { name: '儲存變更' }).click();
+  await expect(page.getByRole('dialog', { name: '編輯詞條' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '編輯詞條' })).toHaveCount(0);
+
+  await glossary.locator('.glossary-card').first().click();
+  const editDialog = page.getByRole('dialog', { name: '編輯詞條' });
+  await expect(editDialog).toBeVisible();
+  await expect(editDialog.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(editDialog.getByRole('button', { name: '儲存變更' })).toBeVisible();
+  await editDialog.getByRole('button', { name: '儲存變更' }).click();
 
   page.once('dialog', (dialog) => dialog.accept());
   await glossary.locator('.glossary-card').first().click();
-  await page.locator('.global-glossary-drawer').getByRole('button', { name: '刪除詞條' }).click();
+  await page.getByRole('dialog', { name: '編輯詞條' }).getByRole('button', { name: '刪除詞條' }).click();
   await expect(glossary.locator('.glossary-empty')).toBeVisible();
 
   expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'DELETE']);
-  expect(requests[0].body.scope).toBe('both');
+  expect(requests[0].body.scope).toBe('live');
   expect(requests[0].body.source).toBe('microphone');
   expect(requests[0].body.tags).toEqual(['audio', 'product']);
-  expect(requests[1].body.scope).toBe('both');
+  expect(requests[1].body.scope).toBe('live');
 });
 
 test.skip('live translation meeting glossary is read-only', async ({ page }) => {

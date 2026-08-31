@@ -56,6 +56,9 @@ const ERROR_RESPONSES = {
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
   not_found: { status: 404, message: 'Route not found.' },
   glossary_entry_not_found: { status: 404, message: 'Glossary entry not found.' },
+  glossary_category_not_found: { status: 404, message: 'Glossary category not found.' },
+  glossary_category_duplicate: { status: 409, message: 'Glossary category label already exists.' },
+  glossary_category_not_deletable: { status: 409, message: 'The other glossary category cannot be deleted.' },
   glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
@@ -2211,6 +2214,10 @@ function safeDecodePathComponent(value) {
 function isGlossaryRoute(method, path) {
   return (
     (method === 'GET' && path === '/api/glossary') ||
+    (method === 'GET' && path === '/api/glossary/categories') ||
+    (method === 'POST' && path === '/api/glossary/categories') ||
+    (method === 'PUT' && path === '/api/glossary/categories/order') ||
+    ((method === 'PUT' || method === 'DELETE') && path.startsWith('/api/glossary/categories/') && path.length > '/api/glossary/categories/'.length) ||
     (method === 'POST' && path === '/api/glossary/entries') ||
     ((method === 'PUT' || method === 'DELETE') &&
       path.startsWith('/api/glossary/entries/') &&
@@ -2219,6 +2226,30 @@ function isGlossaryRoute(method, path) {
 }
 
 async function handleGlossaryCommand(method, path, req, glossaryController) {
+  if (method === 'GET' && path === '/api/glossary/categories') {
+    return { status: 200, result: { categories: await glossaryController.listCategories() } };
+  }
+
+  if (method === 'POST' && path === '/api/glossary/categories') {
+    return { status: 201, result: { category: await glossaryController.createCategory(validateGlossaryCategoryBody(await readJson(req))) } };
+  }
+
+  if (method === 'PUT' && path === '/api/glossary/categories/order') {
+    const body = await readJson(req);
+    if (!isPlainRequestObject(body) || !Array.isArray(body.categoryIds)) throw createHttpError('invalid_request');
+    return { status: 200, result: { categories: await glossaryController.reorderCategories(body.categoryIds) } };
+  }
+
+  if (method === 'PUT' && path.startsWith('/api/glossary/categories/')) {
+    const id = extractGlossaryCategoryId(path);
+    return { status: 200, result: { category: await glossaryController.updateCategory({ id, ...validateGlossaryCategoryBody(await readJson(req), { allowId: false }) }) } };
+  }
+
+  if (method === 'DELETE' && path.startsWith('/api/glossary/categories/')) {
+    const id = extractGlossaryCategoryId(path);
+    return { status: 200, result: await glossaryController.deleteCategory({ id }) };
+  }
+
   if (method === 'GET' && path === '/api/glossary') {
     return { status: 200, result: { entries: await glossaryController.listEntries() } };
   }
@@ -2238,6 +2269,22 @@ async function handleGlossaryCommand(method, path, req, glossaryController) {
   }
 
   throw createHttpError('not_found');
+}
+
+function extractGlossaryCategoryId(path) {
+  try {
+    return validateRequiredString(decodeURIComponent(path.slice('/api/glossary/categories/'.length)));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function validateGlossaryCategoryBody(body) {
+  if (!isPlainRequestObject(body)) throw createHttpError('invalid_request');
+  const label = validateRequiredString(body.label).trim();
+  if (Object.hasOwn(body, 'id')) validateRequiredString(body.id);
+  return { ...(Object.hasOwn(body, 'id') ? { id: body.id } : {}), label, system: body.system === true };
 }
 
 function extractGlossaryEntryId(path) {

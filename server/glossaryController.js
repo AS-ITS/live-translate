@@ -6,6 +6,26 @@ export function createGlossaryController({ glossary } = {}) {
       return glossary.listEntries();
     },
 
+    listCategories() {
+      return glossary.listCategories();
+    },
+
+    createCategory(input) {
+      return glossary.createCategory(input);
+    },
+
+    updateCategory(input) {
+      return glossary.updateCategory(input.id, input);
+    },
+
+    reorderCategories(ids) {
+      return glossary.reorderCategories(ids);
+    },
+
+    deleteCategory({ id }) {
+      return glossary.deleteCategory(id);
+    },
+
     createEntry(input) {
       return glossary.createEntry(input);
     },
@@ -21,7 +41,7 @@ export function createGlossaryController({ glossary } = {}) {
 }
 
 function assertGlossary(glossary) {
-  for (const methodName of ['listEntries', 'createEntry', 'updateEntry', 'deleteEntry']) {
+  for (const methodName of ['listEntries', 'createEntry', 'updateEntry', 'deleteEntry', 'listCategories', 'createCategory', 'updateCategory', 'reorderCategories', 'deleteCategory']) {
     if (!glossary || typeof glossary[methodName] !== 'function') {
       throw new TypeError(`glossary.${methodName} must be a function.`);
     }

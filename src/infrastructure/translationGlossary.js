@@ -3,13 +3,21 @@ import { dirname } from 'node:path';
 import { isSupportedLanguage } from '../../server/languages.js';
 
 const GLOSSARY_SCOPES = new Set(['live', 'history', 'both']);
-const GLOSSARY_CATEGORIES = new Set(['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
+const DEFAULT_CATEGORIES = [
+  { id: 'product', label: '產品名稱', sortOrder: 0, system: false },
+  { id: 'department', label: '部門／職能', sortOrder: 1, system: false },
+  { id: 'abbreviation', label: '縮寫', sortOrder: 2, system: false },
+  { id: 'meeting', label: '會議常用語', sortOrder: 3, system: false },
+  { id: 'technical', label: '技術名詞', sortOrder: 4, system: false },
+  { id: 'other', label: '其他', sortOrder: 5, system: false }
+];
 
 export function createTranslationGlossary({ filePath, fileSystem = defaultFileSystem, idFactory = defaultIdFactory, clock = () => Date.now() } = {}) {
   assertOptionalFilePath(filePath);
   assertFileSystem(fileSystem);
 
   let entriesPromise;
+  let storagePromise;
 
   return Object.freeze({
     async entriesFor(targetLanguageCode, options = {}) {
@@ -33,11 +41,72 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
       return (await loadEntries()).map(cloneEntry);
     },
 
+    async listCategories() {
+      return (await loadStorage()).categories.map(cloneCategory);
+    },
+
+    async createCategory(input = {}) {
+      assertConfigured(filePath);
+      assertWritableFileSystem(fileSystem);
+      const storage = await readStorage(fileSystem, filePath);
+      const category = normalizeCategory({ ...input, id: input.id ?? idFactory() }, storage.categories.length);
+      assertUniqueCategory(storage.categories, category);
+      storage.categories.push({ ...category, sortOrder: storage.categories.length });
+      await writeStorage(fileSystem, filePath, storage);
+      invalidateCache(storage);
+      return cloneCategory(storage.categories.at(-1));
+    },
+
+    async updateCategory(id, input = {}) {
+      assertConfigured(filePath);
+      assertWritableFileSystem(fileSystem);
+      assertNonBlankString(id, 'categoryId');
+      const storage = await readStorage(fileSystem, filePath);
+      const index = storage.categories.findIndex((category) => category.id === id);
+      if (index === -1) throw glossaryError('glossary_category_not_found', `Translation glossary category not found: ${id}`);
+      const category = normalizeCategory({ ...storage.categories[index], ...input, id }, index);
+      assertUniqueCategory(storage.categories, category, id);
+      storage.categories[index] = { ...category, sortOrder: storage.categories[index].sortOrder };
+      await writeStorage(fileSystem, filePath, storage);
+      invalidateCache(storage);
+      return cloneCategory(storage.categories[index]);
+    },
+
+    async reorderCategories(ids = []) {
+      assertConfigured(filePath);
+      assertWritableFileSystem(fileSystem);
+      const storage = await readStorage(fileSystem, filePath);
+      if (!Array.isArray(ids) || ids.length !== storage.categories.length || new Set(ids).size !== ids.length || ids.some((id) => !storage.categories.some((category) => category.id === id))) throw glossaryError('invalid_request', 'Category order is invalid.');
+      storage.categories = ids.map((id, sortOrder) => ({ ...storage.categories.find((category) => category.id === id), sortOrder }));
+      await writeStorage(fileSystem, filePath, storage);
+      invalidateCache(storage);
+      return storage.categories.map(cloneCategory);
+    },
+
+    async deleteCategory(id) {
+      assertConfigured(filePath);
+      assertWritableFileSystem(fileSystem);
+      assertNonBlankString(id, 'categoryId');
+      if (id === 'other') throw glossaryError('glossary_category_not_deletable', 'The other category cannot be deleted.');
+      const storage = await readStorage(fileSystem, filePath);
+      if (!storage.categories.some((category) => category.id === id)) throw glossaryError('glossary_category_not_found', `Translation glossary category not found: ${id}`);
+      storage.categories = storage.categories.filter((category) => category.id !== id).map((category, sortOrder) => ({ ...category, sortOrder }));
+      let reassignedEntryCount = 0;
+      storage.entries = storage.entries.map((entry) => {
+        if (entry.category !== id) return entry;
+        reassignedEntryCount += 1;
+        return { ...entry, category: 'other' };
+      });
+      await writeStorage(fileSystem, filePath, storage);
+      invalidateCache(storage);
+      return { category: cloneCategory(storage.categories.find((category) => category.id === 'other')), reassignedEntryCount };
+    },
+
     async createEntry(input = {}) {
       assertConfigured(filePath);
       assertWritableFileSystem(fileSystem);
       const storage = await readStorage(fileSystem, filePath);
-      const entry = normalizeMutableEntry({ ...input, id: input.id ?? idFactory(), createdAt: clock(), updatedAt: clock() }, storage.entries.length);
+      const entry = normalizeMutableEntry({ ...input, id: input.id ?? idFactory(), createdAt: clock(), updatedAt: clock() }, storage.entries.length, new Set(storage.categories.map((category) => category.id)));
       if (storage.entries.some((candidate) => candidate.id === entry.id)) {
         const error = new Error(`Translation glossary entry already exists: ${entry.id}`);
         error.code = 'invalid_request';
@@ -46,7 +115,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
 
       storage.entries.push(entry);
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
+      invalidateCache(storage);
       return cloneEntry(entry);
     },
 
@@ -68,10 +137,10 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
         id,
         createdAt: storage.entries[index].createdAt,
         updatedAt: clock()
-      }, index);
+      }, index, new Set(storage.categories.map((category) => category.id)));
       storage.entries[index] = entry;
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
+      invalidateCache(storage);
       return cloneEntry(entry);
     },
 
@@ -89,21 +158,27 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
 
       const [entry] = storage.entries.splice(index, 1);
       await writeStorage(fileSystem, filePath, storage);
-      entriesPromise = Promise.resolve(Object.freeze(storage.entries.map(cloneNormalizedEntry)));
+      invalidateCache(storage);
       return cloneEntry(entry);
     }
   });
 
   function loadEntries() {
     if (entriesPromise === undefined) {
-      entriesPromise = filePath === undefined ? Promise.resolve(Object.freeze([])) : readEntries(fileSystem, filePath);
+      entriesPromise = loadStorage().then((storage) => Object.freeze(storage.entries.map(cloneNormalizedEntry)));
     }
     return entriesPromise;
   }
-}
 
-async function readEntries(fileSystem, filePath) {
-  return Object.freeze((await readStorage(fileSystem, filePath)).entries.map(cloneNormalizedEntry));
+  function loadStorage() {
+    if (storagePromise === undefined) storagePromise = filePath === undefined ? Promise.resolve({ categories: cloneCategories(DEFAULT_CATEGORIES), entries: [] }) : readStorage(fileSystem, filePath);
+    return storagePromise;
+  }
+
+  function invalidateCache(storage) {
+    storagePromise = Promise.resolve({ categories: storage.categories.map(cloneCategory), entries: storage.entries.map(cloneNormalizedEntry) });
+    entriesPromise = storagePromise.then((value) => Object.freeze(value.entries.map(cloneNormalizedEntry)));
+  }
 }
 
 async function readStorage(fileSystem, filePath) {
@@ -111,7 +186,7 @@ async function readStorage(fileSystem, filePath) {
   try {
     content = await fileSystem.readFile(filePath, 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT') return { entries: [] };
+    if (error?.code === 'ENOENT') return { categories: cloneCategories(DEFAULT_CATEGORIES), entries: [] };
     throw error;
   }
 
@@ -122,11 +197,12 @@ async function readStorage(fileSystem, filePath) {
     throw new TypeError('Translation glossary JSON is invalid.');
   }
 
-  return { entries: validateGlossary(parsed) };
+  return validateGlossary(parsed);
 }
 
 async function writeStorage(fileSystem, filePath, storage) {
-  const value = { entries: validateGlossary(storage).map(serializeStoredEntry) };
+  const normalized = validateGlossary(storage);
+  const value = { categories: normalized.categories, entries: normalized.entries.map(serializeStoredEntry) };
   await fileSystem.mkdir(dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.tmp`;
   await fileSystem.writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
@@ -137,13 +213,54 @@ function validateGlossary(value) {
   if (!isRecord(value) || !Array.isArray(value.entries)) {
     throw new TypeError('Translation glossary must contain an entries array.');
   }
-
-  return value.entries.map((entry, index) => {
-    return normalizeMutableEntry(entry, index);
-  });
+  const categories = value.categories === undefined ? cloneCategories(DEFAULT_CATEGORIES) : validateCategories(value.categories);
+  const categoryIds = new Set(categories.map((category) => category.id));
+  const entries = value.entries.map((entry, index) => normalizeMutableEntry(entry, index, categoryIds));
+  return { categories, entries };
 }
 
-function normalizeMutableEntry(entry, index) {
+function validateCategories(value) {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError('Translation glossary categories must be a non-empty array.');
+  const normalized = value.map((category, index) => normalizeCategory(category, index));
+  if (!normalized.some((category) => category.id === 'other')) throw new TypeError('Translation glossary categories must contain other.');
+  const ids = new Set();
+  const labels = new Set();
+  for (const category of normalized) {
+    if (ids.has(category.id) || labels.has(category.label.toLocaleLowerCase())) throw new TypeError('Translation glossary category IDs and labels must be unique.');
+    ids.add(category.id);
+    labels.add(category.label.toLocaleLowerCase());
+  }
+  return normalized.sort((a, b) => a.sortOrder - b.sortOrder).map((category, sortOrder) => ({ ...category, sortOrder }));
+}
+
+function normalizeCategory(category, index = 0) {
+  if (!isRecord(category)) throw new TypeError(`Translation glossary category ${index} must be an object.`);
+  const id = assertNonBlankString(category.id, `Translation glossary category ${index}.id`).trim();
+  const label = assertNonBlankString(category.label, `Translation glossary category ${index}.label`).trim();
+  if (!/^[a-z][a-z0-9_-]*$/.test(id)) throw new TypeError(`Translation glossary category ${index}.id is invalid.`);
+  return { id, label, sortOrder: Number.isInteger(category.sortOrder) && category.sortOrder >= 0 ? category.sortOrder : index, system: category.system === true };
+}
+
+function assertUniqueCategory(categories, category, currentId) {
+  if (categories.some((candidate) => candidate.id !== currentId && candidate.id === category.id)) throw glossaryError('invalid_request', 'Category ID already exists.');
+  if (categories.some((candidate) => candidate.id !== currentId && candidate.label.toLocaleLowerCase() === category.label.toLocaleLowerCase())) throw glossaryError('glossary_category_duplicate', 'Category label already exists.');
+}
+
+function glossaryError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+function cloneCategory(category) {
+  return { ...category };
+}
+
+function cloneCategories(categories) {
+  return categories.map(cloneCategory);
+}
+
+function normalizeMutableEntry(entry, index, categoryIds = new Set(DEFAULT_CATEGORIES.map((category) => category.id))) {
   if (!isRecord(entry)) throw new TypeError(`Translation glossary entry ${index} must be an object.`);
   assertNonBlankString(entry.source, `Translation glossary entry ${index}.source`);
   if (!isRecord(entry.translations)) {
@@ -170,7 +287,7 @@ function normalizeMutableEntry(entry, index) {
     throw new TypeError(`Translation glossary entry ${index}.tags must be an array of non-empty strings.`);
   }
   const category = entry.category === undefined ? 'other' : entry.category;
-  if (!GLOSSARY_CATEGORIES.has(category)) throw new RangeError(`Translation glossary entry ${index}.category is invalid.`);
+  if (!categoryIds.has(category)) throw new RangeError(`Translation glossary entry ${index}.category is invalid.`);
   const enabled = entry.enabled === undefined ? true : entry.enabled;
   if (typeof enabled !== 'boolean') throw new TypeError(`Translation glossary entry ${index}.enabled must be a boolean.`);
 

@@ -117,6 +117,10 @@ const GLOSSARY_CATEGORY_OPTIONS = [
   { value: 'technical', label: '技術名詞' },
   { value: 'other', label: '其他' }
 ];
+function syncGlossaryCategoryOptions(categories) {
+  if (!Array.isArray(categories) || categories.length === 0) return;
+  GLOSSARY_CATEGORY_OPTIONS.splice(1, GLOSSARY_CATEGORY_OPTIONS.length - 1, ...categories.map((item) => ({ value: item.id, label: item.label })));
+}
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
@@ -181,6 +185,7 @@ export function App() {
   const [selectedMeetingDetail, setSelectedMeetingDetail] = useState(null);
   const [meetingDetailError, setMeetingDetailError] = useState('');
   const [glossaryEntries, setGlossaryEntries] = useState([]);
+  const [glossaryCategories, setGlossaryCategories] = useState([]);
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [privateMeetingGlossaryEntries, setPrivateMeetingGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
@@ -3055,10 +3060,16 @@ export function App() {
 
       {page === 'glossary' ? (
       <GlobalGlossaryPage
-        GlossaryPanel={GlobalGlossaryPanel}
         entries={glossaryEntries}
         onEntriesChange={setGlossaryEntries}
-      />
+      >
+        <GlobalGlossaryPanel
+          entries={glossaryEntries}
+          onEntriesChange={setGlossaryEntries}
+          categories={glossaryCategories}
+          onCategoriesChange={setGlossaryCategories}
+        />
+      </GlobalGlossaryPage>
       ) : null}
     </MeetingLayout>
     );
@@ -4219,7 +4230,7 @@ function LiveGlossaryDrawer({
   );
 }
 
-function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
+function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange, categories: sharedCategories = [], onCategoriesChange }) {
   const [entries, setEntries] = useState(sharedEntries);
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
@@ -4232,18 +4243,35 @@ function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [categories, setCategories] = useState(sharedCategories);
+  const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState(null);
+  const [categoryLabel, setCategoryLabel] = useState('');
+  const [isCategorySaving, setIsCategorySaving] = useState(false);
   const entriesRef = useRef([]);
   const apiRef = useRef(createGlossaryApiClient());
 
   useEffect(() => { entriesRef.current = sharedEntries; setEntries(sharedEntries); }, [sharedEntries]);
+  useEffect(() => { setCategories(sharedCategories); }, [sharedCategories]);
   useEffect(() => {
     let cancelled = false;
-    apiRef.current.listEntries().then((loaded) => {
-      if (!cancelled) { entriesRef.current = loaded; setEntries(loaded); onEntriesChange?.(loaded); setError(''); }
+    Promise.all([apiRef.current.listEntries(), apiRef.current.listCategories()]).then(([loaded, loadedCategories]) => {
+      if (!cancelled) { entriesRef.current = loaded; setEntries(loaded); setCategories(loadedCategories); syncGlossaryCategoryOptions(loadedCategories); onEntriesChange?.(loaded); onCategoriesChange?.(loadedCategories); setError(''); }
     }).catch(() => { if (!cancelled) setError('無法載入全域字典，請稍後再試。'); })
       .finally(() => { if (!cancelled) setIsLoading(false); });
     return () => { cancelled = true; };
   }, []);
+
+  const categoryOptions = useMemo(() => [{ value: 'all', label: '全部分類' }, ...categories.map((item) => ({ value: item.id, label: item.label }))], [categories]);
+
+  useEffect(() => {
+    if (!isDrawerOpen) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') closeEditor();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDrawerOpen]);
 
   const filteredEntries = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
@@ -4255,7 +4283,7 @@ function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
 
   const allVisibleSelected = filteredEntries.length > 0 && filteredEntries.every((entry) => selectedIds.includes(entry.id));
   function publish(next) { entriesRef.current = next; setEntries(next); onEntriesChange?.(next); }
-  function openEditor(entry = null) { setEditingEntry(entry ? { ...entry, translations: { ...entry.translations }, tags: [...(entry.tags || [])] } : { source: '', sourceLanguageCode: 'zh-Hant', translations: { en: '' }, category: 'other', tags: [], enabled: true, notes: '', scope: 'both' }); setStatus(''); setError(''); setIsDrawerOpen(true); }
+  function openEditor(entry = null) { setEditingEntry(entry ? { ...entry, translations: { ...entry.translations }, tags: [...(entry.tags || [])] } : { source: '', sourceLanguageCode: 'zh-Hant', translations: { en: '' }, category: categories.find((item) => item.id === 'other')?.id || categories[0]?.id || 'other', tags: [], enabled: true, notes: '', scope: 'both' }); setStatus(''); setError(''); setIsDrawerOpen(true); }
   function closeEditor() { setIsDrawerOpen(false); setEditingEntry(null); }
   function updateEditor(field, value) { setEditingEntry((current) => ({ ...current, [field]: value })); }
   function updateTranslation(code, value) { setEditingEntry((current) => ({ ...current, translations: { ...current.translations, [code]: value } })); }
@@ -4266,7 +4294,7 @@ function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
     if (!editingEntry.source.trim() || !Object.keys(translations).length) { setError('請填寫原文與至少一個目標語言翻譯。'); return; }
     setIsSaving(true); setError(''); setStatus('');
     try {
-      const payload = { ...editingEntry, source: editingEntry.source.trim(), translations, tags: editingEntry.tags || [] };
+      const payload = { ...editingEntry, source: editingEntry.source.trim(), translations, tags: editingEntry.tags || [], scope: 'live' };
       const saved = editingEntry.id ? await apiRef.current.updateEntry(editingEntry.id, payload) : await apiRef.current.createEntry(payload);
       publish(editingEntry.id ? entriesRef.current.map((entry) => entry.id === saved.id ? saved : entry) : mergeGlossaryEntry(entriesRef.current, saved));
       closeEditor(); setStatus(editingEntry.id ? '全域詞條已更新。' : '全域詞條已新增。');
@@ -4288,20 +4316,48 @@ function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) {
       ? selectedIds.filter((id) => !filteredEntries.some((entry) => entry.id === id))
       : [...new Set([...selectedIds, ...filteredEntries.map((entry) => entry.id)])]);
   }
+  function publishCategories(next) { syncGlossaryCategoryOptions(next); setCategories(next); onCategoriesChange?.(next); }
+  function openCategoryManager() { setEditingCategory(null); setCategoryLabel(''); setIsCategoryDialogOpen(true); setError(''); }
+  async function saveCategory(event) {
+    event.preventDefault();
+    if (!categoryLabel.trim()) { setError('分類名稱不可為空白。'); return; }
+    setIsCategorySaving(true); setError('');
+    try {
+      const saved = editingCategory ? await apiRef.current.updateCategory(editingCategory.id, { label: categoryLabel.trim() }) : await apiRef.current.createCategory({ label: categoryLabel.trim() });
+      publishCategories(editingCategory ? categories.map((item) => item.id === saved.id ? saved : item) : [...categories, saved]);
+      setEditingCategory(null); setCategoryLabel(''); setStatus(editingCategory ? '分類名稱已更新。' : '分類已新增。');
+    } catch { setError('分類名稱不可空白或重複。'); }
+    finally { setIsCategorySaving(false); }
+  }
+  async function moveCategory(category, direction) {
+    const index = categories.findIndex((item) => item.id === category.id); const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= categories.length) return;
+    const next = [...categories]; [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
+    try { publishCategories(await apiRef.current.reorderCategories(next.map((item) => item.id))); setStatus('分類順序已更新。'); } catch { setError('無法更新分類順序。'); }
+  }
+  async function deleteCategory(category) {
+    if (category.id === 'other' || !window.confirm(`確定要刪除「${category.label}」嗎？相關詞條會改歸其他。`)) return;
+    try { const result = await apiRef.current.deleteCategory(category.id); publishCategories(categories.filter((item) => item.id !== category.id)); publish(entriesRef.current.map((entry) => entry.category === category.id ? { ...entry, category: 'other' } : entry)); setStatus(`分類已刪除，${result.reassignedEntryCount || 0} 筆詞條已改歸其他。`); } catch { setError('無法刪除分類。'); }
+  }
 
   return <section className="global-glossary" aria-label="全域字典詞條管理">
     <div className="global-glossary-toolbar">
-      <label className="field glossary-search"><span>搜尋詞條</span><div className="meeting-toolbar-input"><Search size={19} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋原文、翻譯或標籤" /></div></label>
-      <label className="field"><span>目標語言</span><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="all">所有語言</option>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
-      <label className="field"><span>分類</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{GLOSSARY_CATEGORY_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-      <label className="field"><span>排序</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="updated">最近更新</option><option value="created">最近建立</option><option value="source">原文 A–Z</option></select></label>
-      <button className="button secondary" type="button" onClick={() => { setQuery(''); setCategory('all'); setLanguage('all'); }}><Filter size={17} aria-hidden="true" />清除篩選</button>
-      <button className="button primary" type="button" onClick={() => openEditor()}><Plus size={18} aria-hidden="true" />新增詞條</button>
+      <div className="global-glossary-toolbar-main">
+        <label className="field glossary-search"><span>搜尋詞條</span><div className="meeting-toolbar-input"><Search size={19} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋原文、翻譯或標籤" /></div></label>
+        <div className="global-glossary-primary-actions"><button className="button secondary" type="button" onClick={openCategoryManager}><Settings size={18} aria-hidden="true" />管理分類</button><button className="button primary" type="button" onClick={() => openEditor()}><Plus size={18} aria-hidden="true" />新增詞條</button></div>
+      </div>
+      <div className="global-glossary-filter-row">
+        <label className="field"><span>目標語言</span><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="all">所有語言</option>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
+        <label className="field"><span>分類</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label className="field"><span>排序</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="updated">最近更新</option><option value="created">最近建立</option><option value="source">原文 A–Z</option></select></label>
+        <button className="button secondary" type="button" onClick={() => { setQuery(''); setCategory('all'); setLanguage('all'); }}><Filter size={17} aria-hidden="true" />清除篩選</button>
+      </div>
     </div>
     {selectedIds.length ? <div className="glossary-bulk-bar" role="toolbar"><strong>已選取 {selectedIds.length} 筆</strong><button className="button detail-button" type="button" onClick={() => bulkUpdate({ enabled: true })}><Check size={16} aria-hidden="true" />批次啟用</button><button className="button detail-button" type="button" onClick={() => bulkUpdate({ enabled: false })}>批次停用</button><button className="button secondary" type="button" onClick={() => setSelectedIds([])}>取消選取</button></div> : null}
     {status ? <p className="success-message" role="status">{status}</p> : null}{error ? <p className="error-message" role="alert">{error}</p> : null}
     <div className="global-glossary-layout"><aside className="glossary-category-sidebar"><div className="glossary-sidebar-heading"><strong>詞條分類</strong><span>{entries.length}</span></div>{GLOSSARY_CATEGORY_OPTIONS.map((item) => { const count = item.value === 'all' ? entries.length : entries.filter((entry) => (entry.category || 'other') === item.value).length; return <button className={category === item.value ? 'is-active' : ''} key={item.value} type="button" onClick={() => setCategory(item.value)}><span>{item.label}</span><small>{count}</small></button>; })}</aside><div className="glossary-card-region"><div className="glossary-card-region-header"><span>{isLoading ? '載入中…' : `共 ${filteredEntries.length} 筆詞條`}</span><label className="glossary-select-all"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} />全選目前結果</label></div>{!isLoading && !filteredEntries.length ? <div className="empty-state glossary-empty"><BookOpen size={30} aria-hidden="true" /><strong>找不到符合條件的詞條</strong><span>調整搜尋或新增一筆全域詞條。</span></div> : <div className="glossary-card-grid">{filteredEntries.map((entry) => <article className={`glossary-card${entry.enabled === false ? ' is-disabled' : ''}`} key={entry.id} onClick={() => openEditor(entry)}><div className="glossary-card-topline"><input type="checkbox" aria-label={`選取 ${entry.source}`} checked={selectedIds.includes(entry.id)} onClick={(event) => event.stopPropagation()} onChange={() => setSelectedIds((ids) => ids.includes(entry.id) ? ids.filter((id) => id !== entry.id) : [...ids, entry.id])} /><span className={`glossary-status ${entry.enabled === false ? 'is-disabled' : ''}`}><span />{entry.enabled === false ? '已停用' : '啟用中'}</span><button className="icon-button" type="button" aria-label={`更多操作：${entry.source}`} onClick={(event) => { event.stopPropagation(); openEditor(entry); }}><MoreHorizontal size={19} aria-hidden="true" /></button></div><div className="glossary-card-source"><small>{targetLanguageLabelFor(entry.sourceLanguageCode) || entry.sourceLanguageCode || '來源語言'}</small><h3>{entry.source}</h3></div><div className="glossary-card-translations">{Object.entries(entry.translations || {}).slice(0, 2).map(([code, text]) => <div key={code}><small>{targetLanguageLabelFor(code) || code}</small><p>{text}</p></div>)}{Object.keys(entry.translations || {}).length > 2 ? <small>+{Object.keys(entry.translations).length - 2} 個翻譯</small> : null}</div><div className="glossary-card-footer"><span className="glossary-category-tag">{GLOSSARY_CATEGORY_OPTIONS.find((item) => item.value === (entry.category || 'other'))?.label}</span>{entry.tags?.slice(0, 2).map((tag) => <span className="glossary-tag" key={tag}><Tag size={12} aria-hidden="true" />{tag}</span>)}</div></article>)}</div>}</div></div>
-    {isDrawerOpen && editingEntry ? <><div className="global-glossary-drawer-backdrop" onClick={closeEditor} aria-hidden="true" /><aside className="global-glossary-drawer" aria-label={editingEntry.id ? '編輯全域詞條' : '新增全域詞條'}><div className="global-glossary-drawer-header"><div><p className="eyebrow">GLOBAL ENTRY</p><h2>{editingEntry.id ? '編輯詞條' : '新增詞條'}</h2></div><button className="icon-button" type="button" aria-label="關閉編輯抽屜" onClick={closeEditor}><X size={20} aria-hidden="true" /></button></div><form className="global-glossary-form" onSubmit={saveEntry}><label className="field"><span>原文字詞</span><input value={editingEntry.source} onChange={(event) => updateEditor('source', event.target.value)} autoFocus required /></label><label className="field"><span>來源語言</span><select value={editingEntry.sourceLanguageCode} onChange={(event) => updateEditor('sourceLanguageCode', event.target.value)}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label><div className="glossary-form-section"><div className="glossary-form-section-heading"><strong>目標語言翻譯</strong><button className="button detail-button" type="button" onClick={() => updateEditor('translations', { ...editingEntry.translations, ja: editingEntry.translations?.ja || '' })}>＋新增語言</button></div>{Object.entries(editingEntry.translations || {}).map(([code, text]) => <div className="translation-row" key={code}><select aria-label="翻譯語言" value={code} onChange={(event) => { const next = {}; Object.entries(editingEntry.translations).forEach(([oldCode, oldText]) => { next[oldCode === code ? event.target.value : oldCode] = oldText; }); updateEditor('translations', next); }}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><input aria-label={`翻譯內容：${code}`} value={text} onChange={(event) => updateTranslation(code, event.target.value)} placeholder="輸入翻譯" required /><button className="icon-button" type="button" aria-label="移除翻譯" onClick={() => removeTranslation(code)} disabled={Object.keys(editingEntry.translations).length <= 1}><X size={16} aria-hidden="true" /></button></div>)}</div><div className="glossary-form-grid"><label className="field"><span>分類</span><select value={editingEntry.category} onChange={(event) => updateEditor('category', event.target.value)}>{GLOSSARY_CATEGORY_OPTIONS.slice(1).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="field"><span>套用範圍</span><select value={editingEntry.scope || 'both'} onChange={(event) => updateEditor('scope', event.target.value)}><option value="live">即時字幕</option><option value="history">歷史重新翻譯</option><option value="both">兩者</option></select></label></div><label className="field"><span>標籤（以逗號分隔）</span><input value={(editingEntry.tags || []).join(', ')} onChange={(event) => updateEditor('tags', event.target.value.split(',').map((tag) => tag.trim()).filter(Boolean))} placeholder="例如：產品、Q3" /></label><label className="field"><span>備註</span><textarea rows="4" value={editingEntry.notes || ''} onChange={(event) => updateEditor('notes', event.target.value)} placeholder="補充使用情境或翻譯說明" /></label><label className="glossary-enabled-toggle"><input type="checkbox" checked={editingEntry.enabled !== false} onChange={(event) => updateEditor('enabled', event.target.checked)} /><span><strong>啟用詞條</strong><small>停用後仍保留在全域字典，但不會被會議選用。</small></span></label><div className="global-glossary-drawer-actions">{editingEntry.id ? <button className="button danger-button" type="button" onClick={() => deleteEntry(editingEntry)}>刪除詞條</button> : null}<button className="button secondary" type="button" onClick={closeEditor}>取消</button><button className="button primary" type="submit" disabled={isSaving}>{isSaving ? '儲存中…' : editingEntry.id ? '儲存變更' : '新增全域詞條'}</button></div></form></aside></> : null}
+    {isDrawerOpen && editingEntry ? <><div className="global-glossary-dialog-backdrop" onClick={closeEditor} aria-hidden="true" /><section className="global-glossary-dialog" role="dialog" aria-modal="true" aria-labelledby="global-glossary-editor-title" onClick={(event) => event.stopPropagation()}><div className="global-glossary-dialog-header"><div><p className="eyebrow">GLOBAL ENTRY</p><h2 id="global-glossary-editor-title">{editingEntry.id ? '編輯詞條' : '新增詞條'}</h2></div><button className="icon-button" type="button" aria-label="關閉編輯對話框" onClick={closeEditor}><X size={20} aria-hidden="true" /></button></div><form className="global-glossary-form" onSubmit={saveEntry}><label className="field"><span>原文字詞</span><input value={editingEntry.source} onChange={(event) => updateEditor('source', event.target.value)} autoFocus required /></label><label className="field"><span>來源語言</span><select value={editingEntry.sourceLanguageCode} onChange={(event) => updateEditor('sourceLanguageCode', event.target.value)}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label><div className="glossary-form-section"><div className="glossary-form-section-heading"><strong>目標語言翻譯</strong><button className="button detail-button" type="button" onClick={() => updateEditor('translations', { ...editingEntry.translations, ja: editingEntry.translations?.ja || '' })}>＋新增語言</button></div>{Object.entries(editingEntry.translations || {}).map(([code, text]) => <div className="translation-row" key={code}><select aria-label="翻譯語言" value={code} onChange={(event) => { const next = {}; Object.entries(editingEntry.translations).forEach(([oldCode, oldText]) => { next[oldCode === code ? event.target.value : oldCode] = oldText; }); updateEditor('translations', next); }}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select><input aria-label={`翻譯內容：${code}`} value={text} onChange={(event) => updateTranslation(code, event.target.value)} placeholder="輸入翻譯" required /><button className="icon-button" type="button" aria-label="移除翻譯" onClick={() => removeTranslation(code)} disabled={Object.keys(editingEntry.translations).length <= 1}><X size={16} aria-hidden="true" /></button></div>)}</div><label className="field"><span>分類</span><select value={editingEntry.category} onChange={(event) => updateEditor('category', event.target.value)}>{GLOSSARY_CATEGORY_OPTIONS.slice(1).map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="field"><span>標籤（以逗號分隔）</span><input value={(editingEntry.tags || []).join(', ')} onChange={(event) => updateEditor('tags', event.target.value.split(',').map((tag) => tag.trim()).filter(Boolean))} placeholder="例如：產品、Q3" /></label><label className="field"><span>備註</span><textarea rows="4" value={editingEntry.notes || ''} onChange={(event) => updateEditor('notes', event.target.value)} placeholder="補充使用情境或翻譯說明" /></label><label className="glossary-enabled-toggle"><input type="checkbox" checked={editingEntry.enabled !== false} onChange={(event) => updateEditor('enabled', event.target.checked)} /><span><strong>啟用詞條</strong><small>停用後仍保留在全域字典，但不會被會議選用。</small></span></label><div className="global-glossary-dialog-actions">{editingEntry.id ? <button className="button danger-button" type="button" onClick={() => deleteEntry(editingEntry)}>刪除詞條</button> : null}<button className="button secondary" type="button" onClick={closeEditor}>取消</button><button className="button primary" type="submit" disabled={isSaving}>{isSaving ? '儲存中…' : editingEntry.id ? '儲存變更' : '新增全域詞條'}</button></div></form></section></> : null}
+    {isCategoryDialogOpen ? <><div className="global-glossary-dialog-backdrop" onClick={() => setIsCategoryDialogOpen(false)} aria-hidden="true" /><section className="global-glossary-dialog category-management-dialog" role="dialog" aria-modal="true" aria-labelledby="category-management-title" onClick={(event) => event.stopPropagation()}><div className="global-glossary-dialog-header"><div><p className="eyebrow">GLOBAL CATEGORIES</p><h2 id="category-management-title">管理分類</h2></div><button className="icon-button" type="button" aria-label="關閉分類管理" onClick={() => setIsCategoryDialogOpen(false)}><X size={20} aria-hidden="true" /></button></div><form className="category-create-form" onSubmit={saveCategory}><label className="field"><span>{editingCategory ? '編輯分類名稱' : '新增分類'}</span><input value={categoryLabel} onChange={(event) => setCategoryLabel(event.target.value)} placeholder="例如：專案名詞" autoFocus /></label><button className="button primary" type="submit" disabled={isCategorySaving}>{isCategorySaving ? '儲存中…' : editingCategory ? '儲存名稱' : '新增分類'}</button></form><div className="category-management-list">{categories.map((item, index) => <div className="category-management-row" key={item.id}><span><strong>{item.label}</strong><small>{item.id}{item.id === 'other' ? ' · 不可刪除' : ''}</small></span><div className="category-management-actions"><button className="icon-button" type="button" aria-label={`上移 ${item.label}`} onClick={() => moveCategory(item, -1)} disabled={index === 0}>↑</button><button className="icon-button" type="button" aria-label={`下移 ${item.label}`} onClick={() => moveCategory(item, 1)} disabled={index === categories.length - 1}>↓</button><button className="button detail-button" type="button" onClick={() => { setEditingCategory(item); setCategoryLabel(item.label); }}>編輯</button><button className="button danger-button" type="button" onClick={() => deleteCategory(item)} disabled={item.id === 'other'}>刪除</button></div></div>)}</div></section></> : null}
   </section>;
 }
 
@@ -5451,4 +5507,3 @@ function downloadBlob(blob, fileName) {
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
-

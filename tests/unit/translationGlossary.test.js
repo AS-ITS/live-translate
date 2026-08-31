@@ -179,6 +179,24 @@ test('glossary CRUD persists entries and updates cached provider entries', async
   assert.deepEqual(await glossary.entriesFor('ja'), []);
 });
 
+test('glossary categories support stable IDs, ordering, and reassignment on delete', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-glossary-categories-'));
+  const filePath = join(directory, 'glossary.json');
+  const fs = await import('node:fs/promises');
+  const glossary = createTranslationGlossary({ filePath, fileSystem: fs, idFactory: () => 'project' });
+  assert.deepEqual((await glossary.listCategories()).map((category) => category.id), ['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
+  await glossary.createCategory({ label: '專案名詞' });
+  await glossary.createEntry({ source: 'term', translations: { en: 'term' }, category: 'project' });
+  await glossary.reorderCategories(['project', 'product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
+  await glossary.updateCategory('project', { label: '專案詞彙' });
+  await assert.rejects(glossary.createCategory({ label: '專案詞彙' }), /already exists/);
+  await assert.rejects(glossary.deleteCategory('other'), /cannot be deleted/);
+  const deleted = await glossary.deleteCategory('project');
+  assert.equal(deleted.reassignedEntryCount, 1);
+  assert.equal((await glossary.listEntries())[0].category, 'other');
+  assert.deepEqual((await glossary.listCategories()).map((category) => category.id), ['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
+});
+
 function createGlossary(value) {
   return createGlossaryContent(JSON.stringify(value));
 }

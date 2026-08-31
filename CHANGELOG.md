@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- 新增全域字典分類管理：分類可新增、改名、上下移排序與刪除；刪除分類的詞條會自動改歸「其他」，並相容既有僅含 `entries` 的字典 JSON。
+
+- 全域字典的新增與編輯表單改以置中 Dialog 呈現，保留原有詞條欄位、儲存、刪除與關閉行為。
+- 全域字典移除已不使用的歷史重新翻譯範圍設定；Dialog 保留必要捲動但隱藏 scrollbar，並統一下拉選單高度。
+
 - 移除已被目前 Meeting UI 取代的 `#translation-history`、`#watch`、`#record` 與 `#dead-letter-queue` 前端路由；這些舊連結現在回到 `#meetings`。Meeting Settings 僅保留 Viewer 分享入口，翻譯紀錄改由 Meeting 管理與單一會議紀錄頁進入；後端資料與 API 未刪除。
 
 - 將會議 UI 整理為獨立 Setting、History Detail、Live 與 Viewer 頁面；公開 Viewer 的 `#viewer?code=...` 顯示、SSE 即時字幕與重連邏輯已從 `main.jsx` 拆出，分享連結管理保留在 Setting 頁面。

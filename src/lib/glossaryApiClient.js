@@ -5,6 +5,40 @@ export function createGlossaryApiClient({ fetchImpl = globalThis.fetch, baseUrl 
   fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
+    async listCategories() {
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/categories'), { method: 'GET' });
+      await assertOkResponse(response);
+      const body = await parseJsonResponse(response);
+      if (!body || !Array.isArray(body.categories)) throw new Error('Glossary response must contain a categories array.');
+      return body.categories;
+    },
+
+    async createCategory(category) {
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/categories'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(category) });
+      await assertOkResponse(response);
+      return parseCategoryResponse(response);
+    },
+
+    async updateCategory(id, category) {
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/glossary/categories/${encodeURIComponent(id)}`), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(category) });
+      await assertOkResponse(response);
+      return parseCategoryResponse(response);
+    },
+
+    async reorderCategories(categoryIds) {
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/categories/order'), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ categoryIds }) });
+      await assertOkResponse(response);
+      const body = await parseJsonResponse(response);
+      if (!body || !Array.isArray(body.categories)) throw new Error('Glossary response must contain a categories array.');
+      return body.categories;
+    },
+
+    async deleteCategory(id) {
+      const response = await fetchImpl(buildUrl(baseUrl, `/api/glossary/categories/${encodeURIComponent(id)}`), { method: 'DELETE' });
+      await assertOkResponse(response);
+      return parseJsonResponse(response);
+    },
+
     async listEntries() {
       const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary'), { method: 'GET' });
       await assertOkResponse(response);
@@ -63,6 +97,12 @@ async function parseEntryResponse(response) {
     throw new Error('Glossary response must contain an entry object.');
   }
   return body.entry;
+}
+
+async function parseCategoryResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object' || !body.category || typeof body.category !== 'object') throw new Error('Glossary response must contain a category object.');
+  return body.category;
 }
 
 async function parseJsonResponse(response) {

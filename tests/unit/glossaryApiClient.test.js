@@ -34,6 +34,29 @@ test('glossary API client rejects malformed responses and failed requests', asyn
   await assert.rejects(malformed.listEntries(), /entries array/);
 });
 
+test('glossary API client manages categories with the expected methods and payloads', async () => {
+  const calls = [];
+  const client = createGlossaryApiClient({ fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (options.method === 'GET') return ok({ categories: [{ id: 'other', label: '其他' }] });
+    if (options.method === 'DELETE') return ok({ category: { id: 'project' }, reassignedEntryCount: 1 });
+    if (url.endsWith('/order')) return ok({ categories: [{ id: 'other', label: '其他' }] });
+    return ok({ category: { id: 'project', label: JSON.parse(options.body).label } });
+  }});
+  assert.deepEqual(await client.listCategories(), [{ id: 'other', label: '其他' }]);
+  assert.equal((await client.createCategory({ label: '專案' })).id, 'project');
+  assert.equal((await client.updateCategory('project', { label: '專案詞彙' })).label, '專案詞彙');
+  assert.equal((await client.reorderCategories(['project', 'other'])).length, 1);
+  assert.equal((await client.deleteCategory('project')).reassignedEntryCount, 1);
+  assert.deepEqual(calls.map(({ url, options }) => [url, options.method]), [
+    ['/api/glossary/categories', 'GET'],
+    ['/api/glossary/categories', 'POST'],
+    ['/api/glossary/categories/project', 'PUT'],
+    ['/api/glossary/categories/order', 'PUT'],
+    ['/api/glossary/categories/project', 'DELETE']
+  ]);
+});
+
 function ok(body) {
   return { ok: true, status: 200, json: async () => body };
 }

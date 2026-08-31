@@ -32,7 +32,9 @@ API.
 
 Create local environment configuration outside version control. Common settings:
 
-- `PORT`: backend port, defaults to `3000`.
+- Development origin settings are `dev_frontend_origin` (default
+  `http://127.0.0.1:5173`) and `dev_backend_origin` (default
+  `http://127.0.0.1:3000`).
 - `DATA_DIR`: directory for file-backed persistence, defaults to `./data`
   outside production and `/var/data` in production.
 - `TRANSLATION_PROVIDER`: saved retranslation provider, defaults to `gemini`.
@@ -100,11 +102,9 @@ For Render, configure environment variables on the service instead of committing
 secrets:
 
 ```env
-PORT=3000
 DATA_DIR=/var/data
 TRANSLATION_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
-ALLOWED_ORIGIN=https://your-render-service.onrender.com
 DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 ```
 

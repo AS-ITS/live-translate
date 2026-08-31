@@ -36,13 +36,12 @@ if (IS_MAIN) {
   loadDotenv();
 }
 
-if (IS_MAIN && process.argv.includes('--production')) {
-  process.env.HOST ??= '0.0.0.0';
-}
-
-const PORT = Number.parseInt(process.env.PORT || '8000', 10);
-const HOST = process.env.HOST || '127.0.0.1';
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'http://127.0.0.1:5173';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
+const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
+const RESOLVED_ORIGIN = IS_PRODUCTION
+  ? 'http://127.0.0.1:8000'
+  : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173');
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -125,7 +124,7 @@ function sendJson(res, status, payload, requestId) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -143,7 +142,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Type': contentType,
     'Content-Length': buffer.byteLength,
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -160,7 +159,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Type': contentType,
     ...(Number.isFinite(contentLength) ? { 'Content-Length': contentLength } : {}),
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -2321,7 +2320,7 @@ function validateGlossaryEntryBody(body) {
 }
 
 function validateGlossaryCategory(value) {
-  if (!['product', 'department', 'abbreviation', 'meeting', 'technical', 'other'].includes(value)) throw createHttpError('invalid_request');
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value)) throw createHttpError('invalid_request');
   return value;
 }
 
@@ -2832,7 +2831,7 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -2853,7 +2852,7 @@ function openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meeti
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -2972,8 +2971,8 @@ if (IS_MAIN) {
   });
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 
-  server.listen(PORT, HOST, () => {
-    console.log(`Live Translate API listening on http://${HOST}:${PORT}`);
+  server.listen(SERVER_PORT, SERVER_HOST, () => {
+    console.log(`Live Translate API listening on http://${SERVER_HOST}:${SERVER_PORT}`);
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

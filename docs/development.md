@@ -11,7 +11,10 @@ Backend environment variables:
   shared-token access control, not per-user security.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
-- `PORT`: Optional backend port. Defaults to `3000`.
+- `dev_frontend_origin`: Development frontend origin. Defaults to
+  `http://127.0.0.1:5173`.
+- `dev_backend_origin`: Development backend origin used by the Vite proxy.
+  Defaults to `http://127.0.0.1:3000`.
 - `DATA_DIR`: Optional directory for file-backed persistence. Defaults to
   `./data` outside production and `/var/data` in production.
 - `SESSION_SNAPSHOT_MAX_BYTES`: Optional saved session snapshot JSON request
@@ -19,19 +22,21 @@ Backend environment variables:
 - `SESSION_AUDIO_MAX_BYTES`: Optional per-request WAV upload limit. Defaults to
   `52428800`.
 - `SESSION_SHARES_FILE`: Optional override for persisted session share tokens.
-- `ALLOWED_ORIGIN`: Optional CORS origin for the frontend. Defaults to
-  `http://127.0.0.1:5173`.
+
+The development server binds to `127.0.0.1:3000` and Vite binds to
+`127.0.0.1:5173`. The production server binds to `0.0.0.0:8000` and accepts
+the origin `http://127.0.0.1:8000`.
 
 Development example:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
 SAVED_RETRANSLATION_TIMEOUT_MS=30000
-PORT=3000
+dev_frontend_origin=http://127.0.0.1:5173
+dev_backend_origin=http://127.0.0.1:3000
 DATA_DIR=./data
 SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
-ALLOWED_ORIGIN=http://127.0.0.1:5173
 DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 VITE_DEMO_ACCESS_TOKEN=replace_with_the_same_demo_token_for_browser_demo
 ```

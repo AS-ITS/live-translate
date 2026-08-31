@@ -83,7 +83,7 @@ test.afterEach(() => {
   delete process.env.DEMO_ACCESS_TOKEN;
   delete process.env.RATE_LIMIT_MAX;
   delete process.env.RATE_LIMIT_WINDOW_MS;
-  delete process.env.ALLOWED_ORIGIN;
+  delete process.env.dev_frontend_origin;
 });
 
 test('POST /api/live-token returns an ephemeral token without calling real Gemini', async () => {
@@ -218,8 +218,6 @@ test('POST /api/live-token requires configured demo access token', async () => {
 
 test('POST /api/live-token rejects disallowed origin', async () => {
   process.env.GEMINI_API_KEY = 'test-api-key';
-  process.env.ALLOWED_ORIGIN = 'https://app.example.com';
-
   const response = await request({
     body: JSON.stringify({ targetLanguageCode: 'en' }),
     headers: { origin: 'https://evil.example.com' }

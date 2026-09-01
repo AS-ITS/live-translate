@@ -1,5 +1,6 @@
 import { promises as defaultFileSystem } from 'node:fs';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { isSupportedLanguage } from '../../server/languages.js';
 
 const GLOSSARY_SCOPES = new Set(['live', 'history', 'both']);
@@ -20,6 +21,42 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
   let storagePromise;
 
   return Object.freeze({
+    async previewImport({ format, content } = {}) {
+      const storage = await loadStorage();
+      return buildImportPreview(storage, format, content);
+    },
+
+    async importEntries({ format, content, baseRevision, resolutions = {} } = {}) {
+      assertConfigured(filePath);
+      assertWritableFileSystem(fileSystem);
+      const storage = await readStorage(fileSystem, filePath);
+      const currentRevision = glossaryRevision(storage);
+      if (baseRevision !== currentRevision) throw glossaryError('glossary_revision_conflict', 'Glossary changed after the import preview.');
+      const preview = buildImportPreview(storage, format, content);
+      if (preview.rows.some((row) => row.errors.length > 0)) throw importValidationError(preview.rows);
+      const nextEntries = storage.entries.map((entry) => ({ ...entry }));
+      let createdCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      for (const row of preview.rows) {
+        const action = row.status === 'conflict' ? resolutions[String(row.rowNumber)] : 'create';
+        if (action === 'skip') { skippedCount += 1; continue; }
+        if (row.status === 'conflict' && action !== 'update') throw glossaryError('glossary_import_resolution_required', `Import resolution is required for row ${row.rowNumber}.`);
+        if (action === 'update') {
+          const index = nextEntries.findIndex((entry) => entry.id === row.conflict.existingEntryId);
+          nextEntries[index] = normalizeMutableEntry({ ...row.entry, id: nextEntries[index].id, createdAt: nextEntries[index].createdAt, updatedAt: clock() }, index, new Set(storage.categories.map((category) => category.id)));
+          updatedCount += 1;
+        } else {
+          nextEntries.push(normalizeMutableEntry({ ...row.entry, id: idFactory(), createdAt: clock(), updatedAt: clock() }, nextEntries.length, new Set(storage.categories.map((category) => category.id))));
+          createdCount += 1;
+        }
+      }
+      const nextStorage = { categories: storage.categories, entries: nextEntries };
+      await writeStorage(fileSystem, filePath, nextStorage);
+      invalidateCache(nextStorage);
+      return { createdCount, updatedCount, skippedCount, total: preview.rows.length };
+    },
+
     async entriesFor(targetLanguageCode, options = {}) {
       assertSupportedTargetLanguageCode(targetLanguageCode);
       const scope = normalizeOptionalScope(options.scope);
@@ -218,6 +255,79 @@ function validateGlossary(value) {
   const entries = value.entries.map((entry, index) => normalizeMutableEntry(entry, index, categoryIds));
   return { categories, entries };
 }
+
+function buildImportPreview(storage, format, content) {
+  const rows = parseImportContent(format, content);
+  const categoryIds = new Set(storage.categories.map((category) => category.id));
+  const seenKeys = new Set();
+  const previewRows = rows.map(({ rowNumber, entry }) => {
+    const errors = [];
+    try { normalizeMutableEntry(entry, rowNumber, categoryIds); } catch (error) { errors.push(error.message); }
+    const key = glossaryEntryKey(entry);
+    if (seenKeys.has(key)) errors.push('Import contains a duplicate source term.');
+    seenKeys.add(key);
+    const existingEntry = storage.entries.find((candidate) => glossaryEntryKey(candidate) === key);
+    return { rowNumber, status: errors.length ? 'invalid' : existingEntry ? 'conflict' : 'create', entry, conflict: existingEntry ? { existingEntryId: existingEntry.id, existingEntry: cloneEntry(existingEntry) } : null, errors };
+  });
+  return {
+    baseRevision: glossaryRevision(storage),
+    summary: {
+      total: previewRows.length,
+      valid: previewRows.filter((row) => row.errors.length === 0).length,
+      invalid: previewRows.filter((row) => row.errors.length > 0).length,
+      creates: previewRows.filter((row) => row.status === 'create').length,
+      updates: previewRows.filter((row) => row.status === 'conflict').length,
+      duplicates: previewRows.filter((row) => row.status === 'conflict').length
+    },
+    rows: previewRows
+  };
+}
+
+function parseImportContent(format, content) {
+  if (format !== 'csv' && format !== 'json') throw glossaryError('glossary_import_invalid', 'Import format must be csv or json.');
+  if (typeof content !== 'string' || content.trim() === '') throw glossaryError('glossary_import_invalid', 'Import content must not be empty.');
+  if (format === 'json') {
+    let parsed;
+    try { parsed = JSON.parse(content); } catch { throw glossaryError('glossary_import_invalid', 'Import JSON is invalid.'); }
+    const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+    if (!Array.isArray(entries)) throw glossaryError('glossary_import_invalid', 'Import JSON must contain an entries array.');
+    return entries.map((entry, index) => ({ rowNumber: index + 1, entry }));
+  }
+  const records = parseCsv(content);
+  if (records.length < 2) throw glossaryError('glossary_import_invalid', 'Import CSV must contain a header and at least one row.');
+  const headers = records[0];
+  const translationHeaders = headers.filter((header) => header.startsWith('translation.'));
+  if (!headers.includes('source') || translationHeaders.length === 0) throw glossaryError('glossary_import_invalid', 'Import CSV requires source and translation.<languageCode> columns.');
+  return records.slice(1).map((values, index) => {
+    const fields = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? '']));
+    const translations = Object.fromEntries(translationHeaders.filter((header) => fields[header].trim()).map((header) => [header.slice('translation.'.length), fields[header].trim()]));
+    const replacementAliases = Object.fromEntries(headers.filter((header) => header.startsWith('replacementAliases.')).filter((header) => fields[header].trim()).map((header) => {
+      try { return [header.slice('replacementAliases.'.length), JSON.parse(fields[header])]; } catch { return [header.slice('replacementAliases.'.length), fields[header].split(',').map((value) => value.trim()).filter(Boolean)]; }
+    }));
+    return { rowNumber: index + 2, entry: { source: fields.source, sourceLanguageCode: fields.sourceLanguageCode || 'zh-Hant', translations, replacementAliases, scope: fields.scope || 'history', category: fields.category || 'other', tags: fields.tags ? fields.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [], enabled: fields.enabled === '' ? true : fields.enabled !== 'false', notes: fields.notes || '' } };
+  });
+}
+
+function parseCsv(content) {
+  const records = [];
+  let record = [], field = '', quoted = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+    if (quoted) { if (char === '"' && content[index + 1] === '"') { field += '"'; index += 1; } else if (char === '"') quoted = false; else field += char; }
+    else if (char === '"' && field === '') quoted = true;
+    else if (char === ',') { record.push(field); field = ''; }
+    else if (char === '\n' || char === '\r') { if (char === '\r' && content[index + 1] === '\n') index += 1; record.push(field); field = ''; if (record.some((value) => value !== '')) records.push(record); record = []; }
+    else field += char;
+  }
+  record.push(field); if (record.some((value) => value !== '')) records.push(record);
+  return records;
+}
+
+function glossaryEntryKey(entry) { return `${String(entry?.sourceLanguageCode || 'zh-Hant').trim()}\u0000${String(entry?.source || '').trim()}`; }
+
+function glossaryRevision(storage) { return createHash('sha256').update(JSON.stringify({ categories: storage.categories, entries: storage.entries.map(serializeStoredEntry) })).digest('hex'); }
+
+function importValidationError(rows) { const error = glossaryError('glossary_import_invalid', 'Import contains invalid rows.'); error.details = rows.filter((row) => row.errors.length > 0).map(({ rowNumber, errors }) => ({ rowNumber, errors })); return error; }
 
 function validateCategories(value) {
   if (!Array.isArray(value) || value.length === 0) throw new TypeError('Translation glossary categories must be a non-empty array.');

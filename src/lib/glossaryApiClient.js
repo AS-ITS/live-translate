@@ -14,6 +14,18 @@ export function createGlossaryApiClient({ fetchImpl = globalThis.fetch, baseUrl 
   fetchImpl = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
+    async previewImport(input) {
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/import/preview'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+      await assertOkResponse(response);
+      return parseJsonResponse(response);
+    },
+
+    async importEntries(input) {
+      const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/import'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+      await assertOkResponse(response);
+      return parseJsonResponse(response);
+    },
+
     async listCategories() {
       const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/categories'), { method: 'GET' });
       await assertOkResponse(response);

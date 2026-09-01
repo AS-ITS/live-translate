@@ -59,6 +59,9 @@ const ERROR_RESPONSES = {
   glossary_category_duplicate: { status: 409, message: 'Glossary category label already exists.' },
   glossary_category_not_deletable: { status: 409, message: 'The other glossary category cannot be deleted.' },
   glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
+  glossary_import_invalid: { status: 400, message: 'Glossary import contains invalid data.' },
+  glossary_import_resolution_required: { status: 400, message: 'Glossary import requires conflict resolutions.' },
+  glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
@@ -103,6 +106,7 @@ const ERROR_RESPONSES = {
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const DEFAULT_JSON_REQUEST_MAX_BYTES = 10_000;
+const GLOSSARY_IMPORT_MAX_BYTES = 1 * 1024 * 1024;
 const SESSION_SNAPSHOT_MAX_BYTES = parseByteLimit(process.env.SESSION_SNAPSHOT_MAX_BYTES, 25 * 1024 * 1024);
 const TRANSLATION_OUTPUT_MAX_BYTES = parseByteLimit(process.env.TRANSLATION_OUTPUT_MAX_BYTES, 25 * 1024 * 1024);
 const MEETING_CHECKPOINT_MAX_BYTES = parseByteLimit(process.env.MEETING_CHECKPOINT_MAX_BYTES, 25 * 1024 * 1024);
@@ -2212,6 +2216,7 @@ function safeDecodePathComponent(value) {
 
 function isGlossaryRoute(method, path) {
   return (
+    (method === 'POST' && (path === '/api/glossary/import/preview' || path === '/api/glossary/import')) ||
     (method === 'GET' && path === '/api/glossary') ||
     (method === 'GET' && path === '/api/glossary/categories') ||
     (method === 'POST' && path === '/api/glossary/categories') ||
@@ -2225,6 +2230,14 @@ function isGlossaryRoute(method, path) {
 }
 
 async function handleGlossaryCommand(method, path, req, glossaryController) {
+  if (method === 'POST' && (path === '/api/glossary/import/preview' || path === '/api/glossary/import')) {
+    const body = await readJson(req, { maxBytes: GLOSSARY_IMPORT_MAX_BYTES });
+    if (!isPlainRequestObject(body) || (body.format !== 'csv' && body.format !== 'json') || typeof body.content !== 'string') throw createHttpError('invalid_request');
+    if (path.endsWith('/preview')) return { status: 200, result: await glossaryController.previewImport(body) };
+    if (typeof body.baseRevision !== 'string' || !isPlainRequestObject(body.resolutions)) throw createHttpError('invalid_request');
+    return { status: 200, result: await glossaryController.importEntries(body) };
+  }
+
   if (method === 'GET' && path === '/api/glossary/categories') {
     return { status: 200, result: { categories: await glossaryController.listCategories() } };
   }

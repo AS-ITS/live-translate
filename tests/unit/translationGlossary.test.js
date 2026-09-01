@@ -201,6 +201,35 @@ test('glossary categories support stable IDs, ordering, and reassignment on dele
   assert.deepEqual((await glossary.listCategories()).map((category) => category.id), ['product', 'department', 'abbreviation', 'meeting', 'technical', 'other']);
 });
 
+test('glossary import previews CSV rows and commits selected conflicts atomically', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-glossary-import-'));
+  const filePath = join(directory, 'glossary.json');
+  const fs = await import('node:fs/promises');
+  let nextId = 0;
+  const glossary = createTranslationGlossary({ filePath, fileSystem: fs, idFactory: () => `import-${++nextId}`, clock: () => 2000 });
+  await glossary.createEntry({ source: 'Existing', translations: { en: 'Old' }, scope: 'both' });
+  const content = 'source,sourceLanguageCode,translation.en,scope\nExisting,zh-Hant,New,both\nFresh,zh-Hant,Fresh,both\n';
+  const preview = await glossary.previewImport({ format: 'csv', content });
+  assert.deepEqual(preview.summary, { total: 2, valid: 2, invalid: 0, creates: 1, updates: 1, duplicates: 1 });
+  assert.equal(preview.rows[0].status, 'conflict');
+  const result = await glossary.importEntries({ format: 'csv', content, baseRevision: preview.baseRevision, resolutions: { 2: 'update', 3: 'skip' } });
+  assert.deepEqual(result, { createdCount: 1, updatedCount: 1, skippedCount: 0, total: 2 });
+  assert.equal((await glossary.listEntries()).find((entry) => entry.source === 'Existing').translations.en, 'New');
+  await assert.rejects(glossary.importEntries({ format: 'csv', content, baseRevision: 'stale', resolutions: { 2: 'update' } }), (error) => error.code === 'glossary_revision_conflict');
+});
+
+test('glossary import rejects the complete batch when any row is invalid', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'live-translate-glossary-import-invalid-'));
+  const filePath = join(directory, 'glossary.json');
+  const fs = await import('node:fs/promises');
+  const glossary = createTranslationGlossary({ filePath, fileSystem: fs, idFactory: () => 'import-1' });
+  const content = JSON.stringify({ entries: [{ source: 'Good', translations: { en: 'Good' } }, { source: 'Bad', translations: { xx: 'Bad' } }] });
+  const preview = await glossary.previewImport({ format: 'json', content });
+  assert.equal(preview.summary.invalid, 1);
+  await assert.rejects(glossary.importEntries({ format: 'json', content, baseRevision: preview.baseRevision }), (error) => error.code === 'glossary_import_invalid');
+  assert.deepEqual(await glossary.listEntries(), []);
+});
+
 function createGlossary(value) {
   return createGlossaryContent(JSON.stringify(value));
 }

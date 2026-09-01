@@ -25,6 +25,10 @@ multi-language editing, enabled-state batch actions, and the side drawer. The
 global page manages only entries shared by all Meetings; private entries remain
 covered by the Meeting glossary drawer tests.
 
+Global glossary import coverage includes CSV/JSON parsing, row validation,
+preview conflict detection, revision conflicts, and atomic all-or-nothing
+commits.
+
 Run the focused realtime tests:
 
 ```bash

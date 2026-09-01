@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新增全域字典 CSV／JSON 匯入：支援後端預覽、逐筆處理重複詞條、完整驗證與原子提交，避免部分匯入造成資料不一致。
+
 - 將共用語言標籤與 Live checkpoint／音訊狀態訊息移至 `lib`／`features/live`，修正前端功能拆分後的遺漏引用，避免 `App.jsx` 與 workspace 元件持有 Live 專用 helper。
 - 建立 `useLiveRecordingController` 的固定 Live view-model 介面，讓即時錄製頁透過 controller 讀取狀態並觸發操作，為 audio、transcript/Cue 與 Session recovery 的後續分批搬移保留相容邊界。
 - Live audio recorder、原始／翻譯音訊 chunk handler、upload retry binding 與 cleanup 已接到 Live controller 的 audio interface，維持既有 Session lifecycle 與音訊保存流程。

@@ -1,5 +1,16 @@
 # Live Translate API and Events
 
+## Global glossary import
+
+Authenticated clients can preview and atomically import a UTF-8 CSV or JSON
+glossary through `POST /api/glossary/import/preview` and
+`POST /api/glossary/import`. Both requests use
+`{ format: "csv" | "json", content: "..." }`; the commit request also sends
+the preview `baseRevision` and a `resolutions` map keyed by row number with
+`update` or `skip` for conflicts. The server validates every row before
+writing. Invalid rows reject the whole batch, and a changed revision returns
+`409 glossary_revision_conflict`.
+
 ## Meeting Center and Live Viewer
 
 Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,

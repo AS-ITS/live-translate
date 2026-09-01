@@ -478,6 +478,14 @@ orchestration. Cross-feature presentational components belong in
 Backend-facing business workflows remain in `src/application/`, domain rules
 in `src/domain/`, and external adapters in `src/infrastructure/`.
 
+The application composition root is `src/app/App.jsx`. It owns cross-feature
+state wiring and the existing Live session workflow. Workspace page composition
+is provided by `src/features/workspace/WorkspacePage.jsx`; Meeting, Glossary,
+and History UI are exposed through feature entry points under
+`src/features/{meetings,glossary,history}/`. These entry points are the stable
+migration boundary for extracting page-specific controllers and hooks without
+changing route wiring.
+
 The current frontend structure follows this pattern:
 
 ```text

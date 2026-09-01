@@ -66,7 +66,7 @@ per-user identity or permission system.
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
-`main.jsx` application orchestration, route-level page components under
+`App.jsx` application composition and cross-feature orchestration, route-level page components under
 `src/pages/`, and capability-specific frontend modules under `src/features/`.
 Pages own route boundaries while feature modules own feature UI, API clients,
 and browser-side orchestration. The independent `LiveRecordingPage` and
@@ -853,7 +853,8 @@ them.
 
 | Module | Responsibility | Must Not Own |
 | ------ | -------------- | ------------ |
-| `main.jsx` | UI orchestration, session composition, history/detail wiring, reconnect adapter | Gemini SDK internals, repository implementation, export formatting rules |
+| `src/app/App.jsx` | Cross-feature composition, existing session wiring, and route view composition | Gemini SDK internals, repository implementation, export formatting rules |
+| `src/features/live/*` | Live-specific audio/transcript helpers and browser-side feature orchestration | Route parsing, unrelated Meeting or Glossary state |
 | `src/pages/live/LiveRecordingPage.jsx` | Independent live-recording page surface and route boundary | Session lifecycle implementation, repository persistence, Gemini SDK internals |
 | `src/features/*` | Capability-specific frontend UI, API clients, and browser-side feature orchestration | Route parsing, backend domain rules, unrelated feature state |
 | `src/app/routes.js` | Hash route parsing and canonical URL normalization | Session lifecycle, data fetching, rendering |

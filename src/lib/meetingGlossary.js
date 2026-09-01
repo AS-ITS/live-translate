@@ -30,6 +30,28 @@ export function selectedMeetingGlossaryEntries(entries, selectedIds, targetLangu
     }));
 }
 
+export function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
+  if (!Array.isArray(entries)) return [];
+
+  return entries
+    .filter((entry) => entry?.enabled !== false)
+    .filter((entry) => entry?.scope === 'live' || entry?.scope === 'both')
+    .map((entry) => ({
+      id: entry.id,
+      source: entry.source,
+      target: entry.translations?.[targetLanguageCode],
+      replacementAliases: Array.isArray(entry.replacementAliases?.[targetLanguageCode])
+        ? entry.replacementAliases[targetLanguageCode]
+        : []
+    }))
+    .filter((entry) => (
+      typeof entry.source === 'string' &&
+      entry.source.length > 0 &&
+      typeof entry.target === 'string' &&
+      entry.target.length > 0
+    ));
+}
+
 function isGlossaryAliasMap(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }

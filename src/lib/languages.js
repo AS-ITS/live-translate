@@ -8,3 +8,7 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'fr', label: '法文' },
   { code: 'de', label: '德文' }
 ];
+
+export function targetLanguageLabelFor(code) {
+  return SUPPORTED_LANGUAGES.find((language) => language.code === code)?.label || null;
+}

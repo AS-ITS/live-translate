@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- 將共用語言標籤與 Live checkpoint／音訊狀態訊息移至 `lib`／`features/live`，修正前端功能拆分後的遺漏引用，避免 `App.jsx` 與 workspace 元件持有 Live 專用 helper。
+- 建立 `useLiveRecordingController` 的固定 Live view-model 介面，讓即時錄製頁透過 controller 讀取狀態並觸發操作，為 audio、transcript/Cue 與 Session recovery 的後續分批搬移保留相容邊界。
+- Live audio recorder、原始／翻譯音訊 chunk handler、upload retry binding 與 cleanup 已接到 Live controller 的 audio interface，維持既有 Session lifecycle 與音訊保存流程。
+- 移除 `App.jsx` 內重複的 Live audio fallback functions；audio controller 現在由 `src/features/live/useLiveRecordingController.js` 單一管理。
+- Live Cue event queue、flush、numeric correction 與 subtitle finalization 已移入 Live controller；Cue persistence、重翻與 polishing callback 仍沿用原有服務邊界。
+- Session snapshot 與 Meeting checkpoint sync coordinator 已移入 Live controller；schedule、flush、cancel 與錯誤回報維持既有 API 行為。
+- Session recovery controller boundary 已建立；reconnect controller 的建立與取消，以及 reconnect、resume、segment switch actions 現在由 Live controller 提供，既有 lifecycle 實作與 generation guard 保持不變。
+- `switchMeetingSegment` rollover lifecycle 已移入 Live controller，包含 checkpoint flush、Segment rollover、舊／新 Live session 切換與 audio resume；既有 generation guard 與狀態轉換保持不變。
+- `startReconnectSession` 已移入 Live controller，保留 reconnect generation guard、checkpoint recovery、Live session restart、audio resume、diagnostic 與 failed-session finalize 行為。
+- `resumeMeetingSession` 已移入 Live controller，保留 resume draft、Segment recovery/start、Session record、checkpoint、callback generation、control lease 與失敗回復行為。
+- 移除 App.jsx 的 `reconnectController()` delegation wrapper，所有 reconnect reset、cancel、connectivity 與 scheduling 操作直接透過 Live controller。
+- Segment switch orchestrator 的建立、持有與 cancel/start lifecycle 已移入 Live controller；interval、狀態與錯誤 callback 由 App 注入。
+- `startSession` 已移入 Live controller，保留 microphone permission fallback、Meeting checkpoint、Session record、control lease、Live session start、audio recording 與失敗清理行為。
+- `pauseSession` 已移入 Live controller，保留 reconnect/segment cancel、audio pause、Session stop、transcript/Cue flush、checkpoint sync 與 paused state transition。
+- `continuePausedSession` 已移入 Live controller，保留 paused guard、Live session restart、Cue state preparation、audio resume、snapshot sync 與 segment switch 啟動流程。
+- `endCurrentSession` 已移入 Live controller，保留 stop flag、reconnect/segment cancel、audio finalize、terminal Cue drain、checkpoint sync、Session finalize 與返回會議管理流程。
+- `completeResumableMeeting` 已移入 Live controller，保留完成前 Cue/checkpoint flush、Meeting complete API、狀態清理與返回會議管理流程。
+- 移除 App.jsx 的 Session snapshot、Meeting checkpoint 與 segment switch delegation wrappers，Live 相關呼叫現在直接透過 controller interface。
+- `createMeetingCheckpointForSession`、`finalizeCurrentSessionRecord`、`interruptActiveMeeting` 與 failed-session finalize lifecycle 已移入 Live controller，保留 checkpoint、Session record、audio artifact 與 failure recovery 行為。
+- `createCurrentSessionRecord` 與初始 transcript snapshot 建立流程已移入 Live controller，保留 Session record、audio download preparation、snapshot sync 與 lifecycle persistence 行為。
+- finalized audio artifact upload、retry error handling 與 meeting detail cache refresh 已移入 Live controller，保留既有音訊同步與會議詳細資料更新行為。
+- transcript finalization、partial guard、Session snapshot／Meeting checkpoint scheduling 與 final transcript lifecycle persistence 已移入 Live controller。
+
+- Refactored the frontend composition boundary so the authenticated workspace
+  shell and Meeting, Glossary, and History UI are exposed through capability
+  feature entry points instead of being imported directly from the app shell.
+
 - 新增全域字典分類管理：分類可新增、改名、上下移排序與刪除；刪除分類的詞條會自動改歸「其他」，並相容既有僅含 `entries` 的字典 JSON。
 
 - 全域字典的新增與編輯表單改以置中 Dialog 呈現，保留原有詞條欄位、儲存、刪除與關閉行為。

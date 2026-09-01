@@ -328,7 +328,8 @@
   .glossary-category-more-menu { inset: calc(100% + var(--space-1)) 0 auto auto; }
   .glossary-card-region { order: 2; }
 }
-@media (min-width: 761px) and (max-width: 880px) { .glossary-card-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (min-width: 1025px) { .glossary-card-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1440px) { .glossary-card-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 760px) {
   .meeting-app-shell { padding-inline: var(--space-3); }
   .meeting-app-header { align-items: flex-start; margin-inline: calc(var(--space-3) * -1); padding-inline: var(--space-3); }

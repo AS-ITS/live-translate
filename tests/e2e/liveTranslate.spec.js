@@ -1113,6 +1113,41 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   expect(requests[4].body.scope).toBe('live');
 });
 
+test('global glossary cards use responsive desktop, tablet, and mobile columns', async ({ page }) => {
+  const entries = [
+    { id: 'entry-1', source: '產品名稱', sourceLanguageCode: 'zh-Hant', translations: { en: 'Product name' }, category: 'product', tags: [], enabled: true },
+    { id: 'entry-2', source: '會議術語', sourceLanguageCode: 'zh-Hant', translations: { en: 'Meeting term' }, category: 'meeting', tags: [], enabled: true },
+    { id: 'entry-3', source: '技術名詞', sourceLanguageCode: 'zh-Hant', translations: { en: 'Technical term' }, category: 'technical', tags: [], enabled: true },
+    { id: 'entry-4', source: '其他詞彙', sourceLanguageCode: 'zh-Hant', translations: { en: 'Other term' }, category: 'other', tags: [], enabled: true }
+  ];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'technical', label: '技術名詞' },
+    { id: 'other', label: '其他' }
+  ];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ json: { categories } });
+      return;
+    }
+    await route.fulfill({ json: { entries } });
+  });
+
+  const columnCount = () => page.locator('.glossary-card-grid').evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length);
+  const cardRegionFits = () => page.locator('.glossary-card-region').evaluate((region) => region.scrollWidth <= region.clientWidth);
+
+  for (const [width, expectedColumns] of [[1440, 4], [1280, 3], [1024, 2], [760, 1]]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/#glossary');
+    await expect(page.locator('.glossary-card-grid')).toBeVisible();
+    await expect.poll(columnCount).toBe(expectedColumns);
+    await expect.poll(cardRegionFits).toBe(true);
+  }
+});
+
 test.skip('live translation meeting glossary is read-only', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     await route.fulfill({

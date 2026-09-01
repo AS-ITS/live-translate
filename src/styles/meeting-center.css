@@ -211,7 +211,7 @@
 .global-glossary-toolbar { display: grid; gap: var(--space-4); padding-bottom: var(--space-5); border-bottom: 1px solid var(--color-border); }
 .global-glossary-toolbar-main { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-5); }
 .global-glossary-primary-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.global-glossary-filter-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: var(--space-3); }
+.global-glossary-filter-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) auto; align-items: end; gap: var(--space-3); }
 .global-glossary-filter-row .field { margin: 0; }
 .global-glossary-filter-row .button { min-height: 3rem; }
 .global-glossary-toolbar .field { margin: 0; }

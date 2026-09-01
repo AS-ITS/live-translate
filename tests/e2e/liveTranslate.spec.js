@@ -1036,6 +1036,8 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await page.waitForTimeout(100);
   expect(loadRequests).toEqual({ entries: 1, categories: 1 });
   const glossary = page.locator('.global-glossary');
+  await expect(glossary.locator('.global-glossary-filter-row').getByLabel('分類')).toHaveCount(0);
+  await expect(glossary.locator('.glossary-category-sidebar').getByRole('button', { name: /全部分類/ })).toHaveClass(/is-active/);
   await expect(glossary.locator('.glossary-category-sidebar > button')).toHaveCount(9);
   await glossary.getByRole('button', { name: '更多分類' }).click();
   await expect(glossary.locator('.glossary-category-more-menu')).toContainText('客戶名詞');
@@ -1145,6 +1147,13 @@ test('global glossary cards use responsive desktop, tablet, and mobile columns',
     await expect(page.locator('.glossary-card-grid')).toBeVisible();
     await expect.poll(columnCount).toBe(expectedColumns);
     await expect.poll(cardRegionFits).toBe(true);
+    if (width <= 760) {
+      await expect(page.locator('.glossary-category-sidebar')).toBeHidden();
+      await expect(page.locator('.glossary-mobile-category')).toBeVisible();
+    } else {
+      await expect(page.locator('.glossary-category-sidebar')).toBeVisible();
+      await expect(page.locator('.glossary-mobile-category')).toBeHidden();
+    }
   }
 });
 

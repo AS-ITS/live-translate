@@ -1202,7 +1202,6 @@ export function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChan
       </div>
       <div className="global-glossary-filter-row">
         <label className="field"><span>目標語言</span><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="all">所有語言</option>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>
-        <label className="field"><span>分類</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{categoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
         <label className="field"><span>排序</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option value="updated">最近更新</option><option value="created">最近建立</option><option value="source">原文 A–Z</option></select></label>
         <button className="button secondary" type="button" onClick={() => { setQuery(''); setCategory('all'); setLanguage('all'); }}><Filter size={17} aria-hidden="true" />清除篩選</button>
       </div>

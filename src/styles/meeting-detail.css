@@ -32,17 +32,7 @@
 .article-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .article-content { display: grid; gap: var(--space-3); }
 .article-content p { margin: 0; font-size: var(--text-lg); line-height: 1.75; white-space: pre-wrap; }
-.live-settings-drawer-backdrop, .export-drawer-backdrop, .glossary-drawer-backdrop { display: none; position: fixed; inset: 0; z-index: var(--z-overlay); background: rgb(23 32 42 / 28%); }
-.live-settings-drawer-backdrop.is-open, .export-drawer-backdrop.is-open, .glossary-drawer-backdrop.is-open { display: block; }
-.live-settings-drawer, .export-drawer, .glossary-drawer { display: none; position: fixed; z-index: calc(var(--z-overlay) + 1); inset: 0 0 0 auto; width: min(100%, 21.25rem); padding: 1.125rem; overflow: auto; background: var(--color-surface); box-shadow: var(--shadow-floating); }
-.live-settings-drawer.is-open, .export-drawer.is-open, .glossary-drawer.is-open { display: block; }
-.live-settings-drawer-header, .export-drawer-header, .glossary-drawer-header { display: flex; justify-content: space-between; gap: var(--space-3); }
-.live-settings-drawer-header, .export-drawer-header, .glossary-drawer-header { padding-inline: 1.125rem; }
-.live-settings-drawer-header h2, .export-drawer-header h2, .glossary-drawer-header h2 { margin: 0; }
-.live-settings-drawer-body, .export-drawer-body, .glossary-drawer-body { display: grid; gap: var(--space-4); margin-top: var(--space-5); }
-
 @media (max-width: 760px) { .transcript-columns, .session-detail-metadata, .meeting-detail-metadata { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .live-settings-drawer, .export-drawer, .glossary-drawer { width: 100%; height: min(90dvh, 48.75rem); padding: 1rem; border: 0; border-top: 1px solid var(--color-border); } .live-settings-drawer-header, .export-drawer-header, .glossary-drawer-header { padding-inline: 1rem; } }
 
 .meeting-detail-app-shell { width: 100%; padding-inline: 48px; }
 .meeting-detail-app-shell .meeting-app-header { margin-inline: -48px; padding-inline: 48px; }

@@ -1,0 +1,27 @@
+.meeting-center-page { display: grid; gap: var(--space-6); align-content: start; }
+.meeting-app-shell { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: var(--space-5); width: min(100%, var(--container-max)); min-height: 100dvh; margin: 0 auto; padding: 0 var(--page-gutter) var(--space-8); }
+.meeting-management-shell { width: 100%; max-width: none; gap: var(--space-4); }
+.meeting-app-shell > .feature-page, .meeting-app-shell > .error-message { min-width: 0; }
+.meeting-app-shell > .error-message { align-self: start; height: fit-content; min-height: 0; }
+.meeting-app-header { position: sticky; top: 0; z-index: var(--z-header); display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); min-height: 4.5rem; margin: 0 calc(var(--page-gutter) * -1) var(--space-6); padding: var(--space-3) var(--page-gutter); border-bottom: 1px solid var(--color-border); background: rgb(255 255 255 / 96%); backdrop-filter: blur(12px); }
+.meeting-management-shell .meeting-app-header { margin-bottom: 0; }
+.meeting-app-header .brand-block { display: grid; gap: var(--space-1); }
+.brand-block h1 { margin: 0; font-size: clamp(1.35rem, 2.2vw, 1.75rem); line-height: 1.2; }
+.brand-block p { margin: 0; color: var(--color-text-muted); font-size: var(--text-sm); }
+.meeting-header-action, .meeting-create-header-button { white-space: nowrap; }
+.meeting-center-page .history-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-6); }
+.workspace-page-heading { margin: 0; font-size: clamp(1.6rem, 3vw, 2.25rem); line-height: 1.2; }
+.meeting-center-page .history-description { max-width: 65ch; margin: var(--space-2) 0 0; color: var(--color-text-muted); }
+.meeting-management-shell, .meeting-settings-shell, .glossary-page {
+  --color-primary: var(--color-slate-primary);
+  --color-primary-hover: var(--color-slate-primary-hover);
+  --color-primary-active: var(--color-slate-primary-active);
+  --color-primary-soft: var(--color-slate-primary-soft);
+  --color-focus: var(--color-slate-primary);
+  --color-focus-ring: var(--color-slate-focus-ring);
+}
+
+@media (max-width: 760px) {
+  .meeting-app-shell { padding-inline: var(--space-3); }
+  .meeting-app-header { align-items: flex-start; margin-inline: calc(var(--space-3) * -1); padding-inline: var(--space-3); }
+}

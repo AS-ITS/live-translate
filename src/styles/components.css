@@ -41,6 +41,11 @@
 }
 .dialog-close-button:hover, .global-glossary-modal-header > .icon-button:hover, .glossary-drawer-header > .icon-button:hover, .global-glossary-dialog-header > .icon-button:hover { border-color: var(--color-primary); background: var(--color-primary-soft); color: var(--color-primary); }
 .dialog-close-button:disabled, .global-glossary-modal-header > .icon-button:disabled, .glossary-drawer-header > .icon-button:disabled, .global-glossary-dialog-header > .icon-button:disabled { cursor: not-allowed; opacity: .55; }
+.meeting-private-glossary { display: grid; gap: var(--space-3); }
+.glossary-choice { display: flex; justify-content: space-between; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-muted); }
+.glossary-choice span:first-child { display: grid; gap: var(--space-1); }
+.glossary-choice small { color: var(--color-text-muted); }
+.glossary-quick-add { display: grid; gap: var(--space-3); }
 .inline-retry { border: 0; padding: 0; background: transparent; color: inherit; font-weight: 700; text-decoration: underline; cursor: pointer; }
 
 .field { display: grid; gap: var(--space-2); min-width: 0; color: #314152; font-weight: 650; }

@@ -44,6 +44,37 @@ test('short desktop viewport can scroll the settings steps to the dictionary ste
   await expect(stepButtons.nth(3)).toHaveAttribute('aria-current', 'step');
 });
 
+test('meeting settings imports private glossary rows and saves them with the meeting', async ({ page }) => {
+  let savedBody;
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.route('**/api/meetings/glossary/import/preview', async (route) => route.fulfill({ json: {
+    summary: { total: 2, creates: 1, updates: 0, duplicates: 1, invalid: 0 },
+    rows: [
+      { rowNumber: 2, status: 'create', entry: { source: '產品名稱', translations: { en: 'Product name' } }, errors: [], warnings: [] },
+      { rowNumber: 3, status: 'duplicate', entry: { source: '產品名稱', translations: { en: 'Duplicate' } }, errors: [], warnings: ['Import contains a duplicate source term.'] }
+    ]
+  } }));
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    savedBody = route.request().postDataJSON();
+    return route.fulfill({ json: { meeting: { id: 'meeting-import', name: '產品會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: savedBody.privateGlossaryEntries } } });
+  });
+  await page.route('**/api/meetings/meeting-import/shares', async (route) => route.fulfill({ json: { url: '#viewer?code=viewer-code', share: { id: 'share-1', role: 'viewer', shortCode: 'viewer-code' } } }));
+
+  await page.goto('/#meeting-settings?mode=create');
+  await page.getByRole('button', { name: '匯入詞彙' }).click();
+  const importHelp = page.getByRole('dialog', { name: '匯入會議詞彙' });
+  await expect(importHelp).toContainText('XLSX 格式');
+  await expect(importHelp).toContainText('JSON 範例');
+  await expect(importHelp).toContainText('翻譯結果,Translation result');
+  await page.locator('#meeting-glossary-import-file').setInputFiles({ name: 'terms.csv', mimeType: 'text/csv', buffer: Buffer.from('source,translation\n產品名稱,Product name\n產品名稱,Duplicate') });
+  await expect(page.getByRole('dialog', { name: '預覽匯入：terms.csv' })).toBeVisible();
+  await page.getByRole('button', { name: '加入會議詞彙' }).click();
+  await expect(page.locator('.meeting-private-entry')).toContainText('產品名稱');
+  await page.getByRole('button', { name: '建立會議' }).click();
+  await expect.poll(() => savedBody?.privateGlossaryEntries).toEqual([{ source: '產品名稱', translations: { en: 'Product name' }, replacementAliases: {} }]);
+});
+
 test('active step stays on the first step at the top and follows the 40% focus line', async ({ page }) => {
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
   await page.setViewportSize({ width: 1024, height: 800 });

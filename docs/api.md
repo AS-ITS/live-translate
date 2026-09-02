@@ -47,6 +47,17 @@ revision returns `409 glossary_revision_conflict`.
 
 ## Meeting Center and Live Viewer
 
+## Meeting glossary import preview
+
+Meeting Settings can preview a CSV, JSON, or XLSX file for private Meeting
+glossary entries through `POST /api/meetings/glossary/import/preview`. The
+request is `{ format, content, sourceLanguageCode, targetLanguageCode,
+existingEntries }`; XLSX content is base64 encoded. The endpoint is read-only:
+it returns preview rows with `create`, `conflict`, `duplicate`, or `invalid`
+status and does not change either the Meeting or global glossary. Confirmed
+rows are sent later as part of the existing Meeting create/update request's
+`privateGlossaryEntries` field.
+
 Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,
 and Meeting-level `cue.append` SSE events. The complete contract and delivery
 phases are documented in

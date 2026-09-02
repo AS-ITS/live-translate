@@ -35,6 +35,7 @@ lease model, or security model.
 - Make the Meeting list the application home.
 - Keep Setting, Live, History Detail, and public Viewer responsibilities separate.
 - Separate global glossary entries from Meeting-private entries.
+- Import CSV, JSON, or XLSX rows into Meeting-private glossary settings.
 - Let a Viewer read the complete bilingual Cue stream through a Meeting share.
 - Broadcast finalized Cues without waiting for checkpoint persistence.
 - Restore missing Cues after Viewer reconnect without duplicates or reordering.
@@ -146,6 +147,8 @@ Rules:
 - Live translation applies selected global entries and Meeting-private entries.
 - Completed Meetings are read-only.
 - Viewer payloads do not expose glossary contents.
+- Meeting glossary imports are previewed without persistence and are saved with
+  the existing Meeting settings request.
 
 The existing Meeting glossary snapshot behavior remains the source of truth for
 later Segments, reconnects, exports, and historical reads.

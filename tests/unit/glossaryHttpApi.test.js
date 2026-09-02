@@ -86,6 +86,25 @@ test('glossary HTTP import routes accept XLSX payloads with import settings', as
   ]);
 });
 
+test('meeting glossary preview route accepts private entries without committing them', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    glossaryController: {
+      async previewPrivateImport(input) { calls.push(input); return { rows: [], summary: { total: 0 } }; }
+    }
+  });
+  const body = {
+    format: 'csv',
+    content: 'source,translation\nTerm,Translation',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    existingEntries: [{ source: 'Existing', translations: { en: 'Existing' } }]
+  };
+  const response = await request(handler, { method: 'POST', url: '/api/meetings/glossary/import/preview', body });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(calls, [body]);
+});
+
 test('glossary HTTP import route returns validation details', async () => {
   const validationError = new Error('Import contains invalid rows.');
   validationError.code = 'glossary_import_invalid';

@@ -29,6 +29,10 @@ Global glossary import coverage includes CSV/JSON parsing, row validation,
 preview conflict detection, selected-row imports that skip invalid rows,
 revision conflicts, and atomic all-or-nothing commits.
 
+Meeting glossary import coverage includes private CSV/JSON/XLSX preview,
+duplicate and conflict handling, staged form merging, and persistence through
+the existing Meeting settings save request.
+
 Run the focused realtime tests:
 
 ```bash

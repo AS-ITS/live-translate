@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { ArrowRight, BookOpen, ChevronDown, Copy, Mic, Pencil, Plus, Trash2, Volume2 } from 'lucide-react';
+import { ArrowRight, BookOpen, ChevronDown, Copy, Download, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
 import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
@@ -28,6 +28,12 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [privateSource, setPrivateSource] = useState('');
   const [privateTranslation, setPrivateTranslation] = useState('');
   const [editingPrivateSource, setEditingPrivateSource] = useState('');
+  const [isPrivateImportOpen, setIsPrivateImportOpen] = useState(false);
+  const [privateImportFile, setPrivateImportFile] = useState(null);
+  const [privateImportPreview, setPrivateImportPreview] = useState(null);
+  const [privateImportSelectedRows, setPrivateImportSelectedRows] = useState([]);
+  const [privateImportResolutions, setPrivateImportResolutions] = useState({});
+  const [isPrivateImporting, setIsPrivateImporting] = useState(false);
   const [isGlobalGlossaryExpanded, setIsGlobalGlossaryExpanded] = useState(true);
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
@@ -162,6 +168,69 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     setPrivateSource('');
     setPrivateTranslation('');
     setEditingPrivateSource('');
+  }
+
+  async function previewPrivateGlossaryImport(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    const format = file.name.toLowerCase().endsWith('.json') ? 'json' : file.name.toLowerCase().endsWith('.xlsx') ? 'xlsx' : file.name.toLowerCase().endsWith('.csv') ? 'csv' : null;
+    if (!format) { setError('請選擇 CSV、JSON 或 XLSX 檔案。'); return; }
+    setIsPrivateImporting(true);
+    setError('');
+    try {
+      const content = format === 'xlsx' ? arrayBufferToBase64(await file.arrayBuffer()) : await file.text();
+      const preview = await managementClient.previewPrivateGlossaryImport({ format, content, sourceLanguageCode, targetLanguageCode, existingEntries: privateGlossaryEntries });
+      setPrivateImportFile({ name: file.name, format, content });
+      setPrivateImportPreview(preview);
+      setPrivateImportResolutions({});
+      setPrivateImportSelectedRows(defaultSelectedPrivateImportRows(preview));
+    } catch (requestError) {
+      setError(requestError?.message || '無法預覽匯入檔案。');
+    } finally {
+      setIsPrivateImporting(false);
+    }
+  }
+
+  function openPrivateImportDialog() {
+    setError('');
+    setPrivateImportFile(null);
+    setPrivateImportPreview(null);
+    setPrivateImportSelectedRows([]);
+    setPrivateImportResolutions({});
+    setIsPrivateImportOpen(true);
+  }
+
+  function closePrivateImportDialog() {
+    if (isPrivateImporting) return;
+    setIsPrivateImportOpen(false);
+    setPrivateImportFile(null);
+    setPrivateImportPreview(null);
+    setPrivateImportSelectedRows([]);
+    setPrivateImportResolutions({});
+  }
+
+  function commitPrivateGlossaryImport() {
+    if (!privateImportPreview) return;
+    const nextEntries = [...privateGlossaryEntries];
+    for (const row of privateImportPreview.rows || []) {
+      if (!privateImportSelectedRows.includes(row.rowNumber) || row.status === 'duplicate' || row.errors?.length > 0) continue;
+      const source = row.entry.source.trim();
+      const existingIndex = nextEntries.findIndex((entry) => entry.source === source);
+      if (row.status === 'conflict' && privateImportResolutions[String(row.rowNumber)] !== 'update') continue;
+      const existing = existingIndex >= 0 ? nextEntries[existingIndex] : null;
+      const nextEntry = {
+        ...(existing || {}),
+        source,
+        translations: { ...(existing?.translations || {}), [targetLanguageCode]: row.entry.translations[targetLanguageCode] },
+        replacementAliases: { ...(existing?.replacementAliases || {}) }
+      };
+      if (existingIndex >= 0) nextEntries[existingIndex] = nextEntry;
+      else nextEntries.push(nextEntry);
+    }
+    setPrivateGlossaryEntries(nextEntries);
+    setNotice('匯入詞彙已加入表單，請儲存會議設定以套用。');
+    closePrivateImportDialog();
   }
 
   async function createShare(meetingId, role) {
@@ -329,7 +398,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
                 {isGlobalGlossaryExpanded ? <div className="meeting-global-glossary-content"><p className="meeting-dictionary-section-description">從共用詞彙中選擇要套用到本場會議的項目。</p>{availableGlossaryEntries.map((entry) => <label className={`glossary-choice${selectedGlossaryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}><input type="checkbox" aria-label={`套用詞彙：${entry.source}`} checked={selectedGlossaryIds.includes(entry.id)} onChange={() => setSelectedGlossaryIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} disabled={meeting?.status === 'completed'} /><span className="glossary-choice-content"><span className="glossary-choice-field"><small>聽到的詞彙</small><strong>{entry.source}</strong></span><span className="glossary-choice-field"><small>要顯示／播放的翻譯</small><strong>{entry.translations[targetLanguageCode]}</strong></span></span></label>)}{availableGlossaryEntries.length === 0 ? <p className="export-note">目前沒有可套用的共用詞彙。</p> : null}</div> : null}
               </section>
               <section className="meeting-dictionary-group meeting-private-glossary" aria-labelledby="meeting-private-glossary-title">
-                <div className="meeting-dictionary-section-heading"><div><h4 id="meeting-private-glossary-title">會議詞彙</h4><p className="meeting-settings-card-description">只套用於本場會議，不會影響其他會議。</p></div></div>
+                <div className="meeting-dictionary-section-heading"><div><h4 id="meeting-private-glossary-title">會議詞彙</h4><p className="meeting-settings-card-description">只套用於本場會議，不會影響其他會議。</p></div>{meeting?.status !== 'completed' ? <button className="button secondary" type="button" onClick={openPrivateImportDialog}><Download size={16} aria-hidden="true" />匯入詞彙</button> : null}</div>
                 <div className="meeting-private-glossary-list">{privateGlossaryEntries.map((entry) => <div className="meeting-private-entry" key={entry.source}><div className="meeting-private-entry-fields"><div><span>聽到的詞彙</span><strong>{entry.source}</strong></div><div><span>要顯示／播放的翻譯</span><strong>{entry.translations?.[targetLanguageCode] || '尚未設定目前語言翻譯'}</strong></div></div>{meeting?.status !== 'completed' ? <span className="meeting-actions"><button className="button detail-button" type="button" aria-label={`編輯 ${entry.source}`} onClick={() => { setEditingPrivateSource(entry.source); setPrivateSource(entry.source); setPrivateTranslation(entry.translations?.[targetLanguageCode] || ''); }}><Pencil size={15} aria-hidden="true" /><span className="sr-only">編輯</span></button><button className="button detail-button danger-button" type="button" aria-label={`刪除 ${entry.source}`} onClick={() => setPrivateGlossaryEntries((current) => current.filter((item) => item.source !== entry.source))}><Trash2 size={15} aria-hidden="true" /><span className="sr-only">刪除</span></button></span> : null}</div>)}{meeting?.status !== 'completed' ? <div className="glossary-quick-add"><div className="meeting-private-entry-fields"><label className="field"><span>聽到的詞彙</span><input value={privateSource} onChange={(event) => setPrivateSource(event.target.value)} placeholder="例如：產品名稱" /></label><label className="field"><span>要顯示／播放的翻譯</span><input value={privateTranslation} onChange={(event) => setPrivateTranslation(event.target.value)} placeholder="例如：Product Name" /></label></div><button className="button secondary meeting-add-private-button" type="button" onClick={savePrivateEntry} disabled={!privateSource.trim() || !privateTranslation.trim()}><Plus size={16} aria-hidden="true" />{editingPrivateSource ? '更新會議詞彙' : '新增會議詞彙'}</button></div> : null}</div>
               </section>
             </div>
@@ -339,8 +408,34 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(meeting.id)}>前往即時字幕</button> : null}</div></div>
         </section>
       </div>
+      {isPrivateImportOpen ? <PrivateGlossaryImportDialog file={privateImportFile} preview={privateImportPreview} selectedRows={privateImportSelectedRows} resolutions={privateImportResolutions} isImporting={isPrivateImporting} onFileChange={previewPrivateGlossaryImport} onClose={closePrivateImportDialog} onSelectedRowsChange={setPrivateImportSelectedRows} onResolutionsChange={setPrivateImportResolutions} onCommit={commitPrivateGlossaryImport} targetLanguageCode={targetLanguageCode} /> : null}
     </section>
   );
+}
+
+function PrivateGlossaryImportDialog({ file, preview, selectedRows, resolutions, isImporting, onFileChange, onClose, onSelectedRowsChange, onResolutionsChange, onCommit, targetLanguageCode }) {
+  const selectableRows = (preview?.rows || []).filter((row) => row.errors?.length === 0 && row.status !== 'duplicate');
+  const allSelected = selectableRows.length > 0 && selectableRows.every((row) => selectedRows.includes(row.rowNumber));
+  return <><div className="global-glossary-dialog-backdrop" onClick={onClose} aria-hidden="true" /><section className={`global-glossary-dialog ${preview ? 'glossary-import-dialog' : 'glossary-import-help-dialog'}`} role="dialog" aria-modal="true" aria-labelledby="meeting-glossary-import-title"><div className="global-glossary-dialog-header"><div><p className="eyebrow">{preview ? 'IMPORT PREVIEW' : 'IMPORT FORMAT'}</p><h2 id="meeting-glossary-import-title">{preview ? `預覽匯入：${file?.name}` : '匯入會議詞彙'}</h2>{preview ? <p className="category-management-summary">共 {preview.summary.total} 筆，新增 {preview.summary.creates} 筆，重複 {preview.summary.duplicates} 筆，錯誤 {preview.summary.invalid} 筆；已選 {selectedRows.length} 筆</p> : null}</div><button className="icon-button" type="button" aria-label="關閉匯入會議詞彙" onClick={onClose} disabled={isImporting}><X size={20} aria-hidden="true" /></button></div>{preview ? <><div className="glossary-import-settings"><p className="meeting-dictionary-section-description">目前設定：{targetLanguageCode}；錯誤與重複列會自動略過。</p></div><div className="glossary-import-preview-list"><div className="glossary-import-selection-bar"><label><input type="checkbox" aria-label="全選可匯入項目" checked={allSelected} onChange={() => onSelectedRowsChange(allSelected ? [] : selectableRows.map((row) => row.rowNumber))} disabled={isImporting} />全選／取消全選</label><span>匯入結果會先加入表單，儲存後才套用</span></div>{preview.rows.map((row) => <div className={`glossary-import-row is-${row.status}${selectedRows.includes(row.rowNumber) ? ' is-selected' : ''}`} key={row.rowNumber}><label className="glossary-import-row-selection"><input type="checkbox" aria-label={`選取第 ${row.rowNumber} 列`} checked={selectedRows.includes(row.rowNumber)} onChange={() => onSelectedRowsChange(selectedRows.includes(row.rowNumber) ? selectedRows.filter((number) => number !== row.rowNumber) : [...selectedRows, row.rowNumber])} disabled={isImporting || row.errors?.length > 0 || row.status === 'duplicate'} /><span /></label><div><strong>第 {row.rowNumber} 列{row.errors?.map((item) => <small className="error-message" key={item}>{privateGlossaryImportRowErrorMessage(item)}</small>)}</strong>{row.warnings?.map((item) => <small className="warning-message" key={item}>{privateGlossaryImportRowErrorMessage(item)}</small>)}<span className="import-entry-preview"><strong>{row.entry?.source || '未提供原文'}</strong><span className="import-entry-arrow" aria-hidden="true">→</span><span className="import-entry-translation">{row.entry?.translations?.[targetLanguageCode] || '未提供翻譯'}</span></span></div>{row.status === 'conflict' ? <label className="field"><span>重複處理</span><select aria-label={`第 ${row.rowNumber} 列重複處理`} value={resolutions[String(row.rowNumber)] || ''} onChange={(event) => onResolutionsChange((current) => ({ ...current, [row.rowNumber]: event.target.value }))}><option value="">請選擇</option><option value="update">更新會議詞彙</option><option value="skip">跳過</option></select></label> : <span>{row.status === 'create' ? '新增' : row.status === 'duplicate' ? '重複，略過' : '錯誤，略過'}</span>}</div>)}</div><div className="global-glossary-dialog-actions"><button className="button secondary" type="button" onClick={onClose} disabled={isImporting}>取消</button><button className="button primary" type="button" onClick={onCommit} disabled={isImporting || selectedRows.length === 0 || preview.rows.some((row) => selectedRows.includes(row.rowNumber) && row.status === 'conflict' && !resolutions[String(row.rowNumber)])}>{isImporting ? '處理中…' : '加入會議詞彙'}</button></div></> : <div className="glossary-import-help-content"><p>支援 CSV、JSON 與 XLSX。每筆資料只需要原文與翻譯；來源語言、目標語言與分類會在選檔後設定。</p><h3>XLSX 格式</h3><p>第一個工作表的第一列請使用 <code>source</code> 與 <code>translation</code> 欄位，資料從第二列開始。</p><h3>CSV 範例</h3><pre><code>{'source,translation\n產品名稱,Product name\n會議室,Meeting room\n翻譯結果,Translation result'}</code></pre><h3>JSON 範例</h3><pre><code>{'{\n  "entries": [\n    { "source": "產品名稱", "translation": "Product name" },\n    { "source": "會議室", "translation": "Meeting room" },\n    { "source": "翻譯結果", "translation": "Translation result" }\n  ]\n}'}</code></pre><p className="export-note">每次匯入使用目前會議的來源語言與目標語言；資料會先加入表單，按下儲存會議設定後才會寫入本場會議。</p><div className="global-glossary-dialog-actions"><input className="sr-only" type="file" accept=".csv,.json,.xlsx,text/csv,application/json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" id="meeting-glossary-import-file" onChange={onFileChange} /><label className="button primary" htmlFor="meeting-glossary-import-file">選擇 CSV／JSON／XLSX 檔案</label><button className="button secondary" type="button" onClick={onClose}>取消</button></div></div>}</section></>;
+}
+
+function defaultSelectedPrivateImportRows(preview = {}) {
+  return (preview.rows || []).filter((row) => row.errors?.length === 0 && row.status !== 'duplicate').map((row) => row.rowNumber);
+}
+
+function privateGlossaryImportRowErrorMessage(message) {
+  const text = String(message || '');
+  if (text === 'Import contains a duplicate source term.') return '來源詞重複。';
+  if (text.includes('source must be')) return '來源詞不可為空白。';
+  if (text.includes('translation must be')) return '翻譯內容不可為空白。';
+  return '資料格式不正確。';
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return window.btoa(binary);
 }
 
 function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRevokeShare, onCopy, locked, onLayoutReady }) {

@@ -336,6 +336,36 @@ test('glossary import previews the first XLSX worksheet', async () => {
   ]);
 });
 
+test('meeting glossary import previews private entries without writing global storage', async () => {
+  const glossary = createTranslationGlossary();
+  const preview = await glossary.previewPrivateImport({
+    format: 'csv',
+    content: 'source,translation\n產品名稱,Product name\n產品名稱,Product duplicate\n,Missing source',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    existingEntries: [{ source: '會議室', translations: { en: 'Meeting room' } }]
+  });
+
+  assert.deepEqual(preview.rows.map((row) => row.status), ['create', 'duplicate', 'invalid']);
+  assert.equal(preview.rows[0].entry.translations.en, 'Product name');
+  assert.equal(preview.summary.duplicates, 1);
+  assert.equal(preview.summary.invalid, 1);
+});
+
+test('meeting glossary import marks existing private sources as conflicts', async () => {
+  const glossary = createTranslationGlossary();
+  const preview = await glossary.previewPrivateImport({
+    format: 'json',
+    content: JSON.stringify({ entries: [{ source: '會議室', translation: 'Conference room' }] }),
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    existingEntries: [{ source: '會議室', translations: { en: 'Meeting room' } }]
+  });
+
+  assert.equal(preview.rows[0].status, 'conflict');
+  assert.deepEqual(preview.rows[0].conflict.existingEntry.translations, { en: 'Meeting room' });
+});
+
 test('glossary import finds the header after a worksheet title row', async () => {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('工作表 1');

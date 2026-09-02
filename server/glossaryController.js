@@ -2,6 +2,10 @@ export function createGlossaryController({ glossary } = {}) {
   assertGlossary(glossary);
 
   return Object.freeze({
+    previewPrivateImport(input) {
+      return glossary.previewPrivateImport(input);
+    },
+
     previewImport(input) {
       return glossary.previewImport(input);
     },

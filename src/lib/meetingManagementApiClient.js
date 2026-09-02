@@ -5,6 +5,14 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
   const request = authenticatedFetch(fetchImpl);
 
   return Object.freeze({
+    async previewPrivateGlossaryImport(input) {
+      const response = await request(buildUrl(baseUrl, '/api/meetings/glossary/import/preview'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input)
+      });
+      await assertOk(response);
+      return response.json();
+    },
+
     async create(input = {}) {
       return parseMeeting(await request(buildUrl(baseUrl, '/api/meetings'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...input, draft: true })

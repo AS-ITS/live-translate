@@ -22,6 +22,10 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
   let storagePromise;
 
   return Object.freeze({
+    async previewPrivateImport({ format, content, sourceLanguageCode, targetLanguageCode, existingEntries = [] } = {}) {
+      return buildPrivateImportPreview(format, content, { sourceLanguageCode, targetLanguageCode, existingEntries });
+    },
+
     async previewImport({ format, content, sourceLanguageCode, targetLanguageCode, category } = {}) {
       const storage = await loadStorage();
       return await buildImportPreview(storage, format, content, { sourceLanguageCode, targetLanguageCode, category });
@@ -285,6 +289,44 @@ async function buildImportPreview(storage, format, content, settings = {}) {
       creates: previewRows.filter((row) => row.status === 'create').length,
       updates: previewRows.filter((row) => row.status === 'conflict').length,
       duplicates: previewRows.filter((row) => row.status === 'conflict' || row.status === 'duplicate').length
+    },
+    rows: previewRows
+  };
+}
+
+async function buildPrivateImportPreview(format, content, { sourceLanguageCode, targetLanguageCode, existingEntries = [] } = {}) {
+  if (!Array.isArray(existingEntries)) throw glossaryError('glossary_import_invalid', 'Existing meeting glossary entries must be an array.');
+  const rows = await parseImportContent(format, content, { sourceLanguageCode, targetLanguageCode, category: 'other' });
+  const seenSources = new Set();
+  const existingBySource = new Map(existingEntries.filter(isRecord).map((entry) => [String(entry.source || '').trim(), entry]));
+  const previewRows = rows.map(({ rowNumber, entry }) => {
+    const errors = [];
+    const warnings = [];
+    const source = typeof entry?.source === 'string' ? entry.source.trim() : '';
+    const translation = entry?.translations?.[targetLanguageCode];
+    if (!source) errors.push('Meeting glossary entry source must be a non-empty string.');
+    if (typeof translation !== 'string' || translation.trim() === '') errors.push('Meeting glossary translation must be a non-empty string.');
+    if (seenSources.has(source)) warnings.push('Import contains a duplicate source term.');
+    seenSources.add(source);
+    const existingEntry = existingBySource.get(source);
+    const status = errors.length ? 'invalid' : warnings.length ? 'duplicate' : existingEntry ? 'conflict' : 'create';
+    return {
+      rowNumber,
+      status,
+      entry: source || translation ? { source, translations: { [targetLanguageCode]: translation }, replacementAliases: {} } : entry,
+      conflict: existingEntry ? { existingEntry: JSON.parse(JSON.stringify(existingEntry)) } : null,
+      errors,
+      warnings
+    };
+  });
+  return {
+    summary: {
+      total: previewRows.length,
+      valid: previewRows.filter((row) => row.errors.length === 0 && row.status !== 'duplicate').length,
+      invalid: previewRows.filter((row) => row.errors.length > 0).length,
+      creates: previewRows.filter((row) => row.status === 'create').length,
+      updates: previewRows.filter((row) => row.status === 'conflict').length,
+      duplicates: previewRows.filter((row) => row.status === 'duplicate').length
     },
     rows: previewRows
   };

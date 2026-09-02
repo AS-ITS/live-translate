@@ -930,6 +930,25 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && path === '/api/meetings/glossary/import/preview') {
+    try {
+      if (!glossaryController?.previewPrivateImport) throw createHttpError('glossary_not_configured');
+      const body = await readJson(req, { maxBytes: GLOSSARY_IMPORT_MAX_BYTES });
+      if (!isPlainRequestObject(body) || !['csv', 'json', 'xlsx'].includes(body.format) || typeof body.content !== 'string' || typeof body.sourceLanguageCode !== 'string' || typeof body.targetLanguageCode !== 'string' || !Array.isArray(body.existingEntries)) throw createHttpError('invalid_request');
+      validateSupportedTargetLanguageCode(body.sourceLanguageCode);
+      validateSupportedTargetLanguageCode(body.targetLanguageCode);
+      statusCode = 200;
+      sendJson(res, statusCode, await glossaryController.previewPrivateImport(body), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingDetailPath(path)) {
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');

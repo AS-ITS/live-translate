@@ -1,6 +1,7 @@
 import { promises as defaultFileSystem } from 'node:fs';
 import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
+import ExcelJS from 'exceljs';
 import { isSupportedLanguage } from '../../server/languages.js';
 
 const GLOSSARY_SCOPES = new Set(['live', 'history', 'both']);
@@ -21,24 +22,28 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
   let storagePromise;
 
   return Object.freeze({
-    async previewImport({ format, content } = {}) {
+    async previewImport({ format, content, sourceLanguageCode, targetLanguageCode, category } = {}) {
       const storage = await loadStorage();
-      return buildImportPreview(storage, format, content);
+      return await buildImportPreview(storage, format, content, { sourceLanguageCode, targetLanguageCode, category });
     },
 
-    async importEntries({ format, content, baseRevision, resolutions = {} } = {}) {
+    async importEntries({ format, content, sourceLanguageCode, targetLanguageCode, category, baseRevision, resolutions = {}, selectedRows } = {}) {
       assertConfigured(filePath);
       assertWritableFileSystem(fileSystem);
       const storage = await readStorage(fileSystem, filePath);
       const currentRevision = glossaryRevision(storage);
       if (baseRevision !== currentRevision) throw glossaryError('glossary_revision_conflict', 'Glossary changed after the import preview.');
-      const preview = buildImportPreview(storage, format, content);
-      if (preview.rows.some((row) => row.errors.length > 0)) throw importValidationError(preview.rows);
+      const preview = await buildImportPreview(storage, format, content, { sourceLanguageCode, targetLanguageCode, category });
+      const rowsToImport = selectedRows === undefined
+        ? preview.rows
+        : preview.rows.filter((row) => selectedRows.includes(row.rowNumber));
+      if (rowsToImport.some((row) => row.errors.length > 0)) throw importValidationError(rowsToImport);
       const nextEntries = storage.entries.map((entry) => ({ ...entry }));
       let createdCount = 0;
       let updatedCount = 0;
       let skippedCount = 0;
-      for (const row of preview.rows) {
+      for (const row of rowsToImport) {
+        if (row.status === 'duplicate') { skippedCount += 1; continue; }
         const action = row.status === 'conflict' ? resolutions[String(row.rowNumber)] : 'create';
         if (action === 'skip') { skippedCount += 1; continue; }
         if (row.status === 'conflict' && action !== 'update') throw glossaryError('glossary_import_resolution_required', `Import resolution is required for row ${row.rowNumber}.`);
@@ -54,7 +59,7 @@ export function createTranslationGlossary({ filePath, fileSystem = defaultFileSy
       const nextStorage = { categories: storage.categories, entries: nextEntries };
       await writeStorage(fileSystem, filePath, nextStorage);
       invalidateCache(nextStorage);
-      return { createdCount, updatedCount, skippedCount, total: preview.rows.length };
+      return { createdCount, updatedCount, skippedCount, total: rowsToImport.length };
     },
 
     async entriesFor(targetLanguageCode, options = {}) {
@@ -256,55 +261,85 @@ function validateGlossary(value) {
   return { categories, entries };
 }
 
-function buildImportPreview(storage, format, content) {
-  const rows = parseImportContent(format, content);
+async function buildImportPreview(storage, format, content, settings = {}) {
+  const rows = await parseImportContent(format, content, settings);
   const categoryIds = new Set(storage.categories.map((category) => category.id));
   const seenKeys = new Set();
   const previewRows = rows.map(({ rowNumber, entry }) => {
     const errors = [];
+    const warnings = [];
     try { normalizeMutableEntry(entry, rowNumber, categoryIds); } catch (error) { errors.push(error.message); }
     const key = glossaryEntryKey(entry);
-    if (seenKeys.has(key)) errors.push('Import contains a duplicate source term.');
+    if (seenKeys.has(key)) warnings.push('Import contains a duplicate source term.');
     seenKeys.add(key);
     const existingEntry = storage.entries.find((candidate) => glossaryEntryKey(candidate) === key);
-    return { rowNumber, status: errors.length ? 'invalid' : existingEntry ? 'conflict' : 'create', entry, conflict: existingEntry ? { existingEntryId: existingEntry.id, existingEntry: cloneEntry(existingEntry) } : null, errors };
+    const status = errors.length ? 'invalid' : warnings.length ? 'duplicate' : existingEntry ? 'conflict' : 'create';
+    return { rowNumber, status, entry, conflict: existingEntry ? { existingEntryId: existingEntry.id, existingEntry: cloneEntry(existingEntry) } : null, errors, warnings };
   });
   return {
     baseRevision: glossaryRevision(storage),
     summary: {
       total: previewRows.length,
-      valid: previewRows.filter((row) => row.errors.length === 0).length,
+      valid: previewRows.filter((row) => row.errors.length === 0 && row.status !== 'duplicate').length,
       invalid: previewRows.filter((row) => row.errors.length > 0).length,
       creates: previewRows.filter((row) => row.status === 'create').length,
       updates: previewRows.filter((row) => row.status === 'conflict').length,
-      duplicates: previewRows.filter((row) => row.status === 'conflict').length
+      duplicates: previewRows.filter((row) => row.status === 'conflict' || row.status === 'duplicate').length
     },
     rows: previewRows
   };
 }
 
-function parseImportContent(format, content) {
-  if (format !== 'csv' && format !== 'json') throw glossaryError('glossary_import_invalid', 'Import format must be csv or json.');
+async function parseImportContent(format, content, { sourceLanguageCode = 'zh-Hant', targetLanguageCode = 'en', category = 'other' } = {}) {
+  if (format !== 'csv' && format !== 'json' && format !== 'xlsx') throw glossaryError('glossary_import_invalid', 'Import format must be csv, json, or xlsx.');
   if (typeof content !== 'string' || content.trim() === '') throw glossaryError('glossary_import_invalid', 'Import content must not be empty.');
+  if (!isSupportedLanguage(sourceLanguageCode) || !isSupportedLanguage(targetLanguageCode)) throw glossaryError('glossary_import_invalid', 'Import languages are invalid.');
   if (format === 'json') {
     let parsed;
     try { parsed = JSON.parse(content); } catch { throw glossaryError('glossary_import_invalid', 'Import JSON is invalid.'); }
-    const entries = Array.isArray(parsed) ? parsed : parsed?.entries;
+    const entries = parsed?.entries;
     if (!Array.isArray(entries)) throw glossaryError('glossary_import_invalid', 'Import JSON must contain an entries array.');
-    return entries.map((entry, index) => ({ rowNumber: index + 1, entry }));
+    return entries.map((entry, index) => {
+      if (!isRecord(entry)) return { rowNumber: index + 1, entry };
+      return { rowNumber: index + 1, entry: { ...entry, sourceLanguageCode, translations: { [targetLanguageCode]: entry.translation }, category } };
+    });
   }
+  if (format === 'xlsx') return parseXlsxContent(content, { sourceLanguageCode, targetLanguageCode, category });
   const records = parseCsv(content);
   if (records.length < 2) throw glossaryError('glossary_import_invalid', 'Import CSV must contain a header and at least one row.');
   const headers = records[0];
-  const translationHeaders = headers.filter((header) => header.startsWith('translation.'));
-  if (!headers.includes('source') || translationHeaders.length === 0) throw glossaryError('glossary_import_invalid', 'Import CSV requires source and translation.<languageCode> columns.');
+  if (!headers.includes('source') || !headers.includes('translation')) throw glossaryError('glossary_import_invalid', 'Import CSV requires source and translation columns.');
   return records.slice(1).map((values, index) => {
     const fields = Object.fromEntries(headers.map((header, headerIndex) => [header, values[headerIndex] ?? '']));
-    const translations = Object.fromEntries(translationHeaders.filter((header) => fields[header].trim()).map((header) => [header.slice('translation.'.length), fields[header].trim()]));
-    const replacementAliases = Object.fromEntries(headers.filter((header) => header.startsWith('replacementAliases.')).filter((header) => fields[header].trim()).map((header) => {
-      try { return [header.slice('replacementAliases.'.length), JSON.parse(fields[header])]; } catch { return [header.slice('replacementAliases.'.length), fields[header].split(',').map((value) => value.trim()).filter(Boolean)]; }
-    }));
-    return { rowNumber: index + 2, entry: { source: fields.source, sourceLanguageCode: fields.sourceLanguageCode || 'zh-Hant', translations, replacementAliases, scope: fields.scope || 'history', category: fields.category || 'other', tags: fields.tags ? fields.tags.split(',').map((tag) => tag.trim()).filter(Boolean) : [], enabled: fields.enabled === '' ? true : fields.enabled !== 'false', notes: fields.notes || '' } };
+    return { rowNumber: index + 2, entry: { source: fields.source, sourceLanguageCode, translations: { [targetLanguageCode]: fields.translation }, category } };
+  });
+}
+
+async function parseXlsxContent(content, { sourceLanguageCode, targetLanguageCode, category }) {
+  let workbook;
+  try {
+    workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(Buffer.from(content, 'base64'));
+  } catch { throw glossaryError('glossary_import_invalid', 'Import XLSX is invalid.'); }
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) throw glossaryError('glossary_import_invalid', 'Import XLSX must contain a worksheet.');
+  const records = [];
+  worksheet.eachRow({ includeEmpty: true }, (row) => {
+    const values = [];
+    row.eachCell({ includeEmpty: true }, (cell) => values.push(cell.value ?? ''));
+    records.push({ rowNumber: row.number, values });
+  });
+  const headerIndex = records.findIndex(({ values }) => {
+    const headers = values.map((value) => String(value).trim());
+    return headers.includes('source') && headers.includes('translation');
+  });
+  if (headerIndex < 0) throw glossaryError('glossary_import_invalid', 'Import XLSX requires a header row containing source and translation columns.');
+  const headers = records[headerIndex].values.map((value) => String(value).trim());
+  const dataRecords = records.slice(headerIndex + 1).filter(({ values }) => values.some((value) => String(value ?? '').trim() !== ''));
+  if (dataRecords.length === 0) throw glossaryError('glossary_import_invalid', 'Import XLSX must contain a header and at least one data row.');
+  return dataRecords.map(({ rowNumber, values }) => {
+    const fields = Object.fromEntries(headers.map((header, headerIndex) => [header, String(values[headerIndex] ?? '')]));
+    return { rowNumber, entry: { source: fields.source, sourceLanguageCode, translations: { [targetLanguageCode]: fields.translation }, category } };
   });
 }
 

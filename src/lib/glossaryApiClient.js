@@ -1,11 +1,12 @@
 import { authenticatedFetch } from './accessToken.js';
 
 export class GlossaryApiError extends Error {
-  constructor({ status, code, message }) {
+  constructor({ status, code, message, details }) {
     super(message);
     this.name = 'GlossaryApiError';
     this.status = status;
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -16,13 +17,13 @@ export function createGlossaryApiClient({ fetchImpl = globalThis.fetch, baseUrl 
   return Object.freeze({
     async previewImport(input) {
       const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/import/preview'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-      await assertOkResponse(response);
+      await assertOkResponse(response, { notFoundMessage: '找不到匯入 API，請重新啟動後端服務並確認 dev_backend_origin 設定。' });
       return parseJsonResponse(response);
     },
 
     async importEntries(input) {
       const response = await fetchImpl(buildUrl(baseUrl, '/api/glossary/import'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
-      await assertOkResponse(response);
+      await assertOkResponse(response, { notFoundMessage: '找不到匯入 API，請重新啟動後端服務並確認 dev_backend_origin 設定。' });
       return parseJsonResponse(response);
     },
 
@@ -99,7 +100,7 @@ function buildUrl(baseUrl, path) {
   return normalizedBaseUrl ? `${normalizedBaseUrl}${path}` : path;
 }
 
-async function assertOkResponse(response) {
+async function assertOkResponse(response, { notFoundMessage } = {}) {
   if (!response || typeof response !== 'object') throw new Error('Glossary API request did not return a response.');
   if (response.ok) return;
   let body;
@@ -111,7 +112,8 @@ async function assertOkResponse(response) {
   throw new GlossaryApiError({
     status: response.status,
     code: body?.error?.code,
-    message: body?.error?.message || `Glossary API request failed with HTTP ${response.status}.`
+    message: response.status === 404 && notFoundMessage ? notFoundMessage : body?.error?.message || `Glossary API request failed with HTTP ${response.status}.`,
+    details: body?.error?.details
   });
 }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import ExcelJS from 'exceljs';
 import { createRequestHandler } from '../../server/index.js';
 import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
 
@@ -62,6 +63,38 @@ test('glossary HTTP routes list, create, update, and delete entries', async () =
     ['updateEntry', { id: 'entry-1', source: 'Codex', sourceLanguageCode: 'zh-Hant', translations: { ja: 'コードエックス' }, scope: 'history', category: 'other', tags: [], enabled: true, notes: '' }],
     ['deleteEntry', { id: 'entry-1' }]
   ]);
+});
+
+test('glossary HTTP import routes accept XLSX payloads with import settings', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    glossaryController: {
+      async previewImport(input) { calls.push(['previewImport', input]); return { rows: [], summary: {} }; },
+      async importEntries(input) { calls.push(['importEntries', input]); return { createdCount: 0, updatedCount: 0, skippedCount: 0, total: 0 }; }
+    }
+  });
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Glossary');
+  worksheet.addRows([['source', 'translation'], ['產品名稱', 'Product name']]);
+  const importSettings = { format: 'xlsx', content: Buffer.from(await workbook.xlsx.writeBuffer()).toString('base64'), sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', category: 'product' };
+
+  assert.equal((await request(handler, { method: 'POST', url: '/api/glossary/import/preview', body: importSettings })).statusCode, 200);
+  assert.equal((await request(handler, { method: 'POST', url: '/api/glossary/import', body: { ...importSettings, baseRevision: 'revision-1', resolutions: {}, selectedRows: [2] } })).statusCode, 200);
+  assert.deepEqual(calls, [
+    ['previewImport', importSettings],
+    ['importEntries', { ...importSettings, baseRevision: 'revision-1', resolutions: {}, selectedRows: [2] }]
+  ]);
+});
+
+test('glossary HTTP import route returns validation details', async () => {
+  const validationError = new Error('Import contains invalid rows.');
+  validationError.code = 'glossary_import_invalid';
+  validationError.details = [{ rowNumber: 3, errors: ['Translation glossary entry 2.translations must not be empty.'] }];
+  const handler = createRequestHandler({ glossaryController: { async previewImport() { throw validationError; } } });
+
+  const response = await request(handler, { method: 'POST', url: '/api/glossary/import/preview', body: { format: 'xlsx', content: 'base64-workbook', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', category: 'other' } });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body.error.details, validationError.details);
 });
 
 test('glossary HTTP routes still accept legacy replacement aliases', async () => {

@@ -2,7 +2,15 @@
 
 ## Unreleased
 
-- 新增全域字典 CSV／JSON 匯入：支援後端預覽、逐筆處理重複詞條、完整驗證與原子提交，避免部分匯入造成資料不一致。
+- 全域字典匯入預覽新增逐列選取；正常列預設勾選，錯誤列可取消後略過，後端仍會阻擋被選取的錯誤資料並維持原子提交。
+
+- 匯入預覽的語言／分類選單統一為 3rem；可直接新增分類，建立後會自動套用並重新產生預覽。
+
+- 新增全域字典單一匯入 Dialog，整合格式說明、檔案選擇與匯入預覽；上傳簡單詞條檔後可選擇來源語言、目標語言與分類。
+
+- 全域字典匯入新增 XLSX 支援；讀取第一個工作表的 `source`／`translation` 欄位，並沿用既有預覽與批次匯入流程。
+
+- 新增全域字典 CSV／JSON／XLSX 匯入：支援後端預覽、逐筆處理重複詞條、完整驗證與原子提交，避免部分匯入造成資料不一致。
 
 - 將共用語言標籤與 Live checkpoint／音訊狀態訊息移至 `lib`／`features/live`，修正前端功能拆分後的遺漏引用，避免 `App.jsx` 與 workspace 元件持有 Live 專用 helper。
 - 建立 `useLiveRecordingController` 的固定 Live view-model 介面，讓即時錄製頁透過 controller 讀取狀態並觸發操作，為 audio、transcript/Cue 與 Session recovery 的後續分批搬移保留相容邊界。

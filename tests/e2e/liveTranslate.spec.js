@@ -1115,6 +1115,87 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   expect(requests[4].body.scope).toBe('live');
 });
 
+test('global glossary import explains the format and applies selected settings', async ({ page }) => {
+  const importRequests = [];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'project', label: '專案' },
+    { id: 'other', label: '其他' }
+  ];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries: [] }) });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/glossary/import/preview') {
+      const body = JSON.parse(request.postData() || '{}');
+      importRequests.push({ type: 'preview', body });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          baseRevision: 'revision-1',
+          summary: { total: 2, valid: 1, invalid: 1, creates: 1, updates: 0, duplicates: 0 },
+          rows: [
+            { rowNumber: 2, status: 'create', entry: { source: '產品名稱', sourceLanguageCode: body.sourceLanguageCode, translations: { [body.targetLanguageCode]: 'Product name' }, category: body.category }, conflict: null, errors: [] },
+            { rowNumber: 3, status: 'invalid', entry: { source: '缺少翻譯' }, conflict: null, errors: ['Translation is required.'] }
+          ]
+        })
+      });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/glossary/import') {
+      const body = JSON.parse(request.postData() || '{}');
+      importRequests.push({ type: 'commit', body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ createdCount: 1, updatedCount: 0, skippedCount: 0, total: 1 }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/#glossary');
+  const glossary = page.locator('.global-glossary');
+  await glossary.getByRole('button', { name: '匯入字典' }).click();
+  const helpDialog = page.getByRole('dialog', { name: '匯入字典' });
+  await expect(helpDialog).toContainText('source,translation');
+  await expect(helpDialog).toContainText('entries');
+  await expect(helpDialog).toContainText('XLSX');
+  await expect(helpDialog).toContainText('會議室');
+  await expect(helpDialog).toContainText('翻譯結果');
+
+  await glossary.locator('#global-glossary-import-file').setInputFiles({
+    name: 'terms.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: Buffer.from('test xlsx content')
+  });
+  const previewDialog = page.getByRole('dialog', { name: /預覽匯入/ });
+  await expect(previewDialog).toBeVisible();
+  await expect(previewDialog.locator('.import-entry-preview').first()).toHaveText('產品名稱→Product name');
+  await expect(previewDialog.locator('.import-entry-arrow').first()).toHaveText('→');
+  const firstImportRow = previewDialog.locator('.glossary-import-row').first();
+  const entryPreviewBox = await firstImportRow.locator('.import-entry-preview').boundingBox();
+  const rowStatusBox = await firstImportRow.locator(':scope > span').boundingBox();
+  expect(entryPreviewBox?.x).toBeLessThan(rowStatusBox?.x ?? Number.POSITIVE_INFINITY);
+  await previewDialog.getByLabel('來源語言').selectOption('en');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'en', category: 'other' });
+  await previewDialog.getByLabel('目標語言').selectOption('ja');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'other' });
+  await previewDialog.getByLabel('分類').selectOption('project');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'project' });
+  await expect(previewDialog.getByLabel('選取第 2 列')).toBeChecked();
+  await expect(previewDialog.getByLabel('選取第 3 列')).not.toBeChecked();
+  await expect(previewDialog.getByLabel('選取第 3 列')).toBeDisabled();
+  await previewDialog.getByRole('button', { name: '確認匯入' }).click();
+  await expect.poll(() => importRequests.find((request) => request.type === 'commit')?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'project', selectedRows: [2] });
+});
+
 test('global glossary cards use responsive desktop, tablet, and mobile columns', async ({ page }) => {
   const entries = [
     { id: 'entry-1', source: '產品名稱', sourceLanguageCode: 'zh-Hant', translations: { en: 'Product name' }, category: 'product', tags: [], enabled: true },

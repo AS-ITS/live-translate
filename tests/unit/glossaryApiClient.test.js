@@ -34,6 +34,25 @@ test('glossary API client rejects malformed responses and failed requests', asyn
   await assert.rejects(malformed.listEntries(), /entries array/);
 });
 
+test('glossary API client gives an actionable message when import routes are unavailable', async () => {
+  const client = createGlossaryApiClient({ fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({ error: { code: 'not_found', message: 'Route not found.' } }) }) });
+
+  await assert.rejects(
+    client.previewImport({ format: 'xlsx', content: 'base64-workbook', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', category: 'other' }),
+    (error) => error.status === 404 && error.message.includes('重新啟動後端服務')
+  );
+});
+
+test('glossary API client preserves import validation details', async () => {
+  const client = createGlossaryApiClient({ fetchImpl: async () => ({
+    ok: false,
+    status: 400,
+    json: async () => ({ error: { code: 'glossary_import_invalid', message: 'Glossary import contains invalid data.', details: [{ rowNumber: 3, errors: ['translation is required'] }] } })
+  }) });
+
+  await assert.rejects(client.previewImport({}), (error) => error.details?.[0]?.rowNumber === 3);
+});
+
 test('glossary API client manages categories with the expected methods and payloads', async () => {
   const calls = [];
   const client = createGlossaryApiClient({ fetchImpl: async (url, options) => {

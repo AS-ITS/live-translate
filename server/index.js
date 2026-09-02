@@ -301,13 +301,14 @@ function errorCodeFor(error) {
   return 'internal_error';
 }
 
-function errorPayload(code, requestId) {
+function errorPayload(code, requestId, details) {
   const template = ERROR_RESPONSES[code] || ERROR_RESPONSES.internal_error;
   return {
     error: {
       code,
       message: template.message,
-      requestId
+      requestId,
+      ...(Array.isArray(details) && details.length > 0 ? { details } : {})
     }
   };
 }
@@ -649,7 +650,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
@@ -667,7 +668,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     }
     return;
   }
@@ -1555,7 +1556,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
@@ -2232,9 +2233,12 @@ function isGlossaryRoute(method, path) {
 async function handleGlossaryCommand(method, path, req, glossaryController) {
   if (method === 'POST' && (path === '/api/glossary/import/preview' || path === '/api/glossary/import')) {
     const body = await readJson(req, { maxBytes: GLOSSARY_IMPORT_MAX_BYTES });
-    if (!isPlainRequestObject(body) || (body.format !== 'csv' && body.format !== 'json') || typeof body.content !== 'string') throw createHttpError('invalid_request');
+    if (!isPlainRequestObject(body) || (body.format !== 'csv' && body.format !== 'json' && body.format !== 'xlsx') || typeof body.content !== 'string' || typeof body.sourceLanguageCode !== 'string' || typeof body.targetLanguageCode !== 'string' || typeof body.category !== 'string') throw createHttpError('invalid_request');
+    validateSupportedTargetLanguageCode(body.sourceLanguageCode);
+    validateSupportedTargetLanguageCode(body.targetLanguageCode);
+    validateGlossaryCategory(body.category);
     if (path.endsWith('/preview')) return { status: 200, result: await glossaryController.previewImport(body) };
-    if (typeof body.baseRevision !== 'string' || !isPlainRequestObject(body.resolutions)) throw createHttpError('invalid_request');
+    if (typeof body.baseRevision !== 'string' || !isPlainRequestObject(body.resolutions) || (body.selectedRows !== undefined && (!Array.isArray(body.selectedRows) || body.selectedRows.some((rowNumber) => !Number.isInteger(rowNumber) || rowNumber < 1)))) throw createHttpError('invalid_request');
     return { status: 200, result: await glossaryController.importEntries(body) };
   }
 

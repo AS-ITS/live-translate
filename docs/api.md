@@ -2,14 +2,48 @@
 
 ## Global glossary import
 
-Authenticated clients can preview and atomically import a UTF-8 CSV or JSON
+Authenticated clients can preview and atomically import a UTF-8 CSV, JSON, or XLSX
 glossary through `POST /api/glossary/import/preview` and
 `POST /api/glossary/import`. Both requests use
-`{ format: "csv" | "json", content: "..." }`; the commit request also sends
-the preview `baseRevision` and a `resolutions` map keyed by row number with
-`update` or `skip` for conflicts. The server validates every row before
-writing. Invalid rows reject the whole batch, and a changed revision returns
-`409 glossary_revision_conflict`.
+`{ format: "csv" | "json" | "xlsx", content: "...", sourceLanguageCode: "...", targetLanguageCode: "...", category: "..." }`.
+XLSX content is a base64-encoded workbook whose first worksheet starts with
+`source` and `translation` headers. CSV content uses `source,translation`
+columns. JSON content uses an `entries` array whose items contain `source` and
+`translation` strings. For example, all three formats can contain multiple rows
+such as:
+
+For XLSX, the worksheet should use the same columns shown below in its first row.
+
+```csv
+source,translation
+產品名稱,Product name
+會議室,Meeting room
+翻譯結果,Translation result
+```
+
+```json
+{
+  "entries": [
+    { "source": "產品名稱", "translation": "Product name" },
+    { "source": "會議室", "translation": "Meeting room" },
+    { "source": "翻譯結果", "translation": "Translation result" }
+  ]
+}
+```
+
+The selected languages and category are applied to every imported row. The commit
+request also sends the preview `baseRevision`, a `resolutions` map keyed by row
+number with `update` or `skip` for conflicts, and an optional `selectedRows`
+array of source row numbers. When `selectedRows` is present, unselected rows are
+skipped. The server validates selected rows before writing; invalid selected
+rows reject the whole batch, while invalid unselected rows can be left out.
+Rows that repeat a source term within the same import are reported with
+`status: "duplicate"` and counted in `summary.duplicates`, not
+`summary.invalid`; they are skipped automatically during commit. Existing
+glossary entries remain `status: "conflict"` rows and require `update` or
+`skip` resolution.
+Omitting `selectedRows` preserves the legacy all-rows behavior. A changed
+revision returns `409 glossary_revision_conflict`.
 
 ## Meeting Center and Live Viewer
 

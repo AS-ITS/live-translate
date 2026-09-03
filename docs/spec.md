@@ -19,8 +19,9 @@ React + JavaScript frontend, a Node.js backend, and Gemini Live API using
 
 The browser captures microphone audio, converts it to raw PCM 16-bit 16kHz mono
 chunks, and connects directly to Gemini Live API with a short-lived ephemeral
-token issued by the backend. Gemini returns translated 24kHz PCM audio plus input
-and output transcripts.
+token issued by the backend. The current Live recording path uses Gemini Live
+transcription and persists source-language subtitle events. Existing saved
+translation outputs remain readable for compatibility.
 
 Current scope:
 
@@ -37,9 +38,7 @@ Current scope:
 ## Goals
 
 - Start and stop a Session from the browser.
-- Let the user choose a target output language.
-- Play translated audio in near real time.
-- Show source and translated transcripts.
+- Show source-language transcripts in near real time.
 - Preserve the source transcript as the canonical input for future translations.
 - Keep `GEMINI_API_KEY` only on the backend.
 - Avoid proxying audio streams through the backend.
@@ -65,8 +64,7 @@ The MVP includes:
 - Browser-side audio conversion to the Gemini input audio format.
 - Direct browser connection to Gemini Live API using a backend-issued ephemeral
   token.
-- Playback of translated audio returned by Gemini.
-- Display of input and output transcripts.
+- Display of source transcript updates.
 - A backend endpoint for ephemeral token issuance.
 - Validation of supported target languages and token options.
 - Session-local source transcript preservation for later export or review.
@@ -83,16 +81,14 @@ The MVP includes:
 - The browser requests microphone permission before streaming audio.
 - The browser streams microphone audio to Gemini Live API while the session is
   active.
-- The app plays translated audio returned by Gemini.
 - The app displays source transcript updates.
-- The app displays translated transcript updates.
 - The user can stop the session.
 - Stopping a session closes microphone tracks and ends the Gemini Live session.
 - Before starting a session, the user can choose whether to locally record the
   speaker's original microphone audio.
-- After stopping a session, the user can download saved original microphone and
-  translated audio from the Translation History detail view when the audio
-  artifacts were produced and successfully stored.
+- After stopping a session, the user can download saved original microphone
+  audio from the Translation History detail view when the audio artifact was
+  produced and successfully stored.
 - Saved translation history details can download persisted original and
   translated WAV audio artifacts when those artifacts were produced and
   successfully stored.

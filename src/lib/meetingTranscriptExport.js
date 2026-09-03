@@ -22,12 +22,16 @@ export function hasCompleteFinalCues(detail = {}, cues = detail?.cues) {
 
   return durableSegments.every((segment) => {
     const segmentCues = finalCues.filter((cue) => cue?.segmentId === segment.id);
-    const chunksByStream = new Map(['source', 'translation'].map((stream) => [
+    const requiredStreams = segment.mode === 'transcription' || segment.checkpoint?.mode === 'transcription'
+      || segment.checkpoint?.finalCues?.some((cue) => cue?.mode === 'transcription')
+      ? ['source']
+      : ['source', 'translation'];
+    const chunksByStream = new Map(requiredStreams.map((stream) => [
       stream,
       segment.checkpoint.durableChunks.filter((chunk) => chunk?.stream === stream && meaningfulText(chunk?.text))
     ]));
 
-    return ['source', 'translation'].every((stream) => {
+    return requiredStreams.every((stream) => {
       const chunks = chunksByStream.get(stream);
       const cueText = segmentCues
         .map((cue) => stream === 'source' ? cue?.sourceText : cue?.translatedText)

@@ -18,6 +18,7 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
   if (!isRecord(input)) return invalid('Cue must be an object.');
   const rawSource = text(input.rawSource ?? input.sourceText, 'rawSource');
   const rawTranslation = optionalText(input.rawTranslation ?? input.translatedText, 'rawTranslation');
+  const mode = input.mode === 'transcription' || input.targetLanguageCode === null ? 'transcription' : 'translation';
   const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'refinement');
   const cue = {
     cueId: requiredString(input.cueId, 'cueId'),
@@ -27,7 +28,8 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     startTimeMs: nonNegativeFinite(input.startTimeMs, 'startTimeMs'),
     endTimeMs: finite(input.endTimeMs, 'endTimeMs'),
     sourceLanguageCode: languageCode(input.sourceLanguageCode, 'sourceLanguageCode'),
-    targetLanguageCode: languageCode(input.targetLanguageCode, 'targetLanguageCode'),
+    targetLanguageCode: mode === 'transcription' ? null : languageCode(input.targetLanguageCode, 'targetLanguageCode'),
+    ...(mode === 'transcription' ? { mode } : {}),
     sourceText: rawSource,
     translatedText: rawTranslation,
     ...(hasRefinementContract ? {

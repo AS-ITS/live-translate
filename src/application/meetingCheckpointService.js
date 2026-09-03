@@ -373,6 +373,7 @@ export function validateCheckpointInput(input, meetingId, segmentId) {
     ? input.finalCues.map((cue) => validateFinalCue(cue))
     : [];
   return {
+    mode: input.mode === 'transcription' ? 'transcription' : null,
     idempotencyKey,
     durableChunks: sortChunks(durableChunks),
     finalCues,
@@ -429,6 +430,7 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
   }
 
   return {
+    mode: incoming.mode || normalizedExisting.mode || null,
     idempotencyKey: incoming.idempotencyKey,
     durableChunks: sortChunks(Array.from(chunksByKey.values())),
     finalCues: mergedCues.sort((left, right) => left.sequence - right.sequence),
@@ -445,6 +447,7 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
 export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
   if (checkpoint === null || checkpoint === undefined) {
     return {
+      mode: null,
       idempotencyKey: null,
       durableChunks: [],
       finalCues: [],
@@ -463,6 +466,7 @@ export function normalizeStoredCheckpoint(checkpoint, meetingId, segmentId) {
   }
 
   return {
+    mode: checkpoint.mode === 'transcription' ? 'transcription' : null,
     idempotencyKey: checkpoint.idempotencyKey ?? null,
     durableChunks: sortChunks(checkpoint.durableChunks.map((chunk) => validateDurableChunk(chunk, meetingId, segmentId))),
     finalCues: Array.isArray(checkpoint.finalCues) ? checkpoint.finalCues.map((cue) => validateFinalCue(cue)) : [],

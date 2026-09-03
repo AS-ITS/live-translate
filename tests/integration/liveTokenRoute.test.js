@@ -105,7 +105,7 @@ test('POST /api/live-token returns an ephemeral token without calling real Gemin
   assert.equal(body.token, 'mock-token-name');
   assert.match(body.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
 
-  assert.deepEqual(globalThis.__mockGoogleGenAI.clients[0].httpOptions, { apiVersion: 'v1alpha' });
+  assert.deepEqual(globalThis.__mockGoogleGenAI.clients[0].httpOptions, { apiVersion: 'v1beta' });
   assert.equal(globalThis.__mockGoogleGenAI.tokenCreates[0].config.liveConnectConstraints.config.generationConfig.translationConfig.targetLanguageCode, 'ja');
 });
 

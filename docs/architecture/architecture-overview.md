@@ -118,6 +118,13 @@ the boundary for Session commands and Session read models. Existing repository
 and read-model adapters remain responsible for legacy `SessionRecord`
 compatibility mapping.
 
+The Live recorder uses a source-only transcription path backed by
+`LiveTranscriptionSession` and `gemini-3.5-transcribe-live`. It persists one
+source Cue stream per Segment and does not create translation execution or
+polishing work. Existing bilingual Sessions and refinement history remain
+readable; Meeting/Segment checkpoint, rollover, interrupted recovery, and
+Viewer ordering are shared with the transcription path.
+
 Long Meeting support adds a separate Meeting aggregate with ordered
 MeetingSegment records. A MeetingSegment may reference an existing Live Session
 by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
@@ -125,10 +132,10 @@ by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
 path or ephemeral token flow.
 
 Long Meeting proactive segmentation rolls over one active Segment into the next
-active Segment before opening a replacement Gemini Live connection for the same
-Meeting. This is separate from failure reconnect and token refresh: the browser
-still obtains each fresh ephemeral token through `/api/live-token` and connects
-directly to Gemini Live API.
+active Segment while retaining the same logical browser provider session. A
+provider WebSocket may be replaced for GoAway or connection loss; the browser
+uses the latest session-resumption handle and provisions a fresh single-use
+ephemeral token for every replacement Live session.
 
 Final subtitle Cues are stored in the existing file-backed Meeting/Segment
 checkpoint. Each finalized Cue keeps raw source/translation values plus
@@ -604,7 +611,8 @@ identifiers.
 - The browser receives only a short-lived ephemeral token.
 - `POST /api/live-token` keeps its access gate, origin validation, rate limit,
   and structured error handling.
-- Every replacement LiveSession re-requests `/api/live-token`.
+- Segment rollover and provider reconnect request a fresh `/api/live-token`
+  credential because replacement Live sessions use single-use tokens.
 - Ephemeral tokens must never be written to logs.
 
 The browser should not hold any long-lived secret or backend credential.

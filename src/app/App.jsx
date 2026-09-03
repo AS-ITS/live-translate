@@ -59,13 +59,14 @@ import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completed
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError } from '../features/live/liveStatus.js';
+import { LiveTranscriptionSession } from '../lib/liveTranscriptionSession.js';
 
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';
 const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
-const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
+const SEGMENT_SWITCH_INTERVAL_MS = 15 * 60 * 1000;
 const TRANSLATED_AUDIO_IDLE_STATE = {
   status: 'idle',
   blob: null,
@@ -245,7 +246,7 @@ export function App() {
       getSessionTime: () => sessionTimeForSubtitleCues(),
       persist: enqueueCuePersistence,
       retranslate: (sourceText, cueId) => sessionRef.current?.retranslateSourceText(sourceText, cueId),
-      schedulePolishing: (cues) => scheduleTranscriptPolishing(cues)
+      schedulePolishing: null
     },
     checkpoint: {
       sessionRepositoryRef,
@@ -496,6 +497,10 @@ export function App() {
   }, [page, isLiveSurface]);
 
   useEffect(() => {
+    // Live transcription is source-only; legacy polishing results are
+    // intentionally not polled or applied during a recording.
+    return undefined;
+    /* istanbul ignore next -- retained below only for historical compatibility */
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
     const poll = async () => {
@@ -817,24 +822,20 @@ export function App() {
       ? selectedInputDeviceIdRef.current
       : '';
 
-    const { LiveTranslateSession } = await import('../lib/liveSession.js');
     const callbackGeneration = {
       generation: liveSessionCallbackGenerationRef.current.generation + 1,
       active: false
     };
     liveSessionCallbackGenerationRef.current = callbackGeneration;
 
-    const session = new LiveTranslateSession({
+    const session = new LiveTranscriptionSession({
       liveSessionId,
       connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
       meetingId: activeMeetingCheckpointRef.current?.meetingId || null,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
       sessionClock: () => sessionTimeForSubtitleCues(),
-      targetLanguageCode,
       sourceLanguageCode,
-      echoTargetLanguage,
-      liveGlossaryEntries: liveGlossaryEntriesForTarget(currentMeetingGlossaryEntries(), targetLanguageCode),
       inputDeviceId: inputDeviceIdForSession,
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
@@ -870,24 +871,11 @@ export function App() {
           applyTranscriptUpdate({ ...update, eventId: update.eventId, connectionEpoch: callbackGeneration.generation, stream: 'source' });
         }
       },
-      onOutputTranscript: (update) => {
-        if (isCurrentLiveSessionCallback(callbackGeneration) && isOwnedLiveSessionEvent(update, callbackGeneration)) {
-          applyTranscriptUpdate({ ...update, eventId: update.eventId, connectionEpoch: callbackGeneration.generation, stream: 'translation' });
-        }
-      },
       onCueEvent: (event) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)
           || !isOwnedLiveSessionEvent(event, callbackGeneration)
           || !liveCueUpdatesAllowedRef.current) return;
-        const activeGlossaryEntries = sessionRef.current?.liveGlossaryEntries
-          || liveGlossaryEntriesForTarget(glossaryEntries, targetLanguageCode);
-        const cueEvent = event?.stream === 'translation'
-          ? { ...event, text: applyGlossaryReplacements(event.text, activeGlossaryEntries) }
-          : event;
-        liveController.cue.queueLiveSubtitleCueEvent(cueEvent);
-      },
-      onOutputAudioChunk: (chunk) => {
-        if (isCurrentLiveSessionCallback(callbackGeneration)) liveController.audio.handleTranslatedAudioChunk(chunk);
+        liveController.cue.queueLiveSubtitleCueEvent(event);
       },
       onError: (nextError) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
@@ -1055,7 +1043,6 @@ export function App() {
       if (activeSessionRecord) {
         liveController.checkpoint.scheduleSessionSnapshotSync(activeSessionRecordId);
         liveController.checkpoint.scheduleMeetingCheckpointSync(appended);
-        void translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
     }
   }
@@ -1190,6 +1177,7 @@ export function App() {
   function cueCheckpointForState(state) {
     const lastCue = state?.finalCues?.at(-1);
     return {
+      mode: 'transcription',
       currentCue: state?.currentCue || null,
       pendingCues: state?.pendingCues || [],
       nextSequence: state?.nextSequence || 1,
@@ -1446,7 +1434,6 @@ export function App() {
   }
 
   async function loadMeetingDetail(id) {
-    closeHistoryRecordDetail();
     const requestId = meetingDetailRequestIdRef.current + 1;
     meetingDetailRequestIdRef.current = requestId;
     selectedMeetingIdRef.current = id;
@@ -1546,6 +1533,11 @@ export function App() {
 
   async function resetLiveMeetingState() {
     invalidateLiveSessionCallbacks();
+    meetingDetailRequestIdRef.current += 1;
+    selectedMeetingIdRef.current = null;
+    setSelectedMeetingId(null);
+    setSelectedMeetingDetail(null);
+    setMeetingDetailError('');
     liveController.recovery.reconnectController().cancel();
     liveController.segmentSwitch.cancel();
     segmentSwitchCancelledRef.current = true;
@@ -1554,7 +1546,7 @@ export function App() {
     meetingResumeDraftRequestIdRef.current += 1;
     cancelLiveCueIdleTimers();
     liveController.audio.cancelAudioUploadRetries();
-    await liveController.audio.cleanup().catch(() => {});
+    await Promise.resolve(liveController.audio.cleanup()).catch(() => {});
 
     const resetTranscript = resetTranscriptState();
     transcriptRef.current = resetTranscript;
@@ -1668,7 +1660,7 @@ export function App() {
           mode={settingsInfo.settingsMode}
           meetingId={settingsInfo.meetingId}
           onBack={() => { window.location.hash = '#meetings'; }}
-          onOpenLive={(meetingId) => { window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`; }}
+          onOpenLive={openMeetingLiveWorkspace}
         />
       </MeetingSettingsLayout>
       );
@@ -1728,9 +1720,13 @@ export function App() {
         onRetry={() => refreshSelectedMeetingDetail(routeMeetingId)}
       /> : null}
       {isLiveSurface ? <LiveRecordingPage
-        error={liveController.error}
-        status={liveController.status}
+        error={liveController.error || meetingDetailError}
+        status={meetingDetailError ? 'error' : liveController.status}
         onRetry={() => {
+          if (meetingDetailError) {
+            void loadMeetingDetail(routeMeetingId);
+            return;
+          }
           setError('');
           void (liveController.resumeDraft?.hasTranscript
             ? liveController.actions.resumeMeetingSession()
@@ -1745,7 +1741,7 @@ export function App() {
                 <div className="live-meeting-summary-main">
                   <p className="eyebrow">MEETING CONTROL</p>
                   <h2>{liveMeeting?.name || (routeMeetingId ? '正在載入會議…' : '尚未選擇會議')}</h2>
-                  <p className="live-meeting-language">{liveMeeting ? `${targetLanguageLabelFor(liveMeeting.sourceLanguageCode) || liveMeeting.sourceLanguageCode} → ${targetLanguageLabelFor(liveMeeting.targetLanguageCode) || liveMeeting.targetLanguageCode}` : '請先選擇一場可錄音的會議'}</p>
+                  <p className="live-meeting-language">{liveMeeting ? `來源語言：${targetLanguageLabelFor(liveMeeting.sourceLanguageCode) || liveMeeting.sourceLanguageCode}` : '請先選擇一場可錄音的會議'}</p>
                 </div>
                 <span className="live-meeting-status status-pill">{liveMeetingStatusLabel(liveMeeting)}</span>
               </div>
@@ -1761,8 +1757,8 @@ export function App() {
               {liveController.status === 'paused' ? (
                 <p className="device-note">
                   {shouldRecordInputAudio
-                    ? '工作階段已暫停；逐字稿、翻譯與本機錄音片段會保留到結束本次工作階段。'
-                    : '工作階段已暫停；逐字稿與翻譯會保留到結束本次工作階段。'}
+                    ? '工作階段已暫停；字幕與本機錄音片段會保留到結束本次工作階段。'
+                    : '工作階段已暫停；字幕會保留到結束本次工作階段。'}
                 </p>
               ) : null}
               {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
@@ -1855,13 +1851,8 @@ export function App() {
           statusLabelOverride={liveController.statusLabelOverride}
           isPaused={liveController.status === 'paused'}
           isStopped={liveController.status === 'stopped'}
-          polishingState={liveController.polishingState}
-          polishedArticle={liveController.polishedArticle}
-          onPolishingRetry={liveController.actions.retryPolishingExecution}
           copiedSource={copiedArticleStream === 'source'}
-          copiedTranslation={copiedArticleStream === 'translation'}
           onCopySource={liveController.actions.copyLiveSource}
-          onCopyTranslation={liveController.actions.copyLiveTranslation}
         />
         </div>
         </div>

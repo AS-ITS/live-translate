@@ -82,7 +82,7 @@ test('normalizeSegmentIntervalMs caps the production interval at 15 minutes', ()
   assert.equal(normalizeSegmentIntervalMs(1000), 1000);
 });
 
-test('segment switch orchestrator simulates a 130 minute meeting with 12 ten-minute rollovers', async () => {
+test('segment switch orchestrator simulates a 130 minute meeting with eight fifteen-minute segments', async () => {
   const timers = createFakeTimers();
   const segmentLiveSessionIds = ['live-session-1'];
   const rolloverEvents = [];

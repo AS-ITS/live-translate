@@ -79,6 +79,7 @@ const ERROR_RESPONSES = {
     message: 'Saved transcript re-translation is not configured.'
   },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
+  unsupported_live_session_mode: { status: 400, message: 'Selected Live session mode is not supported.' },
   translation_execution_not_found: { status: 404, message: 'Translation execution not found.' },
   translation_output_not_found: { status: 404, message: 'Translation output not found.' },
   translation_request_not_found: { status: 404, message: 'Translation request not found.' },

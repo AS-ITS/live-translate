@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+- 修正 GoAway 重連流程：GoAway 視為預期的 provider lifecycle event，使用 `timeLeft`
+  只排程一次重連、保留最新 session resumption handle，並為 replacement Live session
+  取得新的 single-use ephemeral token；smoke summary 另行統計 GoAway 重連成功與失敗。
+
+- 放寬長會議 smoke test 的預設 token request 上限至 20；保留每次 provider
+  reconnect 重新取得 single-use ephemeral token 的行為，避免目前 2 小時測試的
+  正常重連次數被錯誤判定為 quota 異常。
+
+- 修正 smoke test provider reconnect 重用已過期 ephemeral token 的問題；每次 GoAway 或
+  provider close/error 重連都重新取得 single-use token，並保留可用的 session resumption handle。
+
+- smoke test 結束時新增中文摘要，輸出開始／結束時間、實際耗時、連線與重連次數、Token
+  請求、GoAway 與去敏後異常事件；同時保留英文欄位名稱的 JSON 摘要。
+
+- 修正長會議 smoke test 的 provider close/error 診斷與快速重連保護：保留去敏後的
+  status／code／message，GoAway 使用 provider delay，異常重連採指數退避與 jitter，連續
+  5 次失敗後安全停止，避免短時間建立大量連線或消耗 quota。
+
+- 修正目前 `@google/genai` SDK 的 ephemeral-token 相容性：backend provisioning 維持
+  `v1beta`，browser 與 smoke-test Live connection 改用 SDK 要求的 `v1alpha`。
+
+- 修正 `gemini-3.5-transcribe-live` ephemeral-token config；移除 provisioning endpoint
+  拒絕的 `languageCodes` 欄位，來源語言提示改由既有 system instruction 保留。
+
+- Gemini Live client 與 ephemeral-token config 統一使用 `v1beta`；長會議 smoke shell
+  會自動載入專案 `.env`（不覆蓋既有環境變數），並在 token provider 失敗時輸出已去敏的
+  status／code／message 分類診斷。
+
+- 新增可直接執行的 2 小時 Gemini transcription 長會議 smoke test：使用 macOS
+  `say`／`afconvert` 產生 PCM 語音，驗證 session resumption、provider reconnect、
+  token refresh 上限與 transcript event 去重；shell entrypoint 會要求
+  `GEMINI_API_KEY` 後直接執行真實 API 測試。
+
+- 長會議 Segment 預設保存週期調整為 15 分鐘；Gemini transcription provider
+  session 會重用 ephemeral token 與 session resumption handle，只有接近過期時
+  才刷新 token，Segment rollover 不再新增 token request。
+
+- Live 錄音流程改為使用 `gemini-3.5-transcribe-live` 的來源語言即時轉錄；移除翻譯音訊、翻譯字幕與即時潤飾請求。長會議仍透過 Meeting／Segment checkpoint、切段與續錄保存連續字幕。
+
+- 修正從會議設定前往即時字幕時可能停留在「正在載入會議」的問題；進入 Live 頁會清除舊的會議選取狀態並重新載入指定會議。
+- 修正即時字幕載入時呼叫已移除的歷史詳細資料 helper，以及尚未建立錄音 controller 時 cleanup 回傳空值造成的未處理例外；會議資料載入失敗時改顯示可重試錯誤。
+
 - 會議設定的會議詞彙新增 CSV／JSON／XLSX 匯入預覽；匯入結果先加入表單，儲存會議設定後才寫入目前會議，不會修改全域字典。
 
 - 全域字典匯入預覽新增逐列選取；正常列預設勾選，錯誤列可取消後略過，後端仍會阻擋被選取的錯誤資料並維持原子提交。

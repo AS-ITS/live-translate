@@ -93,12 +93,12 @@ export function MeetingViewerPage({ token, code }) {
   const cues = useMemo(() => {
     if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
     return (detail?.transcriptItems || [])
-      .filter((item) => item.stream === 'translation')
+      .filter((item) => item.stream === 'source')
       .map((item, index) => ({
         cueId: item.id || `legacy-cue-${index}`,
         sequence: item.sequence || index + 1,
         sourceText: detail?.transcriptItems?.find((source) => source.stream === 'source' && source.sequence === item.sequence)?.text || '',
-        translatedText: item.text,
+        translatedText: '',
         startTimeMs: item.startedAt || 0
       }));
   }, [detail]);
@@ -114,13 +114,13 @@ export function MeetingViewerPage({ token, code }) {
         <section className="viewer-cue-panel" aria-label="Meeting 完整字幕">
           <div className="viewer-cue-header"><div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div></div>
           {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
-            <div className="viewer-cue-columns" aria-hidden="true"><span>輸入／原文</span><span>翻譯</span></div>
+            <div className="viewer-cue-columns" aria-hidden="true"><span>來源字幕</span></div>
             <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
               <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
                 {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }} data-testid="meeting-viewer-cue-row">
                   <div className="viewer-cue-row-meta"><span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span></div>
                   <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div>
-                  <div className="viewer-cue-translation"><p>{cue.translatedText || '—'}</p></div>
+                  {cue.translatedText ? <div className="viewer-cue-translation"><p>{cue.translatedText}</p></div> : null}
                 </article>)}
               </div>
             </div>

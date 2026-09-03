@@ -10,6 +10,15 @@ test('token request validation defaults target language and echo option', () => 
   });
 });
 
+test('transcription token request selects source-only mode', () => {
+  assert.deepEqual(normalizeTokenRequest({ mode: 'transcription', sourceLanguageCode: 'en' }), {
+    mode: 'transcription',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'en',
+    echoTargetLanguage: true
+  });
+});
+
 test('token request validation preserves explicit echoTargetLanguage false', () => {
   assert.deepEqual(normalizeTokenRequest({ targetLanguageCode: 'ja', echoTargetLanguage: false }), {
     targetLanguageCode: 'ja',
@@ -49,7 +58,7 @@ test('token request validation rejects malformed target language instead of defa
   }
 });
 
-test('token config uses v1alpha and single-use Gemini Live constraints', () => {
+test('token config uses v1beta and single-use Gemini Live constraints', () => {
   const config = buildTokenConfig(
     { targetLanguageCode: 'en', echoTargetLanguage: true },
     new Date('2026-07-07T00:00:00.000Z')
@@ -65,7 +74,7 @@ test('token config uses v1alpha and single-use Gemini Live constraints', () => {
   });
   assert.equal(config.liveConnectConstraints.config.generationConfig.translationConfig.sourceLanguageCode, undefined);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
-  assert.deepEqual(config.httpOptions, { apiVersion: 'v1alpha' });
+  assert.deepEqual(config.httpOptions, { apiVersion: 'v1beta' });
 });
 
 test('token config can carry live glossary instruction in connect constraints', () => {
@@ -81,5 +90,16 @@ test('token config can carry live glossary instruction in connect constraints', 
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Glossary instructions/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /translated speech audio/);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Source term: Gemini/);
+  assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
+});
+
+test('transcription token config emits text-only verbatim input transcription', () => {
+  const config = buildTokenConfig({ mode: 'transcription', sourceLanguageCode: 'zh-Hant' });
+  assert.equal(config.liveConnectConstraints.model, 'gemini-3.5-transcribe-live');
+  assert.deepEqual(config.liveConnectConstraints.config.responseModalities, ['TEXT']);
+  assert.deepEqual(config.liveConnectConstraints.config.inputAudioTranscription, {
+    mode: 'VERBATIM'
+  });
+  assert.equal(config.liveConnectConstraints.config.generationConfig, undefined);
   assert.match(config.liveConnectConstraints.config.systemInstruction.parts[0].text, /Primary input language hint: zh-Hant/);
 });

@@ -122,18 +122,24 @@ npm run test:integration
 npm run test:e2e
 ```
 
-The live smoke test is safe by default and does not call Gemini unless explicitly
-enabled:
+The direct long-meeting smoke test requires `GEMINI_API_KEY` and calls Gemini:
+
+```bash
+./scripts/live-meeting-smoke.sh
+```
+
+The equivalent npm command is:
 
 ```bash
 npm run test:live-smoke
 ```
 
-Real Gemini validation requires opt-in configuration:
+For a safe no-op check, run `node scripts/live-smoke-test.js` without
+`ENABLE_REAL_GEMINI_TEST=true`.
 
-```bash
-ENABLE_REAL_GEMINI_TEST=true GEMINI_API_KEY=your_real_key npm run test:live-smoke
-```
+The real smoke test runs a 2-hour macOS-generated speech soak by default and
+checks transcription reconnects plus the token request limit. See
+`docs/TESTING.md` for optional duration and speech settings.
 
 See [docs/TESTING.md](docs/TESTING.md) for the full testing policy and targeted
 commands.
@@ -154,5 +160,5 @@ commands.
 - Never expose `GEMINI_API_KEY` to frontend code.
 - Never log Gemini API keys or ephemeral tokens.
 - Keep `/api/live-token` validation, access gate, rate limit, and origin checks.
-- Do not run real Gemini tests unless `ENABLE_REAL_GEMINI_TEST=true` is set on
-  purpose.
+- The shell smoke-test entrypoint intentionally enables the real Gemini call
+  after confirming `GEMINI_API_KEY`; run it only when quota usage is intended.

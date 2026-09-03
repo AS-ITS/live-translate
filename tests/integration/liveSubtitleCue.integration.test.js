@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
+import { LiveTranscriptionSession } from '../../src/lib/liveTranscriptionSession.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
@@ -201,4 +202,55 @@ test('late transcript, stop flush, rollover sequence, and replay remain determin
   assert.equal(cueState.finalCues[1].translatedText, 'second translation');
   await first.stop();
   await second.stop();
+});
+
+test('transcription mode finalizes source-only subtitles without translation pairing', () => {
+  let cueState = createSubtitleCueState();
+  const session = new LiveTranslateSession({
+    mode: 'transcription',
+    liveSessionId: 'live-transcription',
+    sessionId: 'session-transcription',
+    segmentId: 'segment-transcription',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => 100,
+    onCueEvent: (event) => {
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  session.handleMessage({
+    eventId: 'source-only',
+    serverContent: { inputTranscription: { text: '只有來源字幕' } }
+  });
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 500, reason: 'stop' });
+
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].sourceText, '只有來源字幕');
+  assert.equal(cueState.finalCues[0].translatedText, '');
+  assert.equal(cueState.finalCues[0].targetLanguageCode, null);
+  assert.equal(cueState.finalCues[0].mode, 'transcription');
+  assert.equal(cueState.finalCues[0].refinement, undefined);
+});
+
+test('LiveTranscriptionSession ignores translated output and audio callbacks', () => {
+  const output = [];
+  const audio = [];
+  const session = new LiveTranscriptionSession({
+    liveSessionId: 'live-transcription-output',
+    sourceLanguageCode: 'en',
+    sessionClock: () => 100,
+    onOutputTranscript: (event) => output.push(event),
+    onOutputAudioChunk: (chunk) => audio.push(chunk)
+  });
+
+  session.handleMessage({
+    eventId: 'model-output',
+    serverContent: {
+      outputTranscription: { text: 'must be ignored' },
+      modelTurn: { parts: [{ inlineData: { data: 'AA==' } }] }
+    }
+  });
+
+  assert.deepEqual(output, []);
+  assert.deepEqual(audio, []);
 });

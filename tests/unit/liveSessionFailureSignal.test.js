@@ -281,6 +281,35 @@ test('duplicate failure signals do not create duplicate pending schedules', asyn
   assert.equal(timer.pendingCount(), 1);
 });
 
+test('GoAway schedules one reconnect and forces a fresh token', async () => {
+  const session = createTestSession();
+  const previousSetTimeout = globalThis.setTimeout;
+  const timers = [];
+  globalThis.setTimeout = (callback, delayMs) => {
+    const timer = { callback, delayMs };
+    timers.push(timer);
+    return timer;
+  };
+  try {
+    session.reconnectProvider = async (options) => {
+      session.reconnectOptions = options;
+      return true;
+    };
+
+    session.handleMessage({ goAway: { timeLeft: '2s' }, sessionResumptionUpdate: { newHandle: 'resume-1' } });
+    session.handleMessage({ goAway: { timeLeft: '1s' }, sessionResumptionUpdate: { newHandle: 'resume-2' } });
+
+    assert.equal(timers.length, 1);
+    assert.equal(timers[0].delayMs, 2000);
+    assert.equal(session.resumptionHandle, 'resume-2');
+    timers[0].callback();
+    await new Promise((resolve) => previousSetTimeout(resolve, 0));
+    assert.deepEqual(session.reconnectOptions, { forceRefresh: true });
+  } finally {
+    globalThis.setTimeout = previousSetTimeout;
+  }
+});
+
 test('turn completion finalizes preceding input and output transcript partials', () => {
   const inputEvents = [];
   const outputEvents = [];

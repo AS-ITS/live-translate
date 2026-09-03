@@ -157,6 +157,17 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
     };
   }
 
+  if (!cue.targetLanguageCode && cue.sourceText) {
+    return {
+      state: finalizeCue(state, cue, {
+        ...options,
+        nowMs: options.sessionTimeMs,
+        reason: cue.turnCompleteSeen ? 'turnComplete' : cue.generationCompleteSeen ? 'generationComplete' : 'idle'
+      }),
+      action: 'finalized'
+    };
+  }
+
   if (cue.sourceText && !cue.translatedText) {
     if (cue.retranslationFailed) return { state: stateInput, action: 'translation-failed', cue };
     const maxAttempts = Number.isInteger(options.maxRetranslationAttempts) && options.maxRetranslationAttempts > 0
@@ -458,7 +469,8 @@ function needsTextSeparator(currentText, incomingText, context = {}) {
 }
 
 function isCueSubmittable(cue) {
-  return Boolean(cue && normalizeText(cue.sourceText) && normalizeText(cue.translatedText));
+  return Boolean(cue && normalizeText(cue.sourceText)
+    && (!cue.targetLanguageCode || normalizeText(cue.translatedText)));
 }
 
 function addCue(state, event) {
@@ -473,6 +485,7 @@ function addCue(state, event) {
     endTimeMs: event.sessionTimeMs,
     sourceLanguageCode: event.sourceLanguageCode || null,
     targetLanguageCode: event.targetLanguageCode || null,
+    mode: event.targetLanguageCode ? 'translation' : 'transcription',
     sourceText: event.stream === 'source' ? event.text : '',
     translatedText: event.stream === 'translation' ? event.text : '',
     status: 'partial',
@@ -578,19 +591,21 @@ function finalizeCue(state, cue, options = {}) {
     ...cue,
     sourceText: normalizeText(cue.sourceText),
     translatedText: normalizeText(cue.translatedText),
-    rawSource: normalizeText(cue.rawSource || cue.sourceText),
-    rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
-    refinedSource: cue.refinedSource || null,
-    refinedTranslation: cue.refinedTranslation || null,
-    refinement: {
-      status: 'pending',
-      version: 1,
-      inputHash: cueRefinementInputHash({
-        ...cue,
-        rawSource: normalizeText(cue.rawSource || cue.sourceText),
-        rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText)
-      })
-    },
+    ...(cue.mode === 'transcription' ? {} : {
+      rawSource: normalizeText(cue.rawSource || cue.sourceText),
+      rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
+      refinedSource: cue.refinedSource || null,
+      refinedTranslation: cue.refinedTranslation || null,
+      refinement: {
+        status: 'pending',
+        version: 1,
+        inputHash: cueRefinementInputHash({
+          ...cue,
+          rawSource: normalizeText(cue.rawSource || cue.sourceText),
+          rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText)
+        })
+      }
+    }),
     status: 'final', startTimeMs, endTimeMs,
     finalizedReason: reason || 'final'
   };

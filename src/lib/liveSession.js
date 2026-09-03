@@ -17,6 +17,7 @@ const MAX_PENDING_INPUT_AUDIO_CHUNKS = 64;
 const MAX_PRE_ROLL_BYTES = 480000;
 const AUDIO_CALLBACK_STALL_MS = 3000;
 const LOCAL_SILENCE_FINALIZE_MS = 1800;
+const TOKEN_REFRESH_SAFETY_MS = 5 * 60 * 1000;
 const SPEECH_ACTIVITY_RMS_THRESHOLD = 0.01;
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
@@ -54,7 +55,9 @@ export class LiveTranslateSession {
     audioTurnId = null,
     silenceFinalizeMs = LOCAL_SILENCE_FINALIZE_MS,
     speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD
+    , mode = 'translation'
   }) {
+    this.mode = mode;
     this.targetLanguageCode = targetLanguageCode;
     this.sourceLanguageCode = sourceLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
@@ -81,6 +84,7 @@ export class LiveTranslateSession {
     this.onCueEvent = onCueEvent;
     this.authorizationHeaders = { ...authorizationHeaders };
     this.connectionEpoch = connectionEpoch;
+    this.providerEpoch = 0;
     this.audioTurnId = audioTurnId || `audio-turn-${connectionEpoch}-${++nextAudioTurnSequence}`;
     this.silenceFinalizeMs = silenceFinalizeMs;
     this.speechActivityRmsThreshold = speechActivityRmsThreshold;
@@ -142,6 +146,11 @@ export class LiveTranslateSession {
     this.retranslationCueIds = new Set();
     this.activeRetranslationCueId = null;
     this.inputTurnMode = 'automatic';
+    this.tokenState = null;
+    this.resumptionHandle = null;
+    this.providerReconnectInProgress = null;
+    this.providerReconnectAttempts = 0;
+    this.providerReconnectTimer = null;
     activeDebugSession = this;
     exposeLiveTranslateDebug();
   }
@@ -161,10 +170,17 @@ export class LiveTranslateSession {
 
     this.onConnecting?.();
 
+    await this.connectProvider();
+  }
+
+  async getTokenResponse({ forceRefresh = false } = {}) {
+    const expiresAt = this.tokenState?.expiresAt ? Date.parse(this.tokenState.expiresAt) : 0;
+    if (!forceRefresh && this.tokenState && expiresAt - Date.now() > TOKEN_REFRESH_SAFETY_MS) return this.tokenState;
     const tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
       body: JSON.stringify({
+        mode: this.mode,
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         ...(this.meetingId ? { meetingId: this.meetingId } : {}),
         targetLanguageCode: this.targetLanguageCode,
@@ -172,79 +188,68 @@ export class LiveTranslateSession {
         echoTargetLanguage: this.echoTargetLanguage
       })
     }, TOKEN_TIMEOUT_MS);
-
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
       throw new Error(userMessageForErrorCode(error.error?.code));
     }
+    const response = await tokenResponse.json();
+    this.tokenState = { ...response, fetchedAt: Date.now() };
+    this.liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
+    return this.tokenState;
+  }
 
-    const { token, liveConnectModel, liveConnectConfig, liveGlossaryEntries } = await tokenResponse.json();
-    this.liveGlossaryEntries = Array.isArray(liveGlossaryEntries) ? liveGlossaryEntries : [];
-    const ai = new GoogleGenAI({
-      apiKey: token,
-      httpOptions: {
-        apiVersion: 'v1alpha'
-      }
-    });
+  async connectProvider({ forceRefresh = false } = {}) {
+    const { token, liveConnectModel, liveConnectConfig } = await this.getTokenResponse({ forceRefresh });
+    const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
-    this.inputTurnMode = liveConnectConfig?.realtimeInputConfig?.automaticActivityDetection?.disabled
-      ? 'manual'
-      : 'automatic';
-
-    const connectedSession = await withTimeout(
-      ai.live.connect({
-        model: liveConnectModel || 'gemini-3.5-live-translate-preview',
-        config: liveConnectConfig || {
-          responseModalities: [Modality.AUDIO],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-          generationConfig: {
-            translationConfig: {
-              targetLanguageCode: this.targetLanguageCode,
-              echoTargetLanguage: this.echoTargetLanguage
-            }
-          }
-        },
-        callbacks: {
-          onmessage: (message) => this.handleMessage(message, connectionEpoch),
-          onerror: (event) => {
-            void this.handleSessionError(event, connectionEpoch);
-          },
-          onclose: (event) => {
-            void this.handleSessionClose(event, connectionEpoch);
-          }
-        }
-      }),
-      LIVE_CONNECT_TIMEOUT_MS,
-      '即時翻譯連線逾時。請再試一次。'
-    );
-
-    if (this.closed || this.connectionEpoch !== connectionEpoch) {
-      try {
-        connectedSession?.close?.();
-      } catch {
-        // The stale provider session is already unusable.
+    const providerEpoch = ++this.providerEpoch;
+    const config = {
+      ...(liveConnectConfig || {}),
+      ...(this.resumptionHandle ? { sessionResumption: { handle: this.resumptionHandle } } : {})
+    };
+    this.inputTurnMode = config?.realtimeInputConfig?.automaticActivityDetection?.disabled ? 'manual' : 'automatic';
+    const connectedSession = await withTimeout(ai.live.connect({
+      model: liveConnectModel || 'gemini-3.5-live-translate-preview',
+      config,
+      callbacks: {
+        onmessage: (message) => this.handleMessage(message, providerEpoch),
+        onerror: (event) => { void this.handleSessionError(event, providerEpoch); },
+        onclose: (event) => { void this.handleSessionClose(event, providerEpoch); }
       }
-      this.logLiveEvent('stale.provider.ignored', { connectionEpoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
-      return;
+    }), LIVE_CONNECT_TIMEOUT_MS, '即時翻譯連線逾時。請再試一次。');
+    if (this.closed || this.connectionEpoch !== connectionEpoch || this.providerEpoch !== providerEpoch) {
+      try { connectedSession?.close?.(); } catch { /* stale provider session */ }
+      return false;
     }
-
     this.session = connectedSession;
-
     this.trace('connect.resolved');
     this.logLiveEvent('provider.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
-    this.trace('provider.ready');
     this.providerReady = true;
     this.preRollDraining = true;
     this.inputSendingEnabled = false;
-    if (!this.drainPreRoll(connectionEpoch)) {
-      return;
-    }
+    if (!this.drainPreRoll(connectionEpoch)) return false;
     this.preRollDraining = false;
     this.inputSendingEnabled = true;
-    this.trace('pre_roll_drained', { bufferedBytes: this.pendingInputAudioBytes });
-    this.trace('input.resume.enabled');
     this.onProviderReady?.({ connectionEpoch: this.connectionEpoch });
+    return true;
+  }
+
+  async reconnectProvider({ segmentId = this.segmentId, forceRefresh = false } = {}) {
+    if (this.closed) return false;
+    if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
+    this.segmentId = segmentId;
+    this.providerReconnectInProgress = (async () => {
+      this.providerReady = false;
+      this.inputSendingEnabled = false;
+      try { this.session?.close?.(); } catch { /* best effort */ }
+      this.session = null;
+      this.providerEpoch += 1;
+      const result = await this.connectProvider({ forceRefresh });
+      if (result) this.providerReconnectAttempts = 0;
+      else this.providerReconnectAttempts += 1;
+      return result;
+    })().finally(() => { this.providerReconnectInProgress = null; });
+    return this.providerReconnectInProgress;
   }
 
   setupAudioCapture() {
@@ -614,6 +619,7 @@ export class LiveTranslateSession {
   }
 
   retranslateSourceText(sourceText, cueId = '') {
+    if (this.mode !== 'translation') return false;
     const text = String(sourceText || '').trim();
     const key = String(cueId || text);
     if (!text || this.closed || !this.session || this.retranslationCueIds.has(key)) return false;
@@ -640,8 +646,16 @@ export class LiveTranslateSession {
   }
 
   handleMessage(message, epoch = this.connectionEpoch) {
-    if (epoch !== this.connectionEpoch || this.closed) {
+    if (epoch !== this.providerEpoch || this.closed) {
       this.logLiveEvent('stale.callback.ignored', { kind: 'message', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      return;
+    }
+    if (message?.sessionResumptionUpdate?.newHandle) {
+      this.resumptionHandle = message.sessionResumptionUpdate.newHandle;
+      this.trace('session.resumption.updated');
+    }
+    if (message?.goAway) {
+      this.scheduleProviderReconnect(message.goAway.timeLeft, { forceRefresh: true });
       return;
     }
     const content = message.serverContent;
@@ -662,7 +676,19 @@ export class LiveTranslateSession {
     this.eventSequence += 1;
     const transcriptEventId = message?.eventId || message?.event_id || message?.id
       || `${this.liveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
-    for (const event of normalizeGeminiLiveCueEvents(message, {
+    const normalizedEvents = this.mode === 'transcription'
+      ? normalizeTranscriptionCueEvents(message, {
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
+        connectionEpoch: this.connectionEpoch,
+        eventSequence: this.eventSequence,
+        sessionClock: this.sessionClock,
+        inputTranscriptIsFinal,
+        inputTranscriptArrivedAfterBoundary
+      })
+      : normalizeGeminiLiveCueEvents(message, {
       liveSessionId: this.liveSessionId,
       sessionId: this.sessionId,
       segmentId: this.segmentId,
@@ -676,7 +702,8 @@ export class LiveTranslateSession {
       inputTranscriptArrivedAfterBoundary,
       outputTranscriptArrivedAfterBoundary,
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
-    })) {
+    });
+    for (const event of normalizedEvents) {
       if (!(isRetranslationResponse && event.stream === 'source')) {
         this.onCueEvent?.(event);
       }
@@ -734,7 +761,7 @@ export class LiveTranslateSession {
       this.awaitingInputTranscriptAfterTurnComplete = true;
     }
 
-    if (content?.outputTranscription?.text) {
+    if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
       const transcript = withTranscriptEventId({
         text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
@@ -746,13 +773,13 @@ export class LiveTranslateSession {
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
-    } else if (isFinal && this.pendingOutputTranscript) {
+    } else if (this.mode !== 'transcription' && isFinal && this.pendingOutputTranscript) {
       const transcript = withTranscriptEventId({ ...this.pendingOutputTranscript, isFinal: true }, this.pendingOutputTranscript.eventId);
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = null;
       this.awaitingOutputTranscriptAfterTurnComplete = true;
-    } else if (isFinal) {
+    } else if (this.mode !== 'transcription' && isFinal) {
       this.logLiveEvent('outputTranscription.awaitingLateText');
       this.awaitingOutputTranscriptAfterTurnComplete = true;
     }
@@ -761,10 +788,12 @@ export class LiveTranslateSession {
       this.clearPlaybackQueue();
     }
 
-    const parts = content?.modelTurn?.parts || [];
-    for (const part of parts) {
-      if (part.inlineData?.data) {
-        this.playPcmAudio(part.inlineData.data, { suppressOutput: isRetranslationResponse });
+    if (this.mode !== 'transcription') {
+      const parts = content?.modelTurn?.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          this.playPcmAudio(part.inlineData.data, { suppressOutput: isRetranslationResponse });
+        }
       }
     }
 
@@ -813,12 +842,20 @@ export class LiveTranslateSession {
   }
 
   async handleSessionError(event, epoch = this.connectionEpoch) {
-    if (epoch !== this.connectionEpoch || this.closed) {
+    if (epoch !== this.providerEpoch || this.closed) {
       this.logLiveEvent('stale.callback.ignored', { kind: 'error', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
     const message = event?.message || event?.error?.message || 'Live API error';
     const error = event instanceof Error ? event : new Error(message);
+    if (!this.providerReconnectInProgress && this.providerReconnectAttempts < 3) {
+      try {
+        const resumed = await this.reconnectProvider({ forceRefresh: true });
+        if (resumed) return;
+      } catch {
+        // Fall through to the existing recovery callback after bounded resume.
+      }
+    }
     const diagnostic = this.recordFailureDiagnostic({
       source: 'live_error',
       reasonHint: 'provider_error',
@@ -840,9 +877,20 @@ export class LiveTranslateSession {
   }
 
   async handleSessionClose(event, epoch = this.connectionEpoch) {
-    if (epoch !== this.connectionEpoch || this.closeExpected || this.closed) {
+    if (epoch !== this.providerEpoch || this.closeExpected || this.closed) {
       if (epoch !== this.connectionEpoch) this.logLiveEvent('stale.callback.ignored', { kind: 'close', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
+    }
+
+    if (!this.providerReconnectInProgress && this.providerReconnectAttempts < 3) {
+      try {
+        const resumed = await this.reconnectProvider({
+          forceRefresh: true
+        });
+        if (resumed) return;
+      } catch {
+        // Fall through to the existing recovery callback after bounded resume.
+      }
     }
 
     const reason = event?.reason ? `: ${event.reason}` : '';
@@ -866,6 +914,23 @@ export class LiveTranslateSession {
       afterCleanup: true
     });
     this.onError?.(error);
+  }
+
+  tokenExpiresSoon() {
+    return !this.tokenState?.expiresAt || Date.parse(this.tokenState.expiresAt) - Date.now() <= TOKEN_REFRESH_SAFETY_MS;
+  }
+
+  scheduleProviderReconnect(timeLeft, { forceRefresh = false } = {}) {
+    if (this.closed || this.closeExpected || this.providerReconnectTimer) return;
+    const match = String(timeLeft || '').match(/([\d.]+)\s*(ms|s|m)?/i);
+    const value = match ? Number(match[1]) : 0;
+    const unit = (match?.[2] || 'ms').toLowerCase();
+    const delay = Math.max(0, Math.min(unit === 'm' ? value * 60000 : unit === 's' ? value * 1000 : value, 30000));
+    this.providerReconnectTimer = setTimeout(() => {
+      this.providerReconnectTimer = null;
+      void this.reconnectProvider({ forceRefresh: forceRefresh || this.tokenExpiresSoon() }).catch(() => {});
+    }, delay);
+    this.providerReconnectTimer?.unref?.();
   }
 
   flushPendingTranscripts(options = {}) {
@@ -1125,6 +1190,8 @@ export class LiveTranslateSession {
     this.cleaningUp = true;
     try {
       this.clearSilenceFinalizeTimer();
+      if (this.providerReconnectTimer) clearTimeout(this.providerReconnectTimer);
+      this.providerReconnectTimer = null;
       this.closed = true;
       this.captureEnabled = false;
       this.inputSendingEnabled = false;
@@ -1258,6 +1325,57 @@ function withTranscriptEventId(transcript, eventId) {
     });
   }
   return transcript;
+}
+
+function normalizeTranscriptionCueEvents(message, context = {}) {
+  const content = message?.serverContent || {};
+  const events = [];
+  const providerEventId = message?.eventId || message?.event_id || message?.id || content.eventId || content.event_id;
+  const eventSequence = context.eventSequence ?? null;
+  const sessionTimeMs = typeof context.sessionClock === 'function' ? context.sessionClock() : null;
+  const input = content.inputTranscription || content.interimInputTranscription;
+  if (input?.text) {
+    const eventType = content.inputTranscription?.text ? 'input' : 'input-interim';
+    const isFinal = Boolean(content.inputTranscription?.text && (content.turnComplete || content.generationComplete || context.inputTranscriptIsFinal));
+    events.push({
+      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}:source:${eventType}:${String(input.text).trim()}`,
+      liveSessionId: context.liveSessionId || null,
+      sessionId: context.sessionId || null,
+      segmentId: context.segmentId || null,
+      connectionEpoch: context.connectionEpoch ?? null,
+      stream: 'source',
+      eventType,
+      text: String(input.text).replace(/\s+/gu, ' ').trim(),
+      isFinal,
+      turnComplete: Boolean(content.turnComplete),
+      generationComplete: Boolean(content.generationComplete),
+      sourceLanguageCode: input.sourceLanguageCode || context.sourceLanguageCode || null,
+      targetLanguageCode: null,
+      eventSequence,
+      sessionTimeMs,
+      ...(context.inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {})
+    });
+  }
+  if (content.turnComplete || content.generationComplete) {
+    events.push({
+      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}:control:boundary:${eventSequence || ''}`,
+      liveSessionId: context.liveSessionId || null,
+      sessionId: context.sessionId || null,
+      segmentId: context.segmentId || null,
+      connectionEpoch: context.connectionEpoch ?? null,
+      stream: null,
+      eventType: 'boundary',
+      text: '',
+      isFinal: false,
+      turnComplete: Boolean(content.turnComplete),
+      generationComplete: Boolean(content.generationComplete),
+      sourceLanguageCode: context.sourceLanguageCode || null,
+      targetLanguageCode: null,
+      eventSequence,
+      sessionTimeMs
+    });
+  }
+  return events.filter((event) => event.stream === null || event.text);
 }
 
 function summarizeLiveEvent(message) {

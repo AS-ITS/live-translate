@@ -364,7 +364,6 @@ export function useLiveRecordingController({
       if (activeSessionRecord) {
         checkpointController.scheduleSessionSnapshotSync(activeSessionRecordId);
         checkpointController.scheduleMeetingCheckpointSync(appended);
-        void transcript.translationCommandLifecycle().recordFinalTranscriptItems(activeSessionRecord, appended);
       }
     },
     expectedPendingPartialsStillCurrent(transcriptState, expectedPartialByStream) {
@@ -410,16 +409,11 @@ export function useLiveRecordingController({
         })
       );
       recovery.activeSessionRecordIdRef.current = record.id;
-      recovery.polishingSessionIdRef.current = record.id;
       audioController.prepareInputAudioDownload(record);
       audioController.prepareTranslatedAudioDownload(record);
       const initialItems = recovery.appendInitialTranscriptItems(record.id, initialTranscript);
       checkpointController.markPendingSessionSnapshotItems(record.id, initialItems);
       await checkpointController.flushSessionSnapshot(record.id);
-      void recovery.translationCommandLifecycle().recordSessionStarted(record);
-      if (initialItems.length > 0) {
-        void recovery.translationCommandLifecycle().recordFinalTranscriptItems(record, initialItems);
-      }
       return record;
     },
     appendInitialTranscriptItems(sessionId, initialTranscript) {
@@ -477,7 +471,6 @@ export function useLiveRecordingController({
     async finalizeCurrentSessionRecord(options) {
       const sessionId = recovery.activeSessionRecordIdRef.current;
       const translatedAudioFinalState = audioController.finalizeTranslatedAudioDownload(sessionId);
-      recovery.polishingSessionIdRef.current = sessionId;
       recovery.activeSessionRecordIdRef.current = null;
       const meetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || null;
 
@@ -494,7 +487,6 @@ export function useLiveRecordingController({
 
         if (finalized) {
           await checkpointController.flushSessionSnapshot(sessionId);
-          await recovery.translationCommandLifecycle().recordSessionFinalized(finalized);
           void recovery.uploadFinalizedSessionAudioArtifacts(sessionId, {
             input: options?.audioStates?.input,
             translation: translatedAudioFinalState
@@ -955,45 +947,29 @@ export function useLiveRecordingController({
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
       recovery.archiveActiveTranscriptSegment();
 
-      const nextLiveSessionId = recovery.generateLiveSessionId();
       const rollover = await recovery.meetingCheckpointApiClientRef.current.rolloverSegment({
         meetingId: meetingCheckpoint.meetingId,
         segmentId: meetingCheckpoint.segmentId,
-        idempotencyKey: `rollover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
+        idempotencyKey: `rollover:${meetingCheckpoint.segmentId}:${previousSession.liveSessionId}`,
         checkpoint: {
           idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:rollover`,
           durableChunks: [],
           pendingPartial: null
         },
-        nextLiveSessionId
+        nextLiveSessionId: previousSession.liveSessionId
       });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
-      await audioController.pauseRawAudioRecording();
-      await previousSession.stop().catch(() => {});
       cueController.flushSubtitleCues('segment-rollover');
-      if (recovery.sessionRef.current === previousSession) recovery.sessionRef.current = null;
-
-      const nextSession = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
-      try {
-        await nextSession.start();
-        if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
-          await nextSession.stop().catch(() => {});
-          return;
-        }
-        recovery.activateLiveSessionCallbacks(nextSession.callbackGeneration);
-        await audioController.resumeRawAudioRecording();
-      } catch (error) {
-        await nextSession.stop().catch(() => {});
-        throw error;
-      }
+      const providerResumed = await previousSession.reconnectProvider({ segmentId: rollover.segment.id, forceRefresh: true });
+      if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
-        await nextSession.stop().catch(() => {});
         return;
       }
 
-      recovery.sessionRef.current = nextSession;
+      recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
+      recovery.sessionRef.current = previousSession;
       const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id };
       recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);

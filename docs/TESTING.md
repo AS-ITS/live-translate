@@ -333,26 +333,69 @@ The Playwright flow:
 ## Live Smoke Test
 
 The live smoke test is the only test path allowed to call the real Gemini API.
-It is disabled unless `ENABLE_REAL_GEMINI_TEST=true`.
+The direct shell entrypoint requires `GEMINI_API_KEY` and enables the real API
+call automatically.
 
-Default safe run, no real API call:
+The backend uses `v1beta` when provisioning an ephemeral token. The browser and
+smoke-test Live clients use `v1alpha` because the current `@google/genai` SDK
+requires `v1alpha` for ephemeral-token connections. The SDK may still print its
+experimental ephemeral-token warning; that warning is expected.
+
+Direct two-hour run:
+
+```bash
+./scripts/live-meeting-smoke.sh
+```
+
+Equivalent npm command:
 
 ```bash
 npm run test:live-smoke
 ```
 
-Real Gemini smoke test:
+For a safe no-op check that never calls Gemini, run the Node implementation
+directly without `ENABLE_REAL_GEMINI_TEST=true`:
 
 ```bash
-ENABLE_REAL_GEMINI_TEST=true \
-GEMINI_API_KEY=your_real_key \
-npm run test:live-smoke
+node scripts/live-smoke-test.js
 ```
 
 Optional environment variables:
 
 - `LIVE_SMOKE_TARGET_LANGUAGE`: target language code, defaults to `en`
 - `LIVE_SMOKE_TIMEOUT_MS`: connection timeout in milliseconds, defaults to `15000`
+- `LIVE_SMOKE_DURATION_MS`: run duration, defaults to 2 hours (`7200000`)
+- `LIVE_SMOKE_MAX_TOKEN_REQUESTS`: maximum token requests, defaults to `20`
+- `LIVE_SMOKE_SPEECH_TEXT`: macOS `say` input text
+- `LIVE_SMOKE_SPEECH_INTERVAL_MS`: interval between generated speech samples,
+  defaults to `10000`
+- `LIVE_SMOKE_REQUIRE_RECONNECT`: require at least one provider reconnect;
+  defaults to true for runs of 10 minutes or longer and false for shorter runs
+
+The long-meeting smoke test requires macOS `/usr/bin/say` and
+`/usr/bin/afconvert`. It generates a short source-language speech sample,
+converts it to mono 16-bit PCM at 16kHz, and loops it through Gemini Live for
+the configured duration. Each generated speech sample ends with an explicit
+`audioStreamEnd` signal so final input transcription does not depend only on
+provider voice-activity detection. Provider reconnects reuse the
+session-resumption handle; token refresh is counted and must stay within the
+configured limit. Short diagnostic runs do not require a provider reconnect;
+the default two-hour run does.
+GoAway is an expected provider WebSocket lifecycle event; the test reports its
+count separately from reconnect failures. The test prints only non-sensitive counters and is not intended for CI.
+During execution it prints startup stages, provider connection/reconnect events,
+speech sample sends, and a non-sensitive heartbeat every 60 seconds. The
+default run lasts two hours; use `LIVE_SMOKE_DURATION_MS` for a shorter manual
+check. At the end of every run it prints a Chinese summary with the start time,
+end time, actual duration, provider connection/reconnect counts, token requests,
+GoAway count, final transcript count, and sanitized abnormal events. The JSON
+summary that follows keeps English field names for machine processing.
+
+Two-hour validation:
+
+```bash
+./scripts/live-meeting-smoke.sh
+```
 
 CI must not set `ENABLE_REAL_GEMINI_TEST=true` unless the job is explicitly
 intended to spend real Gemini API quota.

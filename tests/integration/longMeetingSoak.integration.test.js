@@ -115,7 +115,7 @@ test('130 minute long meeting soak persists checkpoints, recovery, and segmented
     assert.deepEqual(transitionLiveSessionIds, allLiveSessionIds.slice(1));
     assert.deepEqual(detail.meeting.segmentSummary.countsByStatus, {
       active: 1,
-      completed: 11,
+      completed: 7,
       interrupted: 1
     });
     assert.equal(detail.meeting.segmentSummary.hasInterruptedSegments, true);
@@ -123,8 +123,8 @@ test('130 minute long meeting soak persists checkpoints, recovery, and segmented
     assert.equal(scenario.expectedChunks.length, LONG_MEETING_SOAK_SEGMENT_COUNT * 2);
     assertNoMissingDuplicateOrOutOfOrderChunks(assert, detail.transcriptItems, scenario.expectedChunks);
     assertNoCrossSegmentPollution(detail.transcriptItems);
-    assert.equal(detail.readingContent.sourceTranscript.text.includes('long meeting source segment 13'), true);
-    assert.equal(detail.readingContent.translationArticle.text.includes('long meeting translation segment 13'), true);
+    assert.equal(detail.readingContent.sourceTranscript.text.includes('long meeting source segment 9'), true);
+    assert.equal(detail.readingContent.translationArticle.text.includes('long meeting translation segment 9'), true);
     assert.equal(sessionDetail.session.status, 'stopped');
     assert.equal(sessionDetail.session.audioArtifacts.input.storageMode, 'segmented');
     assert.equal(sessionDetail.session.audioArtifacts.translation.storageMode, 'segmented');

@@ -166,9 +166,8 @@ Segment checkpoints for confirmed transcript or translation chunks. The live UI
 now creates a Meeting by default, attaches the first Segment to the saved
 SessionRecord, and syncs confirmed source/translation chunks on a short debounce
 and on Stop. Long Meeting WP3 proactive segmentation is completed: live sessions
-roll over the active Segment on a scheduled 10-minute interval, create the next
-ordered Segment with a fresh Live session association, and preserve the visible
-transcript while replacing the browser Gemini Live session. Long Meeting WP4
+roll over the active Segment on a scheduled 15-minute interval while reusing the
+same logical provider session and preserving the visible transcript. Long Meeting WP4
 Live/token recovery is completed: the backend can recover an active Segment as
 interrupted with a next active Segment or as failed with final error metadata,
 and the live UI now uses Segment recovery for controlled reconnect after
@@ -189,7 +188,8 @@ failed-Segment readable checkpoint coverage. E2E coverage verifies
 browser-suspended wake recovery and explicit resource diagnostics after
 long-meeting Stop.
 Offline pause/resume and device-disconnect recovery are completed resilience
-extensions. Proactive token refresh remains deferred.
+extensions. Provider reconnect now reuses session resumption and refreshes
+ephemeral tokens only near expiry.
 
 Completed Phase 1 capabilities include:
 

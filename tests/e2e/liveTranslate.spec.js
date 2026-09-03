@@ -917,6 +917,37 @@ test('live recording surface exposes meeting and session controls', async ({ pag
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeVisible();
 });
 
+test('entering live recording from meeting settings loads the selected meeting', async ({ page }) => {
+  await page.route('**/api/glossary', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ entries: [] })
+  }));
+
+  await page.goto('/#meeting-settings?mode=edit&meetingId=meeting-1');
+  await expect(page.getByRole('heading', { name: '基本資訊' })).toBeVisible();
+
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
+  await expect(page.getByTestId('live-session-toolbar')).not.toContainText('正在載入會議…');
+});
+
+test('live recording shows a retryable error when meeting detail loading fails', async ({ page }) => {
+  await page.route('**/api/meetings/meeting-1', async (route) => route.fulfill({
+    status: 500,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'internal_error' } })
+  }));
+
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByRole('alert')).toContainText('會議詳細資料載入失敗。請重試。');
+  await expect(page.getByRole('button', { name: '重試' })).toBeVisible();
+  await expect(page.getByTestId('live-session-toolbar')).not.toContainText('正在載入會議…');
+});
+
 test('live recording shows an actionable unselected meeting state', async ({ page }) => {
   await page.goto('/#live');
 

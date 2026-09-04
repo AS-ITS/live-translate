@@ -21,10 +21,9 @@ Audio streams are not proxied through the backend.
 
 ## Realtime subtitle pipeline (target architecture)
 
-The current implementation and the target design must be kept distinct. The
-current Live recorder uses `LiveTranscriptionSession` and persists source Cues;
-the following is the planned downstream pipeline and is not yet a production
-runtime change:
+The Live recorder uses `LiveTranscriptionSession` and persists source Cues;
+the downstream translation/refinement work now runs asynchronously after each
+finalized Cue is persisted:
 
 ```text
 Transcribe Live (`gemini-3.5-transcribe-live`)
@@ -45,9 +44,9 @@ Responsibilities and ownership:
 - The checkpoint/repository owns finalized Cue persistence and recovery state.
   Queue items own execution identity and delivery state; they do not own Cue
   identity or transcript text.
-- The backend translation worker consumes `final_cue.persisted`, creates the
-  initial translation execution, validates the structured result, and appends
-  it to the same `cueId`.
+- The Live application submits finalized Cues to the translation command API;
+  the backend worker validates the result and the application appends it to
+  the same `cueId`.
 - The refinement worker consumes a completed initial translation, sends the
   Cue plus bounded finalized context to Flash, validates the result, and
   applies a same-Cue version update. A Viewer broadcaster publishes safe

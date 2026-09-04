@@ -2925,6 +2925,9 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
     targetLanguageCode: value.targetLanguageCode || null,
     sourceText: value.sourceText,
     translatedText: value.translatedText,
+    ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
+    ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
+    ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
     status: value.status,
     finalizedReason: value.finalizedReason || null,
     ...(value.refinement ? { refinement: value.refinement } : {})

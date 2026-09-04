@@ -67,6 +67,7 @@ export function createTranslationExecutionRunner({
       const output = new TranslationOutput({
         id: payload.outputId ?? `${execution.id}-output-0`,
         executionId: execution.id,
+        cueId: payload.cueId,
         sequence: payload.outputSequence ?? 0,
         translatedText: providerAttemptExecution.providerResult.translatedText || providerAttemptExecution.providerResult.refinedTranslation || providerAttemptExecution.providerResult.refinedCues?.map((cue) => cue.refinedTranslation).join('\n') || ' ',
         polishedItems: providerAttemptExecution.providerResult.polishedItems,
@@ -133,6 +134,7 @@ export function createTranslationExecutionRunner({
       const output = new TranslationOutput({
         id: payload.outputId ?? `${execution.id}-output-0`,
         executionId: execution.id,
+        cueId: payload.cueId,
         sequence: payload.outputSequence ?? 0,
         translatedText: execution.providerResult.translatedText || execution.providerResult.refinedTranslation || execution.providerResult.refinedCues?.map((cue) => cue.refinedTranslation).join('\n') || ' ',
         polishedItems: execution.providerResult.polishedItems,

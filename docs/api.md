@@ -1,10 +1,8 @@
 # Live Translate API and Events
 
-## Realtime subtitle pipeline contract (target architecture)
+## Realtime subtitle pipeline contract
 
-The target API treats a finalized source Cue as the stable unit of downstream
-work. This section documents the planned contract; it does not claim that the
-current production runtime has been switched to it.
+The API treats a finalized source Cue as the stable unit of downstream work.
 
 ### Cue read model
 
@@ -36,13 +34,13 @@ Consumers compute the effective translation as
 
 ### Execution trigger and operations
 
-Persistence emits the internal `final_cue.persisted` handoff only after a
-finalized Cue is durably recorded. The backend then creates an asynchronous
-initial translation execution using `gemini-3.5-flash`. A successful initial
-translation schedules a separate refinement execution, also using Flash; both
-operations are non-blocking from the Live transcription request. Failures are
-stored with safe status information and are retryable without changing the
-Cue identity or source fields.
+After a finalized Cue is submitted for checkpoint persistence, the frontend
+creates an asynchronous initial translation execution using
+`gemini-3.5-flash`. A successful initial translation then schedules a separate
+refinement execution, also using Flash; both operations are non-blocking from
+the Live transcription request. Failures are stored with safe status
+information and are retryable without changing the Cue identity or source
+fields.
 
 Worker results must use structured output with the expected operation, exact
 `cueId`, source/input hash, target language, and bounded text fields. Unknown

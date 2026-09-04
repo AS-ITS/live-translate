@@ -20,6 +20,7 @@ import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from '../lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLifecycle.js';
+import { createCueTranslationLifecycle } from '../lib/cueTranslationLifecycle.js';
 import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '../lib/transcriptPolishing.js';
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
@@ -172,6 +173,7 @@ export function App() {
   const meetingDetailCacheRef = useRef(new Map());
   const translationCommandLifecycleRef = useRef(null);
   const transcriptPolishingLifecycleRef = useRef(null);
+  const cueTranslationLifecycleRef = useRef(null);
   const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const sessionControlLeaseRef = useRef(null);
@@ -269,6 +271,7 @@ export function App() {
     recovery: {
       resumeDraft,
       isActive,
+      reconnectController: () => liveController.recovery.reconnectController(),
       resetReconnect: () => liveController.recovery.reconnectController().reset(),
       activeMeetingCheckpointRef,
       sessionRef,
@@ -365,6 +368,7 @@ export function App() {
     }
   });
 
+  // Finalized Cues are translated asynchronously after they are persisted.
   useEffect(() => {
     const lease = createSessionControlLease();
     sessionControlLeaseRef.current = lease;
@@ -497,16 +501,13 @@ export function App() {
   }, [page, isLiveSurface]);
 
   useEffect(() => {
-    // Live transcription is source-only; legacy polishing results are
-    // intentionally not polled or applied during a recording.
-    return undefined;
-    /* istanbul ignore next -- retained below only for historical compatibility */
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
     const poll = async () => {
       try {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
         const detail = await getSessionDetailWithTranslationHistory(sessionId);
+        applyInitialTranslationOutputs(detail);
         const outputs = completedPolishingOutputs(detail);
         applyRefinementExecutionStates(detail);
         applyRefinedOutputs(detail);
@@ -553,6 +554,50 @@ export function App() {
     const timer = window.setInterval(poll, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [status]);
+
+  function cueTranslationLifecycle() {
+    if (!cueTranslationLifecycleRef.current) {
+      cueTranslationLifecycleRef.current = createCueTranslationLifecycle({
+        apiClient: createTranslationCommandApiClient(),
+        onStateChange: (next) => {
+          if (next.status === 'failed') setError('字幕翻譯暫時失敗，原文仍會保留。');
+        }
+      });
+    }
+    return cueTranslationLifecycleRef.current;
+  }
+
+  function applyInitialTranslationOutputs(detail) {
+    const outputs = (detail?.translationHistory?.outputs || []).filter((output) => (
+      output?.operation === 'cue_translation' && output?.cueId && typeof output.translatedText === 'string' && output.translatedText.trim()
+    ));
+    if (outputs.length === 0) return;
+    const current = subtitleCueStateRef.current;
+    const byId = new Map(outputs.map((output) => [output.cueId, output]));
+    let changed = false;
+    const nextCues = current.finalCues.map((cue) => {
+      const output = byId.get(cue.cueId);
+      if (!output || cue.initialTranslation === output.translatedText || cue.refinedTranslation) return cue;
+      changed = true;
+      return {
+        ...cue,
+        targetLanguageCode,
+        initialTranslation: output.translatedText,
+        rawTranslation: output.translatedText,
+        translatedText: output.translatedText,
+        translationStatus: 'completed',
+        refinement: { ...(cue.refinement || {}), status: 'pending' }
+      };
+    });
+    if (!changed) return;
+    const next = { ...current, finalCues: nextCues };
+    subtitleCueStateRef.current = next;
+    setSubtitleCueState(next);
+    enqueueCuePersistence(current, next);
+    nextCues.filter((cue) => cue.initialTranslation && cue.refinement?.status === 'pending').forEach((cue) => {
+      void scheduleTranscriptPolishing([cue]).then(() => transcriptPolishingCoordinator().flush()).catch(() => {});
+    });
+  }
 
   function applyPolishedOutput(output) {
     const polishedItems = Array.isArray(output?.polishedItems) ? output.polishedItems : [];
@@ -804,6 +849,7 @@ export function App() {
       const resetCues = resetSubtitleCueState();
       transcriptPolishingLifecycleRef.current?.reset(activeSessionRecordIdRef.current);
       transcriptPolishingCoordinatorRef.current?.reset();
+      cueTranslationLifecycleRef.current?.reset();
       setPolishingState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
       setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
       cancelLiveCueIdleTimers();
@@ -1099,10 +1145,10 @@ export function App() {
   }
 
   function scheduleTranscriptPolishing(finalCues = []) {
-    if (!TRANSCRIPT_POLISHING_ENABLED) return;
+    if (!TRANSCRIPT_POLISHING_ENABLED) return Promise.resolve(null);
     const cues = finalCues.filter((cue) => cue?.status === 'final' && rawSourceForCue(cue) && rawTranslationForCue(cue));
-    if (!activeSessionRecordIdRef.current || cues.length === 0) return;
-    transcriptPolishingCoordinator().enqueue(cues);
+    if (!activeSessionRecordIdRef.current || cues.length === 0) return Promise.resolve(null);
+    return transcriptPolishingCoordinator().enqueue(cues);
   }
 
   function pollRefinedSubtitleResult(sessionId, inputHash, attempt) {
@@ -1157,6 +1203,14 @@ export function App() {
       return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
     });
     const checkpoint = cueCheckpointForState(next);
+    changedCues.filter((cue) => cue?.status === 'final' && !cue.initialTranslation && !cue.rawTranslation && !cue.translatedText).forEach((cue) => {
+      void cueTranslationLifecycle().submitCue({
+        sessionId: activeSessionRecordIdRef.current,
+        sourceLanguageCode,
+        targetLanguageCode,
+        cue
+      }).catch(() => {});
+    });
     void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
   }
@@ -1564,6 +1618,7 @@ export function App() {
     setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
     transcriptPolishingLifecycleRef.current?.reset(polishingSessionIdRef.current);
     transcriptPolishingCoordinatorRef.current?.reset();
+    cueTranslationLifecycleRef.current?.reset();
     polishingSessionIdRef.current = null;
     liveController.audio.resetInputAudioDownload();
     liveController.audio.resetTranslatedAudioDownload();

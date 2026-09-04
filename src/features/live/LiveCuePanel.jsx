@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Radio } from 'lucide-react';
-import { effectiveSourceForCue } from '../../lib/cueContent.js';
-import { cueListForDisplay, sourceTextForCopy } from '../../lib/cueUi.js';
+import { effectiveSourceForCue, effectiveTranslationForCue } from '../../lib/cueContent.js';
+import { cueListForDisplay, sourceTextForCopy, translationTextForCopy } from '../../lib/cueUi.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
 
-// Refinement status is shown in the panel badge; Cue rows keep the normal
-// surface so async polishing cannot obscure live transcript content.
+// Async translation/refinement updates the same Cue row without obscuring
+// the live transcript content.
 export function LiveCuePanel({
   cueState,
   fallbackTranscriptItems = [],
@@ -43,7 +43,7 @@ export function LiveCuePanel({
   return (
     <section className="cue-panel meeting-settings-card" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>
       <div className="cue-panel-header meeting-settings-card-header">
-        <div><h2>即時字幕</h2><p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '錄音會即時轉成來源語言字幕。'}</p></div>
+        <div><h2>即時字幕</h2><p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '錄音會即時轉成來源語言字幕，翻譯會在句子完成後更新。'}</p></div>
         <div className="cue-panel-actions">
           <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時字幕狀態：${statusLabel(status, statusLabelOverride)}`}><Radio size={15} aria-hidden="true" />{statusLabel(status, statusLabelOverride)}</span>
           {hasContent && !isFollowingLatest ? <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={() => { cueListRef.current?.scrollTo({ top: cueListRef.current.scrollHeight, behavior: 'smooth' }); setIsFollowingLatest(true); }}>回到最新字幕</button> : null}
@@ -53,6 +53,7 @@ export function LiveCuePanel({
         {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始錄音後，來源語音字幕會顯示在這裡</p> : null}
         {hasContent ? <div className="cue-reading-layout">
           <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} />
+          <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} />
           {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">
             {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>
               <div className="cue-row-meta"><span className="cue-partial-status">已保存逐字稿</span></div>
@@ -79,13 +80,15 @@ function PartialCueRow({ cue, ...props }) { return <CueRow cue={cue} partial {..
 function CueRow({ cue, partial = false, stream, paired = false, showSource = true }) {
   const label = cue.terminalStatus === 'saved-pending' ? '未完成語句已保存' : partial ? '辨識中' : `字幕 ${cue.sequence || ''}`;
   const sourceText = effectiveSourceForCue(cue, 'raw');
+  const translationText = effectiveTranslationForCue(cue);
   return <article className={`cue-row${partial ? ' cue-row-partial' : ''}`} data-testid={partial ? 'cue-partial-row' : 'cue-final-row'} data-cue-id={cue.cueId || undefined} aria-label={label}>
     {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
-    <div className="cue-text-toggle">{showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}</div>
+    <div className="cue-text-toggle">{showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}{!partial ? <TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} /> : null}</div>
   </article>;
 }
 
 function SourceCueText({ text = '' }) { return <span className="cue-source" data-testid="cue-source-text">{text || '—'}</span>; }
+function TranslatedCueText({ text = '' }) { return <span className="cue-translation" data-testid="cue-translated-text">{text || '翻譯處理中…'}</span>; }
 
 function isCueListAtLatestPosition(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 24; }
 function statusLabel(status, override = '') { if (override) return override; return { idle: '準備就緒', 'requesting-permission': '正在請求麥克風權限', connecting: '正在連線', listening: '聆聽中', reconnecting: '正在重新連線', 'switching-segment': '切換下一段中', paused: '已暫停', stopped: '已停止', expired: '工作階段已過期', error: '需要處理' }[status] || status; }

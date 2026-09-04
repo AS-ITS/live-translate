@@ -3,7 +3,7 @@ import { cueRefinementInputHash, cueRefinementItem } from './cueContent.js';
 import { stableSubtitleGroup, subtitleResegmentationInputHash } from './subtitleResegmentation.js';
 import { refinementTargetsForItems } from './refinementTargets.js';
 
-export const TRANSCRIPT_POLISHING_MODEL = 'gemini-3.5-flash-lite';
+export const TRANSCRIPT_POLISHING_MODEL = 'gemini-3.5-flash';
 export const TRANSCRIPT_POLISHING_PROVIDER_KEY = 'gemini';
 
 export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = () => {}, now = () => new Date().toISOString() } = {}) {
@@ -41,6 +41,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
           sourceTranscriptRevisionId: `subtitle-revision:${sessionId}`,
           targetLanguageCode,
           operation: 'transcript_polishing',
+          model: TRANSCRIPT_POLISHING_MODEL,
           segmentRange: segmentRange || { fromSequence: items[0].sequence, toSequence: items.at(-1).sequence, segmentIds: [...new Set(items.map((cue) => cue.segmentId).filter(Boolean))] },
           inputHash: hash,
           sourceTranscriptSnapshot: snapshot,
@@ -77,6 +78,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
           sourceTranscriptRevisionId: `source-revision:${sessionId}:final`,
           targetLanguageCode,
           operation: 'transcript_polishing',
+          model: TRANSCRIPT_POLISHING_MODEL,
           segmentRange: { fromSequence: cue.sequence, toSequence: cue.sequence, segmentIds: [cue.segmentId].filter(Boolean) },
           inputHash: hash,
           sourceTranscriptSnapshot: snapshot,
@@ -133,6 +135,7 @@ export function createTranscriptPolishingLifecycle({ apiClient, onStateChange = 
           sourceTranscriptRevisionId,
           targetLanguageCode,
           operation: 'transcript_polishing',
+          model: TRANSCRIPT_POLISHING_MODEL,
           segmentRange,
           inputHash: hash,
           sourceTranscriptSnapshot: snapshot,

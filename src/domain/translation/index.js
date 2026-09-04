@@ -216,6 +216,7 @@ export class TranslationOutput {
 
     this.id = assertRequiredString(input.id, 'id');
     this.executionId = assertRequiredString(input.executionId, 'executionId');
+    this.cueId = input.cueId === undefined ? undefined : assertOptionalString(input.cueId, 'cueId');
     this.sequence = assertNonNegativeInteger(input.sequence, 'sequence');
     this.translatedText = assertRequiredString(input.translatedText, 'translatedText');
     this.polishedItems = input.polishedItems === undefined ? undefined : deepClone(input.polishedItems);

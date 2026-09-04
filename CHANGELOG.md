@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- P1 Flash pipeline 已接回 finalized Cue：每個 Cue 以 `cueId` 建立唯一的
+  `gemini-3.5-flash` 初次翻譯 execution，完成後顯示在同一字幕列並觸發
+  refinement；翻譯失敗不阻塞 Live transcription，legacy fallback 仍可讀。
+
 - 文件重新規劃即時字幕、初版翻譯與非同步潤飾的四階段 pipeline：interim
   僅供 UI，finalized Cue 成為 persistence、history、export、summary 的穩定來源；
   initial translation 與 refinement 皆附加在同一 `cueId`，失敗不阻塞直播。

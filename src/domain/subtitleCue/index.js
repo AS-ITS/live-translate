@@ -19,7 +19,7 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
   const rawSource = text(input.rawSource ?? input.sourceText, 'rawSource');
   const rawTranslation = optionalText(input.rawTranslation ?? input.translatedText, 'rawTranslation');
   const mode = input.mode === 'transcription' || input.targetLanguageCode === null ? 'transcription' : 'translation';
-  const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'refinement');
+  const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'initialTranslation') || Object.hasOwn(input, 'refinement');
   const cue = {
     cueId: requiredString(input.cueId, 'cueId'),
     sessionId: requiredString(input.sessionId, 'sessionId'),
@@ -35,8 +35,10 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     ...(hasRefinementContract ? {
       rawSource,
       rawTranslation,
+      initialTranslation: optionalNullableText(input.initialTranslation, 'initialTranslation'),
       refinedSource: optionalNullableText(input.refinedSource, 'refinedSource'),
       refinedTranslation: optionalNullableText(input.refinedTranslation, 'refinedTranslation'),
+      ...(input.translationStatus ? { translationStatus: input.translationStatus } : {}),
       refinement: normalizeRefinement(input, { rawSource, rawTranslation })
     } : {}),
     status: input.status,
@@ -56,7 +58,7 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   const existingById = normalizedExisting.find((cue) => cue.cueId === input?.cueId);
   if (existingById) {
     const incoming = validateFinalCue(input);
-    if (isPreferredRefinementUpdate(existingById, incoming)) {
+    if (isPreferredRefinementUpdate(existingById, incoming) || isInitialTranslationUpdate(existingById, incoming)) {
       const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
       return { cue: clone(incoming), appended: false, updated: true, cues };
     }
@@ -136,6 +138,19 @@ function isPreferredRefinementUpdate(existing, incoming) {
       && ((statusRank[incomingRefinement.status] || 0) > (statusRank[existingRefinement.status] || 0)
         || (incomingRefinement.status === 'completed'
           && (incoming.refinedSource !== existing.refinedSource || incoming.refinedTranslation !== existing.refinedTranslation))));
+}
+
+function isInitialTranslationUpdate(existing, incoming) {
+  return existing.cueId === incoming.cueId
+    && existing.sessionId === incoming.sessionId
+    && existing.segmentId === incoming.segmentId
+    && existing.sequence === incoming.sequence
+    && existing.startTimeMs === incoming.startTimeMs
+    && existing.endTimeMs === incoming.endTimeMs
+    && existing.sourceText === incoming.sourceText
+    && existing.translatedText === ''
+    && incoming.translatedText !== ''
+    && incoming.initialTranslation === incoming.translatedText;
 }
 
 function isMonotonicMergedCue(existing, incoming) {

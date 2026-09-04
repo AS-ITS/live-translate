@@ -98,6 +98,11 @@ bounded lock waits, stale-lock recovery, and cross-process regression tests.
 This milestone does not add a broker, database, durable event outbox, event
 replay, or cross-host exactly-once delivery.
 
+P1 Flash translation/refinement is implemented: finalized Cues enqueue one
+idempotent `gemini-3.5-flash` translation execution, then the same Cue can be
+updated by asynchronous refinement. Raw Cue content remains available when
+either provider step fails.
+
 Phase 4A WP1 Target Language Selection is completed. The existing target-language
 allowlist and `en` default now apply at live-token, translation-command,
 and saved-transcript retranslation HTTP boundaries. Selected values persist on

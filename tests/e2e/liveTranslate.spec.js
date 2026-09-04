@@ -901,7 +901,18 @@ test('live recording surface exposes meeting and session controls', async ({ pag
   await expect(page.getByRole('button', { name: '設定', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /^字典/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
-  await expect(page.getByRole('link', { name: '回會議管理修改' })).toHaveCount(0);
+  const meetingSettingsButton = page.getByRole('link', { name: '修改會議設定' });
+  await expect(meetingSettingsButton).toBeVisible();
+  await expect(meetingSettingsButton).toHaveAttribute('href', '#meeting-settings?mode=edit&meetingId=meeting-1');
+  await expect(page.locator('.meeting-app-header .live-header-actions').getByRole('link', { name: '修改會議設定' })).toHaveCount(1);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-meeting-summary').getByRole('link', { name: '修改會議設定' })).toHaveCount(0);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-session-status .live-device-summary')).toHaveCount(1);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-meeting-summary .live-device-summary')).toHaveCount(0);
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect(meetingSettingsButton).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page.getByTestId('live-session-toolbar')).toContainText('準備就緒');
   await page.screenshot({ path: test.info().outputPath('live-control-ready.png'), fullPage: true });
 
@@ -1104,7 +1115,7 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await dialog.getByLabel('標籤（以逗號分隔）').fill('audio, product');
   await expect(dialog.getByText('套用範圍')).toHaveCount(0);
   await expect(dialog.locator('select')).toHaveCount(3);
-  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['44px', '44px', '44px']);
+  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['56px', '56px', '56px']);
   await expect(dialog.getByRole('button', { name: '取消' })).toBeVisible();
   await expect(dialog.getByRole('button', { name: '新增全域詞條' })).toBeVisible();
   await dialog.getByRole('button', { name: '新增全域詞條' }).click();

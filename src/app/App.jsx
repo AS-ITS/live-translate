@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Mic, MicOff, Pause, Play, Plus, Square } from 'lucide-react';
+import { ArrowRight, Mic, MicOff, Pause, Pencil, Play, Plus, Square } from 'lucide-react';
 import { targetLanguageLabelFor } from '../lib/languages.js';
 import { classifyConnectionFailure } from '../lib/connectionFailures.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
-import { audioInputDevices } from '../lib/mediaDevices.js';
+import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../lib/mediaDevices.js';
 import { createMemorySessionRepository } from '../lib/sessionRepository.js';
 import { createSessionReadApiClient } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
@@ -61,6 +61,7 @@ import { createAudioUploadSegmentState } from '../features/live/liveAudioBinding
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError } from '../features/live/liveStatus.js';
 import { LiveTranscriptionSession } from '../lib/liveTranscriptionSession.js';
+import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
@@ -110,6 +111,8 @@ export function App() {
   const [copiedArticleStream, setCopiedArticleStream] = useState('');
   const [inputDevices, setInputDevices] = useState([]);
   const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
+  const [outputDevices, setOutputDevices] = useState([]);
+  const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
   const [navigationNotice, setNavigationNotice] = useState('');
@@ -156,6 +159,7 @@ export function App() {
   const archivedTranscriptSegmentsRef = useRef([]);
   const inputDevicesRef = useRef(inputDevices);
   const selectedInputDeviceIdRef = useRef(selectedInputDeviceId);
+  const selectedOutputDeviceIdRef = useRef(selectedOutputDeviceId);
   const reconnectSessionRef = useRef(null);
   const sessionRepositoryRef = useRef(createMemorySessionRepository());
   const sessionSnapshotApiClientRef = useRef(createSessionSnapshotApiClient());
@@ -385,6 +389,7 @@ export function App() {
 
   inputDevicesRef.current = inputDevices;
   selectedInputDeviceIdRef.current = selectedInputDeviceId;
+  selectedOutputDeviceIdRef.current = selectedOutputDeviceId;
 
   useEffect(() => {
     void refreshInputDevices();
@@ -790,8 +795,10 @@ export function App() {
     }
 
     try {
-      const devices = audioInputDevices(await navigator.mediaDevices.enumerateDevices());
+      const normalizedDevices = await navigator.mediaDevices.enumerateDevices();
+      const devices = audioInputDevices(normalizedDevices);
       setInputDevices(devices);
+      setOutputDevices(audioOutputDevices(normalizedDevices));
       setSelectedInputDeviceId((current) => {
         if (!current || devices.some((device) => device.deviceId === current)) {
           return current;
@@ -804,6 +811,37 @@ export function App() {
     } catch {
       setDeviceMessage('無法取得麥克風清單，已改用瀏覽器預設麥克風。');
     }
+  }
+
+  async function selectInputDevice(deviceId) {
+    const nextDeviceId = deviceId || '';
+    if (!sessionRef.current || !['listening', 'reconnecting'].includes(status)) {
+      selectedInputDeviceIdRef.current = nextDeviceId;
+      setSelectedInputDeviceId(nextDeviceId);
+      return;
+    }
+
+    try {
+      const nextStream = await requestAudioInputStream(nextDeviceId);
+      const replaced = await sessionRef.current.replaceInputStream(nextStream);
+      if (!replaced) {
+        nextStream.getTracks?.().forEach((track) => track.stop?.());
+        throw new Error('無法切換麥克風。');
+      }
+      selectedInputDeviceIdRef.current = nextDeviceId;
+      setSelectedInputDeviceId(nextDeviceId);
+      setDeviceMessage('已切換麥克風，字幕工作階段未中斷。');
+    } catch (nextError) {
+      setDeviceMessage(nextError?.message || '無法切換麥克風，已保留原裝置。');
+    }
+  }
+
+  async function selectOutputDevice(deviceId) {
+    selectedOutputDeviceIdRef.current = deviceId || '';
+    setSelectedOutputDeviceId(deviceId || '');
+    if (!sessionRef.current) return;
+    const supported = await sessionRef.current.setOutputDevice(deviceId || '');
+    if (!supported && deviceId) setDeviceMessage('此瀏覽器不支援切換輸出裝置，已維持預設揚聲器。');
   }
 
   function cancelLiveCueIdleTimers() {
@@ -864,9 +902,8 @@ export function App() {
       setStatus('requesting-permission');
     }
 
-    const inputDeviceIdForSession = inputDevicesRef.current.some((device) => device.deviceId === selectedInputDeviceIdRef.current)
-      ? selectedInputDeviceIdRef.current
-      : '';
+    const audioPreference = getMeetingAudioPreference(activeMeetingCheckpointRef.current?.meetingId || routeMeetingId);
+    const inputDeviceIdForSession = hasConfirmedMeetingAudioPreference(audioPreference) ? audioPreference.inputDeviceId || '' : '';
 
     const callbackGeneration = {
       generation: liveSessionCallbackGenerationRef.current.generation + 1,
@@ -883,6 +920,7 @@ export function App() {
       sessionClock: () => sessionTimeForSubtitleCues(),
       sourceLanguageCode,
       inputDeviceId: inputDeviceIdForSession,
+      outputDeviceId: hasConfirmedMeetingAudioPreference(audioPreference) ? audioPreference.outputDeviceId || '' : '',
       onInputDeviceFallback: () => {
         setSelectedInputDeviceId('');
         setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
@@ -908,6 +946,10 @@ export function App() {
       onProviderReady: () => {
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
         setStatusLabelOverride('');
+      },
+      onPlaybackStateChange: ({ state: playbackState } = {}) => {
+        if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        if (playbackState === 'error') setDeviceMessage('翻譯聲音播放失敗，字幕仍會繼續接收。');
       },
       onInputAudioChunk: (chunk) => {
         if (isCurrentLiveSessionInstance(callbackGeneration)) liveController.audio.handleInputAudioChunk(chunk);
@@ -1699,6 +1741,23 @@ export function App() {
 
   const hasSelectedResumableMeeting = meetingRecords.some((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
   const liveMeeting = selectedMeetingDetail?.meeting || meetingRecords.find((meeting) => meeting.id === routeMeetingId) || null;
+  const liveAudioPreference = getMeetingAudioPreference(routeMeetingId);
+  const canRecordLiveMeeting = Boolean(
+    routeMeetingId && (
+      ['created', 'active', 'interrupted'].includes(liveMeeting?.status) ||
+      resumeDraft?.meetingId === routeMeetingId
+    )
+  );
+  const startLiveRecording = () => {
+    if (!hasConfirmedMeetingAudioPreference(liveAudioPreference)) {
+      setError('請先回到會議設定確認音訊裝置，再開始錄製。');
+      window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
+      return;
+    }
+    void (liveController.resumeDraft?.hasTranscript
+      ? liveController.actions.resumeMeetingSession()
+      : liveController.actions.startSession());
+  };
   const views = {
     viewer: () => {
       const viewerInfo = pageInfoFromLocation();
@@ -1735,15 +1794,26 @@ export function App() {
       title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : isMeetingDetailPage ? '會議紀錄' : '即時字幕'}
       titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : isMeetingDetailPage ? 'meeting-detail-page-title' : undefined}
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : isMeetingDetailPage ? '查看這場會議的完整時間軸、逐字稿與匯出內容。' : '會議字幕工作台'}
-      headerAction={isGlobalGlossaryPage || isLiveSurface || isMeetingDetailPage ? (
+      headerAction={isLiveSurface ? (
+        <div className="live-header-actions">
+          {routeMeetingId ? <a className="button secondary meeting-header-action live-meeting-settings-button" href={`#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`}><Pencil size={16} aria-hidden="true" />修改會議設定</a> : null}
+          <a
+            className="button secondary meeting-header-action"
+            href="#meetings"
+            onClick={(event) => {
+              event.preventDefault();
+              setError('');
+              window.location.hash = '#meetings';
+            }}
+          >
+            <ArrowRight size={18} aria-hidden="true" />
+            返回會議管理
+          </a>
+        </div>
+      ) : isGlobalGlossaryPage || isMeetingDetailPage ? (
         <a
           className="button secondary meeting-header-action"
           href="#meetings"
-          onClick={isLiveSurface ? (event) => {
-            event.preventDefault();
-            setError('');
-            window.location.hash = '#meetings';
-          } : undefined}
         >
           <ArrowRight size={18} aria-hidden="true" />
           返回會議管理
@@ -1804,6 +1874,10 @@ export function App() {
             </div>
 
             <div className="live-session-status">
+              <div className="live-device-summary" aria-label="已確認的音訊裝置">
+                <span>麥克風：{liveAudioPreference?.inputDeviceLabel || '尚未確認'}</span>
+                <span>揚聲器：{liveAudioPreference?.outputDeviceLabel || '瀏覽器預設揚聲器'}</span>
+              </div>
               {controlLeaseSnapshot && !hasSessionControl ? (
                 <p className="device-note">目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p>
               ) : null}
@@ -1873,15 +1947,15 @@ export function App() {
                       結束本次工作階段
                     </button>
                   </>
-                ) : hasSelectedResumableMeeting || (routeMeetingId && resumeDraft?.meetingId === routeMeetingId && resumeDraft?.hasTranscript) ? (
+              ) : canRecordLiveMeeting ? (
                   <button
                     className="button primary meeting-live-action-button"
                     type="button"
-                    onClick={liveController.resumeDraft?.hasTranscript ? liveController.actions.resumeMeetingSession : liveController.actions.startSession}
-                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl) || !hasSelectedResumableMeeting}
+                    onClick={startLiveRecording}
+                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {liveController.isActive ? '正在開始' : liveController.resumeDraft?.hasTranscript ? '繼續錄製' : '開始'}
+                    {liveController.isActive ? '正在開始' : liveController.resumeDraft?.hasTranscript ? '繼續錄製' : '開始錄製'}
                   </button>
                 ) : null}
                 {routeMeetingId && liveController.resumeDraft?.meetingId === routeMeetingId && !liveController.isActive && liveController.status === 'idle' ? (

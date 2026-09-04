@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 調整 Live Workspace Header 與 Meeting Control 資訊位置：設定入口移至頁面 Header，麥克風／揚聲器摘要移至中間狀態區。
+
+- Meeting 音訊設定移至設定頁，新增瀏覽器本機 preflight 偏好；Live 頁面改為唯讀顯示裝置，並修正沒有 transcript 的 Meeting 仍可開始錄製。
+
+- 語音管線改用 AudioWorklet capture（舊瀏覽器保留相容 fallback），補上播放錯誤隔離、輸出裝置選擇，以及錄音中的麥克風 stream replacement；切換裝置不會建立新 Session 或清除字幕。
+
 - P1 Flash pipeline 已接回 finalized Cue：每個 Cue 以 `cueId` 建立唯一的
   `gemini-3.5-flash` 初次翻譯 execution，完成後顯示在同一字幕列並觸發
   refinement；翻譯失敗不阻塞 Live transcription，legacy fallback 仍可讀。

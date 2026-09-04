@@ -50,7 +50,7 @@ export function LiveCuePanel({
         </div>
       </div>
       <div ref={cueListRef} onScroll={(event) => setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget))} className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
-        {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始翻譯後，原文與翻譯字幕會顯示在這裡</p> : null}
+        {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始錄音後，來源語音字幕會顯示在這裡</p> : null}
         {hasContent ? <div className="cue-reading-layout">
           <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} />
           {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">

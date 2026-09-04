@@ -580,6 +580,7 @@ function currentKey(state) { return state.currentCue ? 'current' : null; }
 function finalizeCue(state, cue, options = {}) {
   if (!cue || !isCueSubmittable(cue)) return state;
   const { nowMs, reason, minimumGapMs, minimumCueDurationMs } = options;
+  const mode = cue.mode || (cue.targetLanguageCode ? 'translation' : 'transcription');
   const previousEnd = state.finalCues.at(-1)?.endTimeMs;
   const gapMs = Number.isFinite(minimumGapMs) ? Math.max(0, minimumGapMs) : DEFAULT_MINIMUM_GAP_MS;
   const minimumDurationMs = Number.isFinite(minimumCueDurationMs)
@@ -589,9 +590,10 @@ function finalizeCue(state, cue, options = {}) {
   const endTimeMs = Math.max(observedEndTimeMs, startTimeMs + minimumDurationMs);
   const finalCue = {
     ...cue,
+    mode,
     sourceText: normalizeText(cue.sourceText),
     translatedText: normalizeText(cue.translatedText),
-    ...(cue.mode === 'transcription' ? {} : {
+    ...(mode === 'transcription' ? {} : {
       rawSource: normalizeText(cue.rawSource || cue.sourceText),
       rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
       refinedSource: cue.refinedSource || null,

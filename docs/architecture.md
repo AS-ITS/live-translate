@@ -7,7 +7,9 @@ Live Translate uses a browser-first real-time path with a narrow backend service
 - Frontend: React + JavaScript, Web Audio API, and Gemini Live API client logic.
 - Backend: Node.js HTTP server for authentication, token issuance, and
   configuration validation.
-- Gemini: Gemini Live API using `gemini-3.5-live-translate-preview`.
+- Gemini: Gemini Live API using `gemini-3.5-transcribe-live` for the current
+  source transcription path; the speech-to-speech preview model is optional
+  future capability.
 
 The browser connects directly to Gemini Live API using an ephemeral token issued
 by the backend.
@@ -16,6 +18,60 @@ The backend is responsible only for authentication, token issuance, and
 configuration validation.
 
 Audio streams are not proxied through the backend.
+
+## Realtime subtitle pipeline (target architecture)
+
+The current implementation and the target design must be kept distinct. The
+current Live recorder uses `LiveTranscriptionSession` and persists source Cues;
+the following is the planned downstream pipeline and is not yet a production
+runtime change:
+
+```text
+Transcribe Live (`gemini-3.5-transcribe-live`)
+  → finalized source Cue
+  → Translation Worker (`gemini-3.5-flash`)
+  → Refinement Worker (`gemini-3.5-flash`)
+  → history / export / summary
+```
+
+`gemini-3.5-live-translate-preview` remains an optional future speech-to-speech
+capability. It is not the authoritative meeting text source.
+
+Responsibilities and ownership:
+
+- The Live provider owns interim and final transcription events. The
+  `subtitleCues` boundary owns pairing, normalization, and the distinction
+  between an interim preview and a finalized Cue.
+- The checkpoint/repository owns finalized Cue persistence and recovery state.
+  Queue items own execution identity and delivery state; they do not own Cue
+  identity or transcript text.
+- The backend translation worker consumes `final_cue.persisted`, creates the
+  initial translation execution, validates the structured result, and appends
+  it to the same `cueId`.
+- The refinement worker consumes a completed initial translation, sends the
+  Cue plus bounded finalized context to Flash, validates the result, and
+  applies a same-Cue version update. A Viewer broadcaster publishes safe
+  finalized-Cue and same-Cue update events after the owning persistence step.
+- History, export, and summary read finalized Cues and choose the effective
+  translation as `refinedTranslation → initialTranslation → legacy
+  translatedText`.
+
+Interim text is UI-only and never enters persistence, translation, refinement,
+export, history, or summary. Translation/refinement failures are recorded as
+execution failures and surfaced for retry; they cannot pause or fail the Live
+transcription session.
+
+Cue immutable fields are `cueId`, `sessionId`, `segmentId`, `sequence`,
+`startTimeMs`, `endTimeMs`, and `sourceText` (plus language identity). Only
+translation/refinement values, versions, status, and safe execution metadata
+may change. Stale or duplicate worker output is ignored by Cue version and
+input-hash checks.
+
+Lifecycle protection applies at every boundary: start and pre-roll establish
+the session/segment checkpoint before audio is accepted; pause/resume flushes
+final boundaries before replacing the Live connection; reconnect and rollover
+restore the latest checkpoint and reject late events from the old connection;
+terminal stop performs a final flush before history/export become readable.
 
 ## Direct Browser -> Gemini Live API Design
 

@@ -117,7 +117,7 @@ test('preparing a new Segment finalizes paired recovery Cues and clears partial 
   assert.equal(state.lastFinalizedCueId, null);
 });
 
-test('preparing a new Segment drops an unmatched source-only recovery Cue', () => {
+test('preparing a new Segment finalizes an unmatched source-only recovery Cue', () => {
   const state = prepareSubtitleCueStateForNewSegment(createSubtitleCueState({
     nextSequence: 4,
     currentCue: {
@@ -126,27 +126,25 @@ test('preparing a new Segment drops an unmatched source-only recovery Cue', () =
     }
   }), { sessionTimeMs: 300, reason: 'resume' });
 
-  assert.deepEqual(state.finalCues, []);
-  assert.equal(state.nextSequence, 4);
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '沒有翻譯');
+  assert.equal(state.finalCues[0].translatedText, '');
+  assert.equal(state.finalCues[0].mode, 'transcription');
+  assert.equal(state.nextSequence, 5);
   assert.equal(state.currentCue, null);
   assert.deepEqual(state.pendingCues, []);
 });
 
-test('source-only retranslation has bounded retries and a stable failure state', () => {
+test('source-only Cue finalizes without requesting retranslation', () => {
   let state = createSubtitleCueState({ currentCue: {
     cueId: 'cue:source-only', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
     startTimeMs: 10, endTimeMs: 20, sourceText: 'source only', translatedText: '', status: 'partial', updatedTimeMs: 20
   } });
-  let result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', sessionTimeMs: 100, maxRetranslationAttempts: 2 });
-  assert.equal(result.action, 'needs-retranslation');
-  state = result.state;
-  result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', updatedTimeMs: 100, sessionTimeMs: 200, maxRetranslationAttempts: 2 });
-  assert.equal(result.action, 'needs-retranslation');
-  state = result.state;
-  result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', updatedTimeMs: 200, sessionTimeMs: 300, maxRetranslationAttempts: 2 });
-  assert.equal(result.action, 'translation-failed');
-  assert.equal(result.state.currentCue.translationStatus, 'failed');
-  assert.equal(resolveIdleSubtitleCue(result.state, { cueId: 'cue:source-only', updatedTimeMs: 300, sessionTimeMs: 400 }).state, result.state);
+  const result = resolveIdleSubtitleCue(state, { cueId: 'cue:source-only', updatedTimeMs: 20, sessionTimeMs: 100, maxRetranslationAttempts: 2, force: true });
+  assert.equal(result.action, 'finalized');
+  assert.equal(result.state.finalCues.length, 1);
+  assert.equal(result.state.finalCues[0].sourceText, 'source only');
+  assert.equal(result.state.finalCues[0].translatedText, '');
 });
 
 test('buffers short Chinese fragments until a complete paired sentence is available', () => {

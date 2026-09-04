@@ -1,5 +1,32 @@
 # Testing
 
+## Realtime subtitle pipeline strategy (P0 implemented, P1 planned)
+
+The four-stage pipeline is documented as a deterministic, mockable boundary.
+P0 currently implements the voice transcription and finalized Cue stages;
+initial Flash translation and refinement remain planned P1 work:
+
+```text
+finalized source Cue → initial Flash translation → Flash refinement
+```
+
+Interim events are UI-only. They must never appear in persistence, downstream
+execution input, refinement context, export, history, or summary fixtures.
+Real Gemini smoke tests are opt-in only (`ENABLE_REAL_GEMINI_TEST=true`); unit,
+integration, and E2E coverage must use fixtures or provider mocks by default.
+
+Planned focused coverage:
+
+- Unit: interim/finalized separation, immutable Cue fields, same-Cue updates,
+  effective-translation fallback, duplicate handling, and stale-event rejection.
+- Integration: `final_cue.persisted` through initial translation and refinement,
+  including structured-output validation, failure isolation, idempotency, and
+  version fencing.
+- E2E: show the initial translation first, then update the same visible Cue row
+  in place when refinement completes.
+- Lifecycle: start/pre-roll, first sentence, pause/resume, reconnect, rollover,
+  terminal flush, and no loss or late overwrite of finalized Cues.
+
 This project separates deterministic tests from real Gemini API validation. Unit,
 integration, and E2E tests must not call the real Gemini API. The live smoke test
 is opt-in only.

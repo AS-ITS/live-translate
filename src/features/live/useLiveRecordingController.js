@@ -49,6 +49,7 @@ export function useLiveRecordingController({
   routeMeetingId = null,
   targetLanguageCode = 'en',
   sourceLanguageCode = 'zh-Hant',
+  transcriptionOnly = true,
   sessionName = '',
   echoTargetLanguage = true,
   shouldRecordInputAudio = false,
@@ -244,6 +245,7 @@ export function useLiveRecordingController({
       for (const event of events) this.applyLiveSubtitleCueEvent(event);
     },
     requestNumericCorrection(currentState) {
+      if (transcriptionOnly) return;
       const target = [...(currentState.finalCues || [])].reverse().find((candidate) => candidate.status === 'final' && candidate.sourceText && candidate.translatedText && !candidate.numericCorrectionRequested && missingNumericIntegrity(candidate.sourceText, candidate.translatedText));
       if (!target) return;
       const next = markNumericCorrectionRequested(currentState, target.cueId);
@@ -260,10 +262,10 @@ export function useLiveRecordingController({
       cue.stateRef.current = next;
       cue.setState?.(next);
       cue.persist?.(current, next);
-      if (reason === 'stop' || reason === 'complete') cue.schedulePolishing?.(next.finalCues);
+      if (!transcriptionOnly && (reason === 'stop' || reason === 'complete')) cue.schedulePolishing?.(next.finalCues);
       return next;
     }
-  }), [cue, sourceLanguageCode, targetLanguageCode]);
+  }), [cue, sourceLanguageCode, targetLanguageCode, transcriptionOnly]);
 
   const checkpointControllerRef = useRef(null);
   const sessionSnapshotControllerRef = useRef(null);

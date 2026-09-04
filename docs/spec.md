@@ -15,13 +15,63 @@ that issues short-lived Gemini ephemeral tokens.
 
 Build a Session-oriented Real-time Multilingual Translation Platform with a
 React + JavaScript frontend, a Node.js backend, and Gemini Live API using
-`gemini-3.5-live-translate-preview`.
+the current source transcription path. The older Live speech-to-speech model
+description is retained only for compatibility; the target pipeline uses
+`gemini-3.5-transcribe-live` for meeting text.
 
 The browser captures microphone audio, converts it to raw PCM 16-bit 16kHz mono
 chunks, and connects directly to Gemini Live API with a short-lived ephemeral
 token issued by the backend. The current Live recording path uses Gemini Live
 transcription and persists source-language subtitle events. Existing saved
 translation outputs remain readable for compatibility.
+
+## Realtime subtitle pipeline (target architecture)
+
+The planned meeting transcript pipeline has four explicit stages:
+
+```text
+Transcribe Live
+  → finalized source Cue
+  → async Flash translation
+  → async Flash refinement
+  → history / export / summary
+```
+
+This is a documentation target, not a production-runtime switch. The current
+runtime remains source-only for the Live recorder, while existing bilingual
+records and translation history remain readable through compatibility adapters.
+
+An interim transcription is a presentation-only preview. It must not enter
+persistence, translation, refinement, export, history, or summary. A finalized
+Cue is the formal source record and is the only input to those downstream
+capabilities. Initial and refined translations are attached to the same
+`cueId`; translation or refinement failure is recoverable and must never block
+the live transcription path.
+
+Readers should resolve the displayed translation in this order:
+
+```text
+refinedTranslation → initialTranslation → legacy translatedText
+```
+
+History, export, and summary consume finalized Cues, not interim text. The Cue
+identity, source text, sequence, and time range are stable; translation and
+refinement values are the fields that may be updated.
+
+## Model and SDK planning notes
+
+- `gemini-3.5-transcribe-live` is the planned Live source transcription model;
+  Google documents interim/final transcription, `customVocabulary`, Smart
+  transcription, and automatic or hybrid VAD in [Live transcription](https://ai.google.dev/gemini-api/docs/live-api/live-transcribe).
+- `gemini-3.5-live-translate-preview` supports Live speech-to-speech
+  translation and input/output transcription in [Live translation](https://ai.google.dev/gemini-api/docs/live-api/live-translate),
+  but remains an optional future audio capability and is not the formal meeting
+  text source in the target pipeline.
+- `gemini-3.5-flash` is the planned non-Live backend model for translation and
+  refinement workers; its structured-output support is documented in [Gemini 3.5 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.5-flash).
+- The lockfile currently resolves `@google/genai` to `1.52.0`. A Phase 0
+  compatibility check is required before implementation; this documentation
+  update does not upgrade the SDK.
 
 Current scope:
 

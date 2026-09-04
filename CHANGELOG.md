@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- 文件重新規劃即時字幕、初版翻譯與非同步潤飾的四階段 pipeline：interim
+  僅供 UI，finalized Cue 成為 persistence、history、export、summary 的穩定來源；
+  initial translation 與 refinement 皆附加在同一 `cueId`，失敗不阻塞直播。
+- 補充 `gemini-3.5-transcribe-live`、`gemini-3.5-flash` 與可選的
+  `gemini-3.5-live-translate-preview` 模型分工、structured output、same-Cue
+  version/idempotency/stale-output 規則，以及 lifecycle 資料遺失防護。
+- P0 語音優先切片已接入 production runtime：source-only Cue 在 Segment
+  recovery、Stop 與 turn boundary 可 finalized 並保存，interim 不進 history/export；
+  transcription-only controller 不會觸發舊的 numeric retranslation 或 polishing。
+- P1 Flash translation/refinement 尚未切換；本次未修改 public API、schema 或 queue。
+
 - 修正 GoAway 重連流程：GoAway 視為預期的 provider lifecycle event，使用 `timeLeft`
   只排程一次重連、保留最新 session resumption handle，並為 replacement Live session
   取得新的 single-use ephemeral token；smoke summary 另行統計 GoAway 重連成功與失敗。

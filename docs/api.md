@@ -1,5 +1,68 @@
 # Live Translate API and Events
 
+## Realtime subtitle pipeline contract (target architecture)
+
+The target API treats a finalized source Cue as the stable unit of downstream
+work. This section documents the planned contract; it does not claim that the
+current production runtime has been switched to it.
+
+### Cue read model
+
+```json
+{
+  "cueId": "cue:session-1:segment-1:7",
+  "sessionId": "session-1",
+  "segmentId": "segment-1",
+  "sequence": 7,
+  "startTimeMs": 12000,
+  "endTimeMs": 14500,
+  "sourceLanguageCode": "zh-Hant",
+  "targetLanguageCode": "en",
+  "sourceText": "正式原文。",
+  "initialTranslation": "Initial translation.",
+  "refinedTranslation": null,
+  "translationStatus": "completed",
+  "refinementStatus": "queued",
+  "version": 1,
+  "status": "final"
+}
+```
+
+`cueId`, `sessionId`, `segmentId`, `sequence`, time range, language identity,
+and `sourceText` are immutable. Initial translation and refinement update this
+same read-model row; they never create a second Cue or alter its ordering.
+Consumers compute the effective translation as
+`refinedTranslation → initialTranslation → legacy translatedText`.
+
+### Execution trigger and operations
+
+Persistence emits the internal `final_cue.persisted` handoff only after a
+finalized Cue is durably recorded. The backend then creates an asynchronous
+initial translation execution using `gemini-3.5-flash`. A successful initial
+translation schedules a separate refinement execution, also using Flash; both
+operations are non-blocking from the Live transcription request. Failures are
+stored with safe status information and are retryable without changing the
+Cue identity or source fields.
+
+Worker results must use structured output with the expected operation, exact
+`cueId`, source/input hash, target language, and bounded text fields. Unknown
+fields, missing required fields, mismatched Cue identity, invalid language, or
+oversized output fail validation before persistence. Refinement context is
+read-only; only the addressed Cue can be updated.
+
+Duplicate submissions are idempotent by `cueId` plus operation/input version
+and provider idempotency key. A same-Cue update is accepted only when its
+expected version and input hash still match. Older or late worker output is
+classified as stale and discarded without overwriting a newer translation or
+refinement.
+
+Legacy projections remain available for existing clients: `translatedText`
+maps to the effective translation, `rawTranslation` maps to the initial/raw
+translation where available, and `refinedTranslation` remains exposed as the
+newer optional field. Existing auth, rate limiting, origin checks, structured
+errors, backend-only `GEMINI_API_KEY`, and ephemeral-token secret isolation
+remain unchanged.
+
 ## Global glossary import
 
 Authenticated clients can preview and atomically import a UTF-8 CSV, JSON, or XLSX

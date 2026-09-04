@@ -955,7 +955,7 @@ test('live recording shows an actionable unselected meeting state', async ({ pag
   await expect(page.getByRole('combobox', { name: '選擇會議' })).toBeVisible();
   await expect(page.getByRole('button', { name: '開始', exact: true })).toHaveCount(0);
   await expect(page.getByTestId('cue-empty-state')).toHaveCount(1);
-  await expect(page.getByTestId('cue-empty-state')).toContainText('開始翻譯後');
+  await expect(page.getByTestId('cue-empty-state')).toContainText('開始錄音後');
   await page.screenshot({ path: test.info().outputPath('live-control-unselected.png'), fullPage: true });
 });
 
@@ -2469,7 +2469,7 @@ test('paired Cue auto-finalizes after idle when a provider boundary is absent', 
   });
 });
 
-test('source-only partial Cue is removed after idle retries', async ({ page }) => {
+test('source-only partial Cue is finalized after the turn boundary', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2481,7 +2481,13 @@ test('source-only partial Cue is removed after idle retries', async ({ page }) =
   });
 
   await expect(partialCueRows(page)).toHaveCount(1);
-  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 5000 });
+  await emitTurnComplete(page);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '沒有翻譯的暫存句子',
+    translatedText: ''
+  });
 });
 
 test('short paired Chinese Cue does not remain in recognition after turn completion', async ({ page }) => {

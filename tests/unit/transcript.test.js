@@ -43,6 +43,37 @@ test('append final transcript', () => {
   ]);
 });
 
+test('transcript items preserve live session scope and language metadata', () => {
+  const state = applyTranscriptEvent(createTranscriptState(), {
+    stream: 'source',
+    text: '你好',
+    isFinal: true,
+    eventId: 'event-1',
+    liveSessionId: 'live-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    now: 100
+  });
+
+  assert.deepEqual(state.source.finalItems[0], {
+    id: 'source-1',
+    stream: 'source',
+    status: 'final',
+    text: '你好',
+    sequence: 1,
+    startedAt: 100,
+    finalizedAt: 100,
+    eventId: 'event-1',
+    liveSessionId: 'live-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en'
+  });
+});
+
 test('preserves explicit multi-language source detection metadata without changing source text', () => {
   const text = 'Hello，こんにちは，您好';
   const state = applyTranscriptEvent(createTranscriptState(), {
@@ -130,6 +161,72 @@ test('partial followed by final', () => {
     }
   ]);
   assert.equal(final.nextSequence, 2);
+});
+
+test('cumulative finalized transcript updates replace the previous prefix item', () => {
+  let state = createTranscriptState();
+  for (const [text, now] of [['測試錄音1', 100], ['測試錄音1 2', 200], ['測試錄音1 23', 300]]) {
+    state = applyTranscriptEvent(state, {
+      stream: 'source',
+      text,
+      isFinal: true,
+      sessionId: 'session-1',
+      segmentId: 'segment-1',
+      now
+    });
+  }
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.text), ['測試錄音1 23']);
+  assert.equal(state.nextSequence, 2);
+});
+
+test('same audio turn final snapshots keep one transcript item through stop flush', () => {
+  let state = createTranscriptState();
+  for (const [index, text] of ['1', '1測試', '1測試1', '1測試12', '1測試123'].entries()) {
+    state = applyTranscriptEvent(state, {
+      stream: 'source', text, isFinal: true, audioTurnId: 'audio-turn-1', now: 100 + index
+    });
+  }
+  state = finalizePendingTranscriptItems(state, { now: 200 });
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => [item.text, item.audioTurnId]), [
+    ['1測試123', 'audio-turn-1']
+  ]);
+});
+
+test('same audio turn final snapshots replace format revisions instead of concatenating', () => {
+  let state = createTranscriptState();
+  for (const [index, text] of [
+    '你好,測試',
+    '你好測試 1 2 3',
+    '你好測試123',
+    '你好測試一二三。'
+  ].entries()) {
+    state = applyTranscriptEvent(state, {
+      stream: 'source', text, isFinal: true, audioTurnId: 'audio-turn-1', now: 100 + index,
+      sessionId: 'session-1', segmentId: 'segment-1'
+    });
+  }
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.text), ['你好測試一二三。']);
+});
+
+test('different audio turns keep identical transcript text as separate items', () => {
+  let state = createTranscriptState();
+  for (const [index, audioTurnId] of ['audio-turn-1', 'audio-turn-2'].entries()) {
+    state = applyTranscriptEvent(state, {
+      stream: 'source', text: '1', isFinal: true, audioTurnId, now: 100 + index
+    });
+  }
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => [item.text, item.audioTurnId]), [
+    ['1', 'audio-turn-1'], ['1', 'audio-turn-2']
+  ]);
+});
+
+test('completed finalized transcript remains a separate item from a later sentence', () => {
+  let state = createTranscriptState();
+  state = applyTranscriptEvent(state, { stream: 'source', text: '第一句。', isFinal: true, now: 100 });
+  state = applyTranscriptEvent(state, { stream: 'source', text: '第一句。第二句', isFinal: true, now: 200 });
+
+  assert.deepEqual(transcriptItemsForStream(state, 'source').map((item) => item.text), ['第一句。', '第一句。第二句']);
 });
 
 test('late cumulative final transcript extends the previous final item', () => {

@@ -72,6 +72,7 @@ function createEvent({ payload = {}, stream, eventType, text, providerEventId, e
     sessionId: context.sessionId || null,
     segmentId: context.segmentId || null,
     connectionEpoch: context.connectionEpoch ?? null,
+    audioTurnId: context.audioTurnId || null,
     stream,
     eventType,
     text: normalizeText(text),

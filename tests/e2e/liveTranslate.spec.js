@@ -27,10 +27,13 @@ test.beforeEach(async ({ page }) => {
         getUserMedia: async () => {
           const track = {
             kind: 'audio',
+            enabled: true,
+            readyState: 'live',
             stopped: false,
             listeners: new Map(),
             stop() {
               this.stopped = true;
+              this.readyState = 'ended';
             },
             addEventListener(event, handler) {
               this.listeners.set(event, handler);
@@ -44,6 +47,7 @@ test.beforeEach(async ({ page }) => {
           };
           window.__mockMicTracks.push(track);
           return {
+            active: true,
             getTracks: () => [track]
           };
         }
@@ -399,8 +403,11 @@ async function mockMeetingCheckpointApi(page, {
   failCheckpoint = false,
   failCheckpointAttempts = 0,
   waitForSegmentList = null,
+  delayMeetingListMs = 0,
   sourceLanguageCode = 'zh-Hant',
-  targetLanguageCode = 'en'
+  targetLanguageCode = 'en',
+  initialSegmentStatus = 'created',
+  initialLiveSessionId = null
 } = {}) {
   page.useMockMeetings = true;
   page.hasMeetingCheckpointMock = true;
@@ -418,6 +425,7 @@ async function mockMeetingCheckpointApi(page, {
     const method = request.method();
 
     if (method === 'GET' && url.pathname === '/api/meetings') {
+      if (delayMeetingListMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMeetingListMs));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -639,7 +647,8 @@ async function mockMeetingCheckpointApi(page, {
             id: `segment-${index + 1}`,
             meetingId: 'meeting-1',
             sequence: index,
-            status: index + 1 === latestSegmentNumber ? 'active' : 'completed'
+            status: index + 1 === latestSegmentNumber ? initialSegmentStatus : 'completed',
+            liveSessionId: index + 1 === latestSegmentNumber ? initialLiveSessionId : null
           }))
         })
       });
@@ -791,10 +800,71 @@ async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCod
   }
   if (!page.hasMeetingCheckpointMock) await mockMeetingCheckpointApi(page, page.mockMeetingLanguage);
   await page.goto('/#live?meetingId=meeting-1');
+  await page.evaluate(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
   await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
   await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 }
+
+test('live recording can start while the meeting list is still loading', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, { delayMeetingListMs: 500 });
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.evaluate(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+});
+
+test('live recording falls back when AudioWorklet has no callback', async ({ page }) => {
+  await page.addInitScript(() => {
+    const AudioContextImpl = window.AudioContext;
+    window.AudioWorkletNode = class MockAudioWorkletNode {
+      constructor() {
+        this.port = { onmessage: null };
+      }
+
+      connect() {}
+
+      disconnect() {}
+    };
+    window.AudioContext = class MockWorkletAudioContext extends AudioContextImpl {
+      constructor(...args) {
+        super(...args);
+        this.audioWorklet = { addModule: async () => {} };
+      }
+    };
+  });
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const snapshot = window.__liveTranslateDebug?.getSnapshot?.();
+    return snapshot?.captureProcessorMode;
+  }), { timeout: 5000 }).toBe('script');
+  const state = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(state.captureEnabled).toBe(true);
+  expect(state.failureDiagnostics.at(-1).reasonHint).toBe('audio_worklet_callback_stalled');
+  await expect(page.getByText('無法擷取麥克風音訊')).toHaveCount(0);
+});
 
 async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation', { waitMs = 750 } = {}) {
   await page.evaluate(
@@ -943,6 +1013,27 @@ test('entering live recording from meeting settings loads the selected meeting',
   await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
   await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
   await expect(page.getByTestId('live-session-toolbar')).not.toContainText('正在載入會議…');
+});
+
+test('active recording can return from meeting settings without restarting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  const initialSessionCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+  const initialTokenRequestCount = page.liveTokenRequests.length;
+
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(initialSessionCount);
+  expect(page.liveTokenRequests).toHaveLength(initialTokenRequestCount);
 });
 
 test('live recording shows a retryable error when meeting detail loading fails', async ({ page }) => {
@@ -1362,6 +1453,69 @@ test('active session locks workspace navigation while listening', async ({ page 
   await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
 });
 
+test('active recording blocks settings and management navigation', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByRole('alert')).toContainText('請先暫停或停止目前錄音');
+
+  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByRole('alert')).toContainText('請先暫停或停止目前錄音');
+});
+
+test('paused recording can open settings and return without resetting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '暫停' }).click();
+  await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
+  const sessionCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+  const tokenCount = page.liveTokenRequests.length;
+
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(sessionCount);
+  expect(page.liveTokenRequests).toHaveLength(tokenCount);
+});
+
+test('direct URL navigation force-stops active recording before leaving', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => { window.location.hash = '#meeting-settings?mode=edit&meetingId=meeting-1'; });
+
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 1,
+    activeMicTrackCount: 0,
+    audioContextCount: 1,
+    openAudioContextCount: 0,
+    liveSessionCount: 1,
+    openLiveSessionCount: 0
+  });
+});
+
 test('missing microphone keeps a retryable error visible', async ({ page }) => {
   let resolveSegmentList;
   const segmentListLoaded = new Promise((resolve) => {
@@ -1540,6 +1694,26 @@ test('keeps capturing while a continuous turn emits many partial transcript upda
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
+test('renders one row when the same live transcript is received by transcript and Cue pipelines', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: '你好，你好。' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect(page.getByTestId('cue-recovery-fallback')).toHaveCount(0);
+  await expectCueRow(finalCueRows(page).first(), { sourceText: '你好，你好。' });
 });
 
 test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {
@@ -1929,6 +2103,37 @@ test('empty meeting resume draft shows start instead of continue recording', asy
   await expect(page).toHaveURL(/#meeting$/);
 });
 
+test('active segment with a bound live session resumes without subtitles', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page, {
+    initialSegmentStatus: 'active',
+    initialLiveSessionId: 'live-session-interrupted'
+  });
+  await page.addInitScript(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(0);
+  await page.getByRole('button', { name: '繼續錄製' }).click();
+
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('manual_resume');
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('即時翻譯失敗')).toHaveCount(0);
+});
+
 test('clears the meeting actions when live translation has no selected meeting', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await page.goto('/#live?meetingId=meeting-1');
@@ -2297,17 +2502,25 @@ test('live recording reuses the meeting design system at desktop widths', async 
   const typography = await page.evaluate(() => {
     const source = document.querySelector('[data-testid="cue-paired-list"] .cue-source');
     const translation = document.querySelector('[data-testid="cue-paired-list"] .cue-translation');
+    const deviceSummary = document.querySelector('.live-device-summary span');
+    const actionButton = document.querySelector('.live-session-toolbar .session-actions button');
     const sourceStyle = source ? getComputedStyle(source) : null;
     const translationStyle = translation ? getComputedStyle(translation) : null;
+    const deviceSummaryStyle = deviceSummary ? getComputedStyle(deviceSummary) : null;
+    const actionButtonStyle = actionButton ? getComputedStyle(actionButton) : null;
     return {
       sourceFontSize: sourceStyle?.fontSize || '',
       translationFontSize: translationStyle?.fontSize || '',
+      deviceSummaryFontSize: deviceSummaryStyle?.fontSize || '',
+      actionButtonFontSize: actionButtonStyle?.fontSize || '',
       sourceFontWeight: sourceStyle?.fontWeight || '',
       translationFontWeight: translationStyle?.fontWeight || '',
       firstRowBorder: document.querySelector('[data-testid="cue-paired-list"] .cue-row') ? getComputedStyle(document.querySelector('[data-testid="cue-paired-list"] .cue-row')).borderBottomWidth : ''
     };
   });
   expect(typography.translationFontSize).toBe(typography.sourceFontSize);
+  expect(typography.deviceSummaryFontSize).toBe('16px');
+  expect(typography.actionButtonFontSize).toBe(typography.deviceSummaryFontSize);
   expect(typography.translationFontWeight).toBe(typography.sourceFontWeight);
   expect(typography.firstRowBorder).toBe('0px');
 });

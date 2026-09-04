@@ -6,14 +6,14 @@ test('meeting settings steps navigate to each settings card', async ({ page }) =
 
   const languageSelects = page.locator('.meeting-language-fields select');
   await expect(languageSelects).toHaveCount(2);
-  await expect(languageSelects.nth(0)).toHaveCSS('height', '64px');
-  await expect(languageSelects.nth(1)).toHaveCSS('height', '64px');
-  await expect(page.locator('.meeting-language-direction')).toHaveCSS('height', '64px');
+  await expect(languageSelects.nth(0)).toHaveCSS('height', '56px');
+  await expect(languageSelects.nth(1)).toHaveCSS('height', '56px');
+  await expect(page.locator('.meeting-language-direction')).toHaveCSS('height', '56px');
 
   await page.setViewportSize({ width: 600, height: 800 });
-  await expect(languageSelects.nth(0)).toHaveCSS('height', '64px');
-  await expect(languageSelects.nth(1)).toHaveCSS('height', '64px');
-  await expect(page.locator('.meeting-language-direction')).toHaveCSS('height', '64px');
+  await expect(languageSelects.nth(0)).toHaveCSS('height', '56px');
+  await expect(languageSelects.nth(1)).toHaveCSS('height', '56px');
+  await expect(page.locator('.meeting-language-direction')).toHaveCSS('height', '56px');
 
   const stepButtons = page.locator('.meeting-settings-step');
   await expect(stepButtons).toHaveCount(4);
@@ -27,6 +27,70 @@ test('meeting settings steps navigate to each settings card', async ({ page }) =
   await stepButtons.nth(3).click();
   await expect(page.locator('#meeting-dictionary-settings-title')).toBeInViewport();
   await expect(stepButtons.nth(3)).toHaveAttribute('aria-current', 'step');
+});
+
+test('keeps the microphone-only audio controls in a compact 20px control row', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (globalThis.AudioContext?.prototype) {
+      Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: undefined });
+    }
+  });
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.goto('/#meeting-settings?mode=create');
+
+  const deviceGrid = page.locator('.meeting-audio-device-grid');
+  const confirmButton = page.getByRole('button', { name: '測試並確認音訊' });
+  const status = page.locator('.meeting-audio-status');
+  await expect(deviceGrid).toHaveClass(/microphone-only/);
+  await expect(page.getByLabel('選擇會議揚聲器')).toHaveCount(0);
+  await expect(status).toHaveClass(/is-pending/);
+  await expect(status.locator('.meeting-audio-status-icon')).toHaveCount(1);
+
+  const desktopGaps = await page.evaluate(() => {
+    const grid = document.querySelector('.meeting-audio-device-grid');
+    const select = document.querySelector('.meeting-audio-device-grid select');
+    const button = document.querySelector('.meeting-audio-controls > .button');
+    const statusNode = document.querySelector('.meeting-audio-status');
+    const selectRect = select.getBoundingClientRect();
+    const buttonRect = button.getBoundingClientRect();
+    const statusRect = statusNode.getBoundingClientRect();
+    return {
+      gridToButton: buttonRect.left - grid.getBoundingClientRect().right,
+      buttonToStatus: statusRect.left - buttonRect.right,
+      buttonCenterOffset: Math.abs((buttonRect.top + buttonRect.bottom) / 2 - (selectRect.top + selectRect.bottom) / 2),
+      statusCenterOffset: Math.abs((statusRect.top + statusRect.bottom) / 2 - (selectRect.top + selectRect.bottom) / 2)
+    };
+  });
+  expect(desktopGaps.gridToButton).toBe(20);
+  expect(desktopGaps.buttonToStatus).toBe(20);
+  expect(desktopGaps.buttonCenterOffset).toBeLessThanOrEqual(1);
+  expect(desktopGaps.statusCenterOffset).toBeLessThanOrEqual(1);
+
+  await page.setViewportSize({ width: 600, height: 800 });
+  await expect(page.locator('body')).toHaveCSS('overflow-x', 'visible');
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  await expect.poll(() => page.evaluate(() => {
+    const controls = document.querySelector('.meeting-audio-controls').getBoundingClientRect();
+    const button = document.querySelector('.meeting-audio-controls > .button').getBoundingClientRect();
+    return Math.abs(button.width - controls.width) <= 1;
+  })).toBe(true);
+  await expect(status).toBeVisible();
+});
+
+test('keeps both audio device selectors in a two-column layout when output selection is supported', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (globalThis.AudioContext?.prototype) {
+      Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: async () => {} });
+    }
+  });
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.goto('/#meeting-settings?mode=create');
+
+  const deviceGrid = page.locator('.meeting-audio-device-grid');
+  await expect(deviceGrid).toHaveClass(/has-speaker/);
+  await expect(page.getByLabel('選擇會議麥克風')).toBeVisible();
+  await expect(page.getByLabel('選擇會議揚聲器')).toBeVisible();
+  await expect.poll(() => deviceGrid.evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(2);
 });
 
 test('short desktop viewport can scroll the settings steps to the dictionary step', async ({ page }) => {

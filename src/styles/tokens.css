@@ -51,6 +51,7 @@
   --page-gutter: clamp(1rem, 3vw, 3.5rem);
   --content-gutter: clamp(1rem, 2.2vw, 2rem);
   --control-height: 3rem;
+  --select-height: 3.5rem;
   --z-header: 20;
   --z-overlay: 1000;
 }

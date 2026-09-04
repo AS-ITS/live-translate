@@ -17,6 +17,9 @@ integration, and E2E coverage must use fixtures or provider mocks by default.
 
 Focused coverage:
 
+- Voice: PCM conversion, AudioContext recovery, AudioWorklet-compatible capture,
+  playback failure isolation, output sink selection, and active microphone replacement.
+
 - Unit: interim/finalized separation, immutable Cue fields, same-Cue updates,
   effective-translation fallback, duplicate handling, and stale-event rejection.
 - Integration: `final_cue.persisted` through initial translation and refinement,

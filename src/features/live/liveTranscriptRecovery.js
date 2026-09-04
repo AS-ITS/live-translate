@@ -40,7 +40,11 @@ export function transcriptStateFromCheckpointChunks(chunks = []) {
       text: chunk.text,
       sequence: chunk.sequence,
       startedAt: chunk.timestamp,
-      finalizedAt: chunk.timestamp
+      finalizedAt: chunk.timestamp,
+      ...(chunk.sessionId ? { sessionId: chunk.sessionId } : {}),
+      ...(chunk.segmentId ? { segmentId: chunk.segmentId } : {}),
+      ...(chunk.sourceLanguageCode ? { sourceLanguageCode: chunk.sourceLanguageCode } : {}),
+      ...(chunk.targetLanguageCode ? { targetLanguageCode: chunk.targetLanguageCode } : {})
     }))
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
 
@@ -78,18 +82,31 @@ export function unrepresentedTranscriptItems({ archivedTranscript, transcript, c
     ...(transcript?.source?.finalItems || []),
     ...(transcript?.translation?.finalItems || [])
   ];
+  const seenIds = new Set();
   return items
     .filter((item) => item?.status === 'final' && typeof item.text === 'string' && item.text.trim())
-    .filter((item) => !cues.some((cue) => transcriptItemCoveredByCue(item, cue)))
+    .filter((item) => {
+      if (item.id && seenIds.has(item.id)) return false;
+      if (item.id) seenIds.add(item.id);
+      return !cues.some((cue) => transcriptItemCoveredByCue(item, cue));
+    })
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
 }
 export function transcriptItemCoveredByCue(item, cue) {
-  if (!cue || cue.status !== 'final' || cue.segmentId !== item.segmentId) return false;
+  if (!cue || !['final', 'partial'].includes(cue.status) || (cue.stream && cue.stream !== item.stream)) return false;
+  if (!matchingTranscriptScope(item, cue)) return false;
+  if (item.audioTurnId && cue.audioTurnId) return item.audioTurnId === cue.audioTurnId;
   const cueText = item.stream === 'source' ? cue.sourceText : cue.translatedText;
   const itemText = normalizeFallbackText(item.text);
   const normalizedCueText = normalizeFallbackText(cueText);
   return Boolean(itemText && normalizedCueText && (
     normalizedCueText.includes(itemText) || itemText.includes(normalizedCueText)
+  ));
+}
+
+function matchingTranscriptScope(item, cue) {
+  return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
+    !item?.[field] || !cue?.[field] || item[field] === cue[field]
   ));
 }
 
@@ -191,6 +208,11 @@ export function traditionalChineseTranscriptItem(item) {
     ...item,
     text: toTraditionalChineseText(item.text)
   };
+}
+
+export function transcriptTextForDisplay(item) {
+  if (!item || item.stream !== 'source') return item?.text || '';
+  return item.sourceLanguageCode === 'zh-Hans' ? item.text : toTraditionalChineseText(item.text);
 }
 
 export function buildArticleFileName(stream) {

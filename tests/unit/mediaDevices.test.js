@@ -8,6 +8,8 @@ import {
   labelForDevice,
   normalizeMediaDevices,
   requestAudioInputStream,
+  setAudioOutputDevice,
+  supportsAudioContextOutputSelection,
   supportsOutputDeviceSelection
 } from '../../src/lib/mediaDevices.js';
 
@@ -124,6 +126,27 @@ test('supportsOutputDeviceSelection returns true when setSinkId is available', (
     } else {
       Reflect.deleteProperty(globalThis, 'HTMLMediaElement');
     }
+  }
+});
+
+test('setAudioOutputDevice routes a context to the requested sink', async () => {
+  const calls = [];
+  const context = { setSinkId: async (deviceId) => calls.push(deviceId) };
+
+  assert.equal(await setAudioOutputDevice(context, 'speaker-1'), true);
+  assert.deepEqual(calls, ['speaker-1']);
+});
+
+test('supportsAudioContextOutputSelection checks AudioContext support', () => {
+  const previous = globalThis.AudioContext;
+  globalThis.AudioContext = class AudioContext {};
+  globalThis.AudioContext.prototype.setSinkId = async () => {};
+
+  try {
+    assert.equal(supportsAudioContextOutputSelection(), true);
+  } finally {
+    if (previous) globalThis.AudioContext = previous;
+    else Reflect.deleteProperty(globalThis, 'AudioContext');
   }
 });
 

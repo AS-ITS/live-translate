@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- 修正正式錄製在麥克風驗證成功後立即開始時的前端 lifecycle race：Gemini
+  `setupComplete` 前不再建立音訊 graph，只有首個 PCM chunk 成功送出後才進入錄製中；
+  同時加入 start idempotency、完整 cleanup、stage-specific diagnostics，失敗後可直接重試。
+
+- 修正 AudioWorklet 初始化不相容或 callback stalled 時開始錄製會失敗的問題；現在會自動回退到 ScriptProcessor，只有兩種音訊擷取方式都失敗才顯示錯誤。
+
+- 修正 Live 頁面在會議詳細資料已載入、會議列表仍載入中時，開始錄製被誤判為未選擇會議；並統一裝置摘要字體大小。
+
 - 調整 Live Workspace Header 與 Meeting Control 資訊位置：設定入口移至頁面 Header，麥克風／揚聲器摘要移至中間狀態區。
 
 - Meeting 音訊設定移至設定頁，新增瀏覽器本機 preflight 偏好；Live 頁面改為唯讀顯示裝置，並修正沒有 transcript 的 Meeting 仍可開始錄製。
@@ -1855,6 +1863,8 @@ These items are intentionally deferred:
   listing, and revocation.
 - Added named Session creation and explicit single-instance start blocking.
 # Unreleased
+
+- 修正即時逐字稿將逐字累積的 final 文字重複追加。現在同一句的累積更新會覆蓋前一版本，完整句子與真正的新句子仍會保留為獨立紀錄。
 
 - Added meeting-scoped glossary snapshots. Users can select live glossary terms before starting a meeting; the snapshot is reused across meeting segments, reconnects, and saved transcript re-translation without following later global glossary changes.
 - 修正 Meeting 分享設定頁重新整理或重新進入後分享連結消失的問題。分享服務現在持久化短碼（仍只保存 token hash），管理端可重建短碼 URL 與 QR Code；匿名分享回應不暴露短碼，舊資料會在沒有可顯示連結時補建新的分享。

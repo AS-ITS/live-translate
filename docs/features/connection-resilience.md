@@ -130,6 +130,13 @@ recovery UI behavior.
 
 Retry must never loop indefinitely or silently create multiple active sessions.
 
+Navigation away from an active Live workspace is not a recoverable connection
+failure. The frontend must classify it as intentional shutdown, cancel pending
+reconnect work, perform the normal stop/checkpoint cleanup once, and only then
+complete the requested route change. Paused Sessions may remain paused while
+the user visits Settings or Management; switching to another Meeting remains
+blocked until the paused Session is ended.
+
 ## Reconnect Controller Skeleton
 
 Status: Slice 3A implemented.

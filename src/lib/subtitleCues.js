@@ -78,7 +78,7 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   let eventState = marked;
   eventState = moveClosedCurrentCue(eventState, event);
   const revisionFinalTarget = !eventState.currentCue && eventState.pendingCues.length === 0
-    ? findFinalRevisionCue(eventState, event, options)
+    ? findSameAudioTurnFinalCue(eventState, event) || findFinalRevisionCue(eventState, event, options)
     : null;
   if (revisionFinalTarget) return updateFinalCue(eventState, revisionFinalTarget, event);
   const lateSourceOnlyTarget = !eventState.currentCue && eventState.pendingCues.length === 0 && event.stream === 'translation'
@@ -306,9 +306,10 @@ function applyBoundary(state, event, options) {
 function moveClosedCurrentCue(state, event) {
   const current = state.currentCue;
   if (!current) return state;
+  if (isIdentityBoundSourceSnapshot(current, event)) return state;
   const sameScope = cueScopeMatchesEvent(current, event);
   const sameTurn = event.turnIndex !== null && current.turnIndex !== null && current.turnIndex === event.turnIndex;
-  if (!sameScope || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
+  if (!sameScope || !sameAudioTurnId(current, event) || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
     return moveCueToNextState(state, current, event);
   }
 
@@ -346,6 +347,8 @@ function findPairingCue(state, event) {
 
 function cueCanAcceptCurrentCue(cue, event) {
   if (!cueScopeMatchesEvent(cue, event)) return false;
+  if (!sameAudioTurnId(cue, event)) return false;
+  if (isIdentityBoundSourceSnapshot(cue, event)) return true;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   if (!cue[field]) return true;
@@ -360,6 +363,7 @@ function findFinalRevisionCue(state, event, options = {}) {
   if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
     || (!event.isLateTranscript && !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason))
     || (!event.isLateTranscript && !isWithinFinalRevisionWindow(state, cue, event, options))) return null;
+  if (event.audioTurnId && cue.audioTurnId && event.audioTurnId !== cue.audioTurnId) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const existingText = normalizeText(cue[field]);
   const incomingText = normalizeText(event.text);
@@ -369,6 +373,16 @@ function findFinalRevisionCue(state, event, options = {}) {
   if (endsSentence(cue[field])) return null;
   if (state.lastFinalizedStream === event.stream && endsSentence(event.text)) return null;
   return { index, cue };
+}
+
+function findSameAudioTurnFinalCue(state, event) {
+  if (!event.audioTurnId) return null;
+  for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
+    const cue = state.finalCues[index];
+    if (!isIdentityBoundSourceSnapshot(cue, event)) continue;
+    return { index, cue, snapshot: true };
+  }
+  return null;
 }
 
 function findNumericCorrectionCue(state, event) {
@@ -394,6 +408,7 @@ function findLateSourceOnlyCue(state, event) {
     const cue = state.finalCues[index];
     if (cue.translatedText || !cue.sourceText || !cue.retranslationRequested) continue;
     if (!cueScopeMatchesEvent(cue, event)) continue;
+    if (!sameAudioTurnId(cue, event)) continue;
     if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
     return { index, cue };
   }
@@ -406,12 +421,25 @@ function cueScopeMatchesEvent(cue, event) {
   ));
 }
 
+function sameAudioTurnId(cue, event) {
+  return !cue.audioTurnId || !event.audioTurnId || cue.audioTurnId === event.audioTurnId;
+}
+
+function isIdentityBoundSourceSnapshot(cue, event) {
+  return Boolean(cue && event?.stream === 'source'
+    && cue.audioTurnId && event.audioTurnId
+    && cue.audioTurnId === event.audioTurnId
+    && cueScopeMatchesEvent(cue, event));
+}
+
 function updateFinalCue(state, target, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const finalCues = [...state.finalCues];
-  const nextText = target.replace
-    ? normalizeText(event.text)
-    : mergeCueText(target.cue[field], event.text, event);
+  const nextText = target.snapshot
+    ? replaceCumulativeText(target.cue[field], event.text)
+    : target.replace
+      ? normalizeText(event.text)
+      : mergeCueText(target.cue[field], event.text, event);
   finalCues[target.index] = {
     ...target.cue,
     [field]: nextText,
@@ -432,8 +460,22 @@ function updateFinalCue(state, target, event) {
   };
 }
 
+function replaceCumulativeText(currentText, incomingText) {
+  const current = normalizeText(currentText);
+  const incoming = normalizeText(incomingText);
+  if (!current || incoming.startsWith(current)) return incoming;
+  if (current.startsWith(incoming) || (incoming && current.endsWith(incoming))) return current;
+  return incoming;
+}
+
+function hasSameAudioTurnId(cue, event) {
+  return Boolean(cue.audioTurnId && event.audioTurnId && cue.audioTurnId === event.audioTurnId);
+}
+
 function cueCanAccept(cue, event) {
   if (!cueScopeMatchesEvent(cue, event)) return false;
+  if (!sameAudioTurnId(cue, event)) return false;
+  if (isIdentityBoundSourceSnapshot(cue, event)) return true;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   return !cue[field] || event.text.startsWith(cue[field]) || cue[field].startsWith(event.text) || isRedundantTextUpdate(cue[field], event.text);
@@ -512,7 +554,9 @@ function addCue(state, event) {
 function updateCue(state, target, event) {
   const cue = target.cue;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-  const nextText = mergeCueText(cue[field], event.text, event);
+  const nextText = isIdentityBoundSourceSnapshot(cue, event)
+    ? replaceCumulativeText(cue[field], event.text)
+    : mergeCueText(cue[field], event.text, event);
   const updated = {
     ...cue,
     [field]: nextText,
@@ -686,6 +730,7 @@ function canMergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (previousCue.sessionId && nextCue.sessionId && previousCue.sessionId !== nextCue.sessionId) return false;
   if (previousCue.liveSessionId && nextCue.liveSessionId && previousCue.liveSessionId !== nextCue.liveSessionId) return false;
   if (previousCue.segmentId && nextCue.segmentId && previousCue.segmentId !== nextCue.segmentId) return false;
+  if (previousCue.audioTurnId && nextCue.audioTurnId && previousCue.audioTurnId !== nextCue.audioTurnId) return false;
   if (previousCue.sourceText === nextCue.sourceText && previousCue.translatedText === nextCue.translatedText) return false;
   if (endsSentence(previousCue.sourceText) || endsSentence(previousCue.translatedText)) return false;
   const adjacentTexts = [previousCue.sourceText, previousCue.translatedText, nextCue.sourceText, nextCue.translatedText];
@@ -733,6 +778,7 @@ function resolveSessionTimeMs(input = {}) {
 
 function deltaAfterFinalCues(event, options) {
   const text = String(event.text || '');
+  if (event.stream === 'source' && event.audioTurnId) return text;
   // Final transcript events close a provider turn. A later turn may legally
   // repeat the same number or phrase as the completed history, so treating a
   // final event as a cumulative history update would discard real speech.

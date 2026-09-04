@@ -13,6 +13,15 @@ final transcript text being overwritten by later partial updates. It should also
 define a stable frontend transcript item model that future transcript export and
 translation history features can reuse.
 
+Live events feed both the transcript compatibility state and the subtitle Cue
+state. Transcript items therefore retain `sessionId`, `liveSessionId`,
+`segmentId`, `sourceLanguageCode`, and `targetLanguageCode` so the live UI can
+identify whether a recovery item is already represented by a final Cue. Legacy
+items with missing scope fields may use text matching, but explicit scope
+mismatches must not match. Source-language conversion belongs to the display
+boundary: `zh-Hans` remains Simplified Chinese, while the default and
+`zh-Hant` display Traditional Chinese without mutating stored transcript text.
+
 This feature is frontend-scoped planning. It must preserve the existing Start /
 Stop flow, avoid backend/API changes, avoid persistence, and avoid real Gemini
 API calls in automated validation.

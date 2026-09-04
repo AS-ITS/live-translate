@@ -12,7 +12,6 @@ import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotS
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
-import { requestAudioInputStream } from '../../lib/mediaDevices.js';
 import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
 import { finalizePendingTranscriptItems, transcriptItemsForStream } from '../../lib/transcript.js';
@@ -70,6 +69,7 @@ export function useLiveRecordingController({
   actions = {}
 } = {}) {
   const recordingControllerRef = useRef(null);
+  const startOperationRef = useRef(null);
   const audioUploadControllerRef = useRef(null);
   const audioUpload = useMemo(() => {
     if (!audioUploadControllerRef.current && audio.upload) {
@@ -377,7 +377,8 @@ export function useLiveRecordingController({
     }
   }), [checkpointController, transcript]);
 
-  const recoveryController = useMemo(() => ({
+  const recoveryController = useMemo(() => {
+    const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       const persisted = existingSessionId
         ? await recovery.sessionCommandApiClientRef.current.update(existingSessionId, { status: 'active' })
@@ -413,7 +414,7 @@ export function useLiveRecordingController({
       recovery.activeSessionRecordIdRef.current = record.id;
       audioController.prepareInputAudioDownload(record);
       audioController.prepareTranslatedAudioDownload(record);
-      const initialItems = recovery.appendInitialTranscriptItems(record.id, initialTranscript);
+      const initialItems = controller.appendInitialTranscriptItems(record.id, initialTranscript);
       checkpointController.markPendingSessionSnapshotItems(record.id, initialItems);
       await checkpointController.flushSessionSnapshot(record.id);
       return record;
@@ -489,7 +490,7 @@ export function useLiveRecordingController({
 
         if (finalized) {
           await checkpointController.flushSessionSnapshot(sessionId);
-          void recovery.uploadFinalizedSessionAudioArtifacts(sessionId, {
+          void controller.uploadFinalizedSessionAudioArtifacts(sessionId, {
             input: options?.audioStates?.input,
             translation: translatedAudioFinalState
           }, { meetingId });
@@ -551,7 +552,7 @@ export function useLiveRecordingController({
         recovery.setError('無法結束會議，請稍後再試。');
       }
     },
-    async endCurrentSession() {
+    async endCurrentSession({ redirectHash = '#meetings' } = {}) {
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
       recovery.cancelSegmentSwitch?.();
@@ -574,14 +575,14 @@ export function useLiveRecordingController({
       await checkpointController.flushMeetingCheckpointSync();
       recovery.pendingMicrophoneStreamRef.current = null;
       recovery.setResumeDraft(null);
-      await recovery.finalizeCurrentSessionRecord({
+      await controller.finalizeCurrentSessionRecord({
         status: 'stopped',
         failureReason: 'user_stop',
         failureCategory: 'user_intent',
         audioStates: { input: inputAudioState }
       });
       recovery.setStatus('stopped');
-      window.location.hash = '#meetings';
+      if (redirectHash) window.location.hash = redirectHash;
     },
     async continuePausedSession() {
       if (state.status !== 'paused') return;
@@ -643,6 +644,14 @@ export function useLiveRecordingController({
       recovery.setStatus('paused');
     },
     async startSession() {
+      if (startOperationRef.current) return startOperationRef.current;
+      const operation = this.startSessionLifecycle();
+      startOperationRef.current = operation;
+      return operation.finally(() => {
+        if (startOperationRef.current === operation) startOperationRef.current = null;
+      });
+    },
+    async startSessionLifecycle() {
       const status = state.status ?? 'idle';
       const isActive = Boolean(state.isActive);
       if (status === 'active' || status === 'paused' || isActive || recovery.sessionRef.current || recovery.activeSessionRecordIdRef.current) {
@@ -653,7 +662,10 @@ export function useLiveRecordingController({
         recovery.setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
         return;
       }
-      const selectedResumableMeeting = meetingRecords.find((meeting) => meeting.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
+      const selectedResumableMeeting = [
+        selectedMeetingDetail?.meeting,
+        meetingRecords.find((meeting) => meeting.id === routeMeetingId)
+      ].find((meeting) => meeting?.id === routeMeetingId && ['created', 'active', 'interrupted'].includes(meeting.status));
       if (!selectedResumableMeeting) {
         recovery.setError('請先選擇一個可錄音的會議。');
         return;
@@ -672,20 +684,7 @@ export function useLiveRecordingController({
       let session;
       let record = null;
       recovery.setStatus('requesting-permission');
-      const inputDeviceId = recovery.inputDevicesRef.current.some((device) => device.deviceId === recovery.selectedInputDeviceIdRef.current)
-        ? recovery.selectedInputDeviceIdRef.current
-        : '';
-      const microphoneStreamPromise = requestAudioInputStream(inputDeviceId).catch((error) => {
-        if (inputDeviceId && (error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError')) {
-          recovery.selectedInputDeviceIdRef.current = '';
-          recovery.setSelectedInputDeviceId('');
-          recovery.setDeviceMessage('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
-          return requestAudioInputStream('');
-        }
-        throw error;
-      });
       try {
-        const microphoneStream = await microphoneStreamPromise;
         await audioController.cleanup();
         audioController.resetInputAudioDownload();
         audioController.resetTranslatedAudioDownload();
@@ -701,18 +700,19 @@ export function useLiveRecordingController({
           recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
         } else {
-          meetingCheckpoint = await recovery.createMeetingCheckpointForSession({
+          meetingCheckpoint = await controller.createMeetingCheckpointForSession({
             liveSessionId,
             glossaryEntries: selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode),
             privateGlossaryEntries: privateMeetingGlossaryEntries
           });
         }
-        record = await recovery.createCurrentSessionRecord(meetingCheckpoint);
+        record = await controller.createCurrentSessionRecord(meetingCheckpoint);
         if (!recovery.sessionControlLeaseRef.current?.tryAcquire(record.id)) throw new Error('目前已有工作階段由其他頁籤控制。');
         recovery.setHasSessionControl(true);
         session = await recovery.createSession({ preserveTranscript: false, liveSessionId });
         recovery.sessionRef.current = session;
-        await session.start({ inputStream: microphoneStream });
+        const started = await session.start();
+        if (!started) throw new Error('首個音訊資料未成功送出。');
         recovery.activateLiveSessionCallbacks(session.callbackGeneration);
         const activeRecord = recovery.sessionRepositoryRef.current.updateSessionRecord(record.id, { status: 'active', startedAt: record.startedAt || Date.now(), lastLifecycleState: 'listening' });
         await checkpointController.flushSessionSnapshot(record.id);
@@ -811,7 +811,7 @@ export function useLiveRecordingController({
         void recovery.appendSessionFailureDiagnostic(diagnostic, classification);
         recovery.setError(recovery.reconnectErrorMessage({ decision: { stopReason: 'reconnect_session_failed' } }, diagnostic));
         recovery.setStatus('error');
-        void recovery.finalizeFailedSession({ status: 'failed', failureReason: classification.reason, failureCategory: classification.category });
+        void controller.finalizeFailedSession({ status: 'failed', failureReason: classification.reason, failureCategory: classification.category });
         return;
       }
 
@@ -882,7 +882,7 @@ export function useLiveRecordingController({
         recoveredMeetingCheckpoint = nextMeetingCheckpoint;
         recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-        const resumedRecord = await recovery.createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
+        const resumedRecord = await controller.createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
         resumedSessionRecordId = resumedRecord.id;
         recovery.resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
         session = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
@@ -981,7 +981,7 @@ export function useLiveRecordingController({
     reconnectController() {
       if (!reconnectControllerRef.current) {
         reconnectControllerRef.current = createReconnectController({
-          executeReconnect: recovery.startReconnectSession
+          executeReconnect: controller.startReconnectSession
         });
       }
       return reconnectControllerRef.current;
@@ -989,7 +989,10 @@ export function useLiveRecordingController({
     cancel() {
       reconnectControllerRef.current?.cancel();
     }
-  }), [recovery]);
+    });
+    controller.startSession = controller.startSession.bind(controller);
+    return controller;
+  }, [recovery]);
 
   const segmentSwitchControllerRef = useRef(null);
   const segmentSwitchController = useMemo(() => {

@@ -99,6 +99,19 @@ export function supportsOutputDeviceSelection() {
   return Boolean(globalThis.HTMLMediaElement?.prototype?.setSinkId);
 }
 
+export function supportsAudioContextOutputSelection() {
+  return Boolean(globalThis.AudioContext?.prototype?.setSinkId || globalThis.webkitAudioContext?.prototype?.setSinkId);
+}
+
+export async function setAudioOutputDevice(audioContext, deviceId = '') {
+  if (!audioContext || typeof audioContext.setSinkId !== 'function') {
+    return false;
+  }
+
+  await audioContext.setSinkId(deviceId || 'default');
+  return true;
+}
+
 function normalizeDevice(device, fallbackLabel) {
   return {
     deviceId: device.deviceId,

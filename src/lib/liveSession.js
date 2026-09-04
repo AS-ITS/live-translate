@@ -8,11 +8,14 @@ import {
 } from './audio.js';
 import { applyGlossaryReplacements } from './glossaryReplacement.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
+import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
+const LIVE_SETUP_TIMEOUT_MS = 15000;
+const AUDIO_WORKLET_FIRST_CALLBACK_TIMEOUT_MS = 3000;
 const MAX_PENDING_INPUT_AUDIO_CHUNKS = 64;
 const MAX_PRE_ROLL_BYTES = 480000;
 const AUDIO_CALLBACK_STALL_MS = 3000;
@@ -30,6 +33,7 @@ export class LiveTranslateSession {
     sourceLanguageCode = DEFAULT_SOURCE_LANGUAGE_CODE,
     echoTargetLanguage,
     inputDeviceId = '',
+    outputDeviceId = '',
     microphonePermissionTimeoutMs,
     onInputDeviceFallback,
     onMicrophoneReady,
@@ -40,6 +44,7 @@ export class LiveTranslateSession {
     onInputTranscript,
     onOutputTranscript,
     onOutputAudioChunk,
+    onPlaybackStateChange,
     onError,
     onClose,
     onConnectionFailure,
@@ -54,7 +59,8 @@ export class LiveTranslateSession {
     connectionEpoch = 0,
     audioTurnId = null,
     silenceFinalizeMs = LOCAL_SILENCE_FINALIZE_MS,
-    speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD
+    speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD,
+    firstPcmTimeoutMs = LIVE_SETUP_TIMEOUT_MS
     , mode = 'translation'
   }) {
     this.mode = mode;
@@ -62,6 +68,7 @@ export class LiveTranslateSession {
     this.sourceLanguageCode = sourceLanguageCode;
     this.echoTargetLanguage = echoTargetLanguage;
     this.inputDeviceId = inputDeviceId;
+    this.outputDeviceId = outputDeviceId;
     this.microphonePermissionTimeoutMs = microphonePermissionTimeoutMs;
     this.onInputDeviceFallback = onInputDeviceFallback;
     this.onMicrophoneReady = onMicrophoneReady;
@@ -72,6 +79,7 @@ export class LiveTranslateSession {
     this.onInputTranscript = onInputTranscript;
     this.onOutputTranscript = onOutputTranscript;
     this.onOutputAudioChunk = onOutputAudioChunk;
+    this.onPlaybackStateChange = onPlaybackStateChange;
     this.onError = onError;
     this.onClose = onClose;
     this.onConnectionFailure = onConnectionFailure;
@@ -86,18 +94,24 @@ export class LiveTranslateSession {
     this.connectionEpoch = connectionEpoch;
     this.providerEpoch = 0;
     this.audioTurnId = audioTurnId || `audio-turn-${connectionEpoch}-${++nextAudioTurnSequence}`;
+    this.previousAudioTurnId = null;
     this.silenceFinalizeMs = silenceFinalizeMs;
     this.speechActivityRmsThreshold = speechActivityRmsThreshold;
+    this.firstPcmTimeoutMs = firstPcmTimeoutMs;
     this.inputSendingEnabled = false;
     this.captureEnabled = false;
     this.preRollDraining = false;
     this.providerReady = false;
     this.audioGraphEpoch = null;
+    this.captureGraphGeneration = 0;
+    this.activeCaptureGraphGeneration = null;
     this.firstPcmChunkSent = false;
     this.eventSequence = 0;
     this.traceSequence = 0;
     this.providerFirstServerEventSeen = false;
     this.audioCallbackCount = 0;
+    this.lastAudioCallbackType = null;
+    this.lastWorkletProcessCount = null;
     this.pcmGeneratedCount = 0;
     this.pcmGeneratedBytes = 0;
     this.pcmSendAttemptCount = 0;
@@ -117,6 +131,9 @@ export class LiveTranslateSession {
     this.mediaStream = null;
     this.source = null;
     this.processor = null;
+    this.captureProcessorMode = 'script';
+    this.audioCaptureStage = 'not_started';
+    this.startupStage = 'idle';
     this.session = null;
     this.chunker = null;
     this.pendingInputAudioChunks = [];
@@ -141,6 +158,7 @@ export class LiveTranslateSession {
     this.localTurnFinalizeTriggered = false;
     this.audioContextStateHandler = null;
     this.captureHealthTimer = null;
+    this.audioWorkletFallbackAttempted = false;
     this.captureRecoveryCount = 0;
     this.captureStartedAt = null;
     this.retranslationCueIds = new Set();
@@ -151,32 +169,90 @@ export class LiveTranslateSession {
     this.providerReconnectInProgress = null;
     this.providerReconnectAttempts = 0;
     this.providerReconnectTimer = null;
+    this.startPromise = null;
+    this.setupCompletePromise = null;
+    this.setupCompleteResolver = null;
+    this.firstPcmPromise = null;
+    this.firstPcmResolver = null;
+    this.firstPcmRejecter = null;
     activeDebugSession = this;
     exposeLiveTranslateDebug();
   }
 
   async start({ inputStream = null } = {}) {
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startLifecycle({ inputStream }).catch(async (error) => {
+      this.logLiveEvent('startup:failure', { stage: this.audioCaptureStage, message: error?.message || String(error) });
+      await this.cleanup({ closeSession: true, reason: 'startup-failure' });
+      throw error;
+    });
+    return this.startPromise;
+  }
+
+  async startLifecycle({ inputStream = null } = {}) {
     this.trace('connect.invoked');
-    this.mediaStream = inputStream || await this.openInputStream();
+    this.logLiveEvent('getUserMedia:start', { selectedDeviceId: this.inputDeviceId || 'default' });
+    try {
+      this.mediaStream = inputStream || await this.openInputStream();
+    } catch (error) {
+      this.startupStage = 'getUserMedia';
+      this.logLiveEvent('getUserMedia:failure', { message: error?.message || String(error), name: error?.name || null });
+      error.userMessage = error?.name === 'NotAllowedError'
+        ? '麥克風權限被拒絕。'
+        : '無法取得麥克風 stream。';
+      throw error;
+    }
+    const tracks = this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.() || [];
+    const track = tracks[0];
+    if (!this.mediaStream?.active || !track || track.readyState === 'ended') {
+      throw this.startupError('microphone_stream_invalid', '麥克風 track 已失效。');
+    }
     this.attachMicrophoneTrackListeners();
-    this.logLiveEvent('mic.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+    this.logLiveEvent('getUserMedia:success', {
+      selectedDeviceId: this.inputDeviceId || 'default',
+      streamActive: this.mediaStream.active,
+      trackReadyState: track.readyState,
+      trackEnabled: track.enabled !== false
+    });
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
-
-    this.audioContext = createAudioContext();
-    if (!await this.ensureAudioContextRunning()) return;
-    this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
-    this.setupAudioCapture();
-    this.onCaptureStateChange?.({ state: 'capturing', connectionEpoch: this.connectionEpoch });
-
+    this.startupStage = 'live_token';
     this.onConnecting?.();
+    if (!this.firstPcmChunkSent) {
+      this.firstPcmPromise = new Promise((resolve, reject) => {
+        this.firstPcmResolver = resolve;
+        this.firstPcmRejecter = reject;
+      });
+    }
+    const connected = await this.connectProvider();
+    if (!connected) return false;
+    await this.waitForFirstPcm();
+    return true;
+  }
 
-    await this.connectProvider();
+  async waitForFirstPcm() {
+    try {
+      await withTimeout(this.firstPcmPromise, this.firstPcmTimeoutMs, '首個音訊資料未成功送出。');
+    } catch (error) {
+      this.startupStage = 'first_pcm';
+      error.reasonHint = 'first_pcm_timeout';
+      error.userMessage = '錄音音訊管線未啟動，請重試。';
+      this.logLiveEvent('firstPcm:timeout', {
+        audioCaptureStage: this.audioCaptureStage,
+        captureProcessorMode: this.captureProcessorMode,
+        audioCallbackCount: this.audioCallbackCount,
+        pcmGeneratedCount: this.pcmGeneratedCount,
+        pcmSendAttemptCount: this.pcmSendAttemptCount
+      });
+      throw error;
+    }
   }
 
   async getTokenResponse({ forceRefresh = false } = {}) {
     const expiresAt = this.tokenState?.expiresAt ? Date.parse(this.tokenState.expiresAt) : 0;
     if (!forceRefresh && this.tokenState && expiresAt - Date.now() > TOKEN_REFRESH_SAFETY_MS) return this.tokenState;
-    const tokenResponse = await fetchWithTimeout('/api/live-token', {
+    let tokenResponse;
+    try {
+      tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
       body: JSON.stringify({
@@ -187,18 +263,28 @@ export class LiveTranslateSession {
         sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage
       })
-    }, TOKEN_TIMEOUT_MS);
+      }, TOKEN_TIMEOUT_MS);
+    } catch (error) {
+      this.startupStage = 'live_token';
+      error.userMessage ||= '無法取得即時權杖。';
+      this.logLiveEvent('liveToken:failure', { message: error?.message || String(error) });
+      throw error;
+    }
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
-      throw new Error(userMessageForErrorCode(error.error?.code));
+      const startupError = new Error(userMessageForErrorCode(error.error?.code));
+      startupError.userMessage = '無法取得即時權杖。';
+      throw startupError;
     }
     const response = await tokenResponse.json();
+    this.logLiveEvent('liveToken:success', { expiresAt: response.expiresAt || null });
     this.tokenState = { ...response, fetchedAt: Date.now() };
     this.liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
     return this.tokenState;
   }
 
   async connectProvider({ forceRefresh = false } = {}) {
+    this.startupStage = 'socket';
     const { token, liveConnectModel, liveConnectConfig } = await this.getTokenResponse({ forceRefresh });
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
@@ -213,7 +299,10 @@ export class LiveTranslateSession {
       config,
       callbacks: {
         onmessage: (message) => this.handleMessage(message, providerEpoch),
-        onerror: (event) => { void this.handleSessionError(event, providerEpoch); },
+        onerror: (event) => {
+          this.logLiveEvent('socket:error', { connectionEpoch: this.connectionEpoch, message: event?.message || event?.error?.message || 'Live API error' });
+          void this.handleSessionError(event, providerEpoch);
+        },
         onclose: (event) => { void this.handleSessionClose(event, providerEpoch); }
       }
     }), LIVE_CONNECT_TIMEOUT_MS, '即時翻譯連線逾時。請再試一次。');
@@ -222,16 +311,62 @@ export class LiveTranslateSession {
       return false;
     }
     this.session = connectedSession;
+    this.logLiveEvent('socket:open', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.trace('connect.resolved');
-    this.logLiveEvent('provider.ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.providerReady = true;
     this.preRollDraining = true;
     this.inputSendingEnabled = false;
+    await this.waitForSetupComplete(providerEpoch);
+    await this.attachAudioCaptureAfterSetup();
     if (!this.drainPreRoll(connectionEpoch)) return false;
     this.preRollDraining = false;
     this.inputSendingEnabled = true;
+    this.logLiveEvent('provider:ready', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.onProviderReady?.({ connectionEpoch: this.connectionEpoch });
     return true;
+  }
+
+  async waitForSetupComplete(providerEpoch) {
+    this.setupCompletePromise = new Promise((resolve, reject) => {
+      this.setupCompleteResolver = { resolve, reject, providerEpoch };
+    });
+    try {
+      await withTimeout(this.setupCompletePromise, LIVE_SETUP_TIMEOUT_MS, 'Gemini 連線尚未完成。');
+    } catch (error) {
+      this.startupStage = 'socket';
+      error.userMessage ||= 'Gemini 連線尚未完成。';
+      this.logLiveEvent('socket:error', { stage: 'setupComplete', message: error?.message || String(error) });
+      throw error;
+    } finally {
+      this.setupCompletePromise = null;
+      this.setupCompleteResolver = null;
+    }
+  }
+
+  async attachAudioCaptureAfterSetup() {
+    if (this.audioContext && this.audioGraphEpoch !== null && this.captureEnabled) {
+      if (!await this.ensureAudioContextRunning()) throw this.startupError('audio_context_lost', 'AudioContext 無法啟動。');
+      return;
+    }
+    this.audioContext = createAudioContext();
+    this.logLiveEvent('audioContext:create', { state: this.audioContext.state || null });
+    if (!await this.ensureAudioContextRunning()) throw this.startupError('audio_context_lost', 'AudioContext 無法啟動。');
+    await this.prepareAudioCaptureProcessor();
+    await this.setOutputDevice(this.outputDeviceId);
+    this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
+    if (!this.setupAudioCapture()) throw this.startupError('audio_graph_attach_failed', '音訊 graph 無法建立。');
+    this.onCaptureStateChange?.({ state: 'capturing', connectionEpoch: this.connectionEpoch });
+  }
+
+  startupError(reason, message) {
+    this.startupStage = reason;
+    this.audioCaptureStage = reason;
+    const error = new Error(message);
+    error.userMessage = message;
+    error.startupStage = reason;
+    error.reasonHint = reason;
+    this.recordFailureDiagnostic({ source: 'startup', reasonHint: reason, rawError: error });
+    return error;
   }
 
   async reconnectProvider({ segmentId = this.segmentId, forceRefresh = false } = {}) {
@@ -256,31 +391,43 @@ export class LiveTranslateSession {
     if (!this.audioContext || !this.mediaStream) return false;
     this.disconnectAudioGraph();
     const captureEpoch = this.connectionEpoch;
+    const captureGraphGeneration = ++this.captureGraphGeneration;
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
-    // TODO: Replace ScriptProcessorNode with AudioWorklet for lower latency and non-deprecated capture.
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+    this.processor = this.createCaptureProcessor();
     const processor = this.processor;
+    this.audioCaptureStage = this.captureProcessorMode === 'worklet'
+      ? 'audio_worklet_attached'
+      : 'script_processor_selected';
     this.audioGraphEpoch = captureEpoch;
+    this.activeCaptureGraphGeneration = captureGraphGeneration;
     this.captureEnabled = true;
     this.captureStartedAt = Date.now();
     this.lastAudioCallbackAt = null;
-    this.captureRecoveryCount = 0;
+    this.lastWorkletProcessCount = null;
     this.trace('capture_started');
+    this.logLiveEvent('audio.processor.selected', {
+      mode: this.captureProcessorMode,
+      connectionEpoch: this.connectionEpoch,
+      captureGraphGeneration
+    });
     this.logLiveEvent('audio.graph.attached', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
-    this.processor.onaudioprocess = (event) => {
-      this.audioCallbackCount += 1;
-      this.lastAudioCallbackAt = Date.now();
-      if (this.audioCallbackCount === 1) this.trace('audio.callback.first');
-      if (!this.isCurrentCaptureEpoch(captureEpoch, processor) || !this.chunker) {
+    this.logLiveEvent('audioGraph:attached', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+    const handleSamples = (input) => {
+      if (!this.isCurrentCaptureEpoch(captureEpoch, processor, captureGraphGeneration) || !this.chunker) {
         if (this.closed || captureEpoch !== this.connectionEpoch) this.trace('stale.callback.ignored', { kind: 'audio' });
         return;
       }
+
+      this.audioCallbackCount += 1;
+      this.lastAudioCallbackAt = Date.now();
+      this.lastAudioCallbackType = this.captureProcessorMode;
+      this.audioCaptureStage = `${this.captureProcessorMode}_callback`;
+      if (this.audioCallbackCount === 1) this.trace('audio.callback.first');
 
       // Count only consecutive stalls. A later healthy callback means the
       // browser capture graph recovered from a transient scheduling pause.
       this.captureRecoveryCount = 0;
 
-      const input = event.inputBuffer.getChannelData(0);
       this.trackSpeechActivity(input);
       const chunks = this.chunker.push(input);
 
@@ -288,6 +435,18 @@ export class LiveTranslateSession {
         this.sendInputAudioChunk(chunk, captureEpoch);
       }
     };
+
+    if (this.captureProcessorMode === 'worklet') {
+      this.processor.port.onmessage = (event) => {
+        const payload = event.data;
+        const samples = payload?.type === 'pcm' ? payload.samples : payload;
+        if (!samples) return;
+        this.lastWorkletProcessCount = payload?.type === 'pcm' ? payload.processCount || null : null;
+        handleSamples(new Float32Array(samples));
+      };
+    } else {
+      this.processor.onaudioprocess = (event) => handleSamples(event.inputBuffer.getChannelData(0));
+    }
 
     this.source.connect(this.processor);
     this.processor.connect(this.audioContext.destination);
@@ -301,6 +460,82 @@ export class LiveTranslateSession {
     if (this.captureHealthTimer) clearInterval(this.captureHealthTimer);
     this.captureHealthTimer = setInterval(() => { void this.checkAudioCaptureHealth(); }, 1000);
     this.captureHealthTimer?.unref?.();
+    return true;
+  }
+
+  createCaptureProcessor() {
+    if (this.captureProcessorMode === 'worklet') {
+      try {
+        return new globalThis.AudioWorkletNode(this.audioContext, 'pcm-capture', {
+          numberOfInputs: 1,
+          numberOfOutputs: 1,
+          outputChannelCount: [1]
+        });
+      } catch (error) {
+        this.captureProcessorMode = 'script';
+        this.audioCaptureStage = 'audio_worklet_initialization_failed';
+        this.recordFailureDiagnostic({
+          source: 'audio_capture',
+          reasonHint: 'audio_worklet_unavailable',
+          rawError: error
+        });
+      }
+    }
+
+    return this.audioContext.createScriptProcessor(4096, 1, 1);
+  }
+
+  async prepareAudioCaptureProcessor() {
+    const worklet = this.audioContext?.audioWorklet;
+    const AudioWorkletNodeImpl = globalThis.AudioWorkletNode;
+    if (!worklet || typeof worklet.addModule !== 'function' || typeof AudioWorkletNodeImpl !== 'function') {
+      this.captureProcessorMode = 'script';
+      this.audioCaptureStage = 'script_processor_selected';
+      return false;
+    }
+
+    try {
+      await worklet.addModule(new URL('./audioCapture.worklet.js', import.meta.url));
+      this.captureProcessorMode = 'worklet';
+      this.audioCaptureStage = 'audio_worklet_ready';
+      return true;
+    } catch (error) {
+      this.captureProcessorMode = 'script';
+      this.audioCaptureStage = 'audio_worklet_initialization_failed';
+      this.recordFailureDiagnostic({ source: 'audio_capture', reasonHint: 'audio_worklet_unavailable', rawError: error });
+      return false;
+    }
+  }
+
+  async setOutputDevice(deviceId = '') {
+    this.outputDeviceId = deviceId || '';
+    if (!this.audioContext) return false;
+    try {
+      const supported = await setAudioOutputDevice(this.audioContext, this.outputDeviceId);
+      if (supported) this.onPlaybackStateChange?.({ state: 'ready', outputDeviceId: this.outputDeviceId });
+      return supported;
+    } catch (error) {
+      this.onPlaybackStateChange?.({ state: 'error', outputDeviceId: this.outputDeviceId, error });
+      return false;
+    }
+  }
+
+  async replaceInputStream(nextStream) {
+    if (this.closed || !nextStream) return false;
+    const previousStream = this.mediaStream;
+    this.detachMicrophoneTrackListeners();
+    this.mediaStream = nextStream;
+    this.attachMicrophoneTrackListeners();
+    const attached = this.setupAudioCapture();
+    if (!attached) {
+      this.detachMicrophoneTrackListeners();
+      this.mediaStream = previousStream;
+      this.attachMicrophoneTrackListeners();
+      this.setupAudioCapture();
+      return false;
+    }
+    previousStream?.getTracks?.().forEach((track) => track.stop?.());
+    this.onMicrophoneReady?.({ mediaStream: nextStream });
     return true;
   }
 
@@ -363,13 +598,71 @@ export class LiveTranslateSession {
 
   async checkAudioCaptureHealth(now = Date.now()) {
     if (this.closed || !this.captureEnabled || !this.audioContext) return false;
+    if (this.audioContext.state === 'closed') {
+      this.audioCaptureStage = 'audio_context_lost';
+      await this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段已停止。');
+      return false;
+    }
+    if (this.audioContext.state === 'suspended') {
+      const resumed = await this.ensureAudioContextRunning();
+      if (resumed) return true;
+      if (!this.closed) {
+        this.audioCaptureStage = 'audio_context_lost';
+        await this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段無法恢復。');
+      }
+      return false;
+    }
+    const endedTrack = (this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.())
+      .find((track) => track?.readyState === 'ended');
+    if (endedTrack) {
+      await this.handleMicrophoneDisconnected();
+      return false;
+    }
     const lastCallbackAt = this.lastAudioCallbackAt || this.captureStartedAt;
     if (!lastCallbackAt || now - lastCallbackAt < AUDIO_CALLBACK_STALL_MS) return true;
+    if (this.captureProcessorMode === 'worklet') {
+      if (this.audioCallbackCount !== 0) return true;
+      if (this.audioWorkletFallbackAttempted) return true;
+      if (now - this.captureStartedAt < AUDIO_WORKLET_FIRST_CALLBACK_TIMEOUT_MS) return true;
+
+      this.audioWorkletFallbackAttempted = true;
+      this.captureRecoveryCount = 0;
+      this.audioCaptureStage = 'audio_worklet_callback_stalled';
+      this.logLiveEvent('audio.processor.fallback', {
+        from: 'worklet',
+        to: 'script',
+        reason: 'audio_callback_not_received',
+        elapsedMs: now - this.captureStartedAt,
+        audioCallbackCount: this.audioCallbackCount,
+        connectionEpoch: this.connectionEpoch,
+        captureGraphGeneration: this.activeCaptureGraphGeneration
+      });
+      this.recordFailureDiagnostic({
+        source: 'audio_capture',
+        reasonHint: 'audio_callback_not_received'
+      });
+      this.captureProcessorMode = 'script';
+      return this.recoverAudioCapture({
+        expectedEpoch: this.connectionEpoch,
+        expectedGraphGeneration: this.activeCaptureGraphGeneration,
+        requireProviderSession: true
+      });
+    }
     if (this.captureRecoveryCount < 1) {
       this.captureRecoveryCount += 1;
+      this.audioCaptureStage = 'script_processor_callback_stalled';
+      this.recordFailureDiagnostic({
+        source: 'audio_capture',
+        reasonHint: 'script_processor_callback_stalled'
+      });
       this.trace('audio.callback.stalled', { recoveryCount: this.captureRecoveryCount });
       return this.recoverAudioCapture();
     }
+    if (!this.firstPcmChunkSent && this.firstPcmRejecter) {
+      this.rejectFirstPcm('first_pcm_timeout', '錄音音訊管線未啟動，請重試。');
+      return false;
+    }
+    this.audioCaptureStage = 'script_processor_callback_failed';
     await this.handleAudioCaptureFailure('audio_capture_failed', '麥克風沒有產生音訊。請檢查麥克風後再試一次。');
     return false;
   }
@@ -387,6 +680,13 @@ export class LiveTranslateSession {
         await this.handleAudioCaptureFailure('audio_context_lost', error?.message || '瀏覽器音訊工作階段無法恢復。');
         return false;
       }
+      if (this.audioContext.state !== 'running') {
+        await this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段無法恢復。');
+        return false;
+      }
+    } else if (this.audioContext.state === 'suspended') {
+      await this.handleAudioCaptureFailure('audio_context_lost', '瀏覽器音訊工作階段無法恢復。');
+      return false;
     }
     return this.audioContext.state === undefined || this.audioContext.state === 'running';
   }
@@ -395,14 +695,25 @@ export class LiveTranslateSession {
     try { this.processor?.disconnect(); } catch { /* already disconnected */ }
     try { this.source?.disconnect(); } catch { /* already disconnected */ }
     if (this.processor) this.processor.onaudioprocess = null;
+    if (this.processor?.port) this.processor.port.onmessage = null;
     this.processor = null;
     this.source = null;
     this.audioGraphEpoch = null;
+    this.activeCaptureGraphGeneration = null;
   }
 
-  async recoverAudioCapture() {
-    if (this.closed || !this.mediaStream || !this.audioContext) return false;
+  async recoverAudioCapture({ expectedEpoch = this.connectionEpoch, expectedGraphGeneration = this.activeCaptureGraphGeneration, requireProviderSession = false } = {}) {
+    if (this.closed
+      || !this.mediaStream
+      || !this.audioContext
+      || !this.captureEnabled
+      || expectedEpoch !== this.connectionEpoch
+      || expectedGraphGeneration !== this.activeCaptureGraphGeneration
+      || (requireProviderSession && (!this.session || !this.providerReady))) return false;
     if (!await this.ensureAudioContextRunning()) return false;
+    // setupAudioCapture starts by disconnecting the previous graph. This is
+    // important when a stalled Worklet is replaced so both processors cannot
+    // continue consuming the same microphone stream.
     return this.setupAudioCapture();
   }
 
@@ -503,17 +814,42 @@ export class LiveTranslateSession {
     if (this.inputTurnMode === 'manual' && this.pcmSendAttemptCount === 0) {
       this.sendProviderInput({ activityStart: {} }, 'activityStart');
     }
-    this.sendProviderInput({
+    const outcome = this.sendProviderInput({
       audio: {
         data: bytesToBase64(bytes),
         mimeType: 'audio/pcm;rate=16000'
       }
     }, 'pcm');
-    if (!this.firstPcmChunkSent) {
+    if (!this.firstPcmChunkSent && outcome.result !== 'sync-throw' && outcome.result !== 'unsupported') {
       this.firstPcmChunkSent = true;
+      const elapsedMs = Math.max(0, Date.now() - (this.captureStartedAt || Date.now()));
       this.logLiveEvent('audio.firstPcmChunkSent', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      this.logLiveEvent('firstPcmChunk:sent', {
+        connectionEpoch: this.connectionEpoch,
+        sessionId: this.liveSessionId,
+        elapsedMs,
+        captureProcessorMode: this.captureProcessorMode,
+        audioCallbackCount: this.audioCallbackCount,
+        pcmGeneratedCount: this.pcmGeneratedCount,
+        pcmSendAttemptCount: this.pcmSendAttemptCount
+      });
       this.trace('first_pcm_sent', { sequence: record.sequence });
+      this.firstPcmResolver?.(true);
+      this.firstPcmResolver = null;
+      this.firstPcmRejecter = null;
     }
+    return true;
+  }
+
+  rejectFirstPcm(reasonHint, message) {
+    if (!this.firstPcmRejecter || this.firstPcmChunkSent) return false;
+    const error = new Error(message);
+    error.reasonHint = reasonHint;
+    error.startupStage = 'first_pcm';
+    error.userMessage = message;
+    this.firstPcmRejecter(error);
+    this.firstPcmRejecter = null;
+    this.firstPcmResolver = null;
     return true;
   }
 
@@ -529,11 +865,12 @@ export class LiveTranslateSession {
     return true;
   }
 
-  isCurrentCaptureEpoch(epoch, processor = null) {
+  isCurrentCaptureEpoch(epoch, processor = null, graphGeneration = null) {
     return !this.closed
       && this.captureEnabled
       && epoch === this.connectionEpoch
       && (this.audioGraphEpoch === null || this.audioGraphEpoch === epoch)
+      && (graphGeneration === null || this.activeCaptureGraphGeneration === graphGeneration)
       && (!processor || this.processor === processor);
   }
 
@@ -574,6 +911,13 @@ export class LiveTranslateSession {
       track.addEventListener('ended', onEnded);
       this.microphoneTrackListeners.push({ track, onEnded });
     }
+  }
+
+  detachMicrophoneTrackListeners() {
+    for (const { track, onEnded } of this.microphoneTrackListeners) {
+      track.removeEventListener?.('ended', onEnded);
+    }
+    this.microphoneTrackListeners = [];
   }
 
   async handleMicrophoneDisconnected() {
@@ -654,6 +998,11 @@ export class LiveTranslateSession {
       this.resumptionHandle = message.sessionResumptionUpdate.newHandle;
       this.trace('session.resumption.updated');
     }
+    if (message?.setupComplete) {
+      this.logLiveEvent('socket:setupComplete', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
+      if (this.setupCompleteResolver?.providerEpoch === epoch) this.setupCompleteResolver.resolve(true);
+      return;
+    }
     if (message?.goAway) {
       this.scheduleProviderReconnect(message.goAway.timeLeft, { forceRefresh: true });
       return;
@@ -676,6 +1025,9 @@ export class LiveTranslateSession {
     this.eventSequence += 1;
     const transcriptEventId = message?.eventId || message?.event_id || message?.id
       || `${this.liveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
+    const eventAudioTurnId = (inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary)
+      ? (this.previousAudioTurnId || this.audioTurnId)
+      : this.audioTurnId;
     const normalizedEvents = this.mode === 'transcription'
       ? normalizeTranscriptionCueEvents(message, {
         liveSessionId: this.liveSessionId,
@@ -684,6 +1036,7 @@ export class LiveTranslateSession {
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
         eventSequence: this.eventSequence,
+        audioTurnId: eventAudioTurnId,
         sessionClock: this.sessionClock,
         inputTranscriptIsFinal,
         inputTranscriptArrivedAfterBoundary
@@ -696,6 +1049,7 @@ export class LiveTranslateSession {
       targetLanguageCode: this.targetLanguageCode,
       connectionEpoch: this.connectionEpoch,
       eventSequence: this.eventSequence,
+      audioTurnId: eventAudioTurnId,
       sessionClock: this.sessionClock,
       inputTranscriptIsFinal,
       outputTranscriptIsFinal,
@@ -723,7 +1077,12 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: content.inputTranscription.text,
         isFinal: isFinal || this.awaitingInputTranscriptAfterTurnComplete,
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        audioTurnId: eventAudioTurnId,
         ...(inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
@@ -739,7 +1098,12 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
         isFinal: false,
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        audioTurnId: eventAudioTurnId,
         ...(content.interimInputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
@@ -765,7 +1129,13 @@ export class LiveTranslateSession {
       const transcript = withTranscriptEventId({
         text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
+        liveSessionId: this.liveSessionId,
+        sessionId: this.sessionId,
+        segmentId: this.segmentId,
+        sourceLanguageCode: this.sourceLanguageCode,
+        targetLanguageCode: this.targetLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        audioTurnId: eventAudioTurnId,
         ...(outputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(isRetranslationResponse ? { retranslationCueId } : {})
       }, transcriptEventId);
@@ -786,6 +1156,11 @@ export class LiveTranslateSession {
 
     if (content?.interrupted) {
       this.clearPlaybackQueue();
+    }
+
+    if (isFinal && !inputTranscriptArrivedAfterBoundary && !outputTranscriptArrivedAfterBoundary) {
+      this.previousAudioTurnId = this.audioTurnId;
+      this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
     }
 
     if (this.mode !== 'transcription') {
@@ -815,7 +1190,13 @@ export class LiveTranslateSession {
     if (suppressOutput) return;
     this.onOutputAudioChunk?.(new Uint8Array(bytes));
     const samples = pcm16ToFloat(bytes);
-    const buffer = this.audioContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
+    let buffer;
+    try {
+      buffer = this.audioContext.createBuffer(1, samples.length, OUTPUT_SAMPLE_RATE);
+    } catch (error) {
+      this.onPlaybackStateChange?.({ state: 'error', error });
+      return;
+    }
     buffer.copyToChannel(samples, 0);
 
     const source = this.audioContext.createBufferSource();
@@ -828,7 +1209,13 @@ export class LiveTranslateSession {
     const now = this.audioContext.currentTime;
     this.nextPlaybackTime = Math.max(now, this.nextPlaybackTime);
     this.playbackSources.add(source);
-    source.start(this.nextPlaybackTime);
+    try {
+      source.start(this.nextPlaybackTime);
+    } catch (error) {
+      this.playbackSources.delete(source);
+      this.onPlaybackStateChange?.({ state: 'error', error });
+      return;
+    }
     this.nextPlaybackTime += buffer.duration;
   }
 
@@ -1150,7 +1537,16 @@ export class LiveTranslateSession {
       inputSendingEnabled: this.inputSendingEnabled,
       audioGraphAttached: Boolean(this.source && this.audioContext),
       processorAttached: Boolean(this.processor),
+      captureProcessorMode: this.captureProcessorMode,
+      captureGraphGeneration: this.captureGraphGeneration,
+      activeCaptureGraphGeneration: this.activeCaptureGraphGeneration,
+      audioCaptureStage: this.audioCaptureStage,
+      startupStage: this.startupStage,
       audioCallbackCount: this.audioCallbackCount,
+      lastWorkletProcessCount: this.lastWorkletProcessCount,
+      lastAudioCallbackType: this.lastAudioCallbackType,
+      audioContextState: this.audioContext?.state || null,
+      microphoneTrackState: (this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.())?.[0]?.readyState || null,
       captureRecoveryCount: this.captureRecoveryCount,
       lastAudioCallbackAt: this.lastAudioCallbackAt,
       pcmGeneratedCount: this.pcmGeneratedCount,
@@ -1179,7 +1575,7 @@ export class LiveTranslateSession {
     return diagnostic;
   }
 
-  async cleanup({ closeSession = true, signalAudioEnd = false } = {}) {
+  async cleanup({ closeSession = true, signalAudioEnd = false, reason = 'cleanup' } = {}) {
     if (this.cleaningUp) {
       return;
     }
@@ -1189,6 +1585,7 @@ export class LiveTranslateSession {
     }
     this.cleaningUp = true;
     try {
+      this.logLiveEvent('cleanup', { reason, connectionEpoch: this.connectionEpoch });
       this.clearSilenceFinalizeTimer();
       if (this.providerReconnectTimer) clearTimeout(this.providerReconnectTimer);
       this.providerReconnectTimer = null;
@@ -1241,7 +1638,11 @@ export class LiveTranslateSession {
       this.session = null;
       this.audioContext = null;
       this.chunker = null;
+      this.firstPcmResolver = null;
+      this.firstPcmRejecter = null;
+      this.setupCompleteResolver = null;
       this.audioGraphEpoch = null;
+      this.activeCaptureGraphGeneration = null;
       this.pendingInputAudioChunks = [];
       this.pendingInputAudioBytes = 0;
       this.localTurnFinalizeTriggered = false;
@@ -1343,6 +1744,7 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
       sessionId: context.sessionId || null,
       segmentId: context.segmentId || null,
       connectionEpoch: context.connectionEpoch ?? null,
+      audioTurnId: context.audioTurnId || null,
       stream: 'source',
       eventType,
       text: String(input.text).replace(/\s+/gu, ' ').trim(),
@@ -1363,6 +1765,7 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
       sessionId: context.sessionId || null,
       segmentId: context.segmentId || null,
       connectionEpoch: context.connectionEpoch ?? null,
+      audioTurnId: context.audioTurnId || null,
       stream: null,
       eventType: 'boundary',
       text: '',
@@ -1427,6 +1830,14 @@ function safeFailureDiagnostic(failure, session) {
     liveSessionId: session.liveSessionId,
     segmentId: session.segmentId,
     audioCallbackCount: session.audioCallbackCount,
+    captureProcessorMode: session.captureProcessorMode,
+    captureGraphGeneration: session.captureGraphGeneration,
+    activeCaptureGraphGeneration: session.activeCaptureGraphGeneration,
+    audioCaptureStage: session.audioCaptureStage,
+    lastAudioCallbackType: session.lastAudioCallbackType,
+    lastWorkletProcessCount: session.lastWorkletProcessCount,
+    audioContextState: session.audioContext?.state || null,
+    microphoneTrackState: (session.mediaStream?.getAudioTracks?.() || session.mediaStream?.getTracks?.())?.[0]?.readyState || null,
     pcmSendAttemptCount: session.pcmSendAttemptCount,
     pcmSendSyncThrowCount: session.pcmSendSyncThrowCount,
     pcmSendAsyncRejectCount: session.pcmSendAsyncRejectCount
@@ -1463,9 +1874,17 @@ function exposeLiveTranslateDebug() {
     preRollBufferedChunkCount: 0,
     preRollBufferedBytes: 0,
     inputSendingEnabled: false,
-    audioGraphAttached: false,
-    processorAttached: false,
-    audioCallbackCount: 0,
+      audioGraphAttached: false,
+      processorAttached: false,
+      captureProcessorMode: 'script',
+      captureGraphGeneration: 0,
+      activeCaptureGraphGeneration: null,
+      audioCaptureStage: 'not_started',
+      audioCallbackCount: 0,
+      lastWorkletProcessCount: null,
+      lastAudioCallbackType: null,
+      audioContextState: null,
+      microphoneTrackState: null,
     captureRecoveryCount: 0,
     pcmGeneratedCount: 0,
     pcmGeneratedBytes: 0,

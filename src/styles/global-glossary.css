@@ -33,7 +33,7 @@
 .global-glossary-toolbar .button { min-height: 3rem; border-radius: var(--radius-md); }
 .global-glossary-toolbar .meeting-toolbar-input { border-color: var(--color-border-strong); background: var(--color-surface); color: var(--color-text-subtle); }
 .global-glossary-toolbar .meeting-toolbar-input input { min-height: 0; color: var(--color-text); }
-.global-glossary-toolbar select { box-sizing: border-box; width: 100%; height: 3rem; min-height: 3rem; padding: 0 var(--space-3); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text); }
+.global-glossary-toolbar select { box-sizing: border-box; width: 100%; height: var(--select-height); min-height: var(--select-height); padding: 0 var(--space-3); border: 1px solid var(--color-border-strong); background: var(--color-surface); color: var(--color-text); }
 .global-glossary-toolbar .meeting-toolbar-input:focus-within,
 .global-glossary-toolbar select:focus-visible { border-color: var(--color-primary); }
 .glossary-page .global-glossary-toolbar .meeting-toolbar-input:focus-within { box-shadow: 0 0 0 3px var(--color-focus-ring); }
@@ -85,7 +85,7 @@
 .global-glossary-form { display: grid; align-content: start; gap: var(--space-2); min-height: 0; padding-top: var(--space-3); overflow-y: auto; }
 .global-glossary-form .field { margin: 0; }
 .global-glossary-form input, .global-glossary-form select, .global-glossary-form textarea { box-sizing: border-box; width: 100%; min-height: 2.75rem; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); background: var(--color-surface); }
-.global-glossary-form select { height: 2.75rem; }
+.global-glossary-form select { height: var(--select-height); min-height: var(--select-height); }
 .global-glossary-form textarea { height: 4.5rem; resize: vertical; }
 .glossary-form-section { display: grid; gap: var(--space-2); }
 .glossary-form-section-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
@@ -109,7 +109,7 @@
 .glossary-import-help-content p { margin: 0; color: var(--color-text-muted); }
 .glossary-import-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); padding-block: var(--space-3); background: var(--color-surface); }
 .glossary-import-settings .field { margin: 0; }
-.glossary-import-settings select { height: 3rem; min-height: 3rem; }
+.glossary-import-settings select { height: var(--select-height); min-height: var(--select-height); }
 .glossary-import-category-control { display: flex; align-items: flex-end; flex-wrap: nowrap; gap: var(--space-2); min-width: 0; }
 .glossary-import-category-control .field { flex: 1 1 auto; min-width: 0; }
 .glossary-import-category-control .button { flex: 0 0 auto; min-height: 3rem; }

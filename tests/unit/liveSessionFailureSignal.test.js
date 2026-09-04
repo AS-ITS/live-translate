@@ -35,6 +35,14 @@ test('unexpected close triggers connection failure after cleanup', async () => {
     liveSessionId: failures[0].diagnostic.liveSessionId,
     segmentId: failures[0].diagnostic.segmentId,
     audioCallbackCount: 0,
+    captureProcessorMode: 'script',
+    captureGraphGeneration: 0,
+    activeCaptureGraphGeneration: null,
+    audioCaptureStage: 'not_started',
+    lastAudioCallbackType: null,
+    lastWorkletProcessCount: null,
+    audioContextState: null,
+    microphoneTrackState: null,
     pcmSendAttemptCount: 0,
     pcmSendSyncThrowCount: 0,
     pcmSendAsyncRejectCount: 0
@@ -179,6 +187,32 @@ test('selected microphone Invalid constraint falls back to the browser default',
       });
     }
   }
+});
+
+test('startup waits for Gemini setupComplete before proceeding', async () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  session.providerEpoch = 7;
+  const waiting = session.waitForSetupComplete(7);
+  assert.equal(session.setupCompleteResolver.providerEpoch, 7);
+  session.handleMessage({ setupComplete: {} }, 7);
+  await waiting;
+  assert.equal(session.setupCompletePromise, null);
+  assert.equal(session.setupCompleteResolver, null);
+});
+
+test('startup rejects an inactive or ended microphone stream with a stage-specific error', async () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  const stream = {
+    active: false,
+    getTracks: () => [{ readyState: 'ended', enabled: true }]
+  };
+
+  await assert.rejects(
+    () => session.start({ inputStream: stream }),
+    (error) => error.message === '麥克風 track 已失效。' && error.startupStage === 'microphone_stream_invalid'
+  );
+  assert.equal(session.getDebugSnapshot().startupStage, 'microphone_stream_invalid');
+  assert.equal(session.mediaStream, null);
 });
 
 test('microphone permission errors do not fall back to the browser default', async () => {
@@ -336,6 +370,8 @@ test('turn completion finalizes preceding input and output transcript partials',
     { text: 'first translated sentence', isFinal: false },
     { text: 'first translated sentence', isFinal: true }
   ]);
+  assert.equal(inputEvents[0].sessionId, null);
+  assert.equal(inputEvents[0].segmentId, null);
 });
 
 test('local silence finalization completes pending transcripts without provider input-end control', async () => {
@@ -581,6 +617,224 @@ test('suspended audio context is resumed before capture continues', async () => 
   assert.equal(resumeCount, 1);
 });
 
+test('audio health reports an AudioContext that cannot resume', async () => {
+  const failures = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.audioContext = { state: 'suspended' };
+  session.mediaStream = { getTracks: () => [] };
+  session.captureEnabled = true;
+
+  assert.equal(await session.checkAudioCaptureHealth(), false);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reasonHint, 'audio_context_lost');
+});
+
+test('audio health preserves microphone-disconnected classification for ended tracks', async () => {
+  const failures = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.audioContext = { state: 'running' };
+  session.mediaStream = { getTracks: () => [{ readyState: 'ended' }] };
+  session.captureEnabled = true;
+
+  assert.equal(await session.checkAudioCaptureHealth(), false);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].reasonHint, 'microphone_disconnected');
+});
+
+test('AudioWorklet construction failure falls back to ScriptProcessor capture', async () => {
+  const previousAudioWorkletNode = globalThis.AudioWorkletNode;
+  const failures = [];
+  const processors = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.captureProcessorMode = 'worklet';
+  globalThis.AudioWorkletNode = class BrokenAudioWorkletNode {
+    constructor() {
+      throw new Error('AudioWorkletNode is unavailable in this browser');
+    }
+  };
+  session.audioContext = {
+    state: 'running',
+    sampleRate: 16000,
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => {
+      const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+      processors.push(processor);
+      return processor;
+    }
+  };
+  session.mediaStream = { getTracks: () => [] };
+  session.chunker = { push() { return []; }, reset() {} };
+
+  try {
+    assert.equal(session.setupAudioCapture(), true);
+    assert.equal(session.captureProcessorMode, 'script');
+    assert.equal(processors.length, 1);
+    assert.equal(typeof processors[0].onaudioprocess, 'function');
+    assert.deepEqual(failures, []);
+    assert.equal(session.failureDiagnostics.at(-1).reasonHint, 'audio_worklet_unavailable');
+  } finally {
+    if (previousAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+    else globalThis.AudioWorkletNode = previousAudioWorkletNode;
+    await session.cleanup({ closeSession: false });
+  }
+});
+
+test('healthy AudioWorklet callback does not trigger fallback', async () => {
+  const previousAudioWorkletNode = globalThis.AudioWorkletNode;
+  const workletNodes = [];
+  const processors = [];
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  session.captureProcessorMode = 'worklet';
+  globalThis.AudioWorkletNode = class MockAudioWorkletNode {
+    constructor() {
+      this.port = { onmessage: null };
+      workletNodes.push(this);
+    }
+
+    connect() {}
+
+    disconnect() {}
+  };
+  session.audioContext = {
+    state: 'running',
+    sampleRate: 16000,
+    destination: {},
+    createMediaStreamSource: () => ({ connect() {}, disconnect() {} }),
+    createScriptProcessor: () => {
+      const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+      processors.push(processor);
+      return processor;
+    }
+  };
+  session.mediaStream = { getTracks: () => [] };
+  session.chunker = { push() { return []; }, reset() {} };
+
+  try {
+    session.setupAudioCapture();
+    workletNodes[0].port.onmessage({ data: { type: 'pcm', processCount: 1, samples: new Float32Array(1600).buffer } });
+    assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
+    assert.equal(session.captureProcessorMode, 'worklet');
+    assert.equal(workletNodes.length, 1);
+    assert.equal(processors.length, 0);
+  } finally {
+    if (previousAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+    else globalThis.AudioWorkletNode = previousAudioWorkletNode;
+    await session.cleanup({ closeSession: false });
+  }
+});
+
+test('startup first PCM timeout is classified as an audio pipeline failure', async () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en', firstPcmTimeoutMs: 1 });
+  session.firstPcmPromise = new Promise(() => {});
+
+  await assert.rejects(
+    () => session.waitForFirstPcm(),
+    (error) => {
+      const classification = classifyConnectionFailure({ reason: error.reasonHint });
+      assert.equal(error.reasonHint, 'first_pcm_timeout');
+      assert.equal(error.userMessage, '錄音音訊管線未啟動，請重試。');
+      assert.equal(classification.category, 'audio_pipeline');
+      assert.equal(classification.safeMessage, '錄音音訊管線未啟動，請重試。');
+      return true;
+    }
+  );
+});
+
+test('stalled AudioWorklet callback falls back to ScriptProcessor and does not duplicate the graph', async () => {
+  const previousAudioWorkletNode = globalThis.AudioWorkletNode;
+  const failures = [];
+  const workletNodes = [];
+  const processors = [];
+  const sources = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onConnectionFailure: (failure) => failures.push(failure)
+  });
+  session.captureProcessorMode = 'worklet';
+  globalThis.AudioWorkletNode = class MockAudioWorkletNode {
+    constructor() {
+      this.port = { onmessage: null };
+      this.disconnectCalls = 0;
+      workletNodes.push(this);
+    }
+
+    connect() {}
+
+    disconnect() {
+      this.disconnectCalls += 1;
+    }
+  };
+  session.audioContext = {
+    state: 'running',
+    sampleRate: 16000,
+    destination: {},
+    createMediaStreamSource: () => {
+      const source = { connect() {}, disconnect() {} };
+      sources.push(source);
+      return source;
+    },
+    createScriptProcessor: () => {
+      const processor = { connect() {}, disconnect() {}, onaudioprocess: null };
+      processors.push(processor);
+      return processor;
+    }
+  };
+  session.mediaStream = { getTracks: () => [] };
+  session.chunker = { push() { return []; }, reset() {} };
+  session.session = { sendRealtimeInput() {} };
+  session.providerReady = true;
+
+  try {
+    assert.equal(session.setupAudioCapture(), true);
+    assert.equal(session.captureProcessorMode, 'worklet');
+    assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
+    assert.equal(session.captureProcessorMode, 'script');
+    assert.equal(workletNodes.length, 1);
+    assert.equal(workletNodes[0].disconnectCalls, 1);
+    assert.equal(workletNodes[0].port.onmessage, null);
+    assert.equal(processors.length, 1);
+    assert.equal(sources.length, 2);
+    assert.equal(session.audioCaptureStage, 'script_processor_selected');
+    assert.equal(failures.length, 0);
+    assert.equal(session.failureDiagnostics.at(-1).reasonHint, 'audio_callback_not_received');
+
+    session.chunker = { push() { return [new Uint8Array([1, 2, 3, 4])]; }, reset() {} };
+    session.inputSendingEnabled = true;
+    processors[0].onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
+    assert.equal(session.captureProcessorMode, 'script');
+    assert.equal(session.audioCallbackCount, 1);
+
+    // The next health cycle may retry ScriptProcessor once, but never rebuilds
+    // the Worklet or reports a failure until ScriptProcessor also stalls twice.
+    assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
+    assert.equal(workletNodes.length, 1);
+    assert.equal(processors.length, 2);
+    assert.equal(failures.length, 0);
+    await session.checkAudioCaptureHealth(Date.now() + 4000);
+    assert.equal(failures.length, 1);
+    assert.equal(failures[0].reasonHint, 'audio_capture_failed');
+    assert.equal(failures[0].diagnostic.audioCaptureStage, 'script_processor_callback_failed');
+    const processorCount = processors.length;
+    await session.cleanup({ closeSession: false });
+    await session.checkAudioCaptureHealth(Date.now() + 8000);
+    assert.equal(processors.length, processorCount);
+  } finally {
+    if (previousAudioWorkletNode === undefined) delete globalThis.AudioWorkletNode;
+    else globalThis.AudioWorkletNode = previousAudioWorkletNode;
+    await session.cleanup({ closeSession: false });
+  }
+});
+
 test('healthy audio callbacks reset the transient capture-stall recovery budget', async () => {
   const failures = [];
   const processors = [];
@@ -606,13 +860,13 @@ test('healthy audio callbacks reset the transient capture-stall recovery budget'
   processors[0].onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
   assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
   assert.equal(processors.length, 2);
-  assert.equal(session.captureRecoveryCount, 0);
+  assert.equal(session.captureRecoveryCount, 1);
 
   processors.at(-1).onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
   assert.equal(session.captureRecoveryCount, 0);
   assert.equal(await session.checkAudioCaptureHealth(Date.now() + 4000), true);
   assert.equal(processors.length, 3);
-  assert.equal(session.captureRecoveryCount, 0);
+  assert.equal(session.captureRecoveryCount, 1);
   assert.deepEqual(failures, []);
 
   await session.cleanup({ closeSession: false });
@@ -704,6 +958,8 @@ test('old audio processor closure cannot send after the connection epoch changes
   processor.onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
 
   assert.deepEqual(sent, []);
+  assert.equal(session.audioCallbackCount, 0);
+  assert.equal(session.lastAudioCallbackAt, null);
 });
 
 test('pending input audio keeps only the bounded newest window', () => {
@@ -755,9 +1011,9 @@ test('final input transcription replaces interim source while preserving transla
   });
   session.handleMessage({ serverContent: { turnComplete: true } });
 
-  assert.deepEqual(inputEvents, [
-    { text: 'interim source', isFinal: false },
-    { text: 'final source', isFinal: true }
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [
+    { text: 'interim source', isFinal: false, sourceLanguageCode: 'zh-Hant' },
+    { text: 'final source', isFinal: true, sourceLanguageCode: 'zh-Hant' }
   ]);
   assert.deepEqual(outputEvents.map(({ text, isFinal }) => ({ text, isFinal })), [
     { text: 'translated text', isFinal: false },
@@ -783,7 +1039,7 @@ test('output-only transcript does not fabricate source transcript text', () => {
   });
 
   assert.deepEqual(inputEvents, []);
-  assert.deepEqual(outputEvents, [{ text: 'translated only', isFinal: true }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'translated only', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja' }]);
 });
 
 test('live session applies glossary replacements only to output transcript events', () => {
@@ -807,8 +1063,8 @@ test('live session applies glossary replacements only to output transcript event
     }
   });
 
-  assert.deepEqual(inputEvents, [{ text: '麥克風', isFinal: true }]);
-  assert.deepEqual(outputEvents, [{ text: 'Alan speak and Alan speak', isFinal: true }]);
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: '麥克風', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak and Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
 test('live session emits final output transcript events after glossary replacement', () => {
@@ -829,7 +1085,7 @@ test('live session emits final output transcript events after glossary replaceme
     }
   });
 
-  assert.deepEqual(outputEvents, [{ text: 'Alan speak', isFinal: true }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
 test('turn completion flush keeps replacement text when finalizing output partials', () => {
@@ -850,9 +1106,9 @@ test('turn completion flush keeps replacement text when finalizing output partia
   });
   session.handleMessage({ serverContent: { turnComplete: true } });
 
-  assert.deepEqual(outputEvents, [
-    { text: 'Alan speak', isFinal: false },
-    { text: 'Alan speak', isFinal: true }
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [
+    { text: 'Alan speak', isFinal: false, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+    { text: 'Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }
   ]);
 });
 
@@ -910,8 +1166,8 @@ test('turn completion received before transcripts finalizes the next source and 
     }
   });
 
-  assert.deepEqual(inputEvents, [{ text: 'late source sentence', isFinal: true, isLateTranscript: true }]);
-  assert.deepEqual(outputEvents, [{ text: 'late translated sentence', isFinal: true, isLateTranscript: true }]);
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: 'late source sentence', isFinal: true, isLateTranscript: true, sourceLanguageCode: 'zh-Hant' }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'late translated sentence', isFinal: true, isLateTranscript: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja' }]);
 });
 
 test('session stop flushes pending source and translation transcripts once', async () => {
@@ -1136,6 +1392,16 @@ test('numeric correction output is tagged with its Cue and does not request play
   assert.equal(outputEvents[0].retranslationCueId, 'cue-1');
   assert.deepEqual(audioEvents, []);
 });
+
+function transcriptEventSummary(event) {
+  return {
+    text: event.text,
+    isFinal: event.isFinal,
+    ...(event.isLateTranscript ? { isLateTranscript: true } : {}),
+    ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
+    ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {})
+  };
+}
 
 function createTestSession({ events = [], onConnectionFailure, onError, onClose } = {}) {
   const session = new LiveTranslateSession({

@@ -196,6 +196,11 @@ export function App() {
   const refinementSubmissionTimesRef = useRef([]);
   const subtitleRefinementTimerRef = useRef(null);
   const refinementRateLimitTimerRef = useRef(null);
+  const statusRef = useRef(status);
+  const lastSafeHashRef = useRef(canonicalHashForLocation());
+  const pendingForcedNavigationHashRef = useRef(null);
+  const forcedNavigationStopPromiseRef = useRef(null);
+  statusRef.current = status;
 
   const routeMeetingId = pageInfoFromLocation().meetingId;
   const workspaceInfo = pageInfoFromLocation();
@@ -208,7 +213,7 @@ export function App() {
     status === 'reconnecting' ||
     status === 'switching-segment';
   const controlsLocked = isActive || status === 'paused' || Boolean(controlLeaseSnapshot && !hasSessionControl);
-  const isNavigationLocked = isActive || status === 'paused';
+  const isNavigationLocked = isActive;
   const liveController = useLiveRecordingController({
     routeMeetingId,
     targetLanguageCode,
@@ -431,10 +436,31 @@ export function App() {
   useEffect(() => {
     const handleHashChange = () => {
       const canonicalHash = canonicalHashForLocation();
+      const next = pageInfoFromLocation();
+      const activeMeetingId = activeMeetingCheckpointRef.current?.meetingId || '';
+      const activeSession = ['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(statusRef.current);
+      const leavesActiveLiveRoute = next.page !== 'live-recording' || (activeMeetingId && next.meetingId !== activeMeetingId);
+
+      if (activeSession && leavesActiveLiveRoute) {
+        pendingForcedNavigationHashRef.current = canonicalHash;
+        const liveHash = activeMeetingId
+          ? `#live?meetingId=${encodeURIComponent(activeMeetingId)}`
+          : (lastSafeHashRef.current.startsWith('#live') ? lastSafeHashRef.current : '#live');
+        window.history.replaceState(null, '', liveHash);
+        void forceStopForNavigation();
+        return;
+      }
+
+      if (statusRef.current === 'paused' && next.page === 'live-recording' && activeMeetingId && next.meetingId !== activeMeetingId) {
+        window.history.replaceState(null, '', lastSafeHashRef.current);
+        setError('目前錄音已暫停，請先結束目前工作階段後再切換其他會議。');
+        return;
+      }
+
       if (canonicalHash !== window.location.hash) {
         window.history.replaceState(null, '', canonicalHash);
       }
-      const next = pageInfoFromLocation();
+      lastSafeHashRef.current = canonicalHash;
       if (next.page === 'live-recording' && selectedMeetingIdRef.current !== next.meetingId) {
         selectedMeetingIdRef.current = null;
         setSelectedMeetingId(null);
@@ -453,6 +479,15 @@ export function App() {
     handleHashChange();
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      if (!['requesting-permission', 'connecting', 'listening', 'reconnecting', 'switching-segment'].includes(statusRef.current)) return;
+      void forceStopForNavigation();
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    return () => window.removeEventListener('pagehide', handlePageHide);
   }, []);
 
   useEffect(() => {
@@ -850,20 +885,23 @@ export function App() {
   }
 
   function applyStartFailure(nextError, fallbackMessage) {
+    const startupReason = nextError?.reasonHint || (
+      nextError?.startupStage === 'getUserMedia' ? 'audio_capture_failed' : 'unknown_error'
+    );
     const classification = classifyFailureSignal({
       source: 'microphone_capture',
       rawError: nextError,
-      reasonHint: 'audio_capture_failed'
+      reasonHint: startupReason
     });
     const noDefaultInputDevice =
       classification.reason === 'selected_device_missing' && !selectedInputDeviceId;
-    const message = noDefaultInputDevice
+    const message = nextError?.userMessage || (noDefaultInputDevice
       ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
-      : classification.safeMessage || nextError?.message || fallbackMessage;
+      : classification.safeMessage || nextError?.message || fallbackMessage);
 
     const diagnostic = safeReconnectDiagnostic({
       source: 'startup',
-      stage: 'start_session',
+      stage: nextError?.startupStage || 'start_session',
       rawError: nextError,
       reasonHint: classification.reason
     }, classification);
@@ -1493,7 +1531,8 @@ export function App() {
         meetingId,
         segmentId: resumableSegment.id,
         transcriptState: resumeTranscript,
-        hasTranscript: transcriptHasFinalItems(resumeTranscript) > 0
+        hasTranscript: transcriptHasFinalItems(resumeTranscript) > 0,
+        hasBoundLiveSession: Boolean(resumableSegment.liveSessionId)
       });
       setMeetingViewStats({
         archivedSegmentCount: Math.max(0, segments.length - 1),
@@ -1627,6 +1666,24 @@ export function App() {
     };
   }
 
+  async function forceStopForNavigation() {
+    if (forcedNavigationStopPromiseRef.current) return forcedNavigationStopPromiseRef.current;
+
+    forcedNavigationStopPromiseRef.current = (async () => {
+      try {
+        await liveController.actions.endCurrentSession({ redirectHash: null });
+      } finally {
+        const targetHash = pendingForcedNavigationHashRef.current;
+        pendingForcedNavigationHashRef.current = null;
+        forcedNavigationStopPromiseRef.current = null;
+        if (targetHash && window.location.hash !== targetHash) {
+          window.location.hash = targetHash;
+        }
+      }
+    })();
+    return forcedNavigationStopPromiseRef.current;
+  }
+
   async function resetLiveMeetingState() {
     invalidateLiveSessionCallbacks();
     meetingDetailRequestIdRef.current += 1;
@@ -1683,13 +1740,21 @@ export function App() {
   async function openMeetingLiveWorkspace(meetingId) {
     if (!meetingId) return;
 
-    if (isNavigationLocked) {
+    const activeMeetingId = activeMeetingCheckpointRef.current?.meetingId || '';
+    const samePausedMeeting = status === 'paused' && activeMeetingId === meetingId;
+    if (isNavigationLocked || (status === 'paused' && activeMeetingId && activeMeetingId !== meetingId)) {
       setError('錄音進行中，請先結束目前工作階段後再切換目錄。');
       return;
     }
 
-    await resetLiveMeetingState();
+    if (!samePausedMeeting) await resetLiveMeetingState();
     window.location.hash = `#live?meetingId=${encodeURIComponent(meetingId)}`;
+  }
+
+  function preventLiveNavigationWhileRecording(event) {
+    if (!isActive) return;
+    event.preventDefault();
+    setError('請先暫停或停止目前錄音，再修改設定或返回會議管理。');
   }
 
   function selectLiveTranslationMode(value) {
@@ -1754,7 +1819,7 @@ export function App() {
       window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
       return;
     }
-    void (liveController.resumeDraft?.hasTranscript
+    void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
       ? liveController.actions.resumeMeetingSession()
       : liveController.actions.startSession());
   };
@@ -1796,11 +1861,15 @@ export function App() {
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : isMeetingDetailPage ? '查看這場會議的完整時間軸、逐字稿與匯出內容。' : '會議字幕工作台'}
       headerAction={isLiveSurface ? (
         <div className="live-header-actions">
-          {routeMeetingId ? <a className="button secondary meeting-header-action live-meeting-settings-button" href={`#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`}><Pencil size={16} aria-hidden="true" />修改會議設定</a> : null}
+          {routeMeetingId ? <a className="button secondary meeting-header-action live-meeting-settings-button" href={`#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`} onClick={preventLiveNavigationWhileRecording}><Pencil size={16} aria-hidden="true" />修改會議設定</a> : null}
           <a
             className="button secondary meeting-header-action"
             href="#meetings"
             onClick={(event) => {
+              if (isActive) {
+                preventLiveNavigationWhileRecording(event);
+                return;
+              }
               event.preventDefault();
               setError('');
               window.location.hash = '#meetings';
@@ -1853,7 +1922,7 @@ export function App() {
             return;
           }
           setError('');
-          void (liveController.resumeDraft?.hasTranscript
+          void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
             ? liveController.actions.resumeMeetingSession()
             : liveController.actions.startSession());
         }}
@@ -1955,7 +2024,7 @@ export function App() {
                     disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {liveController.isActive ? '正在開始' : liveController.resumeDraft?.hasTranscript ? '繼續錄製' : '開始錄製'}
+                    {liveController.isActive ? '正在開始' : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
                   </button>
                 ) : null}
                 {routeMeetingId && liveController.resumeDraft?.meetingId === routeMeetingId && !liveController.isActive && liveController.status === 'idle' ? (
@@ -1974,7 +2043,11 @@ export function App() {
           fallbackTranscriptItems={unrepresentedTranscriptItems({
             archivedTranscript: liveController.archivedTranscript,
             transcript: liveController.transcript,
-            cues: liveController.subtitleCueState.finalCues
+            cues: [
+              ...liveController.subtitleCueState.finalCues,
+              liveController.subtitleCueState.currentCue,
+              ...(liveController.subtitleCueState.pendingCues || [])
+            ].filter(Boolean)
           })}
           status={liveController.status}
           statusLabelOverride={liveController.statusLabelOverride}

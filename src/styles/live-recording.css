@@ -112,6 +112,6 @@
 }
 
 .live-device-summary span {
-  color: var(--color-text-secondary);
-  font-size: 0.9rem;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
 }

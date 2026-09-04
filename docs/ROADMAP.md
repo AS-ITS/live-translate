@@ -268,7 +268,7 @@ Foundation is current.
 - Translation history. Deferred beyond the foundation milestone.
 - Export transcript as TXT / SRT / VTT. Completed.
 - Audio input device selection. Completed.
-- Audio output device selection. Deferred.
+- Audio output device selection. Completed for browsers exposing AudioContext sink selection.
 - Recent target language. Deferred.
 - Session history. Completed as the Phase 2A MVP.
 - Session Lifecycle Specification. Completed.
@@ -279,7 +279,7 @@ Foundation is current.
   - Reconnect Controller
   - Controlled `unexpected_close` reconnect
   - Failure-state mapping
-- AudioWorklet migration. Deferred.
+- AudioWorklet migration. Completed with legacy browser fallback.
 - Better transcript handling. Completed.
 - Usage logging. Deferred.
 - Admin usage review. Deferred.

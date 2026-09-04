@@ -7,7 +7,8 @@
 .meeting-status-filter-field { flex: 0 1 13.75rem; min-width: 11.25rem; }
 .meeting-toolbar-input { display: flex; align-items: center; min-height: 3.5rem; gap: var(--space-2); padding: 0 var(--space-3); border: 1px solid var(--color-border-strong); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-text-subtle); }
 .meeting-toolbar-input:focus-within { border-color: var(--color-primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 15%, transparent); }
-.meeting-toolbar-input input, .meeting-toolbar-input select { width: 100%; min-height: 3rem; border: 0; outline: 0; background: transparent; color: var(--color-text); }
+.meeting-toolbar-input input { width: 100%; min-height: 3rem; border: 0; outline: 0; background: transparent; color: var(--color-text); }
+.meeting-toolbar-input select { width: 100%; min-height: var(--select-height); border: 0; outline: 0; background: transparent; color: var(--color-text); }
 .meeting-toolbar-input select { cursor: pointer; }
 .meeting-management-page > .history-panel { padding: var(--space-5); }
 .meeting-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-6); }

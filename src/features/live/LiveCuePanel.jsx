@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Radio } from 'lucide-react';
-import { effectiveSourceForCue, effectiveTranslationForCue } from '../../lib/cueContent.js';
-import { cueListForDisplay, sourceTextForCopy, translationTextForCopy } from '../../lib/cueUi.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
+import { cueListForDisplay, sourceTextForCopy, sourceTextForDisplay, translationTextForCopy } from '../../lib/cueUi.js';
+import { transcriptTextForDisplay } from './liveTranscriptRecovery.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
 
 // Async translation/refinement updates the same Cue row without obscuring
@@ -58,7 +59,7 @@ export function LiveCuePanel({
             {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>
               <div className="cue-row-meta"><span className="cue-partial-status">已保存逐字稿</span></div>
               <div className="cue-text-toggle">
-                {showSource && item.stream === 'source' ? <SourceCueText text={wrapSubtitleText(item.text, item.sourceLanguageCode)} /> : null}
+                {showSource && item.stream === 'source' ? <SourceCueText text={wrapSubtitleText(transcriptTextForDisplay(item), item.sourceLanguageCode)} /> : null}
                 {item.stream === 'translation' ? <TranslatedCueText text={wrapSubtitleText(item.text, item.targetLanguageCode)} /> : null}
               </div>
             </article>)}
@@ -79,7 +80,7 @@ function PartialCueRow({ cue, ...props }) { return <CueRow cue={cue} partial {..
 
 function CueRow({ cue, partial = false, stream, paired = false, showSource = true }) {
   const label = cue.terminalStatus === 'saved-pending' ? '未完成語句已保存' : partial ? '辨識中' : `字幕 ${cue.sequence || ''}`;
-  const sourceText = effectiveSourceForCue(cue, 'raw');
+  const sourceText = sourceTextForDisplay(cue, 'raw');
   const translationText = effectiveTranslationForCue(cue);
   return <article className={`cue-row${partial ? ' cue-row-partial' : ''}`} data-testid={partial ? 'cue-partial-row' : 'cue-final-row'} data-cue-id={cue.cueId || undefined} aria-label={label}>
     {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}

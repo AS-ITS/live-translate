@@ -61,7 +61,7 @@
 .meeting-export-block .audio-artifact-downloads .export-note { margin-top: 0; }
 .meeting-export-controls { display: grid; grid-template-columns: minmax(10rem, 14rem) minmax(10rem, 14rem) max-content; align-items: end; gap: var(--space-3); }
 .meeting-export-controls .field { margin: 0; }
-.meeting-export-controls select { height: 3.5rem; min-height: 3.5rem; }
+.meeting-export-controls select { height: var(--select-height); min-height: var(--select-height); }
 .meeting-export-controls .button { width: max-content; min-height: 3.5rem; justify-self: start; white-space: nowrap; }
 
 @media (max-width: 1280px) and (min-width: 761px) {

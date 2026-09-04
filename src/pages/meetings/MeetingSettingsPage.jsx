@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
-import { ArrowRight, BookOpen, ChevronDown, Copy, Download, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, CircleDashed, Copy, Download, LoaderCircle, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
 import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
+import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
+import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const MEETING_SETTINGS_STEPS = [
@@ -46,11 +48,41 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [isLoading, setIsLoading] = useState(mode === 'edit');
   const [isSaving, setIsSaving] = useState(false);
   const [activeStep, setActiveStep] = useState(0);
+  const [audioInputs, setAudioInputs] = useState([]);
+  const [audioOutputs, setAudioOutputs] = useState([]);
+  const [selectedInputDeviceId, setSelectedInputDeviceId] = useState('');
+  const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState('');
+  const [audioPermissionStatus, setAudioPermissionStatus] = useState('unknown');
+  const [audioTestStatus, setAudioTestStatus] = useState('idle');
   const settingsSectionRefs = useRef([]);
   const shareSectionRef = useRef(null);
   const submitRowRef = useRef(null);
   const shareEnsurePromiseRef = useRef(null);
   const autoScrolledMeetingIdRef = useRef(null);
+
+  const refreshAudioDevices = useCallback(async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) { setAudioPermissionStatus('unsupported'); return; }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const inputs = audioInputDevices(devices);
+    const outputs = audioOutputDevices(devices);
+    setAudioInputs(inputs);
+    setAudioOutputs(outputs);
+    setSelectedInputDeviceId((current) => current && inputs.some((device) => device.deviceId === current) ? current : '');
+    setSelectedOutputDeviceId((current) => current && outputs.some((device) => device.deviceId === current) ? current : '');
+    return { inputs, outputs };
+  }, []);
+
+  useEffect(() => { void refreshAudioDevices().catch(() => setAudioPermissionStatus('unsupported')); }, [refreshAudioDevices]);
+
+  useEffect(() => {
+    if (!meetingId) return;
+    const preference = getMeetingAudioPreference(meetingId);
+    if (!preference) return;
+    setSelectedInputDeviceId(preference.inputDeviceId || '');
+    setSelectedOutputDeviceId(preference.outputDeviceId || '');
+    setAudioPermissionStatus(preference.permissionStatus || 'unknown');
+    setAudioTestStatus(hasConfirmedMeetingAudioPreference(preference) ? 'confirmed' : 'idle');
+  }, [meetingId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -313,6 +345,59 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     }
   }
 
+  async function confirmAudioSettings() {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setAudioPermissionStatus('unsupported');
+      setAudioTestStatus('error');
+      setError('此瀏覽器不支援麥克風測試。');
+      return;
+    }
+    setAudioTestStatus('testing');
+    setError('');
+    try {
+      const stream = await requestAudioInputStream(selectedInputDeviceId);
+      stream.getTracks?.().forEach((track) => track.stop?.());
+      const refreshed = await refreshAudioDevices() || { inputs: [], outputs: [] };
+      const selectedInput = refreshed.inputs.find((device) => device.deviceId === selectedInputDeviceId);
+      const selectedOutput = refreshed.outputs.find((device) => device.deviceId === selectedOutputDeviceId);
+      const saved = setMeetingAudioPreference(meeting?.id || meetingId, {
+        inputDeviceId: selectedInput?.deviceId || '',
+        outputDeviceId: supportsAudioContextOutputSelection() ? selectedOutput?.deviceId || '' : '',
+        inputDeviceLabel: selectedInput?.label || '瀏覽器預設麥克風',
+        outputDeviceLabel: supportsAudioContextOutputSelection() ? selectedOutput?.label : '瀏覽器預設揚聲器',
+        permissionStatus: 'confirmed'
+      });
+      if (!saved) throw new Error('storage_unavailable');
+      setAudioPermissionStatus('granted');
+      setAudioTestStatus('confirmed');
+      setNotice('音訊裝置已確認，開始錄製時會使用這組設定。');
+    } catch (requestError) {
+      const denied = requestError?.name === 'NotAllowedError' || requestError?.name === 'SecurityError';
+      setAudioPermissionStatus(denied ? 'denied' : 'error');
+      setAudioTestStatus('error');
+      setError(denied ? '麥克風權限被拒絕，請在瀏覽器設定中允許後再試。' : requestError?.name === 'NotFoundError' || requestError?.name === 'OverconstrainedError' ? '找不到所選麥克風，請重新選擇後再確認。' : '無法確認音訊裝置，請稍後再試。');
+    }
+  }
+
+  async function openLive() {
+    const preference = getMeetingAudioPreference(meeting?.id || meetingId);
+    if (!hasConfirmedMeetingAudioPreference(preference)) {
+      setError('請先在音訊設定完成麥克風確認，再開始錄製。');
+      setActiveStep(2);
+      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
+    if (preference.inputDeviceId && !audioInputDevices(devices).some((device) => device.deviceId === preference.inputDeviceId)) {
+      setError('所選麥克風已不存在，請重新確認音訊設定。');
+      setAudioTestStatus('error');
+      setActiveStep(2);
+      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    onOpenLive(meeting?.id || meetingId);
+  }
+
   async function retryShares() {
     setError('');
     await createSharesWithRetry();
@@ -361,6 +446,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   }
 
   const handleShareLayoutReady = useCallback(() => setShareLayoutReady(true), []);
+  const hasAudioOutputSelection = supportsAudioContextOutputSelection();
 
   if (isLoading) return <section className="feature-page meeting-settings-page"><p>正在載入會議設定…</p></section>;
 
@@ -387,7 +473,14 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[2] = node; }} aria-labelledby="meeting-audio-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 3</p><h3 id="meeting-audio-settings-title">音訊設定</h3></div><span className="meeting-settings-card-number">3</span></div>
             <div className="meeting-audio-options"><label className="meeting-audio-option"><span className="meeting-settings-icon"><Volume2 size={19} aria-hidden="true" /></span><span><strong>播放翻譯聲音</strong><small>讓參與者聽見即時翻譯結果。</small></span><span className="meeting-toggle"><input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label><label className="meeting-audio-option"><span className="meeting-settings-icon"><Mic size={19} aria-hidden="true" /></span><span><strong>保存原始聲音</strong><small>保存會議中的原始麥克風音訊。</small></span><span className="meeting-toggle"><input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label></div>
-            <p className="export-note">麥克風裝置由每位參與者在自己的瀏覽器中選擇。</p>
+            <div className="meeting-audio-controls">
+              <div className={`meeting-audio-device-grid${hasAudioOutputSelection ? ' has-speaker' : ' microphone-only'}`}>
+              <label className="field"><span>麥克風</span><select aria-label="選擇會議麥克風" value={selectedInputDeviceId} onChange={(event) => setSelectedInputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設麥克風</option>{audioInputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label>
+              {hasAudioOutputSelection ? <label className="field"><span>揚聲器</span><select aria-label="選擇會議揚聲器" value={selectedOutputDeviceId} onChange={(event) => setSelectedOutputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設揚聲器</option>{audioOutputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label> : null}
+              </div>
+              <button className="button secondary" type="button" onClick={() => void confirmAudioSettings()} disabled={audioTestStatus === 'testing' || meeting?.status === 'completed'}>{audioTestStatus === 'testing' ? '測試中…' : '測試並確認音訊'}</button>
+              <MeetingAudioStatus audioTestStatus={audioTestStatus} audioPermissionStatus={audioPermissionStatus} />
+            </div>
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[3] = node; }} aria-labelledby="meeting-dictionary-settings-title">
@@ -405,12 +498,23 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           </section>
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
-          <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => onOpenLive(meeting.id)}>前往即時字幕</button> : null}</div></div>
+          <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>
         </section>
       </div>
       {isPrivateImportOpen ? <PrivateGlossaryImportDialog file={privateImportFile} preview={privateImportPreview} selectedRows={privateImportSelectedRows} resolutions={privateImportResolutions} isImporting={isPrivateImporting} onFileChange={previewPrivateGlossaryImport} onClose={closePrivateImportDialog} onSelectedRowsChange={setPrivateImportSelectedRows} onResolutionsChange={setPrivateImportResolutions} onCommit={commitPrivateGlossaryImport} targetLanguageCode={targetLanguageCode} /> : null}
     </section>
   );
+}
+
+function MeetingAudioStatus({ audioTestStatus, audioPermissionStatus }) {
+  const isConfirmed = audioTestStatus === 'confirmed';
+  const isTesting = audioTestStatus === 'testing';
+  const isDenied = audioPermissionStatus === 'denied';
+  const Icon = isConfirmed ? CheckCircle2 : isTesting ? LoaderCircle : isDenied ? AlertCircle : CircleDashed;
+  const statusClass = isConfirmed ? 'is-confirmed' : isTesting ? 'is-testing' : isDenied ? 'is-denied' : 'is-pending';
+  const label = isConfirmed ? '已確認' : isTesting ? '測試中…' : isDenied ? '權限被拒絕' : '尚未確認';
+
+  return <span className={`meeting-audio-status ${statusClass}`} role="status"><Icon className="meeting-audio-status-icon" size={15} aria-hidden="true" /><span>{label}</span></span>;
 }
 
 function PrivateGlossaryImportDialog({ file, preview, selectedRows, resolutions, isImporting, onFileChange, onClose, onSelectedRowsChange, onResolutionsChange, onCommit, targetLanguageCode }) {

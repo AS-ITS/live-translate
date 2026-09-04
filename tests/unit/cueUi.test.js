@@ -97,7 +97,7 @@ test('live display hides an unpaired translation partial without source text', (
   }, { requireSourceTextForPartial: true }), []);
 });
 
-test('live display merges a repeated source with its cumulative translation', () => {
+test('live display keeps completed cues as separate sentence rows', () => {
   const first = {
     ...finalCue('cue-1', 1, '123'),
     sessionId: 'session-1',
@@ -119,10 +119,29 @@ test('live display merges a repeated source with its cumulative translation', ()
 
   const display = cueListForDisplay({ finalCues: [first], currentCue: second });
 
-  assert.equal(display.length, 1);
-  assert.equal(display[0].sourceText, '123 123');
-  assert.equal(display[0].translatedText, '1, 2, 3, 1, 2');
-  assert.equal(display[0].status, 'partial');
+  assert.equal(display.length, 2);
+  assert.equal(display[0].sourceText, '123');
+  assert.equal(display[1].sourceText, '123');
+  assert.equal(display[1].translatedText, '1, 2, 3, 1, 2');
+  assert.equal(display[1].status, 'partial');
+});
+
+test('live display converts Chinese source text to Traditional Chinese by default', () => {
+  const display = cueListForDisplay({ finalCues: [{
+    ...finalCue('cue-hant', 1, '测试文字'),
+    sourceLanguageCode: 'zh-Hant'
+  }]}, { includePartial: false });
+
+  assert.equal(display[0].sourceText, '測試文字');
+});
+
+test('live display preserves Simplified Chinese when explicitly selected', () => {
+  const display = cueListForDisplay({ finalCues: [{
+    ...finalCue('cue-hans', 1, '测试文字'),
+    sourceLanguageCode: 'zh-Hans'
+  }]}, { includePartial: false });
+
+  assert.equal(display[0].sourceText, '测试文字');
 });
 
 test('history display keeps repeated cues as separate persisted records', () => {

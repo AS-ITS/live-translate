@@ -430,6 +430,13 @@ Frontend pipeline:
 6. Decode Gemini output audio bytes.
 7. Schedule translated audio playback at 24kHz.
 
+Capture uses `AudioWorkletNode` when the browser exposes AudioWorklet; the
+existing ScriptProcessor adapter remains only as a compatibility fallback.
+Playback reports failures independently from subtitle delivery and can route
+through an AudioContext output sink when supported. During an active session,
+input device replacement rebuilds only the capture graph and preserves the
+Live Session and finalized Cue identity.
+
 ## Frontend State Machine
 
 - `idle`: No active session.

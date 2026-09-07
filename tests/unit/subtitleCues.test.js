@@ -186,6 +186,43 @@ test('source-only snapshots from different audio turns remain separate', () => {
   ]);
 });
 
+test('cumulative finalized snapshots without a turn id update one Cue', () => {
+  let state = createSubtitleCueState();
+  for (const [index, text] of ['你好', '你好1', '你好12', '你好123。'].entries()) {
+    state = applySubtitleCueEvent(state, baseEvent({
+      eventId: `unstable-${index}`,
+      stream: 'source',
+      targetLanguageCode: null,
+      text,
+      eventSequence: index + 1,
+      sessionTimeMs: 100 + index * 100,
+      isFinal: true
+    }));
+    if (index === 0) {
+      state = finalizePendingSubtitleCue(state, { sessionTimeMs: 150, reason: 'turnComplete' });
+    }
+  }
+
+  assert.equal(state.finalCues.length, 1);
+  assert.equal(state.finalCues[0].sourceText, '你好123。');
+});
+
+test('different audio turns remain separate even when the text has a prefix', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'sentence-1', stream: 'source', targetLanguageCode: null,
+    text: '你好', audioTurnId: 'turn-1', eventSequence: 1, sessionTimeMs: 100, isFinal: true
+  }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 150, reason: 'turnComplete' });
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'sentence-2', stream: 'source', targetLanguageCode: null,
+    text: '你好嗎？', audioTurnId: 'turn-2', eventSequence: 2, sessionTimeMs: 200, isFinal: true
+  }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 250, reason: 'turnComplete' });
+
+  assert.deepEqual(state.finalCues.map((cue) => cue.sourceText), ['你好', '你好嗎？']);
+});
+
 test('same audio turn final source snapshots replace format revisions in one Cue', () => {
   let state = createSubtitleCueState();
   for (const [index, text] of [

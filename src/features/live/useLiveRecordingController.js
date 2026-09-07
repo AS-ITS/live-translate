@@ -211,6 +211,36 @@ export function useLiveRecordingController({
           sourceLanguageCode
         });
       }
+      if (import.meta.env?.DEV) {
+        const previousFinalIds = new Set((current.finalCues || []).map((item) => item.cueId));
+        const nextFinalIds = new Set((next.finalCues || []).map((item) => item.cueId));
+        const updatedExistingFinal = (next.finalCues || []).some((item) => {
+          const previous = (current.finalCues || []).find((candidate) => candidate.cueId === item.cueId);
+          return previous && (previous.sourceText !== item.sourceText || previous.translatedText !== item.translatedText);
+        });
+        const decision = next === current
+          ? 'ignore'
+          : updatedExistingFinal
+            ? 'replace'
+            : [...nextFinalIds].some((cueId) => !previousFinalIds.has(cueId))
+              ? 'append'
+              : 'replace';
+        console.debug('[Cue state transition]', {
+          stream: event?.stream || null,
+          text: event?.text || '',
+          translatedText: event?.stream === 'translation' ? event.text || '' : '',
+          isFinal: Boolean(event?.isFinal),
+          turnComplete: Boolean(event?.turnComplete),
+          generationComplete: Boolean(event?.generationComplete),
+          audioTurnId: event?.audioTurnId || null,
+          eventSequence: event?.eventSequence ?? null,
+          connectionEpoch: event?.connectionEpoch ?? null,
+          segmentId: event?.segmentId || null,
+          decision,
+          decisionReason: event?.eventType || (event?.localFinalize ? event.finalizedReason || 'localFinalize' : 'state-transition'),
+          cueId: next.currentCue?.cueId || next.finalCues?.at(-1)?.cueId || null
+        });
+      }
       if (next === current) return;
       cue.stateRef.current = next;
       cue.setState?.(next);

@@ -8,6 +8,7 @@ export const DEFAULT_FINAL_CUE_REVISION_WINDOW_MS = 5000;
 export const DEFAULT_MAX_RETRANSLATION_ATTEMPTS = 2;
 export const MAX_PROCESSED_EVENT_IDS = 1024;
 import { cueRefinementInputHash } from './cueContent.js';
+import { isCumulativeSnapshot } from './cumulativeTranscript.js';
 
 export function createSubtitleCueState(input = {}) {
   const finalCues = Array.isArray(input.finalCues) ? input.finalCues.map(copyCue) : [];
@@ -309,7 +310,7 @@ function moveClosedCurrentCue(state, event) {
   if (isIdentityBoundSourceSnapshot(current, event)) return state;
   const sameScope = cueScopeMatchesEvent(current, event);
   const sameTurn = event.turnIndex !== null && current.turnIndex !== null && current.turnIndex === event.turnIndex;
-  if (!sameScope || !sameAudioTurnId(current, event) || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
+  if (!sameScope || (!sameAudioTurnId(current, event) && !isCumulativeTurnContinuation(current, event)) || (event.turnIndex !== null && current.turnIndex !== null && !sameTurn)) {
     return moveCueToNextState(state, current, event);
   }
 
@@ -347,7 +348,7 @@ function findPairingCue(state, event) {
 
 function cueCanAcceptCurrentCue(cue, event) {
   if (!cueScopeMatchesEvent(cue, event)) return false;
-  if (!sameAudioTurnId(cue, event)) return false;
+  if (!sameAudioTurnId(cue, event) && !isCumulativeTurnContinuation(cue, event)) return false;
   if (isIdentityBoundSourceSnapshot(cue, event)) return true;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
@@ -360,10 +361,11 @@ function findFinalRevisionCue(state, event, options = {}) {
   if (correctionTarget) return correctionTarget;
   const index = state.finalCues.length - 1;
   const cue = state.finalCues[index];
-  if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript) || !cue
+  const cumulativeContinuation = cue && isCumulativeTurnContinuation(cue, event);
+  if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript && !cumulativeContinuation) || !cue
     || (!event.isLateTranscript && !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason))
     || (!event.isLateTranscript && !isWithinFinalRevisionWindow(state, cue, event, options))) return null;
-  if (event.audioTurnId && cue.audioTurnId && event.audioTurnId !== cue.audioTurnId) return null;
+  if (event.audioTurnId && cue.audioTurnId && event.audioTurnId !== cue.audioTurnId && !cumulativeContinuation) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const existingText = normalizeText(cue[field]);
   const incomingText = normalizeText(event.text);
@@ -371,8 +373,8 @@ function findFinalRevisionCue(state, event, options = {}) {
   const isCumulative = incomingText.startsWith(existingText) || existingText.startsWith(incomingText);
   if (!isCumulative && event.isFinal && !event.isLateTranscript && !endsFragment(existingText)) return null;
   if (endsSentence(cue[field])) return null;
-  if (state.lastFinalizedStream === event.stream && endsSentence(event.text)) return null;
-  return { index, cue };
+  if (state.lastFinalizedStream === event.stream && endsSentence(event.text) && !cumulativeContinuation) return null;
+  return { index, cue, ...(cumulativeContinuation ? { snapshot: true } : {}) };
 }
 
 function findSameAudioTurnFinalCue(state, event) {
@@ -425,6 +427,19 @@ function sameAudioTurnId(cue, event) {
   return !cue.audioTurnId || !event.audioTurnId || cue.audioTurnId === event.audioTurnId;
 }
 
+function isCumulativeTurnContinuation(cue, event) {
+  if (!cue || !event?.stream || !cueScopeMatchesEvent(cue, event)) return false;
+  if (cue.audioTurnId && event.audioTurnId && cue.audioTurnId !== event.audioTurnId) return false;
+  if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
+  if (Number.isFinite(cue.providerEventSequence) && Number.isFinite(event.eventSequence)
+    && event.eventSequence <= cue.providerEventSequence) return false;
+  if (Number.isFinite(cue.updatedTimeMs) && Number.isFinite(event.sessionTimeMs)
+    && event.sessionTimeMs < cue.updatedTimeMs) return false;
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  return isCumulativeSnapshot(cue[field], event.text)
+    && normalizeText(cue[field]) !== normalizeText(event.text);
+}
+
 function isIdentityBoundSourceSnapshot(cue, event) {
   return Boolean(cue && event?.stream === 'source'
     && cue.audioTurnId && event.audioTurnId
@@ -474,7 +489,7 @@ function hasSameAudioTurnId(cue, event) {
 
 function cueCanAccept(cue, event) {
   if (!cueScopeMatchesEvent(cue, event)) return false;
-  if (!sameAudioTurnId(cue, event)) return false;
+  if (!sameAudioTurnId(cue, event) && !isCumulativeTurnContinuation(cue, event)) return false;
   if (isIdentityBoundSourceSnapshot(cue, event)) return true;
   if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) return false;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正 Live 語音的累積式辨識快照在 boundary 或 turn identity 變動時被重複建立為多個 Cue；現在會維持同一個 local audio turn，對 prefix 延伸更新既有 Cue，並在開發環境記錄 raw／normalized event 與 replace、append、ignore 判定。
+
 - 修正正式錄製在麥克風驗證成功後立即開始時的前端 lifecycle race：Gemini
   `setupComplete` 前不再建立音訊 graph，只有首個 PCM chunk 成功送出後才進入錄製中；
   同時加入 start idempotency、完整 cleanup、stage-specific diagnostics，失敗後可直接重試。

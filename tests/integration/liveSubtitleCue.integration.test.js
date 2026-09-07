@@ -276,6 +276,31 @@ test('LiveTranscriptionSession keeps non-final same-turn source snapshots in one
   ]]);
 });
 
+test('LiveTranscriptionSession keeps cumulative snapshots on one local turn after boundaries', () => {
+  const cueEvents = [];
+  const inputEvents = [];
+  const session = new LiveTranscriptionSession({
+    liveSessionId: 'live-cumulative-boundaries',
+    sessionId: 'session-cumulative-boundaries',
+    segmentId: 'segment-cumulative-boundaries',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => 100,
+    onCueEvent: (event) => cueEvents.push(event),
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  for (const text of ['你好', '你好1', '你好12', '你好123。']) {
+    session.handleMessage({
+      serverContent: { inputTranscription: { text }, turnComplete: true }
+    });
+  }
+
+  const sourceEvents = cueEvents.filter((event) => event.stream === 'source');
+  assert.equal(sourceEvents.length, 4);
+  assert.equal(new Set(sourceEvents.map((event) => event.audioTurnId)).size, 1);
+  assert.equal(new Set(inputEvents.map((event) => event.audioTurnId)).size, 1);
+});
+
 test('LiveTranscriptionSession ignores translated output and audio callbacks', () => {
   const output = [];
   const audio = [];

@@ -12,12 +12,27 @@ export function logTranscriptSegmentDecision(update, decision, previous, next) {
   }
 
   const streamState = next?.[update.stream] || previous?.[update.stream];
+  const action = decision?.action || 'ignored';
+  const decisionType = action === 'duplicate' || action === 'ignored'
+    ? 'ignore'
+    : /cumulative|updates-current|same-turn|finalizes-current/iu.test(String(decision?.reason || ''))
+      ? 'replace'
+      : action === 'append' || action === 'delta'
+        ? 'append'
+        : action;
   console.debug('[Transcript segmenter]', {
     stream: update.stream,
-    inputText: update.stream === 'source' ? update.text : '',
-    outputText: update.stream === 'translation' ? update.text : '',
-    turnFinal: Boolean(update.isFinal),
-    decision,
+    text: update.text || '',
+    translatedText: update.stream === 'translation' ? update.text || '' : '',
+    isFinal: Boolean(update.isFinal),
+    turnComplete: Boolean(update.turnComplete),
+    generationComplete: Boolean(update.generationComplete),
+    audioTurnId: update.audioTurnId || null,
+    eventSequence: update.eventSequence ?? null,
+    connectionEpoch: update.connectionEpoch ?? null,
+    segmentId: update.segmentId || null,
+    decision: decisionType,
+    decisionReason: decision?.reason || null,
     completedSegments: streamState?.finalItems?.map((item) => item.text) || [],
     pendingText: streamState?.currentPartial?.text || ''
   });

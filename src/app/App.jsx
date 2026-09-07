@@ -1,9 +1,8 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Mic, MicOff, Pause, Pencil, Play, Plus, Square } from 'lucide-react';
 import { targetLanguageLabelFor } from '../lib/languages.js';
-import { classifyConnectionFailure } from '../lib/connectionFailures.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
-import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../lib/mediaDevices.js';
+import { audioInputDevices, audioOutputDevices, requestAudioInputStream } from '../lib/mediaDevices.js';
 import { createMemorySessionRepository } from '../lib/sessionRepository.js';
 import { createSessionReadApiClient } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
@@ -16,7 +15,6 @@ import { createTranslationCommandApiClient } from '../lib/translationCommandApiC
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
-import { applyGlossaryReplacements } from '../lib/glossaryReplacement.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from '../lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLifecycle.js';
@@ -44,7 +42,7 @@ import {
   DEFAULT_TURN_COMPLETE_DEBOUNCE_MS
 } from '../lib/subtitleCues.js';
 import { sourceTextForCopy, translationTextForCopy } from '../lib/cueUi.js';
-import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from './routes.js';
+import { canonicalHashForLocation, pageFromLocation, pageInfoFromLocation } from './routes.js';
 import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
@@ -56,7 +54,7 @@ import { applyCompletedRefinementOutputs } from '../features/live/liveRecordingC
 import { WorkspacePage } from '../features/workspace/WorkspacePage.jsx';
 import { MeetingDetailPage, MeetingManagementPage } from '../features/meetings/index.js';
 import { GlobalGlossaryPanel } from '../features/glossary/index.js';
-import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, mergeTranscriptItems, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, traditionalChineseTranscriptItem, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
+import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError } from '../features/live/liveStatus.js';

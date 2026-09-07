@@ -1,4 +1,3 @@
-import React from 'react';
 import { AlertCircle } from 'lucide-react';
 
 export function LiveMeetingPicker({ meetings = [], selectedMeetingId = '', disabled = false, onChange }) {

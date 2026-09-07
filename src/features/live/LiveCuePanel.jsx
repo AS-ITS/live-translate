@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Radio } from 'lucide-react';
 import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { cueListForDisplay, sourceTextForCopy, sourceTextForDisplay, translationTextForCopy } from '../../lib/cueUi.js';

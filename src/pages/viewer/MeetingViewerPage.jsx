@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected } from '../../lib/meetingViewerState.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
 import { formatCueTimecode } from '../../lib/cueUi.js';

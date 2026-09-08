@@ -2463,6 +2463,8 @@ test('live subtitles prioritize translation and can collapse the source column',
 test('live recording reuses the meeting design system at desktop widths', async ({ page }) => {
   await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'visual source', 'visual translation');
 
@@ -2492,6 +2494,7 @@ test('live recording reuses the meeting design system at desktop widths', async 
         buttonHeight: sessionButton ? getComputedStyle(sessionButton).minHeight : '',
         hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
         toolbarWidth: toolbar?.getBoundingClientRect().width || 0,
+        toolbarHeight: toolbar?.getBoundingClientRect().height || 0,
         panelWidth: panel?.getBoundingClientRect().width || 0,
         controlDisplay: controlStyles?.display || '',
         controlColumns: controlStyles ? controlStyles.gridTemplateColumns.split(' ').length : 0,
@@ -2506,6 +2509,7 @@ test('live recording reuses the meeting design system at desktop widths', async 
     expect(layout.buttonHeight).toBe('44px');
     expect(layout.hasHorizontalOverflow).toBe(false);
     expect(layout.toolbarWidth).toBeGreaterThan(0);
+    expect(layout.toolbarHeight).toBeLessThanOrEqual(96);
     expect(layout.panelWidth).toBeGreaterThan(0);
     expect(layout.controlDisplay).toBe('grid');
     expect(layout.controlColumns).toBe(3);
@@ -2528,6 +2532,7 @@ test('live recording reuses the meeting design system at desktop widths', async 
   expect(mobileLayout.hasHorizontalOverflow).toBe(false);
 
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByTestId('live-session-toolbar').getByRole('button', { name: '詳細狀態' }).click();
   const typography = await page.evaluate(() => {
     const source = document.querySelector('[data-testid="cue-paired-list"] .cue-source');
     const translation = document.querySelector('[data-testid="cue-paired-list"] .cue-translation');
@@ -2552,6 +2557,32 @@ test('live recording reuses the meeting design system at desktop widths', async 
   expect(typography.actionButtonFontSize).toBe(typography.deviceSummaryFontSize);
   expect(typography.translationFontWeight).toBe(typography.sourceFontWeight);
   expect(typography.firstRowBorder).toBe('0px');
+});
+
+test('live recording can expand secondary status and enter focus mode without hiding controls', async ({ page }) => {
+  await gotoMockMeetingLive(page);
+  await page.setViewportSize({ width: 1041, height: 750 });
+
+  const toolbar = page.getByTestId('live-session-toolbar');
+  const detailsButton = toolbar.getByRole('button', { name: '詳細狀態' });
+  const focusButton = toolbar.getByRole('button', { name: '專注模式' });
+
+  await expect(detailsButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#live-session-status-details')).toHaveCount(0);
+  await detailsButton.click();
+  await expect(detailsButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('#live-session-status-details')).toBeVisible();
+  await expect(page.getByLabel('已確認的音訊裝置')).toBeVisible();
+
+  await focusButton.click();
+  await expect(page.locator('.live-recording-app-shell')).toHaveClass(/is-live-focus-mode/u);
+  await expect(page.locator('.live-recording-app-shell > .meeting-app-header')).toBeHidden();
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: '退出專注' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(toolbar.getByRole('button', { name: /開始錄製|繼續錄製/u })).toBeVisible();
+
+  await toolbar.getByRole('button', { name: '退出專注' }).click();
+  await expect(page.locator('.live-recording-app-shell > .meeting-app-header')).toBeVisible();
 });
 
 test('final repeated number turn keeps its complete source and translation', async ({ page }) => {

@@ -5,26 +5,27 @@
   overflow: hidden;
   padding-bottom: var(--space-5);
 }
+.live-recording-app-shell.is-live-focus-mode { grid-template-rows: minmax(0, 1fr); gap: 0; }
+.live-recording-app-shell.is-live-focus-mode > .meeting-app-header { display: none; }
 .live-recording-page { min-width: 0; }
 .live-recording-app-shell > .live-recording-page { min-height: 0; height: 100%; overflow: hidden; }
 .live-recording-page .live-recording-page-content { display: grid; grid-template-rows: minmax(0, 1fr); gap: var(--space-2); min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 .live-recording-page .live-recording-page-content.has-live-error { grid-template-rows: auto minmax(0, 1fr); }
-.live-recording-app-shell .live-recording-page .control-status-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: var(--space-6); }
+.live-recording-app-shell .live-recording-page .control-status-row { display: grid; grid-template-columns: minmax(16rem, 1fr) auto auto; align-items: center; gap: var(--space-4); }
 .live-error-message { display: flex; align-items: center; align-self: start; gap: var(--space-3); min-height: 0; padding-block: var(--space-2); }
 .live-error-message > p { min-width: 0; margin: 0; }
 .live-error-icon { flex: 0 0 auto; }
 .live-error-retry { flex: 0 0 auto; margin-left: auto; white-space: nowrap; }
-.live-recording-page .live-workspace-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-4); min-width: 0; min-height: 0; height: 100%; }
-.live-recording-page .live-session-toolbar { display: block; min-height: 5.5rem; padding: var(--space-4) var(--space-5); }
+.live-recording-page .live-workspace-stack { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: var(--space-3); min-width: 0; min-height: 0; height: 100%; }
+.live-recording-page .live-session-toolbar { display: block; min-height: 0; padding: var(--space-3) var(--space-4); }
 .live-recording-page .control-status-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-6); }
 .live-recording-page .live-meeting-summary-column { min-width: 16rem; flex: 1 1 auto; }
-.live-recording-page .live-session-status { min-width: 0; flex: 0 1 28rem; }
 .live-recording-page .live-session-status { display: grid; gap: var(--space-2); }
 .live-recording-page .live-session-status > p { margin: 0; }
 .live-recording-app-shell .live-header-actions { display: flex; align-items: center; justify-content: flex-end; flex: 0 1 auto; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
 .live-recording-page .live-meeting-summary { display: flex; align-items: center; gap: var(--space-4); min-width: 0; }
 .live-recording-page .live-meeting-summary-main { min-width: 0; }
-.live-recording-page .live-meeting-summary h2 { margin: var(--space-1) 0 0; overflow-wrap: anywhere; font-size: var(--text-lg); line-height: 1.25; }
+.live-recording-page .live-meeting-summary h2 { margin: 0; overflow-wrap: anywhere; font-size: var(--text-lg); line-height: 1.25; }
 .live-recording-page .live-meeting-language { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .live-recording-page .live-meeting-status { flex: 0 0 auto; }
 .live-recording-page .live-meeting-settings-button { flex: 0 0 auto; white-space: nowrap; }
@@ -36,8 +37,15 @@
 .live-recording-page .session-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .live-recording-page .session-actions { justify-content: flex-end; }
 .live-recording-page .control-actions .button { min-height: 2.75rem; }
+.live-recording-page .live-toolbar-status { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.live-recording-page .live-save-status { white-space: nowrap; }
+.live-recording-page .live-status-details-button svg { transition: transform 180ms ease; }
+.live-recording-page .live-status-details-button[aria-expanded="true"] svg { transform: rotate(180deg); }
+.live-recording-page .live-session-status-details { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.live-recording-page .live-status-attention { display: grid; gap: var(--space-1); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); color: var(--color-text-muted); font-size: var(--text-sm); }
+.live-recording-page .live-status-attention p { margin: 0; }
 .live-recording-page .live-transcript-column { display: grid; min-width: 0; min-height: 0; }
-.live-recording-page .cue-panel { grid-template-rows: auto minmax(0, 1fr) auto; align-content: stretch; row-gap: 0; min-height: 0; height: 100%; overflow: hidden; }
+.live-recording-page .cue-panel { grid-template-rows: auto minmax(0, 1fr) auto; align-content: stretch; row-gap: 0; min-height: 0; height: 100%; padding: var(--space-4) var(--space-5); overflow: hidden; }
 .live-recording-page .cue-panel-header { padding-bottom: 0; }
 .live-recording-page .cue-panel-header h2 { margin: var(--space-1) 0 0; font-size: var(--text-lg); }
 .live-recording-page .cue-panel-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); }
@@ -73,10 +81,16 @@
 .live-recording-page .cue-reading-layout.is-source-hidden .cue-row { grid-template-columns: minmax(0, 1fr); }
 .live-recording-page .cue-reading-layout.is-source-hidden .cue-row > .cue-text-toggle > .cue-translation { grid-column: 1; }
 
+@media (max-width: 1100px) and (min-width: 901px) {
+  .live-recording-page .live-focus-mode-button { width: 2.75rem; min-width: 2.75rem; padding-inline: 0; }
+  .live-recording-page .live-focus-mode-button span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
 @media (max-width: 900px) {
   .live-recording-app-shell .live-recording-page .control-status-row,
   .live-recording-page .control-status-row { display: flex; align-items: stretch; flex-direction: column; }
   .live-recording-page .live-meeting-summary-column { min-width: 0; }
+  .live-recording-page .live-toolbar-status { justify-content: flex-start; }
   .live-recording-page .control-actions { justify-content: flex-start; }
   .live-recording-page .session-actions { justify-content: flex-start; }
 }
@@ -85,6 +99,7 @@
   .live-error-message { align-items: flex-start; }
   .live-error-retry { margin-top: .125rem; }
   .live-recording-page .live-session-toolbar { padding: var(--space-4); }
+  .live-recording-page .cue-panel { padding: var(--space-4); }
   .live-recording-app-shell .meeting-app-header { flex-wrap: wrap; }
   .live-recording-app-shell .meeting-app-header .brand-block { flex: 1 1 100%; }
   .live-recording-app-shell .live-header-actions { width: 100%; justify-content: flex-start; }
@@ -92,6 +107,7 @@
   .live-recording-page .live-meeting-summary { align-items: flex-start; flex-direction: column; gap: var(--space-2); }
   .live-recording-page .live-meeting-picker { width: 100%; }
   .live-recording-page .control-actions, .live-recording-page .session-actions { width: 100%; }
+  .live-recording-page .control-actions { align-items: stretch; flex-direction: column; }
   .live-recording-page .control-actions .button { flex: 1 1 9rem; }
   .live-recording-page .cue-reading-layout { grid-template-columns: 1fr; }
   .live-recording-page .cue-reading-layout::after { display: none; }

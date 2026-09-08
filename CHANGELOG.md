@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 精簡即時字幕頁的會議控制列，將裝置與詳細保存資訊改為可收合狀態區，並新增手動專注模式；專注模式只隱藏頁面 Header，錄音控制與重要錯誤仍保持可見。
+
 - 修正會議錄製固定使用 source-only transcription 導致翻譯字幕停留在「翻譯處理中…」的問題；現在恢復使用 `LiveTranslateSession`，由 Gemini Live 直接回傳來源與翻譯字幕，並避免即時 Cue 重複送入非同步翻譯 queue。
 
 - 修正 Live 語音的累積式辨識快照在 boundary 或 turn identity 變動時被重複建立為多個 Cue；現在會維持同一個 local audio turn，對 prefix 延伸更新既有 Cue，並在開發環境記錄 raw／normalized event 與 replace、append、ignore 判定。

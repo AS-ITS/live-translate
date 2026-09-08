@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, Mic, MicOff, Pause, Pencil, Play, Plus, Square } from 'lucide-react';
+import { ArrowRight, ChevronDown, Maximize2, Mic, MicOff, Minimize2, Pause, Pencil, Play, Plus, Square } from 'lucide-react';
 import { targetLanguageLabelFor } from '../lib/languages.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream } from '../lib/mediaDevices.js';
@@ -56,7 +56,7 @@ import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
-import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError } from '../features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
@@ -94,6 +94,8 @@ export function App() {
   const [hasSessionControl, setHasSessionControl] = useState(false);
   const [controlLeaseSnapshot, setControlLeaseSnapshot] = useState(null);
   const [statusLabelOverride, setStatusLabelOverride] = useState('');
+  const [isLiveFocusMode, setIsLiveFocusMode] = useState(false);
+  const [isLiveStatusDetailsOpen, setIsLiveStatusDetailsOpen] = useState(false);
   const [targetLanguageCode, setTargetLanguageCode] = useState('en');
   const [sourceLanguageCode, setSourceLanguageCode] = useState(DEFAULT_SOURCE_LANGUAGE_CODE);
   const [sessionName, setSessionName] = useState('');
@@ -201,6 +203,11 @@ export function App() {
   const routeMeetingId = pageInfoFromLocation().meetingId;
   const workspaceInfo = pageInfoFromLocation();
   const isLiveSurface = page === 'live-recording';
+
+  useEffect(() => {
+    setIsLiveFocusMode(false);
+    setIsLiveStatusDetailsOpen(false);
+  }, [isLiveSurface, routeMeetingId]);
 
   const isActive =
     status === 'requesting-permission' ||
@@ -1827,11 +1834,25 @@ export function App() {
     const isGlobalGlossaryPage = page === 'glossary';
     const isMeetingDetailPage = page === 'meeting-detail';
     const usesMeetingManagementShell = isMeetingManagementPage || isGlobalGlossaryPage || isLiveSurface;
+    const liveAudioStatusHasError = hasAudioStatusError({
+      shouldRecordInputAudio,
+      recordingState,
+      translatedAudioState
+    });
+    const liveCheckpointMessages = composeCheckpointStatusMessage({
+      meetingCheckpointStatus,
+      shouldRecordInputAudio,
+      recordingState,
+      translatedAudioState
+    });
+    const liveStatusNeedsAttention = Boolean(
+      controlLeaseSnapshot && !hasSessionControl
+    ) || meetingCheckpointStatus === 'error' || liveAudioStatusHasError || Boolean(deviceMessage);
 
     return (
     <WorkspacePage
       managementShell={usesMeetingManagementShell}
-      className={isLiveSurface ? 'live-recording-app-shell' : isMeetingDetailPage ? 'meeting-detail-app-shell' : ''}
+      className={isLiveSurface ? `live-recording-app-shell${isLiveFocusMode ? ' is-live-focus-mode' : ''}` : isMeetingDetailPage ? 'meeting-detail-app-shell' : ''}
       title={isMeetingManagementPage ? '會議管理' : isGlobalGlossaryPage ? '全域字典' : isMeetingDetailPage ? '會議紀錄' : '即時字幕'}
       titleId={isMeetingManagementPage ? 'meeting-management-title' : isGlobalGlossaryPage ? 'glossary-page-title' : isMeetingDetailPage ? 'meeting-detail-page-title' : undefined}
       subtitle={isMeetingManagementPage ? '先建立會議並完成設定，再分享給參與者錄音。' : isGlobalGlossaryPage ? '管理所有會議室都可以查看並選擇的共用詞條。' : isMeetingDetailPage ? '查看這場會議的完整時間軸、逐字稿與匯出內容。' : '會議字幕工作台'}
@@ -1909,7 +1930,6 @@ export function App() {
             <div className="live-meeting-summary-column">
               <div className="live-meeting-summary">
                 <div className="live-meeting-summary-main">
-                  <p className="eyebrow">MEETING CONTROL</p>
                   <h2>{liveMeeting?.name || (routeMeetingId ? '正在載入會議…' : '尚未選擇會議')}</h2>
                   <p className="live-meeting-language">{liveMeeting ? `來源語言：${targetLanguageLabelFor(liveMeeting.sourceLanguageCode) || liveMeeting.sourceLanguageCode}` : '請先選擇一場可錄音的會議'}</p>
                 </div>
@@ -1918,52 +1938,34 @@ export function App() {
               {!routeMeetingId ? <LiveMeetingPicker meetings={meetingRecords} selectedMeetingId="" disabled={controlsLocked} onChange={(meetingId) => selectLiveTranslationMode(`meeting:${meetingId}`)} /> : null}
             </div>
 
-            <div className="live-session-status">
-              <div className="live-device-summary" aria-label="已確認的音訊裝置">
-                <span>麥克風：{liveAudioPreference?.inputDeviceLabel || '尚未確認'}</span>
-                <span>揚聲器：{liveAudioPreference?.outputDeviceLabel || '瀏覽器預設揚聲器'}</span>
-              </div>
-              {controlLeaseSnapshot && !hasSessionControl ? (
-                <p className="device-note">目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p>
-              ) : null}
-              {liveController.status === 'reconnecting' ? <p className="device-note">正在重新連線即時字幕…</p> : null}
-              {liveController.status === 'switching-segment' ? <p className="device-note">正在切換下一段即時字幕…</p> : null}
-              {liveController.status === 'paused' ? (
-                <p className="device-note">
-                  {shouldRecordInputAudio
-                    ? '工作階段已暫停；字幕與本機錄音片段會保留到結束本次工作階段。'
-                    : '工作階段已暫停；字幕會保留到結束本次工作階段。'}
-                </p>
-              ) : null}
-              {deviceMessage ? <p className="device-note">{deviceMessage}</p> : null}
-              <p
-                className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}
-                role={hasAudioStatusError({
-                  shouldRecordInputAudio,
-                  recordingState,
-                  translatedAudioState
-                }) ? 'alert' : undefined}
+            <div className="live-toolbar-status">
+              <span className={`live-save-status status-pill checkpoint-note-${meetingCheckpointStatus}`}>
+                {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
+              </span>
+              <button
+                className="button detail-button live-status-details-button"
+                type="button"
+                aria-expanded={isLiveStatusDetailsOpen}
+                aria-controls="live-session-status-details"
+                onClick={() => setIsLiveStatusDetailsOpen((current) => !current)}
               >
-                {composeCheckpointStatusMessage({
-                  meetingCheckpointStatus,
-                  shouldRecordInputAudio,
-                  recordingState,
-                  translatedAudioState
-                }).map((message, index) => (
-                  <React.Fragment key={`${message}-${index}`}>
-                    {index > 0 ? <br /> : null}
-                    {message}
-                  </React.Fragment>
-                ))}
-              </p>
-              {meetingViewStats.archivedSegmentCount > 0 ? (
-                <p className="checkpoint-note">
-                  保存狀態：長會議已保存 {meetingViewStats.archivedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
-                </p>
-              ) : null}
+                詳細狀態
+                <ChevronDown size={16} aria-hidden="true" />
+              </button>
             </div>
 
             <div className="control-actions">
+              <button
+                className="button detail-button live-focus-mode-button"
+                type="button"
+                aria-label={isLiveFocusMode ? '退出專注' : '專注模式'}
+                aria-pressed={isLiveFocusMode}
+                title={isLiveFocusMode ? '退出專注模式' : '進入專注模式'}
+                onClick={() => setIsLiveFocusMode((current) => !current)}
+              >
+                {isLiveFocusMode ? <Minimize2 size={17} aria-hidden="true" /> : <Maximize2 size={17} aria-hidden="true" />}
+                <span>{isLiveFocusMode ? '退出專注' : '專注模式'}</span>
+              </button>
               <div className="session-actions">
               {liveController.status === 'listening' ? (
                   <>
@@ -2011,6 +2013,36 @@ export function App() {
               </div>
             </div>
           </div>
+          {liveStatusNeedsAttention ? (
+            <div className="live-status-attention" role={meetingCheckpointStatus === 'error' || liveAudioStatusHasError ? 'alert' : 'status'}>
+              {controlLeaseSnapshot && !hasSessionControl ? <p>目前已有工作階段由其他頁籤控制；本頁面只能唯讀查看。</p> : null}
+              {deviceMessage ? <p>{deviceMessage}</p> : null}
+              {meetingCheckpointStatus === 'error' || liveAudioStatusHasError ? <p>{liveCheckpointMessages.join(' ')}</p> : null}
+            </div>
+          ) : null}
+          {isLiveStatusDetailsOpen ? (
+            <div className="live-session-status live-session-status-details" id="live-session-status-details">
+              <div className="live-device-summary" aria-label="已確認的音訊裝置">
+                <span>麥克風：{liveAudioPreference?.inputDeviceLabel || '尚未確認'}</span>
+                <span>揚聲器：{liveAudioPreference?.outputDeviceLabel || '瀏覽器預設揚聲器'}</span>
+              </div>
+              {liveController.status === 'reconnecting' ? <p className="device-note">正在重新連線即時字幕…</p> : null}
+              {liveController.status === 'switching-segment' ? <p className="device-note">正在切換下一段即時字幕…</p> : null}
+              {liveController.status === 'paused' ? (
+                <p className="device-note">
+                  {shouldRecordInputAudio
+                    ? '工作階段已暫停；字幕與本機錄音片段會保留到結束本次工作階段。'
+                    : '工作階段已暫停；字幕會保留到結束本次工作階段。'}
+                </p>
+              ) : null}
+              <p className={`checkpoint-note checkpoint-note-${meetingCheckpointStatus}`}>{liveCheckpointMessages.join(' ')}</p>
+              {meetingViewStats.archivedSegmentCount > 0 ? (
+                <p className="checkpoint-note">
+                  保存狀態：長會議已保存 {meetingViewStats.archivedSegmentCount} 段 · 目前段落 {activeSegmentTranscriptCount(transcript)} 筆
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="live-transcript-column">

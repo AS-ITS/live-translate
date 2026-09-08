@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
+import { LiveTranscriptionSession } from '../../src/lib/liveTranscriptionSession.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
@@ -110,7 +111,7 @@ test('local silence finalize commits a complete Cue immediately without ending p
   await session.cleanup({ closeSession: false });
 });
 
-test('Gemini incremental fragments without turnIndex remain one final cue', () => {
+test('Gemini same-turn source snapshots without turnIndex remain one final cue', () => {
   let cueState = createSubtitleCueState();
   let clock = 0;
   const session = new LiveTranslateSession({
@@ -201,4 +202,124 @@ test('late transcript, stop flush, rollover sequence, and replay remain determin
   assert.equal(cueState.finalCues[1].translatedText, 'second translation');
   await first.stop();
   await second.stop();
+});
+
+test('transcription mode finalizes source-only subtitles without translation pairing', () => {
+  let cueState = createSubtitleCueState();
+  const cueEvents = [];
+  const session = new LiveTranslateSession({
+    mode: 'transcription',
+    liveSessionId: 'live-transcription',
+    sessionId: 'session-transcription',
+    segmentId: 'segment-transcription',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => 100,
+    onCueEvent: (event) => {
+      cueEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  session.handleMessage({
+    eventId: 'source-only',
+    serverContent: { inputTranscription: { text: '只有來源字幕' } }
+  });
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 500, reason: 'stop' });
+
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].sourceText, '只有來源字幕');
+  assert.equal(cueState.finalCues[0].translatedText, '');
+  assert.equal(cueState.finalCues[0].targetLanguageCode, null);
+  assert.equal(cueState.finalCues[0].mode, 'transcription');
+  assert.equal(cueState.finalCues[0].refinement, undefined);
+  assert.ok(cueEvents[0].audioTurnId);
+  assert.equal(cueEvents[0].audioTurnId, cueState.finalCues[0].audioTurnId);
+});
+
+test('LiveTranscriptionSession keeps non-final same-turn source snapshots in one Cue', () => {
+  let cueState = createSubtitleCueState();
+  const cueEvents = [];
+  const session = new LiveTranscriptionSession({
+    liveSessionId: 'live-non-final-snapshots',
+    sessionId: 'session-non-final-snapshots',
+    segmentId: 'segment-non-final-snapshots',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => 100,
+    onCueEvent: (event) => {
+      cueEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  for (const [index, text] of [
+    '喂喂喂。',
+    '喂喂喂, 你好, 你',
+    '喂喂喂，你好你好。'
+  ].entries()) {
+    session.handleMessage({
+      eventId: `provider-snapshot-${index}`,
+      serverContent: { inputTranscription: { text } }
+    });
+  }
+
+  const sourceEvents = cueEvents.filter((event) => event.stream === 'source');
+  assert.equal(sourceEvents.length, 3);
+  assert.ok(sourceEvents.every((event) => event.audioTurnId));
+  assert.equal(new Set(sourceEvents.map((event) => event.audioTurnId)).size, 1);
+  assert.equal(cueState.currentCue.sourceText, '喂喂喂，你好你好。');
+  assert.equal(cueState.pendingCues.length, 0);
+
+  session.handleMessage({ eventId: 'provider-boundary', serverContent: { turnComplete: true } });
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 900, reason: 'turnComplete' });
+  assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.audioTurnId]), [[
+    '喂喂喂，你好你好。', sourceEvents[0].audioTurnId
+  ]]);
+});
+
+test('LiveTranscriptionSession keeps cumulative snapshots on one local turn after boundaries', () => {
+  const cueEvents = [];
+  const inputEvents = [];
+  const session = new LiveTranscriptionSession({
+    liveSessionId: 'live-cumulative-boundaries',
+    sessionId: 'session-cumulative-boundaries',
+    segmentId: 'segment-cumulative-boundaries',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => 100,
+    onCueEvent: (event) => cueEvents.push(event),
+    onInputTranscript: (event) => inputEvents.push(event)
+  });
+
+  for (const text of ['你好', '你好1', '你好12', '你好123。']) {
+    session.handleMessage({
+      serverContent: { inputTranscription: { text }, turnComplete: true }
+    });
+  }
+
+  const sourceEvents = cueEvents.filter((event) => event.stream === 'source');
+  assert.equal(sourceEvents.length, 4);
+  assert.equal(new Set(sourceEvents.map((event) => event.audioTurnId)).size, 1);
+  assert.equal(new Set(inputEvents.map((event) => event.audioTurnId)).size, 1);
+});
+
+test('LiveTranscriptionSession ignores translated output and audio callbacks', () => {
+  const output = [];
+  const audio = [];
+  const session = new LiveTranscriptionSession({
+    liveSessionId: 'live-transcription-output',
+    sourceLanguageCode: 'en',
+    sessionClock: () => 100,
+    onOutputTranscript: (event) => output.push(event),
+    onOutputAudioChunk: (chunk) => audio.push(chunk)
+  });
+
+  session.handleMessage({
+    eventId: 'model-output',
+    serverContent: {
+      outputTranscription: { text: 'must be ignored' },
+      modelTurn: { parts: [{ inlineData: { data: 'AA==' } }] }
+    }
+  });
+
+  assert.deepEqual(output, []);
+  assert.deepEqual(audio, []);
 });

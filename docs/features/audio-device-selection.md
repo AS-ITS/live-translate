@@ -1,7 +1,7 @@
 # Audio Device Selection
 
-Status: v1 implemented for input device selection and reconnect fallback /
-output device selection is future browser-limited work
+Status: Meeting Settings preflight implemented for browser-local input/output
+preferences; output routing remains browser-limited
 
 ## 1. Feature Overview
 
@@ -10,8 +10,10 @@ choose which microphone is used for live translation input and, in a future
 browser-limited phase, which speaker or audio output device is used for
 translated audio playback.
 
-The v1 implementation supports input microphone selection only. It does not
-implement output device routing.
+Microphone and (when supported by the browser) speaker selection is confirmed
+from Meeting Settings before entering the Live recorder. The Live recorder
+shows the confirmed snapshot but does not allow device replacement during an
+active session.
 
 This feature is browser-local. Device enumeration, selection, permission prompts,
 and fallback behavior should be handled in the frontend through browser media
@@ -62,15 +64,14 @@ Output device routing remains future work.
 ## 4. User Flow
 
 1. The user opens the app.
-2. The user opens audio device controls or sees device controls near the session
-   controls.
+2. The user opens the Meeting Settings audio section.
 3. If microphone permission has not been granted, the app shows that full device
    names may require permission.
 4. The user grants microphone permission through the browser prompt when needed.
 5. The app lists available microphones. Output device routing remains future
    browser-limited work.
-6. The user selects an input device.
-7. The user starts a live translation session.
+6. The user selects devices and runs the short audio preflight test.
+7. The user starts a live translation session from the Live workspace.
 8. The session captures audio from the selected input device.
 9. Translated audio plays through the browser default output path.
 10. If a selected input device is unavailable before startup or during
@@ -78,10 +79,9 @@ Output device routing remains future work.
     recoverable message.
 11. The user can stop the session normally.
 
-Changing devices during an active session remains a later explicit decision;
-only failure recovery can rebuild the session with the browser default device.
-The initial implementation should prefer applying device changes to the next
-session to avoid disrupting the latency-sensitive audio path.
+Changing devices during an active session is not supported. The user stops the
+recording and returns to Meeting Settings; this avoids replacing a stream in a
+latency-sensitive Live session.
 
 ## 5. Browser API Design
 

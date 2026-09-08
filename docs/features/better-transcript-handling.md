@@ -13,6 +13,15 @@ final transcript text being overwritten by later partial updates. It should also
 define a stable frontend transcript item model that future transcript export and
 translation history features can reuse.
 
+Live events feed both the transcript compatibility state and the subtitle Cue
+state. Transcript items therefore retain `sessionId`, `liveSessionId`,
+`segmentId`, `sourceLanguageCode`, and `targetLanguageCode` so the live UI can
+identify whether a recovery item is already represented by a final Cue. Legacy
+items with missing scope fields may use text matching, but explicit scope
+mismatches must not match. Source-language conversion belongs to the display
+boundary: `zh-Hans` remains Simplified Chinese, while the default and
+`zh-Hant` display Traditional Chinese without mutating stored transcript text.
+
 This feature is frontend-scoped planning. It must preserve the existing Start /
 Stop flow, avoid backend/API changes, avoid persistence, and avoid real Gemini
 API calls in automated validation.
@@ -238,6 +247,14 @@ If the SDK event does not expose a reliable partial/final flag:
 - Stopping a session should keep the current transcript visible on the screen,
   matching the current demo expectation unless implementation review shows the
   existing behavior is different.
+- A paired partial Cue is finalized after the idle debounce when no newer
+  transcript event arrives. A source-only partial that remains unresolved after
+  bounded retranslation retries is removed from the live preview so it cannot
+  remain indefinitely labelled as recognizing/translating; the canonical
+  transcript item remains preserved separately.
+- Meeting reload and resume restore all persisted Segment transcript chunks. UI
+  caching must not discard older Segments or hide saved transcript content when
+  later Segments already contain final Cues.
 - Restarting a session should clear the transcript if the current app behavior
   clears session-local transcript state on new session start.
 - This feature should not change the UI layout, styling, controls, or visual

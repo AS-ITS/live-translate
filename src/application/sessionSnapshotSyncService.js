@@ -93,6 +93,8 @@ function sessionMetadata(session) {
     targetLanguageCode: session.targetLanguageCode,
     targetLanguageLabel: session.targetLanguageLabel ?? null,
     sourceLanguageCode: session.sourceLanguageCode ?? null,
+    echoTargetLanguage: session.echoTargetLanguage !== false,
+    shouldRecordInputAudio: session.shouldRecordInputAudio === true,
     meetingId: session.meetingId ?? null,
     segmentId: session.segmentId ?? null,
     ...(Object.hasOwn(session, 'meetingGlossaryEntries')

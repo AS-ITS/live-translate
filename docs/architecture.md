@@ -7,7 +7,9 @@ Live Translate uses a browser-first real-time path with a narrow backend service
 - Frontend: React + JavaScript, Web Audio API, and Gemini Live API client logic.
 - Backend: Node.js HTTP server for authentication, token issuance, and
   configuration validation.
-- Gemini: Gemini Live API using `gemini-3.5-live-translate-preview`.
+- Gemini: Gemini Live API using `gemini-3.5-transcribe-live` for the current
+  source transcription path; the speech-to-speech preview model is optional
+  future capability.
 
 The browser connects directly to Gemini Live API using an ephemeral token issued
 by the backend.
@@ -16,6 +18,59 @@ The backend is responsible only for authentication, token issuance, and
 configuration validation.
 
 Audio streams are not proxied through the backend.
+
+## Realtime subtitle pipeline (target architecture)
+
+The Live recorder uses `LiveTranscriptionSession` and persists source Cues;
+the downstream translation/refinement work now runs asynchronously after each
+finalized Cue is persisted:
+
+```text
+Transcribe Live (`gemini-3.5-transcribe-live`)
+  → finalized source Cue
+  → Translation Worker (`gemini-3.5-flash`)
+  → Refinement Worker (`gemini-3.5-flash`)
+  → history / export / summary
+```
+
+`gemini-3.5-live-translate-preview` remains an optional future speech-to-speech
+capability. It is not the authoritative meeting text source.
+
+Responsibilities and ownership:
+
+- The Live provider owns interim and final transcription events. The
+  `subtitleCues` boundary owns pairing, normalization, and the distinction
+  between an interim preview and a finalized Cue.
+- The checkpoint/repository owns finalized Cue persistence and recovery state.
+  Queue items own execution identity and delivery state; they do not own Cue
+  identity or transcript text.
+- The Live application submits finalized Cues to the translation command API;
+  the backend worker validates the result and the application appends it to
+  the same `cueId`.
+- The refinement worker consumes a completed initial translation, sends the
+  Cue plus bounded finalized context to Flash, validates the result, and
+  applies a same-Cue version update. A Viewer broadcaster publishes safe
+  finalized-Cue and same-Cue update events after the owning persistence step.
+- History, export, and summary read finalized Cues and choose the effective
+  translation as `refinedTranslation → initialTranslation → legacy
+  translatedText`.
+
+Interim text is UI-only and never enters persistence, translation, refinement,
+export, history, or summary. Translation/refinement failures are recorded as
+execution failures and surfaced for retry; they cannot pause or fail the Live
+transcription session.
+
+Cue immutable fields are `cueId`, `sessionId`, `segmentId`, `sequence`,
+`startTimeMs`, `endTimeMs`, and `sourceText` (plus language identity). Only
+translation/refinement values, versions, status, and safe execution metadata
+may change. Stale or duplicate worker output is ignored by Cue version and
+input-hash checks.
+
+Lifecycle protection applies at every boundary: start and pre-roll establish
+the session/segment checkpoint before audio is accepted; pause/resume flushes
+final boundaries before replacing the Live connection; reconnect and rollover
+restore the latest checkpoint and reject late events from the old connection;
+terminal stop performs a final flush before history/export become readable.
 
 ## Direct Browser -> Gemini Live API Design
 
@@ -375,6 +430,13 @@ Frontend pipeline:
 6. Decode Gemini output audio bytes.
 7. Schedule translated audio playback at 24kHz.
 
+Capture uses `AudioWorkletNode` when the browser exposes AudioWorklet; the
+existing ScriptProcessor adapter remains only as a compatibility fallback.
+Playback reports failures independently from subtitle delivery and can route
+through an AudioContext output sink when supported. During an active session,
+input device replacement rebuilds only the capture graph and preserves the
+Live Session and finalized Cue identity.
+
 ## Frontend State Machine
 
 - `idle`: No active session.
@@ -469,7 +531,24 @@ Sessions retain the existing compatibility read model and exporter.
 - The backend should not log secrets, raw audio, or transcript content.
 - The backend should not proxy, store, or inspect live audio streams in the MVP.
 
-## Suggested Project Structure
+## Frontend Project Structure
+
+Route pages are kept in `src/pages/`. Capability-specific frontend code is
+kept in `src/features/`, including feature UI, API clients, and browser-side
+orchestration. Cross-feature presentational components belong in
+`src/components/`; only genuinely shared pure helpers belong in `src/lib/`.
+Backend-facing business workflows remain in `src/application/`, domain rules
+in `src/domain/`, and external adapters in `src/infrastructure/`.
+
+The application composition root is `src/app/App.jsx`. It owns cross-feature
+state wiring and the existing Live session workflow. Workspace page composition
+is provided by `src/features/workspace/WorkspacePage.jsx`; Meeting, Glossary,
+and History UI are exposed through feature entry points under
+`src/features/{meetings,glossary,history}/`. These entry points are the stable
+migration boundary for extracting page-specific controllers and hooks without
+changing route wiring.
+
+The current frontend structure follows this pattern:
 
 ```text
 .
@@ -484,6 +563,18 @@ Sessions retain the existing compatibility read model and exporter.
 │   ├── languages.js
 │   └── tokenService.js
 ├── src/
+│   ├── components/
+│   ├── features/
+│   │   ├── deadLetterQueue/
+│   │   ├── history/
+│   │   └── live/
+│   ├── pages/
+│   │   ├── admin/
+│   │   ├── glossary/
+│   │   ├── history/
+│   │   ├── live/
+│   │   ├── meetings/
+│   │   └── viewer/
 │   ├── lib/
 │   │   ├── audio.js
 │   │   ├── languages.js

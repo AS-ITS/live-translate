@@ -1,4 +1,4 @@
-const DEFAULT_SEGMENT_INTERVAL_MS = 10 * 60 * 1000;
+const DEFAULT_SEGMENT_INTERVAL_MS = 15 * 60 * 1000;
 const MAX_SEGMENT_INTERVAL_MS = 15 * 60 * 1000;
 
 export function createSegmentSwitchOrchestrator({
@@ -84,4 +84,3 @@ function normalizeIntervalMs(value) {
   if (!Number.isFinite(value) || value <= 0) return DEFAULT_SEGMENT_INTERVAL_MS;
   return Math.min(Math.floor(value), MAX_SEGMENT_INTERVAL_MS);
 }
-

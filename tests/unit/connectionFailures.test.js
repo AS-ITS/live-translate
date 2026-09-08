@@ -92,6 +92,22 @@ test('classifies audio capture timeout by context', () => {
   assert.equal(classification.category, 'audio_device');
 });
 
+test('classifies first PCM timeout as an audio pipeline failure', () => {
+  const classification = classifyConnectionFailure({ reason: 'first_pcm_timeout' });
+
+  assert.equal(classification.reason, 'first_pcm_timeout');
+  assert.equal(classification.category, 'audio_pipeline');
+  assert.equal(classification.safeMessage, '錄音音訊管線未啟動，請重試。');
+});
+
+test('classifies invalid startup microphone stream as a microphone failure', () => {
+  const classification = classifyConnectionFailure({ reason: 'microphone_stream_invalid' });
+
+  assert.equal(classification.reason, 'microphone_stream_invalid');
+  assert.equal(classification.category, 'audio_device');
+  assert.match(classification.safeMessage, /麥克風/);
+});
+
 test('classifies provider unavailable from provider HTTP statuses', () => {
   assert.equal(classifyConnectionFailure({ status: 502, context: 'provider' }).reason, 'provider_unavailable');
   assert.equal(classifyConnectionFailure({ status: 503, context: 'gemini' }).reason, 'provider_unavailable');

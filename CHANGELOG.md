@@ -2,6 +2,220 @@
 
 ## Unreleased
 
+- 收斂 Meeting Viewer 即時字幕畫面：移除時間與欄位標題，字幕列改為依內容自動高度，新增桌面與手機皆並排的原文顯示切換與回到最新字幕控制，並在桌面雙語欄位間加入分隔線；保留 SSE 與字幕排序／重連行為。
+
+- Live 即時字幕新增「顯示原文」切換，預設顯示原文，關閉後翻譯欄改為單欄；保留新字幕自動跟隨與回到最新字幕行為。
+
+- 精簡即時字幕頁的會議控制列，將裝置與詳細保存資訊改為可收合狀態區，並新增手動專注模式；專注模式只隱藏頁面 Header，錄音控制與重要錯誤仍保持可見。
+
+- 修正會議錄製固定使用 source-only transcription 導致翻譯字幕停留在「翻譯處理中…」的問題；現在恢復使用 `LiveTranslateSession`，由 Gemini Live 直接回傳來源與翻譯字幕，並避免即時 Cue 重複送入非同步翻譯 queue。
+
+- 修正 Live 語音的累積式辨識快照在 boundary 或 turn identity 變動時被重複建立為多個 Cue；現在會維持同一個 local audio turn，對 prefix 延伸更新既有 Cue，並在開發環境記錄 raw／normalized event 與 replace、append、ignore 判定。
+
+- 修正正式錄製在麥克風驗證成功後立即開始時的前端 lifecycle race：Gemini
+  `setupComplete` 前不再建立音訊 graph，只有首個 PCM chunk 成功送出後才進入錄製中；
+  同時加入 start idempotency、完整 cleanup、stage-specific diagnostics，失敗後可直接重試。
+
+- 修正 AudioWorklet 初始化不相容或 callback stalled 時開始錄製會失敗的問題；現在會自動回退到 ScriptProcessor，只有兩種音訊擷取方式都失敗才顯示錯誤。
+
+- 修正 Live 頁面在會議詳細資料已載入、會議列表仍載入中時，開始錄製被誤判為未選擇會議；並統一裝置摘要字體大小。
+
+- 調整 Live Workspace Header 與 Meeting Control 資訊位置：設定入口移至頁面 Header，麥克風／揚聲器摘要移至中間狀態區。
+
+- Meeting 音訊設定移至設定頁，新增瀏覽器本機 preflight 偏好；Live 頁面改為唯讀顯示裝置，並修正沒有 transcript 的 Meeting 仍可開始錄製。
+
+- 語音管線改用 AudioWorklet capture（舊瀏覽器保留相容 fallback），補上播放錯誤隔離、輸出裝置選擇，以及錄音中的麥克風 stream replacement；切換裝置不會建立新 Session 或清除字幕。
+
+- P1 Flash pipeline 已接回 finalized Cue：每個 Cue 以 `cueId` 建立唯一的
+  `gemini-3.5-flash` 初次翻譯 execution，完成後顯示在同一字幕列並觸發
+  refinement；翻譯失敗不阻塞 Live transcription，legacy fallback 仍可讀。
+
+- 文件重新規劃即時字幕、初版翻譯與非同步潤飾的四階段 pipeline：interim
+  僅供 UI，finalized Cue 成為 persistence、history、export、summary 的穩定來源；
+  initial translation 與 refinement 皆附加在同一 `cueId`，失敗不阻塞直播。
+- 補充 `gemini-3.5-transcribe-live`、`gemini-3.5-flash` 與可選的
+  `gemini-3.5-live-translate-preview` 模型分工、structured output、same-Cue
+  version/idempotency/stale-output 規則，以及 lifecycle 資料遺失防護。
+- P0 語音優先切片已接入 production runtime：source-only Cue 在 Segment
+  recovery、Stop 與 turn boundary 可 finalized 並保存，interim 不進 history/export；
+  transcription-only controller 不會觸發舊的 numeric retranslation 或 polishing。
+- P1 Flash translation/refinement 尚未切換；本次未修改 public API、schema 或 queue。
+
+- 修正 GoAway 重連流程：GoAway 視為預期的 provider lifecycle event，使用 `timeLeft`
+  只排程一次重連、保留最新 session resumption handle，並為 replacement Live session
+  取得新的 single-use ephemeral token；smoke summary 另行統計 GoAway 重連成功與失敗。
+
+- 放寬長會議 smoke test 的預設 token request 上限至 20；保留每次 provider
+  reconnect 重新取得 single-use ephemeral token 的行為，避免目前 2 小時測試的
+  正常重連次數被錯誤判定為 quota 異常。
+
+- 修正 smoke test provider reconnect 重用已過期 ephemeral token 的問題；每次 GoAway 或
+  provider close/error 重連都重新取得 single-use token，並保留可用的 session resumption handle。
+
+- smoke test 結束時新增中文摘要，輸出開始／結束時間、實際耗時、連線與重連次數、Token
+  請求、GoAway 與去敏後異常事件；同時保留英文欄位名稱的 JSON 摘要。
+
+- 修正長會議 smoke test 的 provider close/error 診斷與快速重連保護：保留去敏後的
+  status／code／message，GoAway 使用 provider delay，異常重連採指數退避與 jitter，連續
+  5 次失敗後安全停止，避免短時間建立大量連線或消耗 quota。
+
+- 修正目前 `@google/genai` SDK 的 ephemeral-token 相容性：backend provisioning 維持
+  `v1beta`，browser 與 smoke-test Live connection 改用 SDK 要求的 `v1alpha`。
+
+- 修正 `gemini-3.5-transcribe-live` ephemeral-token config；移除 provisioning endpoint
+  拒絕的 `languageCodes` 欄位，來源語言提示改由既有 system instruction 保留。
+
+- Gemini Live client 與 ephemeral-token config 統一使用 `v1beta`；長會議 smoke shell
+  會自動載入專案 `.env`（不覆蓋既有環境變數），並在 token provider 失敗時輸出已去敏的
+  status／code／message 分類診斷。
+
+- 新增可直接執行的 2 小時 Gemini transcription 長會議 smoke test：使用 macOS
+  `say`／`afconvert` 產生 PCM 語音，驗證 session resumption、provider reconnect、
+  token refresh 上限與 transcript event 去重；shell entrypoint 會要求
+  `GEMINI_API_KEY` 後直接執行真實 API 測試。
+
+- 長會議 Segment 預設保存週期調整為 15 分鐘；Gemini transcription provider
+  session 會重用 ephemeral token 與 session resumption handle，只有接近過期時
+  才刷新 token，Segment rollover 不再新增 token request。
+
+- Live 錄音流程改為使用 `gemini-3.5-transcribe-live` 的來源語言即時轉錄；移除翻譯音訊、翻譯字幕與即時潤飾請求。長會議仍透過 Meeting／Segment checkpoint、切段與續錄保存連續字幕。
+
+- 修正從會議設定前往即時字幕時可能停留在「正在載入會議」的問題；進入 Live 頁會清除舊的會議選取狀態並重新載入指定會議。
+- 修正即時字幕載入時呼叫已移除的歷史詳細資料 helper，以及尚未建立錄音 controller 時 cleanup 回傳空值造成的未處理例外；會議資料載入失敗時改顯示可重試錯誤。
+
+- 會議設定的會議詞彙新增 CSV／JSON／XLSX 匯入預覽；匯入結果先加入表單，儲存會議設定後才寫入目前會議，不會修改全域字典。
+
+- 全域字典匯入預覽新增逐列選取；正常列預設勾選，錯誤列可取消後略過，後端仍會阻擋被選取的錯誤資料並維持原子提交。
+
+- 匯入預覽的語言／分類選單統一為 3rem；可直接新增分類，建立後會自動套用並重新產生預覽。
+
+- 新增全域字典單一匯入 Dialog，整合格式說明、檔案選擇與匯入預覽；上傳簡單詞條檔後可選擇來源語言、目標語言與分類。
+
+- 全域字典匯入新增 XLSX 支援；讀取第一個工作表的 `source`／`translation` 欄位，並沿用既有預覽與批次匯入流程。
+
+- 新增全域字典 CSV／JSON／XLSX 匯入：支援後端預覽、逐筆處理重複詞條、完整驗證與原子提交，避免部分匯入造成資料不一致。
+
+- 將共用語言標籤與 Live checkpoint／音訊狀態訊息移至 `lib`／`features/live`，修正前端功能拆分後的遺漏引用，避免 `App.jsx` 與 workspace 元件持有 Live 專用 helper。
+- 建立 `useLiveRecordingController` 的固定 Live view-model 介面，讓即時錄製頁透過 controller 讀取狀態並觸發操作，為 audio、transcript/Cue 與 Session recovery 的後續分批搬移保留相容邊界。
+- Live audio recorder、原始／翻譯音訊 chunk handler、upload retry binding 與 cleanup 已接到 Live controller 的 audio interface，維持既有 Session lifecycle 與音訊保存流程。
+- 移除 `App.jsx` 內重複的 Live audio fallback functions；audio controller 現在由 `src/features/live/useLiveRecordingController.js` 單一管理。
+- Live Cue event queue、flush、numeric correction 與 subtitle finalization 已移入 Live controller；Cue persistence、重翻與 polishing callback 仍沿用原有服務邊界。
+- Session snapshot 與 Meeting checkpoint sync coordinator 已移入 Live controller；schedule、flush、cancel 與錯誤回報維持既有 API 行為。
+- Session recovery controller boundary 已建立；reconnect controller 的建立與取消，以及 reconnect、resume、segment switch actions 現在由 Live controller 提供，既有 lifecycle 實作與 generation guard 保持不變。
+- `switchMeetingSegment` rollover lifecycle 已移入 Live controller，包含 checkpoint flush、Segment rollover、舊／新 Live session 切換與 audio resume；既有 generation guard 與狀態轉換保持不變。
+- `startReconnectSession` 已移入 Live controller，保留 reconnect generation guard、checkpoint recovery、Live session restart、audio resume、diagnostic 與 failed-session finalize 行為。
+- `resumeMeetingSession` 已移入 Live controller，保留 resume draft、Segment recovery/start、Session record、checkpoint、callback generation、control lease 與失敗回復行為。
+- 移除 App.jsx 的 `reconnectController()` delegation wrapper，所有 reconnect reset、cancel、connectivity 與 scheduling 操作直接透過 Live controller。
+- Segment switch orchestrator 的建立、持有與 cancel/start lifecycle 已移入 Live controller；interval、狀態與錯誤 callback 由 App 注入。
+- `startSession` 已移入 Live controller，保留 microphone permission fallback、Meeting checkpoint、Session record、control lease、Live session start、audio recording 與失敗清理行為。
+- `pauseSession` 已移入 Live controller，保留 reconnect/segment cancel、audio pause、Session stop、transcript/Cue flush、checkpoint sync 與 paused state transition。
+- `continuePausedSession` 已移入 Live controller，保留 paused guard、Live session restart、Cue state preparation、audio resume、snapshot sync 與 segment switch 啟動流程。
+- `endCurrentSession` 已移入 Live controller，保留 stop flag、reconnect/segment cancel、audio finalize、terminal Cue drain、checkpoint sync、Session finalize 與返回會議管理流程。
+- `completeResumableMeeting` 已移入 Live controller，保留完成前 Cue/checkpoint flush、Meeting complete API、狀態清理與返回會議管理流程。
+- 移除 App.jsx 的 Session snapshot、Meeting checkpoint 與 segment switch delegation wrappers，Live 相關呼叫現在直接透過 controller interface。
+- `createMeetingCheckpointForSession`、`finalizeCurrentSessionRecord`、`interruptActiveMeeting` 與 failed-session finalize lifecycle 已移入 Live controller，保留 checkpoint、Session record、audio artifact 與 failure recovery 行為。
+- `createCurrentSessionRecord` 與初始 transcript snapshot 建立流程已移入 Live controller，保留 Session record、audio download preparation、snapshot sync 與 lifecycle persistence 行為。
+- finalized audio artifact upload、retry error handling 與 meeting detail cache refresh 已移入 Live controller，保留既有音訊同步與會議詳細資料更新行為。
+- transcript finalization、partial guard、Session snapshot／Meeting checkpoint scheduling 與 final transcript lifecycle persistence 已移入 Live controller。
+
+- Refactored the frontend composition boundary so the authenticated workspace
+  shell and Meeting, Glossary, and History UI are exposed through capability
+  feature entry points instead of being imported directly from the app shell.
+
+- 新增全域字典分類管理：分類可新增、改名、上下移排序與刪除；刪除分類的詞條會自動改歸「其他」，並相容既有僅含 `entries` 的字典 JSON。
+
+- 全域字典的新增與編輯表單改以置中 Dialog 呈現，保留原有詞條欄位、儲存、刪除與關閉行為。
+- 全域字典移除已不使用的歷史重新翻譯範圍設定；Dialog 保留必要捲動但隱藏 scrollbar，並統一下拉選單高度。
+
+- 移除已被目前 Meeting UI 取代的 `#translation-history`、`#watch`、`#record` 與 `#dead-letter-queue` 前端路由；這些舊連結現在回到 `#meetings`。Meeting Settings 僅保留 Viewer 分享入口，翻譯紀錄改由 Meeting 管理與單一會議紀錄頁進入；後端資料與 API 未刪除。
+
+- 將會議 UI 整理為獨立 Setting、History Detail、Live 與 Viewer 頁面；公開 Viewer 的 `#viewer?code=...` 顯示、SSE 即時字幕與重連邏輯已從 `main.jsx` 拆出，分享連結管理保留在 Setting 頁面。
+
+- 建立會議並產生分享卡片後，設定頁會自動捲動到最下方操作列，讓使用者能在畫面中看到分享內容與「儲存變更」按鈕；編輯既有會議不會自動跳轉。
+
+- 修正會議錄音頁靜音後未完成的「辨識中／翻譯中」字幕會永久停留的問題；未完成來源句在有限次翻譯重試後會自動收起，已保存逐字稿不受影響。重載或繼續會議時不再因 3 段暫存上限遺失較早的已保存內容，並補回沒有 final Cue 覆蓋的 checkpoint transcript。
+
+- 修正即時字幕連續說話時的音訊捕捉中斷：短暫恢復後會重設擷取故障計數，並合併高頻 partial 字幕更新，避免長時間錄音因前端負載停止接收後續語音。
+
+- 限制即時字幕事件去重快取為最近 1024 筆，並在 checkpoint 還原時裁切舊事件，避免長時間連續說話造成前端處理與同步資料持續膨脹。
+
+- 修正長會議 checkpoint 發生 409 衝突時直接顯示錯誤的問題；前端會重新讀取最新 checkpoint、去除已保存內容並保留可繼續同步的資料，不中斷目前即時錄音。潤飾中的字幕列改為淡藍色，潤飾完成後移除底色並保留完成標記。
+
+- 修正 Safari 即時錄音啟動流程：在開始操作時立即請求麥克風權限，支援 `webkitAudioContext`，並對未回應的權限提示逾時處理與清理晚到的音訊串流。
+
+- 修正即時字幕麥克風啟動失敗時留在 live 頁提供重試，並清理返回會議管理後的暫態錯誤；會議管理錯誤提示改為內容高度。
+
+- 在即時字幕按下「結束本次工作階段」並完成保存後，會自動返回會議管理首頁。
+
+- 即時字幕 UI 與潤飾流程拆分為 live 專用元件／controller；潤飾完成後立即回寫對應 Cue，僅正在處理的 Cue 顯示底色，並移除字幕列內的潤飾狀態文字。
+
+- 會議匯出區只顯示已成功儲存的原始／翻譯語音下載按鈕；兩者皆不存在時顯示無語音提示，並縮窄字幕下載按鈕、提高格式與內容下拉選單高度。
+
+- 會議紀錄頁的「會議內容」改為獨立的全域字典風格分類卡片，桌面維持兩欄、手機改為上方橫向選單；紀錄、翻譯內容與匯出行為不變。
+
+- 獨立會議記錄頁改為全域字典風格的「紀錄／翻譯內容／匯出」兩欄版型；原文與翻譯改在「翻譯內容」內以 tab 切換，下載與字幕匯出集中於匯出區。
+
+- 已完成會議從會議管理點選「查看翻譯紀錄」時，直接開啟該會議的單一紀錄畫面，不再先進入翻譯紀錄管理頁。
+- 會議紀錄頁改用全域字典相同的卡片版型，移除重複的頁內標題與返回操作，保留完整逐字稿、音訊下載與匯出功能。
+
+- 修正即時字幕控制列與 Cue 渲染：移除即時頁設定、字典與匯出功能，並讓隱藏原文時 source JSX 完全不掛載，翻譯欄維持單欄且不混入原文。
+
+- 修正即時字幕說明文字下方的過大留白，讓雙欄標題與字幕內容以 24px 間距自然銜接並增加首屏可讀字幕數量。
+
+- 調整即時字幕標題與句子間距；顯示原文時加入原文／翻譯欄位分隔線，隱藏原文時維持翻譯單欄閱讀。
+
+- 微調即時字幕閱讀層級：錯誤提示貼近工作區，修正狀態改為低調輔助資訊，移除字幕分隔線，並統一原文與翻譯字級、放大欄位標題。
+
+- 改善即時錄製字幕閱讀版型：每段原文與翻譯改為同一列左右並排，縮短字幕上下間距並以文章式分隔呈現；窄螢幕自動改為上下排列，既有字幕資料與錄製流程不變。
+
+- 分享錄音頁已對齊即時字幕的滿版工作區、控制列與字幕閱讀版型，並套用 slate 配色、原文收合、翻譯欄滿寬與最新 Cue 樣式；Recorder 的 lifecycle、音訊同步、Session snapshot、checkpoint 與會議完成流程未變更。
+
+- 精簡即時字幕頁的可見操作：Header 改為「即時字幕」並提供返回會議管理，主畫面僅保留錄音流程控制；設定、字典與匯出入口改由其他頁面承接。
+
+- 建立即時錄製獨立 Page；`#live?meetingId=...` 接管即時錄製畫面，舊的 Meeting Workspace live URL 會相容轉址，Workspace 僅保留其他 Meeting 功能。
+
+- 重做會議即時字幕閱讀版型：移除左側設定卡，改為上方操作列與全寬字幕區；翻譯作為主要閱讀欄，原文可切換顯示並在小螢幕改為上下排列，保留既有字幕與 Session 行為。
+
+- 建立會議的全域字典與私有字典集中至同一個「字典設定」步驟與卡片中；保留原有選取、編輯、刪除與儲存行為。
+
+- 建立／編輯會議頁完整對齊全域字典頁的管理 Header、石板藍色彩 token、表單控制項、按鈕與卡片樣式；移除重複頁內標題並保留既有設定、字典、音訊 Toggle 與分享流程。
+
+- 建立／編輯會議頁改為分區卡片與響應式步驟導引，並將全域字典、音訊設定與私有字典改為更緊湊的操作版面；既有會議建立與分享流程不變。
+
+- 新增獨立 Meeting Settings 頁面與專用 Layout；建立／編輯會議可一次保存語言、字典、翻譯播放與原始音訊設定，建立成功後自動產生永久 Viewer／Recorder 分享連結與 QR Code，分享失敗會保留會議並允許重試。
+
+- 調整全域字典頁沿用會議管理既有背景、卡片、工具列與深青綠色樣式，並統一篩選工具列控制項為 56px 高、10px 圓角與 12px 間距。
+
+- 新增全域字典卡片庫頁面：全域詞條可供所有會議室查看與選擇，私人詞條仍隔離於個別會議；支援分類、搜尋、批次操作、多語言翻譯與右側編輯抽屜。
+
+- 改善會議卡片 RWD：寬桌面支援四欄、一般桌面三欄、小桌面兩欄，1023px 以下切換單欄，維持卡片內容與操作可讀性。
+
+- 改善會議管理首頁滿版版面：移除桌面最大寬度限制，Header 延伸至視窗邊界，並縮短 Header 與會議列表的垂直間距；窄螢幕仍保留安全內距與單欄卡片。
+
+- 調整會議管理首頁標題層級：將頁面標題與副標題整合至全站 Header，移除內容區重複標題，並保留建立／編輯頁返回會議清單操作。
+
+- 改善 #29 會議管理首頁：移除首頁主要 AG Grid 呈現，改為淺色兩欄會議卡片庫；保留搜尋、狀態篩選、全域字典、既有主要操作與 Meeting Workspace 流程，1024px 以下切換單欄並維持卡片鍵盤操作。
+
+- 改善 #29 P2 窄視窗體驗：`1024px` 以下工具列自動換行，Meeting 列表保留安全橫向捲動，避免欄位與操作按鈕擠壓，並維持至少 44px 的操作高度。
+
+- 改善 #29 Meeting 管理列表可讀性：合併語言欄、時間改為分鐘級短格式並保留 tooltip、少量資料隱藏分頁控制，降低表格框線並補強列 hover／focus 與筆電版面。
+
+- 修正 #29 P0 會議管理版面：Header 固定於頁面頂端、移除工具列重複的「建立會議」、列表改為依內容高度呈現，並將草稿刪除移至會議設定的危險操作區。
+
+- 完成 #29 UI 整併收尾：移除五項獨立主導航，`#meetings` 成為唯一首頁；legacy `#live`／`#history`／`#retranslate`／`#glossary` 會導向 Meeting 管理或 Workspace；Meeting 列表改為單一主要操作，Workspace 依狀態顯示分頁，完成會議可撤銷既有 Viewer 分享。
+
+- 完成 #29 Milestone 5：新增獨立 Meeting Cue publish API、process-local SSE broadcaster、cursor replay／gap recovery、Viewer 去重與 refinement merge，以及 deterministic latency SLA 測試；跨程序事件傳遞與 durable replay 仍 deferred。
+
+- 完成 #29 Milestone 4：新增 Meeting Viewer token／短碼／QR 分享、歷史 Final Cue 唯讀快照與 windowed 雙語字幕渲染；即時 Cue 廣播與重連補洞留待 Milestone 5。
+
+- 完成 #29 Milestone 3：新增 Meeting 私有字典，與全域字典在資料、Workspace UI、翻譯套用與 Segment snapshot 中隔離；私有字典不會出現在全域字典或 Viewer payload，既有 `glossaryEntries` 資料維持相容。
+
+- 完成 #29 Milestone 2：新增 status-aware Meeting Workspace，依 Meeting 狀態提供即時字幕、會議字典、分享觀看、匯出與完成後翻譯紀錄分頁；Meeting Management 的繼續錄製與完成會議操作改由 Workspace 承接，既有 `#live`、`#history` 等 legacy 路由保留相容性。
+
+- 完成 #29 Milestone 1：`#meetings` 現在是 Meeting Management 首頁，提供會議名稱／語言／狀態搜尋、狀態篩選、最後更新時間與依 Meeting 狀態顯示的操作；保留既有錄音與設定流程，Viewer 與 Cue 廣播留待後續 Milestone。
+
+- 完成 #29「會議中心 UI 整併與即時字幕直播分享」規格：定義 Meeting 管理首頁、單一 Meeting Workspace、全域／會議專用字典隔離、Meeting-level Viewer 分享、Final Cue 廣播、重連補洞與本地延遲 SLA 驗證；目前已完成 Milestone 1，後續能力仍依交付階段進行。
+
 - 完成 #27 的潤飾 RPM 與長會議可靠性收尾：RPM authoritative gate 現在位於實際 provider attempt 邊界，retry attempt 也會計入；worker 僅負責 durable claim、lease heartbeat、retry/recovery 與 DLQ，rate-limit 等待不再反覆重排 queue item。
 
 - 修正即時翻譯左側設定卡被右側字幕卡強制同高而裁切內容的問題；短視窗現在由頁面自然垂直捲動，設定卡依內容撐高，會議模式與操作按鈕不再重疊。
@@ -524,6 +738,11 @@
 ## Unreleased
 
 ### Changed
+
+- Simplified `main.jsx` by removing the unused saved-session retranslation UI and
+  old route compatibility layer. Saved retranslation backend contracts and live
+  subtitle correction remain available; removed hashes now fall back to
+  `#meetings`.
 
 - Original speaker audio recording now defaults off and can be enabled before
   starting a live session; disabling it still allows live translation while
@@ -1632,6 +1851,21 @@ These items are intentionally deferred:
   remain valid after backend restart.
 # Unreleased
 
+- Reorganized frontend capability code under `src/features/` while keeping
+  route entry points under `src/pages/`; added the missing DLQ page mounting for
+  `#dead-letter-queue` without changing API or queue behavior.
+
+- 修正會議紀錄匯出只使用部分 Final Cue，導致下載的 TXT／字幕內容少於畫面顯示內容的問題。TXT 現在會保留整場 durable transcript；不完整的 Cue 會安全回退至逐字稿匯出。
+
+- 更新唯讀 Meeting Viewer，改為截圖風格的滿版白底字幕工作區，只保留 Header、會議名稱與即時字幕，並使用板岩藍強調色。
+
+- 修正長會議即時字幕在部分字幕完成潤飾後隱藏其他已錄製內容的問題。潤飾結果現在只覆蓋相同 Cue，尚未潤飾的原始字幕仍會完整顯示。
+
+- 修正即時字幕與潤飾競爭問題。錄音期間不再啟動潤飾，改於工作階段停止或會議完成後送出；潤飾等待期間保留原始字幕，且不再讓字幕列持續顯示潤飾中的底色。
+
+- 新增獨立 `#translation-history` 翻譯紀錄頁。紀錄列表改用卡片式工作區，選取紀錄後可透過「紀錄／原文／翻譯／匯出」小目錄切換內容；既有 `#history` 連結會相容導向新頁面。
+- 會議管理中的已完成會議入口統一導向 `#translation-history`，並保留舊 Meeting Workspace history tab 作為相容功能。
+
 - Completed Session sharing handoff: Viewer SSE snapshots now use the same
   sanitized read model as detail reads, share URLs use SPA hash routes, and
   token/code viewers support reconnect-safe updates.
@@ -1640,4 +1874,7 @@ These items are intentionally deferred:
 - Added named Session creation and explicit single-instance start blocking.
 # Unreleased
 
+- 修正即時逐字稿將逐字累積的 final 文字重複追加。現在同一句的累積更新會覆蓋前一版本，完整句子與真正的新句子仍會保留為獨立紀錄。
+
 - Added meeting-scoped glossary snapshots. Users can select live glossary terms before starting a meeting; the snapshot is reused across meeting segments, reconnects, and saved transcript re-translation without following later global glossary changes.
+- 修正 Meeting 分享設定頁重新整理或重新進入後分享連結消失的問題。分享服務現在持久化短碼（仍只保存 token hash），管理端可重建短碼 URL 與 QR Code；匿名分享回應不暴露短碼，舊資料會在沒有可顯示連結時補建新的分享。

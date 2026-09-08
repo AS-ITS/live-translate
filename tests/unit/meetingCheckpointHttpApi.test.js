@@ -28,7 +28,10 @@ test('Meeting Management creates a draft, updates settings, and starts its first
       name: '產品會議',
       sourceLanguageCode: 'zh-Hant',
       targetLanguageCode: 'en',
-      glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }]
+      echoTargetLanguage: false,
+      shouldRecordInputAudio: true,
+      glossaryEntries: [{ source: '產品', target: 'Product', replacementAliases: [] }],
+      privateGlossaryEntries: [{ source: '專案代號', translations: { en: 'Project Codename' } }]
     })
   });
   const created = createResponse.json();
@@ -36,14 +39,20 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(createResponse.status, 201);
   assert.equal(created.meeting.status, 'created');
   assert.equal(created.segment.status, 'created');
+  assert.equal(created.meeting.echoTargetLanguage, false);
+  assert.equal(created.meeting.shouldRecordInputAudio, true);
+  assert.deepEqual(created.meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { en: 'Project Codename' }, replacementAliases: {} }]);
 
   const updateResponse = await request(handler, {
     method: 'PATCH',
     url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', glossaryEntries: [] })
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
   });
   assert.equal(updateResponse.status, 200);
   assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');
+  assert.equal(updateResponse.json().meeting.echoTargetLanguage, true);
+  assert.equal(updateResponse.json().meeting.shouldRecordInputAudio, false);
+  assert.deepEqual(updateResponse.json().meeting.privateGlossaryEntries, [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: {} }]);
 
   const startResponse = await request(handler, {
     method: 'POST',
@@ -57,7 +66,7 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   assert.equal(started.segment.liveSessionId, 'live-session-management-1');
 });
 
-test('completed meetings reject settings changes and share mutations', async () => {
+test('completed meetings reject settings changes and new shares but allow revoking existing Viewer shares', async () => {
   const shareService = createSessionShareService();
   const handler = createHandler({ sessionShareService: shareService });
   const created = (await request(handler, {
@@ -65,7 +74,7 @@ test('completed meetings reject settings changes and share mutations', async () 
     url: '/api/meetings',
     body: JSON.stringify({ draft: true })
   })).json();
-  const share = shareService.createMeetingShare(created.meeting.id);
+  const share = shareService.createMeetingShare(created.meeting.id, { role: 'viewer' });
 
   const completed = await request(handler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/complete` });
   assert.equal(completed.status, 200);
@@ -90,8 +99,98 @@ test('completed meetings reject settings changes and share mutations', async () 
     method: 'DELETE',
     url: `/api/meetings/${created.meeting.id}/shares/${share.id}`
   });
-  assert.equal(revokeShare.status, 409);
-  assert.equal(revokeShare.json().error.code, 'meeting_share_locked');
+  assert.equal(revokeShare.status, 204);
+});
+
+test('Meeting Viewer shares expose sanitized historical detail by token and short code', async () => {
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({
+      draft: true,
+      name: '公開字幕會議',
+      glossaryEntries: [{ source: '內部詞', target: 'Internal Term' }],
+      privateGlossaryEntries: [{ source: '私有詞', translations: { en: 'Private Term' } }]
+    })
+  })).json();
+
+  const createdShare = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  });
+  const shareBody = createdShare.json();
+  assert.equal(createdShare.status, 201);
+  assert.equal(shareBody.share.role, 'viewer');
+  assert.match(shareBody.url, /^#viewer\?token=/);
+  assert.match(shareBody.codeUrl, /^#viewer\?code=/);
+
+  const byToken = await request(handler, { method: 'GET', url: `/api/shared-meetings/${shareBody.share.token}` });
+  const byCode = await request(handler, { method: 'GET', url: `/api/shared-meetings/code/${shareBody.share.shortCode}` });
+  for (const response of [byToken, byCode]) {
+    assert.equal(response.status, 200);
+    assert.equal(response.json().capability.role, 'viewer');
+    assert.equal(response.json().meeting.glossaryEntries, undefined);
+    assert.equal(response.json().meeting.privateGlossaryEntries, undefined);
+    assert.equal(response.json().audioArtifacts, undefined);
+  }
+});
+
+test('Meeting share management list rebuilds a stable code URL after the share service is reloaded', async () => {
+  const directory = await (await import('node:fs/promises')).mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(), 'live-translate-meeting-share-list-'));
+  const fileSystem = await import('node:fs/promises');
+  const filePath = (await import('node:path')).join(directory, 'shares.json');
+  const created = (await request(createHandler(), { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
+  const firstHandler = createHandler({ sessionShareService: (await import('../../src/infrastructure/fileSessionShareService.js')).createFileSessionShareService({ filePath, fileSystem, clock: () => 1000 }) });
+  const createdShare = (await request(firstHandler, { method: 'POST', url: `/api/meetings/${created.meeting.id}/shares`, body: JSON.stringify({ role: 'viewer' }) })).json();
+  const secondHandler = createHandler({ sessionShareService: (await import('../../src/infrastructure/fileSessionShareService.js')).createFileSessionShareService({ filePath, fileSystem, clock: () => 1000 }) });
+
+  const listed = await request(secondHandler, { method: 'GET', url: `/api/meetings/${created.meeting.id}/shares` });
+  assert.equal(listed.status, 200);
+  assert.deepEqual(listed.json().shares[0], {
+    id: createdShare.share.id,
+    sessionId: created.meeting.id,
+    role: 'viewer',
+    resourceType: 'meeting',
+    meetingId: created.meeting.id,
+    createdAt: 1000,
+    expiresAt: null,
+    shortCode: createdShare.share.shortCode,
+    codeUrl: `#viewer?code=${createdShare.share.shortCode}`
+  });
+});
+
+test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persistence', async () => {
+  let meetingId = null;
+  const sessionRepository = {
+    async getSessionRecord() {
+      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
+    }
+  };
+  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService, sessionRepository, meetingEventBroadcaster });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json();
+  meetingId = created.meeting.id;
+  const share = (await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  })).json().share;
+  const published = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/segments/segment-1/cues`,
+    body: JSON.stringify({ sessionId: 'session-live', producedAt: 10, cue: finalCue({ sessionId: 'session-live', segmentId: 'segment-1' }) })
+  });
+  assert.equal(published.status, 202);
+  assert.deepEqual(published.json(), { eventId: 1, cueSequence: 1 });
+
+  const events = await request(handler, { method: 'GET', url: `/api/shared-meetings/${share.token}/events?after=0` });
+  assert.equal(events.status, 200);
+  assert.match(events.body, /event: cue\.append/);
+  assert.match(events.body, /"translatedText":"hello"/);
 });
 
 test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
@@ -546,7 +645,7 @@ test('completes an interrupted meeting through the HTTP API', async () => {
   assert.equal(response.json().meeting.status, 'completed');
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -565,10 +664,12 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService } = {}) 
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
+    ...(sessionRepository ? { sessionRepository } : {}),
     meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
     ...(sessionShareService ? { sessionShareService } : {}),
+    ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }
@@ -641,6 +742,9 @@ async function request(handler, { method = 'GET', url = '/', body = '', headers 
     writeHead(status, responseHeaders) {
       this.statusCode = status;
       this.headers = responseHeaders;
+    },
+    write(chunk) {
+      chunks.push(Buffer.from(chunk));
     },
     end(chunk) {
       if (chunk) chunks.push(Buffer.from(chunk));

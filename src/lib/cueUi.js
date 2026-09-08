@@ -1,5 +1,6 @@
 export const CUE_FOLLOW_BOTTOM_THRESHOLD_PX = 80;
 import { effectiveSourceForCue, effectiveTranslationForCue } from './cueContent.js';
+import { toTraditionalChineseText } from './chineseText.js';
 
 export function formatCueTimecode(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--:--.---';
@@ -23,7 +24,7 @@ export function sortFinalCues(cues = []) {
 
 export function sourceTextForCopy(cues = []) {
   return sortFinalCues(cues)
-    .map((cue) => effectiveSourceForCue(cue))
+    .map((cue) => sourceTextForDisplay(cue))
     .filter(Boolean)
     .join('\n');
 }
@@ -75,11 +76,32 @@ export function cueListForDisplay(state = {}, {
   requireSourceTextForPartial = false,
   mergeRepeatedFinalCues = false
 } = {}) {
-  const final = sortFinalCues(state.refinedSubtitleCues?.length ? state.refinedSubtitleCues : state.finalCues);
+  const final = sortFinalCues(mergeRefinedCuesWithRaw(state.finalCues, state.refinedSubtitleCues));
   const partial = includePartial ? partialCueForDisplay(state, { requireSourceText: requireSourceTextForPartial }) : null;
   const displayedFinal = mergeRepeatedFinalCues ? mergeAdjacentFinalCues(final) : final;
   const cues = partial ? [...displayedFinal, partial] : displayedFinal;
-  return includePartial ? mergeRepeatedLiveCues(cues) : cues;
+  return cues.map((cue) => ({
+    ...cue,
+    sourceText: sourceTextForDisplay(cue)
+  }));
+}
+
+export function sourceTextForDisplay(cue, variant = 'refined') {
+  const text = effectiveSourceForCue(cue, variant);
+  return cue?.sourceLanguageCode === 'zh-Hans' ? text : toTraditionalChineseText(text);
+}
+
+function mergeRefinedCuesWithRaw(rawCues = [], refinedCues = []) {
+  const raw = Array.isArray(rawCues) ? rawCues : [];
+  const refined = Array.isArray(refinedCues) ? refinedCues : [];
+  if (refined.length === 0) return raw;
+
+  const refinedById = new Map(refined.map((cue) => [cue?.cueId, cue]));
+  const merged = raw.map((cue) => refinedById.has(cue?.cueId)
+    ? { ...cue, ...refinedById.get(cue.cueId) }
+    : cue);
+  const rawIds = new Set(raw.map((cue) => cue?.cueId));
+  return merged.concat(refined.filter((cue) => cue?.cueId && !rawIds.has(cue.cueId)));
 }
 
 function mergeAdjacentFinalCues(cues) {
@@ -110,48 +132,6 @@ function areIdenticalAdjacentFinalCues(previous, next) {
     previous.segmentId === next.segmentId &&
     effectiveSourceForCue(previous) === effectiveSourceForCue(next) &&
     effectiveTranslationForCue(previous) === effectiveTranslationForCue(next);
-}
-
-function mergeRepeatedLiveCues(cues) {
-  const merged = [];
-
-  for (const cue of cues) {
-    const previous = merged.at(-1);
-    if (!previous || !canMergeRepeatedCue(previous, cue)) {
-      merged.push(cue);
-      continue;
-    }
-
-    merged[merged.length - 1] = {
-      ...previous,
-      sourceText: `${previous.sourceText} ${cue.sourceText}`.trim(),
-      translatedText: mergedRepeatedTranslation(previous.translatedText, cue.translatedText),
-      endTimeMs: Math.max(previous.endTimeMs || 0, cue.endTimeMs || 0),
-      updatedTimeMs: Math.max(previous.updatedTimeMs || 0, cue.updatedTimeMs || 0),
-      status: previous.status === 'final' && cue.status === 'final' ? 'final' : 'partial',
-      ...(cue.status === 'final' ? { finalizedReason: cue.finalizedReason } : {})
-    };
-  }
-
-  return merged;
-}
-
-function canMergeRepeatedCue(previous, next) {
-  return previous.status === 'final' &&
-    Boolean(previous.sourceText) &&
-    Boolean(next.sourceText) &&
-    previous.sourceText.trim() === next.sourceText.trim() &&
-    previous.sessionId === next.sessionId &&
-    previous.segmentId === next.segmentId;
-}
-
-function mergedRepeatedTranslation(previousText = '', nextText = '') {
-  const previous = String(previousText || '').trim();
-  const next = String(nextText || '').trim();
-  if (!previous) return next;
-  if (!next) return previous;
-  if (next.startsWith(previous)) return next;
-  return `${previous} ${next}`;
 }
 
 export function distanceFromScrollBottom(element) {

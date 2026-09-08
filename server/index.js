@@ -12,6 +12,7 @@ import { createApplicationDependencies, createProductionApplicationDependencies,
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
+import { createMeetingEventBroadcaster } from '../src/infrastructure/meetingEventBroadcaster.js';
 import { createRecorderGrantService } from '../src/application/recorderGrantService.js';
 import { authorizeRecorderRequest, hasRecorderHeaders } from '../src/application/recorderAuthorization.js';
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
@@ -35,13 +36,12 @@ if (IS_MAIN) {
   loadDotenv();
 }
 
-if (IS_MAIN && process.argv.includes('--production')) {
-  process.env.HOST ??= '0.0.0.0';
-}
-
-const PORT = Number.parseInt(process.env.PORT || '8000', 10);
-const HOST = process.env.HOST || '127.0.0.1';
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'http://127.0.0.1:5173';
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
+const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
+const RESOLVED_ORIGIN = IS_PRODUCTION
+  ? 'http://127.0.0.1:8000'
+  : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173');
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -55,7 +55,13 @@ const ERROR_RESPONSES = {
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
   not_found: { status: 404, message: 'Route not found.' },
   glossary_entry_not_found: { status: 404, message: 'Glossary entry not found.' },
+  glossary_category_not_found: { status: 404, message: 'Glossary category not found.' },
+  glossary_category_duplicate: { status: 409, message: 'Glossary category label already exists.' },
+  glossary_category_not_deletable: { status: 409, message: 'The other glossary category cannot be deleted.' },
   glossary_not_configured: { status: 503, message: 'Translation glossary is not configured.' },
+  glossary_import_invalid: { status: 400, message: 'Glossary import contains invalid data.' },
+  glossary_import_resolution_required: { status: 400, message: 'Glossary import requires conflict resolutions.' },
+  glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
@@ -73,6 +79,7 @@ const ERROR_RESPONSES = {
     message: 'Saved transcript re-translation is not configured.'
   },
   unsupported_language: { status: 400, message: 'Selected target language is not supported.' },
+  unsupported_live_session_mode: { status: 400, message: 'Selected Live session mode is not supported.' },
   translation_execution_not_found: { status: 404, message: 'Translation execution not found.' },
   translation_output_not_found: { status: 404, message: 'Translation output not found.' },
   translation_request_not_found: { status: 404, message: 'Translation request not found.' },
@@ -100,6 +107,7 @@ const ERROR_RESPONSES = {
 };
 const DELETABLE_SESSION_STATUSES = new Set(['completed', 'stopped', 'failed', 'expired']);
 const DEFAULT_JSON_REQUEST_MAX_BYTES = 10_000;
+const GLOSSARY_IMPORT_MAX_BYTES = 1 * 1024 * 1024;
 const SESSION_SNAPSHOT_MAX_BYTES = parseByteLimit(process.env.SESSION_SNAPSHOT_MAX_BYTES, 25 * 1024 * 1024);
 const TRANSLATION_OUTPUT_MAX_BYTES = parseByteLimit(process.env.TRANSLATION_OUTPUT_MAX_BYTES, 25 * 1024 * 1024);
 const MEETING_CHECKPOINT_MAX_BYTES = parseByteLimit(process.env.MEETING_CHECKPOINT_MAX_BYTES, 25 * 1024 * 1024);
@@ -121,7 +129,7 @@ function sendJson(res, status, payload, requestId) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -139,7 +147,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Type': contentType,
     'Content-Length': buffer.byteLength,
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -156,7 +164,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Type': contentType,
     ...(Number.isFinite(contentLength) ? { 'Content-Length': contentLength } : {}),
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -242,7 +250,7 @@ function getClientIp(req) {
 
 function isAllowedOrigin(req) {
   const origin = req.headers?.origin;
-  return !origin || origin === ALLOWED_ORIGIN;
+  return !origin || origin === RESOLVED_ORIGIN;
 }
 
 const accessControl = createAccessControl();
@@ -294,13 +302,14 @@ function errorCodeFor(error) {
   return 'internal_error';
 }
 
-function errorPayload(code, requestId) {
+function errorPayload(code, requestId, details) {
   const template = ERROR_RESPONSES[code] || ERROR_RESPONSES.internal_error;
   return {
     error: {
       code,
       message: template.message,
-      requestId
+      requestId,
+      ...(Array.isArray(details) && details.length > 0 ? { details } : {})
     }
   };
 }
@@ -532,6 +541,7 @@ export function createRequestHandler(options = {}) {
     recorderLeaseService,
     recorderGrantService = createRecorderGrantService(),
     sessionEventBroadcaster = createSessionEventBroadcaster(),
+    meetingEventBroadcaster = createMeetingEventBroadcaster(),
     executionEventBroadcaster,
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
@@ -571,6 +581,7 @@ export function createRequestHandler(options = {}) {
       recorderLeaseService,
       recorderGrantService,
       sessionEventBroadcaster,
+      meetingEventBroadcaster,
       sessionSnapshotMaxBytes,
       meetingCheckpointMaxBytes,
       sessionAudioMaxBytes,
@@ -586,7 +597,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -640,7 +651,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
@@ -658,7 +669,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     }
     return;
   }
@@ -714,6 +725,8 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: body?.targetLanguageCode || 'en',
         targetLanguageLabel: body?.targetLanguageLabel || null,
         sourceLanguageCode: body?.sourceLanguageCode || null,
+        echoTargetLanguage: body?.echoTargetLanguage !== false,
+        shouldRecordInputAudio: body?.shouldRecordInputAudio === true,
         ...(Object.hasOwn(body || {}, 'meetingGlossaryEntries')
           ? { meetingGlossaryEntries: Array.isArray(body.meetingGlossaryEntries) ? body.meetingGlossaryEntries : [] }
           : {}),
@@ -918,6 +931,25 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && path === '/api/meetings/glossary/import/preview') {
+    try {
+      if (!glossaryController?.previewPrivateImport) throw createHttpError('glossary_not_configured');
+      const body = await readJson(req, { maxBytes: GLOSSARY_IMPORT_MAX_BYTES });
+      if (!isPlainRequestObject(body) || !['csv', 'json', 'xlsx'].includes(body.format) || typeof body.content !== 'string' || typeof body.sourceLanguageCode !== 'string' || typeof body.targetLanguageCode !== 'string' || !Array.isArray(body.existingEntries)) throw createHttpError('invalid_request');
+      validateSupportedTargetLanguageCode(body.sourceLanguageCode);
+      validateSupportedTargetLanguageCode(body.targetLanguageCode);
+      statusCode = 200;
+      sendJson(res, statusCode, await glossaryController.previewPrivateImport(body), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
+    } finally {
+      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingDetailPath(path)) {
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
@@ -951,23 +983,31 @@ async function handleRequestWithSessionReadController(
       if (!sessionShareService) throw createHttpError('meeting_share_invalid');
       if (req.method === 'GET') {
         statusCode = 200;
-        sendJson(res, statusCode, { shares: await sessionShareService.listShares(meetingId) }, requestId);
+        const shares = typeof sessionShareService.listMeetingShares === 'function'
+          ? await sessionShareService.listMeetingShares(meetingId)
+          : await sessionShareService.listShares(meetingId);
+        sendJson(res, statusCode, { shares: shares.map((share) => ({
+          ...share,
+          ...(share.shortCode ? { codeUrl: `#${share.role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}` } : {})
+        })) }, requestId);
       } else if (req.method === 'POST') {
         await assertMeetingShareMutable(meetingId, meetingRepository);
         const body = await readJson(req);
-        const share = await sessionShareService.createMeetingShare(meetingId, {
-          role: 'recorder',
-          expiresAt: body?.expiresAt ?? null
-        });
+        const role = body?.role || 'recorder';
+        if (role !== 'viewer' && role !== 'recorder') throw createHttpError('invalid_request');
+        const share = body?.ensureExisting === true && typeof sessionShareService.ensureMeetingShare === 'function'
+          ? await sessionShareService.ensureMeetingShare(meetingId, { role, expiresAt: body?.expiresAt ?? null })
+          : await sessionShareService.createMeetingShare(meetingId, { role, expiresAt: body?.expiresAt ?? null });
         statusCode = 201;
-        sendJson(res, statusCode, {
+        const payload = {
           share,
-          url: `#record?token=${encodeURIComponent(share.token)}`,
-          codeUrl: `#record?code=${encodeURIComponent(share.shortCode)}`
-        }, requestId);
+          ...(share.token ? { url: `#${role === 'viewer' ? 'viewer' : 'record'}?token=${encodeURIComponent(share.token)}` } : {}),
+          ...(share.shortCode ? { codeUrl: `#${role === 'viewer' ? 'viewer' : 'record'}?code=${encodeURIComponent(share.shortCode)}` } : {})
+        };
+        sendJson(res, statusCode, payload, requestId);
       } else {
-        await assertMeetingShareMutable(meetingId, meetingRepository);
         const shareId = parseMeetingSharePath(path).shareId;
+        await assertMeetingShareRevocable(meetingId, shareId, meetingRepository, sessionShareService);
         if (!await sessionShareService.revokeShare(meetingId, shareId)) throw createHttpError('meeting_share_invalid');
         statusCode = 204;
         res.writeHead(statusCode, { 'X-Request-Id': requestId });
@@ -1027,7 +1067,10 @@ async function handleRequestWithSessionReadController(
         ...(Object.hasOwn(body || {}, 'name') ? { name: body.name } : {}),
         ...(Object.hasOwn(body || {}, 'sourceLanguageCode') ? { sourceLanguageCode: body.sourceLanguageCode } : {}),
         ...(Object.hasOwn(body || {}, 'targetLanguageCode') ? { targetLanguageCode: body.targetLanguageCode } : {}),
-        ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {})
+        ...(Object.hasOwn(body || {}, 'echoTargetLanguage') ? { echoTargetLanguage: body.echoTargetLanguage !== false } : {}),
+        ...(Object.hasOwn(body || {}, 'shouldRecordInputAudio') ? { shouldRecordInputAudio: body.shouldRecordInputAudio === true } : {}),
+        ...(Object.hasOwn(body || {}, 'glossaryEntries') ? { glossaryEntries: body.glossaryEntries } : {}),
+        ...(Object.hasOwn(body || {}, 'privateGlossaryEntries') ? { privateGlossaryEntries: body.privateGlossaryEntries } : {})
       }});
       statusCode = 200;
       sendJson(res, statusCode, result, requestId);
@@ -1090,7 +1133,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'GET' && isSharedMeetingDetailPath(path)) {
     const share = await resolveSharedMeeting(path, sessionShareService);
-    if (!share || share.resourceType !== 'meeting' || share.role !== 'recorder') {
+    if (!share || share.resourceType !== 'meeting' || !['viewer', 'recorder'].includes(share.role)) {
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
@@ -1099,7 +1142,58 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
       return;
     }
-    sendJson(res, 200, { meeting, capability: { role: 'recorder', meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
+    const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
+    if (share.role === 'viewer') {
+      const cursor = meetingEventBroadcaster.cursor(share.meetingId);
+      payload.cursor = {
+        eventId: cursor.eventId,
+        cueSequence: Math.max(cursor.cueSequence, ...((payload.cues || []).map((cue) => Number(cue.sequence) || 0)))
+      };
+    }
+    sendJson(res, 200, { ...payload, capability: { role: share.role, meetingId: share.meetingId, expiresAt: share.expiresAt } }, requestId);
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
+    try {
+      if (!meetingEventBroadcaster || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
+      const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
+      const body = await readJson(req, { maxBytes: 100_000 });
+      const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
+      const existing = await sessionRepository.getSessionRecord(sessionId);
+      if (!existing?.sessionRecord || existing.sessionRecord.meetingId !== meetingId || existing.sessionRecord.segmentId !== segmentId) {
+        throw createHttpError('recorder_session_mismatch');
+      }
+      if (hasRecorderHeaders(req)) {
+        await authorizeRecorderMeetingWrite({
+          req,
+          meetingId,
+          segmentId,
+          sessionRepository,
+          sessionShareService,
+          recorderGrantService,
+          recorderLeaseService
+        });
+      }
+      const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
+      const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
+      statusCode = 202;
+      sendJson(res, statusCode, { eventId: event.eventId, cueSequence: event.cue.sequence }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && isSharedMeetingEventsPath(path)) {
+    const share = await resolveSharedMeeting(path, sessionShareService);
+    if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
+      sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
+      return;
+    }
+    openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
     return;
   }
 
@@ -1123,7 +1217,16 @@ async function handleRequestWithSessionReadController(
         targetLanguageCode: meeting.targetLanguageCode || 'en',
         targetLanguageLabel: meeting.targetLanguageCode || null,
         sourceLanguageCode: meeting.sourceLanguageCode || null,
-        meetingGlossaryEntries: meeting.glossaryEntries || [],
+        echoTargetLanguage: meeting.echoTargetLanguage !== false,
+        shouldRecordInputAudio: meeting.shouldRecordInputAudio === true,
+        meetingGlossaryEntries: [
+          ...(meeting.glossaryEntries || []),
+          ...((meeting.privateGlossaryEntries || []).map((entry) => ({
+            source: entry.source,
+            target: entry.translations?.[meeting.targetLanguageCode],
+            replacementAliases: entry.replacementAliases?.[meeting.targetLanguageCode] || []
+          })).filter((entry) => entry.target))
+        ],
         meetingId: share.meetingId,
         segmentId: started.segment.id,
         status: 'created',
@@ -1473,7 +1576,7 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
@@ -1821,7 +1924,8 @@ function isPublicApiPath(method, path) {
   return (method === 'GET' && (
     isSharedSessionDetailPath(path) ||
     isSharedSessionEventsPath(path) ||
-    isSharedMeetingDetailPath(path)
+    isSharedMeetingDetailPath(path) ||
+    isSharedMeetingEventsPath(path)
   )) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
@@ -1832,6 +1936,7 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;
   if (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) return true;
+  if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
   return false;
 }
@@ -1970,6 +2075,16 @@ function isMeetingShareCollectionPath(path) {
 
 function isMeetingSharePath(path) {
   return /^\/api\/meetings\/[^/]+\/shares\/[^/]+$/.test(path);
+}
+
+function isMeetingCuePublishPath(path) {
+  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/.test(path);
+}
+
+function parseMeetingCuePublishPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/cues$/);
+  if (!match) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(match[1]), segmentId: safeDecodePathComponent(match[2]) };
 }
 
 function parseMeetingShareCollectionPath(path) {
@@ -2122,7 +2237,12 @@ function safeDecodePathComponent(value) {
 
 function isGlossaryRoute(method, path) {
   return (
+    (method === 'POST' && (path === '/api/glossary/import/preview' || path === '/api/glossary/import')) ||
     (method === 'GET' && path === '/api/glossary') ||
+    (method === 'GET' && path === '/api/glossary/categories') ||
+    (method === 'POST' && path === '/api/glossary/categories') ||
+    (method === 'PUT' && path === '/api/glossary/categories/order') ||
+    ((method === 'PUT' || method === 'DELETE') && path.startsWith('/api/glossary/categories/') && path.length > '/api/glossary/categories/'.length) ||
     (method === 'POST' && path === '/api/glossary/entries') ||
     ((method === 'PUT' || method === 'DELETE') &&
       path.startsWith('/api/glossary/entries/') &&
@@ -2131,6 +2251,41 @@ function isGlossaryRoute(method, path) {
 }
 
 async function handleGlossaryCommand(method, path, req, glossaryController) {
+  if (method === 'POST' && (path === '/api/glossary/import/preview' || path === '/api/glossary/import')) {
+    const body = await readJson(req, { maxBytes: GLOSSARY_IMPORT_MAX_BYTES });
+    if (!isPlainRequestObject(body) || (body.format !== 'csv' && body.format !== 'json' && body.format !== 'xlsx') || typeof body.content !== 'string' || typeof body.sourceLanguageCode !== 'string' || typeof body.targetLanguageCode !== 'string' || typeof body.category !== 'string') throw createHttpError('invalid_request');
+    validateSupportedTargetLanguageCode(body.sourceLanguageCode);
+    validateSupportedTargetLanguageCode(body.targetLanguageCode);
+    validateGlossaryCategory(body.category);
+    if (path.endsWith('/preview')) return { status: 200, result: await glossaryController.previewImport(body) };
+    if (typeof body.baseRevision !== 'string' || !isPlainRequestObject(body.resolutions) || (body.selectedRows !== undefined && (!Array.isArray(body.selectedRows) || body.selectedRows.some((rowNumber) => !Number.isInteger(rowNumber) || rowNumber < 1)))) throw createHttpError('invalid_request');
+    return { status: 200, result: await glossaryController.importEntries(body) };
+  }
+
+  if (method === 'GET' && path === '/api/glossary/categories') {
+    return { status: 200, result: { categories: await glossaryController.listCategories() } };
+  }
+
+  if (method === 'POST' && path === '/api/glossary/categories') {
+    return { status: 201, result: { category: await glossaryController.createCategory(validateGlossaryCategoryBody(await readJson(req))) } };
+  }
+
+  if (method === 'PUT' && path === '/api/glossary/categories/order') {
+    const body = await readJson(req);
+    if (!isPlainRequestObject(body) || !Array.isArray(body.categoryIds)) throw createHttpError('invalid_request');
+    return { status: 200, result: { categories: await glossaryController.reorderCategories(body.categoryIds) } };
+  }
+
+  if (method === 'PUT' && path.startsWith('/api/glossary/categories/')) {
+    const id = extractGlossaryCategoryId(path);
+    return { status: 200, result: { category: await glossaryController.updateCategory({ id, ...validateGlossaryCategoryBody(await readJson(req), { allowId: false }) }) } };
+  }
+
+  if (method === 'DELETE' && path.startsWith('/api/glossary/categories/')) {
+    const id = extractGlossaryCategoryId(path);
+    return { status: 200, result: await glossaryController.deleteCategory({ id }) };
+  }
+
   if (method === 'GET' && path === '/api/glossary') {
     return { status: 200, result: { entries: await glossaryController.listEntries() } };
   }
@@ -2150,6 +2305,22 @@ async function handleGlossaryCommand(method, path, req, glossaryController) {
   }
 
   throw createHttpError('not_found');
+}
+
+function extractGlossaryCategoryId(path) {
+  try {
+    return validateRequiredString(decodeURIComponent(path.slice('/api/glossary/categories/'.length)));
+  } catch (error) {
+    if (error?.code === 'invalid_request') throw error;
+    throw createHttpError('invalid_request');
+  }
+}
+
+function validateGlossaryCategoryBody(body) {
+  if (!isPlainRequestObject(body)) throw createHttpError('invalid_request');
+  const label = validateRequiredString(body.label).trim();
+  if (Object.hasOwn(body, 'id')) validateRequiredString(body.id);
+  return { ...(Object.hasOwn(body, 'id') ? { id: body.id } : {}), label, system: body.system === true };
 }
 
 function extractGlossaryEntryId(path) {
@@ -2174,10 +2345,35 @@ function validateGlossaryEntryBody(body) {
   const replacementAliases = validateGlossaryReplacementAliases(body.replacementAliases);
   return {
     source: body.source,
+    sourceLanguageCode: body.sourceLanguageCode === undefined ? 'zh-Hant' : validateSupportedTargetLanguageCode(body.sourceLanguageCode),
     translations: body.translations,
     ...(hasReplacementAliases(replacementAliases) ? { replacementAliases } : {}),
-    scope
+    scope,
+    category: body.category === undefined ? 'other' : validateGlossaryCategory(body.category),
+    tags: body.tags === undefined ? [] : validateGlossaryTags(body.tags),
+    enabled: body.enabled === undefined ? true : validateBoolean(body.enabled),
+    notes: body.notes === undefined ? '' : validateOptionalString(body.notes)
   };
+}
+
+function validateGlossaryCategory(value) {
+  if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value)) throw createHttpError('invalid_request');
+  return value;
+}
+
+function validateGlossaryTags(value) {
+  if (!Array.isArray(value) || value.some((tag) => typeof tag !== 'string' || tag.trim() === '')) throw createHttpError('invalid_request');
+  return value.map((tag) => tag.trim());
+}
+
+function validateBoolean(value) {
+  if (typeof value !== 'boolean') throw createHttpError('invalid_request');
+  return value;
+}
+
+function validateOptionalString(value) {
+  if (typeof value !== 'string') throw createHttpError('invalid_request');
+  return value;
 }
 
 function validateGlossaryReplacementAliases(value) {
@@ -2609,7 +2805,13 @@ function isSharedSessionEventsPath(path) {
 
 function isSharedMeetingDetailPath(path) {
   return path.startsWith('/api/shared-meetings/') && !path.endsWith('/start') &&
+    !path.endsWith('/events') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
+}
+
+function isSharedMeetingEventsPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
 }
 
 function isSharedMeetingStartPath(path) {
@@ -2623,8 +2825,19 @@ async function assertMeetingShareMutable(meetingId, meetingRepository) {
   if (meeting?.status === 'completed') throw createHttpError('meeting_share_locked');
 }
 
+async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository, sessionShareService) {
+  if (!meetingRepository || typeof meetingRepository.getMeeting !== 'function') return;
+  const meeting = await meetingRepository.getMeeting(meetingId);
+  if (meeting?.status !== 'completed') return;
+  const shares = typeof sessionShareService?.listShares === 'function'
+    ? await sessionShareService.listShares(meetingId)
+    : [];
+  const share = shares.find((item) => item.id === shareId);
+  if (share?.role !== 'viewer') throw createHttpError('meeting_share_locked');
+}
+
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/start$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }
@@ -2655,7 +2868,7 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -2670,6 +2883,76 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
   req.on('close', unsubscribe);
 }
 
+function openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, afterEventId = 0) {
+  const replay = meetingEventBroadcaster.eventsSince(share.meetingId, afterEventId);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    'X-Content-Type-Options': 'nosniff'
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  if (replay.gap) {
+    writeSseEvent(res, { id: replay.cursor.eventId, type: 'meeting.gap', data: { meetingId: share.meetingId, cursor: replay.cursor } });
+  }
+  for (const event of replay.events) writeSseEvent(res, { id: event.eventId, type: event.type, data: publicMeetingCueEvent(event) });
+  if (replay.events.length === 0 && !replay.gap) res.write(': keep-alive\n\n');
+  const unsubscribe = meetingEventBroadcaster.subscribe(share.meetingId, (event) => {
+    writeSseEvent(res, { id: event.eventId, type: event.type, data: publicMeetingCueEvent(event) });
+  });
+  req.on('close', unsubscribe);
+}
+
+function parseAfterEventId(req) {
+  const url = new URL(req.url || '/', 'http://localhost');
+  const queryValue = url.searchParams.get('after');
+  const headerValue = req.headers?.['last-event-id'];
+  const parsed = Number.parseInt(queryValue || headerValue || '0', 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw createHttpError('subtitle_cue_invalid');
+  const cue = {
+    cueId: value.cueId,
+    sessionId,
+    segmentId,
+    sequence: value.sequence,
+    startTimeMs: value.startTimeMs,
+    endTimeMs: value.endTimeMs,
+    sourceLanguageCode: value.sourceLanguageCode || null,
+    targetLanguageCode: value.targetLanguageCode || null,
+    sourceText: value.sourceText,
+    translatedText: value.translatedText,
+    ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
+    ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
+    ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
+    status: value.status,
+    finalizedReason: value.finalizedReason || null,
+    ...(value.refinement ? { refinement: value.refinement } : {})
+  };
+  if (typeof cue.cueId !== 'string' || !cue.cueId || cue.status !== 'final' ||
+      !Number.isInteger(cue.sequence) || cue.sequence < 1 ||
+      !Number.isFinite(cue.startTimeMs) || cue.startTimeMs < 0 ||
+      (cue.endTimeMs !== null && cue.endTimeMs !== undefined && (!Number.isFinite(cue.endTimeMs) || cue.endTimeMs < cue.startTimeMs)) ||
+      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string') {
+    throw createHttpError('subtitle_cue_invalid');
+  }
+  return { ...cue, meetingId };
+}
+
+function publicMeetingCueEvent(event) {
+  return {
+    eventId: event.eventId,
+    type: event.type,
+    meetingId: event.meetingId,
+    segmentId: event.segmentId,
+    cue: event.cue,
+    timing: event.timing
+  };
+}
+
 function publicViewerDetail(detail) {
   const clone = detail?.sessionRecord
     ? mapSessionRecordDetailToDTO(detail)
@@ -2678,6 +2961,40 @@ function publicViewerDetail(detail) {
     delete clone.session.audioArtifacts;
     delete clone.session.selectedInputDeviceId;
     delete clone.session.inputDeviceLabelSnapshot;
+  }
+  return clone;
+}
+
+function publicMeetingViewerDetail(detail) {
+  const clone = JSON.parse(JSON.stringify(detail || {}));
+  if (clone.meeting) {
+    delete clone.meeting.glossaryEntries;
+    delete clone.meeting.privateGlossaryEntries;
+  }
+  delete clone.audioArtifacts;
+  if (Array.isArray(clone.segments)) {
+    clone.segments = clone.segments.map((segment) => {
+      const safeSegment = { ...segment };
+      delete safeSegment.liveSessionId;
+      if (safeSegment.settingsSnapshot) {
+        safeSegment.settingsSnapshot = { ...safeSegment.settingsSnapshot };
+        delete safeSegment.settingsSnapshot.glossaryEntries;
+        delete safeSegment.settingsSnapshot.privateGlossaryEntries;
+      }
+      return safeSegment;
+    });
+  }
+  if (Array.isArray(clone.timeline)) {
+    clone.timeline = clone.timeline.map((segment) => {
+      const safeSegment = { ...segment };
+      delete safeSegment.liveSessionId;
+      if (safeSegment.settingsSnapshot) {
+        safeSegment.settingsSnapshot = { ...safeSegment.settingsSnapshot };
+        delete safeSegment.settingsSnapshot.glossaryEntries;
+        delete safeSegment.settingsSnapshot.privateGlossaryEntries;
+      }
+      return safeSegment;
+    });
   }
   return clone;
 }
@@ -2694,8 +3011,8 @@ if (IS_MAIN) {
   });
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 
-  server.listen(PORT, HOST, () => {
-    console.log(`Live Translate API listening on http://${HOST}:${PORT}`);
+  server.listen(SERVER_PORT, SERVER_HOST, () => {
+    console.log(`Live Translate API listening on http://${SERVER_HOST}:${SERVER_PORT}`);
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

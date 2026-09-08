@@ -52,7 +52,8 @@ function applyLateFinalTranscriptEvent(state, event) {
   if (streamState.currentPartial) return null;
 
   const lastFinal = streamState.finalItems.at(-1);
-  if (!lastFinal || !event.text.startsWith(lastFinal.text) || event.text.length <= lastFinal.text.length) {
+  if (!lastFinal || !sameAudioTurn(lastFinal, event)
+    || !event.text.startsWith(lastFinal.text) || event.text.length <= lastFinal.text.length) {
     return null;
   }
 
@@ -63,6 +64,11 @@ function applyLateFinalTranscriptEvent(state, event) {
     finalizedAt,
     ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+    ...(event.liveSessionId ? { liveSessionId: event.liveSessionId } : {}),
+    ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+    ...(event.segmentId ? { segmentId: event.segmentId } : {}),
+    ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
+    ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {}),
     ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
     ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
@@ -239,6 +245,23 @@ function applyPartialEvent(state, event) {
 function applyFinalEvent(state, event) {
   const streamState = state[event.stream];
   const lastFinal = streamState.finalItems.at(-1);
+  if (isSameTurnSourceSnapshot(lastFinal, event)) {
+    const updatedFinal = finalizeTranscriptItem(lastFinal, event, eventTime(event));
+    return replaceStreamState(state, event.stream, {
+      ...streamState,
+      finalItems: [...streamState.finalItems.slice(0, -1), updatedFinal]
+    });
+  }
+  const cumulativeFinal = findCumulativeFinalExtension(lastFinal, event);
+
+  if (cumulativeFinal) {
+    const updatedFinal = finalizeTranscriptItem(lastFinal, event, eventTime(event));
+    return replaceStreamState(state, event.stream, {
+      ...streamState,
+      finalItems: [...streamState.finalItems.slice(0, -1), updatedFinal]
+    });
+  }
+
   const isDuplicateFinal = isDuplicateTranscriptItem(lastFinal, event);
 
   if (isDuplicateFinal) {
@@ -271,6 +294,39 @@ function applyFinalEvent(state, event) {
   };
 }
 
+function isSameTurnSourceSnapshot(lastFinal, event) {
+  if (!lastFinal || event.stream !== 'source' || !event.isFinal) return false;
+  if (!lastFinal.audioTurnId || !event.audioTurnId || lastFinal.audioTurnId !== event.audioTurnId) return false;
+  return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
+    !lastFinal[field] || !event[field] || lastFinal[field] === event[field]
+  ));
+}
+
+function findCumulativeFinalExtension(lastFinal, event) {
+  if (!lastFinal || !event?.text || lastFinal.text === event.text) {
+    return null;
+  }
+
+  if (!event.text.startsWith(lastFinal.text) || endsTranscriptSentence(lastFinal.text)) {
+    return null;
+  }
+
+  if (lastFinal.languageCode !== event.languageCode) {
+    return null;
+  }
+
+  for (const field of ['sessionId', 'liveSessionId', 'segmentId']) {
+    if (lastFinal[field] && event[field] && lastFinal[field] !== event[field]) {
+      return null;
+    }
+  }
+  if (lastFinal.audioTurnId && event.audioTurnId && lastFinal.audioTurnId !== event.audioTurnId) {
+    return null;
+  }
+
+  return true;
+}
+
 function appendAfterCommittingCurrentPartial(state, event, status) {
   const streamState = state[event.stream];
   const now = eventTime(event);
@@ -298,7 +354,8 @@ function decideTranscriptEvent(state, event) {
   const currentPartial = streamState.currentPartial;
   const lastFinal = streamState.finalItems.at(-1);
 
-  if (currentPartial?.text === event.text && currentPartial.languageCode === event.languageCode) {
+  if (currentPartial?.text === event.text && currentPartial.languageCode === event.languageCode
+    && sameAudioTurn(currentPartial, event)) {
     if (event.isFinal) {
       return {
         action: 'append',
@@ -311,8 +368,19 @@ function decideTranscriptEvent(state, event) {
     return { action: 'duplicate', reason: 'matches-current-partial', text: event.text };
   }
 
-  if (currentPartial && currentPartial.languageCode === event.languageCode && isRedundantSuffixUpdate(currentPartial.text, event.text)) {
+  if (currentPartial && currentPartial.languageCode === event.languageCode && sameAudioTurn(currentPartial, event)
+    && isRedundantSuffixUpdate(currentPartial.text, event.text)) {
     return { action: 'duplicate', reason: 'matches-current-partial-suffix', text: event.text };
+  }
+
+  if (currentPartial && event.stream === 'source' && event.isFinal
+    && currentPartial.audioTurnId && event.audioTurnId && currentPartial.audioTurnId === event.audioTurnId) {
+    return {
+      action: 'append',
+      reason: 'same-turn-source-snapshot-finalizes-current',
+      text: event.text,
+      commitCurrentBeforeEvent: false
+    };
   }
 
   if (isDuplicateTranscriptItem(lastFinal, event)) {
@@ -502,6 +570,11 @@ function createTranscriptItem(state, event, status, now) {
     finalizedAt: status === 'final' ? now : undefined,
     ...(event.eventId ? { eventId: event.eventId } : {}),
     ...(event.languageCode ? { languageCode: event.languageCode } : {}),
+    ...(event.liveSessionId ? { liveSessionId: event.liveSessionId } : {}),
+    ...(event.sessionId ? { sessionId: event.sessionId } : {}),
+    ...(event.segmentId ? { segmentId: event.segmentId } : {}),
+    ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
+    ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     ...(event.sourceLanguageDetection ? { sourceLanguageDetection: event.sourceLanguageDetection } : {}),
     ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
     ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
@@ -532,8 +605,13 @@ function isDuplicateTranscriptItem(item, event) {
   if (!item || item.text !== event.text || item.languageCode !== event.languageCode) {
     return false;
   }
+  if (item.audioTurnId && event.audioTurnId) return item.audioTurnId === event.audioTurnId;
   if (item.eventId && event.eventId) return item.eventId === event.eventId;
   return !item.eventId && !event.eventId;
+}
+
+function sameAudioTurn(item, event) {
+  return !item.audioTurnId || !event.audioTurnId || item.audioTurnId === event.audioTurnId;
 }
 
 function replaceStreamState(state, stream, streamState) {
@@ -545,4 +623,8 @@ function replaceStreamState(state, stream, streamState) {
 
 function eventTime(event) {
   return Number.isFinite(event.now) ? event.now : Date.now();
+}
+
+function endsTranscriptSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(String(text || '').trim());
 }

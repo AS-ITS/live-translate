@@ -3,8 +3,39 @@ import { isSupportedLanguage } from './languages.js';
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
 export const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
+export const LIVE_SESSION_MODES = Object.freeze(['translation', 'transcription']);
+
+export function classifyGeminiProviderError(error = {}) {
+  const status = providerStatusCode(error);
+  const text = providerErrorText(error);
+  if (status === 401 || /invalid\s*(api\s*)?key|api key.*invalid|unauthenticated/.test(text)) return 'invalid_api_key';
+  if (status === 403 || /permission|forbidden|not authorized|api.*not enabled|unavailable/.test(text)) return 'permission_api_unavailable';
+  if (status === 404 || /model.*(not found|invalid)|unknown model/.test(text)) return 'invalid_model';
+  if (/context(window| compression)|compression.*(config|unsupported)|invalid.*(live|session).*config|configuration.*invalid|(?:parameter|field|property).*not supported|unsupported.*(?:parameter|field|property|config)/.test(text)) return 'invalid_live_config';
+  if (status === 429 || /rate.?limit|quota|resource.?exhausted|too many requests/.test(text)) return 'rate_limit';
+  return 'unknown_provider_error';
+}
+
+export function safeGeminiProviderDiagnostic(error = {}) {
+  const status = providerStatusCode(error);
+  const code = providerCode(error);
+  const message = sanitizeProviderMessage(error.message || error.statusMessage || error.error?.message);
+  return {
+    category: classifyGeminiProviderError(error),
+    ...(status === null ? {} : { status }),
+    ...(code ? { code } : {}),
+    ...(message ? { message } : {})
+  };
+}
 
 export function normalizeTokenRequest(body = {}) {
+  const mode = body.mode === undefined ? 'translation' : body.mode;
+  if (!LIVE_SESSION_MODES.includes(mode)) {
+    const error = new Error('Unsupported live session mode');
+    error.status = 400;
+    error.code = 'unsupported_live_session_mode';
+    throw error;
+  }
   const targetLanguageCode = Object.hasOwn(body, 'targetLanguageCode') ? body.targetLanguageCode : 'en';
   const sourceLanguageCode = Object.hasOwn(body, 'sourceLanguageCode')
     ? body.sourceLanguageCode
@@ -31,6 +62,7 @@ export function normalizeTokenRequest(body = {}) {
   }
 
   return {
+    ...(mode === 'translation' ? {} : { mode }),
     targetLanguageCode,
     sourceLanguageCode,
     echoTargetLanguage,
@@ -39,11 +71,12 @@ export function normalizeTokenRequest(body = {}) {
 }
 
 export function buildTokenConfig({
+  mode = 'translation',
   targetLanguageCode,
   sourceLanguageCode = DEFAULT_SOURCE_LANGUAGE_CODE,
   echoTargetLanguage,
   glossaryEntries,
-  liveTranslateModel = resolveLiveTranslateModel()
+  liveTranslateModel
 }, now = new Date()) {
   const expireTime = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const newSessionExpireTime = new Date(now.getTime() + 60 * 1000).toISOString();
@@ -51,7 +84,21 @@ export function buildTokenConfig({
     targetLanguageCode,
     echoTargetLanguage
   };
-  const liveConnectConfig = {
+  const liveModel = liveTranslateModel || (mode === 'transcription' ? resolveLiveTranscriptionModel() : resolveLiveTranslateModel());
+  const liveConnectConfig = mode === 'transcription'
+    ? {
+      responseModalities: ['TEXT'],
+      inputAudioTranscription: {
+        mode: 'VERBATIM'
+      },
+      sessionResumption: {},
+      contextWindowCompression: {
+        slidingWindow: {}
+      },
+      realtimeInputConfig: { automaticActivityDetection: {} },
+      systemInstruction: buildSystemInstruction({ sourceLanguageCode, glossaryEntries })
+    }
+    : {
     responseModalities: ['AUDIO'],
     inputAudioTranscription: {},
     outputAudioTranscription: {},
@@ -64,18 +111,18 @@ export function buildTokenConfig({
       translationConfig
     },
     systemInstruction: buildSystemInstruction({ sourceLanguageCode, glossaryEntries })
-  };
+    };
 
   return {
     uses: 1,
     expireTime,
     newSessionExpireTime,
     liveConnectConstraints: {
-      model: liveTranslateModel,
+      model: liveModel,
       config: liveConnectConfig
     },
     httpOptions: {
-      apiVersion: 'v1alpha'
+      apiVersion: 'v1beta'
     }
   };
 }
@@ -90,6 +137,9 @@ export async function createLiveToken(body, options = {}) {
   const request = normalizeTokenRequest(body);
   const now = options.now || new Date();
   const liveTranslateModel = options.liveTranslateModel ?? resolveLiveTranslateModel(process.env);
+  const liveModel = request.mode === 'transcription'
+    ? (options.liveTranscriptionModel ?? resolveLiveTranscriptionModel(process.env))
+    : liveTranslateModel;
   const meeting = request.meetingId && options.meetingRepository
     ? await options.meetingRepository.getMeeting(request.meetingId)
     : null;
@@ -100,7 +150,7 @@ export async function createLiveToken(body, options = {}) {
     throw error;
   }
   const glossaryEntries = meeting
-    ? meeting.glossaryEntries
+    ? [...(meeting.glossaryEntries || []), ...privateGlossaryEntriesForTarget(meeting.privateGlossaryEntries, request.targetLanguageCode)]
     : options.glossary === undefined
       ? undefined
       : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
@@ -116,7 +166,7 @@ export async function createLiveToken(body, options = {}) {
       }))
       .filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
   const configWithGlossary = buildTokenConfig(
-    { ...request, liveTranslateModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
+    { ...request, liveTranslateModel: liveModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
   const client = options.client || (await createGenAiClient(process.env.GEMINI_API_KEY));
@@ -126,7 +176,7 @@ export async function createLiveToken(body, options = {}) {
     return {
       token: token.name,
       expiresAt: configWithGlossary.expireTime,
-      liveConnectModel: liveTranslateModel,
+      liveConnectModel: liveModel,
       liveConnectConfig: configWithGlossary.liveConnectConstraints.config,
       liveGlossaryEntries: targetGlossaryEntries || []
     };
@@ -134,8 +184,50 @@ export async function createLiveToken(body, options = {}) {
     const error = new Error('Failed to create Gemini ephemeral token');
     error.status = 502;
     error.cause = cause;
+    error.providerDiagnostic = safeGeminiProviderDiagnostic(cause);
     throw error;
   }
+}
+
+function providerStatusCode(error) {
+  const value = error?.status ?? error?.statusCode ?? error?.response?.status ?? error?.error?.status;
+  return Number.isInteger(value) ? value : null;
+}
+
+function providerCode(error) {
+  const value = error?.code ?? error?.error?.code ?? error?.response?.data?.error?.status;
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+}
+
+function providerErrorText(error) {
+  return [error?.message, error?.statusMessage, error?.error?.message, error?.response?.data?.error?.message]
+    .filter((value) => typeof value === 'string')
+    .join(' ')
+    .toLowerCase();
+}
+
+function sanitizeProviderMessage(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const sanitized = value
+    .replace(/https?:\/\/[^\s)]+/gi, '[redacted-url]')
+    .replace(/\b(?:bearer\s+)?(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z_-]+)\b/gi, '[redacted-secret]')
+    .replace(/(authorization|api[-_ ]?key|token|resumption(?:[-_ ]?handle)?)(\s*[:=]\s*)([^,;\s]+)/gi, '$1$2[redacted]');
+  return sanitized.length > 300 ? `${sanitized.slice(0, 297)}...` : sanitized;
+}
+
+export function resolveLiveTranscriptionModel(env = process.env) {
+  const value = env.LIVE_TRANSCRIPTION_MODEL;
+  if (value === undefined) return 'gemini-3.5-transcribe-live';
+  if (typeof value !== 'string' || value.trim() === '') throw new Error('Invalid LIVE_TRANSCRIPTION_MODEL');
+  return value.trim();
+}
+
+function privateGlossaryEntriesForTarget(entries, targetLanguageCode) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    source: entry.source,
+    target: entry.translations?.[targetLanguageCode],
+    replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
+  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
 }
 
 export function resolveLiveTranslateModel(env = process.env) {
@@ -199,7 +291,7 @@ async function createGenAiClient(apiKey) {
   return new GoogleGenAI({
     apiKey,
     httpOptions: {
-      apiVersion: 'v1alpha'
+      apiVersion: 'v1beta'
     }
   });
 }

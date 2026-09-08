@@ -21,6 +21,7 @@ function preferCue(incoming, existing) {
 
 export function createMeetingCheckpointSyncCoordinator({
   updateCheckpoint,
+  getCheckpoint,
   onStatusChange,
   onError,
   delayMs = DEFAULT_CHECKPOINT_SYNC_DELAY_MS,
@@ -29,6 +30,7 @@ export function createMeetingCheckpointSyncCoordinator({
   clearTimeoutFn = globalThis.clearTimeout
 } = {}) {
   if (typeof updateCheckpoint !== 'function') throw new TypeError('updateCheckpoint is required.');
+  if (getCheckpoint !== undefined && typeof getCheckpoint !== 'function') throw new TypeError('getCheckpoint must be a function.');
   if (typeof setTimeoutFn !== 'function') throw new TypeError('setTimeoutFn is required.');
   if (typeof clearTimeoutFn !== 'function') throw new TypeError('clearTimeoutFn is required.');
 
@@ -147,6 +149,25 @@ export function createMeetingCheckpointSyncCoordinator({
       return true;
     } catch (error) {
       if (context?.generation !== flushContext.generation) return false;
+
+      if (error?.status === 409 && getCheckpoint) {
+        try {
+          const latest = await getCheckpoint({
+            meetingId: flushContext.meetingId,
+            segmentId: flushContext.segmentId
+          });
+          reconcilePendingWithCheckpoint(latest?.checkpoint);
+          if (context?.generation !== flushContext.generation) return false;
+          onStatusChange?.(pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint ? 'ready' : 'synced');
+          if (pendingChunks.size > 0 || pendingCues.size > 0 || pendingCueCheckpoint) {
+            scheduleRetry(flushContext.generation);
+          }
+          return false;
+        } catch (reconcileError) {
+          onError?.(reconcileError);
+        }
+      }
+
       onStatusChange?.('error');
       onError?.(error);
       if (context?.generation === flushContext.generation && isRetryableCheckpointError(error)) scheduleRetry(flushContext.generation);
@@ -172,6 +193,31 @@ export function createMeetingCheckpointSyncCoordinator({
     if (!retryTimer) return;
     clearTimeoutFn(retryTimer);
     retryTimer = null;
+  }
+
+  function reconcilePendingWithCheckpoint(checkpoint) {
+    const persistedChunks = Array.isArray(checkpoint?.durableChunks) ? checkpoint.durableChunks : [];
+    const persistedByKey = new Map(persistedChunks.map((chunk) => [chunk?.idempotencyKey, chunk]));
+    const persistedBySequence = new Map(persistedChunks.map((chunk) => [`${chunk?.stream}:${chunk?.sequence}`, chunk]));
+
+    for (const [key, pending] of pendingChunks) {
+      const persisted = persistedByKey.get(key) || persistedBySequence.get(`${pending.stream}:${pending.sequence}`);
+      if (persisted && (sameChunk(persisted, pending) || persistedBySequence.get(`${pending.stream}:${pending.sequence}`))) {
+        pendingChunks.delete(key);
+      }
+    }
+
+    const persistedCues = new Map((Array.isArray(checkpoint?.finalCues) ? checkpoint.finalCues : []).map((cue) => [cue?.cueId, cue]));
+    for (const [cueId, pending] of pendingCues) {
+      const persisted = persistedCues.get(cueId);
+      if (!persisted || preferCue(pending, persisted) === persisted) {
+        pendingCues.delete(cueId);
+      }
+    }
+
+    if (pendingCueCheckpoint && checkpoint?.cueCheckpoint) {
+      pendingCueCheckpoint = null;
+    }
   }
 }
 

@@ -8,24 +8,6 @@ export function compactTranslationHistoryForDetail(detail) {
   };
 }
 
-export function retryLineagesForExecutions(executions = []) {
-  const lineages = new Map();
-  for (const execution of Array.isArray(executions) ? executions : []) {
-    if (!execution || typeof execution !== 'object') continue;
-    const requestId = execution.requestId || execution.translationRequestId || null;
-    const key = requestId || `execution:${execution.id || lineages.size}`;
-    if (!lineages.has(key)) {
-      lineages.set(key, { requestId, executions: [] });
-    }
-    lineages.get(key).executions.push(execution);
-  }
-
-  return [...lineages.values()].map((lineage) => ({
-    ...lineage,
-    executions: [...lineage.executions].sort(compareExecutionTimeline)
-  }));
-}
-
 export function mergeRetranslationHistoryIntoDetail(detail, translations) {
   if (!detail) return detail;
 
@@ -48,22 +30,6 @@ export function mergeRetranslationHistoryIntoDetail(detail, translations) {
     translationHistory: {
       outputs: mergedOutputs,
       executions: translationsHistory.executions
-    }
-  };
-}
-
-export function removeRetranslationOutputFromDetail(detail, outputId) {
-  if (!detail) return detail;
-
-  const history = compactTranslationHistoryForDetail(detail);
-  const outputs = history.outputs.filter((output) => output.id !== outputId);
-  const polishedItems = mergePolishedItemsFromOutputs(outputs);
-  return {
-    ...detail,
-    polishedArticle: polishedArticleContentFromItems(polishedItems, outputs),
-    translationHistory: {
-      outputs,
-      executions: history.executions
     }
   };
 }
@@ -95,10 +61,4 @@ function mergeHistoryItemsById(firstItems, secondItems) {
     merged.set(key, item);
   }
   return [...merged.values()];
-}
-
-function compareExecutionTimeline(first, second) {
-  const firstTime = first?.createdAt || first?.startedAt || first?.providerAttemptedAt || '';
-  const secondTime = second?.createdAt || second?.startedAt || second?.providerAttemptedAt || '';
-  return String(firstTime).localeCompare(String(secondTime)) || String(first?.id || '').localeCompare(String(second?.id || ''));
 }

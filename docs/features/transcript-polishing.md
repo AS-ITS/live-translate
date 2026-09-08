@@ -2,10 +2,11 @@
 
 ## Purpose
 
-Transcript polishing refines each finalized bilingual Cue asynchronously while
-Gemini Live Translate continues to produce the low-latency raw result. The raw
-source and translation remain available for audit and export; refined values
-are stored on the same Cue and become the default display/article/export text.
+Transcript polishing refines finalized bilingual Cues after the live Session
+ends. Gemini Live Translate continues to produce low-latency raw results during
+the Session; raw source and translation remain available for audit and export,
+while refined values are stored on the same Cue and become the default
+display/article/export text after completion.
 
 ## Runtime Contract
 
@@ -14,8 +15,10 @@ in the Live transcript and are not sent to the polishing provider. Each Cue
 creates one refinement request with the current Cue and up to two preceding
 finalized Cues as context; only the current Cue may be updated.
 
-The browser submits a non-blocking request after each finalized Cue. Request
-identity is derived from `cueId`, refinement version, and raw input hash.
+The browser keeps finalized Cues available as raw live output while the Session
+is active. It submits a non-blocking request only when the Session is stopped
+or a resumable Meeting is completed. Request identity is derived from `cueId`,
+refinement version, and raw input hash.
 
 Requests use the existing TranslationRequest/TranslationExecution queue with
 `operation: "transcript_polishing"`. The structured provider response contains
@@ -77,7 +80,9 @@ Live and history views keep the existing content types:
 
 The same Cue row updates after a completed output is persisted. Raw content can
 still be inspected and explicitly exported. Failed polishing leaves raw values
-visible and does not affect Live controls or audio downloads.
+visible and does not affect Live controls or audio downloads. During an active
+Session, finalized and partial raw Cues remain the only live reading output;
+polishing status is not allowed to replace or visually block them.
 The Live view also shows queued, running, completed, and failed polishing
 states, with a retry action for failed executions.
 

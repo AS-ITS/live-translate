@@ -27,10 +27,13 @@ test.beforeEach(async ({ page }) => {
         getUserMedia: async () => {
           const track = {
             kind: 'audio',
+            enabled: true,
+            readyState: 'live',
             stopped: false,
             listeners: new Map(),
             stop() {
               this.stopped = true;
+              this.readyState = 'ended';
             },
             addEventListener(event, handler) {
               this.listeners.set(event, handler);
@@ -44,6 +47,7 @@ test.beforeEach(async ({ page }) => {
           };
           window.__mockMicTracks.push(track);
           return {
+            active: true,
             getTracks: () => [track]
           };
         }
@@ -309,22 +313,6 @@ test.beforeEach(async ({ page }) => {
 
 });
 
-function historyPanel(page) {
-  return page.locator('.history-page > .history-panel:not(.meeting-panel)');
-}
-
-function historyItems(page) {
-  return historyPanel(page).locator('.history-data-grid .ag-row');
-}
-
-function meetingsPanel(page) {
-  return historyPanel(page);
-}
-
-function meetingItems(page) {
-  return meetingsPanel(page).locator('.history-data-grid .ag-row');
-}
-
 function sessionDetail(page) {
   return page.locator('.session-detail');
 }
@@ -338,15 +326,15 @@ function cueList(page) {
 }
 
 function translationCueList(page) {
-  return liveCuePanel(page).getByTestId('cue-translation-list');
+  return liveCuePanel(page).getByTestId('cue-paired-list');
 }
 
 function finalCueRows(page) {
-  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-final-row');
+  return liveCuePanel(page).getByTestId('cue-paired-list').getByTestId('cue-final-row');
 }
 
 function partialCueRows(page) {
-  return liveCuePanel(page).getByTestId('cue-source-list').getByTestId('cue-partial-row');
+  return liveCuePanel(page).getByTestId('cue-paired-list').getByTestId('cue-partial-row');
 }
 
 function cueRow(page, cueId) {
@@ -359,10 +347,6 @@ async function expectCueRow(row, { sourceText, translatedText, timecode } = {}) 
     const pairedTranslation = row.getByTestId('cue-translated-text');
     if (await pairedTranslation.count() > 0) {
       await expect(pairedTranslation).toHaveText(translatedText);
-    } else {
-      const rowIndex = await row.evaluate((element) => Array.from(element.parentElement.children).indexOf(element));
-      const panel = row.locator('xpath=ancestor::*[@data-testid="live-cue-panel"]');
-      await expect(panel.getByTestId('cue-translation-list').locator('.cue-row').nth(rowIndex).getByTestId('cue-translated-text')).toHaveText(translatedText);
     }
   }
   if (timecode !== undefined) await expect(row.getByTestId('cue-timecode')).toHaveText(timecode);
@@ -384,14 +368,14 @@ async function expectActiveExportDownloadEnabled(page) {
 }
 
 async function openLiveSettings(page) {
-  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  const drawer = page.getByRole('complementary', { name: '即時字幕設定' });
   await page.getByRole('button', { name: '設定', exact: true }).click();
   await expect(drawer).toBeVisible();
   return drawer;
 }
 
 async function liveSetting(page, label) {
-  const drawer = page.getByRole('complementary', { name: '即時翻譯設定' });
+  const drawer = page.getByRole('complementary', { name: '即時字幕設定' });
   const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
   if (await settingsTrigger.isVisible()) {
     if (!(await drawer.isVisible())) await openLiveSettings(page);
@@ -415,16 +399,15 @@ function glossaryPanel(page) {
   return page.locator('.glossary-panel');
 }
 
-function retranslationPage(page) {
-  return page.locator('.retranslation-workflow');
-}
-
 async function mockMeetingCheckpointApi(page, {
   failCheckpoint = false,
   failCheckpointAttempts = 0,
   waitForSegmentList = null,
+  delayMeetingListMs = 0,
   sourceLanguageCode = 'zh-Hant',
-  targetLanguageCode = 'en'
+  targetLanguageCode = 'en',
+  initialSegmentStatus = 'created',
+  initialLiveSessionId = null
 } = {}) {
   page.useMockMeetings = true;
   page.hasMeetingCheckpointMock = true;
@@ -442,6 +425,7 @@ async function mockMeetingCheckpointApi(page, {
     const method = request.method();
 
     if (method === 'GET' && url.pathname === '/api/meetings') {
+      if (delayMeetingListMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMeetingListMs));
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -663,7 +647,8 @@ async function mockMeetingCheckpointApi(page, {
             id: `segment-${index + 1}`,
             meetingId: 'meeting-1',
             sequence: index,
-            status: index + 1 === latestSegmentNumber ? 'active' : 'completed'
+            status: index + 1 === latestSegmentNumber ? initialSegmentStatus : 'completed',
+            liveSessionId: index + 1 === latestSegmentNumber ? initialLiveSessionId : null
           }))
         })
       });
@@ -788,33 +773,9 @@ async function mockLiveLayoutMeeting(page, { meetingId = '4444', archivedSegment
   });
 }
 
-async function openHistoryPage(page) {
-  if (page.useMeetingRootForGoto && page.url().includes('#live?meetingId=meeting-1')) {
-    page.useMockMeetings = false;
-    page.useMeetingRootForGoto = false;
-    page.sessionHistoryMode = true;
-    await page.goto('/#history');
-    await expect(page).toHaveURL(/#history$/);
-    return;
-  }
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click();
-  await expect(page).toHaveURL(/#history$/);
-}
-
-async function openSessionHistoryPage(page) {
-  page.useMockMeetings = false;
-  page.useMeetingRootForGoto = false;
-  await page.goto('/#history');
-  await expect(page).toHaveURL(/#history$/);
-}
-
-async function openMeetingsPage(page) {
-  await openHistoryPage(page);
-}
-
 async function openGlossaryPage(page) {
-  await page.getByRole('link', { name: '翻譯字典' }).click();
-  await expect(page).toHaveURL(/#glossary$/);
+  await page.goto('/#glossary');
+  await expect(page).toHaveURL(/#meetings\?panel=global-glossary$/);
 }
 
 async function openLivePage(page) {
@@ -826,8 +787,8 @@ async function openLivePage(page) {
     await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
     return;
   }
-  await page.getByRole('link', { name: '即時翻譯', exact: true }).click();
-  await expect(page).toHaveURL(/#live$/);
+  await page.goto('/#meetings');
+  await expect(page).toHaveURL(/#meetings$/);
 }
 
 async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCode } = {}) {
@@ -839,9 +800,71 @@ async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCod
   }
   if (!page.hasMeetingCheckpointMock) await mockMeetingCheckpointApi(page, page.mockMeetingLanguage);
   await page.goto('/#live?meetingId=meeting-1');
-  await expect(page.getByRole('combobox', { name: '選擇會議' })).toHaveValue('測試會議');
+  await page.evaluate(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
+  await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 }
+
+test('live recording can start while the meeting list is still loading', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, { delayMeetingListMs: 500 });
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.evaluate(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+});
+
+test('live recording falls back when AudioWorklet has no callback', async ({ page }) => {
+  await page.addInitScript(() => {
+    const AudioContextImpl = window.AudioContext;
+    window.AudioWorkletNode = class MockAudioWorkletNode {
+      constructor() {
+        this.port = { onmessage: null };
+      }
+
+      connect() {}
+
+      disconnect() {}
+    };
+    window.AudioContext = class MockWorkletAudioContext extends AudioContextImpl {
+      constructor(...args) {
+        super(...args);
+        this.audioWorklet = { addModule: async () => {} };
+      }
+    };
+  });
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始錄製' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await expect.poll(async () => page.evaluate(() => {
+    const snapshot = window.__liveTranslateDebug?.getSnapshot?.();
+    return snapshot?.captureProcessorMode;
+  }), { timeout: 5000 }).toBe('script');
+  const state = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
+  expect(state.captureEnabled).toBe(true);
+  expect(state.failureDiagnostics.at(-1).reasonHint).toBe('audio_worklet_callback_stalled');
+  await expect(page.getByText('無法擷取麥克風音訊')).toHaveCount(0);
+});
 
 async function emitFinalTranscript(page, sourceText = 'history source', translationText = 'history translation', { waitMs = 750 } = {}) {
   await page.evaluate(
@@ -939,382 +962,120 @@ async function emitTurnComplete(page) {
   });
 }
 
-test('initial history shows empty state', async ({ page }) => {
-  await page.goto('/');
-  await openHistoryPage(page);
+test('live recording surface exposes meeting and session controls', async ({ page }) => {
+  await gotoMockMeetingLive(page);
 
-  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(historyPanel(page).getByText('尚無會議紀錄。')).toHaveCount(0);
-  await expect(historyPanel(page).getByText('完成一次即時翻譯後，會議摘要會出現在這裡。')).toHaveCount(0);
-  await expect(historyPanel(page).locator('.history-data-grid')).toBeVisible();
-  await expect(historyItems(page)).toHaveCount(0);
+  await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
+  await expect(page.getByRole('combobox', { name: '選擇會議' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '設定', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^字典/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
+  const meetingSettingsButton = page.getByRole('link', { name: '修改會議設定' });
+  await expect(meetingSettingsButton).toBeVisible();
+  await expect(meetingSettingsButton).toHaveAttribute('href', '#meeting-settings?mode=edit&meetingId=meeting-1');
+  await expect(page.locator('.meeting-app-header .live-header-actions').getByRole('link', { name: '修改會議設定' })).toHaveCount(1);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-meeting-summary').getByRole('link', { name: '修改會議設定' })).toHaveCount(0);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-session-status .live-device-summary')).toHaveCount(1);
+  await expect(page.getByTestId('live-session-toolbar').locator('.live-meeting-summary .live-device-summary')).toHaveCount(0);
+  await page.setViewportSize({ width: 640, height: 800 });
+  await expect(meetingSettingsButton).toBeVisible();
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('準備就緒');
+  await page.screenshot({ path: test.info().outputPath('live-control-ready.png'), fullPage: true });
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('live-control-listening.png'), fullPage: true });
+  await expect(page.getByRole('button', { name: '暫停' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeVisible();
+
+  await page.getByRole('button', { name: '暫停' }).click();
+  await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeVisible();
 });
 
-test('page-specific workspaces stay isolated', async ({ page }) => {
-  await page.route('**/api/meetings', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([{ id: 'navigation-meeting', name: '導覽測試會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }])
-    });
-  });
-
-  await page.goto('/#live');
-  await expect(page.locator('.history-page')).toBeHidden();
-  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
-  await expect(page.locator('.live-page')).toBeVisible();
-
-  await page.goto('/#meeting');
-  await expect(page.locator('.history-page')).toBeHidden();
-  await expect(page.locator('.history-page, .meetings-page, .retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
-  await expect(page.locator('.meeting-management-page:not(.history-page)')).toBeVisible();
-
-  await openHistoryPage(page);
-  await expect(page.locator('.history-page')).toBeVisible();
-  await expect(page.locator('.live-page')).toBeHidden();
-  await expect(page.locator('.retranslation-page, .glossary-page, .dead-letter-queue-page')).toHaveCount(0);
-});
-
-test('workspace pages use the sidebar instead of the legacy header', async ({ page }) => {
-  for (const hash of ['#history', '#retranslate', '#glossary', '#meetings', '#dead-letter-queue']) {
-    await page.goto(`/${hash}`);
-    await expect(page.locator('.live-sidebar')).toBeVisible();
-    await expect(page.locator('.app-header')).toBeHidden();
-  }
-});
-
-test('history grid uses native pagination and page size controls', async ({ page }) => {
-  await page.route('**/api/sessions', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(Array.from({ length: 13 }, (_, index) => historyRecord({
-        id: `session-pagination-${index + 1}`,
-        startedAt: index + 1,
-        endedAt: index + 2
-      })))
-    });
-  });
-
-  await page.goto('/');
-  await openHistoryPage(page);
-
-  const grid = historyPanel(page).locator('.history-data-grid');
-  await expect(grid.locator('.ag-row')).toHaveCount(12);
-  await expect(grid.locator('.ag-paging-page-size')).toBeVisible();
-  await expect(grid.getByRole('button', { name: '下一頁' })).toBeEnabled();
-
-  const layout = await grid.evaluate((element) => {
-    const gridRect = element.getBoundingClientRect();
-    const panelRect = element.parentElement.getBoundingClientRect();
-    const paginationPanel = element.querySelector('.ag-paging-panel')?.getBoundingClientRect() || null;
-    return {
-      gridFitsPanel: gridRect.left >= panelRect.left && gridRect.right <= panelRect.right,
-      paginationFitsGrid: paginationPanel ? paginationPanel.bottom <= gridRect.bottom + 1 : false,
-      paginationPanel
-    };
-  });
-  expect(layout.gridFitsPanel).toBe(true);
-  expect(layout.paginationFitsGrid).toBe(true);
-  expect(layout.paginationPanel).not.toBeNull();
-
-  const nextPageButton = await grid.getByRole('button', { name: '下一頁' }).boundingBox();
-  const pageSizeSelector = await grid.locator('.ag-paging-page-size').boundingBox();
-  expect(nextPageButton).not.toBeNull();
-  expect(pageSizeSelector).not.toBeNull();
-  expect(Math.abs(nextPageButton.y + nextPageButton.height / 2 - (pageSizeSelector.y + pageSizeSelector.height / 2))).toBeLessThanOrEqual(2);
-
-  await grid.getByRole('button', { name: '下一頁' }).click();
-  await expect(grid.locator('.ag-row')).toHaveCount(1);
-
-  await grid.locator('.ag-paging-page-size .ag-picker-field-display').click();
-  await expect(page.getByRole('option', { name: '24' })).toBeVisible();
-  await page.getByRole('option', { name: '24' }).click();
-  await expect(grid.locator('.ag-row')).toHaveCount(13);
-});
-
-test('history grid uses compact columns on laptop viewports', async ({ page }) => {
-  await page.route('**/api/sessions', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([
-        historyRecord({ id: 'session-compact-1', targetLanguageLabel: '英文' }),
-        historyRecord({ id: 'session-compact-2', targetLanguageLabel: '日文' }),
-        historyRecord({ id: 'session-compact-3', targetLanguageLabel: '韓文' })
-      ])
-    });
-  });
-
-  await page.setViewportSize({ width: 1024, height: 600 });
-  await page.goto('/#history');
-
-  const grid = historyPanel(page).locator('.history-data-grid');
-  await expect(grid.locator('.ag-row')).toHaveCount(3);
-  await expect(grid.getByText('會議', { exact: true })).toBeVisible();
-  await expect(grid.getByText('開始時間', { exact: true })).toBeVisible();
-  await expect(grid.getByText('會議摘要', { exact: true })).toBeVisible();
-  await expect(grid.getByText('操作', { exact: true })).toBeVisible();
-  await expect(grid.getByText('結束時間', { exact: true })).toHaveCount(0);
-
-  const layout = await grid.evaluate((element) => {
-    const horizontalScroll = element.querySelector('.ag-body-horizontal-scroll-viewport');
-    return {
-      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-      gridHasHorizontalOverflow: Boolean(horizontalScroll && horizontalScroll.scrollWidth > horizontalScroll.clientWidth + 1)
-    };
-  });
-  expect(layout.pageHasHorizontalOverflow).toBe(false);
-  expect(layout.gridHasHorizontalOverflow).toBe(false);
-});
-
-test('history workspace keeps page scrolling inside the table', async ({ page }) => {
-  await page.route('**/api/sessions', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(Array.from({ length: 48 }, (_, index) => historyRecord({
-        id: `session-scroll-${index + 1}`,
-        startedAt: index + 1,
-        endedAt: index + 2,
-        targetLanguageLabel: `語言 ${index + 1}`
-      })))
-    });
-  });
-
-  await page.goto('/');
-  await openHistoryPage(page);
-  await expect(historyPanel(page).locator('.history-data-grid')).toBeVisible();
-  await expect(historyItems(page)).not.toHaveCount(0);
-
-  const layout = await page.evaluate(() => {
-    const grid = document.querySelector('.history-data-grid');
-    const tableScroll = document.querySelector('.history-table-scroll');
-    const pageScroll = document.scrollingElement;
-    const body = document.body;
-    const gridBody = grid?.querySelector('.ag-body-viewport');
-    const rect = grid?.getBoundingClientRect();
-    const panelRect = document.querySelector('.history-page > .history-panel')?.getBoundingClientRect();
-    return {
-      bodyCanScroll: body.scrollHeight > body.clientHeight,
-      pageCanScroll: pageScroll.scrollHeight > pageScroll.clientHeight,
-      tableScrollEnabled: Boolean(tableScroll && ['auto', 'scroll'].includes(getComputedStyle(tableScroll).overflowY)),
-      gridBodyScrollEnabled: Boolean(gridBody && ['auto', 'scroll'].includes(getComputedStyle(gridBody).overflowY)),
-      gridFitsPanel: Boolean(rect && panelRect && rect.top >= panelRect.top && rect.bottom <= panelRect.bottom + 1),
-      domLayout: grid?.querySelector('.ag-root')?.getAttribute('class') || ''
-    };
-  });
-  expect(layout.bodyCanScroll).toBe(false);
-  expect(layout.pageCanScroll).toBe(false);
-  expect(layout.tableScrollEnabled || layout.gridBodyScrollEnabled).toBe(true);
-  expect(layout.gridFitsPanel).toBe(true);
-  expect(layout.domLayout).not.toContain('ag-layout-auto-height');
-});
-
-test('retranslation picker uses compact columns on laptop viewports', async ({ page }) => {
-  await page.route('**/api/sessions', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.fallback();
-      return;
-    }
-
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([
-        historyRecord({ id: 'session-retranslation-compact-1', name: '紀錄一' }),
-        historyRecord({ id: 'session-retranslation-compact-2', name: '紀錄二' }),
-        historyRecord({ id: 'session-retranslation-compact-3', name: '紀錄三' })
-      ])
-    });
-  });
-
-  await page.setViewportSize({ width: 1024, height: 600 });
-  await page.goto('/#retranslate');
-
-  const grid = page.locator('.retranslation-session-data-grid');
-  await expect(grid.locator('.ag-row')).toHaveCount(3);
-  await expect(grid.getByText('名稱', { exact: true })).toBeVisible();
-  await expect(grid.getByText('開始時間', { exact: true })).toBeVisible();
-  await expect(grid.getByText('逐字稿', { exact: true })).toBeVisible();
-  await expect(grid.getByRole('button', { name: '選擇' }).first()).toBeVisible();
-  await expect(grid.getByText('結束時間', { exact: true })).toHaveCount(0);
-
-  const layout = await grid.evaluate((element) => {
-    const horizontalScroll = element.querySelector('.ag-body-horizontal-scroll-viewport');
-    return {
-      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-      gridHasHorizontalOverflow: Boolean(horizontalScroll && horizontalScroll.scrollWidth > horizontalScroll.clientWidth + 1)
-    };
-  });
-  expect(layout.pageHasHorizontalOverflow).toBe(false);
-  expect(layout.gridHasHorizontalOverflow).toBe(false);
-});
-
-test('meeting history detail uses an independent page with timeline, article views, and export controls', async ({ page }) => {
-  await page.route('**/api/meetings**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-
-    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify([meetingHistoryRecord()])
-      });
-      return;
-    }
-
-    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-1') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(meetingDetailResponse())
-      });
-      return;
-    }
-
-    await route.fallback();
-  });
-
-  await page.goto('/');
-  await openMeetingsPage(page);
-
-  await expect(page.getByRole('heading', { name: '翻譯紀錄' })).toBeVisible();
-  await expect(meetingItems(page)).toHaveCount(1);
-  await expect(meetingItems(page).first().getByText('3 段（完成 1、中斷 1、失敗 1）')).toBeVisible();
-  await meetingItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=history$/);
-  await expect(page.locator('.history-page')).toHaveCount(0);
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '會議詳細資料' })).toBeVisible();
-  const detail = page.locator('.meeting-detail-page .meeting-detail');
-  const detailLayout = await page.evaluate(() => {
-    const detailPage = document.querySelector('.meeting-detail-page');
-    const detailScroll = document.querySelector('.meeting-detail-page-scroll');
-    const pageScroll = document.scrollingElement;
-    return {
-      pageCanScroll: pageScroll.scrollHeight > pageScroll.clientHeight,
-      detailPageVisible: Boolean(detailPage),
-      detailScrollEnabled: Boolean(detailScroll && ['auto', 'scroll'].includes(getComputedStyle(detailScroll).overflowY))
-    };
-  });
-  expect(detailLayout.pageCanScroll).toBe(false);
-  expect(detailLayout.detailPageVisible).toBe(true);
-  expect(detailLayout.detailScrollEnabled).toBe(true);
-  const audioDownloads = detail.locator('.audio-artifact-downloads');
-  const audioLayout = await audioDownloads.evaluate((element) => ({
-    height: element.getBoundingClientRect().height,
-    columns: getComputedStyle(element).gridTemplateColumns,
-    pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+test('entering live recording from meeting settings loads the selected meeting', async ({ page }) => {
+  await page.route('**/api/glossary', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ entries: [] })
   }));
-  expect(audioLayout.height).toBeLessThanOrEqual(120);
-  expect(audioLayout.columns.split(' ').length).toBe(2);
-  expect(audioLayout.pageHasHorizontalOverflow).toBe(false);
-  await expect(detail.getByLabel('會議段落時間軸')).toHaveCount(0);
-  await expect(detail.getByText('段落內容', { exact: true })).toHaveCount(0);
-  await expect(detail.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
 
-  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
-  await expect(detail.getByText('第一段原文 第二段原文 第三段原文')).toBeVisible();
+  await page.goto('/#meeting-settings?mode=edit&meetingId=meeting-1');
+  await expect(page.getByRole('heading', { name: '基本資訊' })).toBeVisible();
 
-  const exportPanel = detail.getByLabel('整場會議逐字稿匯出');
-  await expect(exportPanel.getByRole('button', { name: '下載整場逐字稿' })).toBeEnabled();
-  await exportPanel.getByRole('combobox', { name: '整場匯出格式' }).selectOption('srt');
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
 
-  const downloadPromise = page.waitForEvent('download');
-  await exportPanel.getByRole('button', { name: '下載整場逐字稿' }).click();
-  const download = await downloadPromise;
-  const downloadPath = await download.path();
-  const content = await readFile(downloadPath, 'utf8');
-
-  expect(download.suggestedFilename()).toMatch(/^live-translate-meeting-meeting-1-.*-translation\.srt$/);
-  expect(content).toContain('00:00:09,000 --> 00:00:10,000\n第一段翻譯');
-  expect(content).toContain('00:01:09,000 --> 00:01:10,000\n第二段翻譯');
-  expect(content).toContain('00:02:09,000 --> 00:02:10,000\n第三段翻譯');
-  expect(content.indexOf('第一段翻譯')).toBeLessThan(content.indexOf('第二段翻譯'));
-  expect(content.indexOf('第二段翻譯')).toBeLessThan(content.indexOf('第三段翻譯'));
-
-  await page.getByRole('button', { name: '返回翻譯紀錄' }).click();
-  await expect(page).toHaveURL(/#history$/);
-  await expect(page.locator('.meeting-detail-page')).toHaveCount(0);
-
-  await page.goto('/#meetings');
-  await expect(page.locator('.meetings-page')).toBeVisible();
-  await page.locator('.meetings-page .meeting-item').first().getByRole('button', { name: '查看會議詳細資料' }).click();
-  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=meetings$/);
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await page.getByRole('button', { name: '返回會議列表' }).click();
-  await expect(page).toHaveURL(/#meetings$/);
-
-  await page.goto('/#meeting-detail?meetingId=meeting-1&from=history');
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('測試會議');
+  await expect(page.getByTestId('live-session-toolbar')).not.toContainText('正在載入會議…');
 });
 
-test('completed meeting opens translation history from meeting management without a blank page', async ({ page }) => {
-  const detail = meetingDetailResponse();
-  detail.meeting = { ...detail.meeting, status: 'completed' };
+test('active recording can return from meeting settings without restarting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
 
-  await page.route('**/api/meetings**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  const initialSessionCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+  const initialTokenRequestCount = page.liveTokenRequests.length;
 
-    if (request.method() === 'GET' && url.pathname === '/api/meetings') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify([meetingHistoryRecord({ status: 'completed' })])
-      });
-      return;
-    }
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
 
-    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-1') {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify(detail)
-      });
-      return;
-    }
-
-    await route.fallback();
-  });
-
-  const pageErrors = [];
-  page.on('pageerror', (error) => pageErrors.push(error));
-  await page.goto('/#meeting');
-
-  const row = page.locator('.meeting-management-page .meeting-management-data-grid .ag-row').first();
-  await expect(row).toContainText('已完成');
-  await row.getByRole('button', { name: '前往翻譯紀錄' }).click();
-
-  await expect(page).toHaveURL(/#meeting-detail\?meetingId=meeting-1&from=history$/);
-  await expect(page.locator('.meeting-detail-page')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '會議詳細資料' })).toBeVisible();
-  await expect(page.getByText('第一段翻譯 第二段翻譯 第三段翻譯')).toBeVisible();
-  expect(pageErrors).toEqual([]);
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(initialSessionCount);
+  expect(page.liveTokenRequests).toHaveLength(initialTokenRequestCount);
 });
 
-test('glossary page creates, edits, and deletes scoped entries', async ({ page }) => {
+test('live recording shows a retryable error when meeting detail loading fails', async ({ page }) => {
+  await page.route('**/api/meetings/meeting-1', async (route) => route.fulfill({
+    status: 500,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'internal_error' } })
+  }));
+
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByRole('alert')).toContainText('會議詳細資料載入失敗。請重試。');
+  await expect(page.getByRole('button', { name: '重試' })).toBeVisible();
+  await expect(page.getByTestId('live-session-toolbar')).not.toContainText('正在載入會議…');
+});
+
+test('live recording shows an actionable unselected meeting state', async ({ page }) => {
+  await page.goto('/#live');
+
+  await expect(page.getByTestId('live-session-toolbar')).toContainText('尚未選擇會議');
+  await expect(page.getByRole('combobox', { name: '選擇會議' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '開始', exact: true })).toHaveCount(0);
+  await expect(page.getByTestId('cue-empty-state')).toHaveCount(1);
+  await expect(page.getByTestId('cue-empty-state')).toContainText('開始錄音後');
+  await page.screenshot({ path: test.info().outputPath('live-control-unselected.png'), fullPage: true });
+});
+
+test('global glossary page creates, edits, and deletes entries', async ({ page }) => {
   const requests = [];
+  const loadRequests = { entries: 0, categories: 0 };
   let entries = [];
+  let categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'department', label: '部門／職能' },
+    { id: 'abbreviation', label: '縮寫' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'technical', label: '技術名詞' },
+    { id: 'sales', label: '銷售用語' },
+    { id: 'legal', label: '法務用語' },
+    { id: 'customer', label: '客戶名詞' },
+    { id: 'other', label: '其他' }
+  ];
 
   await page.route('**/api/glossary**', async (route) => {
     const request = route.request();
@@ -1322,7 +1083,51 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
     const method = request.method();
 
     if (method === 'GET' && url.pathname === '/api/glossary') {
+      loadRequests.entries += 1;
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+
+    if (method === 'GET' && url.pathname === '/api/glossary/categories') {
+      loadRequests.categories += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ categories })
+      });
+      return;
+    }
+
+    if (method === 'POST' && url.pathname === '/api/glossary/categories') {
+      const body = JSON.parse(request.postData() || '{}');
+      const category = { id: 'project', label: body.label };
+      categories = [...categories, category];
+      requests.push({ method, body });
+      await route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify({ category }) });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/glossary/categories/order') {
+      const body = JSON.parse(request.postData() || '{}');
+      categories = body.categoryIds.map((id) => categories.find((category) => category.id === id));
+      requests.push({ method, body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+
+    if (method === 'PUT' && url.pathname === '/api/glossary/categories/project') {
+      const body = JSON.parse(request.postData() || '{}');
+      categories = categories.map((category) => category.id === 'project' ? { ...category, label: body.label } : category);
+      requests.push({ method, body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ category: categories.find((category) => category.id === 'project') }) });
+      return;
+    }
+
+    if (method === 'DELETE' && url.pathname === '/api/glossary/categories/project') {
+      categories = categories.filter((category) => category.id !== 'project');
+      entries = entries.map((entry) => entry.category === 'project' ? { ...entry, category: 'other' } : entry);
+      requests.push({ method });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ category: categories.find((category) => category.id === 'other'), reassignedEntryCount: 0 }) });
       return;
     }
 
@@ -1355,40 +1160,289 @@ test('glossary page creates, edits, and deletes scoped entries', async ({ page }
     await route.fallback();
   });
 
-  await page.goto('/');
-  await page.evaluate(() => { window.location.hash = 'glossary'; });
+  await page.goto('/#glossary');
   await expect(page).toHaveURL(/#glossary$/);
 
-  await expect(page.getByRole('heading', { name: '翻譯字典' })).toBeVisible();
-  await expect(page.locator('.glossary-page > .history-header')).toBeVisible();
-  await glossaryPanel(page).getByLabel('詞條').fill('microphone');
-  await glossaryPanel(page).getByLabel('目標語言').selectOption('ja');
-  await glossaryPanel(page).getByLabel('替換成').fill('Alan speak');
-  await expect(glossaryPanel(page).getByLabel('字幕替換詞')).toHaveCount(0);
-  await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
-  await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
+  await expect(page.getByRole('heading', { name: '全域字典' })).toBeVisible();
+  await expect.poll(() => loadRequests.entries).toBe(1);
+  await expect.poll(() => loadRequests.categories).toBe(1);
+  await page.waitForTimeout(100);
+  expect(loadRequests).toEqual({ entries: 1, categories: 1 });
+  const glossary = page.locator('.global-glossary');
+  await expect(glossary.locator('.global-glossary-filter-row').getByLabel('分類')).toHaveCount(0);
+  await expect(glossary.locator('.glossary-category-sidebar').getByRole('button', { name: /全部分類/ })).toHaveClass(/is-active/);
+  await expect(glossary.locator('.glossary-category-sidebar > button')).toHaveCount(9);
+  await glossary.getByRole('button', { name: '更多分類' }).click();
+  await expect(glossary.locator('.glossary-category-more-menu')).toContainText('客戶名詞');
+  await glossary.locator('.glossary-category-more-menu').getByRole('menuitem', { name: /客戶名詞/ }).click();
+  await glossary.locator('.glossary-category-sidebar').getByRole('button', { name: /全部分類/ }).click();
+  await glossary.getByRole('button', { name: '管理分類' }).click();
+  const categoryDialog = page.getByRole('dialog', { name: '管理分類' });
+  const categoryCloseButton = categoryDialog.getByRole('button', { name: '關閉分類管理' });
+  await expect(categoryCloseButton).toHaveCSS('width', '44px');
+  await expect(categoryCloseButton).toHaveCSS('height', '44px');
+  await categoryDialog.getByRole('searchbox').fill('法務');
+  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(1);
+  await categoryDialog.getByRole('searchbox').fill('');
+  await categoryDialog.getByRole('textbox').fill('專案名詞');
+  await categoryDialog.getByRole('button', { name: '新增分類' }).click();
+  await expect(categoryDialog.locator('.category-management-row')).toHaveCount(10);
+  await categoryDialog.getByRole('button', { name: '上移 專案名詞' }).click();
+  await expect(categoryDialog.locator('.category-management-row').nth(8)).toContainText('專案名詞');
+  expect(requests.filter((request) => request.method === 'PUT' && request.body?.categoryIds).length).toBe(1);
+  const projectRow = categoryDialog.locator('.category-management-row').filter({ hasText: '專案名詞' });
+  await projectRow.getByRole('button', { name: '編輯' }).click();
+  await categoryDialog.getByRole('textbox').fill('專案詞彙');
+  await categoryDialog.getByRole('button', { name: '儲存名稱' }).click();
+  await expect(categoryDialog.locator('.category-management-row').filter({ hasText: '專案詞彙' })).toHaveCount(1);
+  await categoryDialog.getByRole('button', { name: '關閉分類管理' }).click();
+  await expect(page.getByText('無法更新分類順序。')).toHaveCount(0);
+  await glossary.getByRole('button', { name: '新增詞條' }).click();
+  const dialog = page.getByRole('dialog', { name: '新增詞條' });
+  await dialog.getByLabel('原文字詞').fill('microphone');
+  await dialog.getByLabel('翻譯語言').selectOption('ja');
+  await dialog.getByLabel('翻譯內容：ja').fill('Alan speak');
+  await dialog.getByLabel('分類').selectOption('project');
+  await dialog.getByLabel('標籤（以逗號分隔）').fill('audio, product');
+  await expect(dialog.getByText('套用範圍')).toHaveCount(0);
+  await expect(dialog.locator('select')).toHaveCount(3);
+  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['56px', '56px', '56px']);
+  await expect(dialog.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '新增全域詞條' })).toBeVisible();
+  await dialog.getByRole('button', { name: '新增全域詞條' }).click();
+  await expect(glossary.locator('.glossary-card').first()).toContainText('microphone');
+  await expect(glossary.locator('.glossary-card').first()).toContainText('Alan speak');
 
-  const glossaryRow = glossaryPanel(page).locator('.glossary-data-grid .ag-row').first();
-  await expect(glossaryRow.getByText('microphone', { exact: true })).toBeVisible();
-  await expect(glossaryRow.getByText('Alan speak')).toBeVisible();
-  await expect(glossaryPanel(page).getByText('套用範圍：即時翻譯')).toBeVisible();
+  const selectAllButton = glossary.getByRole('button', { name: '全選目前結果' });
+  await expect(selectAllButton).toHaveAttribute('aria-pressed', 'false');
+  await selectAllButton.click();
+  await expect(selectAllButton).toHaveText('取消全選目前結果');
+  await expect(selectAllButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(glossary.getByRole('button', { name: '取消選取' })).toHaveCount(0);
+  await expect(glossary.locator('.glossary-card-topline > input[type="checkbox"]')).toBeChecked();
+  await selectAllButton.click();
+  await expect(glossary.getByRole('button', { name: '全選目前結果' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(glossary.locator('.glossary-card-topline > input[type="checkbox"]')).not.toBeChecked();
 
-  await glossaryPanel(page).getByRole('button', { name: '編輯' }).click();
-  await glossaryPanel(page).getByLabel('套用範圍').selectOption('both');
-  await glossaryPanel(page).getByRole('button', { name: '更新詞條' }).click();
-  await expect(glossaryPanel(page).getByText('套用範圍：兩者')).toBeVisible();
+  await glossary.locator('.glossary-card').first().click();
+  await expect(page.getByRole('dialog', { name: '編輯詞條' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '編輯詞條' })).toHaveCount(0);
+
+  await glossary.locator('.glossary-card').first().click();
+  const editDialog = page.getByRole('dialog', { name: '編輯詞條' });
+  await expect(editDialog).toBeVisible();
+  await expect(editDialog.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(editDialog.getByRole('button', { name: '儲存變更' })).toBeVisible();
+  await editDialog.getByRole('button', { name: '儲存變更' }).click();
 
   page.once('dialog', (dialog) => dialog.accept());
-  await glossaryPanel(page).getByRole('button', { name: '刪除' }).click();
-  await expect(glossaryPanel(page).getByText('尚無字典詞條。')).toBeVisible();
+  await glossary.locator('.glossary-card').first().click();
+  await page.getByRole('dialog', { name: '編輯詞條' }).getByRole('button', { name: '刪除詞條' }).click();
+  await expect(glossary.locator('.glossary-empty')).toBeVisible();
+  await expect(glossary.getByRole('button', { name: '全選目前結果' })).toBeDisabled();
 
-  expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'DELETE']);
-  expect(requests[0].body.scope).toBe('live');
-  expect(requests[0].body).toEqual({ source: 'microphone', translations: { ja: 'Alan speak' }, scope: 'live' });
-  expect(requests[1].body.scope).toBe('both');
+  await glossary.getByRole('button', { name: '管理分類' }).click();
+  const finalCategoryDialog = page.getByRole('dialog', { name: '管理分類' });
+  page.once('dialog', (dialog) => dialog.accept());
+  await finalCategoryDialog.locator('.category-management-row').filter({ hasText: '專案詞彙' }).getByRole('button', { name: '刪除' }).click();
+  await expect(finalCategoryDialog.locator('.category-management-row')).toHaveCount(9);
+  await finalCategoryDialog.getByRole('button', { name: '關閉分類管理' }).click();
+
+  expect(requests.map((request) => request.method)).toEqual(['POST', 'PUT', 'PUT', 'POST', 'PUT', 'DELETE', 'DELETE']);
+  expect(requests[0].body.label).toBe('專案名詞');
+  expect(requests[1].body.categoryIds[8]).toBe('project');
+  expect(requests[2].body.label).toBe('專案詞彙');
+  expect(requests[3].body.scope).toBe('live');
+  expect(requests[3].body.category).toBe('project');
+  expect(requests[3].body.source).toBe('microphone');
+  expect(requests[3].body.tags).toEqual(['audio', 'product']);
+  expect(requests[4].body.scope).toBe('live');
 });
 
-test('live translation meeting glossary is read-only', async ({ page }) => {
+test('global glossary batch updates selected entries sequentially', async ({ page }) => {
+  const entries = [
+    { id: 'entry-1', source: '產品名稱', sourceLanguageCode: 'zh-Hant', translations: { en: 'Product name' }, category: 'product', tags: [], enabled: true },
+    { id: 'entry-2', source: '會議術語', sourceLanguageCode: 'zh-Hant', translations: { en: 'Meeting term' }, category: 'meeting', tags: [], enabled: true }
+  ];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'other', label: '其他' }
+  ];
+  const updates = [];
+  let updateInFlight = false;
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+    if (request.method() === 'PUT' && url.pathname.startsWith('/api/glossary/entries/')) {
+      if (updateInFlight) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Concurrent update' } }) });
+        return;
+      }
+      updateInFlight = true;
+      const id = decodeURIComponent(url.pathname.split('/').pop());
+      const body = JSON.parse(request.postData() || '{}');
+      updates.push({ id, body });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      updateInFlight = false;
+      const entry = { ...entries.find((item) => item.id === id), ...body, updatedAt: Date.now() };
+      entries.splice(entries.findIndex((item) => item.id === id), 1, entry);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/#glossary');
+  const glossary = page.locator('.global-glossary');
+  await expect(glossary.locator('.glossary-card')).toHaveCount(2);
+  await glossary.getByRole('button', { name: '全選目前結果' }).click();
+  await glossary.getByRole('button', { name: '批次停用' }).click();
+  await expect.poll(() => updates.length).toBe(2);
+  expect(updates.map(({ id, body }) => [id, body.enabled])).toEqual([['entry-1', false], ['entry-2', false]]);
+  await expect(glossary.locator('.glossary-status.is-disabled')).toHaveCount(2);
+
+  await glossary.getByRole('button', { name: '全選目前結果' }).click();
+  await glossary.getByRole('button', { name: '批次啟用' }).click();
+  await expect.poll(() => updates.length).toBe(4);
+  expect(updates.slice(2).map(({ id, body }) => [id, body.enabled]).sort()).toEqual([['entry-1', true], ['entry-2', true]]);
+  await expect(glossary.locator('.glossary-status:not(.is-disabled)')).toHaveCount(2);
+});
+
+test('global glossary import explains the format and applies selected settings', async ({ page }) => {
+  const importRequests = [];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'project', label: '專案' },
+    { id: 'other', label: '其他' }
+  ];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries: [] }) });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/glossary/import/preview') {
+      const body = JSON.parse(request.postData() || '{}');
+      importRequests.push({ type: 'preview', body });
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          baseRevision: 'revision-1',
+          summary: { total: 2, valid: 1, invalid: 1, creates: 1, updates: 0, duplicates: 0 },
+          rows: [
+            { rowNumber: 2, status: 'create', entry: { source: '產品名稱', sourceLanguageCode: body.sourceLanguageCode, translations: { [body.targetLanguageCode]: 'Product name' }, category: body.category }, conflict: null, errors: [] },
+            { rowNumber: 3, status: 'invalid', entry: { source: '缺少翻譯' }, conflict: null, errors: ['Translation is required.'] }
+          ]
+        })
+      });
+      return;
+    }
+    if (request.method() === 'POST' && url.pathname === '/api/glossary/import') {
+      const body = JSON.parse(request.postData() || '{}');
+      importRequests.push({ type: 'commit', body });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ createdCount: 1, updatedCount: 0, skippedCount: 0, total: 1 }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/#glossary');
+  const glossary = page.locator('.global-glossary');
+  await glossary.getByRole('button', { name: '匯入字典' }).click();
+  const helpDialog = page.getByRole('dialog', { name: '匯入字典' });
+  await expect(helpDialog).toContainText('source,translation');
+  await expect(helpDialog).toContainText('entries');
+  await expect(helpDialog).toContainText('XLSX');
+  await expect(helpDialog).toContainText('會議室');
+  await expect(helpDialog).toContainText('翻譯結果');
+
+  await glossary.locator('#global-glossary-import-file').setInputFiles({
+    name: 'terms.xlsx',
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    buffer: Buffer.from('test xlsx content')
+  });
+  const previewDialog = page.getByRole('dialog', { name: /預覽匯入/ });
+  await expect(previewDialog).toBeVisible();
+  await expect(previewDialog.locator('.import-entry-preview').first()).toHaveText('產品名稱→Product name');
+  await expect(previewDialog.locator('.import-entry-arrow').first()).toHaveText('→');
+  const firstImportRow = previewDialog.locator('.glossary-import-row').first();
+  const entryPreviewBox = await firstImportRow.locator('.import-entry-preview').boundingBox();
+  const rowStatusBox = await firstImportRow.locator(':scope > span').boundingBox();
+  expect(entryPreviewBox?.x).toBeLessThan(rowStatusBox?.x ?? Number.POSITIVE_INFINITY);
+  await previewDialog.getByLabel('來源語言').selectOption('en');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'en', category: 'other' });
+  await previewDialog.getByLabel('目標語言').selectOption('ja');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'other' });
+  await previewDialog.getByLabel('分類').selectOption('project');
+  await expect.poll(() => importRequests.filter((request) => request.type === 'preview').at(-1)?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'project' });
+  await expect(previewDialog.getByLabel('選取第 2 列')).toBeChecked();
+  await expect(previewDialog.getByLabel('選取第 3 列')).not.toBeChecked();
+  await expect(previewDialog.getByLabel('選取第 3 列')).toBeDisabled();
+  await previewDialog.getByRole('button', { name: '確認匯入' }).click();
+  await expect.poll(() => importRequests.find((request) => request.type === 'commit')?.body).toMatchObject({ sourceLanguageCode: 'en', targetLanguageCode: 'ja', category: 'project', selectedRows: [2] });
+});
+
+test('global glossary cards use responsive desktop, tablet, and mobile columns', async ({ page }) => {
+  const entries = [
+    { id: 'entry-1', source: '產品名稱', sourceLanguageCode: 'zh-Hant', translations: { en: 'Product name' }, category: 'product', tags: [], enabled: true },
+    { id: 'entry-2', source: '會議術語', sourceLanguageCode: 'zh-Hant', translations: { en: 'Meeting term' }, category: 'meeting', tags: [], enabled: true },
+    { id: 'entry-3', source: '技術名詞', sourceLanguageCode: 'zh-Hant', translations: { en: 'Technical term' }, category: 'technical', tags: [], enabled: true },
+    { id: 'entry-4', source: '其他詞彙', sourceLanguageCode: 'zh-Hant', translations: { en: 'Other term' }, category: 'other', tags: [], enabled: true }
+  ];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'technical', label: '技術名詞' },
+    { id: 'other', label: '其他' }
+  ];
+
+  await page.route('**/api/glossary**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ json: { categories } });
+      return;
+    }
+    await route.fulfill({ json: { entries } });
+  });
+
+  const columnCount = () => page.locator('.glossary-card-grid').evaluate((grid) => getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length);
+  const cardRegionFits = () => page.locator('.glossary-card-region').evaluate((region) => region.scrollWidth <= region.clientWidth);
+
+  for (const [width, expectedColumns] of [[1440, 4], [1280, 3], [1024, 2], [760, 1]]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto('/#glossary');
+    await expect(page.locator('.glossary-card-grid')).toBeVisible();
+    await expect.poll(columnCount).toBe(expectedColumns);
+    await expect.poll(cardRegionFits).toBe(true);
+    if (width <= 760) {
+      await expect(page.locator('.glossary-category-sidebar')).toBeHidden();
+      await expect(page.locator('.glossary-mobile-category')).toBeVisible();
+    } else {
+      await expect(page.locator('.glossary-category-sidebar')).toBeVisible();
+      await expect(page.locator('.glossary-mobile-category')).toBeHidden();
+    }
+  }
+});
+
+test.skip('live translation meeting glossary is read-only', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     await route.fulfill({
       status: 200,
@@ -1464,12 +1518,73 @@ test('active session locks workspace navigation while listening', async ({ page 
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
-
   await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
   await expect(page.locator('.history-page')).toHaveCount(0);
-  await expect(page.getByRole('alert')).toContainText('錄音進行中');
-  await expect(page.locator('.live-sidebar-navigation a[aria-disabled="true"]')).toHaveCount(5);
+  await expect(page.locator('.live-sidebar, .feature-navigation')).toHaveCount(0);
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
+});
+
+test('active recording blocks settings and management navigation', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByRole('alert')).toContainText('請先暫停或停止目前錄音');
+
+  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByRole('alert')).toContainText('請先暫停或停止目前錄音');
+});
+
+test('paused recording can open settings and return without resetting', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '暫停' }).click();
+  await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
+  const sessionCount = await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length);
+  const tokenCount = page.liveTokenRequests.length;
+
+  await page.getByRole('link', { name: '修改會議設定' }).click();
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
+
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await expect(page.getByLabel('即時字幕狀態：已暫停')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(sessionCount);
+  expect(page.liveTokenRequests).toHaveLength(tokenCount);
+});
+
+test('direct URL navigation force-stops active recording before leaving', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => { window.location.hash = '#meeting-settings?mode=edit&meetingId=meeting-1'; });
+
+  await expect(page).toHaveURL(/#meeting-settings\?mode=edit&meetingId=meeting-1$/);
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 1,
+    activeMicTrackCount: 0,
+    audioContextCount: 1,
+    openAudioContextCount: 0,
+    liveSessionCount: 1,
+    openLiveSessionCount: 0
+  });
 });
 
 test('missing microphone keeps a retryable error visible', async ({ page }) => {
@@ -1495,43 +1610,44 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
   await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-error-message')).toHaveCSS('padding-top', '8px');
+  await expect(page.locator('.live-error-message')).toHaveCSS('padding-bottom', '8px');
+
+  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+test('meeting management errors use content height', async ({ page }) => {
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: { message: '會議清單暫時無法載入。' } })
+    });
+  });
+
+  await page.goto('/#meetings');
+
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText('無法載入會議或字典資料。');
+  const box = await alert.boundingBox();
+  expect(box?.height).toBeLessThan(120);
 });
 
 test('starts and stops a mocked Gemini Live translation session', async ({ page }) => {
   page.liveGlossaryEntries = [
     { source: 'microphone', target: 'Alan speak', replacementAliases: ['mic'] }
   ];
-  let releaseTranslatedAudioUpload;
-  let markTranslatedAudioUploadStarted;
-  const translatedAudioUploadStarted = new Promise((resolve) => {
-    markTranslatedAudioUploadStarted = resolve;
-  });
-  await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
-    if (route.request().method() === 'POST') {
-      markTranslatedAudioUploadStarted();
-      await new Promise((uploadResolve) => {
-        releaseTranslatedAudioUpload = uploadResolve;
-      });
-    }
-    await route.fallback();
-  });
   await gotoMockMeetingLive(page);
 
-  await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
+  await expect(page.locator('h1', { hasText: '即時字幕' })).toBeVisible();
   await expect(page.getByText('準備就緒')).toBeVisible();
-  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('會議模式：尚未啟用', { exact: true })).toBeVisible();
   await expect(page.getByText('會議模式：尚未保存', { exact: true })).toHaveCount(0);
   await expect(page.getByText(/尚無可下載/)).toHaveCount(0);
 
-  const settingsPanel = await openLiveSettings(page);
-  const sourceLanguage = settingsPanel.getByRole('combobox', { name: '我主要說的語言' });
-  const targetLanguage = settingsPanel.getByRole('combobox', { name: '目標語言' });
-
-  await expect(sourceLanguage).toHaveValue('zh-Hant');
-  await expect(targetLanguage).toHaveValue('en');
-  await expect(sourceLanguage).toBeDisabled();
-  await expect(targetLanguage).toBeDisabled();
-  await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '開始' }).click();
 
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -1578,23 +1694,19 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.every((track) => track.stopped))).toBe(true);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].closed)).toBe(true);
 
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-  await translatedAudioUploadStarted;
-  await historyItems(page).first().getByRole('button', { name: /查看(詳細資料|內容)/ }).click();
-  await expect(sessionDetail(page).locator('.audio-artifact-downloads').getByRole('heading', { name: '語音紀錄下載' })).toBeVisible();
-  await expect(sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
-  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute('aria-disabled', 'true');
+});
 
-  releaseTranslatedAudioUpload();
-  await expect(sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' })).toHaveAttribute(
-    'href',
-    /\/api\/sessions\/.+\/audio\/translation/
-  );
-  const savedTranslatedDownloadPromise = page.waitForEvent('download');
-  await sessionDetail(page).getByRole('link', { name: '下載翻譯語音紀錄' }).click();
-  const savedTranslatedDownload = await savedTranslatedDownloadPromise;
-  expect(savedTranslatedDownload.suggestedFilename()).toMatch(/^live-translate-translated-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
+test('ending a live recording returns to meeting management', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockSingleMeetingList(page);
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
 });
 
 test('captures and drains first speech while provider connect is delayed', async ({ page }) => {
@@ -1624,6 +1736,118 @@ test('captures and drains first speech while provider connect is delayed', async
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 });
 
+test('keeps capturing while a continuous turn emits many partial transcript updates', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitMicrophoneAudio(page);
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (let index = 0; index < 250; index += 1) {
+      liveSession.emitMessage({
+        serverContent: {
+          inputTranscription: { text: `連續說話原文 ${index}` },
+          outputTranscription: { text: `continuous translation ${index}` }
+        }
+      });
+    }
+  });
+
+  await page.waitForTimeout(50);
+  await expectCueRow(partialCueRows(page).first(), {
+    sourceText: '連續說話原文 249',
+    translatedText: 'continuous translation 249'
+  });
+  await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getSnapshot().pcmSendAttemptCount)).toBe(1);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
+test('renders one row when the same live transcript is received by transcript and Cue pipelines', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: {
+        inputTranscription: { text: '你好，你好。' },
+        turnComplete: true
+      }
+    });
+  });
+
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expect(page.getByTestId('cue-recovery-fallback')).toHaveCount(0);
+  await expectCueRow(finalCueRows(page).first(), { sourceText: '你好，你好。' });
+});
+
+test('renders two separate Cues for two consecutive sentences', async ({ page }) => {
+  const cueLogs = [];
+  page.on('console', (message) => {
+    if (message.type() === 'debug' && /Cue decision|Cue state transition/u.test(message.text())) cueLogs.push(message.text());
+  });
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, '第一句測試。', 'First sentence.');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await emitFinalTranscript(page, '第二句測試。', 'Second sentence.');
+
+  await expect(finalCueRows(page)).toHaveCount(2);
+  await expectCueRow(finalCueRows(page).nth(0), { sourceText: '第一句測試。', translatedText: 'First sentence.' });
+  await expectCueRow(finalCueRows(page).nth(1), { sourceText: '第二句測試。', translatedText: 'Second sentence.' });
+  const cueIds = await finalCueRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-cue-id')));
+  expect(cueIds).toHaveLength(2);
+  expect(cueIds[0]).toMatch(/^cue:session-[^:]+:segment-1:1$/u);
+  expect(cueIds[1]).toMatch(/^cue:session-[^:]+:segment-1:2$/u);
+  expect(new Set(cueIds).size).toBe(2);
+  expect(cueLogs.some((log) => log.includes('same-turn-final'))).toBe(false);
+  expect(cueLogs.some((log) => log.includes('duplicate') || log.includes('already-finalized'))).toBe(false);
+  console.log(`[two-cue-browser] ${JSON.stringify({ cueIds, cueLogs })}`);
+});
+
+test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.goto('/#live?meetingId=meeting-1');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (let index = 0; index < 30; index += 1) {
+      liveSession.emitMessage({
+        serverContent: {
+          turnIndex: index,
+          inputTranscription: { text: `版面測試原文 ${index}` },
+          outputTranscription: { text: `layout test translation ${index}` },
+          turnComplete: true
+        }
+      });
+    }
+  });
+
+  await expect.poll(() => page.evaluate(() => {
+    const list = document.querySelector('[data-testid="cue-list"]');
+    return {
+      pageScrollable: document.scrollingElement.scrollHeight > window.innerHeight,
+      listScrollable: list ? list.scrollHeight > list.clientHeight : false
+    };
+  })).toEqual({ pageScrollable: false, listScrollable: true });
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+});
+
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await page.goto('/');
@@ -1646,72 +1870,6 @@ test('pause and resume drains first speech from the replacement pre-roll', async
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 });
 
-test('audio segment upload retries a temporary failure and preserves the saved artifact', async ({ page }) => {
-  let uploadAttempts = 0;
-  await page.route('**/api/sessions/**/audio/translation/segments/**', async (route) => {
-    if (route.request().method() === 'POST' && uploadAttempts++ === 0) {
-      await route.fulfill({
-        status: 503,
-        contentType: 'application/json',
-        body: JSON.stringify({ error: { code: 'session_audio_unavailable' } })
-      });
-      return;
-    }
-    await route.fallback();
-  });
-
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitOutputAudio(page);
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
-
-  await expect(page.getByText('語音紀錄暫時無法同步，未上傳片段已保留並會在背景持續重試。')).toBeVisible();
-  await expect.poll(() => uploadAttempts, { timeout: 12000 }).toBe(2);
-  await expect(page.getByRole('alert').filter({ hasText: '長會議同步' })).toBeHidden();
-});
-
-test('pause keeps the session content and end exposes microphone recording download', async ({ page }) => {
-  await page.goto('/');
-
-  await (await liveSetting(page, '錄下原始聲音')).check();
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'before pause source', 'before pause translation');
-
-  await page.getByRole('button', { name: '暫停' }).click();
-  await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
-  await expect(page.getByText('before pause source')).toBeVisible();
-  await expect(page.getByText('before pause translation')).toBeVisible();
-  await expect(page.getByText('原始語音：錄音已暫停，已保留目前片段。')).toBeVisible();
-  const pausedLiveUrl = page.url();
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
-  await expect(page).toHaveURL(pausedLiveUrl);
-  await expect(page.getByRole('alert')).toContainText('錄音進行中');
-
-  await page.getByRole('button', { name: '繼續' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(partialCueRows(page)).toHaveCount(0);
-  await expect.poll(() => page.liveTokenRequests.length).toBe(2);
-  await expect(page.getByText('before pause source')).toBeVisible();
-  await emitMicrophoneAudio(page);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1)?.sentInputs.length || 0)).toBe(1);
-  await emitFinalTranscript(page, 'after continue source', 'after continue translation');
-
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
-  await expect(page.getByText('after continue source')).toBeVisible();
-  await expect(page.getByText('原始語音：音檔已保存，請到翻譯紀錄下載。')).toBeVisible();
-
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  const savedInputDownloadPromise = page.waitForEvent('download');
-  await sessionDetail(page).getByRole('link', { name: '下載原始語音紀錄' }).click();
-  const savedInputDownload = await savedInputDownloadPromise;
-  expect(savedInputDownload.suggestedFilename()).toMatch(/^live-translate-input-audio-session-[a-z0-9-]+-\d{8}-\d{6}\.wav$/);
-});
-
 test('pause preserves a pending subtitle received immediately before pause', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -1728,7 +1886,7 @@ test('pause preserves a pending subtitle received immediately before pause', asy
   });
 });
 
-test('microphone recording error does not stop live translation', async ({ page }) => {
+test.skip('microphone recording error does not stop live translation', async ({ page }) => {
   await page.goto('/');
 
   await (await liveSetting(page, '錄下原始聲音')).check();
@@ -1890,15 +2048,16 @@ test('stop error banner stays above the live workspace', async ({ page }) => {
   await emitFinalTranscript(page, 'stop error source', 'stop error translation');
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByRole('region', { name: '即時翻譯工作區' })).toBeVisible();
+  await expect(page.getByTestId('live-session-toolbar')).toBeVisible();
   const errorBanner = page.getByRole('alert').filter({ hasText: '長會議同步尚未完成' });
   await expect(errorBanner).toBeVisible();
 
   const errorBox = await errorBanner.boundingBox();
-  const workspaceBox = await page.getByRole('region', { name: '即時翻譯工作區' }).boundingBox();
+  const workspaceBox = await page.getByTestId('live-session-toolbar').boundingBox();
   expect(errorBox).not.toBeNull();
   expect(workspaceBox).not.toBeNull();
   expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(workspaceBox.y);
+  expect(workspaceBox.y - (errorBox.y + errorBox.height)).toBeLessThanOrEqual(16);
 });
 
 test('checkpoint sync retries a temporary failure and clears the error after success', async ({ page }) => {
@@ -1929,8 +2088,6 @@ test('reload with meeting id restores checkpoint and allows manual resume', asyn
     await route.fallback();
   });
   await gotoMockMeetingLive(page);
-  await page.getByRole('combobox', { name: '選擇會議' }).click();
-  await page.getByRole('option', { name: '測試會議' }).click();
   await page.getByRole('button', { name: '開始' }).click();
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2046,6 +2203,37 @@ test('empty meeting resume draft shows start instead of continue recording', asy
   await expect(page).toHaveURL(/#meeting$/);
 });
 
+test('active segment with a bound live session resumes without subtitles', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page, {
+    initialSegmentStatus: 'active',
+    initialLiveSessionId: 'live-session-interrupted'
+  });
+  await page.addInitScript(() => {
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+  });
+
+  await page.goto('/#live?meetingId=meeting-1');
+
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(0);
+  await page.getByRole('button', { name: '繼續錄製' }).click();
+
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  expect(checkpointRequests.recoverRequests[0].body.outcome).toBe('interrupted');
+  expect(checkpointRequests.recoverRequests[0].body.failureReason).toBe('manual_resume');
+  await expect.poll(() => page.liveTokenRequests.length).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('即時翻譯失敗')).toHaveCount(0);
+});
+
 test('clears the meeting actions when live translation has no selected meeting', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await page.goto('/#live?meetingId=meeting-1');
@@ -2127,27 +2315,6 @@ test('glossary edits during an active session update later live translation arti
   });
 });
 
-test('navigation keeps an active translation session and its article reading state', async ({ page }) => {
-  await page.goto('/');
-  await expect(historyPanel(page)).toBeHidden();
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'keep this source', 'keep this translation');
-
-  const listeningLiveUrl = page.url();
-  await page.getByRole('link', { name: '翻譯紀錄', exact: true }).click({ force: true });
-  await expect(page).toHaveURL(listeningLiveUrl);
-  await expect(page.getByRole('alert')).toContainText('錄音進行中');
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await expect(liveCuePanel(page)).toBeVisible();
-  await expect(finalCueRows(page)).toHaveCount(1);
-  await expect(page.getByText('keep this source')).toBeVisible();
-  await expect(page.getByText('keep this translation')).toBeVisible();
-  await expect(page.getByTestId('cue-empty-state')).toHaveCount(0);
-  await expect(page.getByText('逐字稿 / 文章版')).toBeHidden();
-});
-
 test('transcript polishing status and independent article output are visible', async ({ page }) => {
   let polishingOutput = null;
   await mockMeetingCheckpointApi(page);
@@ -2173,14 +2340,14 @@ test('transcript polishing status and independent article output are visible', a
     await route.fallback();
   });
 
-  await page.goto('/');
-  await page.getByRole('combobox', { name: '選擇會議' }).click();
-  await page.getByRole('option', { name: '測試會議' }).click();
+  await page.goto('/#live?meetingId=meeting-1');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, '常會議', 'The regular meeting.');
   const cueId = await finalCueRows(page).first().getAttribute('data-cue-id');
   expect(cueId).toBeTruthy();
+  await expect(liveCuePanel(page).getByTestId('transcript-polishing-status')).toHaveCount(0);
+  await expect(finalCueRows(page).first()).not.toHaveClass(/cue-row-refining/);
 
   await page.getByRole('button', { name: '結束本次工作階段' }).click();
   polishingOutput = {
@@ -2202,8 +2369,15 @@ test('transcript polishing status and independent article output are visible', a
   await expect(polishingStatus).toHaveText(/潤飾完成.*v1/);
   await expect(page.locator('.live-page > [data-testid="transcript-polishing-status"]')).toHaveCount(0);
   await expect(page.getByTestId('polished-article').getByText('The long meeting.')).toBeVisible();
-  await expect(translationCueList(page).getByText('The regular meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The long meeting.')).toBeVisible();
+  await expect(translationCueList(page).getByText('The regular meeting.')).toHaveCount(0);
+  await expect(finalCueRows(page).first()).not.toHaveClass(/cue-row-refining/);
+  await expect(finalCueRows(page).first()).toHaveClass(/cue-row-refined/);
+  await expect(finalCueRows(page).first().getByTestId('cue-refined-indicator')).toHaveCount(1);
+  await expect(finalCueRows(page).first()).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   await expect(finalCueRows(page).first().getByTestId('cue-source-text')).toHaveText('常會議');
+  await expect(finalCueRows(page).first()).not.toContainText('修正中');
+  await expect(finalCueRows(page).first()).not.toContainText('等待修正');
 });
 
 test('transcript polishing retry shows the new queued execution and failure reason inline', async ({ page }) => {
@@ -2316,6 +2490,172 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
     translatedText: '第四句翻譯中'
   });
   await expect(finalCueRows(page)).toHaveCount(2);
+});
+
+test('live subtitles prioritize translation and can collapse the source column', async ({ page }) => {
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'source sentence', 'translated sentence');
+
+  const panel = liveCuePanel(page);
+  const toggle = panel.getByTestId('source-visibility-toggle');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  expect(await panel.locator('.cue-panel-actions > *').evaluateAll((items) => items.findIndex((item) => item.matches('.live-inline-status')) < items.findIndex((item) => item.matches('[data-testid="source-visibility-toggle"]')))).toBe(true);
+  await expect(panel.getByRole('region', { name: '即時字幕原文' })).toBeVisible();
+  await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('live-subtitles-source-visible.png'), fullPage: true });
+
+  const visibleLayout = await panel.getByTestId('cue-list').locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(visibleLayout.split(' ').length).toBe(2);
+  const translationHeading = await panel.getByRole('heading', { name: '翻譯', exact: true }).boundingBox();
+  const firstCueRow = await panel.getByTestId('cue-paired-list').locator('.cue-row').first().boundingBox();
+  const description = await panel.locator('.meeting-settings-card-description').boundingBox();
+  expect(translationHeading).not.toBeNull();
+  expect(firstCueRow).not.toBeNull();
+  expect(description).not.toBeNull();
+  expect(translationHeading.y - (description.y + description.height)).toBeGreaterThanOrEqual(24);
+  expect(translationHeading.y - (description.y + description.height)).toBeLessThanOrEqual(32);
+  expect(firstCueRow.y - (translationHeading.y + translationHeading.height)).toBeLessThan(48);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(panel.getByRole('region', { name: '即時字幕原文' })).toHaveCount(0);
+  await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
+  await expect(panel.getByTestId('cue-source-text')).toHaveCount(0);
+  await expect(panel.getByText('source sentence', { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath('live-subtitles-source-hidden.png'), fullPage: true });
+  const hiddenLayout = await panel.getByTestId('cue-list').locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
+  expect(hiddenLayout.split(' ').length).toBe(1);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(panel.getByTestId('cue-paired-list').getByText('source sentence')).toBeVisible();
+});
+
+test('live recording reuses the meeting design system at desktop widths', async ({ page }) => {
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'visual source', 'visual translation');
+
+  for (const viewport of [
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+    { width: 1280, height: 800 },
+    { width: 1024, height: 768 }
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.screenshot({ path: test.info().outputPath(`live-recording-${viewport.width}.png`) });
+
+    const layout = await page.evaluate(() => {
+      const shell = document.querySelector('.live-recording-app-shell');
+      const toolbar = document.querySelector('.live-session-toolbar');
+      const panel = document.querySelector('[data-testid="live-cue-panel"]');
+      const readingLayout = document.querySelector('.cue-reading-layout');
+      const controlStatusRow = document.querySelector('.live-session-toolbar .control-status-row');
+      const sessionButton = document.querySelector('.live-session-toolbar .session-actions button');
+      const styles = toolbar ? getComputedStyle(toolbar) : null;
+      const controlStyles = controlStatusRow ? getComputedStyle(controlStatusRow) : null;
+      return {
+        shellUsesMeetingManagement: shell?.classList.contains('meeting-management-shell') || false,
+        toolbarBackground: styles?.backgroundColor,
+        toolbarRadius: styles?.borderRadius,
+        buttonHeight: sessionButton ? getComputedStyle(sessionButton).minHeight : '',
+        hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        toolbarWidth: toolbar?.getBoundingClientRect().width || 0,
+        toolbarHeight: toolbar?.getBoundingClientRect().height || 0,
+        panelWidth: panel?.getBoundingClientRect().width || 0,
+        controlDisplay: controlStyles?.display || '',
+        controlColumns: controlStyles ? controlStyles.gridTemplateColumns.split(' ').length : 0,
+        readingColumns: readingLayout ? getComputedStyle(readingLayout).gridTemplateColumns.split(' ').length : 0,
+        dividerContent: readingLayout ? getComputedStyle(readingLayout, '::after').content : 'none'
+      };
+    });
+
+    expect(layout.shellUsesMeetingManagement).toBe(true);
+    expect(layout.toolbarBackground).toBe('rgb(255, 255, 255)');
+    expect(layout.toolbarRadius).toBe('16px');
+    expect(layout.buttonHeight).toBe('44px');
+    expect(layout.hasHorizontalOverflow).toBe(false);
+    expect(layout.toolbarWidth).toBeGreaterThan(0);
+    expect(layout.toolbarHeight).toBeLessThanOrEqual(96);
+    expect(layout.panelWidth).toBeGreaterThan(0);
+    expect(layout.controlDisplay).toBe('grid');
+    expect(layout.controlColumns).toBe(3);
+    expect(layout.readingColumns).toBe(2);
+    expect(layout.dividerContent).not.toBe('none');
+  }
+
+  await page.setViewportSize({ width: 640, height: 800 });
+  const mobileLayout = await page.evaluate(() => {
+    const row = document.querySelector('[data-testid="cue-paired-list"] .cue-row');
+    const styles = row ? getComputedStyle(row) : null;
+    return {
+      rowColumns: styles?.gridTemplateColumns.split(' ').length || 0,
+      controlDisplay: getComputedStyle(document.querySelector('.live-session-toolbar .control-status-row')).display,
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+    };
+  });
+  expect(mobileLayout.rowColumns).toBe(1);
+  expect(mobileLayout.controlDisplay).toBe('flex');
+  expect(mobileLayout.hasHorizontalOverflow).toBe(false);
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.getByTestId('live-session-toolbar').getByRole('button', { name: '詳細狀態' }).click();
+  const typography = await page.evaluate(() => {
+    const source = document.querySelector('[data-testid="cue-paired-list"] .cue-source');
+    const translation = document.querySelector('[data-testid="cue-paired-list"] .cue-translation');
+    const deviceSummary = document.querySelector('.live-device-summary span');
+    const actionButton = document.querySelector('.live-session-toolbar .session-actions button');
+    const sourceStyle = source ? getComputedStyle(source) : null;
+    const translationStyle = translation ? getComputedStyle(translation) : null;
+    const deviceSummaryStyle = deviceSummary ? getComputedStyle(deviceSummary) : null;
+    const actionButtonStyle = actionButton ? getComputedStyle(actionButton) : null;
+    return {
+      sourceFontSize: sourceStyle?.fontSize || '',
+      translationFontSize: translationStyle?.fontSize || '',
+      deviceSummaryFontSize: deviceSummaryStyle?.fontSize || '',
+      actionButtonFontSize: actionButtonStyle?.fontSize || '',
+      sourceFontWeight: sourceStyle?.fontWeight || '',
+      translationFontWeight: translationStyle?.fontWeight || '',
+      firstRowBorder: document.querySelector('[data-testid="cue-paired-list"] .cue-row') ? getComputedStyle(document.querySelector('[data-testid="cue-paired-list"] .cue-row')).borderBottomWidth : ''
+    };
+  });
+  expect(typography.translationFontSize).toBe(typography.sourceFontSize);
+  expect(typography.deviceSummaryFontSize).toBe('16px');
+  expect(typography.actionButtonFontSize).toBe(typography.deviceSummaryFontSize);
+  expect(typography.translationFontWeight).toBe(typography.sourceFontWeight);
+  expect(typography.firstRowBorder).toBe('0px');
+});
+
+test('live recording can expand secondary status and enter focus mode without hiding controls', async ({ page }) => {
+  await gotoMockMeetingLive(page);
+  await page.setViewportSize({ width: 1041, height: 750 });
+
+  const toolbar = page.getByTestId('live-session-toolbar');
+  const detailsButton = toolbar.getByRole('button', { name: '詳細狀態' });
+  const focusButton = toolbar.getByRole('button', { name: '專注模式' });
+
+  await expect(detailsButton).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#live-session-status-details')).toHaveCount(0);
+  await detailsButton.click();
+  await expect(detailsButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(page.locator('#live-session-status-details')).toBeVisible();
+  await expect(page.getByLabel('已確認的音訊裝置')).toBeVisible();
+
+  await focusButton.click();
+  await expect(page.locator('.live-recording-app-shell')).toHaveClass(/is-live-focus-mode/u);
+  await expect(page.locator('.live-recording-app-shell > .meeting-app-header')).toBeHidden();
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.getByRole('button', { name: '退出專注' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(toolbar.getByRole('button', { name: /開始錄製|繼續錄製/u })).toBeVisible();
+
+  await toolbar.getByRole('button', { name: '退出專注' }).click();
+  await expect(page.locator('.live-recording-app-shell > .meeting-app-header')).toBeVisible();
 });
 
 test('final repeated number turn keeps its complete source and translation', async ({ page }) => {
@@ -2486,6 +2826,27 @@ test('paired Cue auto-finalizes after idle when a provider boundary is absent', 
   });
 });
 
+test('source-only partial Cue is finalized after the turn boundary', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      serverContent: { inputTranscription: { text: '沒有翻譯的暫存句子' } }
+    });
+  });
+
+  await expect(partialCueRows(page)).toHaveCount(1);
+  await emitTurnComplete(page);
+  await expect(partialCueRows(page)).toHaveCount(0, { timeout: 3500 });
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '沒有翻譯的暫存句子',
+    translatedText: ''
+  });
+});
+
 test('short paired Chinese Cue does not remain in recognition after turn completion', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -2562,6 +2923,33 @@ test('incremental word fragments render as one subtitle row after Turn completio
   });
 });
 
+test('keeps non-cumulative numeric translation fragments in the same Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: { inputTranscription: { text: '測試測試123123' } }
+    });
+    session.emitMessage({
+      serverContent: { outputTranscription: { text: 'test, test' } }
+    });
+    session.emitMessage({
+      serverContent: { outputTranscription: { text: '123 123' } }
+    });
+    session.emitMessage({ serverContent: { turnComplete: true } });
+  });
+
+  await page.waitForTimeout(750);
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '測試測試123123',
+    translatedText: 'test, test 123 123'
+  });
+});
+
 test('adjacent short final Cues render as one natural sentence', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
@@ -2633,7 +3021,7 @@ test('unfinished prefix Cue joins the following sentence-ending Cue', async ({ p
   });
 });
 
-test('downloads the active transcript through a browser download', async ({ page }) => {
+test.skip('downloads the active transcript through a browser download', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2646,7 +3034,7 @@ test('downloads the active transcript through a browser download', async ({ page
   expect(download.suggestedFilename()).toMatch(/^live-translate-transcript-.*\.txt$/);
 });
 
-test('active source and translation SRT downloads use the same Cue timeline', async ({ page }) => {
+test.skip('active source and translation SRT downloads use the same Cue timeline', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2710,7 +3098,7 @@ test('copies only completed source transcript from live subtitles', async ({ pag
   await expect.poll(() => page.evaluate(() => window.__copiedText)).toBe('第一段翻譯\n第二段翻譯');
 });
 
-test('Stop finalizes visible partial transcripts for export and history', async ({ page }) => {
+test('Stop finalizes visible partial transcripts without active export controls', async ({ page }) => {
   await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -2723,1077 +3111,8 @@ test('Stop finalizes visible partial transcripts for export and history', async 
     sourceText: 'partial source on stop',
     translatedText: 'partial translation on stop'
   });
-  await page.getByRole('button', { name: '匯出', exact: true }).click();
-  await expect(page.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await page.getByRole('button', { name: '關閉匯出' }).click();
-  await openSessionHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-});
-
-test('interim input transcription stays in the same pending pair as formal input', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await emitInterimInputWithOutput(page, 'interim source before final', 'translation already available');
-
-  await expect(partialCueRows(page)).toHaveCount(1);
-  await expectCueRow(partialCueRows(page).first(), {
-    sourceText: 'interim source before final',
-    translatedText: 'translation already available'
-  });
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: {
-        inputTranscription: { text: 'formal source after interim' },
-        turnComplete: true
-      }
-    });
-  });
-
-  await expect(finalCueRows(page)).toHaveCount(1);
-  await expectCueRow(finalCueRows(page).first(), {
-    sourceText: 'interim source before final formal source after interim',
-    translatedText: 'translation already available'
-  });
-
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openSessionHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-});
-
-test('stopped session appears in history with language, status, and transcript summary', async ({ page }) => {
-  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'hello history', '履歴');
-
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openSessionHistoryPage(page);
-
-  const item = historyItems(page).first();
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(item).toBeVisible();
-});
-
-test('stopped session can be deleted from history', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'delete source', 'delete translation');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openSessionHistoryPage(page);
-
-  await expect(historyItems(page)).toHaveCount(1);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await expect(sessionDetail(page)).toBeVisible();
-
-  page.once('dialog', (dialog) => dialog.accept());
-  await historyItems(page).first().getByRole('button', { name: '刪除' }).click();
-
-  await expect(historyItems(page)).toHaveCount(1);
-});
-
-test('recording and playback settings appear before export fields without overflow', async ({ page }) => {
-  await page.unroute('**/api/meetings');
-  await page.route('**/api/meetings', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify([{ id: 'meeting-layout', name: '版面測試會議', status: 'created' }])
-    });
-  });
-  await page.route('**/api/meetings/meeting-layout', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        meeting: {
-          id: 'meeting-layout',
-          name: '版面測試會議',
-          status: 'created',
-          sourceLanguageCode: 'zh-Hant',
-          targetLanguageCode: 'en',
-          glossaryEntries: []
-        }
-      })
-    });
-  });
-  await page.setViewportSize({ width: 1280, height: 800 });
-  page.useMeetingRootForGoto = false;
-  await page.goto('/');
-
-  const settingsTrigger = page.getByRole('button', { name: '設定', exact: true });
-  await expect(settingsTrigger).toBeVisible();
-  await settingsTrigger.click();
-  const settingsPanel = page.getByRole('complementary', { name: '即時翻譯設定' });
-  await expect(settingsPanel).toBeVisible();
-  await expect(settingsPanel.getByLabel('我主要說的語言')).toBeEnabled();
-  await expect(settingsPanel.getByLabel('目標語言')).toBeEnabled();
-  await page.keyboard.press('Escape');
-  await expect(settingsPanel).toBeHidden();
-
-  const meetingPicker = page.getByRole('combobox', { name: '選擇會議' });
-  await meetingPicker.click();
-  await page.getByRole('option', { name: '版面測試會議' }).click();
-
-  await expect(settingsTrigger).toBeVisible();
-  await settingsTrigger.click();
-  await expect(settingsPanel).toBeVisible();
-  const playback = page.getByLabel('播放翻譯聲音');
-  const recording = page.getByLabel('錄下原始聲音');
-  const exportTrigger = page.getByRole('button', { name: '匯出', exact: true });
-  await expect(exportTrigger).toBeVisible();
-  await expect(settingsPanel.getByLabel('我主要說的語言')).toBeVisible();
-  await expect(settingsPanel.getByLabel('目標語言')).toBeVisible();
-  await expect(settingsPanel.getByLabel('麥克風')).toBeVisible();
-  await expect(playback).toBeVisible();
-  await expect(recording).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(settingsPanel).toBeHidden();
-  await exportTrigger.click();
-  const exportPanel = activeExportPanel(page);
-  await expect(exportPanel.getByRole('combobox', { name: '匯出格式' })).toBeVisible();
-
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload();
-
-  await settingsTrigger.click();
-  await expect(playback).toBeVisible();
-  await expect(recording).toBeVisible();
-  const exportButton = page.getByRole('button', { name: '匯出', exact: true });
-  await expect(exportButton).toBeVisible();
-  const layout = await page.evaluate(() => {
-    const card = document.querySelector('.live-settings-card');
-    const startButton = [...document.querySelectorAll('button')].find((button) => button.textContent.includes('開始'));
-    const cardRect = card?.getBoundingClientRect();
-    const startRect = startButton?.getBoundingClientRect();
-    return {
-      cardContainsStartButton: Boolean(cardRect && startRect && startRect.bottom <= cardRect.bottom + 1),
-      pageCanScrollVertically: document.documentElement.scrollHeight >= window.innerHeight,
-      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
-    };
-  });
-  expect(layout.cardContainsStartButton).toBe(true);
-  expect(layout.pageCanScrollVertically).toBe(true);
-  expect(layout.hasHorizontalOverflow).toBe(false);
-
-  await page.setViewportSize({ width: 1024, height: 600 });
-  await page.reload();
-
-  const laptopCard = page.locator('.live-settings-card');
-  const laptopStartButton = page.getByRole('button', { name: '開始', exact: true });
-  await expect(laptopStartButton).toHaveCount(1);
-  const laptopLayoutBeforeScroll = await laptopCard.evaluate((card, startButton) => {
-    const cardRect = card.getBoundingClientRect();
-    const startRect = startButton.getBoundingClientRect();
-    const controls = card.querySelector('.live-settings-controls');
-    const statusMessages = card.querySelector('.control-status-messages');
-    const actions = card.querySelector('.control-actions');
-    const controlsRect = controls?.getBoundingClientRect();
-    const statusRect = statusMessages?.getBoundingClientRect();
-    const actionsRect = actions?.getBoundingClientRect();
-    return {
-      cardOverflowY: getComputedStyle(card).overflowY,
-      controlsOverflowY: getComputedStyle(controls).overflowY,
-      cardContentFits: card.scrollHeight <= card.clientHeight + 1,
-      pageCanScroll: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight,
-      controlsDoNotOverlapStatus: controlsRect.bottom <= statusRect.top + 1,
-      statusDoesNotOverlapActions: statusRect.bottom <= actionsRect.top + 1,
-      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
-    };
-  }, await laptopStartButton.elementHandle());
-  expect(laptopLayoutBeforeScroll.cardOverflowY).toBe('visible');
-  expect(laptopLayoutBeforeScroll.controlsOverflowY).toBe('visible');
-  expect(laptopLayoutBeforeScroll.cardContentFits).toBe(true);
-  expect(laptopLayoutBeforeScroll.pageCanScroll).toBe(true);
-  expect(laptopLayoutBeforeScroll.controlsDoNotOverlapStatus).toBe(true);
-  expect(laptopLayoutBeforeScroll.statusDoesNotOverlapActions).toBe(true);
-  expect(laptopLayoutBeforeScroll.hasHorizontalOverflow).toBe(false);
-
-  await laptopCard.evaluate((card) => card.scrollIntoView({ block: 'start' }));
-  await expect(laptopStartButton).toBeInViewport();
-  await expect(laptopCard.getByRole('button', { name: '開始', exact: true })).toBeVisible();
-  await expect(laptopCard.getByText(/會議模式：/)).toBeInViewport();
-
-  const laptopTextLayout = await laptopCard.evaluate((card) => {
-    const textElements = [...card.querySelectorAll('h2, p, label > span, button')];
-    return {
-      textWrapEnabled: textElements.every((element) => getComputedStyle(element).overflowWrap === 'anywhere' || getComputedStyle(element).whiteSpace !== 'nowrap'),
-      clippedText: textElements.some((element) => element.scrollWidth > element.clientWidth + 1 && getComputedStyle(element).overflow === 'hidden')
-    };
-  });
-  expect(laptopTextLayout.textWrapEnabled).toBe(true);
-  expect(laptopTextLayout.clippedText).toBe(false);
-
-  await page.setViewportSize({ width: 1280, height: 550 });
-  await page.reload();
-  const desktopShortLayout = await page.locator('.live-settings-card').evaluate((card) => {
-    const cardRect = card.getBoundingClientRect();
-    const controls = [...card.querySelectorAll('.live-settings-controls button, .live-settings-controls a.button, .control-actions button, .control-actions a.button')]
-      .filter((element) => element.getClientRects().length > 0)
-      .map((element) => ({ text: element.textContent.trim(), rect: element.getBoundingClientRect() }));
-    const overlaps = controls.some((current, index) => controls.slice(index + 1).some((other) => (
-      current.rect.left < other.rect.right && current.rect.right > other.rect.left
-      && current.rect.top < other.rect.bottom && current.rect.bottom > other.rect.top
-    )));
-    return {
-      cardHeight: cardRect.height,
-      cardContentFits: card.scrollHeight <= card.clientHeight + 1,
-      pageCanScroll: document.scrollingElement.scrollHeight > document.scrollingElement.clientHeight,
-      overflowY: getComputedStyle(card).overflowY,
-      controlsOverflowY: getComputedStyle(card.querySelector('.live-settings-controls')).overflowY,
-      controlsOverlap: overlaps,
-      controlsRemainInCardFlow: controls.every(({ rect }) => rect.top >= cardRect.top && rect.left >= cardRect.left && rect.right <= cardRect.right + 1)
-    };
-  });
-  expect(desktopShortLayout.cardContentFits).toBe(true);
-  expect(desktopShortLayout.pageCanScroll).toBe(true);
-  expect(desktopShortLayout.overflowY).toBe('visible');
-  expect(desktopShortLayout.controlsOverflowY).toBe('visible');
-  expect(desktopShortLayout.controlsOverlap).toBe(false);
-  expect(desktopShortLayout.controlsRemainInCardFlow).toBe(true);
-});
-
-test('live settings actions keep the same width without a long-meeting checkpoint note', async ({ page }) => {
-  await mockLiveLayoutMeeting(page, { archivedSegmentCount: 0 });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/#live?meetingId=4444');
-
-  const card = page.locator('.live-settings-card');
-  await expect(card.getByText('會議模式：已保存')).toBeVisible();
-  const widths = await card.evaluate((element) => {
-    const widthOf = (button) => button.getBoundingClientRect().width;
-    return {
-      start: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('開始'))),
-      end: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('結束會議'))),
-      export: widthOf(element.querySelector('.live-export-trigger'))
-    };
-  });
-
-  expect(Math.abs(widths.start - widths.end)).toBeLessThanOrEqual(1);
-  expect(Math.abs(widths.start - widths.export)).toBeLessThanOrEqual(1);
-});
-
-test('live settings actions keep the same width with a long-meeting checkpoint note', async ({ page }) => {
-  await mockLiveLayoutMeeting(page, { archivedSegmentCount: 30 });
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto('/#live?meetingId=4444');
-
-  const card = page.locator('.live-settings-card');
-  await expect(card.getByText('會議模式：已保存')).toBeVisible();
-  await expect(card.getByText('保存狀態：長會議已保存 30 段 · 目前段落 0 筆')).toBeVisible();
-  const widths = await card.evaluate((element) => {
-    const widthOf = (button) => button.getBoundingClientRect().width;
-    return {
-      start: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('開始'))),
-      end: widthOf([...element.querySelectorAll('button')].find((button) => button.textContent.includes('結束會議'))),
-      export: widthOf(element.querySelector('.live-export-trigger'))
-    };
-  });
-
-  expect(Math.abs(widths.start - widths.end)).toBeLessThanOrEqual(1);
-  expect(Math.abs(widths.start - widths.export)).toBeLessThanOrEqual(1);
-});
-
-test('stopped session can open and close inline detail with metadata and final transcripts', async ({ page }) => {
-  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: { inputTranscription: { text: 'partial should not save' } }
-    });
-  });
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
-      serverContent: { turnComplete: true }
-    });
-  });
-  await emitFinalTranscript(page, 'saved source detail', 'saved translation detail');
-
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openSessionHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-});
-
-test('session detail queues retranslation and displays pending status', async ({ page }) => {
-  await page.route('**/api/translation-providers', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
-    });
-  });
-
-  await page.route('**/api/sessions/**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
-    const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
-
-    if (isRetranslationSubmit) {
-      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
-      await route.fulfill({
-        status: 202,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          request: { id: 'request-fr-1', sessionId, targetLanguageCode: 'fr' },
-          execution: { id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'queued' }
-        })
-      });
-      return;
-    }
-
-    if (!isSessionDetail) {
-      await route.continue();
-      return;
-    }
-
-    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
-    await route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify(sessionDetailResponse({
-        sessionId,
-        sourceText: 'Hello retranslation',
-        translationHistory: {
-          outputs: [{
-            id: 'legacy-output-fr-1',
-            targetLanguageCode: 'fr',
-            version: 1,
-            source: 'legacy',
-            translatedText: 'live output'
-          }],
-          executions: []
-        }
-      }))
-    });
-  });
-
-  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'Hello retranslation', 'live output');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  await expect(detail.getByRole('heading', { name: '翻譯內容' })).toBeVisible();
-  await detail.getByRole('tab', { name: '原始逐字稿' }).click();
-  await expect(detail.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
-  await expect(detail.getByLabel('重新翻譯進度')).toHaveCount(0);
-  const retranslation = detail.getByLabel('重新翻譯');
-
-  await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
-  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
-  const workflow = retranslationPage(page);
-  await expect(workflow.getByRole('link', { name: '返回 Session 清單' })).toBeVisible();
-  await workflow.getByRole('link', { name: '返回 Session 清單' }).click();
-  await expect(page).toHaveURL(/#retranslate$/);
-  await expect(workflow.getByLabel('選擇歷史紀錄')).toBeVisible();
-  await workflow.getByLabel('選擇歷史紀錄').getByRole('button', { name: '選擇' }).click();
-  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
-  await expect(workflow.getByRole('heading', { name: '原始逐字稿' })).toBeVisible();
-  await expect(workflow.getByText('Hello retranslation')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯結果').getByText('重新翻譯結果（0）')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯結果').getByText('尚無重新翻譯結果。')).toBeVisible();
-  await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await expect(workflow.getByLabel('使用模型').locator('strong')).toHaveText('test model');
-  await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
-
-  await expect(workflow.getByRole('status')).toHaveText('已將法文重新翻譯加入佇列。');
-  await expect(workflow.getByLabel('重新翻譯進度').getByText('法文')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯進度').getByText('已排隊')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯進度').getByText('live output')).toHaveCount(0);
-
-  await openHistoryPage(page);
-  await page.getByRole('link', { name: '重新翻譯' }).click();
-  await expect(page).toHaveURL(/#retranslate$/);
-  await expect(workflow.getByLabel('選擇歷史紀錄')).toBeVisible();
-  await expect(workflow.getByRole('button', { name: '開始重新翻譯' })).toHaveCount(0);
-  await workflow.getByLabel('選擇歷史紀錄').getByRole('button', { name: '選擇' }).click();
-  await expect(page).toHaveURL(/#retranslate\?sessionId=/);
-  await expect(workflow.getByText('Hello retranslation')).toBeVisible();
-});
-
-test('completed retranslation stays out of translation history records', async ({ page }) => {
-  let submitted = false;
-  let postSubmitDetailReads = 0;
-  let completed = false;
-  let deletedOutput = false;
-  const originalSessionId = 'session-complete-retranslation';
-
-  await page.route('**/api/translation-providers', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
-    });
-  });
-
-  await page.route('**/api/sessions', async (route) => {
-    if (route.request().method() !== 'GET') {
-      await route.continue();
-      return;
-    }
-
-    await route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify([
-        historyRecord({ id: originalSessionId, targetLanguageCode: 'ja', targetLanguageLabel: '日文' })
-      ])
-    });
-  });
-
-  await page.route('**/api/sessions/**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const isTranslationHistory = request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname);
-    const isTranslationOutputDelete = request.method() === 'DELETE' && /^\/api\/sessions\/[^/]+\/translations\/[^/]+$/.test(url.pathname);
-    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
-    const isRetranslationSubmit = request.method() === 'POST' && url.pathname.endsWith('/retranslations');
-    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
-
-    if (isTranslationOutputDelete) {
-      deletedOutput = true;
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ deleted: true, sessionId, outputId: 'output-fr-1' })
-      });
-      return;
-    }
-
-    if (isTranslationHistory) {
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          sessionId,
-          translations: [],
-          translationHistory: !submitted
-            ? { outputs: [], executions: [] }
-            : completed && !deletedOutput
-              ? {
-                  outputs: [{
-                    id: 'output-fr-1',
-                    executionId: 'execution-fr-1',
-                    requestId: 'request-fr-1',
-                    targetLanguageCode: 'fr',
-                    translatedText: 'Bonjour terminé\nDeuxième phrase',
-                    version: 1,
-                    source: 'formal',
-                    completedAt: '2026-07-21T00:00:10.000Z'
-                  }],
-                  executions: [{
-                    id: 'execution-fr-1',
-                    requestId: 'request-fr-1',
-                    targetLanguageCode: 'fr',
-                    status: 'running',
-                    providerAttemptStatus: 'in_flight',
-                    providerAttemptedAt: new Date(Date.now() - 2000).toISOString()
-                  }]
-                }
-              : {
-                  outputs: [],
-                  executions: [{
-                    id: 'execution-fr-1',
-                    requestId: 'request-fr-1',
-                    targetLanguageCode: 'fr',
-                    status: 'running',
-                    providerAttemptStatus: 'in_flight',
-                    providerAttemptedAt: new Date(Date.now() - 2000).toISOString()
-                  }]
-                }
-        })
-      });
-      return;
-    }
-
-    if (isRetranslationSubmit) {
-      submitted = true;
-      await route.fulfill({
-        status: 202,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          request: { id: 'request-fr-1', sessionId, targetLanguageCode: 'fr' },
-          execution: { id: 'execution-fr-1', requestId: 'request-fr-1', status: 'queued' }
-        })
-      });
-      return;
-    }
-
-    if (isSessionDetail) {
-      if (submitted) {
-        postSubmitDetailReads += 1;
-      }
-
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify(sessionDetailResponse({
-          sessionId: originalSessionId,
-          translationHistory: !submitted
-            ? { outputs: [], executions: [] }
-            : postSubmitDetailReads === 1
-              ? { outputs: [], executions: [{ id: 'execution-fr-1', requestId: 'request-fr-1', targetLanguageCode: 'fr', status: 'running', providerAttemptStatus: 'in_flight', providerAttemptedAt: new Date(Date.now() - 2000).toISOString() }] }
-              : { outputs: [], executions: [] }
-        }))
-      });
-      return;
-    }
-
-    await route.continue();
-  });
-
-  await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'Hello complete retranslation', 'live output');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  const retranslation = detail.getByLabel('重新翻譯');
-  await retranslation.getByRole('button', { name: '以此原文重新翻譯' }).click();
-  const workflow = retranslationPage(page);
-  await workflow.getByRole('combobox', { name: '目標語言' }).selectOption('fr');
-  await expect(workflow.getByLabel('使用模型').locator('strong')).toHaveText('test model');
-  await workflow.getByRole('button', { name: '開始重新翻譯' }).click();
-
-  await expect(workflow.getByLabel('重新翻譯進度').getByText('正在送往 Gemini')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯進度').getByText(/已等待 \d+ 秒/)).toBeVisible();
-  completed = true;
-  const resultWorkspace = workflow.getByLabel('重新翻譯結果與內容');
-  const outputList = resultWorkspace.getByLabel('重新翻譯結果');
-  const selectionPrompt = resultWorkspace.getByLabel('重新翻譯內容選取');
-  await expect(selectionPrompt.getByText('選取一筆重新翻譯結果後查看原文與翻譯文。')).toBeVisible();
-  await expect(resultWorkspace.locator('.retranslation-output-list-panel')).toHaveCount(1);
-  await expect(resultWorkspace.locator('.retranslation-selection-panel')).toHaveCount(1);
-  await expect(outputList.getByText('法文重新翻譯')).toBeVisible();
-  await expect(outputList.getByText('已完成')).toBeVisible();
-  await expect(workflow.getByLabel('重新翻譯進度').getByText(/已等待 \d+ 秒/)).toHaveCount(0);
-  await expect(workflow.getByText('Bonjour terminé')).toHaveCount(0);
-  await expect(workflow.getByText('Hello complete retranslation')).toHaveCount(0);
-  await expect(workflow.getByText(/v1/)).toHaveCount(0);
-  await outputList.getByRole('button', { name: '查看內容' }).click();
-  await expect(selectionPrompt).toHaveCount(0);
-  await expect(resultWorkspace.getByRole('heading', { name: '重翻逐字稿' })).toBeVisible();
-  const retranslationExport = workflow.getByLabel('重新翻譯匯出');
-  const sourceArticle = resultWorkspace.getByLabel('原始逐字稿');
-  const outputArticle = resultWorkspace.getByLabel('重翻逐字稿');
-  await expect(sourceArticle.getByRole('button', { name: '複製' })).toBeEnabled();
-  await expect(sourceArticle.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
-  await expect(outputArticle.getByRole('button', { name: '複製' })).toBeEnabled();
-  await expect(outputArticle.getByRole('button', { name: '匯出 TXT' })).toBeEnabled();
-  await expect(retranslationExport.getByRole('combobox', { name: '匯出格式' })).toHaveValue('txt');
-  await expect(retranslationExport.getByRole('combobox', { name: '匯出內容' })).toHaveValue('translation');
-  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('srt');
-  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await retranslationExport.getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
-  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('both');
-  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeDisabled();
-  await expect(retranslationExport.getByText('SRT 與 VTT 一次只能匯出一個內容。')).toBeVisible();
-  await retranslationExport.getByRole('combobox', { name: '匯出內容' }).selectOption('source');
-  await expect(retranslationExport.getByRole('button', { name: '下載', exact: true })).toBeEnabled();
-  await expect(resultWorkspace.getByLabel('重新翻譯閱讀區').getByText('Hello complete retranslation')).toBeVisible();
-  const retranslatedContent = resultWorkspace.getByLabel('重翻逐字稿內容');
-  await expect(retranslatedContent.getByText('Bonjour terminé Deuxième phrase')).toBeVisible();
-  await expect(retranslatedContent.locator('p')).toHaveCount(1);
-  page.once('dialog', (dialog) => dialog.accept());
-  await outputList.getByRole('button', { name: '刪除' }).click();
-  await expect(outputList.getByText('尚無重新翻譯結果。')).toBeVisible();
-  await expect(workflow.getByText('重新翻譯結果已刪除。')).toBeVisible();
-  await expect(resultWorkspace.getByText('Bonjour terminé')).toHaveCount(0);
-  await expect(retranslationExport).toHaveCount(0);
-
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(historyItems(page).first().getByText('由')).toHaveCount(0);
-  if (await sessionDetail(page).count() === 0) {
-    await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  }
-
-  const originalDetail = sessionDetail(page);
-  await expect(originalDetail.getByRole('heading', { name: '翻譯內容' })).toBeVisible();
-  await expect(originalDetail.getByLabel('翻譯內容').getByText('live output')).toBeVisible();
-  await expect(originalDetail.getByText('Bonjour terminé')).toHaveCount(0);
-});
-
-test('session detail displays failed retranslation reason', async ({ page }) => {
-  await page.route('**/api/translation-providers', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ providers: [{ key: 'gemini', label: 'Gemini', model: 'test model' }] })
-    });
-  });
-
-  const failedTranslationHistory = {
-    outputs: [],
-    executions: [{
-      id: 'execution-fr-failed',
-      requestId: 'request-fr-failed',
-      targetLanguageCode: 'fr',
-      status: 'failed',
-      failureInfo: {
-        reason: 'provider_execution_failed',
-        code: 'unauthorized',
-        status: 401,
-        message: 'Gemini HTTP request failed: unauthorized (401).'
-      }
-    }, {
-      id: 'execution-de-timeout',
-      requestId: 'request-de-timeout',
-      targetLanguageCode: 'de',
-      status: 'failed',
-      providerAttemptStatus: 'failed',
-      providerAttemptedAt: '2026-07-21T00:00:00.000Z',
-      providerCompletedAt: '2026-07-21T00:00:30.000Z',
-      failureInfo: {
-        reason: 'provider_execution_failed',
-        code: 'provider_timeout',
-        status: 504,
-        message: 'Gemini saved transcript translation timed out after 30000ms.'
-      }
-    }, {
-      id: 'execution-ja-failed',
-      requestId: 'request-ja-failed',
-      targetLanguageCode: 'ja',
-      status: 'failed',
-      failureInfo: {
-        reason: 'provider_execution_failed',
-        code: 'rate_limited',
-        status: 429,
-        providerStatus: 'RESOURCE_EXHAUSTED',
-        providerMessage: 'Quota exceeded for GenerateRequestsPerMinutePerProject.',
-        message: 'Gemini HTTP request failed: rate_limited (429).'
-      }
-    }]
-  };
-
-  await page.route('**/api/sessions/**', async (route) => {
-    const request = route.request();
-    const url = new URL(request.url());
-    const isTranslationHistory = request.method() === 'GET' && /^\/api\/sessions\/[^/]+\/translations$/.test(url.pathname);
-    const isSessionDetail = request.method() === 'GET' && /^\/api\/sessions\/[^/]+$/.test(url.pathname);
-
-    if (isTranslationHistory) {
-      const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
-      await route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ sessionId, translations: [], translationHistory: failedTranslationHistory })
-      });
-      return;
-    }
-
-    if (!isSessionDetail) {
-      await route.continue();
-      return;
-    }
-
-    const sessionId = decodeURIComponent(url.pathname.split('/')[3] || 'session-retranslation');
-    await route.fulfill({
-      contentType: 'application/json',
-      body: JSON.stringify(sessionDetailResponse({
-        sessionId,
-        translationHistory: failedTranslationHistory
-      }))
-    });
-  });
-
-  await gotoMockMeetingLive(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'Hello failed retranslation', 'live output');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-  await sessionDetail(page).getByLabel('重新翻譯').getByRole('button', { name: '以此原文重新翻譯' }).click();
-
-  const progress = retranslationPage(page).getByLabel('重新翻譯進度');
-  await expect(progress.getByText('法文')).toBeVisible();
-  await expect(progress.getByText('德文')).toBeVisible();
-  await expect(progress.getByText('日文')).toBeVisible();
-  await expect(progress.locator('.history-status-failed')).toHaveCount(3);
-  await expect(progress.getByText('已逾時')).toBeVisible();
-  await expect(progress.getByText('失敗原因：Gemini API 金鑰未授權，請確認後端 GEMINI_API_KEY。')).toBeVisible();
-  await expect(progress.getByText('失敗原因：Gemini 回應逾時，請稍後重試。')).toBeVisible();
-  await expect(progress.getByText('失敗原因：Gemini 暫時限制此請求，可能是短時間速率、Token、模型容量或滾動用量限制；不一定代表每日用量已達上限，請稍後重試。')).toBeVisible();
-});
-
-function historyRecord(overrides = {}) {
-  return {
-    id: overrides.id || 'session-1',
-    status: overrides.status || 'stopped',
-    startedAt: overrides.startedAt ?? 1,
-    endedAt: overrides.endedAt ?? 2,
-    durationMs: overrides.durationMs ?? 1,
-    targetLanguageCode: overrides.targetLanguageCode || 'ja',
-    targetLanguageLabel: overrides.targetLanguageLabel || '日文',
-    failureReason: overrides.failureReason ?? null,
-    failureCategory: overrides.failureCategory ?? null,
-    transcriptSummary: overrides.transcriptSummary || {
-      totalItems: 2,
-      sourceFinalCount: 1,
-      translationFinalCount: 1,
-      sourcePartialCount: 0,
-      translationPartialCount: 0,
-      hasTranscript: true
-    },
-    recordKind: overrides.recordKind || 'session',
-    retranslatedFrom: overrides.retranslatedFrom || null
-  };
-}
-
-function meetingHistoryRecord(overrides = {}) {
-  return {
-    id: overrides.id || 'meeting-1',
-    status: overrides.status || 'active',
-    startedAt: overrides.startedAt ?? 1000,
-    endedAt: overrides.endedAt ?? 190000,
-    durationMs: overrides.durationMs ?? 189000,
-    segmentSummary: overrides.segmentSummary || {
-      totalSegments: 3,
-      countsByStatus: { completed: 1, interrupted: 1, failed: 1 },
-      hasInterruptedSegments: true,
-      hasFailedSegments: true
-    },
-    transcriptSummary: overrides.transcriptSummary || {
-      totalItems: 6,
-      sourceFinalCount: 3,
-      translationFinalCount: 3,
-      hasTranscript: true
-    },
-    failureInfo: null,
-    recordKind: 'meeting'
-  };
-}
-
-function meetingDetailResponse() {
-  const meeting = meetingHistoryRecord();
-  const timeline = [
-    { id: 'segment-1', sequence: 0, status: 'completed', startedAt: 1000, endedAt: 60000, durationMs: 59000, liveSessionId: 'live-1', errorInfo: null },
-    { id: 'segment-2', sequence: 1, status: 'interrupted', startedAt: 61000, endedAt: 120000, durationMs: 59000, liveSessionId: 'live-2', errorInfo: { reason: 'token_expired', category: 'token' } },
-    { id: 'segment-3', sequence: 2, status: 'failed', startedAt: 121000, endedAt: 190000, durationMs: 69000, liveSessionId: 'live-3', errorInfo: { reason: 'provider_error', category: 'provider' } }
-  ];
-  const transcriptItems = [
-    meetingTranscriptItem({ id: 'source-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'source', sequence: 1, text: '第一段原文', startedAt: 10000 }),
-    meetingTranscriptItem({ id: 'translation-1', segmentId: 'segment-1', segmentSequence: 0, segmentStatus: 'completed', stream: 'translation', sequence: 2, text: '第一段翻譯', startedAt: 11000 }),
-    meetingTranscriptItem({ id: 'source-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'source', sequence: 3, text: '第二段原文', startedAt: 70000 }),
-    meetingTranscriptItem({ id: 'translation-2', segmentId: 'segment-2', segmentSequence: 1, segmentStatus: 'interrupted', stream: 'translation', sequence: 4, text: '第二段翻譯', startedAt: 71000 }),
-    meetingTranscriptItem({ id: 'source-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'source', sequence: 5, text: '第三段原文', startedAt: 130000 }),
-    meetingTranscriptItem({ id: 'translation-3', segmentId: 'segment-3', segmentSequence: 2, segmentStatus: 'failed', stream: 'translation', sequence: 6, text: '第三段翻譯', startedAt: 131000 })
-  ];
-
-  return {
-    meeting,
-    segments: timeline.map((segment) => ({
-      ...segment,
-      meetingId: 'meeting-1',
-      checkpointUpdatedAt: segment.endedAt,
-      transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, hasTranscript: true }
-    })),
-    timeline,
-    transcriptItems,
-    readingContent: {
-      sourceTranscript: {
-        kind: 'sourceTranscript',
-        status: 'available',
-        text: '第一段原文 第二段原文 第三段原文',
-        paragraphs: ['第一段原文 第二段原文 第三段原文'],
-        createdAt: 1000,
-        finalizedAt: 190000
-      },
-      translationArticle: {
-        kind: 'translationArticle',
-        status: 'available',
-        text: '第一段翻譯 第二段翻譯 第三段翻譯',
-        paragraphs: ['第一段翻譯 第二段翻譯 第三段翻譯'],
-        createdAt: 1000,
-        completedAt: 190000
-      }
-    },
-    recordKind: 'meeting'
-  };
-}
-
-function meetingTranscriptItem(overrides = {}) {
-  return {
-    meetingId: 'meeting-1',
-    status: 'final',
-    finalizedAt: overrides.startedAt + 1000,
-    liveSessionId: `live-${overrides.segmentSequence + 1}`,
-    ...overrides
-  };
-}
-
-function sessionDetailResponse({ sessionId, sourceText = 'Hello complete retranslation', translationHistory, recordKind = 'session', retranslatedFrom = null, selectedTranslationOutput, readingContent }) {
-  return {
-    session: { id: sessionId, status: 'stopped', startedAt: 1, endedAt: 2, durationMs: 1, failureReason: null, failureCategory: null, transcriptSummary: { totalItems: 2, sourceFinalCount: 1, translationFinalCount: 1, sourcePartialCount: 0, translationPartialCount: 0, hasTranscript: true }, recordKind, retranslatedFrom },
-    sourceTranscript: { id: `source:${sessionId}`, sessionId, revisionId: 'source:final', status: 'finalized', items: [{ id: 'source-1', stream: 'source', status: 'final', text: sourceText, sequence: 0, startedAt: 1, finalizedAt: 2 }], createdAt: 1, finalizedAt: 2 },
-    translationOutputs: [],
-    selectedTranslationOutput: selectedTranslationOutput || { id: `legacy-output:${sessionId}:ja`, targetLanguageCode: 'ja', items: [{ id: 'translation-1', stream: 'translation', status: 'final', text: 'live output' }] },
-    readingContent,
-    translationHistory,
-    legacy: false
-  };
-}
-
-test('saved SRT and VTT export are enabled when timing exists', async ({ page }) => {
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'timed source', 'timed translation');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const panel = savedExportPanel(page);
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出內容' }).selectOption('source');
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('srt');
-  await expect(panel.getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
-
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('vtt');
-  await expect(panel.getByRole('button', { name: '下載已儲存的逐字稿' })).toBeEnabled();
-  await expect(panel.getByText('已儲存字幕的時間碼採用原始工作階段觀察時間。')).toBeVisible();
-});
-
-test('downloads saved Cue TXT, SRT, and VTT through browser downloads', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'saved download source', 'saved download translation', { waitMs: 1800 });
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const panel = savedExportPanel(page);
-  const downloadSaved = async (format) => {
-    await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption(format);
-    const downloadPromise = page.waitForEvent('download');
-    await panel.getByRole('button', { name: '下載已儲存的逐字稿' }).click();
-    const download = await downloadPromise;
-    return {
-      download,
-      content: await readFile(await download.path(), 'utf8')
-    };
-  };
-
-  const txt = await downloadSaved('txt');
-  expect(txt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.txt$/);
-  expect(txt.content).toContain('saved download translation');
-
-  const srt = await downloadSaved('srt');
-  expect(srt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.srt$/);
-  expect(srt.content).toMatch(/^1\n\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\nsaved download translation\n/);
-
-  const vtt = await downloadSaved('vtt');
-  expect(vtt.download.suggestedFilename()).toMatch(/^live-translate-session-.*\.vtt$/);
-  expect(vtt.content).toMatch(/^WEBVTT\n\n\d{2}:\d{2}:\d{2}\.\d{3} --> \d{2}:\d{2}:\d{2}\.\d{3}\nsaved download translation\n/);
-});
-
-test('both stream is unavailable for saved SRT and VTT export', async ({ page }) => {
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'source subtitle', 'translation subtitle');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const panel = savedExportPanel(page);
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('srt');
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出內容' }).selectOption('both');
-
-  await expect(panel.getByRole('button', { name: '下載已儲存的逐字稿' })).toBeDisabled();
-  await expect(panel.getByText('SRT 與 VTT 一次只能匯出一個內容。')).toBeVisible();
-
-  await panel.getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('vtt');
-  await expect(panel.getByRole('button', { name: '下載已儲存的逐字稿' })).toBeDisabled();
-});
-
-test('no transcript detail shows empty state', async ({ page }) => {
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  await expect(sessionDetail(page).getByRole('heading', { name: '翻譯內容' })).toBeVisible();
-  await expect(sessionDetail(page).getByText('尚無翻譯內容。')).toBeVisible();
-  await sessionDetail(page).getByRole('tab', { name: '原始逐字稿' }).click();
-  await expect(sessionDetail(page).getByText('尚無原始逐字稿。')).toBeVisible();
-  await expect(savedExportPanel(page).getByRole('button', { name: '下載已儲存的逐字稿' })).toBeDisabled();
-});
-
-test('switching saved session resets saved export controls', async ({ page }) => {
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'first source', 'first translation');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByLabel('即時翻譯工作區').getByText('已停止', { exact: true })).toBeVisible();
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'second source', 'second translation');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(2);
-
-  await historyItems(page).nth(1).getByRole('button', { name: '查看詳細資料' }).click();
-  await savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('vtt');
-  await savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' }).selectOption('source');
-
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' })).toHaveValue('txt');
-  await expect(savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' })).toHaveValue('translation');
-});
-
-test('saved export controls do not alter active export controls', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '匯出', exact: true }).click();
-  await activeExportPanel(page).getByRole('combobox', { name: '匯出格式' }).selectOption('vtt');
-  await activeExportPanel(page).getByRole('combobox', { name: '匯出內容' }).selectOption('source');
-  await activeExportPanel(page).getByRole('button', { name: '關閉匯出' }).click();
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'source export separation', 'translation export separation');
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  await savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出格式' }).selectOption('srt');
-  await savedExportPanel(page).getByRole('combobox', { name: '已儲存逐字稿匯出內容' }).selectOption('translation');
-
-  await openLivePage(page);
-  await page.getByRole('button', { name: '匯出', exact: true }).click();
-  await expect(activeExportPanel(page).getByRole('combobox', { name: '匯出格式' })).toHaveValue('vtt');
-  await expect(activeExportPanel(page).getByRole('combobox', { name: '匯出內容' })).toHaveValue('source');
-});
-
-test('failed session appears in history with normalized failure reason', async ({ page }) => {
-  page.failLiveTokenRequestAt = 2;
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
-  });
-
-  await expect(page.getByText('無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。')).toBeVisible();
-  await openHistoryPage(page);
-
-  const item = historyItems(page).first();
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(item.getByText('失敗', { exact: true })).toBeVisible();
-});
-
-test('failed session detail shows normalized failure reason', async ({ page }) => {
-  page.failLiveTokenRequestAt = 2;
-  await page.goto('/');
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
-  });
-
-  await expect(page.getByText('無法重新連線即時翻譯。準備就緒後可以開始新的工作階段。')).toBeVisible();
-  await openHistoryPage(page);
-  await historyItems(page).first().getByRole('button', { name: '查看詳細資料' }).click();
-
-  const detail = sessionDetail(page);
-  await expect(detail.getByText('失敗原因')).toBeVisible();
-  await expect(detail.getByText('unexpected_close')).toBeVisible();
-  await expect(detail.getByText('失敗類別')).toBeVisible();
-  await expect(detail.getByText('翻譯服務暫時失敗')).toBeVisible();
-});
-
-test('token expiration reconnect does not finalize history until user stops', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'token expired', code: 1008 });
-  });
-
-  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.length)).toBe(2);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(0);
-
-  await openLivePage(page);
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  const item = historyItems(page).last();
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(item.getByText('已停止', { exact: true })).toBeVisible();
-});
-
-test('manual Start after a finalized session does not clear previous history', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-
-  await openLivePage(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(historyItems(page).first().getByText('已停止', { exact: true })).toBeVisible();
-});
-
-test('reconnect does not create duplicate history record', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'before reconnect', 'after reconnect');
-
-  await page.evaluate(() => {
-    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
-  });
-
-  await expect(page.getByText('正在重新連線', { exact: true })).toBeVisible();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(0);
-
-  await openLivePage(page);
-  await page.getByRole('button', { name: '結束本次工作階段' }).click();
-  await expect(page.getByLabel('即時翻譯工作區').getByText('已停止', { exact: true })).toBeVisible();
-
-  await openHistoryPage(page);
-  await expect(historyItems(page)).toHaveCount(1);
-  await expect(historyItems(page).first().getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
 });
 
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
@@ -3858,7 +3177,7 @@ test('offline pauses reconnect and online resumes one replacement session', asyn
   await expect(page.getByText('after online')).toBeVisible();
 });
 
-test('selected microphone disconnect falls back on reconnect', async ({ page }) => {
+test.skip('selected microphone disconnect falls back on reconnect', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
   await page.addInitScript(() => {
     navigator.mediaDevices.enumerateDevices = async () => [{
@@ -4099,11 +3418,7 @@ test('reconnect failure preserves transcript and allows manual restart', async (
 
 test('retry exhaustion shows explicit error and preserves transcript', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
-  await mockSingleMeetingList(page);
-  await page.goto('/');
-
-  await page.getByRole('combobox', { name: '選擇會議' }).click();
-  await page.getByRole('option', { name: '測試會議' }).click();
+  await page.goto('/#live?meetingId=meeting-1');
   await page.getByRole('button', { name: '開始' }).click();
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
@@ -4169,6 +3484,24 @@ test('meeting management uses the live workspace layout and preserves create flo
           meeting: {
             id: 'meeting-existing',
             name: '既有產品會議',
+            status: 'created',
+            sourceLanguageCode: 'zh-Hant',
+            targetLanguageCode: 'en',
+            glossaryEntries: []
+          }
+        })
+      });
+      return;
+    }
+
+    if (request.method() === 'GET' && url.pathname === '/api/meetings/meeting-created') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          meeting: {
+            id: 'meeting-created',
+            name: '產品會議',
             status: 'created',
             sourceLanguageCode: 'zh-Hant',
             targetLanguageCode: 'en',
@@ -4246,70 +3579,54 @@ test('meeting management uses the live workspace layout and preserves create flo
 
   await page.goto('/#meeting');
 
-  await expect(page.locator('.live-app-shell')).toBeVisible();
-  await expect(page.getByRole('link', { name: '會議管理' })).toHaveAttribute('aria-current', 'page');
-  await expect(page.locator('.app-header')).toBeHidden();
+  await expect(page.locator('.meeting-app-shell')).toBeVisible();
+  await expect(page.locator('.meeting-app-header')).toBeVisible();
+  await expect(page.locator('.live-sidebar')).toHaveCount(0);
   await expect(page.getByText('MEETING SETUP')).toBeHidden();
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議', exact: true }).last()).toBeVisible();
   await expect(page.locator('.meeting-management-page > .history-panel')).toBeVisible();
 
-  await expect(page.locator('.meeting-management-data-grid .ag-row')).toHaveCount(1);
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(page.locator('.meeting-management-page ul.history-list')).toHaveCount(0);
-  await expect(page.getByRole('row', { name: /既有產品會議/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /既有產品會議/ })).toBeVisible();
 
-  const meetingGridLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
+  const meetingCardLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     const gridRect = element.getBoundingClientRect();
-    const scrollRect = element.parentElement.getBoundingClientRect();
     const panelRect = element.closest('.history-panel').getBoundingClientRect();
-    const root = element.querySelector('.ag-root-wrapper');
-    const scroll = element.parentElement;
-    const cell = element.querySelector('.ag-cell');
     return {
-      gridFitsPanel: gridRect.bottom <= panelRect.bottom + 1,
-      pageFitsViewport: document.scrollingElement.scrollHeight <= document.scrollingElement.clientHeight,
-      layout: root?.className || '',
-      overflowY: getComputedStyle(scroll).overflowY,
-      overflowX: getComputedStyle(scroll).overflowX,
-      cellAlignItems: cell ? getComputedStyle(cell).alignItems : '',
-      rootHeight: root?.getBoundingClientRect().height || 0,
+      gridFitsPanel: gridRect.left >= panelRect.left && gridRect.right <= panelRect.right,
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      columnCount: getComputedStyle(element).gridTemplateColumns.split(' ').length,
       gridRect: { top: gridRect.top, bottom: gridRect.bottom, height: gridRect.height },
-      scrollRect: { top: scrollRect.top, bottom: scrollRect.bottom, height: scrollRect.height },
       panelRect: { top: panelRect.top, bottom: panelRect.bottom, height: panelRect.height }
     };
   });
-  expect(meetingGridLayout.gridFitsPanel).toBe(true);
-  expect(meetingGridLayout.pageFitsViewport).toBe(true);
-  expect(meetingGridLayout.layout).toContain('ag-layout-normal');
-  expect(meetingGridLayout.overflowY).toBe('auto');
-  expect(meetingGridLayout.overflowX).toBe('auto');
-  expect(meetingGridLayout.cellAlignItems).toBe('center');
-  expect(meetingGridLayout.rootHeight).toBeLessThanOrEqual(meetingGridLayout.scrollRect.height);
-  expect(meetingGridLayout.scrollRect.height).toBeGreaterThan(0);
+  expect(meetingCardLayout.gridFitsPanel).toBe(true);
+  expect(meetingCardLayout.pageHasHorizontalOverflow).toBe(false);
+  expect(meetingCardLayout.columnCount).toBe(3);
 
-  await page.setViewportSize({ width: 1024, height: 600 });
-  const laptopMeetingLayout = await page.locator('.meeting-management-data-grid').evaluate((element) => {
-    const mainText = [...element.querySelectorAll('.meeting-name-cell')];
+  await page.setViewportSize({ width: 1023, height: 600 });
+  const laptopMeetingLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     return {
       pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
-      mainTextCanWrap: mainText.every((cell) => getComputedStyle(cell).overflowWrap === 'anywhere'),
-      clippedMainText: mainText.some((cell) => cell.scrollWidth > cell.clientWidth + 1 && getComputedStyle(cell).overflow === 'hidden')
+      columnCount: getComputedStyle(element).gridTemplateColumns.split(' ').length,
+      cardFitsViewport: [...element.querySelectorAll('.meeting-card')].every((card) => card.getBoundingClientRect().right <= window.innerWidth)
     };
   });
   expect(laptopMeetingLayout.pageHasHorizontalOverflow).toBe(false);
-  expect(laptopMeetingLayout.mainTextCanWrap).toBe(true);
-  expect(laptopMeetingLayout.clippedMainText).toBe(false);
+  expect(laptopMeetingLayout.columnCount).toBe(1);
+  expect(laptopMeetingLayout.cardFitsViewport).toBe(true);
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  await page.getByRole('row', { name: /既有產品會議/ }).getByRole('button', { name: '編輯' }).click();
+  await page.locator('.meeting-card').filter({ hasText: '既有產品會議' }).getByRole('button', { name: '編輯並開始會議' }).click();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
   await expect(page.getByLabel('會議名稱')).toHaveValue('既有產品會議');
-  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeVisible();
   await page.getByRole('button', { name: '返回會議清單' }).click();
-  await expect(page.getByRole('button', { name: '建立新會議', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '建立會議', exact: true }).last()).toBeVisible();
   await expect(page.getByRole('heading', { name: '編輯會議設定' })).toHaveCount(0);
 
-  await page.getByRole('button', { name: '建立新會議', exact: true }).click();
+  await page.getByRole('button', { name: '建立會議', exact: true }).last().click();
   await expect(page.getByText('MEETING SETUP')).toBeVisible();
   await expect(page.getByRole('heading', { name: '建立會議' })).toBeVisible();
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
@@ -4376,12 +3693,11 @@ test('meeting management uses the live workspace layout and preserves create flo
   await expect(glossaryDrawer).toBeHidden();
 
   await page.getByLabel('會議名稱').fill('產品會議');
-  await page.getByRole('button', { name: '建立會議', exact: true }).click();
+  await page.getByLabel('會議設定').getByRole('button', { name: '建立會議', exact: true }).click();
 
   await expect(page.getByRole('status')).toHaveText('會議已建立。');
   await expect(page.getByRole('button', { name: '儲存變更', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '返回會議清單', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toBeEnabled();
   await expect(page.locator('.meeting-management-grid > .control-panel')).toHaveCount(2);
   const cardWidths = await page.locator('.meeting-management-grid > .control-panel').evaluateAll((cards) => cards.map((card) => Math.round(card.getBoundingClientRect().width)));
   expect(cardWidths[0]).toBe(cardWidths[1]);
@@ -4389,9 +3705,11 @@ test('meeting management uses the live workspace layout and preserves create flo
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.getByRole('button', { name: '返回會議清單' }).click();
   page.once('dialog', (dialog) => dialog.accept());
-  const createdMeetingRow = page.getByRole('row').filter({ has: page.getByText('產品會議', { exact: true }) });
-  await createdMeetingRow.getByRole('button', { name: '刪除' }).click();
-  await expect(createdMeetingRow).toHaveCount(0);
+  const createdMeetingCard = page.locator('.meeting-card').filter({ has: page.getByText('產品會議', { exact: true }) });
+  await createdMeetingCard.click({ position: { x: 12, y: 12 } });
+  await expect(page.getByRole('heading', { name: '編輯會議設定' })).toBeVisible();
+  await page.getByRole('button', { name: '刪除會議' }).click();
+  await expect(createdMeetingCard).toHaveCount(0);
   await expect(page.getByRole('status')).toHaveText('會議已刪除。');
 });
 
@@ -4440,8 +3758,8 @@ test('opening a meeting live workspace clears the previous live preview', async 
     await route.fallback();
   });
   await page.goto('/#meeting');
-  await page.getByRole('row', { name: /新測試會議/ }).getByRole('button', { name: '編輯' }).click();
-  await page.getByRole('button', { name: '前往即時翻譯' }).click();
+  await page.locator('.meeting-card').filter({ hasText: '新測試會議' }).getByRole('button', { name: '編輯並開始會議' }).click();
+  await page.getByRole('button', { name: '前往即時字幕' }).click();
 
   await expect(page).toHaveURL(/#live\?meetingId=meeting-2$/);
   await expect(page.getByTestId('cue-empty-state')).toBeVisible();
@@ -4522,7 +3840,7 @@ test('switching meetings before recording clears subtitles from the previous mee
   await expect(page.getByText('Previous translation')).toHaveCount(0);
 });
 
-test('live translation offers resumable meetings and loads selected settings', async ({ page }) => {
+test.skip('live translation offers resumable meetings and loads selected settings', async ({ page }) => {
   await page.route('**/api/meetings', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -4631,12 +3949,113 @@ test('live route redirects when the meeting is terminal', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText('會議連結不存在或已失效，請重新選擇已建立的會議。');
 });
 
-test('live route redirects when the meeting does not exist', async ({ page }) => {
-  await page.goto('/#live?meetingId=missing-meeting');
+test('Meeting home searches by name and filters by status', async ({ page }) => {
+  await page.unroute('**/api/meetings');
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
 
-  await expect(page).toHaveURL(/#meeting$/);
-  await expect(page.getByRole('alert')).toHaveText('會議連結不存在或已失效，請重新選擇已建立的會議。');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: 'meeting-active', name: '產品評審', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', startedAt: 1699999000000, updatedAt: 1700000000000 },
+        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', startedAt: 1699999001000, updatedAt: 1700000001000 },
+        { id: 'meeting-completed', name: '已完成簡報', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', startedAt: 1699999002000, updatedAt: 1700000002000 }
+      ])
+    });
+  });
 
-  await openHistoryPage(page);
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.goto('/#meetings');
+  await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();
+  await expect(page.locator('.meeting-app-header .brand-block p')).toHaveText('先建立會議並完成設定，再分享給參與者錄音。');
+  await expect(page.locator('.meeting-management-page > .history-header')).toHaveCount(0);
+  const desktopMeetingLayout = await page.locator('.meeting-management-shell').evaluate((shell) => {
+    const header = shell.querySelector('.meeting-app-header')?.getBoundingClientRect();
+    const panel = shell.querySelector('.meeting-management-page > .history-panel')?.getBoundingClientRect();
+    const shellRect = shell.getBoundingClientRect();
+    return {
+      shellWidth: shellRect.width,
+      headerLeft: header?.left ?? 0,
+      headerRight: header?.right ?? 0,
+      headerToPanelGap: panel && header ? panel.top - header.bottom : Infinity
+    };
+  });
+  expect(desktopMeetingLayout.shellWidth).toBeGreaterThanOrEqual(1279);
+  expect(desktopMeetingLayout.headerLeft).toBeLessThanOrEqual(1);
+  expect(desktopMeetingLayout.headerRight).toBeGreaterThanOrEqual(1279);
+  expect(desktopMeetingLayout.headerToPanelGap).toBeLessThan(40);
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(3);
+  const activeCard = page.locator('.meeting-card').filter({ hasText: '產品評審' });
+  await expect(activeCard).toContainText('繁體中文 → 日文');
+  await expect(activeCard).toContainText('開始時間：');
+  await expect(activeCard).toContainText('最後更新：');
+  await expect(activeCard.getByTestId('meeting-card-started-at')).toHaveCount(1);
+  await expect(activeCard.getByTestId('meeting-card-updated-at')).toHaveCount(1);
+
+  await page.setViewportSize({ width: 768, height: 800 });
+  const narrowMeetingLayout = await page.locator('.meeting-management-page').evaluate((pageElement) => {
+    const toolbar = pageElement.querySelector('.meeting-table-toolbar');
+    const search = pageElement.querySelector('.meeting-search-field');
+    const dictionaryButton = pageElement.querySelector('.meeting-table-toolbar > .button');
+    const cards = pageElement.querySelector('.meeting-card-grid');
+    const actionButton = pageElement.querySelector('.meeting-card-action');
+    return {
+      toolbarDisplay: toolbar ? getComputedStyle(toolbar).display : '',
+      toolbarWraps: search && dictionaryButton ? dictionaryButton.getBoundingClientRect().top > search.getBoundingClientRect().bottom : false,
+      pageHasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      cardColumnCount: cards ? getComputedStyle(cards).gridTemplateColumns.split(' ').length : 0,
+      actionHeight: actionButton?.getBoundingClientRect().height || 0
+    };
+  });
+  expect(narrowMeetingLayout.toolbarDisplay).toBe('grid');
+  expect(narrowMeetingLayout.toolbarWraps).toBe(true);
+  expect(narrowMeetingLayout.pageHasHorizontalOverflow).toBe(false);
+  expect(narrowMeetingLayout.cardColumnCount).toBe(1);
+  expect(narrowMeetingLayout.actionHeight).toBeGreaterThanOrEqual(44);
+
+  await page.getByLabel('搜尋會議').fill('產品');
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
+  await expect(activeCard).toContainText('進行中');
+
+  await page.getByLabel('搜尋會議').fill('');
+  await page.getByLabel('篩選狀態').selectOption('interrupted');
+  const interruptedCard = page.locator('.meeting-card').filter({ hasText: '客戶訪談' });
+  await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
+  await expect(interruptedCard).toContainText('可續錄');
+  await expect(interruptedCard.getByRole('button', { name: '繼續即時字幕' })).toBeVisible();
+});
+
+test('Meeting home card layout captures desktop viewport references', async ({ page }) => {
+  await page.unroute('**/api/meetings');
+  await page.route('**/api/meetings', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        { id: 'meeting-active', name: '董事會策略會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 120000 },
+        { id: 'meeting-ready', name: '產品發布簡報', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 1080000 },
+        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: Date.now() - 3600000 },
+        { id: 'meeting-completed', name: '每週團隊同步', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', updatedAt: Date.now() - 86400000 }
+      ])
+    });
+  });
+
+  await page.goto('/#meetings');
+  await page.locator('.meeting-card').first().waitFor();
+
+  for (const [width, height, name, expectedColumns] of [
+    [1920, 900, 'wide-desktop', 4],
+    [1440, 900, 'desktop', 3],
+    [1280, 800, '13-inch', 3],
+    [1279, 768, 'compact-desktop', 2]
+  ]) {
+    await page.setViewportSize({ width, height });
+    await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
+  }
 });

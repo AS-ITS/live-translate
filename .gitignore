@@ -3,6 +3,7 @@ dist/
 test-results/
 playwright-report/
 .playwright-cli/
+.zvec-grep/
 coverage/
 .env
 .env.development

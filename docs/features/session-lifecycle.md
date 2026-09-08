@@ -7,8 +7,11 @@ current Start / Stop / Error flow into an explicit session lifecycle model. The
 goal is to make session state, transitions, cleanup, and error reasons clear
 before adding Auto Reconnect, Token Refresh, Session History, or Usage Logging.
 
-This feature does not directly implement reconnect behavior, change the Gemini
-Live token flow, add backend APIs, add a database, or add persistence.
+This feature does not directly implement reconnect behavior, add backend APIs,
+add a database, or add persistence. Browser startup is ordered explicitly:
+microphone stream readiness precedes token acquisition, Gemini `setupComplete`
+precedes audio graph attachment, and the first accepted PCM chunk precedes the
+`listening` state.
 
 ## Related Capabilities
 
@@ -130,6 +133,32 @@ Cleanup should:
 Cleanup should be idempotent. Calling cleanup more than once must not create a
 new session, request a token, throw uncaught errors, or clear unrelated
 transcript/export state unless the selected session reset policy requires it.
+
+Navigation policy is part of the session lifecycle:
+
+- `requesting-permission`, `connecting`, `listening`, `reconnecting`, and
+  `switching-segment` block in-app navigation to Meeting Settings, Meeting
+  Management, or another Meeting. The user must pause or stop first.
+- `paused` allows the user to open Settings or Management while preserving the
+  paused Session, checkpoint, and transcript. Returning to another Meeting's
+  Live workspace still requires ending the paused Session first.
+- A direct hash change, browser history navigation, or equivalent route change
+  that leaves an active Live workspace force-stops the Session once, flushes
+  the checkpoint, and navigates to the requested route after cleanup.
+- Forced navigation uses the same idempotent stop path as user Stop; it does
+  not create a replacement Session or attempt reconnect recovery.
+
+Startup owns one in-flight operation per session. Repeated start calls while
+permission, token, socket setup, audio graph attachment, or first-PCM delivery
+is pending return the same operation and cannot create another stream,
+AudioContext, provider connection, or callback generation. A failed start is
+fully cleaned up; retry creates a new session lifecycle.
+
+Startup emits structured console diagnostics containing the selected device,
+stream active state, track ready state, AudioContext state, provider setup
+state, cleanup reason, and connection epoch. User-visible errors identify the
+failed stage instead of treating token, socket, AudioContext, and PCM failures
+as microphone permission failures.
 
 ## UI State Mapping
 

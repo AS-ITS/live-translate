@@ -61,9 +61,8 @@ function transcriptIsFinal({ content, context, stream, eventType }) {
 }
 
 function createEvent({ payload = {}, stream, eventType, text, providerEventId, eventSequence, turnIndex, sessionTimeMs, context, isFinal, turnComplete = false, generationComplete = false }) {
-  const identityBase = providerEventId || [
-    context.liveSessionId || context.sessionId || 'session-unknown',
-    turnIndex ?? 'turn-unknown',
+  const identityBase = [
+    providerEventId || context.liveSessionId || context.sessionId || 'session-unknown',
     eventSequence ?? 'sequence-unknown'
   ].join('|');
   return {
@@ -72,9 +71,17 @@ function createEvent({ payload = {}, stream, eventType, text, providerEventId, e
     sessionId: context.sessionId || null,
     segmentId: context.segmentId || null,
     connectionEpoch: context.connectionEpoch ?? null,
+    audioTurnId: context.audioTurnId || null,
+    turnKey: context.turnKey || context.audioTurnId || null,
+    turnIdentitySource: context.turnIdentitySource || (context.audioTurnId ? 'local' : null),
     stream,
     eventType,
     text: normalizeText(text),
+    textMergeMode: stream === 'source'
+      ? (context.inputTextMergeMode || 'initial')
+      : stream === 'translation'
+        ? (context.outputTextMergeMode || 'initial')
+        : undefined,
     isFinal,
     turnComplete,
     generationComplete,

@@ -443,6 +443,7 @@ function serializeTranslationOutput(output) {
   return {
     id: output.id,
     executionId: output.executionId,
+    ...(output.cueId === undefined ? {} : { cueId: output.cueId }),
     sequence: output.sequence,
     translatedText: output.translatedText,
     ...(output.polishedItems === undefined ? {} : { polishedItems: clonePlain(output.polishedItems) }),
@@ -479,6 +480,7 @@ function enrichOutputForPersistence(output, request, existingOutputs) {
   return new TranslationOutput({
     id: output.id,
     executionId: output.executionId,
+    cueId: output.cueId,
     sequence: output.sequence,
     translatedText: output.translatedText,
     polishedItems: output.polishedItems,

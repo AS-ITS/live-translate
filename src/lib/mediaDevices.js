@@ -5,6 +5,8 @@ const DEFAULT_AUDIO_INPUT_CONSTRAINTS = {
   channelCount: 1
 };
 
+export const DEFAULT_MICROPHONE_PERMISSION_TIMEOUT_MS = 15000;
+
 export function labelForDevice(device, fallbackLabel) {
   return device?.label?.trim() || fallbackLabel;
 }
@@ -43,6 +45,48 @@ export function buildAudioInputConstraints(inputDeviceId = '') {
   };
 }
 
+export function requestAudioInputStream(inputDeviceId = '', {
+  timeoutMs = DEFAULT_MICROPHONE_PERMISSION_TIMEOUT_MS,
+  mediaDevices = globalThis.navigator?.mediaDevices
+} = {}) {
+  if (!mediaDevices || typeof mediaDevices.getUserMedia !== 'function') {
+    return Promise.reject(new DOMException('Microphone access is unavailable.', 'NotSupportedError'));
+  }
+
+  let request;
+  try {
+    request = Promise.resolve(mediaDevices.getUserMedia(buildAudioInputConstraints(inputDeviceId)));
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) return request;
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new DOMException('Microphone permission request timed out.', 'TimeoutError'));
+      void request.then((stream) => stopMediaStream(stream)).catch(() => {});
+    }, timeoutMs);
+
+    request.then((stream) => {
+      if (settled) {
+        stopMediaStream(stream);
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve(stream);
+    }, (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
 export function isMissingSelectedInputError(error) {
   if (error?.name === 'NotFoundError' || error?.name === 'OverconstrainedError') {
     return true;
@@ -55,6 +99,19 @@ export function supportsOutputDeviceSelection() {
   return Boolean(globalThis.HTMLMediaElement?.prototype?.setSinkId);
 }
 
+export function supportsAudioContextOutputSelection() {
+  return Boolean(globalThis.AudioContext?.prototype?.setSinkId || globalThis.webkitAudioContext?.prototype?.setSinkId);
+}
+
+export async function setAudioOutputDevice(audioContext, deviceId = '') {
+  if (!audioContext || typeof audioContext.setSinkId !== 'function') {
+    return false;
+  }
+
+  await audioContext.setSinkId(deviceId || 'default');
+  return true;
+}
+
 function normalizeDevice(device, fallbackLabel) {
   return {
     deviceId: device.deviceId,
@@ -62,4 +119,8 @@ function normalizeDevice(device, fallbackLabel) {
     kind: device.kind,
     label: labelForDevice(device, fallbackLabel)
   };
+}
+
+function stopMediaStream(stream) {
+  for (const track of stream?.getTracks?.() || []) track.stop?.();
 }

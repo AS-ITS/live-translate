@@ -1,5 +1,155 @@
 # Live Translate API and Events
 
+## Realtime subtitle pipeline contract
+
+The API treats a finalized source Cue as the stable unit of downstream work.
+
+### Cue read model
+
+```json
+{
+  "cueId": "cue:session-1:segment-1:7",
+  "sessionId": "session-1",
+  "segmentId": "segment-1",
+  "sequence": 7,
+  "startTimeMs": 12000,
+  "endTimeMs": 14500,
+  "sourceLanguageCode": "zh-Hant",
+  "targetLanguageCode": "en",
+  "sourceText": "正式原文。",
+  "initialTranslation": "Initial translation.",
+  "refinedTranslation": null,
+  "translationStatus": "completed",
+  "refinementStatus": "queued",
+  "version": 1,
+  "status": "final"
+}
+```
+
+`cueId`, `sessionId`, `segmentId`, `sequence`, time range, language identity,
+and `sourceText` are immutable. Initial translation and refinement update this
+same read-model row; they never create a second Cue or alter its ordering.
+Consumers compute the effective translation as
+`refinedTranslation → initialTranslation → legacy translatedText`.
+
+### Execution trigger and operations
+
+After a finalized Cue is submitted for checkpoint persistence, the frontend
+creates an asynchronous initial translation execution using
+`gemini-3.5-flash`. A successful initial translation then schedules a separate
+refinement execution, also using Flash; both operations are non-blocking from
+the Live transcription request. Failures are stored with safe status
+information and are retryable without changing the Cue identity or source
+fields.
+
+Worker results must use structured output with the expected operation, exact
+`cueId`, source/input hash, target language, and bounded text fields. Unknown
+fields, missing required fields, mismatched Cue identity, invalid language, or
+oversized output fail validation before persistence. Refinement context is
+read-only; only the addressed Cue can be updated.
+
+Duplicate submissions are idempotent by `cueId` plus operation/input version
+and provider idempotency key. A same-Cue update is accepted only when its
+expected version and input hash still match. Older or late worker output is
+classified as stale and discarded without overwriting a newer translation or
+refinement.
+
+Legacy projections remain available for existing clients: `translatedText`
+maps to the effective translation, `rawTranslation` maps to the initial/raw
+translation where available, and `refinedTranslation` remains exposed as the
+newer optional field. Existing auth, rate limiting, origin checks, structured
+errors, backend-only `GEMINI_API_KEY`, and ephemeral-token secret isolation
+remain unchanged.
+
+## Global glossary import
+
+Authenticated clients can preview and atomically import a UTF-8 CSV, JSON, or XLSX
+glossary through `POST /api/glossary/import/preview` and
+`POST /api/glossary/import`. Both requests use
+`{ format: "csv" | "json" | "xlsx", content: "...", sourceLanguageCode: "...", targetLanguageCode: "...", category: "..." }`.
+XLSX content is a base64-encoded workbook whose first worksheet starts with
+`source` and `translation` headers. CSV content uses `source,translation`
+columns. JSON content uses an `entries` array whose items contain `source` and
+`translation` strings. For example, all three formats can contain multiple rows
+such as:
+
+For XLSX, the worksheet should use the same columns shown below in its first row.
+
+```csv
+source,translation
+產品名稱,Product name
+會議室,Meeting room
+翻譯結果,Translation result
+```
+
+```json
+{
+  "entries": [
+    { "source": "產品名稱", "translation": "Product name" },
+    { "source": "會議室", "translation": "Meeting room" },
+    { "source": "翻譯結果", "translation": "Translation result" }
+  ]
+}
+```
+
+The selected languages and category are applied to every imported row. The commit
+request also sends the preview `baseRevision`, a `resolutions` map keyed by row
+number with `update` or `skip` for conflicts, and an optional `selectedRows`
+array of source row numbers. When `selectedRows` is present, unselected rows are
+skipped. The server validates selected rows before writing; invalid selected
+rows reject the whole batch, while invalid unselected rows can be left out.
+Rows that repeat a source term within the same import are reported with
+`status: "duplicate"` and counted in `summary.duplicates`, not
+`summary.invalid`; they are skipped automatically during commit. Existing
+glossary entries remain `status: "conflict"` rows and require `update` or
+`skip` resolution.
+Omitting `selectedRows` preserves the legacy all-rows behavior. A changed
+revision returns `409 glossary_revision_conflict`.
+
+## Meeting Center and Live Viewer
+
+## Meeting glossary import preview
+
+Meeting Settings can preview a CSV, JSON, or XLSX file for private Meeting
+glossary entries through `POST /api/meetings/glossary/import/preview`. The
+request is `{ format, content, sourceLanguageCode, targetLanguageCode,
+existingEntries }`; XLSX content is base64 encoded. The endpoint is read-only:
+it returns preview rows with `create`, `conflict`, `duplicate`, or `invalid`
+status and does not change either the Meeting or global glossary. Confirmed
+rows are sent later as part of the existing Meeting create/update request's
+`privateGlossaryEntries` field.
+
+Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,
+and Meeting-level `cue.append` SSE events. The complete contract and delivery
+phases are documented in
+[Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
+The Meeting-level Viewer capability is delivered incrementally. Existing
+Session share and Meeting checkpoint routes remain the current implementation
+contract for their respective resources.
+
+Milestone 4 Meeting Viewer sharing is available through
+`POST /api/meetings/:meetingId/shares` with
+`{ "role": "viewer", "expiresAt": null }`. Anonymous Viewer reads use
+`GET /api/shared-meetings/:token` or
+`GET /api/shared-meetings/code/:shortCode`; the response contains sanitized
+Meeting metadata and historical final Cues, but no glossary, audio artifact,
+Recorder lease, device, or credential data. Live Cue events and reconnect
+recovery are provided by the Milestone 5 SSE contract below.
+
+Milestone 5 adds `POST /api/meetings/:meetingId/segments/:segmentId/cues` for
+finalized Cue publication. Owner requests use the existing Access Token gate;
+Recorder requests use the existing Recorder grant, lease, fence, and session
+headers. The endpoint validates the Meeting／Segment／Session relationship,
+publishes without waiting for checkpoint persistence, and returns the Meeting
+event cursor.
+
+Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
+variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
+Events are process-local and replayable only within the bounded in-memory
+history. When the cursor is too old, the stream emits `meeting.gap` and the
+Viewer refetches the REST snapshot.
+
 ## Session sharing
 
 Share creation accepts `role: "viewer" | "recorder"` and defaults to Viewer.
@@ -20,8 +170,10 @@ and Recorder clients cannot download Session audio.
 
 Authenticated owner routes are available at `GET`/`POST /api/sessions/:sessionId/shares`
 and `DELETE /api/sessions/:sessionId/shares/:shareId`. Creation returns a
-one-time plaintext token and short code, plus SPA hash URLs (`#watch?token=...`
-and `#watch?code=...`); stored share metadata contains only hashes. Anonymous
+one-time plaintext token and short code, plus legacy SPA hash URLs
+(`#watch?token=...` and `#watch?code=...`); stored share metadata contains only
+hashes. The legacy `#watch` frontend route is no longer exposed and falls back
+to `#meetings`. Anonymous
 Viewer reads and SSE streams resolve through either `/api/shared-sessions/:token`
 or `/api/shared-sessions/code/:code` and their `/events` variants. Viewer detail
 and SSE snapshots share the same sanitized DTO and never include audio or input
@@ -225,8 +377,10 @@ retain the active Meeting behavior. This endpoint does not start, stop,
 reconnect, or segment a Gemini Live session. The optional
 `liveSessionId` request field associates the first Segment with the frontend's
 first Gemini Live connection. `name`, `sourceLanguageCode`, and
-`targetLanguageCode` store Meeting settings. `glossaryEntries` stores a complete
-meeting-owned glossary snapshot.
+`targetLanguageCode` store Meeting settings. `echoTargetLanguage` defaults to
+`true` and `shouldRecordInputAudio` defaults to `false`. `glossaryEntries` stores the
+selected shared-glossary snapshot for compatibility; `privateGlossaryEntries`
+stores terms owned only by this Meeting.
 
 ```json
 {
@@ -234,11 +388,20 @@ meeting-owned glossary snapshot.
   "name": "產品會議",
   "sourceLanguageCode": "zh-Hant",
   "targetLanguageCode": "en",
+  "echoTargetLanguage": true,
+  "shouldRecordInputAudio": false,
   "glossaryEntries": [
     {
       "source": "Acme",
       "translations": { "en": "Acme", "ja": "アクメ" },
       "replacementAliases": { "en": ["ACME"] }
+    }
+  ],
+  "privateGlossaryEntries": [
+    {
+      "source": "專案代號",
+      "translations": { "en": "Project Codename" },
+      "replacementAliases": { "en": ["代號"] }
     }
   ]
 }
@@ -255,7 +418,9 @@ Returns `201 Created`:
 
 ## `PATCH /api/meetings/:meetingId`
 
-Updates Meeting name, source/target languages, and glossary entries. A live
+Updates Meeting name, source/target languages, translated-audio playback,
+original-audio recording, shared glossary entries, and
+private glossary entries. A live
 Recorder applies changed language or glossary settings at the next Segment
 boundary; the current Segment keeps its settings snapshot. Completed Meetings
 are read-only and return `409 meeting_settings_locked`.
@@ -283,8 +448,9 @@ available for viewing, but `POST` returns `409 meeting_share_locked`.
 
 ## `DELETE /api/meetings/:meetingId/shares/:shareId`
 
-Revokes one Meeting Recorder share. Completed Meetings are read-only; revocation
-returns `409 meeting_share_locked`.
+Revokes one Meeting share. Existing Viewer shares may be revoked after a Meeting
+is completed; completed Meetings still reject new share creation and settings
+changes.
 
 ## `GET /api/meetings/:meetingId/segments`
 
@@ -441,6 +607,13 @@ not durable checkpoint content.
 
 Returns the global translation glossary.
 
+Global entries are visible to all Meetings and can be selected into an
+individual Meeting glossary snapshot. Meeting-private entries are stored on the
+Meeting and are not returned by this endpoint. Entries may include
+`sourceLanguageCode`, `category`, `tags`, `enabled`, and `notes`; legacy entries
+default to Traditional Chinese source language, `other` category, enabled, and
+empty tags/notes.
+
 When `TRANSLATION_GLOSSARY_FILE` is unset, the backend uses
 `translation-glossary.json` under `DATA_DIR`. If `DATA_DIR` is unset, it
 defaults to `./data` outside production and `/var/data` in production. If the
@@ -463,6 +636,20 @@ writes the file.
   ]
 }
 ```
+
+## Glossary category management
+
+`GET /api/glossary/categories` returns the ordered category list. `POST
+/api/glossary/categories` creates a category from `{ "label": "專案名詞" }`;
+`PUT /api/glossary/categories/:categoryId` edits its label;
+`PUT /api/glossary/categories/order` accepts `{ "categoryIds": [...] }` and
+persists the order; and `DELETE /api/glossary/categories/:categoryId` deletes a
+category and reassigns its entries to `other`. Labels cannot be blank or
+duplicated, category IDs remain stable after creation, and `other` cannot be
+deleted. Entry create/update requests may use any ID returned by this endpoint;
+an unknown category ID returns `400 invalid_request`. Legacy files containing only `entries` are upgraded in memory with the
+default categories and are written in the new `{ categories, entries }` shape
+on the next successful mutation.
 
 ## `POST /api/glossary/entries`
 

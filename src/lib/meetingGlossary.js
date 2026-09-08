@@ -16,6 +16,7 @@ export function selectedMeetingGlossaryEntries(entries, selectedIds, targetLangu
   const selected = new Set(Array.isArray(selectedIds) ? selectedIds : []);
   return (Array.isArray(entries) ? entries : [])
     .filter((entry) => selected.has(entry.id))
+    .filter((entry) => entry?.enabled !== false)
     .filter((entry) => typeof entry?.source === 'string' && entry.source.trim() !== '')
     .map((entry) => ({
       source: entry.source,
@@ -27,6 +28,28 @@ export function selectedMeetingGlossaryEntries(entries, selectedIds, targetLangu
         ])
       )
     }));
+}
+
+export function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
+  if (!Array.isArray(entries)) return [];
+
+  return entries
+    .filter((entry) => entry?.enabled !== false)
+    .filter((entry) => entry?.scope === 'live' || entry?.scope === 'both')
+    .map((entry) => ({
+      id: entry.id,
+      source: entry.source,
+      target: entry.translations?.[targetLanguageCode],
+      replacementAliases: Array.isArray(entry.replacementAliases?.[targetLanguageCode])
+        ? entry.replacementAliases[targetLanguageCode]
+        : []
+    }))
+    .filter((entry) => (
+      typeof entry.source === 'string' &&
+      entry.source.length > 0 &&
+      typeof entry.target === 'string' &&
+      entry.target.length > 0
+    ));
 }
 
 function isGlossaryAliasMap(value) {

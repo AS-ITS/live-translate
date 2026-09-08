@@ -62,13 +62,20 @@ action, and exposes only a safe user-facing message.
 
 This slice prepares UX messaging and recovery metadata. Long Meeting WP4 now
 uses `token_expired` as a controlled reconnect signal with a fresh token and
-Segment recovery checkpoint. Proactive token refresh remains not implemented.
+Segment recovery checkpoint. Replacement Live sessions always obtain a fresh
+single-use token.
 
 Current token status:
 
 - `token_expired` classification is complete.
 - `token_expired` reconnect is enabled through the controlled reconnect path.
-- Proactive token refresh is not implemented.
+- Provider reconnects reuse the latest session-resumption handle and request a
+  fresh single-use token for every replacement Live session.
+
+GoAway is an expected provider lifecycle event, not an abnormal failure. The
+client uses its `timeLeft` value to schedule one reconnect, passes the latest
+session-resumption handle, and requests a fresh single-use token for the
+replacement Live session. Only reconnect failure is reported as abnormal.
 
 ## Recovery Matrix
 
@@ -122,6 +129,13 @@ recovery UI behavior.
   recoverable.
 
 Retry must never loop indefinitely or silently create multiple active sessions.
+
+Navigation away from an active Live workspace is not a recoverable connection
+failure. The frontend must classify it as intentional shutdown, cancel pending
+reconnect work, perform the normal stop/checkpoint cleanup once, and only then
+complete the requested route change. Paused Sessions may remain paused while
+the user visits Settings or Management; switching to another Meeting remains
+blocked until the paused Session is ended.
 
 ## Reconnect Controller Skeleton
 
@@ -229,9 +243,9 @@ error, retry exhaustion shows a distinct exhausted-retry message, stale
 callbacks are guarded by reconnect generation checks, and transcript/export
 state remains available after reconnect failure.
 
-Token refresh remains reactive: replacement sessions request fresh ephemeral
-tokens through the existing token endpoint. Proactive token refresh remains
-not implemented.
+Token refresh is replacement-session aware: every provider reconnect requests a
+fresh ephemeral token because the token is single-use for starting a Live
+session. The latest session-resumption handle is reused to preserve context.
 
 ## Reload Resume for Long Meetings
 
@@ -308,8 +322,8 @@ controlled reconnect path:
   controlled reconnect path.
 
 This unit coverage documents and protects the current frontend boundary. It
-does not request fresh tokens for manual-recovery failures and does not add
-proactive token refresh.
+does not request fresh tokens for manual-recovery failures outside the normal
+provider-session expiry flow.
 
 ## Manual Recovery UX Polish
 
@@ -327,8 +341,7 @@ the Stop button is hidden, and existing transcript/export state is kept
 available until the user manually starts a new session.
 
 Manual Start continues through the existing start flow and resets transcript
-state. This slice does not request tokens outside the existing start/reconnect
-flow and does not add proactive token refresh behavior.
+state. Token refresh remains limited to the existing provider reconnect flow.
 
 ## Timeout Strategy
 

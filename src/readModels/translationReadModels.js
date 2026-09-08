@@ -24,9 +24,11 @@ export function mapTranslationOutputToSummaryDTO(output = {}) {
   return {
     id: output.id,
     executionId: output.executionId,
+    ...(output.cueId === undefined ? {} : { cueId: output.cueId }),
     translatedText: output.translatedText,
     targetLanguageCode: output.targetLanguageCode,
     ...(output.operation === 'transcript_polishing' ? polishingFields(output, { includeProviderModel: true }) : {}),
+    ...(output.operation && output.operation !== 'transcript_polishing' ? { operation: output.operation, inputHash: output.inputHash ?? null, model: output.model ?? null } : {}),
     createdAt: output.createdAt
   };
 }

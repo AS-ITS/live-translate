@@ -6,16 +6,24 @@ Session Records & Translation History is a Phase 2 capability for defining the
 session record model, translation history foundation, session-to-transcript
 relationship, and repository abstraction.
 
-Status: Slice 5 implemented with a finalized history list, inline session
-detail, independent Meeting detail view, saved-session export,
-finalized-record delete, and saved-retranslation output delete backed by the
-repository boundary. The UI exposes translation history through `#history` as
-a Meeting Management-style workspace: Meeting records and standalone Sessions
-are shown in one meeting-oriented table, with standalone Sessions labelled as
-`單次翻譯`. Meeting detail opens at
+Status: Slice 6 implemented with finalized history reads, the Meeting detail
+view, saved-session export, and finalized-record delete backed by the repository
+boundary. History is now entered from Meeting Management and the independent
+`#translation-history` page has been removed; removed hashes fall back to
+`#meetings`.
+Meeting records and standalone Sessions remain available through the existing
+read model. A selected Meeting record uses a small directory for `紀錄`,
+`原文`, `翻譯`, and `匯出` sections. Meeting detail remains available at
 `#meeting-detail?meetingId=...&from=history|meetings` and returns to its source
-list. Existing detail, export, delete, resume, and re-translation actions
-remain available, while live translation remains on `#live`.
+list. Existing detail, export, delete, and resume actions remain available, while
+live translation remains on `#live`.
+
+Completed Meeting entries in Meeting Management now open the single Meeting
+record page at `#meeting-detail?meetingId=...&from=meetings`; there is no separate
+translation-history management route. The legacy Meeting Workspace `history`
+tab remains available for compatibility.
+The record page follows the Global Glossary layout with one shared page header,
+an independent directory card, and an independent main content card.
 
 This capability creates the planning boundary for saving and reopening completed
 translation sessions without selecting a storage engine, adding backend APIs,
@@ -40,8 +48,8 @@ Domain direction note:
 - Support the conceptual boundary for list, detail, and delete behavior.
 - Support finalizing the current session into history.
 - Keep history review separate from the live translation workspace while
-  preserving in-memory detail, export, and pending-execution state when moving
-  between the two feature pages.
+  preserving detail, export, and pending-execution behavior in the Meeting
+  detail page.
 - Do not decide the storage engine.
 - Do not add backend APIs.
 - Do not add access control.

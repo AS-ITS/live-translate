@@ -32,7 +32,10 @@ export class Meeting {
     this.name = normalizeOptionalString(input.name);
     this.sourceLanguageCode = normalizeOptionalString(input.sourceLanguageCode);
     this.targetLanguageCode = normalizeOptionalString(input.targetLanguageCode);
+    this.echoTargetLanguage = input.echoTargetLanguage !== false;
+    this.shouldRecordInputAudio = input.shouldRecordInputAudio === true;
     this.glossaryEntries = normalizeGlossaryEntries(input.glossaryEntries);
+    this.privateGlossaryEntries = normalizePrivateGlossaryEntries(input.privateGlossaryEntries);
 
     validateMeetingState(this);
     deepFreeze(this);
@@ -86,9 +89,14 @@ export class Meeting {
       name: Object.hasOwn(patch, 'name') ? normalizeOptionalString(patch.name) : this.name,
       sourceLanguageCode: Object.hasOwn(patch, 'sourceLanguageCode') ? normalizeOptionalString(patch.sourceLanguageCode) : this.sourceLanguageCode,
       targetLanguageCode: Object.hasOwn(patch, 'targetLanguageCode') ? normalizeOptionalString(patch.targetLanguageCode) : this.targetLanguageCode,
+      echoTargetLanguage: Object.hasOwn(patch, 'echoTargetLanguage') ? patch.echoTargetLanguage !== false : this.echoTargetLanguage,
+      shouldRecordInputAudio: Object.hasOwn(patch, 'shouldRecordInputAudio') ? patch.shouldRecordInputAudio === true : this.shouldRecordInputAudio,
       glossaryEntries: Object.hasOwn(patch, 'glossaryEntries')
         ? normalizeGlossaryEntries(patch.glossaryEntries)
-        : this.glossaryEntries
+        : this.glossaryEntries,
+      privateGlossaryEntries: Object.hasOwn(patch, 'privateGlossaryEntries')
+        ? normalizePrivateGlossaryEntries(patch.privateGlossaryEntries)
+        : this.privateGlossaryEntries
     });
   }
 
@@ -99,7 +107,8 @@ export class Meeting {
     return this.transitionTo(this.status, {
       ...settings,
       updatedAt: settings.updatedAt ?? this.updatedAt,
-      glossaryEntries: normalizeGlossaryEntries(settings.glossaryEntries ?? this.glossaryEntries)
+      glossaryEntries: normalizeGlossaryEntries(settings.glossaryEntries ?? this.glossaryEntries),
+      privateGlossaryEntries: normalizePrivateGlossaryEntries(settings.privateGlossaryEntries ?? this.privateGlossaryEntries)
     });
   }
 }
@@ -270,6 +279,36 @@ function normalizeGlossaryEntries(value) {
       replacementAliases: Object.freeze([...replacementAliases])
     });
   }));
+}
+
+function normalizePrivateGlossaryEntries(value) {
+  if (value === undefined || value === null) return Object.freeze([]);
+  if (!Array.isArray(value)) throw new TypeError('Meeting privateGlossaryEntries must be an array.');
+  const sources = new Set();
+  return Object.freeze(value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new TypeError(`Meeting private glossary entry ${index} must be an object.`);
+    const source = normalizeGlossaryText(entry.source, `Meeting private glossary entry ${index}.source`);
+    if (sources.has(source)) throw new RangeError(`Meeting private glossary source is duplicated: ${source}`);
+    sources.add(source);
+    if (!entry.translations || typeof entry.translations !== 'object' || Array.isArray(entry.translations)) throw new TypeError(`Meeting private glossary entry ${index}.translations must be an object.`);
+    const translations = Object.fromEntries(Object.entries(entry.translations).map(([languageCode, translation]) => {
+      if (!languageCode || typeof translation !== 'string' || translation.trim() === '') throw new TypeError(`Meeting private glossary entry ${index}.translations is invalid.`);
+      return [languageCode, translation.trim()];
+    }));
+    if (Object.keys(translations).length === 0) throw new TypeError(`Meeting private glossary entry ${index}.translations must not be empty.`);
+    const aliases = entry.replacementAliases ?? {};
+    if (typeof aliases !== 'object' || Array.isArray(aliases)) throw new TypeError(`Meeting private glossary entry ${index}.replacementAliases must be an object.`);
+    const replacementAliases = Object.fromEntries(Object.entries(aliases).map(([languageCode, values]) => {
+      if (!Array.isArray(values) || values.some((alias) => typeof alias !== 'string' || alias.trim() === '')) throw new TypeError(`Meeting private glossary entry ${index}.replacementAliases is invalid.`);
+      return [languageCode, values.map((alias) => alias.trim())];
+    }));
+    return Object.freeze({ source, translations: Object.freeze(translations), replacementAliases: Object.freeze(replacementAliases) });
+  }));
+}
+
+function normalizeGlossaryText(value, field) {
+  if (typeof value !== 'string' || value.trim() === '') throw new TypeError(`${field} must be a non-empty string.`);
+  return value.trim();
 }
 
 function normalizeOptionalString(value) {

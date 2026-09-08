@@ -1,7 +1,29 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
+import ExcelJS from 'exceljs';
 import { createRequestHandler } from '../../server/index.js';
+import { createProductionApplicationDependencies } from '../../server/compositionRoot.js';
+
+test('production glossary composition generates IDs accepted by the glossary store', () => {
+  let glossaryFactoryOptions;
+  createProductionApplicationDependencies({
+    env: {},
+    translationExecutionProvider: { execute() {} },
+    resolveSavedTranscriptTranslationProvider() { return { translate() {} }; },
+    savedTranscriptRetranslationServiceFactory() { return { translateSavedTranscript() {} }; },
+    translationGlossaryFactory(options) {
+      glossaryFactoryOptions = options;
+      return {
+        listEntries() { return []; }, listCategories() { return []; },
+        createCategory() {}, updateCategory() {}, reorderCategories() {}, deleteCategory() {},
+        createEntry() {}, updateEntry() {}, deleteEntry() {}
+      };
+    }
+  });
+
+  assert.match(glossaryFactoryOptions.idFactory(), /^glossary-[0-9a-f-]{36}$/);
+});
 
 test('glossary HTTP routes list, create, update, and delete entries', async () => {
   const calls = [];
@@ -37,10 +59,61 @@ test('glossary HTTP routes list, create, update, and delete entries', async () =
 
   assert.deepEqual(calls, [
     ['listEntries'],
-    ['createEntry', { source: 'microphone', translations: { en: 'Alan speak' }, scope: 'live' }],
-    ['updateEntry', { id: 'entry-1', source: 'Codex', translations: { ja: 'コードエックス' }, scope: 'history' }],
+    ['createEntry', { source: 'microphone', sourceLanguageCode: 'zh-Hant', translations: { en: 'Alan speak' }, scope: 'live', category: 'other', tags: [], enabled: true, notes: '' }],
+    ['updateEntry', { id: 'entry-1', source: 'Codex', sourceLanguageCode: 'zh-Hant', translations: { ja: 'コードエックス' }, scope: 'history', category: 'other', tags: [], enabled: true, notes: '' }],
     ['deleteEntry', { id: 'entry-1' }]
   ]);
+});
+
+test('glossary HTTP import routes accept XLSX payloads with import settings', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    glossaryController: {
+      async previewImport(input) { calls.push(['previewImport', input]); return { rows: [], summary: {} }; },
+      async importEntries(input) { calls.push(['importEntries', input]); return { createdCount: 0, updatedCount: 0, skippedCount: 0, total: 0 }; }
+    }
+  });
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Glossary');
+  worksheet.addRows([['source', 'translation'], ['產品名稱', 'Product name']]);
+  const importSettings = { format: 'xlsx', content: Buffer.from(await workbook.xlsx.writeBuffer()).toString('base64'), sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', category: 'product' };
+
+  assert.equal((await request(handler, { method: 'POST', url: '/api/glossary/import/preview', body: importSettings })).statusCode, 200);
+  assert.equal((await request(handler, { method: 'POST', url: '/api/glossary/import', body: { ...importSettings, baseRevision: 'revision-1', resolutions: {}, selectedRows: [2] } })).statusCode, 200);
+  assert.deepEqual(calls, [
+    ['previewImport', importSettings],
+    ['importEntries', { ...importSettings, baseRevision: 'revision-1', resolutions: {}, selectedRows: [2] }]
+  ]);
+});
+
+test('meeting glossary preview route accepts private entries without committing them', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    glossaryController: {
+      async previewPrivateImport(input) { calls.push(input); return { rows: [], summary: { total: 0 } }; }
+    }
+  });
+  const body = {
+    format: 'csv',
+    content: 'source,translation\nTerm,Translation',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en',
+    existingEntries: [{ source: 'Existing', translations: { en: 'Existing' } }]
+  };
+  const response = await request(handler, { method: 'POST', url: '/api/meetings/glossary/import/preview', body });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(calls, [body]);
+});
+
+test('glossary HTTP import route returns validation details', async () => {
+  const validationError = new Error('Import contains invalid rows.');
+  validationError.code = 'glossary_import_invalid';
+  validationError.details = [{ rowNumber: 3, errors: ['Translation glossary entry 2.translations must not be empty.'] }];
+  const handler = createRequestHandler({ glossaryController: { async previewImport() { throw validationError; } } });
+
+  const response = await request(handler, { method: 'POST', url: '/api/glossary/import/preview', body: { format: 'xlsx', content: 'base64-workbook', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', category: 'other' } });
+  assert.equal(response.statusCode, 400);
+  assert.deepEqual(response.body.error.details, validationError.details);
 });
 
 test('glossary HTTP routes still accept legacy replacement aliases', async () => {
@@ -65,8 +138,57 @@ test('glossary HTTP routes still accept legacy replacement aliases', async () =>
 
   assert.equal(response.statusCode, 201);
   assert.deepEqual(calls, [
-    { source: 'microphone', translations: { en: 'Alan speak' }, replacementAliases: { en: ['mic'] }, scope: 'live' }
+    { source: 'microphone', sourceLanguageCode: 'zh-Hant', translations: { en: 'Alan speak' }, replacementAliases: { en: ['mic'] }, scope: 'live', category: 'other', tags: [], enabled: true, notes: '' }
   ]);
+});
+
+test('glossary HTTP category routes accept label and categoryIds contracts', async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    glossaryController: {
+      async listCategories() { return [{ id: 'other', label: '其他' }, { id: 'glossary-project', label: '專案' }]; },
+      async createCategory(input) { calls.push(['createCategory', input]); return { id: 'glossary-new', ...input }; },
+      async reorderCategories(categoryIds) { calls.push(['reorderCategories', categoryIds]); return categoryIds.map((id) => ({ id, label: id })); }
+    }
+  });
+
+  const created = await request(handler, {
+    method: 'POST',
+    url: '/api/glossary/categories',
+    body: { label: '新分類' }
+  });
+  const reordered = await request(handler, {
+    method: 'PUT',
+    url: '/api/glossary/categories/order',
+    body: { categoryIds: ['glossary-project', 'other'] }
+  });
+
+  assert.equal(created.statusCode, 201);
+  assert.deepEqual(created.body.category, { id: 'glossary-new', label: '新分類', system: false });
+  assert.equal(reordered.statusCode, 200);
+  assert.deepEqual(reordered.body.categories.map((category) => category.id), ['glossary-project', 'other']);
+  assert.deepEqual(calls, [
+    ['createCategory', { label: '新分類', system: false }],
+    ['reorderCategories', ['glossary-project', 'other']]
+  ]);
+});
+
+test('glossary entry routes accept a custom category ID', async () => {
+  let received;
+  const handler = createRequestHandler({
+    glossaryController: {
+      async createEntry(input) { received = input; return { id: 'entry-1', ...input }; }
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/glossary/entries',
+    body: { source: 'Codex', translations: { en: 'Codex' }, category: 'glossary-project' }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(received.category, 'glossary-project');
 });
 
 test('glossary HTTP routes reject invalid replacement aliases', async () => {

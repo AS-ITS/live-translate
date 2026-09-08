@@ -43,6 +43,7 @@ export class GoogleGenAI {
             this.emitClose();
           }
         };
+        setTimeout(() => request.callbacks?.onmessage?.({ setupComplete: {} }), 0);
 
         window.__mockGoogleGenAI.liveSessions.push(session);
         return session;

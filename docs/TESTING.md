@@ -1,8 +1,74 @@
 # Testing
 
+## Realtime subtitle pipeline strategy (P0 and P1 implemented)
+
+The four-stage pipeline is documented as a deterministic, mockable boundary.
+P0 currently implements the voice transcription and finalized Cue stages;
+initial Flash translation and refinement run asynchronously after finalized Cue persistence:
+
+```text
+finalized source Cue → initial Flash translation → Flash refinement
+```
+
+Interim events are UI-only. They must never appear in persistence, downstream
+execution input, refinement context, export, history, or summary fixtures.
+Real Gemini smoke tests are opt-in only (`ENABLE_REAL_GEMINI_TEST=true`); unit,
+integration, and E2E coverage must use fixtures or provider mocks by default.
+
+Focused coverage:
+
+- Voice: PCM conversion, AudioContext recovery, AudioWorklet-compatible capture,
+  playback failure isolation, output sink selection, and active microphone replacement.
+
+- Unit: interim/finalized separation, immutable Cue fields, same-Cue updates,
+  effective-translation fallback, duplicate handling, and stale-event rejection.
+- Integration: `final_cue.persisted` through initial translation and refinement,
+  including structured-output validation, failure isolation, idempotency, and
+  version fencing.
+- E2E: show the initial translation first, then update the same visible Cue row
+  in place when refinement completes.
+- Lifecycle: start/pre-roll, first sentence, pause/resume, reconnect, rollover,
+  terminal flush, and no loss or late overwrite of finalized Cues.
+
 This project separates deterministic tests from real Gemini API validation. Unit,
 integration, and E2E tests must not call the real Gemini API. The live smoke test
 is opt-in only.
+
+Issue #29 Milestone 1 coverage includes Meeting home route behavior, status
+mapping, search/filter rules, and Meeting Management E2E flows. Later coverage
+will add independent Viewer snapshot/SSE, Cue deduplication, ordering,
+and reconnect merge. The Viewer latency SLA will use a local deterministic
+synthetic broadcaster test; it must not call Gemini or overwrite full benchmark
+reports. See [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
+Milestone 5 realtime coverage includes Meeting broadcaster sequencing and
+bounded replay, Cue publish HTTP authorization, Meeting Viewer SSE delivery,
+snapshot gap recovery, duplicate/refinement merge, and deterministic latency
+measurements.
+
+Issue #29 UI consolidation coverage includes canonical independent Setting,
+Live, History Detail, and Viewer routes, plus global/private glossary
+boundaries.
+
+Global glossary UI coverage includes card-grid filtering, category counts,
+multi-language editing, enabled-state batch actions, and the side drawer. The
+global page manages only entries shared by all Meetings; private entries remain
+covered by the Meeting glossary drawer tests.
+
+Global glossary import coverage includes CSV/JSON parsing, row validation,
+preview conflict detection, selected-row imports that skip invalid rows,
+revision conflicts, and atomic all-or-nothing commits.
+
+Meeting glossary import coverage includes private CSV/JSON/XLSX preview,
+duplicate and conflict handling, staged form merging, and persistence through
+the existing Meeting settings save request.
+
+Run the focused realtime tests:
+
+```bash
+node --test tests/unit/meetingEventBroadcaster.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingCheckpointHttpApi.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/sessionSharing.spec.js
+```
 
 ## Test Responsibility Boundaries
 
@@ -245,7 +311,8 @@ npx playwright test --config tests/e2e/playwright.config.js tests/e2e/sessionSha
 ```
 
 This flow verifies read-only Viewer rendering, cross-Session content isolation,
-and recoverable invalid or expired share-link errors.
+and recoverable invalid or expired share-link errors through the independent
+`#viewer?code=<shortCode>` route.
 
 The Playwright flow:
 
@@ -296,26 +363,69 @@ The Playwright flow:
 ## Live Smoke Test
 
 The live smoke test is the only test path allowed to call the real Gemini API.
-It is disabled unless `ENABLE_REAL_GEMINI_TEST=true`.
+The direct shell entrypoint requires `GEMINI_API_KEY` and enables the real API
+call automatically.
 
-Default safe run, no real API call:
+The backend uses `v1beta` when provisioning an ephemeral token. The browser and
+smoke-test Live clients use `v1alpha` because the current `@google/genai` SDK
+requires `v1alpha` for ephemeral-token connections. The SDK may still print its
+experimental ephemeral-token warning; that warning is expected.
+
+Direct two-hour run:
+
+```bash
+./scripts/live-meeting-smoke.sh
+```
+
+Equivalent npm command:
 
 ```bash
 npm run test:live-smoke
 ```
 
-Real Gemini smoke test:
+For a safe no-op check that never calls Gemini, run the Node implementation
+directly without `ENABLE_REAL_GEMINI_TEST=true`:
 
 ```bash
-ENABLE_REAL_GEMINI_TEST=true \
-GEMINI_API_KEY=your_real_key \
-npm run test:live-smoke
+node scripts/live-smoke-test.js
 ```
 
 Optional environment variables:
 
 - `LIVE_SMOKE_TARGET_LANGUAGE`: target language code, defaults to `en`
 - `LIVE_SMOKE_TIMEOUT_MS`: connection timeout in milliseconds, defaults to `15000`
+- `LIVE_SMOKE_DURATION_MS`: run duration, defaults to 2 hours (`7200000`)
+- `LIVE_SMOKE_MAX_TOKEN_REQUESTS`: maximum token requests, defaults to `20`
+- `LIVE_SMOKE_SPEECH_TEXT`: macOS `say` input text
+- `LIVE_SMOKE_SPEECH_INTERVAL_MS`: interval between generated speech samples,
+  defaults to `10000`
+- `LIVE_SMOKE_REQUIRE_RECONNECT`: require at least one provider reconnect;
+  defaults to true for runs of 10 minutes or longer and false for shorter runs
+
+The long-meeting smoke test requires macOS `/usr/bin/say` and
+`/usr/bin/afconvert`. It generates a short source-language speech sample,
+converts it to mono 16-bit PCM at 16kHz, and loops it through Gemini Live for
+the configured duration. Each generated speech sample ends with an explicit
+`audioStreamEnd` signal so final input transcription does not depend only on
+provider voice-activity detection. Provider reconnects reuse the
+session-resumption handle; token refresh is counted and must stay within the
+configured limit. Short diagnostic runs do not require a provider reconnect;
+the default two-hour run does.
+GoAway is an expected provider WebSocket lifecycle event; the test reports its
+count separately from reconnect failures. The test prints only non-sensitive counters and is not intended for CI.
+During execution it prints startup stages, provider connection/reconnect events,
+speech sample sends, and a non-sensitive heartbeat every 60 seconds. The
+default run lasts two hours; use `LIVE_SMOKE_DURATION_MS` for a shorter manual
+check. At the end of every run it prints a Chinese summary with the start time,
+end time, actual duration, provider connection/reconnect counts, token requests,
+GoAway count, final transcript count, and sanitized abnormal events. The JSON
+summary that follows keeps English field names for machine processing.
+
+Two-hour validation:
+
+```bash
+./scripts/live-meeting-smoke.sh
+```
 
 CI must not set `ENABLE_REAL_GEMINI_TEST=true` unless the job is explicitly
 intended to spend real Gemini API quota.

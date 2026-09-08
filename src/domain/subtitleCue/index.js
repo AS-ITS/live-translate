@@ -1,5 +1,6 @@
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { cueRefinementInputHash } from '../../lib/cueContent.js';
+import { MAX_PROCESSED_EVENT_IDS } from '../../lib/subtitleCues.js';
 
 const LANGUAGE_CODES = new Set(SUPPORTED_LANGUAGES.map(({ code }) => code));
 const PUNCTUATION_ONLY = /^[\s\p{P}\p{S}]+$/u;
@@ -17,7 +18,8 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
   if (!isRecord(input)) return invalid('Cue must be an object.');
   const rawSource = text(input.rawSource ?? input.sourceText, 'rawSource');
   const rawTranslation = optionalText(input.rawTranslation ?? input.translatedText, 'rawTranslation');
-  const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'refinement');
+  const mode = input.mode === 'transcription' || input.targetLanguageCode === null ? 'transcription' : 'translation';
+  const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'initialTranslation') || Object.hasOwn(input, 'refinement');
   const cue = {
     cueId: requiredString(input.cueId, 'cueId'),
     sessionId: requiredString(input.sessionId, 'sessionId'),
@@ -26,14 +28,17 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     startTimeMs: nonNegativeFinite(input.startTimeMs, 'startTimeMs'),
     endTimeMs: finite(input.endTimeMs, 'endTimeMs'),
     sourceLanguageCode: languageCode(input.sourceLanguageCode, 'sourceLanguageCode'),
-    targetLanguageCode: languageCode(input.targetLanguageCode, 'targetLanguageCode'),
+    targetLanguageCode: mode === 'transcription' ? null : languageCode(input.targetLanguageCode, 'targetLanguageCode'),
+    ...(mode === 'transcription' ? { mode } : {}),
     sourceText: rawSource,
     translatedText: rawTranslation,
     ...(hasRefinementContract ? {
       rawSource,
       rawTranslation,
+      initialTranslation: optionalNullableText(input.initialTranslation, 'initialTranslation'),
       refinedSource: optionalNullableText(input.refinedSource, 'refinedSource'),
       refinedTranslation: optionalNullableText(input.refinedTranslation, 'refinedTranslation'),
+      ...(input.translationStatus ? { translationStatus: input.translationStatus } : {}),
       refinement: normalizeRefinement(input, { rawSource, rawTranslation })
     } : {}),
     status: input.status,
@@ -53,7 +58,7 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   const existingById = normalizedExisting.find((cue) => cue.cueId === input?.cueId);
   if (existingById) {
     const incoming = validateFinalCue(input);
-    if (isPreferredRefinementUpdate(existingById, incoming)) {
+    if (isPreferredRefinementUpdate(existingById, incoming) || isInitialTranslationUpdate(existingById, incoming)) {
       const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
       return { cue: clone(incoming), appended: false, updated: true, cues };
     }
@@ -86,7 +91,9 @@ export function normalizeCueCheckpoint(checkpoint = null) {
     pendingCues: Array.isArray(checkpoint.pendingCues) ? checkpoint.pendingCues : [],
     nextSequence: Number.isInteger(checkpoint.nextSequence) && checkpoint.nextSequence > 0 ? checkpoint.nextSequence : 1,
     finalizedCueKeys: Array.isArray(checkpoint.finalizedCueKeys) ? checkpoint.finalizedCueKeys : [],
-    processedEventIds: Array.isArray(checkpoint.processedEventIds) ? checkpoint.processedEventIds : [],
+    processedEventIds: Array.isArray(checkpoint.processedEventIds)
+      ? checkpoint.processedEventIds.slice(-MAX_PROCESSED_EVENT_IDS)
+      : [],
     pendingBoundary: {
       turnComplete: Boolean(checkpoint.pendingBoundary?.turnComplete),
       generationComplete: Boolean(checkpoint.pendingBoundary?.generationComplete)
@@ -131,6 +138,19 @@ function isPreferredRefinementUpdate(existing, incoming) {
       && ((statusRank[incomingRefinement.status] || 0) > (statusRank[existingRefinement.status] || 0)
         || (incomingRefinement.status === 'completed'
           && (incoming.refinedSource !== existing.refinedSource || incoming.refinedTranslation !== existing.refinedTranslation))));
+}
+
+function isInitialTranslationUpdate(existing, incoming) {
+  return existing.cueId === incoming.cueId
+    && existing.sessionId === incoming.sessionId
+    && existing.segmentId === incoming.segmentId
+    && existing.sequence === incoming.sequence
+    && existing.startTimeMs === incoming.startTimeMs
+    && existing.endTimeMs === incoming.endTimeMs
+    && existing.sourceText === incoming.sourceText
+    && existing.translatedText === ''
+    && incoming.translatedText !== ''
+    && incoming.initialTranslation === incoming.translatedText;
 }
 
 function isMonotonicMergedCue(existing, incoming) {

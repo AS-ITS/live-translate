@@ -451,7 +451,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const translationGlossary = translationGlossaryFactory({
     filePath: translationGlossaryFilePathFor(env),
     fileSystem: translationGlossaryFileSystem,
-    idFactory: () => randomUUID(),
+    idFactory: () => `glossary-${randomUUID()}`,
     clock: () => Date.now()
   });
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
@@ -1139,6 +1139,7 @@ function createTranslationExecutionPayloadFromPersistedState({ execution, reques
     requestId: request.id,
     sessionId: request.sessionId,
     executionId: execution.id,
+    cueId: sourceTranscriptSnapshot.cueId,
     sourceText: sourceTextFromSnapshot(sourceTranscriptSnapshot),
     operation: request.operation,
     polishingItems: sourceTranscriptSnapshot.polishingItems,
@@ -1198,7 +1199,7 @@ function sourceTextFromSnapshot(sourceTranscriptSnapshot) {
 
 function transcriptPolishingModelFor(env = process.env) {
   const value = env.TRANSCRIPT_POLISHING_MODEL;
-  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'gemini-3.5-flash-lite';
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'gemini-3.5-flash';
 }
 
 function resolveSavedTranscriptProviderDependencies({

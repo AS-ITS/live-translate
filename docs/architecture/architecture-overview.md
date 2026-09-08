@@ -34,6 +34,7 @@ Relevant background docs:
 - [docs/features/better-transcript-handling.md](../features/better-transcript-handling.md)
 - [docs/features/transcript-export.md](../features/transcript-export.md)
 - [docs/features/audio-device-selection.md](../features/audio-device-selection.md)
+- [docs/features/meeting-center-live-viewer.md](../features/meeting-center-live-viewer.md)
 
 ## 2. System Context
 
@@ -65,8 +66,15 @@ per-user identity or permission system.
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
 stream-based source/translation `TranscriptItem` records, a memory repository,
-`main.jsx` application orchestration, and a Gemini/browser-specific
-`LiveTranslateSession`.
+`App.jsx` application composition and cross-feature orchestration, route-level page components under
+`src/pages/`, and capability-specific frontend modules under `src/features/`.
+Pages own route boundaries while feature modules own feature UI, API clients,
+and browser-side orchestration. The independent `LiveRecordingPage` and
+Gemini/browser-specific
+`LiveTranslateSession`. Hash route parsing is isolated in
+`src/app/routes.js`; shared application and public-session shells are provided
+by `src/layouts/AppLayout.jsx`. These layout components own presentation
+composition only and do not own Session lifecycle or API state.
 
 Session-first implementation now creates a persisted `created` Session before
 opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
@@ -77,7 +85,9 @@ records are file-backed and survive backend restart.
 
 Meeting-first recorder sharing creates a configurable Meeting draft and its
 first empty Segment before recording. The creator saves the name, languages,
-and meeting glossary before issuing the Meeting share link and QR code; the
+meeting glossary, translated-audio playback, and original-audio recording
+settings in the independent Meeting Settings layout before issuing a Viewer
+share link and QR code; the
 shared recorder page does not activate the Meeting, create a Session, claim a
 lease, or request microphone access until the recipient explicitly starts
 recording. Editing settings during recording takes effect at the next Segment
@@ -108,6 +118,14 @@ the boundary for Session commands and Session read models. Existing repository
 and read-model adapters remain responsible for legacy `SessionRecord`
 compatibility mapping.
 
+The Meeting Live recorder uses the direct translation path backed by
+`LiveTranslateSession` and `gemini-3.5-live-translate-preview`. Gemini returns
+paired source and translated transcript events for the same live Cue, while
+the existing Session/Meeting checkpoint, rollover, interrupted recovery, and
+Viewer ordering remain shared with the recording path. The source-only
+`LiveTranscriptionSession` remains available for a future asynchronous
+translation pipeline but is not the active Meeting runtime.
+
 Long Meeting support adds a separate Meeting aggregate with ordered
 MeetingSegment records. A MeetingSegment may reference an existing Live Session
 by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
@@ -115,10 +133,10 @@ by `liveSessionId`; compatibility `SessionRecord` snapshots may optionally carry
 path or ephemeral token flow.
 
 Long Meeting proactive segmentation rolls over one active Segment into the next
-active Segment before opening a replacement Gemini Live connection for the same
-Meeting. This is separate from failure reconnect and token refresh: the browser
-still obtains each fresh ephemeral token through `/api/live-token` and connects
-directly to Gemini Live API.
+active Segment while retaining the same logical browser provider session. A
+provider WebSocket may be replaced for GoAway or connection loss; the browser
+uses the latest session-resumption handle and provisions a fresh single-use
+ephemeral token for every replacement Live session.
 
 Final subtitle Cues are stored in the existing file-backed Meeting/Segment
 checkpoint. Each finalized Cue keeps raw source/translation values plus
@@ -142,6 +160,17 @@ this path for controlled reconnect after unexpected close or token expiration.
 When opened with `#live?meetingId=...`, the live UI reads ordered Segment
 checkpoints, restores confirmed transcript content, and lets the user manually
 continue recording in the next recovered Segment.
+
+Issue #29 specifies the next Meeting-centered UI boundary and a Meeting-level
+Viewer broadcast path. The specification keeps the existing Meeting/Segment
+checkpoint as the durable source of complete final Cues, while a process-local
+Meeting broadcaster delivers finalized `cue.append` events without waiting for
+checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
+cursor merge; it does not change the direct browser-to-Gemini path or Recorder
+authorization model. Milestone 5 implements this path with an independent Cue
+publish endpoint, bounded in-memory replay, SSE gap recovery, and deterministic
+Viewer latency validation. Cross-process delivery and durable replay remain
+deferred.
 
 ## 3. Runtime Architecture
 
@@ -193,7 +222,11 @@ flowchart LR
 
 Dependency direction is intentionally one-way:
 
-- UI orchestration owns composition and state wiring.
+- UI orchestration owns cross-page state wiring; page components own route-level
+  composition and feature rendering, while Layout components own shared visual
+  shells.
+- `LiveRecordingPage` owns the independent live-recording surface; the
+  Meeting Workspace owns history, glossary, sharing, and saved export views.
 - LiveTranslateSession owns one low-level browser-to-Gemini session attempt.
 - Transcript Engine owns normalization of transcript items.
 - Session Record Lifecycle maps session state into record updates.
@@ -579,7 +612,8 @@ identifiers.
 - The browser receives only a short-lived ephemeral token.
 - `POST /api/live-token` keeps its access gate, origin validation, rate limit,
   and structured error handling.
-- Every replacement LiveSession re-requests `/api/live-token`.
+- Segment rollover and provider reconnect request a fresh `/api/live-token`
+  credential because replacement Live sessions use single-use tokens.
 - Ephemeral tokens must never be written to logs.
 
 The browser should not hold any long-lived secret or backend credential.
@@ -828,7 +862,12 @@ them.
 
 | Module | Responsibility | Must Not Own |
 | ------ | -------------- | ------------ |
-| `main.jsx` | UI orchestration, session composition, history/detail wiring, reconnect adapter | Gemini SDK internals, repository implementation, export formatting rules |
+| `src/app/App.jsx` | Cross-feature composition, existing session wiring, and route view composition | Gemini SDK internals, repository implementation, export formatting rules |
+| `src/features/live/*` | Live-specific audio/transcript helpers and browser-side feature orchestration | Route parsing, unrelated Meeting or Glossary state |
+| `src/pages/live/LiveRecordingPage.jsx` | Independent live-recording page surface and route boundary | Session lifecycle implementation, repository persistence, Gemini SDK internals |
+| `src/features/*` | Capability-specific frontend UI, API clients, and browser-side feature orchestration | Route parsing, backend domain rules, unrelated feature state |
+| `src/app/routes.js` | Hash route parsing and canonical URL normalization | Session lifecycle, data fetching, rendering |
+| `src/layouts/AppLayout.jsx` | Shared application, meeting, and public-session shells | Feature state, API calls, Session lifecycle |
 | `SessionApplicationService` | Phase 2B target session use-case boundary for create/start/reconnect/stop/complete/fail/list/detail | React rendering, Gemini SDK internals, legacy `SessionRecord` storage shape |
 | `TranslationApplicationService` | Phase 2B target translation request, execution, retry/cancel/delete contract boundary | Provider SDK details, React rendering, compatibility mapping |
 | `ExportApplicationService` | Phase 2B target export orchestration for SourceTranscript, TranslationOutput, and combined Session view | Repository implementation, file-format internals, live audio |

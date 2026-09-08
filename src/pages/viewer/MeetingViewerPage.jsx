@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected } from '../../lib/meetingViewerState.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
-import { formatCueTimecode } from '../../lib/cueUi.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -13,7 +12,11 @@ export function MeetingViewerPage({ token, code }) {
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
   const latencySamplesRef = useRef([]);
-  const rowHeight = 116;
+  const rowHeightsRef = useRef(new Map());
+  const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
+  const [showSource, setShowSource] = useState(true);
+  const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const estimatedRowHeight = 64;
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -102,24 +105,85 @@ export function MeetingViewerPage({ token, code }) {
         startTimeMs: item.startedAt || 0
       }));
   }, [detail]);
-  const visibleCount = Math.ceil(viewportHeight / rowHeight) + 12;
-  const startIndex = Math.max(0, Math.floor(scrollTop / rowHeight) - 6);
-  const visibleCues = cues.slice(startIndex, startIndex + visibleCount);
+  const rowLayout = useMemo(() => {
+    const offsets = [];
+    let totalHeight = 0;
+    cues.forEach((cue, index) => {
+      offsets.push(totalHeight);
+      totalHeight += rowHeightsRef.current.get(cue.cueId || index) || estimatedRowHeight;
+    });
+    return { offsets, totalHeight };
+  }, [cues, rowLayoutVersion]);
+  const startIndex = useMemo(() => {
+    let low = 0;
+    let high = rowLayout.offsets.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (rowLayout.offsets[middle] < scrollTop) low = middle + 1;
+      else high = middle;
+    }
+    return Math.max(0, low - 7);
+  }, [rowLayout.offsets, scrollTop]);
+  const endIndex = useMemo(() => {
+    const limit = scrollTop + viewportHeight + estimatedRowHeight * 7;
+    let index = startIndex;
+    while (index < cues.length && rowLayout.offsets[index] < limit) index += 1;
+    return Math.max(startIndex + 1, index);
+  }, [cues.length, estimatedRowHeight, rowLayout.offsets, scrollTop, startIndex, viewportHeight]);
+  const visibleCues = cues.slice(startIndex, endIndex);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      let changed = false;
+      entries.forEach((entry) => {
+        const index = Number(entry.target.dataset.cueIndex);
+        const cue = cues[index];
+        if (!cue || !Number.isFinite(index)) return;
+        const key = cue.cueId || index;
+        const height = Math.ceil(entry.target.getBoundingClientRect().height);
+        if (height > 0 && rowHeightsRef.current.get(key) !== height) {
+          rowHeightsRef.current.set(key, height);
+          changed = true;
+        }
+      });
+      if (changed) setRowLayoutVersion((version) => version + 1);
+    });
+    viewport.querySelectorAll('.viewer-cue-row').forEach((row) => observer.observe(row));
+    return () => observer.disconnect();
+  }, [cues, endIndex, startIndex]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport || cues.length === 0 || !isFollowingLatest) return undefined;
+    const frame = requestAnimationFrame(() => viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'auto' }));
+    return () => cancelAnimationFrame(frame);
+  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest, rowLayoutVersion, showSource]);
+
+  function scrollToLatest() {
+    viewportRef.current?.scrollTo({ top: viewportRef.current.scrollHeight, behavior: 'smooth' });
+    setIsFollowingLatest(true);
+  }
 
   return (
     <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
       {detail ? (
-        <section className="viewer-cue-panel" aria-label="Meeting 完整字幕">
-          <div className="viewer-cue-header"><div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div></div>
+        <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
+          <div className="viewer-cue-header">
+            <div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div>
+            {cues.length > 0 ? <div className="viewer-cue-actions">
+              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
+              {!isFollowingLatest ? <button className="button detail-button" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
+            </div> : null}
+          </div>
           {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
-            <div className="viewer-cue-columns" aria-hidden="true"><span>來源字幕</span></div>
-            <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
-              <div style={{ height: cues.length * rowHeight, position: 'relative' }}>
-                {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: (startIndex + index) * rowHeight, left: 0, right: 0, minHeight: rowHeight - 12 }} data-testid="meeting-viewer-cue-row">
-                  <div className="viewer-cue-row-meta"><span className="viewer-cue-time">{formatCueTimecode(cue.startTimeMs || 0)}</span></div>
-                  <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div>
+            <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
+              <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
+                {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: rowLayout.offsets[startIndex + index], left: 0, right: 0 }} data-cue-index={startIndex + index} data-testid="meeting-viewer-cue-row">
+                  {showSource ? <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div> : null}
                   {cue.translatedText ? <div className="viewer-cue-translation"><p>{cue.translatedText}</p></div> : null}
                 </article>)}
               </div>
@@ -130,3 +194,5 @@ export function MeetingViewerPage({ token, code }) {
     </PublicSessionLayout>
   );
 }
+
+function isCueListAtLatestPosition(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 24; }

@@ -112,6 +112,20 @@ Attach a Render Persistent Disk mounted at `/var/data` when saved sessions,
 durable queue state, glossary data, or dead-letter queue files must survive
 restarts.
 
+## Cloud foundation (P0)
+
+The repository also contains the Issue #31 deployment foundation:
+
+- Vercel uses `npm run build` and the catch-all Node Function under `api/`.
+- `/healthz` and `/readyz` are available through the Function. Other cloud API
+  capabilities remain disabled until their Supabase adapters are delivered.
+- Local Supabase development uses `npm run db:start`, `npm run db:reset`, and
+  `npm run db:lint`.
+- Development uses the local Supabase stack, preview uses an isolated Supabase
+  branch, and production uses a separate Supabase project.
+- The P0 migration is intentionally an empty baseline. It does not create
+  application tables, RLS policies, or Storage buckets.
+
 ## Tests
 
 Run focused deterministic tests as needed:

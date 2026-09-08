@@ -41,6 +41,28 @@ DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 VITE_DEMO_ACCESS_TOKEN=replace_with_the_same_demo_token_for_browser_demo
 ```
 
+## Vercel and Supabase foundation
+
+P0 keeps the local Node runtime unchanged and adds a cloud-only Function shell.
+The Vercel Function does not start the local WebSocket broadcaster or
+translation worker and does not use the file-backed `data/` directory. It
+exposes health/readiness checks and returns a structured `503` for cloud
+capabilities that are waiting for Supabase adapters.
+
+Use the Supabase CLI migration workflow locally:
+
+```bash
+npm run db:start
+npm run db:reset
+npm run db:lint
+```
+
+Vercel environment variables are configured per environment in the Vercel
+project. Keep `SUPABASE_SERVICE_ROLE_KEY` and future `KEY_ENCRYPTION_SECRET`
+server-only; never prefix them with `VITE_`. The 4.5 MB Vercel Function
+request/response limit means the current large snapshot, checkpoint, and audio
+routes remain disabled in the P0 cloud shell.
+
 Secrets must be kept out of git. Use `.env` locally and keep `.env.example` as a
 non-secret template.
 

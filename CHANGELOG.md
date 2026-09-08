@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Issue #31 P0 deployment foundation：request handler 改為 lazy composition，新增 Vercel
+  cloud Function 與 Supabase migration baseline；Vercel cloud shell 不啟動 file-backed
+  persistence、WebSocket 或 translation worker，現有本機 Node 與 Gemini Live 流程維持不變。
+
 - 收斂 Meeting Viewer 即時字幕畫面：移除時間與欄位標題，字幕列改為依內容自動高度，新增桌面與手機皆並排的原文顯示切換與回到最新字幕控制，並在桌面雙語欄位間加入分隔線；保留 SSE 與字幕排序／重連行為。
 
 - Live 即時字幕新增「顯示原文」切換，預設顯示原文，關閉後翻譯欄改為單欄；保留新字幕自動跟隨與回到最新字幕行為。

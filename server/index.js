@@ -386,14 +386,20 @@ function parseDotenvValue(value) {
   return commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
 }
 
-const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
-  env: process.env
-});
-const defaultApplicationDependencies = createDefaultApplicationDependencies({
-  requestHandlerFactory: createRequestHandler,
-  includeSessionRetranslationCommandController: true
-});
-const { requestHandler: defaultRequestHandler } = defaultApplicationDependencies;
+let defaultApplicationDependencies;
+
+function getDefaultApplicationDependencies() {
+  if (defaultApplicationDependencies === undefined) {
+    const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
+      env: process.env
+    });
+    defaultApplicationDependencies = createDefaultApplicationDependencies({
+      requestHandlerFactory: createRequestHandler,
+      includeSessionRetranslationCommandController: true
+    });
+  }
+  return defaultApplicationDependencies;
+}
 
 export function selectDefaultApplicationDependenciesFactory({ env = process.env } = {}) {
   return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env)
@@ -406,11 +412,17 @@ function hasConfiguredGeminiApiKey(env) {
 }
 
 export function startTranslationExecutionWorkerRuntime({
-  translationExecutionWorkerRuntime = defaultApplicationDependencies.translationExecutionWorkerRuntime,
-  sessionRepository = defaultApplicationDependencies.sessionRepository,
-  translationExecutionQueue = defaultApplicationDependencies.translationExecutionQueue,
+  translationExecutionWorkerRuntime,
+  sessionRepository,
+  translationExecutionQueue,
   logger = logEvent
 } = {}) {
+  if (translationExecutionWorkerRuntime === undefined || sessionRepository === undefined || translationExecutionQueue === undefined) {
+    const defaults = getDefaultApplicationDependencies();
+    translationExecutionWorkerRuntime ??= defaults.translationExecutionWorkerRuntime;
+    sessionRepository ??= defaults.sessionRepository;
+    translationExecutionQueue ??= defaults.translationExecutionQueue;
+  }
   if (!translationExecutionWorkerRuntime || typeof translationExecutionWorkerRuntime.start !== 'function') {
     return () => undefined;
   }
@@ -591,7 +603,7 @@ export function createRequestHandler(options = {}) {
 }
 
 export async function handleRequest(req, res) {
-  return defaultRequestHandler(req, res);
+  return getDefaultApplicationDependencies().requestHandler(req, res);
 }
 
 async function handleRequestWithSessionReadController(
@@ -3000,6 +3012,7 @@ function publicMeetingViewerDetail(detail) {
 }
 
 if (IS_MAIN) {
+  const defaultApplicationDependencies = getDefaultApplicationDependencies();
   await ensureDataDirectory();
   const server = http.createServer(handleRequest);
   attachExecutionEventsWebSocket({

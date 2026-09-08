@@ -2429,7 +2429,8 @@ test('live subtitles prioritize translation and can collapse the source column',
 
   const panel = liveCuePanel(page);
   const toggle = panel.getByTestId('source-visibility-toggle');
-  await expect(toggle).toBeChecked();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  expect(await panel.locator('.cue-panel-actions > *').evaluateAll((items) => items.findIndex((item) => item.matches('.live-inline-status')) < items.findIndex((item) => item.matches('[data-testid="source-visibility-toggle"]')))).toBe(true);
   await expect(panel.getByRole('region', { name: '即時字幕原文' })).toBeVisible();
   await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('live-subtitles-source-visible.png'), fullPage: true });
@@ -2446,8 +2447,8 @@ test('live subtitles prioritize translation and can collapse the source column',
   expect(translationHeading.y - (description.y + description.height)).toBeLessThanOrEqual(32);
   expect(firstCueRow.y - (translationHeading.y + translationHeading.height)).toBeLessThan(48);
 
-  await toggle.uncheck();
-  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await expect(panel.getByRole('region', { name: '即時字幕原文' })).toHaveCount(0);
   await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
   await expect(panel.getByTestId('cue-source-text')).toHaveCount(0);
@@ -2456,7 +2457,8 @@ test('live subtitles prioritize translation and can collapse the source column',
   const hiddenLayout = await panel.getByTestId('cue-list').locator('.cue-reading-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns);
   expect(hiddenLayout.split(' ').length).toBe(1);
 
-  await toggle.check();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(panel.getByTestId('cue-paired-list').getByText('source sentence')).toBeVisible();
 });
 

@@ -22,7 +22,7 @@ export function LiveCuePanel({
   const panelRef = useRef(null);
   const cueListRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
-  const showSource = true;
+  const [showSource, setShowSource] = useState(true);
   const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
   const hasContent = cues.length > 0 || fallbackTranscriptItems.length > 0;
 
@@ -47,13 +47,14 @@ export function LiveCuePanel({
         <div><h2>即時字幕</h2><p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '錄音會即時轉成來源語言字幕，翻譯會在句子完成後更新。'}</p></div>
         <div className="cue-panel-actions">
           <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時字幕狀態：${statusLabel(status, statusLabelOverride)}`}><Radio size={15} aria-hidden="true" />{statusLabel(status, statusLabelOverride)}</span>
+          <button className={`button detail-button source-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" data-testid="source-visibility-toggle" aria-pressed={showSource} onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
           {hasContent && !isFollowingLatest ? <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={() => { cueListRef.current?.scrollTo({ top: cueListRef.current.scrollHeight, behavior: 'smooth' }); setIsFollowingLatest(true); }}>回到最新字幕</button> : null}
         </div>
       </div>
       <div ref={cueListRef} onScroll={(event) => setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget))} className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
         {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始錄音後，來源語音字幕會顯示在這裡</p> : null}
-        {hasContent ? <div className="cue-reading-layout">
-          <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} />
+        {hasContent ? <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}`}>
+          {showSource ? <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} /> : null}
           <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} />
           {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">
             {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>

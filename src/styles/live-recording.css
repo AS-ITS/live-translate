@@ -50,7 +50,7 @@
 .live-recording-page .cue-panel-header h2 { margin: var(--space-1) 0 0; font-size: var(--text-lg); }
 .live-recording-page .cue-panel-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); }
 .live-recording-page .source-visibility-toggle { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; color: var(--color-text); font-size: var(--text-sm); font-weight: 700; white-space: nowrap; cursor: pointer; }
-.live-recording-page .source-visibility-toggle input { width: 1.125rem; height: 1.125rem; accent-color: var(--color-slate-primary); }
+.live-recording-page .source-visibility-toggle.is-active { border-color: var(--color-primary-soft); background: var(--color-primary-soft); color: var(--color-primary-hover); }
 .live-recording-page .cue-list { display: grid; min-height: 0; height: 100%; max-height: none; margin-top: var(--space-5); overflow-y: auto; overscroll-behavior: contain; }
 .live-recording-page .cue-panel > .transcript-panel { margin-top: var(--space-5); }
 .live-recording-page .cue-list-empty { min-height: 18rem; place-items: center; }

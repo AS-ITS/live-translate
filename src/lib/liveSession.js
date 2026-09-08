@@ -11,7 +11,7 @@ import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDev
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
-import { isCumulativeExtension } from './cumulativeTranscript.js';
+import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -1037,6 +1037,8 @@ export class LiveTranslateSession {
       this.lastOutputTranscriptText,
       content?.outputTranscription?.text
     );
+    const inputTextMergeMode = transcriptMergeMode(this.lastInputTranscriptText, content?.inputTranscription?.text || content?.interimInputTranscription?.text);
+    const outputTextMergeMode = transcriptMergeMode(this.lastOutputTranscriptText, content?.outputTranscription?.text);
     const eventAudioTurnId = (inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
       || cumulativeInputContinuation || cumulativeOutputContinuation)
       ? (this.activeTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
@@ -1051,6 +1053,8 @@ export class LiveTranslateSession {
       outputTranscriptIsFinal,
       cumulativeInputContinuation,
       cumulativeOutputContinuation,
+      inputTextMergeMode,
+      outputTextMergeMode,
       eventAudioTurnId,
       eventSequence: this.eventSequence
     });
@@ -1063,9 +1067,12 @@ export class LiveTranslateSession {
         connectionEpoch: this.connectionEpoch,
         eventSequence: this.eventSequence,
         audioTurnId: eventAudioTurnId,
+        turnKey: `local:${eventAudioTurnId}`,
+        turnIdentitySource: 'local',
         sessionClock: this.sessionClock,
         inputTranscriptIsFinal,
-        inputTranscriptArrivedAfterBoundary
+        inputTranscriptArrivedAfterBoundary,
+        inputTextMergeMode
       })
       : normalizeGeminiLiveCueEvents(message, {
       liveSessionId: this.liveSessionId,
@@ -1076,17 +1083,22 @@ export class LiveTranslateSession {
       connectionEpoch: this.connectionEpoch,
       eventSequence: this.eventSequence,
       audioTurnId: eventAudioTurnId,
+      turnKey: `local:${eventAudioTurnId}`,
+      turnIdentitySource: 'local',
       sessionClock: this.sessionClock,
       inputTranscriptIsFinal,
       outputTranscriptIsFinal,
       inputTranscriptArrivedAfterBoundary,
       outputTranscriptArrivedAfterBoundary,
+      inputTextMergeMode,
+      outputTextMergeMode,
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
     for (const event of normalizedEvents) {
       this.logLiveEvent('cue.normalized', {
         stream: event.stream,
         text: event.text,
+        textMergeMode: event.textMergeMode,
         isFinal: event.isFinal,
         turnComplete: event.turnComplete,
         generationComplete: event.generationComplete,
@@ -1780,15 +1792,18 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
     const eventType = content.inputTranscription?.text ? 'input' : 'input-interim';
     const isFinal = Boolean(content.inputTranscription?.text && (content.turnComplete || content.generationComplete || context.inputTranscriptIsFinal));
     events.push({
-      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}:source:${eventType}:${String(input.text).trim()}`,
+      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}|${eventSequence ?? 'sequence-unknown'}:source:${eventType}:${String(input.text).trim()}`,
       liveSessionId: context.liveSessionId || null,
       sessionId: context.sessionId || null,
       segmentId: context.segmentId || null,
       connectionEpoch: context.connectionEpoch ?? null,
       audioTurnId: context.audioTurnId || null,
+      turnKey: context.turnKey || context.audioTurnId || null,
+      turnIdentitySource: context.turnIdentitySource || (context.audioTurnId ? 'local' : null),
       stream: 'source',
       eventType,
       text: String(input.text).replace(/\s+/gu, ' ').trim(),
+      textMergeMode: context.inputTextMergeMode || 'initial',
       isFinal,
       turnComplete: Boolean(content.turnComplete),
       generationComplete: Boolean(content.generationComplete),
@@ -1820,6 +1835,14 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
     });
   }
   return events.filter((event) => event.stream === null || event.text);
+}
+
+function transcriptMergeMode(previousText, incomingText) {
+  const previous = String(previousText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  if (!previous || !incoming) return 'initial';
+  const relation = cumulativeTextRelation(previous, incoming);
+  return relation === 'extension' || relation === 'revision' || relation === 'same' ? 'snapshot' : 'append';
 }
 
 function summarizeLiveEvent(message) {

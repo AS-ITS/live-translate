@@ -1716,6 +1716,35 @@ test('renders one row when the same live transcript is received by transcript an
   await expectCueRow(finalCueRows(page).first(), { sourceText: '你好，你好。' });
 });
 
+test('renders two separate Cues for two consecutive sentences', async ({ page }) => {
+  const cueLogs = [];
+  page.on('console', (message) => {
+    if (message.type() === 'debug' && /Cue decision|Cue state transition/u.test(message.text())) cueLogs.push(message.text());
+  });
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await emitFinalTranscript(page, '第一句測試。', 'First sentence.');
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await emitFinalTranscript(page, '第二句測試。', 'Second sentence.');
+
+  await expect(finalCueRows(page)).toHaveCount(2);
+  await expectCueRow(finalCueRows(page).nth(0), { sourceText: '第一句測試。', translatedText: 'First sentence.' });
+  await expectCueRow(finalCueRows(page).nth(1), { sourceText: '第二句測試。', translatedText: 'Second sentence.' });
+  const cueIds = await finalCueRows(page).evaluateAll((rows) => rows.map((row) => row.getAttribute('data-cue-id')));
+  expect(cueIds).toHaveLength(2);
+  expect(cueIds[0]).toMatch(/^cue:session-[^:]+:segment-1:1$/u);
+  expect(cueIds[1]).toMatch(/^cue:session-[^:]+:segment-1:2$/u);
+  expect(new Set(cueIds).size).toBe(2);
+  expect(cueLogs.some((log) => log.includes('same-turn-final'))).toBe(false);
+  expect(cueLogs.some((log) => log.includes('duplicate') || log.includes('already-finalized'))).toBe(false);
+  console.log(`[two-cue-browser] ${JSON.stringify({ cueIds, cueLogs })}`);
+});
+
 test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await page.goto('/#live?meetingId=meeting-1');
@@ -2787,6 +2816,33 @@ test('incremental word fragments render as one subtitle row after Turn completio
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: "it's a voice input.",
     translatedText: '這是語音輸入。'
+  });
+});
+
+test('keeps non-cumulative numeric translation fragments in the same Cue', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
+    session.emitMessage({
+      serverContent: { inputTranscription: { text: '測試測試123123' } }
+    });
+    session.emitMessage({
+      serverContent: { outputTranscription: { text: 'test, test' } }
+    });
+    session.emitMessage({
+      serverContent: { outputTranscription: { text: '123 123' } }
+    });
+    session.emitMessage({ serverContent: { turnComplete: true } });
+  });
+
+  await page.waitForTimeout(750);
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: '測試測試123123',
+    translatedText: 'test, test 123 123'
   });
 });
 

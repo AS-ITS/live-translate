@@ -37,9 +37,10 @@ Transcribe Live
   → history / export / summary
 ```
 
-This is a documentation target, not a production-runtime switch. The current
-runtime remains source-only for the Live recorder, while existing bilingual
-records and translation history remain readable through compatibility adapters.
+The current Meeting runtime uses the direct Live translation path. Finalized
+source and translated transcript events are paired into the same Cue during
+recording. The source-only plus asynchronous Flash path remains available for
+future work and is not used by the active Meeting recorder.
 
 An interim transcription is a presentation-only preview. It must not enter
 persistence, translation, refinement, export, history, or summary. A finalized

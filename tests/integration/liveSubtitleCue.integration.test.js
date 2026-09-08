@@ -134,7 +134,7 @@ test('Gemini same-turn source snapshots without turnIndex remain one final cue',
   assert.equal(cueState.finalCues.length, 1);
   assert.equal(cueState.currentCue, null);
   assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [[
-    'input.',
+    "it's a voice input.",
     '這是語音輸入。'
   ]]);
 });

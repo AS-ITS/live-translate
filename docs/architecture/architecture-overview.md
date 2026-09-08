@@ -118,12 +118,13 @@ the boundary for Session commands and Session read models. Existing repository
 and read-model adapters remain responsible for legacy `SessionRecord`
 compatibility mapping.
 
-The Live recorder uses a source-only transcription path backed by
-`LiveTranscriptionSession` and `gemini-3.5-transcribe-live`. It persists one
-source Cue stream per Segment and does not create translation execution or
-polishing work. Existing bilingual Sessions and refinement history remain
-readable; Meeting/Segment checkpoint, rollover, interrupted recovery, and
-Viewer ordering are shared with the transcription path.
+The Meeting Live recorder uses the direct translation path backed by
+`LiveTranslateSession` and `gemini-3.5-live-translate-preview`. Gemini returns
+paired source and translated transcript events for the same live Cue, while
+the existing Session/Meeting checkpoint, rollover, interrupted recovery, and
+Viewer ordering remain shared with the recording path. The source-only
+`LiveTranscriptionSession` remains available for a future asynchronous
+translation pipeline but is not the active Meeting runtime.
 
 Long Meeting support adds a separate Meeting aggregate with ordered
 MeetingSegment records. A MeetingSegment may reference an existing Live Session

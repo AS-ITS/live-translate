@@ -8,6 +8,7 @@ import {
   prepareSubtitleCueStateForNewSegment
 } from '../../lib/subtitleCues.js';
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
+import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
@@ -225,7 +226,7 @@ export function useLiveRecordingController({
             : [...nextFinalIds].some((cueId) => !previousFinalIds.has(cueId))
               ? 'append'
               : 'replace';
-        console.debug('[Cue state transition]', {
+        console.debug('[Cue state transition]', JSON.stringify({
           stream: event?.stream || null,
           text: event?.text || '',
           translatedText: event?.stream === 'translation' ? event.text || '' : '',
@@ -233,13 +234,18 @@ export function useLiveRecordingController({
           turnComplete: Boolean(event?.turnComplete),
           generationComplete: Boolean(event?.generationComplete),
           audioTurnId: event?.audioTurnId || null,
+          turnKey: event?.turnKey || null,
+          turnIdentitySource: event?.turnIdentitySource || null,
           eventSequence: event?.eventSequence ?? null,
           connectionEpoch: event?.connectionEpoch ?? null,
           segmentId: event?.segmentId || null,
           decision,
           decisionReason: event?.eventType || (event?.localFinalize ? event.finalizedReason || 'localFinalize' : 'state-transition'),
-          cueId: next.currentCue?.cueId || next.finalCues?.at(-1)?.cueId || null
-        });
+          cueId: next.currentCue?.cueId || next.finalCues?.at(-1)?.cueId || null,
+          cueSequence: next.currentCue?.sequence || next.finalCues?.at(-1)?.sequence || null,
+          finalCueIds: (next.finalCues || []).map((item) => item.cueId),
+          finalCueSequences: (next.finalCues || []).map((item) => item.sequence)
+        }));
       }
       if (next === current) return;
       cue.stateRef.current = next;
@@ -255,10 +261,19 @@ export function useLiveRecordingController({
         this.flushQueuedLiveCueEvents();
         return;
       }
-      const key = `${event?.stream || 'unknown'}:${event?.eventType || 'partial'}:${event?.turnIndex ?? 'current'}`;
-      const existingIndex = cue.eventsRef.current.findIndex((candidate) => `${candidate?.stream || 'unknown'}:${candidate?.eventType || 'partial'}:${candidate?.turnIndex ?? 'current'}` === key);
-      if (existingIndex >= 0) cue.eventsRef.current[existingIndex] = event;
-      else cue.eventsRef.current.push(event);
+      const previousQueueLength = cue.eventsRef.current.length;
+      const nextQueue = enqueueLiveCueEvent(cue.eventsRef.current, event);
+      cue.eventsRef.current = nextQueue;
+      if (import.meta.env?.DEV) {
+        console.debug('[Cue queue]', JSON.stringify({
+          action: nextQueue.length === previousQueueLength ? 'replace-snapshot' : 'append',
+          stream: event?.stream || null,
+          eventId: event?.eventId || null,
+          eventSequence: event?.eventSequence ?? null,
+          textMergeMode: event?.textMergeMode || 'initial',
+          queueLength: nextQueue.length
+        }));
+      }
       if (cue.flushTimerRef.current !== null) return;
       cue.flushTimerRef.current = window.setTimeout(() => {
         cue.flushTimerRef.current = null;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Mic, MicOff, Pause, Pencil, Play, Plus, Square } from 'lucide-react';
 import { targetLanguageLabelFor } from '../lib/languages.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
@@ -18,7 +18,6 @@ import { authenticatedFetch } from '../lib/accessToken.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from '../lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLifecycle.js';
-import { createCueTranslationLifecycle } from '../lib/cueTranslationLifecycle.js';
 import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '../lib/transcriptPolishing.js';
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
@@ -58,7 +57,7 @@ import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completed
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError } from '../features/live/liveStatus.js';
-import { LiveTranscriptionSession } from '../lib/liveTranscriptionSession.js';
+import { LiveTranslateSession } from '../lib/liveSession.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
@@ -175,7 +174,6 @@ export function App() {
   const meetingDetailCacheRef = useRef(new Map());
   const translationCommandLifecycleRef = useRef(null);
   const transcriptPolishingLifecycleRef = useRef(null);
-  const cueTranslationLifecycleRef = useRef(null);
   const transcriptPolishingCoordinatorRef = useRef(null);
   const activeSessionRecordIdRef = useRef(null);
   const sessionControlLeaseRef = useRef(null);
@@ -593,18 +591,6 @@ export function App() {
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [status]);
 
-  function cueTranslationLifecycle() {
-    if (!cueTranslationLifecycleRef.current) {
-      cueTranslationLifecycleRef.current = createCueTranslationLifecycle({
-        apiClient: createTranslationCommandApiClient(),
-        onStateChange: (next) => {
-          if (next.status === 'failed') setError('字幕翻譯暫時失敗，原文仍會保留。');
-        }
-      });
-    }
-    return cueTranslationLifecycleRef.current;
-  }
-
   function applyInitialTranslationOutputs(detail) {
     const outputs = (detail?.translationHistory?.outputs || []).filter((output) => (
       output?.operation === 'cue_translation' && output?.cueId && typeof output.translatedText === 'string' && output.translatedText.trim()
@@ -923,7 +909,6 @@ export function App() {
       const resetCues = resetSubtitleCueState();
       transcriptPolishingLifecycleRef.current?.reset(activeSessionRecordIdRef.current);
       transcriptPolishingCoordinatorRef.current?.reset();
-      cueTranslationLifecycleRef.current?.reset();
       setPolishingState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
       setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
       cancelLiveCueIdleTimers();
@@ -947,7 +932,7 @@ export function App() {
     };
     liveSessionCallbackGenerationRef.current = callbackGeneration;
 
-    const session = new LiveTranscriptionSession({
+    const session = new LiveTranslateSession({
       liveSessionId,
       connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
@@ -955,6 +940,8 @@ export function App() {
       segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
       sessionClock: () => sessionTimeForSubtitleCues(),
       sourceLanguageCode,
+      targetLanguageCode,
+      echoTargetLanguage,
       inputDeviceId: inputDeviceIdForSession,
       outputDeviceId: hasConfirmedMeetingAudioPreference(audioPreference) ? audioPreference.outputDeviceId || '' : '',
       onInputDeviceFallback: () => {
@@ -1281,14 +1268,6 @@ export function App() {
       return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
     });
     const checkpoint = cueCheckpointForState(next);
-    changedCues.filter((cue) => cue?.status === 'final' && !cue.initialTranslation && !cue.rawTranslation && !cue.translatedText).forEach((cue) => {
-      void cueTranslationLifecycle().submitCue({
-        sessionId: activeSessionRecordIdRef.current,
-        sourceLanguageCode,
-        targetLanguageCode,
-        cue
-      }).catch(() => {});
-    });
     void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
   }
@@ -1715,7 +1694,6 @@ export function App() {
     setPolishedArticle({ text: '', items: [], version: null, updatedAt: null });
     transcriptPolishingLifecycleRef.current?.reset(polishingSessionIdRef.current);
     transcriptPolishingCoordinatorRef.current?.reset();
-    cueTranslationLifecycleRef.current?.reset();
     polishingSessionIdRef.current = null;
     liveController.audio.resetInputAudioDownload();
     liveController.audio.resetTranslatedAudioDownload();

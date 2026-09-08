@@ -13,6 +13,7 @@ import {
 } from '../../src/lib/subtitleCues.js';
 import { missingNumericIntegrity } from '../../src/lib/numericIntegrity.js';
 import { normalizeGeminiLiveCueEvents } from '../../src/lib/geminiLiveCueEvent.js';
+import { enqueueLiveCueEvent } from '../../src/lib/liveCueEventQueue.js';
 
 test('aggregates source and translation partials into one pending cue', () => {
   let state = createSubtitleCueState();
@@ -26,6 +27,78 @@ test('aggregates source and translation partials into one pending cue', () => {
   assert.equal(state.currentCue.status, 'partial');
   assert.equal(state.currentCue.sequence, 1);
   assert.equal(state.nextSequence, 2);
+});
+
+test('queue preserves non-cumulative fragments received in the same batch', () => {
+  const events = enqueueLiveCueEvent(
+    enqueueLiveCueEvent([], {
+      eventId: 'translation-1', stream: 'translation', text: 'test, test', textMergeMode: 'initial',
+      connectionEpoch: 1, segmentId: 'segment-1', turnKey: 'local:turn-1'
+    }),
+    {
+      eventId: 'translation-2', stream: 'translation', text: '123 123', textMergeMode: 'append',
+      connectionEpoch: 1, segmentId: 'segment-1', turnKey: 'local:turn-1'
+    }
+  );
+
+  assert.deepEqual(events.map((event) => event.text), ['test, test', '123 123']);
+});
+
+test('queue replaces only cumulative snapshots for the same stream and turn', () => {
+  let events = enqueueLiveCueEvent([], {
+    eventId: 'source-1', stream: 'source', text: '測試', textMergeMode: 'initial',
+    connectionEpoch: 1, segmentId: 'segment-1', turnKey: 'local:turn-1'
+  });
+  events = enqueueLiveCueEvent(events, {
+    eventId: 'source-2', stream: 'source', text: '測試測試', textMergeMode: 'snapshot',
+    connectionEpoch: 1, segmentId: 'segment-1', turnKey: 'local:turn-1'
+  });
+  events = enqueueLiveCueEvent(events, {
+    eventId: 'source-3', stream: 'source', text: '測試測試123', textMergeMode: 'snapshot',
+    connectionEpoch: 1, segmentId: 'segment-1', turnKey: 'local:turn-1'
+  });
+
+  assert.deepEqual(events.map((event) => event.text), ['測試', '測試測試123']);
+});
+
+test('appends independent source fragments instead of keeping only the last fragment', () => {
+  let state = createSubtitleCueState();
+  for (const [index, text] of ['你', '好', '嗎'].entries()) {
+    state = applySubtitleCueEvent(state, baseEvent({
+      eventId: `source-fragment-${index}`,
+      stream: 'source',
+      text,
+      audioTurnId: 'audio-turn-fragments',
+      sessionTimeMs: 100 + index
+    }));
+  }
+  assert.equal(state.currentCue.sourceText, '你好嗎');
+});
+
+test('appends interleaved source and translation fragments into one bilingual Cue', () => {
+  let state = createSubtitleCueState();
+  for (const event of [
+    { stream: 'source', text: '你', audioTurnId: 'audio-turn-interleaved', sessionTimeMs: 100 },
+    { stream: 'translation', text: 'hel', audioTurnId: 'audio-turn-interleaved', sessionTimeMs: 110 },
+    { stream: 'source', text: '好嗎', audioTurnId: 'audio-turn-interleaved', sessionTimeMs: 120 },
+    { stream: 'translation', text: 'lo', audioTurnId: 'audio-turn-interleaved', sessionTimeMs: 130 }
+  ]) state = applySubtitleCueEvent(state, baseEvent({ ...event, eventId: `${event.stream}-${event.sessionTimeMs}` }));
+
+  assert.deepEqual([state.currentCue.sourceText, state.currentCue.translatedText], ['你好嗎', 'hello']);
+});
+
+test('turnComplete finalizes the complete accumulated source and translation text', () => {
+  let state = createSubtitleCueState();
+  for (const [index, event] of [
+    { stream: 'source', text: '你', sessionTimeMs: 100 },
+    { stream: 'source', text: '好嗎', sessionTimeMs: 110 },
+    { stream: 'translation', text: 'hello', sessionTimeMs: 120 },
+    { stream: 'translation', text: ' there', sessionTimeMs: 130 }
+  ].entries()) state = applySubtitleCueEvent(state, baseEvent({ ...event, eventId: `accumulated-${index}`, audioTurnId: 'audio-turn-final' }));
+  state = applySubtitleCueEvent(state, { eventId: 'accumulated-boundary', turnComplete: true, sessionTimeMs: 140 });
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 840, reason: 'turnComplete' });
+
+  assert.deepEqual(state.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]), [['你好嗎', 'hello there']]);
 });
 
 test('polishing data cannot mutate canonical Cue source or translation', () => {
@@ -193,6 +266,7 @@ test('cumulative finalized snapshots without a turn id update one Cue', () => {
       eventId: `unstable-${index}`,
       stream: 'source',
       targetLanguageCode: null,
+      turnKey: 'local:test-turn-1',
       text,
       eventSequence: index + 1,
       sessionTimeMs: 100 + index * 100,
@@ -943,6 +1017,38 @@ test('cumulative transcript text updates the preceding final cue instead of crea
   assert.equal(state.finalCues.length, 1);
   assert.equal(state.finalCues[0].sourceText, '你好,你好。');
   assert.equal(state.finalCues[0].translatedText, 'Hello, hello.');
+});
+
+test('a new sentence with a reused audio turn id does not overwrite a finalized Cue', () => {
+  let state = createSubtitleCueState();
+  const event = (overrides) => baseEvent({ audioTurnId: 'reused-audio-turn', ...overrides });
+  state = applySubtitleCueEvent(state, event({ eventId: 'first-source', stream: 'source', text: '第一句測試。', sessionTimeMs: 100, isFinal: true }));
+  state = applySubtitleCueEvent(state, event({ eventId: 'first-translation', stream: 'translation', text: 'First sentence.', sessionTimeMs: 110, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 120, reason: 'turnComplete' });
+  state = applySubtitleCueEvent(state, event({ eventId: 'second-source', stream: 'source', text: '第二句測試。', sessionTimeMs: 300, isFinal: true }));
+  state = applySubtitleCueEvent(state, event({ eventId: 'second-translation', stream: 'translation', text: 'Second sentence.', sessionTimeMs: 310, isFinal: true }));
+  state = finalizePendingSubtitleCue(state, { sessionTimeMs: 320, reason: 'turnComplete' });
+
+  assert.deepEqual(state.finalCues.map(({ cueId, sequence, sourceText, translatedText }) => ({ cueId, sequence, sourceText, translatedText })), [
+    { cueId: 'cue:session-1:segment-1:1', sequence: 1, sourceText: '第一句測試。', translatedText: 'First sentence.' },
+    { cueId: 'cue:session-1:segment-1:2', sequence: 2, sourceText: '第二句測試。', translatedText: 'Second sentence.' }
+  ]);
+});
+
+test('a new sentence with missing audio turn identity is not cross-turn deduplicated', () => {
+  let state = createSubtitleCueState();
+  const event = (overrides) => baseEvent({ audioTurnId: null, ...overrides });
+  for (const [eventId, sourceText, translationText, sessionTimeMs] of [
+    ['first-source', '第一句測試。', '第一句翻譯。', 100],
+    ['second-source', '第二句測試。', '第二句翻譯。', 300]
+  ]) {
+    state = applySubtitleCueEvent(state, event({ eventId, stream: 'source', text: sourceText, sessionTimeMs, isFinal: true }));
+    state = applySubtitleCueEvent(state, event({ eventId: `${eventId}-translation`, stream: 'translation', text: translationText, sessionTimeMs: sessionTimeMs + 10, isFinal: true }));
+    state = finalizePendingSubtitleCue(state, { sessionTimeMs: sessionTimeMs + 20, reason: 'turnComplete' });
+  }
+
+  assert.equal(state.finalCues.length, 2);
+  assert.deepEqual(state.finalCues.map((cue) => cue.sequence), [1, 2]);
 });
 
 test('same text from a later turn is retained as a separate cue event', () => {

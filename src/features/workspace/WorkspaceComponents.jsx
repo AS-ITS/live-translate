@@ -508,7 +508,9 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
         <div className="meeting-card-grid" aria-label="既有會議列表">
           {filteredMeetings.map((meeting) => {
             const StatusIcon = meetingCardStatusIcon(meeting.status);
+            const startedAt = meeting.startedAt || null;
             const updatedAt = meetingManagementLastUpdated(meeting);
+            const startedFullTime = formatRecordTime(startedAt);
             const fullTime = formatRecordTime(updatedAt);
             return (
               <article
@@ -535,7 +537,8 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                 <h3>{meeting.name || meeting.id || '未命名會議'}</h3>
                 <div className="meeting-card-metadata">
                   <span><Globe2 size={18} aria-hidden="true" />{meetingLanguageLabel(meeting)}</span>
-                  <span><Clock3 size={18} aria-hidden="true" /><time dateTime={updatedAt || undefined} title={fullTime}>{formatMeetingListTime(updatedAt)}</time></span>
+                  <span><CalendarDays size={18} aria-hidden="true" />開始時間：<time data-testid="meeting-card-started-at" dateTime={startedAt || undefined} title={startedFullTime}>{formatMeetingListTime(startedAt)}</time></span>
+                  <span><Clock3 size={18} aria-hidden="true" />最後更新：<time data-testid="meeting-card-updated-at" dateTime={updatedAt || undefined} title={fullTime}>{formatMeetingListTime(updatedAt)}</time></span>
                 </div>
                 <div className="meeting-card-divider" />
                 <div className="meeting-card-footer">

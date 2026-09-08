@@ -3890,9 +3890,9 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify([
-        { id: 'meeting-active', name: '產品評審', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', updatedAt: 1700000000000 },
-        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: 1700000001000 },
-        { id: 'meeting-completed', name: '已完成簡報', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', updatedAt: 1700000002000 }
+        { id: 'meeting-active', name: '產品評審', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'ja', startedAt: 1699999000000, updatedAt: 1700000000000 },
+        { id: 'meeting-paused', name: '客戶訪談', status: 'interrupted', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', startedAt: 1699999001000, updatedAt: 1700000001000 },
+        { id: 'meeting-completed', name: '已完成簡報', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', startedAt: 1699999002000, updatedAt: 1700000002000 }
       ])
     });
   });
@@ -3920,7 +3920,10 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(3);
   const activeCard = page.locator('.meeting-card').filter({ hasText: '產品評審' });
   await expect(activeCard).toContainText('繁體中文 → 日文');
-  await expect(activeCard.locator('time')).toHaveCount(1);
+  await expect(activeCard).toContainText('開始時間：');
+  await expect(activeCard).toContainText('最後更新：');
+  await expect(activeCard.getByTestId('meeting-card-started-at')).toHaveCount(1);
+  await expect(activeCard.getByTestId('meeting-card-updated-at')).toHaveCount(1);
 
   await page.setViewportSize({ width: 768, height: 800 });
   const narrowMeetingLayout = await page.locator('.meeting-management-page').evaluate((pageElement) => {

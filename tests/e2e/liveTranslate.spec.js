@@ -1213,6 +1213,17 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await expect(glossary.locator('.glossary-card').first()).toContainText('microphone');
   await expect(glossary.locator('.glossary-card').first()).toContainText('Alan speak');
 
+  const selectAllButton = glossary.getByRole('button', { name: '全選目前結果' });
+  await expect(selectAllButton).toHaveAttribute('aria-pressed', 'false');
+  await selectAllButton.click();
+  await expect(selectAllButton).toHaveText('取消全選目前結果');
+  await expect(selectAllButton).toHaveAttribute('aria-pressed', 'true');
+  await expect(glossary.getByRole('button', { name: '取消選取' })).toHaveCount(0);
+  await expect(glossary.locator('.glossary-card-topline > input[type="checkbox"]')).toBeChecked();
+  await selectAllButton.click();
+  await expect(glossary.getByRole('button', { name: '全選目前結果' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(glossary.locator('.glossary-card-topline > input[type="checkbox"]')).not.toBeChecked();
+
   await glossary.locator('.glossary-card').first().click();
   await expect(page.getByRole('dialog', { name: '編輯詞條' })).toBeVisible();
   await page.keyboard.press('Escape');
@@ -1229,6 +1240,7 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await glossary.locator('.glossary-card').first().click();
   await page.getByRole('dialog', { name: '編輯詞條' }).getByRole('button', { name: '刪除詞條' }).click();
   await expect(glossary.locator('.glossary-empty')).toBeVisible();
+  await expect(glossary.getByRole('button', { name: '全選目前結果' })).toBeDisabled();
 
   await glossary.getByRole('button', { name: '管理分類' }).click();
   const finalCategoryDialog = page.getByRole('dialog', { name: '管理分類' });
@@ -1246,6 +1258,65 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   expect(requests[3].body.source).toBe('microphone');
   expect(requests[3].body.tags).toEqual(['audio', 'product']);
   expect(requests[4].body.scope).toBe('live');
+});
+
+test('global glossary batch updates selected entries sequentially', async ({ page }) => {
+  const entries = [
+    { id: 'entry-1', source: '產品名稱', sourceLanguageCode: 'zh-Hant', translations: { en: 'Product name' }, category: 'product', tags: [], enabled: true },
+    { id: 'entry-2', source: '會議術語', sourceLanguageCode: 'zh-Hant', translations: { en: 'Meeting term' }, category: 'meeting', tags: [], enabled: true }
+  ];
+  const categories = [
+    { id: 'product', label: '產品名稱' },
+    { id: 'meeting', label: '會議常用語' },
+    { id: 'other', label: '其他' }
+  ];
+  const updates = [];
+  let updateInFlight = false;
+
+  await page.route('**/api/glossary**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/api/glossary') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entries }) });
+      return;
+    }
+    if (request.method() === 'GET' && url.pathname === '/api/glossary/categories') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ categories }) });
+      return;
+    }
+    if (request.method() === 'PUT' && url.pathname.startsWith('/api/glossary/entries/')) {
+      if (updateInFlight) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: { message: 'Concurrent update' } }) });
+        return;
+      }
+      updateInFlight = true;
+      const id = decodeURIComponent(url.pathname.split('/').pop());
+      const body = JSON.parse(request.postData() || '{}');
+      updates.push({ id, body });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      updateInFlight = false;
+      const entry = { ...entries.find((item) => item.id === id), ...body, updatedAt: Date.now() };
+      entries.splice(entries.findIndex((item) => item.id === id), 1, entry);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ entry }) });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.goto('/#glossary');
+  const glossary = page.locator('.global-glossary');
+  await expect(glossary.locator('.glossary-card')).toHaveCount(2);
+  await glossary.getByRole('button', { name: '全選目前結果' }).click();
+  await glossary.getByRole('button', { name: '批次停用' }).click();
+  await expect.poll(() => updates.length).toBe(2);
+  expect(updates.map(({ id, body }) => [id, body.enabled])).toEqual([['entry-1', false], ['entry-2', false]]);
+  await expect(glossary.locator('.glossary-status.is-disabled')).toHaveCount(2);
+
+  await glossary.getByRole('button', { name: '全選目前結果' }).click();
+  await glossary.getByRole('button', { name: '批次啟用' }).click();
+  await expect.poll(() => updates.length).toBe(4);
+  expect(updates.slice(2).map(({ id, body }) => [id, body.enabled]).sort()).toEqual([['entry-1', true], ['entry-2', true]]);
+  await expect(glossary.locator('.glossary-status:not(.is-disabled)')).toHaveCount(2);
 });
 
 test('global glossary import explains the format and applies selected settings', async ({ page }) => {

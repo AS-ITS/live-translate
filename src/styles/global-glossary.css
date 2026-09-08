@@ -58,7 +58,7 @@
 .glossary-page .glossary-category-sidebar button.is-active small { color: var(--color-category-active-count); }
 .glossary-card-region { min-width: 0; }
 .glossary-card-region-header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-height: 2.75rem; margin-bottom: var(--space-3); color: var(--color-text-muted); }
-.glossary-select-all { display: flex; align-items: center; gap: var(--space-2); cursor: pointer; }
+.glossary-select-all { min-width: auto; min-height: 2.75rem; white-space: nowrap; }
 .glossary-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
 .glossary-card { display: grid; min-width: 0; gap: var(--space-3); min-height: 0; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: 0 5px 16px rgb(23 32 42 / 4%); cursor: pointer; transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease; }
 .glossary-card:hover { border-color: var(--color-primary); box-shadow: var(--shadow-panel); transform: translateY(-1px); }

@@ -10,6 +10,7 @@ Backend environment variables:
 - `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`: browser-safe values.
 - `P1_PROFILE_ONLY=true`: keeps non-Profile cloud capabilities fail-closed.
+- Supabase P2 mode stores each user's Gemini API Key in Vault; apply the Vault migration before enabling personal-key token issuance.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `dev_frontend_origin`: Development frontend origin. Defaults to
@@ -70,6 +71,10 @@ Supabase mode requires a valid JWT, the `authenticated` role, and an email in
 `AUTH_ALLOWED_EMAIL_DOMAINS`. P1 enables only `GET /api/profile`; other private
 capabilities return `503 cloud_capability_unavailable` until ownership adapters
 are implemented. The legacy demo token remains only as a local fallback.
+
+## P2 Cloud Data Mode
+
+When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are configured, new Meeting, Segment, Session, and finalized Cue writes use owner-scoped Supabase repositories. Existing file-backed records are not migrated automatically. Apply `supabase/migrations/20260909000000_secure_gemini_credentials.sql` before using personal Gemini credentials.
 
 ## Local Development Setup
 

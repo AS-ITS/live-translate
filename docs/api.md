@@ -1,5 +1,11 @@
 # Live Translate API and Events
 
+## Personal Gemini Credential
+
+Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.
+
+`POST /api/live-token` resolves the Gemini key for the authenticated user in cloud mode. A user without a configured key receives `gemini_credential_not_configured`; the response and request logs never contain the key.
+
 ## Realtime subtitle pipeline contract
 
 The API treats a finalized source Cue as the stable unit of downstream work.

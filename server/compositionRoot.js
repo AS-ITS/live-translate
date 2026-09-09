@@ -63,6 +63,8 @@ import { createTranslationRepositoryAdapter } from '../src/infrastructure/transl
 import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
 import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
+import { createSupabaseMeetingRepository } from '../src/infrastructure/supabaseMeetingRepository.js';
+import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseSessionRepository.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
@@ -454,18 +456,23 @@ export function createProductionApplicationDependencies(options = {}) {
     idFactory: () => `glossary-${randomUUID()}`,
     clock: () => Date.now()
   });
+  const cloudDataMode = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL);
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
     ? applicationOptions.sessionRepository
-    : fileSessionRepositoryFactory({
-        filePath: sessionRecordsFilePathFor(env),
-        fileSystem: sessionRepositoryFileSystem
-      });
+    : cloudDataMode
+      ? createSupabaseSessionRepository({ env })
+      : fileSessionRepositoryFactory({
+          filePath: sessionRecordsFilePathFor(env),
+          fileSystem: sessionRepositoryFileSystem
+        });
   const meetingRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingRepository')
     ? applicationOptions.meetingRepository
-    : fileMeetingRepositoryFactory({
-        filePath: meetingRecordsFilePathFor(env),
-        fileSystem: meetingRepositoryFileSystem
-      });
+    : cloudDataMode
+      ? createSupabaseMeetingRepository({ env })
+      : fileMeetingRepositoryFactory({
+          filePath: meetingRecordsFilePathFor(env),
+          fileSystem: meetingRepositoryFileSystem
+        });
   const sessionShareService = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionShareService')
     ? applicationOptions.sessionShareService
     : sessionShareServiceFactory({

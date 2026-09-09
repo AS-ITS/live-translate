@@ -45,6 +45,7 @@ import { canonicalHashForLocation, pageFromLocation, pageInfoFromLocation } from
 import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
+import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from '../pages/live/LiveRecordingPage.jsx';
@@ -1827,6 +1828,7 @@ export function App() {
       </MeetingSettingsLayout>
       );
     },
+    settings: () => <GeminiCredentialPage />,
   };
 
   const workspaceView = () => {

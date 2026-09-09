@@ -128,7 +128,8 @@ export function buildTokenConfig({
 }
 
 export async function createLiveToken(body, options = {}) {
-  if (!process.env.GEMINI_API_KEY && !options.client) {
+  const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
+  if (!apiKey && !options.client) {
     const error = new Error('GEMINI_API_KEY is not configured');
     error.status = 500;
     throw error;
@@ -169,7 +170,7 @@ export async function createLiveToken(body, options = {}) {
     { ...request, liveTranslateModel: liveModel, ...(targetGlossaryEntries === undefined ? {} : { glossaryEntries: targetGlossaryEntries }) },
     now
   );
-  const client = options.client || (await createGenAiClient(process.env.GEMINI_API_KEY));
+  const client = options.client || (await createGenAiClient(apiKey));
 
   try {
     const token = await client.authTokens.create({ config: configWithGlossary });

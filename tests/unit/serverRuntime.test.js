@@ -155,6 +155,30 @@ test('translation execution worker runtime start failures are logged safely', as
   }]);
 });
 
+test('request-scoped session repositories skip startup queue recovery', async () => {
+  const calls = [];
+  startTranslationExecutionWorkerRuntime({
+    sessionRepository: {
+      requiresRequestIdentity: true,
+      async listSessionRecords() {
+        throw new Error('startup must not read owner-scoped records');
+      }
+    },
+    translationExecutionQueue: noopQueue(),
+    translationExecutionWorkerRuntime: {
+      async start() {
+        calls.push('start');
+      },
+      stop() {}
+    },
+    logger(event) {
+      calls.push(event.event);
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls, ['start']);
+});
+
 function sessionRepositoryWithTranslationState(translationCommandState) {
   return {
     async listSessionRecords() {

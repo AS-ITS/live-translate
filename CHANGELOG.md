@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Issue #31 P2 first milestone「安全可開會」：新增 Supabase Vault 個人 Gemini API Key 設定與 owner-scoped cloud repositories；`/api/live-token` 依登入者解密個人 Key，完整 Key 不回傳、不寫入 log。
 
 - Issue #31 P1 identity foundation：加入 Supabase Google PKCE 登入、Workspace domain
   allowlist、JWT validation、Profile API、profile header/logout，以及 profiles 與私人

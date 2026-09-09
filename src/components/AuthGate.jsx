@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../lib/supabaseAuth.js';
 
-const AuthContext = createContext({ session: null, profile: null, signOut: async () => {} });
+const AuthContext = createContext({ session: null, profile: null, signOut: async () => {}, switchAccount: async () => {} });
 
 export function useAuth() {
   return useContext(AuthContext);
@@ -35,7 +35,18 @@ export function AuthGate({ children }) {
     return () => { active = false; };
   }, [session?.access_token]);
 
-  const value = useMemo(() => ({ session, profile, signOut: () => supabase?.auth.signOut() }), [session, profile]);
+  const value = useMemo(() => ({
+    session,
+    profile,
+    signOut: () => supabase?.auth.signOut(),
+    switchAccount: () => supabase?.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin,
+        queryParams: { prompt: 'select_account' }
+      }
+    })
+  }), [session, profile]);
   if (!isSupabaseConfigured()) return children;
   if (loading) return <main className="auth-page"><p>正在檢查登入狀態…</p></main>;
   if (!session) {

@@ -1,16 +1,9 @@
-# P1 Identity, Data Model, and RLS
+# P2 Identity, Data Model, and RLS
 
-P1 uses Supabase Google OAuth with PKCE. The browser persists and refreshes the
-Supabase session, then sends its access token as `Authorization: Bearer ...`.
-The server validates JWT signature, issuer, audience, expiry, role, and the
-comma-separated `AUTH_ALLOWED_EMAIL_DOMAINS` allowlist. Profile rows are
-created or updated by an `auth.users` trigger and are returned only by
-`GET /api/profile` for the authenticated user.
+Supabase Google OAuth uses PKCE. The browser sends its access token as `Authorization: Bearer ...`; the server validates JWT signature, issuer, audience, expiry, role, and the configured email-domain allowlist.
 
-The migration creates owner-scoped domain tables with non-null
-`owner_user_id`, composite parent-child foreign keys, idempotency/version
-constraints, hash-only viewer shares, and encrypted-value-only Gemini
-credential placeholders. All tables have RLS. Client grants are revoked and
-re-added only for the authenticated Profile read path; `service_role` is
-server-only. P1 leaves all non-Profile adapters disabled and fail-closed with
-`cloud_capability_unavailable`.
+In cloud mode, Meeting, MeetingSegment, Session, and finalized Cue repositories are owner-scoped. Every service-role query includes `owner_user_id`, and parent-child references use the composite ownership constraints in the Supabase schema.
+
+Users manage their Gemini API Key through `/api/profile/gemini-credential`. The key is stored as a per-user Supabase Vault secret. The application stores only the Vault reference, last four characters, and key version in `gemini_credentials`; the full value is decrypted only in server memory while creating an ephemeral token. The key is never returned to the browser or written to logs.
+
+Existing opaque Viewer share routes remain an explicit read-only capability. They do not grant access to authenticated owner APIs or credential data.

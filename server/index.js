@@ -26,6 +26,8 @@ import {
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
+import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
+import { setRequestUser } from './requestIdentity.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -67,6 +69,9 @@ const ERROR_RESPONSES = {
   glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
+  gemini_credential_unavailable: { status: 503, message: 'Gemini credential storage is not configured.' },
+  gemini_credential_not_configured: { status: 409, message: 'Set a Gemini API Key before starting a meeting.' },
+  gemini_credential_invalid: { status: 400, message: 'Gemini API Key is invalid.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
@@ -435,12 +440,15 @@ export function startTranslationExecutionWorkerRuntime({
   }
 
   let isStopped = false;
-  startRuntimeAfterPersistedQueueRecovery({
-    translationExecutionWorkerRuntime,
-    sessionRepository,
-    translationExecutionQueue,
-    logger
-  }).catch((error) => {
+  const startup = sessionRepository?.requiresRequestIdentity === true
+    ? translationExecutionWorkerRuntime.start()
+    : startRuntimeAfterPersistedQueueRecovery({
+      translationExecutionWorkerRuntime,
+      sessionRepository,
+      translationExecutionQueue,
+      logger
+    });
+  Promise.resolve(startup).catch((error) => {
     logWorkerRuntimeError(logger, 'translation_execution_worker_runtime_start_failed', error);
   });
 
@@ -567,6 +575,7 @@ export function createRequestHandler(options = {}) {
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
     , profileService = createProfileService()
+    , credentialRepository = createGeminiCredentialRepository()
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -609,6 +618,7 @@ export function createRequestHandler(options = {}) {
       translationExecutionMetrics
       , accessControl: requestAccessControl
       , profileService
+      , credentialRepository
     });
   };
 }
@@ -620,7 +630,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -630,6 +640,7 @@ async function handleRequestWithSessionReadController(
   let authenticatedUser = null;
   let statusCode = 500;
   let targetLanguageCode;
+  setRequestUser(null);
 
   if (req.method === 'OPTIONS') {
     statusCode = 204;
@@ -644,7 +655,8 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured()) && (process.env.NODE_ENV !== 'production' || Boolean(process.env.AUTH_ALLOWED_EMAIL_DOMAINS));
+    const hasCloudCredentialMode = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY && process.env.SUPABASE_JWKS_URL);
+    const ready = (Boolean(process.env.GEMINI_API_KEY) || hasCloudCredentialMode) && (process.env.NODE_ENV !== 'production' || isAuthConfigured()) && (process.env.NODE_ENV !== 'production' || Boolean(process.env.AUTH_ALLOWED_EMAIL_DOMAINS));
     statusCode = ready ? 200 : 503;
     sendJson(res, statusCode, { ok: ready, requestId }, requestId);
     return;
@@ -654,6 +666,7 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -662,7 +675,7 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (path.startsWith('/api/') && isProfileOnlyMode() && path !== '/api/profile') {
+  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential'].includes(path)) {
     statusCode = 503;
     sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     return;
@@ -720,6 +733,7 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -735,6 +749,33 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       statusCode = 503;
       sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
+    }
+    return;
+  }
+
+  if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
+    try {
+      if (!authenticatedUser?.id) throw createHttpError('auth_required');
+      if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
+      if (req.method === 'GET') {
+        const credential = await credentialRepository.get(authenticatedUser.id);
+        statusCode = 200;
+        sendJson(res, statusCode, { credential: credential || { configured: false, lastFour: null, keyVersion: null, verifiedAt: null } }, requestId);
+      } else if (req.method === 'PUT') {
+        const body = await readJson(req, { maxBytes: 16 * 1024 });
+        const credential = await credentialRepository.upsert(authenticatedUser.id, body?.apiKey);
+        statusCode = 200;
+        sendJson(res, statusCode, { credential }, requestId);
+      } else {
+        await credentialRepository.remove(authenticatedUser.id);
+        statusCode = 204;
+        res.writeHead(statusCode, { 'X-Request-Id': requestId });
+        res.end();
+      }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -1889,7 +1930,13 @@ async function handleRequestWithSessionReadController(
       void auth;
     }
     targetLanguageCode = body.targetLanguageCode || 'en';
-    const token = await liveTokenCreator(tokenRequest);
+    const apiKey = authenticatedUser?.id && credentialRepository
+      ? await credentialRepository.resolveKey(authenticatedUser.id)
+      : null;
+    if (authenticatedUser?.id && credentialRepository && !apiKey) {
+      throw createHttpError('gemini_credential_not_configured');
+    }
+    const token = await liveTokenCreator(tokenRequest, apiKey ? { apiKey } : {});
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);
     logEvent({
@@ -3058,7 +3105,7 @@ if (IS_MAIN) {
   const server = http.createServer(handleRequest);
   attachExecutionEventsWebSocket({
     server,
-    accessControl,
+    accessControl: globalAccessControl,
     sessionReadController: defaultApplicationDependencies.sessionReadController,
     broadcaster: defaultApplicationDependencies.executionEventBroadcaster,
     WebSocketServerClass: WebSocketServer

@@ -1017,17 +1017,14 @@ Malformed session identifiers return `400 invalid_request`.
 
 ## Access control
 
-Private `/api/*` routes require `Authorization: Bearer <DEMO_ACCESS_TOKEN>`.
+Private `/api/*` routes require `Authorization: Bearer <supabase-access-token>`.
 The legacy `X-Demo-Access-Token` header remains accepted for compatibility.
-Production returns `503 auth_not_configured` when `DEMO_ACCESS_TOKEN` is absent;
-development and test remain permissive when it is absent. Health/readiness and
-Viewer share routes (`GET /api/shared-sessions/:token` and `/events`) remain
-anonymous. Private requests also retain the configured origin check.
-
-The browser uses the build-time `VITE_DEMO_ACCESS_TOKEN`. It must match the
-server token and is visible in the frontend bundle; this v1 design does not
-provide per-user security. All authenticated users share the same private API
-permissions.
+Supabase validation checks signature, issuer, audience, expiry, the
+`authenticated` role, and `AUTH_ALLOWED_EMAIL_DOMAINS`, returning fixed
+`401 auth_required`, `401 auth_invalid`, or `403 auth_forbidden` errors.
+`GET /api/profile` returns only the current user's profile. With
+`P1_PROFILE_ONLY=true`, unimplemented capabilities return
+`503 cloud_capability_unavailable`.
 
 ## `GET /api/metrics`
 

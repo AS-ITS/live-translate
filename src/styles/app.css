@@ -11,3 +11,6 @@
 @import url('./live-viewer.css');
 @import url('./meeting-viewer.css');
 @import url('./recorder.css');
+ .auth-page { min-height: 100vh; display: grid; place-items: center; padding: 2rem; background: #f5f7fb; }
+ .auth-card { max-width: 28rem; padding: 2rem; border: 1px solid #dbe2ee; border-radius: 1rem; background: white; box-shadow: 0 1rem 3rem rgb(30 41 59 / 10%); text-align: center; }
+ .profile-chip { align-self: center; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; font-size: .875rem; }

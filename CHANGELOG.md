@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Issue #31 P1 identity foundation：加入 Supabase Google PKCE 登入、Workspace domain
+  allowlist、JWT validation、Profile API、profile header/logout，以及 profiles 與私人
+  domain tables 的 owner-scoped composite foreign keys、RLS 與 grants。P1 未完成 ownership
+  adapter 的 API 以 `503 cloud_capability_unavailable` fail-closed。
+
 - Issue #31 P0 deployment foundation：request handler 改為 lazy composition，新增 Vercel
   cloud Function 與 Supabase migration baseline；Vercel cloud shell 不啟動 file-backed
   persistence、WebSocket 或 translation worker，現有本機 Node 與 Gemini Live 流程維持不變。

@@ -5,10 +5,11 @@
 Backend environment variables:
 
 - `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
-- `DEMO_ACCESS_TOKEN`: Shared access token required by production private APIs.
-- `VITE_DEMO_ACCESS_TOKEN`: Browser build-time copy of `DEMO_ACCESS_TOKEN`; both
-  values must match. The token is included in the browser bundle, so this is
-  shared-token access control, not per-user security.
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY`: server-only Supabase values.
+- `SUPABASE_JWKS_URL`: Supabase public JWKS endpoint used to verify access tokens.
+- `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
+- `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`: browser-safe values.
+- `P1_PROFILE_ONLY=true`: keeps non-Profile cloud capabilities fail-closed.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `dev_frontend_origin`: Development frontend origin. Defaults to
@@ -38,7 +39,6 @@ DATA_DIR=./data
 SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
-VITE_DEMO_ACCESS_TOKEN=replace_with_the_same_demo_token_for_browser_demo
 ```
 
 ## Vercel and Supabase foundation
@@ -58,7 +58,7 @@ npm run db:lint
 ```
 
 Vercel environment variables are configured per environment in the Vercel
-project. Keep `SUPABASE_SERVICE_ROLE_KEY` and future `KEY_ENCRYPTION_SECRET`
+project. Keep `SUPABASE_SECRET_KEY` and future `KEY_ENCRYPTION_SECRET`
 server-only; never prefix them with `VITE_`. The 4.5 MB Vercel Function
 request/response limit means the current large snapshot, checkpoint, and audio
 routes remain disabled in the P0 cloud shell.
@@ -66,10 +66,10 @@ routes remain disabled in the P0 cloud shell.
 Secrets must be kept out of git. Use `.env` locally and keep `.env.example` as a
 non-secret template.
 
-Production requires `DEMO_ACCESS_TOKEN`. Development and test remain
-permissive when it is unset. All authenticated browser users share the same
-read/write access to private Session, Meeting, Translation, and Glossary APIs;
-per-user identity, ownership, RBAC, audit actors, and SSO are deferred.
+Supabase mode requires a valid JWT, the `authenticated` role, and an email in
+`AUTH_ALLOWED_EMAIL_DOMAINS`. P1 enables only `GET /api/profile`; other private
+capabilities return `503 cloud_capability_unavailable` until ownership adapters
+are implemented. The legacy demo token remains only as a local fallback.
 
 ## Local Development Setup
 

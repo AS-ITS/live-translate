@@ -96,7 +96,9 @@ Current scope:
 
 ## Non-Goals
 
-- User accounts.
+- Phase 1 had no user accounts. P1 adds Workspace Google identity through
+  Supabase Auth and keeps private capability APIs disabled until ownership
+  adapters are implemented.
 - Database-backed transcript history.
 - Multi-user transcript history.
 - Room sharing or multi-user calls.

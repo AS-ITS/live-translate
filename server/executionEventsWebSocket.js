@@ -14,6 +14,10 @@ export function attachExecutionEventsWebSocket({ server, accessControl, sessionR
   });
 
   webSocketServer.on('connection', async (client, request, sessionId) => {
+    if (process.env.P1_PROFILE_ONLY === 'true' || process.env.SUPABASE_JWKS_URL) {
+      client.close(1013, 'cloud_capability_unavailable');
+      return;
+    }
     let authenticated = false;
     let unsubscribe = null;
     const authTimeout = setTimeout(() => closeUnauthorized(), 5000);
@@ -24,7 +28,7 @@ export function attachExecutionEventsWebSocket({ server, accessControl, sessionR
       try { message = JSON.parse(raw.toString()); } catch { return closeUnauthorized(); }
       if (message?.type !== 'auth' || typeof message.token !== 'string') return closeUnauthorized();
       try {
-        accessControl.validateRequest({ headers: { authorization: `Bearer ${message.token}` } });
+        await accessControl.validateRequest({ headers: { authorization: `Bearer ${message.token}` } });
         if (!await sessionReadController.getSession(sessionId)) return closeUnauthorized(1008, 'session_not_found');
       } catch {
         return closeUnauthorized();

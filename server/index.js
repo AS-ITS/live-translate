@@ -25,6 +25,7 @@ import {
   validateAudioArtifactKind
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
+import { createProfileService } from './profileService.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -49,7 +50,9 @@ const rateLimitBuckets = new Map();
 const ERROR_RESPONSES = {
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
+  auth_forbidden: { status: 403, message: 'Access is not allowed.' },
   auth_not_configured: { status: 503, message: 'Access gate is not configured.' },
+  cloud_capability_unavailable: { status: 503, message: 'This cloud capability is not enabled yet.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
@@ -253,10 +256,14 @@ function isAllowedOrigin(req) {
   return !origin || origin === RESOLVED_ORIGIN;
 }
 
-const accessControl = createAccessControl();
+function isProfileOnlyMode() {
+  return process.env.P1_PROFILE_ONLY === 'true' || Boolean(process.env.SUPABASE_JWKS_URL);
+}
+
+const globalAccessControl = createAccessControl();
 
 function isAuthConfigured() {
-  return accessControl.isConfigured();
+  return globalAccessControl.isConfigured();
 }
 
 function enforceRateLimit(clientIp) {
@@ -558,6 +565,8 @@ export function createRequestHandler(options = {}) {
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
+    , accessControl: requestAccessControl = globalAccessControl
+    , profileService = createProfileService()
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -598,6 +607,8 @@ export function createRequestHandler(options = {}) {
       meetingCheckpointMaxBytes,
       sessionAudioMaxBytes,
       translationExecutionMetrics
+      , accessControl: requestAccessControl
+      , profileService
     });
   };
 }
@@ -609,13 +620,14 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
+  let authenticatedUser = null;
   let statusCode = 500;
   let targetLanguageCode;
 
@@ -632,9 +644,27 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured());
+    const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured()) && (process.env.NODE_ENV !== 'production' || Boolean(process.env.AUTH_ALLOWED_EMAIL_DOMAINS));
     statusCode = ready ? 200 : 503;
     sendJson(res, statusCode, { ok: ready, requestId }, requestId);
+    return;
+  }
+
+  if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
+    try {
+      if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
+      authenticatedUser = await requestAccessControl.validateRequest(req);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      return;
+    }
+  }
+
+  if (path.startsWith('/api/') && isProfileOnlyMode() && path !== '/api/profile') {
+    statusCode = 503;
+    sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     return;
   }
 
@@ -689,13 +719,24 @@ async function handleRequestWithSessionReadController(
   if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
-      accessControl.validateRequest(req);
+      authenticatedUser = await requestAccessControl.validateRequest(req);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
       return;
     }
+  }
+
+  if (req.method === 'GET' && path === '/api/profile') {
+    try {
+      statusCode = 200;
+      sendJson(res, statusCode, { profile: await profileService.getProfile(authenticatedUser) }, requestId);
+    } catch (error) {
+      statusCode = 503;
+      sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
+    }
+    return;
   }
 
   if (req.method === 'GET' && path === '/api/sessions') {

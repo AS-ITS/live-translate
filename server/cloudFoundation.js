@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
+import { createAccessControl } from './accessControl.js';
+import { createProfileService } from './profileService.js';
 
 const CLOUD_CAPABILITY_ERROR = 'cloud_capability_unavailable';
 
-export function createCloudFoundationHandler({ env = process.env } = {}) {
+export function createCloudFoundationHandler({ env = process.env, accessControl = createAccessControl({ env }), profileService = createProfileService({ env }) } = {}) {
   return async function cloudFoundationHandler(req, res) {
     const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
     const path = new URL(req.url || '/', 'http://localhost').pathname;
@@ -19,8 +21,19 @@ export function createCloudFoundationHandler({ env = process.env } = {}) {
     }
 
     if (req.method === 'GET' && normalizedPath === '/readyz') {
-      const ready = Boolean(env.SUPABASE_URL && env.SUPABASE_ANON_KEY);
+      const ready = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL && env.AUTH_ALLOWED_EMAIL_DOMAINS);
       sendJson(res, ready ? 200 : 503, { ok: ready, requestId, runtime: 'vercel' }, requestId);
+      return;
+    }
+
+    if (req.method === 'GET' && normalizedPath === '/profile') {
+      try {
+        const user = await accessControl.validateRequest(req);
+        sendJson(res, 200, { profile: await profileService.getProfile(user), requestId }, requestId);
+      } catch (error) {
+        const code = error.code || 'cloud_capability_unavailable';
+        sendJson(res, error.status || 503, { error: { code, message: error.message }, requestId }, requestId);
+      }
       return;
     }
 
@@ -44,4 +57,3 @@ function sendJson(res, status, payload, requestId) {
   });
   res.end(body);
 }
-

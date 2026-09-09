@@ -38,6 +38,16 @@ Relevant background docs:
 
 ## 2. System Context
 
+## P1 identity and data boundary
+
+Supabase Google OAuth uses PKCE in the browser. The backend validates the
+Supabase access JWT before private dispatch, including issuer, audience,
+expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Profile data is
+served by `GET /api/profile`; the service-role key is server-only. The P1
+Supabase migration applies owner-scoped composite foreign keys and RLS to all
+private tables. Until an ownership adapter is complete, the capability
+registry leaves its API disabled with `503 cloud_capability_unavailable`.
+
 ```mermaid
 flowchart LR
   User[User]
@@ -57,11 +67,10 @@ The backend only issues short-lived ephemeral tokens and enforces the access
 gate, origin validation, rate limit, and structured error handling around
 `POST /api/live-token`.
 
-Access Control v1 applies the shared `DEMO_ACCESS_TOKEN` gate to private
-`/api/*` routes. Browsers send the matching build-time `VITE_DEMO_ACCESS_TOKEN`
-as a Bearer token. Health/readiness and opaque share Viewer routes remain
-anonymous; the browser token is visible in its bundle and does not represent a
-per-user identity or permission system.
+P1 applies Supabase JWT validation to private `/api/*` routes. Browsers send
+the current Supabase session access token as a Bearer token. Health/readiness
+remain public, and unimplemented cloud capabilities stay disabled until their
+ownership adapters exist.
 
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,

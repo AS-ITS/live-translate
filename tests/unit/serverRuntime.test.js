@@ -12,7 +12,12 @@ import {
 import { createCloudFoundationHandler } from '../../server/cloudFoundation.js';
 
 test('cloud foundation handler is health-only and reports readiness from Supabase configuration', async () => {
-  const handler = createCloudFoundationHandler({ env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_ANON_KEY: 'anon' } });
+  const handler = createCloudFoundationHandler({ env: {
+    SUPABASE_URL: 'https://example.supabase.co',
+    SUPABASE_SECRET_KEY: 'secret',
+    SUPABASE_JWKS_URL: 'https://example.supabase.co/auth/v1/.well-known/jwks.json',
+    AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
+  } });
   const health = await request(handler, { method: 'GET', url: '/healthz' });
   const ready = await request(handler, { method: 'GET', url: '/api/readyz' });
   const unavailable = await request(handler, { method: 'POST', url: '/api/sessions' });

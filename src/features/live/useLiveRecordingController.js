@@ -16,6 +16,7 @@ import { createReconnectController } from '../../lib/reconnectController.js';
 import { createSegmentSwitchOrchestrator } from '../../lib/segmentSwitchOrchestrator.js';
 import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
+import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 import { finalizePendingTranscriptItems, transcriptItemsForStream } from '../../lib/transcript.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
@@ -641,6 +642,7 @@ export function useLiveRecordingController({
       }
     },
     async endCurrentSession({ redirectHash = '#meetings' } = {}) {
+      const endedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || recovery.resumeDraft?.meetingId || '';
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
       recovery.cancelSegmentSwitch?.();
@@ -670,6 +672,7 @@ export function useLiveRecordingController({
         audioStates: { input: inputAudioState }
       });
       recovery.setStatus('stopped');
+      clearMeetingAudioPreference(endedMeetingId);
       if (redirectHash) window.location.hash = redirectHash;
     },
     async continuePausedSession() {

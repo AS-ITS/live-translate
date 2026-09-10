@@ -44,6 +44,14 @@
 .meeting-settings-card-description { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: var(--text-sm); }
 .meeting-name-field { max-width: 36rem; }
 .meeting-name-field small, .meeting-settings-card .field small { color: var(--color-text-muted); font-weight: 400; }
+.meeting-name-field > span em { color: var(--color-danger); font-style: normal; }
+.meeting-name-field.has-error input { border-color: var(--color-danger); }
+.meeting-name-field.has-error input:focus { border-color: var(--color-danger); box-shadow: 0 0 0 3px var(--color-danger-soft); }
+.meeting-name-field small.field-error { color: var(--color-danger); }
+.meeting-audio-controls .button.has-error { border-color: var(--color-danger); }
+.meeting-audio-controls { position: relative; }
+.meeting-audio-controls.has-error { padding-bottom: 1.5rem; }
+.meeting-audio-controls small.field-error { position: absolute; bottom: 0; left: 0; color: var(--color-danger); font-size: var(--text-sm); white-space: normal; }
 .meeting-language-fields { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: var(--space-4); max-width: 48rem; }
 .meeting-language-fields .field select { height: var(--select-height); min-height: var(--select-height); }
 .meeting-language-direction { display: grid; width: 2.5rem; height: var(--select-height); place-items: center; color: var(--color-primary); }

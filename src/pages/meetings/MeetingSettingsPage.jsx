@@ -7,7 +7,7 @@ import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
 import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
-import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
+import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const MEETING_SETTINGS_STEPS = [
@@ -45,6 +45,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [shareState, setShareState] = useState('idle');
   const [shareLayoutReady, setShareLayoutReady] = useState(false);
   const [error, setError] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [audioSettingsError, setAudioSettingsError] = useState('');
   const [notice, setNotice] = useState('');
   const [isLoading, setIsLoading] = useState(mode === 'edit');
   const [isSaving, setIsSaving] = useState(false);
@@ -58,6 +60,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const settingsSectionRefs = useRef([]);
   const shareSectionRef = useRef(null);
   const submitRowRef = useRef(null);
+  const nameInputRef = useRef(null);
+  const audioConfirmButtonRef = useRef(null);
   const shareEnsurePromiseRef = useRef(null);
   const autoScrolledMeetingIdRef = useRef(null);
 
@@ -319,6 +323,23 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   async function saveMeeting() {
     if (meeting?.status === 'completed') return;
+    if (!name.trim()) {
+      const message = '請輸入會議名稱。';
+      setNameError(message);
+      setError('');
+      nameInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      nameInputRef.current?.focus();
+      return;
+    }
+    const audioPreference = getMeetingAudioPreference(meeting?.id || meetingId);
+    if (audioTestStatus !== 'confirmed' && !hasConfirmedMeetingAudioPreference(audioPreference)) {
+      setAudioSettingsError('請先測試並確認麥克風權限。');
+      setError('');
+      focusAudioSettings();
+      return;
+    }
+    setNameError('');
+    setAudioSettingsError('');
     setIsSaving(true);
     setError('');
     setNotice('');
@@ -335,6 +356,13 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       const saved = meeting
         ? await managementClient.update(meeting.id, input)
         : await managementClient.create(input);
+      if (!meeting && audioTestStatus === 'confirmed') {
+        setMeetingAudioPreference(saved.id, {
+          inputDeviceId: selectedInputDeviceId,
+          outputDeviceId: selectedOutputDeviceId,
+          permissionStatus: 'confirmed'
+        });
+      }
       setMeeting(saved);
       setNotice(meeting ? '會議設定已更新。' : '會議已建立，正在產生分享連結…');
       if (!meeting) await createSharesWithRetry(saved.id);
@@ -354,6 +382,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       return;
     }
     setAudioTestStatus('testing');
+    setAudioSettingsError('');
     setError('');
     try {
       const stream = await requestAudioInputStream(selectedInputDeviceId);
@@ -361,7 +390,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       const refreshed = await refreshAudioDevices() || { inputs: [], outputs: [] };
       const selectedInput = refreshed.inputs.find((device) => device.deviceId === selectedInputDeviceId);
       const selectedOutput = refreshed.outputs.find((device) => device.deviceId === selectedOutputDeviceId);
-      const saved = setMeetingAudioPreference(meeting?.id || meetingId, {
+      const audioPreferenceMeetingId = meeting?.id || meetingId;
+      const saved = !audioPreferenceMeetingId || setMeetingAudioPreference(audioPreferenceMeetingId, {
         inputDeviceId: selectedInput?.deviceId || '',
         outputDeviceId: supportsAudioContextOutputSelection() ? selectedOutput?.deviceId || '' : '',
         inputDeviceLabel: selectedInput?.label || '瀏覽器預設麥克風',
@@ -384,16 +414,16 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     const preference = getMeetingAudioPreference(meeting?.id || meetingId);
     if (!hasConfirmedMeetingAudioPreference(preference)) {
       setError('請先在音訊設定完成麥克風確認，再開始錄製。');
-      setActiveStep(2);
-      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setAudioSettingsError('請先測試並確認麥克風權限。');
+      focusAudioSettings();
       return;
     }
     const devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
     if (preference.inputDeviceId && !audioInputDevices(devices).some((device) => device.deviceId === preference.inputDeviceId)) {
       setError('所選麥克風已不存在，請重新確認音訊設定。');
       setAudioTestStatus('error');
-      setActiveStep(2);
-      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setAudioSettingsError('所選麥克風已不存在，請重新確認音訊設定。');
+      focusAudioSettings();
       return;
     }
     onOpenLive(meeting?.id || meetingId);
@@ -436,6 +466,15 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     });
   }
 
+  function focusAudioSettings() {
+    setActiveStep(2);
+    window.requestAnimationFrame(() => {
+      const section = settingsSectionRefs.current[2];
+      section?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      window.requestAnimationFrame(() => audioConfirmButtonRef.current?.focus());
+    });
+  }
+
   function scrollToSubmitRow() {
     const row = submitRowRef.current;
     if (!row) return;
@@ -464,7 +503,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
         <section className="meeting-settings-form control-panel" aria-label="會議設定表單">
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[0] = node; }} aria-labelledby="meeting-basic-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 1</p><h3 id="meeting-basic-settings-title">基本資訊</h3></div><span className="meeting-settings-card-number">1</span></div>
-            <label className="field meeting-name-field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} disabled={meeting?.status === 'completed'} /><small>建立後可分享會議連結給參與者。</small></label>
+            <label className={`field meeting-name-field${nameError ? ' has-error' : ''}`}><span>會議名稱 <em aria-hidden="true">*</em><span className="sr-only">（必填）</span></span><input ref={nameInputRef} value={name} onChange={(event) => { setName(event.target.value); if (nameError && event.target.value.trim()) setNameError(''); }} placeholder="例如：產品會議" maxLength={120} disabled={meeting?.status === 'completed'} required aria-invalid={nameError ? 'true' : 'false'} aria-describedby={nameError ? 'meeting-name-error' : undefined} />{nameError ? <small id="meeting-name-error" className="field-error" role="alert">{nameError}</small> : <small>建立後可分享會議連結給參與者。</small>}</label>
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[1] = node; }} aria-labelledby="meeting-language-settings-title">
@@ -475,12 +514,13 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[2] = node; }} aria-labelledby="meeting-audio-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 3</p><h3 id="meeting-audio-settings-title">音訊設定</h3></div><span className="meeting-settings-card-number">3</span></div>
             <div className="meeting-audio-options"><label className="meeting-audio-option"><span className="meeting-settings-icon"><Volume2 size={19} aria-hidden="true" /></span><span><strong>播放翻譯聲音</strong><small>讓參與者聽見即時翻譯結果。</small></span><span className="meeting-toggle"><input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label><label className="meeting-audio-option"><span className="meeting-settings-icon"><Mic size={19} aria-hidden="true" /></span><span><strong>保存原始聲音</strong><small>保存會議中的原始麥克風音訊。</small></span><span className="meeting-toggle"><input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label></div>
-            <div className="meeting-audio-controls">
+            <div className={`meeting-audio-controls${audioSettingsError ? ' has-error' : ''}`}>
               <div className={`meeting-audio-device-grid${hasAudioOutputSelection ? ' has-speaker' : ' microphone-only'}`}>
-              <label className="field"><span>麥克風</span><select aria-label="選擇會議麥克風" value={selectedInputDeviceId} onChange={(event) => setSelectedInputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設麥克風</option>{audioInputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label>
+              <label className="field"><span>麥克風</span><select aria-label="選擇會議麥克風" value={selectedInputDeviceId} onChange={(event) => { setSelectedInputDeviceId(event.target.value); setAudioTestStatus('idle'); setAudioPermissionStatus('unknown'); setAudioSettingsError(''); clearMeetingAudioPreference(meeting?.id || meetingId); }} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設麥克風</option>{audioInputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label>
               {hasAudioOutputSelection ? <label className="field"><span>揚聲器</span><select aria-label="選擇會議揚聲器" value={selectedOutputDeviceId} onChange={(event) => setSelectedOutputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設揚聲器</option>{audioOutputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label> : null}
               </div>
-              <button className="button secondary" type="button" onClick={() => void confirmAudioSettings()} disabled={audioTestStatus === 'testing' || meeting?.status === 'completed'}>{audioTestStatus === 'testing' ? '測試中…' : '測試並確認音訊'}</button>
+              <button ref={audioConfirmButtonRef} className={`button secondary${audioSettingsError ? ' has-error' : ''}`} type="button" onClick={() => void confirmAudioSettings()} disabled={audioTestStatus === 'testing' || meeting?.status === 'completed'} aria-invalid={audioSettingsError ? 'true' : 'false'} aria-describedby={audioSettingsError ? 'meeting-audio-settings-error' : undefined}>{audioTestStatus === 'testing' ? '測試中…' : '測試並確認音訊'}</button>
+              {audioSettingsError ? <small id="meeting-audio-settings-error" className="field-error" role="alert">{audioSettingsError}</small> : null}
               <MeetingAudioStatus audioTestStatus={audioTestStatus} audioPermissionStatus={audioPermissionStatus} />
             </div>
           </section>

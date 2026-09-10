@@ -4,6 +4,7 @@ export function createMeetingDeletionService({
   meetingRepository,
   sessionRepository,
   sessionAudioArtifactRepository,
+  deleteMeetingAudio,
   revokeMeetingShares
 } = {}) {
   assertMethod(meetingRepository, 'getMeeting', 'meetingRepository');
@@ -16,6 +17,9 @@ export function createMeetingDeletionService({
   }
   if (revokeMeetingShares !== undefined && typeof revokeMeetingShares !== 'function') {
     throw new TypeError('revokeMeetingShares must be a function.');
+  }
+  if (deleteMeetingAudio !== undefined && typeof deleteMeetingAudio !== 'function') {
+    throw new TypeError('deleteMeetingAudio must be a function.');
   }
 
   return Object.freeze({
@@ -33,12 +37,14 @@ export function createMeetingDeletionService({
         throw codedError('meeting_delete_active_not_allowed', 'Active meetings cannot be deleted.');
       }
 
-      for (const record of records) {
+    for (const record of records) {
         await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
         await sessionRepository.deleteSessionRecord(record.id);
-      }
+    }
 
-      const deletedMeeting = await meetingRepository.deleteMeeting(meetingId);
+    await deleteMeetingAudio?.(meetingId);
+
+    const deletedMeeting = await meetingRepository.deleteMeeting(meetingId);
       await revokeMeetingShares?.(meetingId);
 
       return {

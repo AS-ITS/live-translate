@@ -112,19 +112,27 @@ Attach a Render Persistent Disk mounted at `/var/data` when saved sessions,
 durable queue state, glossary data, or dead-letter queue files must survive
 restarts.
 
-## Cloud foundation (P0)
+## Cloud deployment (P3)
 
 The repository also contains the Issue #31 deployment foundation:
 
 - Vercel uses `npm run build` and the catch-all Node Function under `api/`.
-- `/healthz` and `/readyz` are available through the Function. Other cloud API
-  capabilities remain disabled until their Supabase adapters are delivered.
+- `/healthz`, `/readyz`, authenticated Meeting APIs, private Storage metadata,
+  and Viewer Realtime token exchange are available through the Function.
 - Local Supabase development uses `npm run db:start`, `npm run db:reset`, and
   `npm run db:lint`.
 - Development uses the local Supabase stack, preview uses an isolated Supabase
   branch, and production uses a separate Supabase project.
-- The P0 migration is intentionally an empty baseline. It does not create
-  application tables, RLS policies, or Storage buckets.
+- Apply all migrations through `20260910010000`. They create owner RLS, the
+  private `meeting-audio` bucket, Viewer Realtime authorization, and persisted
+  Cue broadcasts.
+
+Required cloud variables include `SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
+`SUPABASE_JWKS_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
+`AUTH_ALLOWED_EMAIL_DOMAINS`, `APP_ORIGIN`, and
+`SUPABASE_REALTIME_SIGNING_PRIVATE_JWK`. The Realtime key is a private JWK whose
+`kid` matches a Supabase JWT signing key; never expose it through a `VITE_`
+variable.
 
 ## Tests
 

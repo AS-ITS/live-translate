@@ -94,6 +94,7 @@ import {
 } from '../../lib/audio.js';
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from '../../app/routes.js';
 import { AudioArtifactDownloads } from '../history/AudioArtifactDownloads.jsx';
+import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時字幕。準備就緒後可以開始新的工作階段。';
 const RECONNECT_EXHAUSTED_MESSAGE = '即時字幕多次重新連線後仍未成功。準備就緒後可以開始新的工作階段。';
@@ -404,6 +405,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
 
   return (
     <section className="feature-page meeting-center-page meeting-management-page meetings-page" aria-labelledby="meeting-management-title">
+      <GeminiCredentialNotice />
       {viewMode === 'form' ? (
         <div className="meeting-management-back-row">
           <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>
@@ -727,7 +729,7 @@ export function MeetingExportSection({ detail, detailError = '', onRetry }) {
   return (
     <section className="meeting-record-section meeting-export-section" aria-label="匯出">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
-      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
+      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
       <section className="meeting-export-block" aria-label="字幕匯出"><h3>字幕匯出</h3><div className="meeting-export-controls"><label className="field"><span>字幕匯出格式</span><select value={meetingExportFormat} onChange={(event) => setMeetingExportFormat(event.target.value)}><option value="txt">TXT</option><option value="srt">SRT</option><option value="vtt">VTT</option></select></label><label className="field"><span>匯出內容</span><select value={meetingExportStream} onChange={(event) => setMeetingExportStream(event.target.value)}><option value="translation">翻譯</option><option value="source">原文</option><option value="both">兩者</option></select></label><button className="button primary" type="button" onClick={downloadMeetingTranscript} disabled={!canDownload}><Download size={16} aria-hidden="true" />下載字幕檔案</button></div><p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；舊紀錄沒有 Final Cue 時會使用逐字稿 fallback。</p>{unavailableReason ? <p className="export-note">{unavailableReason}</p> : null}{meetingExportError ? <p className="error-message" role="alert">{meetingExportError}</p> : null}</section>
     </section>
   );
@@ -853,6 +855,7 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
       <AudioArtifactDownloads
         title="整場語音紀錄下載"
         audioArtifacts={detail.audioArtifacts}
+        cloudAudioArtifacts={detail.cloudAudioArtifacts}
         inputLabel="下載整場原始語音"
         translationLabel="下載整場翻譯語音"
       />

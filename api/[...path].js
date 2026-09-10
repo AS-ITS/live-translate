@@ -1,8 +1,5 @@
-import { createCloudFoundationHandler } from '../server/cloudFoundation.js';
-
-const handler = createCloudFoundationHandler();
+import { handleRequest } from '../server/index.js';
 
 export default function vercelApiHandler(req, res) {
-  return handler(req, res);
+  return handleRequest(req, res);
 }
-

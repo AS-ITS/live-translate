@@ -125,10 +125,29 @@ status and does not change either the Meeting or global glossary. Confirmed
 rows are sent later as part of the existing Meeting create/update request's
 `privateGlossaryEntries` field.
 
-Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,
-and Meeting-level `cue.append` SSE events. The complete contract and delivery
-phases are documented in
+The Meeting-scoped Viewer API, private glossary fields, Storage upload, and
+Realtime contracts are documented in
 [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
+### P3 Storage and Realtime override
+
+The following cloud contract supersedes the older process-local SSE contract
+below. `POST /api/meetings/:meetingId/segments/:segmentId/cues` persists a Final
+Cue before a database trigger broadcasts `cue.append`. A Viewer exchanges its
+share through `POST /api/shared-meetings/:token/realtime-token` (or the
+short-code variant), subscribes to private `meeting:<meetingId>`, then merges a
+REST snapshot. The share-scoped JWT expires in at most five minutes. Cloud SSE
+returns `410 realtime_required`; it remains available only as a local fallback.
+
+Original Segment audio uses metadata-only HTTP endpoints:
+
+- `POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` returns the
+  private Storage TUS endpoint/path for `{ mimeType, byteSize }`.
+- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/complete` verifies
+  the object; `/fail` records a failed upload.
+- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/download-url`
+  performs ownership validation and returns a 60-second signed URL with
+  `Cache-Control: no-store`.
 
 The Meeting-level Viewer capability is delivered incrementally. Existing
 Session share and Meeting checkpoint routes remain the current implementation

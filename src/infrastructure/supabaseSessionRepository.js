@@ -5,13 +5,14 @@ import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 export function createSupabaseSessionRepository(options = {}) {
   const client = createSupabaseRestClient(options);
   if (!client) return null;
+  const idFactory = options.idFactory;
   const owner = () => currentRequestUserId() || failOwner();
   const repository = {
     // Startup runs outside an authenticated HTTP request. Persisted recovery
     // must not attempt to list owner-scoped records without request identity.
     requiresRequestIdentity: true,
     async createSessionRecord(input = {}) {
-      const record = createSessionRecordModel({ ...input, ownerUserId: owner() }, input);
+      const record = createSessionRecordModel({ ...input, ownerUserId: owner() }, { ...input, idFactory });
       await client.request('sessions', { method: 'POST', body: [sessionRow(record, owner())] });
       return clone(record);
     },

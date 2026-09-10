@@ -4,7 +4,7 @@ import {
 } from '../readModels/meetingReadModels.js';
 import { audioArtifactDownloadByteLength } from '../infrastructure/sessionAudioArtifacts.js';
 
-export function createMeetingReadQueryService({ meetingRepository, sessionRepository } = {}) {
+export function createMeetingReadQueryService({ meetingRepository, sessionRepository, meetingAudioService } = {}) {
   assertMeetingRepository(meetingRepository);
 
   return Object.freeze({
@@ -27,13 +27,38 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
         return null;
       }
 
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
+      const cloudAudioArtifacts = meetingAudioService
+        ? await listCloudAudioArtifacts(meetingAudioService, normalizedMeetingId)
+        : [];
+
       return mapMeetingToDetailDTO({
         meeting,
-        segments: await meetingRepository.listMeetingSegments(normalizedMeetingId),
-        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, await meetingRepository.listMeetingSegments(normalizedMeetingId))
+        segments,
+        audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, segments),
+        cloudAudioArtifacts: attachSegmentSequence(cloudAudioArtifacts, segments)
       });
     }
   });
+}
+
+async function listCloudAudioArtifacts(service, meetingId) {
+  try {
+    return await service.listMeetingArtifacts(meetingId);
+  } catch (error) {
+    // Anonymous shared Viewer requests intentionally have no owner identity;
+    // their DTO excludes audio metadata.
+    if (error?.code === 'auth_required') return [];
+    throw error;
+  }
+}
+
+function attachSegmentSequence(artifacts, segments) {
+  const sequenceById = new Map(segments.map((segment) => [segment.id, segment.sequence]));
+  return artifacts.map((artifact) => ({
+    ...artifact,
+    segmentSequence: sequenceById.get(artifact.segmentId) ?? null
+  }));
 }
 
 async function audioArtifactsForMeeting(sessionRepository, meetingId, segments = []) {

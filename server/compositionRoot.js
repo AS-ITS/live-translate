@@ -65,6 +65,10 @@ import { createSessionReadRepository } from '../src/repositories/sessionReadRepo
 import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
 import { createSupabaseMeetingRepository } from '../src/infrastructure/supabaseMeetingRepository.js';
 import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseSessionRepository.js';
+import { createSupabaseMeetingAudioService } from '../src/infrastructure/supabaseMeetingAudioService.js';
+import { createSupabaseMeetingShareService } from '../src/infrastructure/supabaseMeetingShareService.js';
+import { createSupabaseMeetingCueService } from '../src/infrastructure/supabaseMeetingCueService.js';
+import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
 import { createSessionReadController } from './sessionReadController.js';
@@ -161,6 +165,9 @@ export function createApplicationDependencies(options = {}) {
     liveTokenCreator,
     ...sessionReadOptions
   } = options;
+  const meetingAudioService = options.meetingAudioService;
+  const meetingCueService = options.meetingCueService;
+  const viewerRealtimeTokenService = options.viewerRealtimeTokenService;
   const resolvedTranslationExecutionMetrics = translationExecutionMetrics ?? createTranslationExecutionMetrics();
   const translationGlossary = glossaryController === undefined
     ? translationGlossaryFactory({
@@ -311,7 +318,8 @@ export function createApplicationDependencies(options = {}) {
   });
   const meetingReadQueryService = meetingReadQueryServiceFactory({
     meetingRepository: resolvedMeetingRepository,
-    sessionRepository: sessionReadDependencies.sessionRepository
+    sessionRepository: sessionReadDependencies.sessionRepository,
+    meetingAudioService
   });
   const meetingReadController = meetingReadControllerFactory({ meetingReadQueryService });
   const resolvedSessionAudioArtifactRepository = Object.prototype.hasOwnProperty.call(options, 'sessionAudioArtifactRepository')
@@ -325,6 +333,9 @@ export function createApplicationDependencies(options = {}) {
     meetingRepository: resolvedMeetingRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    deleteMeetingAudio: meetingAudioService
+      ? (meetingId) => meetingAudioService.deleteMeetingArtifacts(meetingId)
+      : undefined,
     revokeMeetingShares: sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function'
       ? (meetingId) => sessionShareService.revokeMeetingShares(meetingId)
       : undefined
@@ -343,6 +354,9 @@ export function createApplicationDependencies(options = {}) {
       meetingCheckpointService,
       meetingDeletionService,
       sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+      ...(meetingAudioService ? { meetingAudioService } : {}),
+      ...(meetingCueService ? { meetingCueService } : {}),
+      ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
       ...(resolvedSessionApplicationService !== undefined
@@ -375,6 +389,9 @@ export function createApplicationDependencies(options = {}) {
     meetingReadQueryService,
     meetingReadController,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    ...(meetingAudioService ? { meetingAudioService } : {}),
+    ...(meetingCueService ? { meetingCueService } : {}),
+    ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
@@ -450,6 +467,8 @@ export function createProductionApplicationDependencies(options = {}) {
   const needsProductionProviderComposition =
     !(hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider) ||
     !(hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver);
+  const hasGlobalGeminiApiKey = typeof env.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0;
+  const canCreateProductionProviderComposition = needsProductionProviderComposition && hasGlobalGeminiApiKey;
   const translationGlossary = translationGlossaryFactory({
     filePath: translationGlossaryFilePathFor(env),
     fileSystem: translationGlossaryFileSystem,
@@ -460,7 +479,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
     ? applicationOptions.sessionRepository
     : cloudDataMode
-      ? createSupabaseSessionRepository({ env })
+      ? createSupabaseSessionRepository({ env, idFactory: randomUUID })
       : fileSessionRepositoryFactory({
           filePath: sessionRecordsFilePathFor(env),
           fileSystem: sessionRepositoryFileSystem
@@ -475,24 +494,41 @@ export function createProductionApplicationDependencies(options = {}) {
         });
   const sessionShareService = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionShareService')
     ? applicationOptions.sessionShareService
-    : sessionShareServiceFactory({
-        filePath: sessionSharesFilePathFor(env),
-        fileSystem: sessionShareServiceFileSystem
-      });
+    : cloudDataMode
+      ? createSupabaseMeetingShareService({ env })
+      : sessionShareServiceFactory({
+      filePath: sessionSharesFilePathFor(env),
+      fileSystem: sessionShareServiceFileSystem
+    });
+  const meetingAudioService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingAudioService')
+    ? applicationOptions.meetingAudioService
+    : cloudDataMode
+      ? createSupabaseMeetingAudioService({ env })
+      : undefined;
+  const meetingCueService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingCueService')
+    ? applicationOptions.meetingCueService
+    : cloudDataMode
+      ? createSupabaseMeetingCueService({ env })
+      : undefined;
+  const viewerRealtimeTokenService = Object.prototype.hasOwnProperty.call(applicationOptions, 'viewerRealtimeTokenService')
+    ? applicationOptions.viewerRealtimeTokenService
+    : cloudDataMode
+      ? createViewerRealtimeTokenService({ env })
+      : undefined;
   const recorderLeaseService = Object.prototype.hasOwnProperty.call(applicationOptions, 'recorderLeaseService')
     ? applicationOptions.recorderLeaseService
     : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
-  const productionEnvironment = needsProductionProviderComposition
+  const productionEnvironment = canCreateProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
     : undefined;
-  const productionProviderConfiguration = needsProductionProviderComposition
+  const productionProviderConfiguration = canCreateProductionProviderComposition
     ? translationProviderConfigurationFactory({ environment: env })
     : undefined;
   const productionProviderResolutionComposition =
     hasSavedTranscriptTranslationProvider || hasResolveSavedTranscriptTranslationProvider
       ? undefined
-      : createProductionProviderResolutionComposition({
+      : canCreateProductionProviderComposition ? createProductionProviderResolutionComposition({
           env,
           environment: productionEnvironment,
           configuration: productionProviderConfiguration,
@@ -503,11 +539,11 @@ export function createProductionApplicationDependencies(options = {}) {
           translationProviderConfigurationFactory,
           translationProviderResolutionCompositionFactory,
           glossary: translationGlossary
-        });
+        }) : createUnavailableSavedTranscriptProviderResolution();
   const productionTranslationExecutionProviderResolutionComposition =
     hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
       ? undefined
-      : createProductionTranslationExecutionProviderResolutionComposition({
+      : canCreateProductionProviderComposition ? createProductionTranslationExecutionProviderResolutionComposition({
           env,
           environment: productionEnvironment,
           configuration: productionProviderConfiguration,
@@ -517,7 +553,7 @@ export function createProductionApplicationDependencies(options = {}) {
           geminiTranslationExecutionProviderFactory,
           translationProviderConfigurationFactory,
           glossary: translationGlossary
-        });
+        }) : { resolver: createUnavailableTranslationProviderResolver() };
   const resolvedTranslationExecutionProvider = hasTranslationExecutionProvider
     ? translationExecutionProvider
     : undefined;
@@ -589,9 +625,15 @@ export function createProductionApplicationDependencies(options = {}) {
     : undefined;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
+    ...(cloudDataMode && !Object.prototype.hasOwnProperty.call(applicationOptions, 'idGenerator')
+      ? { idGenerator: () => randomUUID() }
+      : {}),
     ...(sessionRepository !== undefined ? { sessionRepository } : {}),
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
     sessionShareService,
+    ...(meetingAudioService ? { meetingAudioService } : {}),
+    ...(meetingCueService ? { meetingCueService } : {}),
+    ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
@@ -612,7 +654,11 @@ export function createProductionApplicationDependencies(options = {}) {
     translationExecutionRetryErrorClassifier,
     translationExecutionMetrics,
     glossaryController,
-    liveTokenCreator: (body) => createLiveToken(body, { glossary: translationGlossary, meetingRepository }),
+    liveTokenCreator: (body, tokenOptions = {}) => createLiveToken(body, {
+      ...tokenOptions,
+      glossary: translationGlossary,
+      meetingRepository
+    }),
     ...resolvedProviderDependencies
   });
   const startupTranslationExecutionQueueRecovery =
@@ -1236,6 +1282,30 @@ function resolveSavedTranscriptProviderDependencies({
       });
     }
   };
+}
+
+function createUnavailableSavedTranscriptProviderResolution() {
+  return Object.freeze({
+    configuration: null,
+    resolve() {
+      throw cloudCredentialProviderError();
+    }
+  });
+}
+
+function createUnavailableTranslationProviderResolver() {
+  return Object.freeze({
+    resolve() {
+      throw cloudCredentialProviderError();
+    }
+  });
+}
+
+function cloudCredentialProviderError() {
+  const error = new Error('A user-scoped Gemini credential is required for this operation.');
+  error.code = 'gemini_credential_not_configured';
+  error.status = 409;
+  return error;
 }
 
 function createProductionTranslationExecutionProviderResolutionComposition({

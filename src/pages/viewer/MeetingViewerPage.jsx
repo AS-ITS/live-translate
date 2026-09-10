@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected } from '../../lib/meetingViewerState.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -51,6 +52,19 @@ export function MeetingViewerPage({ token, code }) {
       setDetail(merged);
       return merged;
     }
+    function applyCuePayload(payload) {
+      const receivedAt = Date.now();
+      const next = applyMeetingCueEvent(detailRef.current, payload);
+      detailRef.current = next;
+      setDetail(next);
+      requestAnimationFrame(() => {
+        const sample = viewerLatencySample({
+          ...payload,
+          timing: { ...(payload.timing || {}), publishedAt: payload.committedAt || payload.timing?.publishedAt, receivedAt }
+        }, { renderedAt: Date.now() });
+        if (sample) latencySamplesRef.current.push(sample);
+      });
+    }
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
       if (cancelled) return;
       eventSourceRef.current?.close();
@@ -60,18 +74,11 @@ export function MeetingViewerPage({ token, code }) {
       events.addEventListener('cue.append', (event) => {
         try {
           const payload = JSON.parse(event.data);
-          const receivedAt = Date.now();
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
             void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
             return;
           }
-          const next = applyMeetingCueEvent(detailRef.current, payload);
-          detailRef.current = next;
-          setDetail(next);
-          requestAnimationFrame(() => {
-            const sample = viewerLatencySample({ ...payload, timing: { ...(payload.timing || {}), receivedAt } }, { renderedAt: Date.now() });
-            if (sample) latencySamplesRef.current.push(sample);
-          });
+          applyCuePayload(payload);
         } catch {
           if (!cancelled) setError('無法讀取即時字幕。');
         }
@@ -83,11 +90,36 @@ export function MeetingViewerPage({ token, code }) {
         if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
       };
     }
-    void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-      if (!cancelled) setError(value.message);
-    });
+    let realtimeController = null;
+    if (meetingViewerRealtimeEnabled()) {
+      let snapshotReady = false;
+      let bufferedEvents = [];
+      realtimeController = createMeetingViewerRealtimeController({
+        basePath,
+        onConnecting: () => { snapshotReady = false; },
+        onEvent: (payload) => {
+          if (!snapshotReady) bufferedEvents.push(payload);
+          else applyCuePayload(payload);
+        },
+        onSubscribed: async () => {
+          await fetchSnapshot();
+          snapshotReady = true;
+          const pending = bufferedEvents;
+          bufferedEvents = [];
+          pending.forEach(applyCuePayload);
+          if (!cancelled) setError('');
+        },
+        onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
+      });
+      realtimeController.start();
+    } else {
+      void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
+        if (!cancelled) setError(value.message);
+      });
+    }
     return () => {
       cancelled = true;
+      void realtimeController?.stop();
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };

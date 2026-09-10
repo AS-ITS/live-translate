@@ -35,7 +35,7 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
   };
 }
 
-export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts = {} } = {}) {
+export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts = {}, cloudAudioArtifacts = [] } = {}) {
   const normalizedSegments = sortedSegments(segments);
   const transcriptItems = transcriptItemsFromSegments({ meeting, segments: normalizedSegments });
   const cues = finalCuesFromSegments(normalizedSegments);
@@ -60,9 +60,29 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
     transcriptItems,
     cues,
     audioArtifacts: sanitizeAudioArtifactsForDTO(audioArtifacts, { meetingId: meeting?.id }),
+    cloudAudioArtifacts: sanitizeCloudAudioArtifacts(cloudAudioArtifacts),
     readingContent: buildReadingContent(transcriptItems),
     recordKind: 'meeting'
   };
+}
+
+function sanitizeCloudAudioArtifacts(artifacts) {
+  if (!Array.isArray(artifacts)) return [];
+  return artifacts
+    .filter((artifact) => artifact?.status === 'ready' && artifact?.id && artifact?.meetingId)
+    .map((artifact) => ({
+      id: artifact.id,
+      meetingId: artifact.meetingId,
+      segmentId: artifact.segmentId ?? null,
+      segmentSequence: Number.isInteger(artifact.segmentSequence) ? artifact.segmentSequence : null,
+      kind: artifact.kind,
+      status: artifact.status,
+      fileName: artifact.fileName || 'recording.webm',
+      byteSize: Number.isFinite(artifact.byteSize) ? artifact.byteSize : 0,
+      mimeType: artifact.mimeType || 'audio/webm',
+      createdAt: artifact.createdAt ?? null
+    }))
+    .sort((left, right) => (left.segmentSequence ?? Number.MAX_SAFE_INTEGER) - (right.segmentSequence ?? Number.MAX_SAFE_INTEGER));
 }
 
 function finalCuesFromSegments(segments = []) {

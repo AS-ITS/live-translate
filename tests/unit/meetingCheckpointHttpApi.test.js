@@ -138,6 +138,58 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   }
 });
 
+test('meeting audio upload endpoints delegate metadata only and issue signed downloads', async () => {
+  const calls = [];
+  const meetingAudioService = {
+    async beginUpload(input) {
+      calls.push(['begin', input]);
+      return { id: 'artifact-1', status: 'uploading', bucket: 'meeting-audio', objectPath: 'user/meeting/segment/recording.webm', uploadEndpoint: 'https://storage.example/upload/resumable' };
+    },
+    async completeUpload(input) { calls.push(['complete', input]); return { id: input.artifactId, status: 'ready' }; },
+    async createDownloadUrl(input) { calls.push(['download', input]); return { url: 'https://storage.example/signed', expiresAt: 61_000, fileName: 'recording.webm' }; }
+  };
+  const handler = createHandler({ meetingAudioService });
+
+  const started = await request(handler, {
+    method: 'POST',
+    url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads',
+    body: JSON.stringify({ mimeType: 'audio/webm', byteSize: 4096 })
+  });
+  const completed = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete' });
+  const download = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/download-url' });
+
+  assert.equal(started.status, 201, started.body);
+  assert.equal(completed.status, 200, completed.body);
+  assert.equal(download.status, 200, download.body);
+  assert.deepEqual(calls, [
+    ['begin', { meetingId: 'meeting-1', segmentId: 'segment-1', mimeType: 'audio/webm', byteSize: 4096 }],
+    ['complete', { meetingId: 'meeting-1', artifactId: 'artifact-1' }],
+    ['download', { meetingId: 'meeting-1', artifactId: 'artifact-1', expiresIn: 60 }]
+  ]);
+});
+
+test('Meeting Viewer exchanges an active viewer share for scoped Realtime authorization', async () => {
+  const shareService = createSessionShareService();
+  const viewerRealtimeTokenService = {
+    async issue(share) {
+      return { accessToken: `jwt:${share.id}`, expiresAt: 301_000, channel: `meeting:${share.meetingId}` };
+    }
+  };
+  const handler = createHandler({ sessionShareService: shareService, viewerRealtimeTokenService });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const share = (await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  })).json().share;
+
+  const response = await request(handler, { method: 'POST', url: `/api/shared-meetings/${share.token}/realtime-token` });
+
+  assert.equal(response.status, 200, response.body);
+  assert.equal(response.json().channel, `meeting:${created.meeting.id}`);
+  assert.equal(response.json().accessToken, `jwt:${share.id}`);
+});
+
 test('Meeting share management list rebuilds a stable code URL after the share service is reloaded', async () => {
   const directory = await (await import('node:fs/promises')).mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(), 'live-translate-meeting-share-list-'));
   const fileSystem = await import('node:fs/promises');
@@ -645,7 +697,7 @@ test('completes an interrupted meeting through the HTTP API', async () => {
   assert.equal(response.json().meeting.status, 'completed');
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService } = {}) {
   const repository = createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -670,6 +722,8 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     meetingCheckpointService,
     ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
+    ...(meetingAudioService ? { meetingAudioService } : {}),
+    ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
   });
 }

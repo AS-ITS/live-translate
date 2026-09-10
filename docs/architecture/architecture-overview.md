@@ -89,7 +89,7 @@ Session-first implementation now creates a persisted `created` Session before
 opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
 `sessionId` and `segmentId`, and exposes a read-only Viewer path through opaque
 share tokens and per-Session SSE events. The current broadcaster is
-process-local; multi-process event distribution remains later work. Share token
+process-local; production Meeting Viewer delivery uses Supabase Realtime. Share token
 records are file-backed and survive backend restart.
 
 Meeting-first recorder sharing creates a configurable Meeting draft and its
@@ -178,8 +178,9 @@ checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
 cursor merge; it does not change the direct browser-to-Gemini path or Recorder
 authorization model. Milestone 5 implements this path with an independent Cue
 publish endpoint, bounded in-memory replay, SSE gap recovery, and deterministic
-Viewer latency validation. Cross-process delivery and durable replay remain
-deferred.
+Viewer latency validation. Those SSE/replay details remain only for local
+fallback; cloud delivery and durable replay are provided by Supabase Realtime
+and persisted Final Cues.
 
 ## 3. Runtime Architecture
 
@@ -980,6 +981,15 @@ contracts.
 
 Current state:
 
+- Supabase cloud mode stores owner-scoped Meetings, Segments, Sessions, Final
+  Cues, shares, and audio metadata under RLS.
+- Original Segment audio is WebM/Opus uploaded by browser TUS directly to the
+  private `meeting-audio` bucket; Vercel handles metadata and signed URLs only.
+- Final Cue writes trigger private Supabase Realtime broadcasts, so production
+  does not require process-local Meeting event state.
+- Local Node development retains file-backed repositories, segmented WAV
+  artifacts, and SSE for compatibility.
+
 - Backend server runtime uses a JSON file-backed SessionRepository by default at
   `session-records.json` under `DATA_DIR`.
 - `SESSION_RECORDS_FILE` overrides the default file path when configured.
@@ -987,7 +997,7 @@ Current state:
   translation command state across page refresh and server restart.
 - No `localStorage`.
 - No `IndexedDB`.
-- No database-backed persistence.
+- Cloud persistence is database-backed; file-backed adapters are local fallback.
 
 The file-backed adapter is intended for the current single-node internal-tool
 scope. It is not a multi-process locking or production database substitute.

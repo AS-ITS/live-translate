@@ -2,10 +2,10 @@
 
 ## Status
 
-Milestone 5 is implemented: Meeting Viewer now receives process-local Final Cue
-events through SSE, recovers snapshot gaps on reconnect, merges duplicate and
-refined Cues deterministically, and has local deterministic latency SLA
-validation. Cross-process event delivery and durable replay remain deferred.
+Issue #31 P3 is implemented for cloud deployments: original Segment audio
+uploads directly from the browser to private Supabase Storage, and Meeting
+Viewer receives database-persisted Final Cues through private Supabase
+Realtime. Local development without Supabase keeps the WAV and SSE fallback.
 
 Milestone 4 is implemented: Meeting Viewer shares now support Meeting-scoped
 viewer links, short codes, QR entry, sanitized historical Cue snapshots, and a
@@ -44,8 +44,8 @@ lease model, or security model.
 ## Non-Goals
 
 - Login, OAuth, RBAC, or multi-user identity.
-- Database migration or a new storage engine.
-- Cross-process event brokers or durable event replay.
+- WebM-to-MP3 transcoding or translated-audio artifact generation.
+- Replay of transient partial Cues; only persisted Final Cues are broadcast.
 - Proxying audio or changing the Gemini Live integration.
 - A new automatic reconnect policy for Recorder sessions.
 - Deleting existing re-translation data or historical outputs.
@@ -169,9 +169,16 @@ Anonymous Viewer API contract:
 
 - `GET /api/shared-meetings/:token` returns the sanitized Meeting snapshot.
 - `GET /api/shared-meetings/code/:shortCode` resolves a short code.
-- `GET /api/shared-meetings/:token/events` opens the Meeting SSE stream.
-- `GET /api/shared-meetings/code/:shortCode/events` opens the short-code SSE
-  stream.
+- `POST /api/shared-meetings/:token/realtime-token` returns a five-minute
+  Viewer JWT and private `meeting:<meetingId>` channel.
+- `POST /api/shared-meetings/code/:shortCode/realtime-token` provides the same
+  exchange for a short code.
+
+Cloud audio uses metadata-only HTTP endpoints. The browser uploads WebM/Opus
+with TUS directly to
+`meeting-audio/<owner>/<meeting>/<segment>/recording.webm`. Completion verifies
+the stored object; download requests perform ownership validation and return a
+60-second signed URL. Audio bytes never cross the Vercel Function.
 
 Viewer detail contains the Meeting summary, ordered Segment metadata, and all
 final bilingual Cues. It excludes API keys, ephemeral tokens, audio artifacts,
@@ -182,17 +189,17 @@ Live Session, claims a Recorder lease, or writes a Session/checkpoint.
 
 ## Cue Broadcast Contract
 
-Final Cue delivery is intentionally separate from persistence:
+In cloud mode, persistence is the broadcast boundary:
 
 ```text
 final bilingual Cue
-  -> normalize and finalize in Recorder path
-  -> publish Meeting cue event immediately
-  -> update Viewer
-  -> persist checkpoint/transcript/audio independently
+  -> validate Meeting/Segment/Session relationship
+  -> upsert subtitle_cues
+  -> database trigger broadcasts cue.append on a private Realtime channel
+  -> Viewer merges by cueId/version
 ```
 
-The process-local Meeting broadcaster publishes an event shaped like:
+The database trigger publishes an event shaped like:
 
 ```js
 {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { AlertCircle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, CircleDashed, Copy, Download, LoaderCircle, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
+import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
 import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
@@ -452,6 +453,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   return (
     <section className="feature-page meeting-settings-page" aria-labelledby="meeting-settings-title">
+      <GeminiCredentialNotice />
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {notice ? <p className="success-message" role="status">{notice}</p> : null}
       <div className="meeting-settings-layout meeting-management-grid">

@@ -42,9 +42,9 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = IS_PRODUCTION
-  ? 'http://127.0.0.1:8000'
-  : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173');
+const RESOLVED_ORIGIN = process.env.APP_ORIGIN
+  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+  || (IS_PRODUCTION ? 'http://127.0.0.1:8000' : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173'));
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -76,6 +76,10 @@ const ERROR_RESPONSES = {
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
   session_not_found: { status: 404, message: 'Session not found.' },
+  audio_artifact_not_found: { status: 404, message: 'Audio artifact not found.' },
+  audio_artifact_not_ready: { status: 409, message: 'Audio artifact is not ready.' },
+  audio_mime_type_unsupported: { status: 400, message: 'Audio MIME type is not supported.' },
+  realtime_required: { status: 410, message: 'Supabase Realtime is required for this Viewer.' },
   meeting_delete_active_not_allowed: { status: 409, message: 'Active meetings cannot be deleted.' },
   recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
   recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
@@ -262,7 +266,7 @@ function isAllowedOrigin(req) {
 }
 
 function isProfileOnlyMode() {
-  return process.env.P1_PROFILE_ONLY === 'true' || Boolean(process.env.SUPABASE_JWKS_URL);
+  return process.env.P1_PROFILE_ONLY === 'true';
 }
 
 const globalAccessControl = createAccessControl();
@@ -555,6 +559,9 @@ export function createRequestHandler(options = {}) {
     meetingCheckpointService,
     meetingDeletionService,
     sessionAudioArtifactRepository,
+    meetingAudioService,
+    meetingCueService,
+    viewerRealtimeTokenService,
     sessionApplicationService,
     translationProviderOptionsController,
     glossaryController,
@@ -599,6 +606,9 @@ export function createRequestHandler(options = {}) {
       meetingCheckpointService,
       meetingDeletionService,
       sessionAudioArtifactRepository,
+      meetingAudioService,
+      meetingCueService,
+      viewerRealtimeTokenService,
       ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
       glossaryController,
@@ -630,7 +640,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository() } = {}
+    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository() } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1176,6 +1186,47 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && isMeetingAudioUploadStartPath(path)) {
+    try {
+      if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
+      const { meetingId, segmentId } = parseMeetingAudioUploadStartPath(path);
+      const body = await readJson(req, { maxBytes: DEFAULT_JSON_REQUEST_MAX_BYTES });
+      statusCode = 201;
+      sendJson(res, statusCode, await meetingAudioService.beginUpload({
+        meetingId,
+        segmentId,
+        mimeType: body?.mimeType,
+        byteSize: body?.byteSize
+      }), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingAudioArtifactActionPath(path)) {
+    try {
+      if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
+      const { meetingId, artifactId, action } = parseMeetingAudioArtifactActionPath(path);
+      let result;
+      if (action === 'complete') result = await meetingAudioService.completeUpload({ meetingId, artifactId });
+      else if (action === 'fail') result = await meetingAudioService.failUpload({ meetingId, artifactId });
+      else {
+        result = await meetingAudioService.createDownloadUrl({ meetingId, artifactId, expiresIn: 60 });
+        res.setHeader?.('Cache-Control', 'no-store');
+      }
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingAudioPath(path)) {
     try {
       const { meetingId, kind } = parseMeetingAudioPath(path);
@@ -1231,6 +1282,7 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
     const meeting = await meetingReadController?.getMeeting(share.meetingId);
     if (!meeting) {
       sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
@@ -1238,7 +1290,7 @@ async function handleRequestWithSessionReadController(
     }
     const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
     if (share.role === 'viewer') {
-      const cursor = meetingEventBroadcaster.cursor(share.meetingId);
+      const cursor = meetingEventBroadcaster?.cursor(share.meetingId) || { eventId: 0, cueSequence: 0 };
       payload.cursor = {
         eventId: cursor.eventId,
         cueSequence: Math.max(cursor.cueSequence, ...((payload.cues || []).map((cue) => Number(cue.sequence) || 0)))
@@ -1250,7 +1302,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
     try {
-      if (!meetingEventBroadcaster || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
+      if ((!meetingEventBroadcaster && !meetingCueService) || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
       const body = await readJson(req, { maxBytes: 100_000 });
       const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
@@ -1270,6 +1322,12 @@ async function handleRequestWithSessionReadController(
         });
       }
       const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
+      if (meetingCueService) {
+        await meetingCueService.persist({ meetingId, segmentId, sessionId, cue });
+        statusCode = 202;
+        sendJson(res, statusCode, { transport: 'supabase', cueSequence: cue.sequence }, requestId);
+        return;
+      }
       const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
       statusCode = 202;
       sendJson(res, statusCode, { eventId: event.eventId, cueSequence: event.cue.sequence }, requestId);
@@ -1281,7 +1339,28 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && isSharedMeetingRealtimeTokenPath(path)) {
+    try {
+      if (!viewerRealtimeTokenService) throw createHttpError('cloud_capability_unavailable');
+      enforceRateLimit(clientIp);
+      const share = await resolveSharedMeeting(path, sessionShareService);
+      if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      statusCode = 200;
+      res.setHeader?.('Cache-Control', 'no-store');
+      sendJson(res, statusCode, await viewerRealtimeTokenService.issue(share), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isSharedMeetingEventsPath(path)) {
+    if (viewerRealtimeTokenService) {
+      sendJson(res, 410, errorPayload('realtime_required', requestId), requestId);
+      return;
+    }
     const share = await resolveSharedMeeting(path, sessionShareService);
     if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
@@ -2026,7 +2105,7 @@ function isPublicApiPath(method, path) {
     isSharedSessionEventsPath(path) ||
     isSharedMeetingDetailPath(path) ||
     isSharedMeetingEventsPath(path)
-  )) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
+  )) || (method === 'POST' && isSharedMeetingRealtimeTokenPath(path)) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
 function isRecorderAuthorizedPath(method, path, req) {
@@ -2144,6 +2223,30 @@ function parseSessionAudioSegmentPath(path) {
 
 function isMeetingAudioPath(path) {
   return path.startsWith('/api/meetings/') && path.includes('/audio/') && path.length > '/api/meetings//audio/'.length;
+}
+
+function isMeetingAudioUploadStartPath(path) {
+  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/u.test(path);
+}
+
+function parseMeetingAudioUploadStartPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/audio-uploads$/u);
+  if (!match) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(match[1]), segmentId: safeDecodePathComponent(match[2]) };
+}
+
+function isMeetingAudioArtifactActionPath(path) {
+  return /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail|download-url)$/u.test(path);
+}
+
+function parseMeetingAudioArtifactActionPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/([^/]+)\/(complete|fail|download-url)$/u);
+  if (!match) throw createHttpError('invalid_request');
+  return {
+    meetingId: safeDecodePathComponent(match[1]),
+    artifactId: safeDecodePathComponent(match[2]),
+    action: match[3]
+  };
 }
 
 function parseMeetingAudioPath(path) {
@@ -2905,12 +3008,17 @@ function isSharedSessionEventsPath(path) {
 
 function isSharedMeetingDetailPath(path) {
   return path.startsWith('/api/shared-meetings/') && !path.endsWith('/start') &&
-    !path.endsWith('/events') &&
+    !path.endsWith('/events') && !path.endsWith('/realtime-token') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
 }
 
 function isSharedMeetingEventsPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
+}
+
+function isSharedMeetingRealtimeTokenPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/realtime-token') &&
     (path.split('/').length === 5 || path.split('/').length === 6);
 }
 
@@ -2937,7 +3045,7 @@ async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events)$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }

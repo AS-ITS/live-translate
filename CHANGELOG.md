@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- 登入頁右側產品展示區改用中亮板岩藍，字幕預覽卡保留深板岩藍層次，降低整體視覺重量。
+
+- 登入頁 Panjaya 雙欄版型改用板岩藍配色，維持既有 Google OAuth 與其他產品頁面的藍綠色系。
+
+- 登入頁改為 Panjaya 雙欄版型：保留 Workspace Google OAuth，新增即時雙語字幕產品預覽、官方 Google 登入按鈕樣式與手機版響應式布局。
+
 - Issue #31 P3：瀏覽器以 TUS 將每段原始 WebM/Opus 直接上傳 private Supabase Storage，後端只處理 owner-scoped metadata、完成驗證與 60 秒下載 URL，避開 Vercel request body 限制；Meeting 刪除同步清理 Storage artifacts。
 - Issue #31 P3：Final Cue 先寫入 `subtitle_cues`，再由資料庫 trigger 發送 private Supabase Realtime `cue.append`；Viewer 使用五分鐘 share-scoped JWT、subscribe-first snapshot merge 與自動重連，production 不再依賴 process-local Meeting SSE 狀態。
 - Issue #31 P2 first milestone「安全可開會」：新增 Supabase Vault 個人 Gemini API Key 設定與 owner-scoped cloud repositories；`/api/live-token` 依登入者解密個人 Key，完整 Key 不回傳、不寫入 log。

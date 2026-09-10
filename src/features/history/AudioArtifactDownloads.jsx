@@ -17,6 +17,8 @@ export function AudioArtifactDownloads({
   const hasInputAudio = Boolean(inputArtifact?.downloadUrl);
   const hasTranslationAudio = Boolean(translationArtifact?.downloadUrl);
   const readyCloudArtifacts = cloudAudioArtifacts.filter((artifact) => artifact?.status === 'ready');
+  const pendingMp3Artifacts = cloudAudioArtifacts.filter((artifact) => ['queued', 'processing'].includes(artifact?.status));
+  const failedMp3Artifacts = cloudAudioArtifacts.filter((artifact) => artifact?.kind === 'mp3' && artifact?.status === 'failed');
 
   async function downloadCloudArtifact(artifact) {
     setCloudDownloadError('');
@@ -35,6 +37,17 @@ export function AudioArtifactDownloads({
     }
   }
 
+  async function retryMp3(artifact) {
+    setCloudDownloadError('');
+    try {
+      const response = await fetch(`/api/meetings/${encodeURIComponent(artifact.meetingId)}/audio-artifacts/${encodeURIComponent(artifact.id)}/retry`, { method: 'POST' });
+      if (!response.ok) throw new Error('retry failed');
+      window.location.reload();
+    } catch {
+      setCloudDownloadError('無法重新產生 MP3，請稍後重試。');
+    }
+  }
+
   return (
     <section className="saved-export-panel audio-artifact-downloads" aria-label={title}>
       {title ? <h4>{title}</h4> : null}
@@ -45,6 +58,8 @@ export function AudioArtifactDownloads({
             {cloudDownloadId === artifact.id ? '準備下載…' : `下載第 ${artifact.segmentSequence ?? '?'} 段原始語音`}
           </button>
         ))}
+        {pendingMp3Artifacts.map((artifact) => <span className="button detail-button disabled-link" aria-disabled="true" key={`${artifact.id}-pending`}>MP3 產生中…</span>)}
+        {failedMp3Artifacts.map((artifact) => <button className="button detail-button" type="button" key={`${artifact.id}-retry`} onClick={() => retryMp3(artifact)}>MP3 產生失敗，重試</button>)}
         {hideUnavailableLinks ? (
           hasInputAudio ? <a className="button detail-button" href={inputArtifact.downloadUrl} download={inputArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{inputLabel}</a> : null
         ) : (

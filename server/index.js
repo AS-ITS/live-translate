@@ -1213,6 +1213,7 @@ async function handleRequestWithSessionReadController(
       let result;
       if (action === 'complete') result = await meetingAudioService.completeUpload({ meetingId, artifactId });
       else if (action === 'fail') result = await meetingAudioService.failUpload({ meetingId, artifactId });
+      else if (action === 'retry') result = await meetingAudioService.retryArtifact({ meetingId, artifactId });
       else {
         result = await meetingAudioService.createDownloadUrl({ meetingId, artifactId, expiresIn: 60 });
         res.setHeader?.('Cache-Control', 'no-store');
@@ -2236,11 +2237,11 @@ function parseMeetingAudioUploadStartPath(path) {
 }
 
 function isMeetingAudioArtifactActionPath(path) {
-  return /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail|download-url)$/u.test(path);
+  return /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail|retry|download-url)$/u.test(path);
 }
 
 function parseMeetingAudioArtifactActionPath(path) {
-  const match = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/([^/]+)\/(complete|fail|download-url)$/u);
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/([^/]+)\/(complete|fail|retry|download-url)$/u);
   if (!match) throw createHttpError('invalid_request');
   return {
     meetingId: safeDecodePathComponent(match[1]),

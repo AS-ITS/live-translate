@@ -4,6 +4,7 @@ import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export const MEETING_AUDIO_BUCKET = 'meeting-audio';
 export const MEETING_AUDIO_KIND = 'source_webm';
+export const MP3_AUDIO_KIND = 'mp3';
 export const MEETING_AUDIO_MAX_BYTES = 64 * 1024 * 1024;
 export const MEETING_AUDIO_MIME_TYPES = Object.freeze([
   'audio/webm',
@@ -105,6 +106,20 @@ export function createSupabaseMeetingAudioService({
       return artifactDTO(rows[0] || { ...artifact, status: 'failed' });
     },
 
+    async retryArtifact({ meetingId, artifactId }) {
+      const ownerUserId = owner();
+      const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
+      if (artifact.kind !== MP3_AUDIO_KIND || artifact.status !== 'failed') {
+        throw audioError('audio_artifact_not_retryable', 409);
+      }
+      const rows = await client.request('audio_artifacts', {
+        method: 'PATCH',
+        query: `?${eq('id', artifact.id)}&${eq('meeting_id', meetingId)}&${eq('owner_user_id', ownerUserId)}`,
+        body: { status: 'queued', error_code: null, updated_at: new Date(clock()).toISOString() }
+      });
+      return artifactDTO(rows[0] || { ...artifact, status: 'queued', error_code: null });
+    },
+
     async createDownloadUrl({ meetingId, artifactId, expiresIn = 60 }) {
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
@@ -204,7 +219,9 @@ function artifactDTO(row) {
     byteSize: Number(row.byte_size) || 0,
     mimeType: row.mime_type,
     createdAt: row.created_at,
-    updatedAt: row.updated_at
+    updatedAt: row.updated_at,
+    ...(Object.hasOwn(row, 'attempt') ? { attempt: Number(row.attempt) || 0 } : {}),
+    ...(Object.hasOwn(row, 'error_code') ? { errorCode: row.error_code || null } : {})
   };
 }
 

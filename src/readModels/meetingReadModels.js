@@ -69,7 +69,7 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
 function sanitizeCloudAudioArtifacts(artifacts) {
   if (!Array.isArray(artifacts)) return [];
   return artifacts
-    .filter((artifact) => artifact?.status === 'ready' && artifact?.id && artifact?.meetingId)
+    .filter((artifact) => ['queued', 'processing', 'ready', 'failed'].includes(artifact?.status) && artifact?.id && artifact?.meetingId)
     .map((artifact) => ({
       id: artifact.id,
       meetingId: artifact.meetingId,
@@ -77,6 +77,8 @@ function sanitizeCloudAudioArtifacts(artifacts) {
       segmentSequence: Number.isInteger(artifact.segmentSequence) ? artifact.segmentSequence : null,
       kind: artifact.kind,
       status: artifact.status,
+      ...(Object.hasOwn(artifact, 'attempt') ? { attempt: Number.isInteger(artifact.attempt) ? artifact.attempt : 0 } : {}),
+      ...(Object.hasOwn(artifact, 'errorCode') ? { errorCode: artifact.errorCode || null } : {}),
       fileName: artifact.fileName || 'recording.webm',
       byteSize: Number.isFinite(artifact.byteSize) ? artifact.byteSize : 0,
       mimeType: artifact.mimeType || 'audio/webm',

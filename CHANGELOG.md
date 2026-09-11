@@ -2,6 +2,12 @@
 
 ## 2026-09-11
 
+- Added a P0 GitHub Actions validation gate for syntax, frontend builds,
+  security/cloud boundaries, durable worker behavior, Viewer realtime, and
+  Supabase migration linting.
+- Corrected the documented browser Supabase key name and expanded the runtime
+  environment template and Production smoke-test instructions.
+
 - Default local runtime Meeting and Segment IDs now use UUIDs, aligning file-backed development records with the Supabase checkpoint contract.
 - Restored the access-control integration test and documented the local/cloud runtime capability boundary and deployment smoke checks.
 

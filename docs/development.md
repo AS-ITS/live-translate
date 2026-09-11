@@ -23,7 +23,9 @@ Backend environment variables:
 - `SUPABASE_JWKS_URL`: Supabase public JWKS endpoint used to verify access tokens.
 - `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
 - `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`: browser-safe values.
-- `P1_PROFILE_ONLY=true`: keeps non-Profile cloud capabilities fail-closed.
+- `P1_PROFILE_ONLY=true`: optional compatibility switch that keeps non-Profile
+  cloud capabilities fail-closed. Leave unset for the current owner-scoped
+  cloud runtime.
 - Supabase P2 mode stores each user's Gemini API Key in Vault; apply the Vault migration before enabling personal-key token issuance.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
@@ -88,7 +90,12 @@ are implemented. Supabase access tokens are required for all authenticated flows
 
 ## P2 Cloud Data Mode
 
-When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are configured, new Meeting, Segment, Session, and finalized Cue writes use owner-scoped Supabase repositories. Existing file-backed records are not migrated automatically. Apply `supabase/migrations/20260909000000_secure_gemini_credentials.sql` before using personal Gemini credentials.
+When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are
+configured, new Meeting, Segment, Session, finalized Cue, glossary, queue, DLQ,
+lease, and execution-status writes use owner-scoped Supabase repositories.
+Existing file-backed records are not migrated automatically. Apply all
+migrations through `20260911020000_execution_realtime.sql` before production
+traffic, then verify `/readyz`.
 
 ## Local Development Setup
 
@@ -225,3 +232,18 @@ Frontend testing scope for MVP:
 | Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
 
 For a deployment smoke check, verify `/healthz`, `/readyz`, an unauthenticated private API rejection, a valid owner-scoped API request, and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
+## Production Gemini Smoke Test
+
+For the first Production Gemini smoke test, keep the request short and avoid
+the default long-meeting soak:
+
+```bash
+LIVE_SMOKE_DURATION_MS=60000 \
+LIVE_SMOKE_SPEECH_INTERVAL_MS=10000 \
+LIVE_SMOKE_REQUIRE_RECONNECT=false \
+npm run test:live-smoke
+```
+
+Run this once only after confirming the Production `GEMINI_API_KEY` is
+available to the smoke runner. Do not place that key in browser-exposed
+`VITE_` variables or commit it.

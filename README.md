@@ -131,7 +131,7 @@ The repository also contains the Issue #31 deployment foundation:
   Cue broadcasts.
 
 Required cloud variables include `SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
-`SUPABASE_JWKS_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`,
+`SUPABASE_JWKS_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`,
 `AUTH_ALLOWED_EMAIL_DOMAINS`, `APP_ORIGIN`, and
 `SUPABASE_REALTIME_SIGNING_PRIVATE_JWK`. The Realtime key is a private JWK whose
 `kid` matches a Supabase JWT signing key; never expose it through a `VITE_`

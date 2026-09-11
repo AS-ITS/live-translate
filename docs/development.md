@@ -94,7 +94,7 @@ When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are
 configured, new Meeting, Segment, Session, finalized Cue, glossary, queue, DLQ,
 lease, and execution-status writes use owner-scoped Supabase repositories.
 Existing file-backed records are not migrated automatically. Apply all
-migrations through `20260911020000_execution_realtime.sql` before production
+migrations through `20260912000000_atomic_translation_queue_operations.sql` before production
 traffic, then verify `/readyz`.
 
 ## Local Development Setup

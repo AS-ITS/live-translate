@@ -354,7 +354,9 @@ host. Queue writes use a process-unique temporary file followed by an atomic
 rename. Lock acquisition has a bounded wait and stale-lock recovery. Queue
 operations retain their existing lease and fence checks, so a process that
 loses ownership cannot acknowledge, retry, renew, or transfer an item. This
-provides single-host multi-process atomicity, not cross-host coordination or
+provides single-host multi-process atomicity, and the Supabase queue adapter
+uses database RPC claim/fence transitions for cross-instance worker ownership,
+but it does not yet provide cross-host event coordination or
 exactly-once provider delivery. Cross-storage queue/DLQ transfer remains
 recoverable rather than transactional.
 
@@ -375,7 +377,7 @@ Current limitations:
 - Failed reconciliation is limited to failed executions with no output; a
   failed execution that has output remains durable for manual investigation.
 - Locking is limited to file-backed repositories on one host.
-- These safeguards do not provide cross-host exactly-once delivery.
+- These safeguards do not provide cross-host exactly-once event delivery.
 - Provider external idempotency keys and event-publishing deduplication remain
   out of scope.
 

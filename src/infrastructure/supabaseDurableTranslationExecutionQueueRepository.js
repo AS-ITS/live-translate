@@ -23,13 +23,46 @@ export function createSupabaseDurableTranslationExecutionQueueRepository({ env =
     async clear() { await client.request('translation_queue_items', { method: 'DELETE', query: `?${eq('owner_user_id', owner())}` }); },
     async updateStatus(id, status) { const result = await client.request('translation_queue_items', { method: 'PATCH', query: query(id), body: { status } }); return toItem(result[0]); },
     async acknowledge(id) { await client.request('translation_queue_items', { method: 'DELETE', query: query(id) }); },
-    async acknowledgeClaim(id, claim) { return this.acknowledge(id, claim); },
+    async acknowledgeClaim(id, claim) {
+      const result = await client.rpc('translation_queue_acknowledge_claim', {
+        p_execution_id: id,
+        p_owner_user_id: owner(),
+        p_lease_id: claim.leaseId,
+        p_fence_token: claim.fenceToken
+      });
+      return toItem(result[0]);
+    },
     async contains(id) { return Boolean((await client.request('translation_queue_items', { query: `${query(id)}&select=execution_id` }))[0]); },
-    async claim(id, lease) { const result = await client.request('translation_queue_items', { method: 'PATCH', query: query(id), body: { status: 'processing', lease_id: lease.leaseId, lease_expires_at: lease.leaseExpiresAt, fence_token: lease.fenceToken || 0 } }); return toItem(result[0]); },
+    async claim(id, lease) {
+      const result = await client.rpc('translation_queue_claim', {
+        p_execution_id: id,
+        p_owner_user_id: owner(),
+        p_lease_id: lease.leaseId,
+        p_lease_expires_at: lease.leaseExpiresAt
+      });
+      return toItem(result[0]);
+    },
     async retryClaim(id, retry) { return this.updateStatus(id, 'queued', retry); },
-    async renewClaim(id, claim, lease) { return this.claim(id, { ...lease, fenceToken: claim.fenceToken }); },
+    async renewClaim(id, claim, lease) {
+      const result = await client.rpc('translation_queue_renew_claim', {
+        p_execution_id: id,
+        p_owner_user_id: owner(),
+        p_lease_id: claim.leaseId,
+        p_fence_token: claim.fenceToken,
+        p_lease_expires_at: lease.leaseExpiresAt,
+        p_now: lease.now
+      });
+      return toItem(result[0]);
+    },
     async assertClaimActive(id) { const result = await client.request('translation_queue_items', { query: query(id) }); return toItem(result[0]); },
-    async requeueExpiredProcessing(id) { return this.updateStatus(id, 'queued'); },
+    async requeueExpiredProcessing(id, now) {
+      const result = await client.rpc('translation_queue_requeue_expired', {
+        p_execution_id: id,
+        p_owner_user_id: owner(),
+        p_now: now
+      });
+      return toItem(result[0]);
+    },
     async transferClaimToDeadLetter(id) { return this.updateStatus(id, 'failed'); }
   };
   return createDurableTranslationExecutionQueueRepository(implementation);

@@ -2,6 +2,8 @@
 
 ## 2026-09-11
 
+- Added atomic Supabase translation queue claim, renewal, acknowledgement, and
+  expired-lease recovery RPCs with fence-token ownership checks.
 - Added a P0 GitHub Actions validation gate for syntax, frontend builds,
   security/cloud boundaries, durable worker behavior, Viewer realtime, and
   Supabase migration linting.

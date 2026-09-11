@@ -208,7 +208,8 @@ function productionOptions({ env, clock }) {
     savedTranscriptRetranslationServiceFactory() {
       return { async translateSavedTranscript() {} };
     },
-    idGenerator: staticIdGenerator()
+    idGenerator: staticIdGenerator(),
+    strictCheckpointPathIds: false
   };
 }
 

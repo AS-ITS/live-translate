@@ -1547,10 +1547,7 @@ function createGeminiHttpClient({
 }
 
 function createDefaultIdGenerator() {
-  let sequence = 0;
-
-  return function defaultIdGenerator(prefix = 'id') {
-    sequence += 1;
-    return `${prefix}-${Date.now()}-${sequence}`;
+  return function defaultIdGenerator() {
+    return randomUUID();
   };
 }

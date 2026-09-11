@@ -213,3 +213,15 @@ Frontend testing scope for MVP:
 - Automated real Gemini API integration tests.
 - Full benchmark runs.
 - Dataset generation or benchmark report regeneration.
+
+## Runtime capability matrix
+
+| Capability | Local Node runtime | Vercel/Supabase runtime |
+| --- | --- | --- |
+| Meeting, Segment, Session, Cue persistence | Supabase configuration required; JSON files are test-only fixtures | Owner-scoped Supabase repositories |
+| Checkpoint path IDs | UUIDs for newly created records; legacy test adapters may opt out of strict path validation | UUIDs required |
+| Translation execution | Local worker runtime | Bounded `/api/internal/worker` Cron batches |
+| Viewer delivery | Local SSE/WebSocket adapters | Supabase Realtime and signed Storage URLs |
+| Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
+
+For a deployment smoke check, verify `/healthz`, `/readyz`, an unauthenticated private API rejection, a valid owner-scoped API request, and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.

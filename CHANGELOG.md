@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-09-11
+
+- Default local runtime Meeting and Segment IDs now use UUIDs, aligning file-backed development records with the Supabase checkpoint contract.
+- Restored the access-control integration test and documented the local/cloud runtime capability boundary and deployment smoke checks.
+
 - Local runtime persistence now uses Supabase for glossary, durable translation
   queue, dead-letter records, recorder leases, and application metadata. JSON
   files under `data/` remain test/migration fixtures only.

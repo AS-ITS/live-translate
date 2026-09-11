@@ -58,9 +58,10 @@ SESSION_AUDIO_MAX_BYTES=52428800
 ## Vercel and Supabase foundation
 
 P0 keeps the local Node runtime unchanged and adds a cloud-only Function shell.
-The Vercel Function does not start the local WebSocket broadcaster or
-translation worker and does not use the file-backed `data/` directory. It
-exposes health/readiness checks and returns a structured `503` for cloud
+Vercel Functions do not use the local WebSocket broadcaster or file-backed
+`data/` directory. Translation work is processed by the bounded Vercel Cron
+worker at `/api/internal/worker`. They expose health/readiness checks and return
+a structured `503` for cloud
 capabilities that are waiting for Supabase adapters.
 
 Use the Supabase CLI migration workflow locally:

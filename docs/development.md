@@ -57,14 +57,13 @@ SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
 ```
 
-## Vercel and Supabase foundation
+## Vercel and Supabase cloud capabilities
 
 P0 keeps the local Node runtime unchanged and adds a cloud-only Function shell.
 Vercel Functions do not use the local WebSocket broadcaster or file-backed
 `data/` directory. Translation work is processed by the bounded Vercel Cron
 worker at `/api/internal/worker`. They expose health/readiness checks and return
-a structured `503` for cloud
-capabilities that are waiting for Supabase adapters.
+a structured `503` when a cloud dependency is unavailable.
 
 Use the Supabase CLI migration workflow locally:
 
@@ -84,18 +83,36 @@ Secrets must be kept out of git. Use `.env` locally and keep `.env.example` as a
 non-secret template.
 
 Supabase mode requires a valid JWT, the `authenticated` role, and an email in
-`AUTH_ALLOWED_EMAIL_DOMAINS`. P1 enables only `GET /api/profile`; other private
-capabilities return `503 cloud_capability_unavailable` until ownership adapters
-are implemented. Supabase access tokens are required for all authenticated flows.
+`AUTH_ALLOWED_EMAIL_DOMAINS`. Supabase access tokens are required for all
+authenticated flows. P1 owner-scoped adapters support these cloud capabilities:
 
-## P2 Cloud Data Mode
+| Capability | Persistence / boundary |
+| --- | --- |
+| Meetings, Segments, Sessions, finalized Cues | Supabase repositories under owner-scoped RLS |
+| Shares, recorder leases, audio metadata | Supabase repositories and private Storage metadata |
+| Glossary, translation queue, DLQ, execution status | Supabase repositories and atomic queue RPCs |
+| Meeting Viewer events | `meeting_events` persistence with cursor replay and Realtime delivery |
+| Observability | Service-role metric RPCs and UTC-minute buckets |
+
+If the required Supabase configuration is missing, or `/readyz` cannot verify
+the observability table and RPC, these cloud APIs remain fail-closed with a
+structured `503`.
+
+## Cloud rollout preflight
 
 When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are
-configured, new Meeting, Segment, Session, finalized Cue, glossary, queue, DLQ,
-lease, and execution-status writes use owner-scoped Supabase repositories.
-Existing file-backed records are not migrated automatically. Apply all
-migrations through `20260912000000_atomic_translation_queue_operations.sql` before production
-traffic, then verify `/readyz`.
+configured, new cloud writes use the owner-scoped Supabase repositories listed
+above. Existing file-backed records are not migrated automatically. Before
+production traffic, apply all migrations through
+`20260914000000_observability_metric_buckets.sql`, run `npm run db:lint`, and
+verify `/healthz` and `/readyz`. Readiness must confirm the observability table
+and atomic metric RPC. The worker cron must use `Authorization: Bearer
+$CRON_SECRET`; metric persistence is best-effort and must not change queue
+processing outcomes.
+
+Production smoke checks and alert thresholds are maintained in
+[`docs/observability-runbook.md`](observability-runbook.md). Production
+verification is a rollout task, not an unimplemented P1 capability.
 
 ## Local Development Setup
 

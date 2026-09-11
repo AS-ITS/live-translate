@@ -43,10 +43,13 @@ Relevant background docs:
 Supabase Google OAuth uses PKCE in the browser. The backend validates the
 Supabase access JWT before private dispatch, including issuer, audience,
 expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Profile data is
-served by `GET /api/profile`; the service-role key is server-only. The P1
-Supabase migration applies owner-scoped composite foreign keys and RLS to all
-private tables. Until an ownership adapter is complete, the capability
-registry leaves its API disabled with `503 cloud_capability_unavailable`.
+served by `GET /api/profile`; the service-role key is server-only. P1
+Supabase migrations apply owner-scoped composite foreign keys and RLS to all
+private tables, and the production composition now wires owner-scoped
+Supabase adapters for the supported cloud capabilities. If the required
+Supabase configuration is missing or readiness checks fail, cloud APIs remain
+fail-closed with `503 cloud_capability_unavailable` or the documented readiness
+error.
 
 ```mermaid
 flowchart LR
@@ -69,8 +72,8 @@ gate, origin validation, rate limit, and structured error handling around
 
 P1 applies Supabase JWT validation to private `/api/*` routes. Browsers send
 the current Supabase session access token as a Bearer token. Health/readiness
-remain public, and unimplemented cloud capabilities stay disabled until their
-ownership adapters exist.
+remain public. Supported cloud capabilities use owner-scoped adapters; missing
+configuration or an unhealthy dependency keeps those APIs fail-closed.
 
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
@@ -982,7 +985,9 @@ contracts.
 Current state:
 
 - Supabase cloud mode stores owner-scoped Meetings, Segments, Sessions, Final
-  Cues, shares, and audio metadata under RLS.
+  Cues, shares, audio metadata, glossary data, translation queue/DLQ records,
+  recorder leases, execution status, meeting events, and observability metrics
+  under RLS or service-role-only RPC boundaries as appropriate.
 - Original Segment audio is WebM/Opus uploaded by browser TUS directly to the
   private `meeting-audio` bucket; Vercel handles metadata and signed URLs only.
 - Final Cue writes trigger private Supabase Realtime broadcasts, so production

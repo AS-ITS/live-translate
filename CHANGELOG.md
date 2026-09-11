@@ -50,8 +50,9 @@
 
 - Issue #31 P1 identity foundation：加入 Supabase Google PKCE 登入、Workspace domain
   allowlist、JWT validation、Profile API、profile header/logout，以及 profiles 與私人
-  domain tables 的 owner-scoped composite foreign keys、RLS 與 grants。P1 未完成 ownership
-  adapter 的 API 以 `503 cloud_capability_unavailable` fail-closed。
+  domain tables 的 owner-scoped composite foreign keys、RLS 與 grants；P1 owner-scoped
+  adapters now support the configured cloud capabilities and remain fail-closed when
+  Supabase configuration or readiness checks are unavailable。
 
 - Issue #31 P0 deployment foundation：request handler 改為 lazy composition，新增 Vercel
   cloud Function 與 Supabase migration baseline；Vercel cloud shell 不啟動 file-backed
@@ -94,8 +95,6 @@
 - P0 語音優先切片已接入 production runtime：source-only Cue 在 Segment
   recovery、Stop 與 turn boundary 可 finalized 並保存，interim 不進 history/export；
   transcription-only controller 不會觸發舊的 numeric retranslation 或 polishing。
-- P1 Flash translation/refinement 尚未切換；本次未修改 public API、schema 或 queue。
-
 - 修正 GoAway 重連流程：GoAway 視為預期的 provider lifecycle event，使用 `timeLeft`
   只排程一次重連、保留最新 session resumption handle，並為 replacement Live session
   取得新的 single-use ephemeral token；smoke summary 另行統計 GoAway 重連成功與失敗。

@@ -1,5 +1,19 @@
 # Live Translate Development Guide
 
+Local runtime persistence is Supabase-only. JSON files under `data/` are
+legacy test fixtures and are not read by the application.
+
+```bash
+supabase start
+supabase db reset
+supabase db lint
+```
+
+Copy the local API URL and service-role key from `supabase status` into the
+server-only `SUPABASE_URL` and `SUPABASE_SECRET_KEY` values in `.env`. Never
+commit or log the service key. Use `/readyz` to distinguish an unavailable
+Supabase endpoint, missing migrations, and invalid credentials.
+
 ## Environment Variables
 
 Backend environment variables:

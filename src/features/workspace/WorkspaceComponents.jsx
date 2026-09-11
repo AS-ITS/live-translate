@@ -9,6 +9,7 @@ import { createMemorySessionRepository } from '../../lib/sessionRepository.js';
 import { createSessionReadApiClient } from '../../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
+import { meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
 import { createSessionSnapshotApiClient } from '../../lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from '../../lib/sessionCommandApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
@@ -215,6 +216,8 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
   const [isGlobalGlossaryPanelOpen, setIsGlobalGlossaryPanelOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState(initialStatusFilter);
+  const [isLoadingMeetings, setIsLoadingMeetings] = useState(true);
+  const [meetingLoadError, setMeetingLoadError] = useState('');
 
   useEffect(() => {
     setStatusFilter(initialStatusFilter || 'all');
@@ -233,15 +236,29 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
     status: statusFilter
   }), [meetings, query, statusFilter]);
 
-  useEffect(() => {
+  const loadMeetingManagementData = async () => {
     const routeMeetingId = pageInfoFromLocation().meetingId;
-    Promise.all([readClientRef.current.listMeetingHistory(), glossaryClientRef.current.listEntries()])
-      .then(async ([meetingItems, entries]) => {
-        setMeetings(meetingItems);
-        setGlossaryEntries(entries);
-        if (routeMeetingId) await selectMeeting(routeMeetingId, entries);
-      })
-      .catch(() => setError('無法載入會議或字典資料。'));
+    setIsLoadingMeetings(true);
+    setMeetingLoadError('');
+    const [meetingResult, glossaryResult] = await Promise.allSettled([
+      readClientRef.current.listMeetingHistory(),
+      glossaryClientRef.current.listEntries()
+    ]);
+
+    if (meetingResult.status === 'rejected') {
+      setMeetingLoadError(meetingManagementErrorMessage(meetingResult.reason, '無法載入會議資料。'));
+    } else {
+      const meetingItems = meetingResult.value;
+      setMeetings(meetingItems);
+      if (routeMeetingId) await selectMeeting(routeMeetingId, glossaryResult.status === 'fulfilled' ? glossaryResult.value : []);
+    }
+
+    setGlossaryEntries(glossaryResult.status === 'fulfilled' ? glossaryResult.value : []);
+    setIsLoadingMeetings(false);
+  };
+
+  useEffect(() => {
+    void loadMeetingManagementData();
   }, []);
 
   useEffect(() => {
@@ -505,8 +522,10 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
             全域字典
           </a>
         </div>
-        {meetings.length === 0 ? <p className="history-empty">尚無會議。建立第一場會議開始使用。</p> : null}
-        {meetings.length > 0 && filteredMeetings.length === 0 ? <p className="history-empty">找不到符合條件的會議。</p> : null}
+          {isLoadingMeetings ? <p className="history-empty">正在載入會議…</p> : null}
+          {meetingLoadError ? <p className="error-message" role="alert">{meetingLoadError} <button className="inline-retry" type="button" onClick={() => void loadMeetingManagementData()}>重新載入</button></p> : null}
+          {!isLoadingMeetings && !meetingLoadError && meetings.length === 0 ? <p className="history-empty">尚無會議。建立第一場會議開始使用。</p> : null}
+          {!isLoadingMeetings && !meetingLoadError && meetings.length > 0 && filteredMeetings.length === 0 ? <p className="history-empty">找不到符合條件的會議。</p> : null}
         <div className="meeting-card-grid" aria-label="既有會議列表">
           {filteredMeetings.map((meeting) => {
             const StatusIcon = meetingCardStatusIcon(meeting.status);

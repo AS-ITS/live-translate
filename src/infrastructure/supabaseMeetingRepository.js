@@ -66,11 +66,11 @@ export function createSupabaseMeetingRepository(options = {}) {
 }
 
 function meetingRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: entity.startedAt, ended_at: entity.endedAt, created_at: entity.createdAt, updated_at: entity.updatedAt, failure_info: entity.failureInfo, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
+  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt), failure_info: entity.failureInfo, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
 }
 
 function segmentRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, meeting_id: entity.meetingId, sequence: entity.sequence, status: entity.status, started_at: entity.startedAt, ended_at: entity.endedAt, live_session_id: entity.liveSessionId, settings_snapshot: entity.settingsSnapshot, checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined }, error_info: entity.errorInfo, created_at: entity.createdAt, updated_at: entity.updatedAt };
+  return { id: entity.id, owner_user_id: ownerUserId, meeting_id: entity.meetingId, sequence: entity.sequence, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), live_session_id: entity.liveSessionId, settings_snapshot: entity.settingsSnapshot, checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined }, error_info: entity.errorInfo, created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt) };
 }
 
 async function hydrateSegment(client, row, ownerUserId) {
@@ -92,8 +92,18 @@ async function persistCues(client, entity, ownerUserId) {
   await client.request('subtitle_cues', {
     method: 'POST',
     headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText, translated_text: cue.translatedText || null, source_version: cue.sourceVersion || 1, translation_version: cue.translationVersion || 0, started_at: cue.startTimeMs, ended_at: cue.endTimeMs }))
+    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText, translated_text: cue.translatedText || null, source_version: cue.sourceVersion || 1, translation_version: cue.translationVersion || 0, started_at: toSupabaseTimestamp(cue.startTimeMs), ended_at: toSupabaseTimestamp(cue.endTimeMs) }))
   });
+}
+
+function toSupabaseTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return new Date(value).toISOString();
+  if (typeof value === 'string') {
+    const milliseconds = Date.parse(value);
+    if (!Number.isNaN(milliseconds)) return new Date(milliseconds).toISOString();
+  }
+  return value;
 }
 
 function cueFromRow(row) {

@@ -4,7 +4,7 @@ import { AlertCircle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, CircleDas
 import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
-import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
+import { createMeetingManagementApiClient, meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
 import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
@@ -45,6 +45,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [shareState, setShareState] = useState('idle');
   const [shareLayoutReady, setShareLayoutReady] = useState(false);
   const [error, setError] = useState('');
+  const [glossaryLoadWarning, setGlossaryLoadWarning] = useState('');
   const [nameError, setNameError] = useState('');
   const [audioSettingsError, setAudioSettingsError] = useState('');
   const [notice, setNotice] = useState('');
@@ -91,12 +92,27 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
+    Promise.allSettled([
       glossaryClient.listEntries(),
       mode === 'edit' && meetingId ? readClient.getMeetingDetail(meetingId) : Promise.resolve(null)
-    ]).then(([glossaryEntries, detail]) => {
+    ]).then(([glossaryResult, meetingResult]) => {
       if (cancelled) return;
+
+      const glossaryEntries = glossaryResult.status === 'fulfilled' ? glossaryResult.value : [];
       setEntries(glossaryEntries);
+      if (glossaryResult.status === 'rejected') {
+        setGlossaryLoadWarning('共用詞彙目前無法載入，仍可使用私人詞彙。');
+      } else {
+        setGlossaryLoadWarning('');
+      }
+
+      if (meetingResult.status === 'rejected') {
+        setError('無法載入會議設定。');
+        setIsLoading(false);
+        return;
+      }
+
+      const detail = meetingResult.value;
       const current = detail?.meeting || null;
       if (mode === 'edit' && !current) throw new Error('meeting_not_found');
       if (current) applyMeeting(current, glossaryEntries);
@@ -368,7 +384,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       if (!meeting) await createSharesWithRetry(saved.id);
       else setShareState('ready');
     } catch (requestError) {
-      setError(requestError?.status === 409 ? '已完成會議不可修改設定。' : '無法儲存會議設定。');
+      setError(meetingManagementErrorMessage(requestError, '無法儲存會議設定，請稍後再試。'));
     } finally {
       setIsSaving(false);
     }
@@ -530,7 +546,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             <div className="meeting-dictionary-groups">
               <section className="meeting-dictionary-group meeting-global-glossary" aria-labelledby="meeting-global-glossary-title">
                 <button className="meeting-global-glossary-summary" type="button" aria-expanded={isGlobalGlossaryExpanded} onClick={() => setIsGlobalGlossaryExpanded((current) => !current)}><span className="meeting-settings-icon"><BookOpen size={18} aria-hidden="true" /></span><span><strong id="meeting-global-glossary-title">共用詞彙</strong><small>{availableGlossaryEntries.length === 0 ? '目前沒有可套用的共用詞彙。' : `已選 ${selectedGlossaryCount} 項，共 ${availableGlossaryEntries.length} 項可用`}</small></span><ChevronDown size={18} aria-hidden="true" /></button>
-                {isGlobalGlossaryExpanded ? <div className="meeting-global-glossary-content"><p className="meeting-dictionary-section-description">從共用詞彙中選擇要套用到本場會議的項目。</p>{availableGlossaryEntries.map((entry) => <label className={`glossary-choice${selectedGlossaryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}><input type="checkbox" aria-label={`套用詞彙：${entry.source}`} checked={selectedGlossaryIds.includes(entry.id)} onChange={() => setSelectedGlossaryIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} disabled={meeting?.status === 'completed'} /><span className="glossary-choice-content"><span className="glossary-choice-field"><small>聽到的詞彙</small><strong>{entry.source}</strong></span><span className="glossary-choice-field"><small>要顯示／播放的翻譯</small><strong>{entry.translations[targetLanguageCode]}</strong></span></span></label>)}{availableGlossaryEntries.length === 0 ? <p className="export-note">目前沒有可套用的共用詞彙。</p> : null}</div> : null}
+                {isGlobalGlossaryExpanded ? <div className="meeting-global-glossary-content"><p className="meeting-dictionary-section-description">從共用詞彙中選擇要套用到本場會議的項目。</p>{glossaryLoadWarning ? <p className="warning-message" role="status">{glossaryLoadWarning}</p> : null}{availableGlossaryEntries.map((entry) => <label className={`glossary-choice${selectedGlossaryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}><input type="checkbox" aria-label={`套用詞彙：${entry.source}`} checked={selectedGlossaryIds.includes(entry.id)} onChange={() => setSelectedGlossaryIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} disabled={meeting?.status === 'completed'} /><span className="glossary-choice-content"><span className="glossary-choice-field"><small>聽到的詞彙</small><strong>{entry.source}</strong></span><span className="glossary-choice-field"><small>要顯示／播放的翻譯</small><strong>{entry.translations[targetLanguageCode]}</strong></span></span></label>)}{availableGlossaryEntries.length === 0 ? <p className="export-note">目前沒有可套用的共用詞彙。</p> : null}</div> : null}
               </section>
               <section className="meeting-dictionary-group meeting-private-glossary" aria-labelledby="meeting-private-glossary-title">
                 <div className="meeting-dictionary-section-heading"><div><h4 id="meeting-private-glossary-title">會議詞彙</h4><p className="meeting-settings-card-description">只套用於本場會議，不會影響其他會議。</p></div>{meeting?.status !== 'completed' ? <button className="button secondary" type="button" onClick={openPrivateImportDialog}><Download size={16} aria-hidden="true" />匯入詞彙</button> : null}</div>

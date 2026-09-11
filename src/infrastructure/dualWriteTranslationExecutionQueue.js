@@ -4,6 +4,7 @@ import {
 } from '../application/translation/translationExecutionQueue.js';
 import { assertDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 import { DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES } from '../application/translation/durableTranslationExecutionQueueRepository.js';
+import { currentRequestUserId, isWorkerRequestContext, setRequestUser } from '../../server/requestIdentity.js';
 
 export function createDualWriteTranslationExecutionQueue({ primaryQueue, durableRepository, clock } = {}) {
   assertTranslationExecutionQueue(primaryQueue);
@@ -12,6 +13,7 @@ export function createDualWriteTranslationExecutionQueue({ primaryQueue, durable
 
   return createTranslationExecutionQueue({
     async enqueue(item) {
+      const ownerUserId = item.ownerUserId || currentRequestUserId() || undefined;
       if (await durableRepository.contains(item.executionId)) {
         return undefined;
       }
@@ -19,13 +21,17 @@ export function createDualWriteTranslationExecutionQueue({ primaryQueue, durable
       await durableRepository.enqueue({
         executionId: item.executionId,
         requestId: item.requestId,
+        ...(ownerUserId ? { ownerUserId } : {}),
         enqueuedAt: clock.now(),
         status: DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES.QUEUED
       });
 
+      if (isWorkerRequestContext() && ownerUserId) setRequestUser({ id: ownerUserId, kind: 'worker' });
+
       return primaryQueue.enqueue({
         executionId: item.executionId,
-        requestId: item.requestId
+        requestId: item.requestId,
+        ...(ownerUserId ? { ownerUserId } : {})
       });
     },
 

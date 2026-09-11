@@ -1,5 +1,9 @@
 # Live Translate
 
+Local runtime persistence is Supabase-only. Start the local stack with
+`supabase start` and apply migrations with `supabase db reset`; `data/` is not
+read by the application.
+
 Live Translate is a browser-based real-time speech translation app. The React
 frontend captures microphone audio, requests a short-lived Gemini ephemeral
 token from the Node.js backend, then connects directly to the Gemini Live API.

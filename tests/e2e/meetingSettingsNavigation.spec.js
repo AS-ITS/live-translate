@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '@playwright/test'; test('continues loading meeting settings when glossary is unavailable', async ({ page }) => { await page.route('**/api/glossary', async (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_unavailable' } }) })); await page.goto('/#meeting-settings?mode=create'); await expect(page.getByRole('heading', { name: '基本資訊' })).toBeVisible(); await expect(page.getByRole('alert')).toHaveCount(0); await expect(page.locator('.warning-message')).toHaveText('共用詞彙目前無法載入，仍可使用私人詞彙。'); });
 
 test('requires a meeting name before saving', async ({ page }) => {
   let createRequestCount = 0;

@@ -68,6 +68,10 @@ import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseS
 import { createSupabaseMeetingAudioService } from '../src/infrastructure/supabaseMeetingAudioService.js';
 import { createSupabaseMeetingShareService } from '../src/infrastructure/supabaseMeetingShareService.js';
 import { createSupabaseMeetingCueService } from '../src/infrastructure/supabaseMeetingCueService.js';
+import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.js';
+import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
+import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
+import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -469,13 +473,15 @@ export function createProductionApplicationDependencies(options = {}) {
     !(hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver);
   const hasGlobalGeminiApiKey = typeof env.GEMINI_API_KEY === 'string' && env.GEMINI_API_KEY.trim().length > 0;
   const canCreateProductionProviderComposition = needsProductionProviderComposition && hasGlobalGeminiApiKey;
-  const translationGlossary = translationGlossaryFactory({
-    filePath: translationGlossaryFilePathFor(env),
-    fileSystem: translationGlossaryFileSystem,
-    idFactory: () => `glossary-${randomUUID()}`,
-    clock: () => Date.now()
-  });
-  const cloudDataMode = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL);
+  const cloudDataMode = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY);
+  const translationGlossary = cloudDataMode
+    ? createSupabaseGlossary({ env, idFactory: () => `glossary-${randomUUID()}` })
+    : translationGlossaryFactory({
+      filePath: translationGlossaryFilePathFor(env),
+      fileSystem: translationGlossaryFileSystem,
+      idFactory: () => `glossary-${randomUUID()}`,
+      clock: () => Date.now()
+    });
   const sessionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'sessionRepository')
     ? applicationOptions.sessionRepository
     : cloudDataMode
@@ -517,7 +523,9 @@ export function createProductionApplicationDependencies(options = {}) {
       : undefined;
   const recorderLeaseService = Object.prototype.hasOwnProperty.call(applicationOptions, 'recorderLeaseService')
     ? applicationOptions.recorderLeaseService
-    : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
+    : cloudDataMode
+      ? createSupabaseRecorderLeaseService({ env })
+      : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = canCreateProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -585,23 +593,19 @@ export function createProductionApplicationDependencies(options = {}) {
     },
     providerResolutionComposition: productionProviderResolutionComposition
   });
-  const queueConfiguration = translationQueueConfigurationFactory({
-    environment: env
-  });
+  const configuredQueue = translationQueueConfigurationFactory({ environment: env });
+  const queueConfiguration = { ...configuredQueue, durableQueueEnabled: cloudDataMode || configuredQueue.durableQueueEnabled };
   const translationExecutionRetryPolicy = translationExecutionRetryPolicyFactory();
   const translationExecutionRetryErrorClassifier = translationExecutionRetryErrorClassifierFactory();
   const deadLetterQueueRepository = queueConfiguration.durableQueueEnabled
-    ? fileDeadLetterQueueRepositoryFactory({
-        fileSystem: durableQueueFileSystem,
-        filePath: queueConfiguration.deadLetterQueueFilePath
-      })
+    ? cloudDataMode
+      ? createSupabaseDeadLetterQueueRepository({ env })
+      : fileDeadLetterQueueRepositoryFactory({ fileSystem: durableQueueFileSystem, filePath: queueConfiguration.deadLetterQueueFilePath })
     : undefined;
   const durableTranslationExecutionQueueRepository = queueConfiguration.durableQueueEnabled
-    ? fileDurableTranslationExecutionQueueRepositoryFactory({
-        fileSystem: durableQueueFileSystem,
-        filePath: queueConfiguration.durableQueueFilePath,
-        deadLetterQueueRepository
-      })
+    ? cloudDataMode
+      ? createSupabaseDurableTranslationExecutionQueueRepository({ env })
+      : fileDurableTranslationExecutionQueueRepositoryFactory({ fileSystem: durableQueueFileSystem, filePath: queueConfiguration.durableQueueFilePath, deadLetterQueueRepository })
     : undefined;
   const primaryTranslationExecutionQueue =
     durableTranslationExecutionQueueRepository !== undefined

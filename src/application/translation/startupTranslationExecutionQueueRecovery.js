@@ -12,6 +12,7 @@ import {
   createNoopTranslationExecutionMetrics,
   TRANSLATION_EXECUTION_METRIC_NAMES
 } from './translationExecutionMetrics.js';
+import { runWithRequestUser, setRequestUser } from '../../../server/requestIdentity.js';
 
 export function createStartupTranslationExecutionQueueRecovery({
   durableRepository,
@@ -74,12 +75,13 @@ export function createStartupTranslationExecutionQueueRecovery({
       }
 
       for (const item of processingItems) {
+        if (item.ownerUserId) setRequestUser({ id: item.ownerUserId, kind: 'worker' });
         if (!hasExpiredCompleteLease(item, now)) {
           continue;
         }
 
         assertRecoveryTranslationRepository(translationRepository);
-        const execution = await translationRepository.findExecutionById(item.executionId);
+        const execution = await runWithRequestUser({ id: item.ownerUserId, kind: 'worker' }, () => translationRepository.findExecutionById(item.executionId));
         assertFoundExecution(execution, item.executionId);
         const outputs = await translationRepository.listTranslationOutputsByExecution(item.executionId);
 
@@ -151,7 +153,7 @@ export function createStartupTranslationExecutionQueueRecovery({
 
       async function enqueueOnce(item) {
         if (replayedExecutionIds.has(item.executionId)) return;
-        await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
+        await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId, ...(item.ownerUserId ? { ownerUserId: item.ownerUserId } : {}) });
         replayedExecutionIds.add(item.executionId);
         safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RECOVERY_TOTAL);
       }
@@ -167,6 +169,7 @@ export function createStartupTranslationExecutionQueueRecovery({
       }
 
       async function acknowledgeTerminalItem(item, status) {
+        if (item.ownerUserId) setRequestUser({ id: item.ownerUserId, kind: 'worker' });
         assertRecoveryTranslationRepository(translationRepository);
         const execution = await translationRepository.findExecutionById(item.executionId);
         if (execution === null || execution === undefined) return;

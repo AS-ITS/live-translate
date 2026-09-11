@@ -1,0 +1,38 @@
+import { currentRequestUserId, isWorkerRequestContext } from '../../server/requestIdentity.js';
+import { createDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
+import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+
+export function createSupabaseDurableTranslationExecutionQueueRepository({ env = process.env, fetchImpl = globalThis.fetch, clock = () => Date.now() } = {}) {
+  const client = createSupabaseRestClient({ env, fetchImpl });
+  if (!client) return null;
+  const owner = () => currentRequestUserId() || env.SUPABASE_WORKER_USER_ID || failOwner();
+  const ownerFilter = () => isWorkerRequestContext() ? '' : `&${eq('owner_user_id', owner())}`;
+  const query = (id) => `?${eq('execution_id', id)}${ownerFilter()}`;
+  const toItem = (row) => row && ({ executionId: row.execution_id, requestId: row.request_id, ownerUserId: row.owner_user_id, enqueuedAt: row.enqueued_at, status: row.status, availableAt: row.available_at, leaseId: row.lease_id, leaseExpiresAt: row.lease_expires_at, fenceToken: row.fence_token || 0, attempt: row.attempt || 0, lastFailure: row.last_failure || null });
+  const implementation = {
+    async enqueue(item) {
+      const result = await client.request('translation_queue_items', { method: 'POST', body: [{ owner_user_id: item.ownerUserId || owner(), execution_id: item.executionId, request_id: item.requestId, enqueued_at: item.enqueuedAt, status: item.status || 'queued', available_at: item.availableAt, fence_token: item.fenceToken || 0, attempt: item.attempt || 0, last_failure: item.lastFailure || null }] });
+      return toItem(result[0]);
+    },
+    async dequeue() { const item = await this.peek(); if (item) await this.acknowledge(item.executionId); return item; },
+    async peek() { const result = await this.listAvailable(new Date(clock()).toISOString()); return result[0] || null; },
+    async list() { const result = await client.request('translation_queue_items', { query: `?select=*${ownerFilter()}&order=enqueued_at.asc` }); return result.map(toItem); },
+    async listAvailable(now) { return (await this.list()).filter((item) => item.status === 'queued' && (!item.availableAt || item.availableAt <= now)); },
+    async nextAvailableAt() { const item = (await this.list()).find((candidate) => candidate.status === 'queued'); return item?.availableAt || null; },
+    async size() { return (await this.list()).filter((item) => item.status === 'queued').length; },
+    async clear() { await client.request('translation_queue_items', { method: 'DELETE', query: `?${eq('owner_user_id', owner())}` }); },
+    async updateStatus(id, status) { const result = await client.request('translation_queue_items', { method: 'PATCH', query: query(id), body: { status } }); return toItem(result[0]); },
+    async acknowledge(id) { await client.request('translation_queue_items', { method: 'DELETE', query: query(id) }); },
+    async acknowledgeClaim(id, claim) { return this.acknowledge(id, claim); },
+    async contains(id) { return Boolean((await client.request('translation_queue_items', { query: `${query(id)}&select=execution_id` }))[0]); },
+    async claim(id, lease) { const result = await client.request('translation_queue_items', { method: 'PATCH', query: query(id), body: { status: 'processing', lease_id: lease.leaseId, lease_expires_at: lease.leaseExpiresAt, fence_token: lease.fenceToken || 0 } }); return toItem(result[0]); },
+    async retryClaim(id, retry) { return this.updateStatus(id, 'queued', retry); },
+    async renewClaim(id, claim, lease) { return this.claim(id, { ...lease, fenceToken: claim.fenceToken }); },
+    async assertClaimActive(id) { const result = await client.request('translation_queue_items', { query: query(id) }); return toItem(result[0]); },
+    async requeueExpiredProcessing(id) { return this.updateStatus(id, 'queued'); },
+    async transferClaimToDeadLetter(id) { return this.updateStatus(id, 'failed'); }
+  };
+  return createDurableTranslationExecutionQueueRepository(implementation);
+}
+
+function failOwner() { const error = new Error('Supabase worker identity is required.'); error.code = 'auth_required'; error.status = 401; throw error; }

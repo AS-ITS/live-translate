@@ -27,7 +27,7 @@ import {
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
-import { setRequestUser } from './requestIdentity.js';
+import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -55,6 +55,10 @@ const ERROR_RESPONSES = {
   auth_forbidden: { status: 403, message: 'Access is not allowed.' },
   auth_not_configured: { status: 503, message: 'Access gate is not configured.' },
   cloud_capability_unavailable: { status: 503, message: 'This cloud capability is not enabled yet.' },
+  supabase_unavailable: { status: 503, message: 'Local Supabase is unavailable.' },
+  supabase_schema_missing: { status: 503, message: 'Local Supabase migrations are missing.' },
+  supabase_credentials_invalid: { status: 503, message: 'Local Supabase service credentials are invalid.' },
+  supabase_request_failed: { status: 503, message: 'Local Supabase request failed.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
@@ -444,14 +448,14 @@ export function startTranslationExecutionWorkerRuntime({
   }
 
   let isStopped = false;
-  const startup = sessionRepository?.requiresRequestIdentity === true
+  const startup = runWithRequestUser({ kind: 'worker' }, () => sessionRepository?.requiresRequestIdentity === true
     ? translationExecutionWorkerRuntime.start()
     : startRuntimeAfterPersistedQueueRecovery({
       translationExecutionWorkerRuntime,
       sessionRepository,
       translationExecutionQueue,
       logger
-    });
+    }));
   Promise.resolve(startup).catch((error) => {
     logWorkerRuntimeError(logger, 'translation_execution_worker_runtime_start_failed', error);
   });
@@ -541,8 +545,20 @@ function logWorkerRuntimeError(logger, event, error) {
     level: 'error',
     event,
     errorName: error?.name || 'Error',
-    safeSummary: 'Translation execution worker runtime failed'
+    ...(error?.code ? { errorCode: error.code } : {}),
+    ...(Number.isInteger(error?.status) ? { errorStatus: error.status } : {}),
+    safeSummary: safeWorkerRuntimeSummary(error)
   });
+}
+
+function safeWorkerRuntimeSummary(error) {
+  switch (error?.code) {
+    case 'supabase_unavailable': return 'Supabase REST endpoint is unavailable';
+    case 'supabase_schema_missing': return 'Supabase migration or required table is missing';
+    case 'supabase_credentials_invalid': return 'Supabase service credentials are invalid';
+    case 'auth_required': return 'Worker owner context is missing';
+    default: return 'Translation execution worker runtime failed';
+  }
 }
 
 export function createRequestHandler(options = {}) {

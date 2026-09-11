@@ -115,7 +115,7 @@ export function createTranslationExecutionWorkerRuntime({
       if (translationExecutionQueue.size() === 0 && durableRepository !== undefined) {
         const items = await durableRepository.listAvailable(clock());
         for (const item of items) {
-          await translationExecutionQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
+          await translationExecutionQueue.enqueue({ executionId: item.executionId, requestId: item.requestId, ...(item.ownerUserId ? { ownerUserId: item.ownerUserId } : {}) });
         }
       }
       if (translationExecutionQueue.size() > 0) {

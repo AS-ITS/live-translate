@@ -1,6 +1,18 @@
 # Changelog
 
+- Local runtime persistence now uses Supabase for glossary, durable translation
+  queue, dead-letter records, recorder leases, and application metadata. JSON
+  files under `data/` remain test/migration fixtures only.
+
 ## Unreleased
+
+- 修正 Supabase 會議建立的 PostgreSQL timestamp 格式，並補齊全域字典的建立與更新時間欄位。
+
+- 修正首次進入會議設定時共用字典 503 會阻擋整個頁面的問題；字典暫時不可用時仍可建立會議。
+
+- 修正會議清單與全域字典分開載入，空的會議清單會正確顯示空狀態；字典載入失敗不再阻擋會議頁面。
+
+- 修正會議建立與列表載入錯誤被誤顯示成空列表或「無法儲存會議設定」的問題，現在會保留後端錯誤識別碼並提供重新載入。
 
 - 登入頁右側產品展示區改用中亮板岩藍，字幕預覽卡保留深板岩藍層次，降低整體視覺重量。
 

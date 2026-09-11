@@ -8,6 +8,7 @@ import {
   createNoopTranslationExecutionMetrics,
   TRANSLATION_EXECUTION_METRIC_NAMES
 } from './translation/translationExecutionMetrics.js';
+import { setRequestUser } from '../../server/requestIdentity.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
@@ -50,6 +51,7 @@ export function createTranslationExecutionWorker({
         safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
         return IDLE_RESULT;
       }
+      if (job.ownerUserId) setRequestUser({ id: job.ownerUserId, kind: 'worker' });
       safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
 
       const execution = await translationRepository.findExecutionById(job.executionId);

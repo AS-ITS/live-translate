@@ -5,21 +5,39 @@ export function createSupabaseRestClient({ env = process.env, fetchImpl = global
   if (!baseUrl || !key) return null;
 
   async function request(table, { method = 'GET', query = '', body, headers = {} } = {}) {
-    const response = await fetchImpl(`${baseUrl}/rest/v1/${table}${query}`, {
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}/rest/v1/${table}${query}`, {
       method,
       headers: { apikey: key, Authorization: `Bearer ${key}`, Prefer: 'return=representation', ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
-    });
+      });
+    } catch (cause) {
+      const error = new Error('Supabase REST endpoint is unavailable.');
+      error.code = 'supabase_unavailable';
+      error.status = 503;
+      error.cause = cause;
+      throw error;
+    }
     if (!response.ok) {
-      const error = new Error(`Supabase ${method} ${table} failed.`);
+      const error = new Error(`Supabase ${method} ${table} request failed.`);
       error.status = response.status;
-      error.code = response.status === 404 ? 'not_found' : 'cloud_capability_unavailable';
+      error.code = response.status === 404
+        ? 'supabase_schema_missing'
+        : (response.status === 401 || response.status === 403
+          ? 'supabase_credentials_invalid'
+          : 'supabase_request_failed');
       throw error;
     }
     return response.status === 204 ? [] : response.json();
   }
 
-  return Object.freeze({ request });
+  async function healthCheck({ tables = [] } = {}) {
+    for (const table of tables) await request(table, { query: '?select=*&limit=0' });
+    return { ok: true, tables };
+  }
+
+  return Object.freeze({ request, healthCheck, baseUrl });
 }
 
 export function eq(name, value) {

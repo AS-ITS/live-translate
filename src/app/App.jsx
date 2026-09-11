@@ -115,6 +115,7 @@ export function App() {
   const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
+  const [liveErrorCode, setLiveErrorCode] = useState('');
   const [navigationNotice, setNavigationNotice] = useState('');
   const [meetingRecords, setMeetingRecords] = useState([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState(null);
@@ -976,6 +977,7 @@ export function App() {
       },
       onProviderReady: () => {
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        setLiveErrorCode('');
         setStatusLabelOverride('');
       },
       onPlaybackStateChange: ({ state: playbackState } = {}) => {
@@ -1003,6 +1005,7 @@ export function App() {
           return;
         }
 
+        setLiveErrorCode(nextError.code || '');
         setError(nextError.message);
         setStatus('error');
         sessionRef.current = null;
@@ -1019,6 +1022,7 @@ export function App() {
       },
       onConnectionFailure: (failure) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        setLiveErrorCode(failure.rawError?.code || failure.rawEvent?.code || '');
         if (failure.source === 'microphone_disconnected' && failure.reasonHint === 'selected_device_missing') {
           selectedInputDeviceIdRef.current = '';
           setSelectedInputDeviceId('');
@@ -1914,7 +1918,9 @@ export function App() {
       /> : null}
       {isLiveSurface ? <LiveRecordingPage
         error={liveController.error || meetingDetailError}
+        errorCode={liveErrorCode}
         status={meetingDetailError ? 'error' : liveController.status}
+        onOpenGeminiSettings={() => { window.location.hash = '#settings'; }}
         onRetry={() => {
           if (meetingDetailError) {
             void loadMeetingDetail(routeMeetingId);

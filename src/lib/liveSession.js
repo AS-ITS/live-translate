@@ -276,7 +276,10 @@ export class LiveTranslateSession {
     }
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
-      const startupError = new Error(userMessageForErrorCode(error.error?.code));
+      const errorCode = error.error?.code || 'token_request_failed';
+      const startupError = new Error(userMessageForErrorCode(errorCode));
+      startupError.code = errorCode;
+      startupError.status = tokenResponse.status;
       startupError.userMessage = '無法取得即時權杖。';
       throw startupError;
     }
@@ -1984,6 +1987,9 @@ function userMessageForErrorCode(code) {
     auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
     invalid_origin: '此網站不允許請求即時翻譯。',
     provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
+    gemini_credential_not_configured: '請先設定 Gemini API Key，再開始即時翻譯。',
+    gemini_credential_unavailable: 'Gemini API Key 設定服務目前無法使用。請稍後再試。',
+    gemini_credential_invalid: 'Gemini API Key 無效，請重新設定。',
     rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',
     server_misconfigured: '伺服器尚未設定即時翻譯。',
     unsupported_language: '不支援所選的目標語言。',

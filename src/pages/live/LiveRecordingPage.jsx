@@ -29,7 +29,7 @@ export function liveMeetingStatusLabel(meeting) {
  * is supplied by the application shell until it is extracted behind a page
  * controller; this boundary keeps Workspace pages from rendering live UI.
  */
-export function LiveRecordingPage({ children, drawers = null, error = '', status = 'idle', onRetry = null }) {
+export function LiveRecordingPage({ children, drawers = null, error = '', errorCode = '', status = 'idle', onRetry = null, onOpenGeminiSettings = null }) {
   return (
     <>
       <section className="feature-page live-page live-recording-page" aria-label="即時錄製">
@@ -38,6 +38,11 @@ export function LiveRecordingPage({ children, drawers = null, error = '', status
             <div className="error-message live-error-message">
               <AlertCircle className="live-error-icon" size={18} aria-hidden="true" />
               <p role="alert">{error}</p>
+              {errorCode === 'gemini_credential_not_configured' && onOpenGeminiSettings ? (
+                <button className="inline-retry live-error-settings" type="button" onClick={onOpenGeminiSettings}>
+                  設定 Gemini Key
+                </button>
+              ) : null}
               {status === 'error' && onRetry ? (
                 <button className="inline-retry live-error-retry" type="button" onClick={onRetry}>
                   重試

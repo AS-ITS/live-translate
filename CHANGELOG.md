@@ -6,6 +6,8 @@
 
 ## Unreleased
 
+- 修正 Gemini API Key 未設定時開始錄製只顯示泛用錯誤的問題，改為提供設定 Gemini Key 的入口。
+
 - 修正 Supabase 會議建立的 PostgreSQL timestamp 格式，並補齊全域字典的建立與更新時間欄位。
 
 - 修正首次進入會議設定時共用字典 503 會阻擋整個頁面的問題；字典暫時不可用時仍可建立會議。

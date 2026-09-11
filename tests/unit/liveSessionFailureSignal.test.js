@@ -4,6 +4,32 @@ import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
 import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
 
+test('live token setup preserves missing Gemini credential error details', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 409,
+    async json() {
+      return { error: { code: 'gemini_credential_not_configured' } };
+    }
+  });
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+    await assert.rejects(
+      session.getTokenResponse(),
+      (error) => {
+        assert.equal(error.code, 'gemini_credential_not_configured');
+        assert.equal(error.status, 409);
+        assert.equal(error.message, '請先設定 Gemini API Key，再開始即時翻譯。');
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('unexpected close triggers connection failure after cleanup', async () => {
   const events = [];
   const failures = [];

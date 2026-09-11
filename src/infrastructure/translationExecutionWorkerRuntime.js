@@ -4,6 +4,7 @@ import {
   createNoopTranslationExecutionMetrics,
   TRANSLATION_EXECUTION_METRIC_NAMES
 } from '../application/translation/translationExecutionMetrics.js';
+import { OBSERVABILITY_METRIC_NAMES } from '../application/observability/observabilityMetricRegistry.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 1000;
 const PENDING_SCHEDULE = Symbol('pending_schedule');
@@ -26,7 +27,8 @@ export function createTranslationExecutionWorkerRuntime({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
   scheduler = DEFAULT_SCHEDULER,
   logger,
-  metrics = createNoopTranslationExecutionMetrics()
+  metrics = createNoopTranslationExecutionMetrics(),
+  observabilityMetrics
 } = {}) {
   assertTranslationExecutionWorker(translationExecutionWorker);
   assertTranslationExecutionQueue(translationExecutionQueue);
@@ -47,12 +49,14 @@ export function createTranslationExecutionWorkerRuntime({
     }
 
     isStarted = true;
+    safeObsCounter(observabilityMetrics, 'worker_runtime_started_total');
     scheduleNextPoll(false);
   }
 
   function stop() {
     isStarted = false;
     clearScheduledPoll();
+    safeObsCounter(observabilityMetrics, 'worker_runtime_stopped_total');
   }
 
   function isRunning() {
@@ -88,6 +92,7 @@ export function createTranslationExecutionWorkerRuntime({
       timerHandle = scheduler.set(processNextPoll, delayMs);
     }).catch((error) => {
       logRuntimeError(error);
+      safeObsCounter(observabilityMetrics, 'worker_runtime_poll_error_total');
       if (isStarted && timerHandle === scheduleToken) timerHandle = scheduler.set(processNextPoll, pollIntervalMs);
     });
   }
@@ -122,8 +127,10 @@ export function createTranslationExecutionWorkerRuntime({
         await translationExecutionWorker.processNext();
       }
       safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+      safeObsGauge(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
     } catch (error) {
       logRuntimeError(error);
+      safeObsCounter(observabilityMetrics, 'worker_runtime_poll_error_total');
     } finally {
       isProcessing = false;
       scheduleNextPoll(true);
@@ -170,6 +177,7 @@ export function createTranslationExecutionWorkerRuntime({
         processed += 1;
       }
       safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+      safeObsGauge(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
       return { processed, busy: false };
     } finally {
       isProcessing = false;
@@ -191,6 +199,14 @@ function safeSetGauge(metrics, name, value) {
   } catch {
     // Metrics must never break worker polling.
   }
+}
+
+function safeObsCounter(observability, name, amount = 1, labels) {
+  try { observability?.recordCounter?.(name, amount, labels); } catch { /* best effort */ }
+}
+
+function safeObsGauge(observability, name, value, labels) {
+  try { observability?.setGauge?.(name, value, labels); } catch { /* best effort */ }
 }
 
 function assertTranslationExecutionWorker(translationExecutionWorker) {

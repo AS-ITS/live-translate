@@ -793,7 +793,11 @@ async function handleRequestWithSessionReadController(
       const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
       if (observabilityMetricRepository) {
         const metric = `viewer_${telemetry.eventType}_total`;
-        await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
+        try {
+          await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
+        } catch (error) {
+          logEvent({ level: 'warn', event: 'observability_metrics_write_failed', requestId, statusClass: 'other', safeSummary: 'Viewer telemetry persistence failed' });
+        }
       }
       statusCode = 202;
       sendJson(res, statusCode, { accepted: true, requestId }, requestId);

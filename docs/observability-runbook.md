@@ -2,6 +2,8 @@
 
 Metrics are stored in UTC-minute buckets in `observability_metric_buckets`. The RPC uses an atomic upsert, and cleanup removes buckets strictly older than 30 days. Labels are fixed low-cardinality values: `provider`, `operation`, and `status_class`.
 
+Production composition wires the recorder through the translation runner, queue worker, worker runtime, Gemini provider boundary, and Viewer telemetry endpoint. Metric persistence is best-effort and never changes request or execution outcomes.
+
 Useful dashboard queries:
 
 ```sql

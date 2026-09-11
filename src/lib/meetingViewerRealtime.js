@@ -13,6 +13,7 @@ export function createMeetingViewerRealtimeController({
   onSubscribed,
   replayPath = `${basePath}/events`,
   onConnecting,
+  onTelemetry,
   onError,
   fetchImpl = globalThis.fetch,
   client = supabase,
@@ -49,10 +50,13 @@ export function createMeetingViewerRealtimeController({
               async replay(afterEventId = 0) {
                 const response = await fetchImpl(`${replayPath}?after=${encodeURIComponent(afterEventId)}`);
                 if (!response.ok) throw new Error('無法補抓遺失的即時字幕。');
-                return response.json();
+                const result = await response.json();
+                onTelemetry?.('replay_success');
+                return result;
               }
             });
           } catch (error) {
+            onTelemetry?.('replay_failure');
             onError?.(error);
             scheduleReconnect();
             return;
@@ -72,6 +76,7 @@ export function createMeetingViewerRealtimeController({
 
   async function reconnect() {
     if (stopped) return;
+    onTelemetry?.('reconnect');
     generation += 1;
     clearScheduledReconnect();
     const previous = channel;

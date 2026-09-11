@@ -25,6 +25,13 @@ export function meetingEventGapDetected(cursor, eventId) {
   return previous > 0 && Number.isInteger(eventId) && eventId > previous + 1;
 }
 
+export function meetingEventDuplicateDetected(detail, event) {
+  const cueId = event?.cue?.cueId || event?.cueId;
+  if (!cueId) return false;
+  return Array.isArray(detail?.cues) && detail.cues.some((cue) => cue?.cueId === cueId &&
+    (Number(cue?.translationVersion) || 0) >= (Number(event?.cue?.translationVersion) || 0));
+}
+
 export function sortMeetingCues(cues = []) {
   return [...cues].sort((left, right) => (
     (Number(left?.segmentSequence) || 0) - (Number(right?.segmentSequence) || 0) ||

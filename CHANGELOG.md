@@ -1934,3 +1934,4 @@ These items are intentionally deferred:
 # Unreleased
 
 - Added minute-bucket Supabase observability metrics, safe structured logging, readiness dependency hook, and share-scoped Viewer telemetry validation.
+- Completed P1-B observability wiring for worker/runtime lifecycle, Gemini provider status and latency metrics, Viewer reconnect/gap/duplicate/replay telemetry, and best-effort production metric persistence.

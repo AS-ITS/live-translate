@@ -25,6 +25,8 @@ import { createTranscriptPolishingRateLimiter } from '../src/application/transla
 import { createTranslationExecutionRetryPolicy } from '../src/application/translation/translationExecutionRetryPolicy.js';
 import { createTranslationExecutionRetryErrorClassifier } from '../src/application/translation/translationExecutionRetryErrorClassifier.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
+import { createProductionObservability } from '../src/application/observability/productionObservability.js';
+import { createObservedTranslationExecutionProvider } from '../src/application/observability/observedTranslationExecutionProvider.js';
 import { createGeminiClient } from '../src/infrastructure/geminiClient.js';
 import { createGeminiClientAdapter } from '../src/infrastructure/geminiClientAdapter.js';
 import { createGeminiEnvironment } from '../src/infrastructure/geminiEnvironment.js';
@@ -73,6 +75,8 @@ import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.j
 import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
 import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
 import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
+import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
+import { createSupabaseReadinessCheck } from '../src/infrastructure/supabaseReadiness.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -122,6 +126,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
     translationExecutionMetrics,
+    observabilityMetrics,
     translationDomainEventHandlers,
     executionEventBroadcaster,
     savedTranscriptTranslationProvider,
@@ -246,6 +251,7 @@ export function createApplicationDependencies(options = {}) {
     translationExecutionRetryPolicy,
     translationExecutionRetryErrorClassifier,
     translationExecutionMetrics: resolvedTranslationExecutionMetrics,
+    observabilityMetrics,
     translationDomainEventHandlers,
     idGenerator,
     clock,
@@ -457,6 +463,13 @@ export function createProductionApplicationDependencies(options = {}) {
 
   const translationExecutionMetrics = applicationOptions.translationExecutionMetrics
     ?? createTranslationExecutionMetrics({ clock: translationQueueClock.now.bind(translationQueueClock) });
+  const observabilityMetricRepository = applicationOptions.observabilityMetricRepository
+    ?? createSupabaseObservabilityMetricRepository({ env });
+  const observabilityMetrics = applicationOptions.observabilityMetrics
+    ?? createProductionObservability({ repository: observabilityMetricRepository, clock: () => new Date() });
+  applicationOptions.observabilityMetrics = observabilityMetrics;
+  applicationOptions.observabilityMetricRepository = observabilityMetricRepository;
+  applicationOptions.readinessCheck ??= createSupabaseReadinessCheck({ env });
 
   const hasTranslationExecutionProvider = Object.prototype.hasOwnProperty.call(options, 'translationExecutionProvider');
   const hasTranslationExecutionProviderResolver = Object.prototype.hasOwnProperty.call(
@@ -559,7 +572,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const productionTranslationExecutionProviderResolutionComposition =
     hasTranslationExecutionProvider || hasTranslationExecutionProviderResolver
       ? undefined
-      : canCreateProductionProviderComposition ? createProductionTranslationExecutionProviderResolutionComposition({
+  : canCreateProductionProviderComposition ? createProductionTranslationExecutionProviderResolutionComposition({
           env,
           environment: productionEnvironment,
           configuration: productionProviderConfiguration,
@@ -596,6 +609,7 @@ export function createProductionApplicationDependencies(options = {}) {
       geminiClientAdapterFactory,
       geminiSavedTranscriptTranslationCompositionFactory,
       translationProviderConfigurationFactory,
+      observabilityMetrics,
       translationProviderResolutionCompositionFactory,
       glossary: translationGlossary
     },
@@ -866,6 +880,7 @@ export function createTranslationCommandDependencies({
   translationExecutionRetryPolicy,
   translationExecutionRetryErrorClassifier,
   translationExecutionMetrics,
+  observabilityMetrics,
   translationDomainEventHandlers,
   idGenerator = createDefaultIdGenerator(),
   clock = () => Date.now(),
@@ -914,7 +929,8 @@ export function createTranslationCommandDependencies({
             resolvedTranslationExecutionProviderResolver
           ),
           retryPolicy: resolvedRetryPolicy,
-          transcriptPolishingRateLimiter: createTranscriptPolishingRateLimiter({ maxRequestsPerMinute: transcriptPolishingMaxRpm }),
+      transcriptPolishingRateLimiter: createTranscriptPolishingRateLimiter({ maxRequestsPerMinute: transcriptPolishingMaxRpm }),
+      observabilityMetrics,
           ...(translationExecutionFenceGuard !== undefined ? { executionFenceGuard: translationExecutionFenceGuard } : {})
         })
       : undefined);
@@ -937,7 +953,8 @@ export function createTranslationCommandDependencies({
       ? translationExecutionWorkerFactory({
           translationExecutionQueue: resolvedTranslationExecutionQueue,
           translationRepository,
-          translationExecutionRunner: resolvedWorkerTranslationExecutionRunner,
+      translationExecutionRunner: resolvedWorkerTranslationExecutionRunner,
+      observabilityMetrics,
           ...(durableTranslationExecutionQueueRepository !== undefined
             ? { durableTranslationExecutionQueueRepository }
             : {}),
@@ -977,7 +994,8 @@ export function createTranslationCommandDependencies({
                 ...(translationQueueClock !== undefined ? { clock: translationQueueClock.now.bind(translationQueueClock) } : {})
               }
             : {}),
-          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {})
+          ...(translationExecutionMetrics !== undefined ? { metrics: translationExecutionMetrics } : {}),
+          observabilityMetrics
         })
       : undefined);
   const translationCommandService = translationCommandServiceFactory({
@@ -1330,6 +1348,7 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   geminiClientFactory = createGeminiClient,
   geminiTranslationExecutionProviderFactory = createGeminiTranslationExecutionProvider,
   translationProviderConfigurationFactory = createTranslationProviderConfiguration,
+  observabilityMetrics,
   glossary
 } = {}) {
   assertFactory(geminiEnvironmentFactory, 'geminiEnvironmentFactory');
@@ -1351,9 +1370,10 @@ function createProductionTranslationExecutionProviderResolutionComposition({
   const geminiProvider = geminiTranslationExecutionProviderFactory({
     client: geminiClient
   });
+  const observedGeminiProvider = createObservedTranslationExecutionProvider({ provider: geminiProvider, observabilityMetrics });
   const resolver = createProductionTranslationExecutionProviderResolver({
     providers: {
-      [DEFAULT_TRANSLATION_PROVIDER]: geminiProvider
+      [DEFAULT_TRANSLATION_PROVIDER]: observedGeminiProvider
     },
     configuration: resolvedConfiguration
   });

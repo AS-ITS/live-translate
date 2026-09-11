@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected } from '../../lib/meetingViewerState.js';
+import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
+import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
@@ -41,6 +42,7 @@ export function MeetingViewerPage({ token, code }) {
     const basePath = token
       ? `/api/shared-meetings/${encodeURIComponent(token)}`
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
+    const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
     async function fetchSnapshot() {
       const response = await fetch(basePath);
@@ -75,9 +77,11 @@ export function MeetingViewerPage({ token, code }) {
         try {
           const payload = JSON.parse(event.data);
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
+            void telemetry.report('event_gap');
             void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
             return;
           }
+          if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
           applyCuePayload(payload);
         } catch {
           if (!cancelled) setError('無法讀取即時字幕。');
@@ -97,6 +101,7 @@ export function MeetingViewerPage({ token, code }) {
       realtimeController = createMeetingViewerRealtimeController({
         basePath,
         onConnecting: () => { snapshotReady = false; },
+        onTelemetry: (eventType) => { void telemetry.report(eventType); },
         onEvent: (payload) => {
           if (!snapshotReady) bufferedEvents.push(payload);
           else applyCuePayload(payload);

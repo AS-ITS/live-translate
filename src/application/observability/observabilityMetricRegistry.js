@@ -27,6 +27,9 @@ export const OBSERVABILITY_METRIC_NAMES = Object.freeze({
   VIEWER_REPLAY: 'viewer_replay_total',
   VIEWER_REPLAY_FAILURE: 'viewer_replay_failure_total',
   METRICS_WRITE_FAILURE: 'observability_metrics_write_failure_total',
+  WORKER_RUNTIME_STARTED: 'worker_runtime_started_total',
+  WORKER_RUNTIME_STOPPED: 'worker_runtime_stopped_total',
+  WORKER_RUNTIME_POLL_ERROR: 'worker_runtime_poll_error_total',
   VIEWER_REPLAY_SUCCESS: 'viewer_replay_success_total',
   VIEWER_REPLAY_FAILURE: 'viewer_replay_failure_total'
 });
@@ -65,12 +68,13 @@ export function createObservabilityMetricRegistry({ clock = () => new Date(), si
     const key = JSON.stringify([metricName, ...Object.values(labels)]);
     const current = values.get(key) || { metricName, ...labels, count: 0, sumValue: 0, maxValue: 0, gaugeValue: 0, type };
     if (type === 'gauge') current.gaugeValue = value;
+    else if (type === 'counter') current.count += value;
     else { current.count += 1; current.sumValue += value; current.maxValue = Math.max(current.maxValue, value); }
     values.set(key, current);
-    if (typeof sink === 'function') Promise.resolve(sink({ ...current, bucketStart: minuteBucket(at || clock()) })).catch(() => {});
+    if (typeof sink === 'function') Promise.resolve(sink({ metricName, type, ...labels, bucketStart: minuteBucket(at || clock()), count: type === 'gauge' ? 0 : type === 'counter' ? value : 1, sumValue: type === 'latency' ? value : 0, maxValue: type === 'latency' ? value : 0, gaugeValue: type === 'gauge' ? value : null })).catch(() => {});
   };
   return Object.freeze({
-    recordCounter: (metricName, labels) => record(metricName, { ...labels, type: 'counter' }),
+    recordCounter: (metricName, amount = 1, labels = {}) => record(metricName, { ...labels, value: amount, type: 'counter' }),
     recordLatency: (metricName, value, labels) => record(metricName, { ...labels, value, type: 'latency' }),
     setGauge: (metricName, value, labels) => record(metricName, { ...labels, value, type: 'gauge' }),
     snapshot: () => Object.freeze([...values.values()].map((item) => Object.freeze({ ...item }))),

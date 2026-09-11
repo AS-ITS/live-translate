@@ -248,7 +248,7 @@ Frontend testing scope for MVP:
 | Viewer delivery | Local SSE/WebSocket adapters | Supabase Realtime and signed Storage URLs |
 | Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
 
-For a deployment smoke check, verify `/healthz`, `/readyz`, an unauthenticated private API rejection, a valid owner-scoped API request, and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
+For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
 ## Production Gemini Smoke Test
 
 For the first Production Gemini smoke test, keep the request short and avoid

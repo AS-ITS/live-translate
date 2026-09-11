@@ -18,6 +18,7 @@
     "test:integration": "node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/*.test.js",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
     "test:live-smoke": "./scripts/live-meeting-smoke.sh",
+    "test:deployment-preflight": "node scripts/deployment-preflight.js",
     "check": "node --check server/index.js && node --check server/tokenService.js && node --check src/lib/audio.js"
   },
   "dependencies": {

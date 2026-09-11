@@ -142,11 +142,46 @@ export function createTranslationExecutionWorkerRuntime({
     }
   }
 
-  return Object.freeze({
+  async function runOnce({ limit = 1 } = {}) {
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new TypeError('limit must be a positive integer.');
+    }
+    if (isProcessing) {
+      return { processed: 0, busy: true };
+    }
+
+    isProcessing = true;
+    let processed = 0;
+    try {
+      if (durableRepository !== undefined) {
+        const availableItems = await durableRepository.listAvailable(clock());
+        for (const item of availableItems.slice(0, limit)) {
+          if (translationExecutionQueue.size() >= limit) break;
+          await translationExecutionQueue.enqueue({
+            executionId: item.executionId,
+            requestId: item.requestId,
+            ...(item.ownerUserId ? { ownerUserId: item.ownerUserId } : {})
+          });
+        }
+      }
+
+      while (processed < limit && translationExecutionQueue.size() > 0) {
+        await translationExecutionWorker.processNext();
+        processed += 1;
+      }
+      safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+      return { processed, busy: false };
+    } finally {
+      isProcessing = false;
+    }
+  }
+
+return Object.freeze({
     start,
     stop,
     isRunning,
-    wake
+    wake,
+    runOnce
   });
 }
 

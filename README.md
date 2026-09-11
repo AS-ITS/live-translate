@@ -137,6 +137,12 @@ Required cloud variables include `SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
 `kid` matches a Supabase JWT signing key; never expose it through a `VITE_`
 variable.
 
+## Vercel Cron worker
+
+Vercel calls `/api/internal/worker` every minute. Configure `CRON_SECRET` and
+`WORKER_BATCH_SIZE`; the worker processes a bounded batch from the Supabase
+durable queue and does not rely on process-local polling.
+
 ## Tests
 
 Run focused deterministic tests as needed:

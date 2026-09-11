@@ -430,7 +430,7 @@ function parseDotenvValue(value) {
 
 let defaultApplicationDependencies;
 
-function getDefaultApplicationDependencies() {
+export function getDefaultApplicationDependencies() {
   if (defaultApplicationDependencies === undefined) {
     const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
       env: process.env

@@ -8,6 +8,12 @@ Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-creden
 
 ## Realtime subtitle pipeline contract
 
+In cloud mode, execution status changes are persisted in Supabase and clients
+subscribe through Supabase Realtime. REST execution snapshots remain the
+authoritative recovery path after disconnects. The Vercel Cron worker processes
+durable translation jobs in bounded batches and does not rely on process-local
+polling.
+
 The API treats a finalized source Cue as the stable unit of downstream work.
 
 ### Cue read model

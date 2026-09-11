@@ -1,6 +1,9 @@
 # Changelog
 
 ## 2026-09-11
+- Completed P1-B observability closeout: atomic operation-labelled metric buckets, 30-day cleanup isolation, queue/recovery/token/provider/Viewer telemetry wiring, and readiness-safe failure handling.
+
+## 2026-09-11
 
 - Added atomic Supabase translation queue claim, renewal, acknowledgement, and
   expired-lease recovery RPCs with fence-token ownership checks.

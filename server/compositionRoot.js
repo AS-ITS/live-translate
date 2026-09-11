@@ -702,7 +702,8 @@ export function createProductionApplicationDependencies(options = {}) {
           clock: translationQueueClock.now.bind(translationQueueClock),
           leaseDurationMs: queueConfiguration.leaseMs,
           leaseIdFactory: translationQueueLeaseIdFactory,
-          metrics: translationExecutionMetrics
+          metrics: translationExecutionMetrics,
+          observabilityMetrics
         })
       : undefined;
   const translationExecutionWorkerRuntime =

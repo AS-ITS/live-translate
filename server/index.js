@@ -29,6 +29,7 @@ import { createProfileService } from './profileService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
 import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
+import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 
@@ -628,6 +629,7 @@ export function createRequestHandler(options = {}) {
     , profileService = createProfileService()
     , credentialRepository = createGeminiCredentialRepository()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
+    , observabilityMetrics
   , readinessCheck
   , strictCheckpointPathIds = true
   } = options;
@@ -675,6 +677,7 @@ export function createRequestHandler(options = {}) {
       sessionAudioMaxBytes,
       translationExecutionMetrics
       , observabilityMetricRepository
+      , observabilityMetrics
       , readinessCheck
       , accessControl: requestAccessControl
       , profileService
@@ -791,10 +794,17 @@ async function handleRequestWithSessionReadController(
       const share = await resolveSharedMeeting(path, sessionShareService);
       if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
       const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
-      if (observabilityMetricRepository) {
-        const metric = `viewer_${telemetry.eventType}_total`;
+      if (observabilityMetrics || observabilityMetricRepository) {
+        const metric = {
+          reconnect: OBSERVABILITY_METRIC_NAMES.VIEWER_RECONNECT,
+          event_gap: OBSERVABILITY_METRIC_NAMES.VIEWER_GAP,
+          event_duplicate: OBSERVABILITY_METRIC_NAMES.VIEWER_DUPLICATE,
+          replay_success: OBSERVABILITY_METRIC_NAMES.VIEWER_REPLAY_SUCCESS,
+          replay_failure: OBSERVABILITY_METRIC_NAMES.VIEWER_REPLAY_FAILURE
+        }[telemetry.eventType];
         try {
-          await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
+          if (observabilityMetrics) observabilityMetrics.recordCounter(metric, telemetry.count, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.timestampBucket);
+          else await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
         } catch (error) {
           logEvent({ level: 'warn', event: 'observability_metrics_write_failed', requestId, statusClass: 'other', safeSummary: 'Viewer telemetry persistence failed' });
         }
@@ -2191,6 +2201,10 @@ async function handleRequestWithSessionReadController(
       throw createHttpError('gemini_credential_not_configured');
     }
     const token = await liveTokenCreator(tokenRequest, apiKey ? { apiKey } : {});
+    try {
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass: '200' });
+      observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass: '200' });
+    } catch { /* Metrics are best effort. */ }
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);
     logEvent({
@@ -2203,6 +2217,12 @@ async function handleRequestWithSessionReadController(
     });
   } catch (error) {
     const code = errorCodeFor(error);
+    try {
+      const statusClass = providerStatusClass(error?.status || statusCode);
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass });
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_FAILURE, 1, { provider: 'gemini', operation: 'token', statusClass });
+      observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass });
+    } catch { /* Metrics are best effort. */ }
     statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
     if (code === 'provider_unavailable') {
       logProviderError(requestId, error);

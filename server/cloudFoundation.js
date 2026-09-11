@@ -4,7 +4,7 @@ import { createProfileService } from './profileService.js';
 
 const CLOUD_CAPABILITY_ERROR = 'cloud_capability_unavailable';
 
-export function createCloudFoundationHandler({ env = process.env, accessControl = createAccessControl({ env }), profileService = createProfileService({ env }) } = {}) {
+export function createCloudFoundationHandler({ env = process.env, accessControl = createAccessControl({ env }), profileService = createProfileService({ env }), readinessCheck } = {}) {
   return async function cloudFoundationHandler(req, res) {
     const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
     const path = new URL(req.url || '/', 'http://localhost').pathname;
@@ -21,8 +21,13 @@ export function createCloudFoundationHandler({ env = process.env, accessControl 
     }
 
     if (req.method === 'GET' && normalizedPath === '/readyz') {
-      const ready = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL && env.AUTH_ALLOWED_EMAIL_DOMAINS);
-      sendJson(res, ready ? 200 : 503, { ok: ready, requestId, runtime: 'vercel' }, requestId);
+      let ready = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL && env.AUTH_ALLOWED_EMAIL_DOMAINS);
+      let dependencyCode = null;
+      if (ready && typeof readinessCheck === 'function') {
+        try { ready = Boolean(await readinessCheck()); }
+        catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }
+      }
+      sendJson(res, ready ? 200 : 503, ready ? { ok: true, requestId, runtime: 'vercel' } : { ok: false, error: { code: dependencyCode || 'supabase_unavailable' }, requestId }, requestId);
       return;
     }
 

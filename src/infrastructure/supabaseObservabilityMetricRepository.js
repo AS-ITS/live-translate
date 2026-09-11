@@ -17,6 +17,7 @@ export function createSupabaseObservabilityMetricRepository({ env = process.env,
     const normalized = normalizeMetricLabels(labels);
     return client.rpc('record_observability_metric', {
       p_bucket_start: minuteBucket(at), p_instance_id: instanceId, p_metric_name: metricName,
+      p_operation: normalized.operation,
       p_provider: normalized.provider,
       p_status_class: normalized.statusClass, p_count: values.count || 0,
       p_sum_value: values.sumValue || 0, p_max_value: values.maxValue || 0,
@@ -24,6 +25,11 @@ export function createSupabaseObservabilityMetricRepository({ env = process.env,
     });
   }
   return Object.freeze({ recordCounter, recordLatency, setGauge,
-    flush: async (records = []) => Promise.all(records.map((item) => record(item.metricName, item, item, item.bucketStart))),
+    flush: async (records = []) => Promise.all(records.map((item) => record(item.metricName, item, {
+      count: item.count || 0,
+      sumValue: item.sumValue || 0,
+      maxValue: item.maxValue || 0,
+      gaugeValue: item.gaugeValue ?? null
+    }, item.bucketStart))),
     cleanupExpired: () => client.rpc('cleanup_observability_metric_buckets') });
 }

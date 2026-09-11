@@ -67,18 +67,26 @@ export function MeetingViewerPage({ token, code }) {
         if (sample) latencySamplesRef.current.push(sample);
       });
     }
+    let sseConnected = false;
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
       if (cancelled) return;
       eventSourceRef.current?.close();
       const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
       eventSourceRef.current = events;
-      events.onopen = () => setError('');
+      events.onopen = () => {
+        if (sseConnected) void telemetry.report('reconnect');
+        sseConnected = true;
+        setError('');
+      };
       events.addEventListener('cue.append', (event) => {
         try {
           const payload = JSON.parse(event.data);
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
             void telemetry.report('event_gap');
-            void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+          void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+            void telemetry.report('replay_failure');
+            if (!cancelled) setError(value.message);
+          });
             return;
           }
           if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
@@ -88,7 +96,11 @@ export function MeetingViewerPage({ token, code }) {
         }
       });
       events.addEventListener('meeting.gap', () => {
-        void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+        void telemetry.report('event_gap');
+        void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+          void telemetry.report('replay_failure');
+          if (!cancelled) setError(value.message);
+        });
       });
       events.onerror = () => {
         if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');

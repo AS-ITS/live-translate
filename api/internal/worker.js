@@ -24,6 +24,11 @@ export default async function workerHandler(req, res) {
 
   try {
     const dependencies = getDefaultApplicationDependencies();
+    try {
+      await dependencies.observabilityMetrics?.cleanupExpired?.();
+    } catch {
+      // Cleanup is best effort and must not prevent queue processing.
+    }
     const result = await runWithRequestUser({ kind: 'worker' }, () =>
       dependencies.translationExecutionWorkerRuntime.runOnce({ limit })
     );

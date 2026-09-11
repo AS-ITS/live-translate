@@ -350,6 +350,27 @@ function logProviderError(requestId, error) {
   });
 }
 
+function safeRequestErrorSummary(error) {
+  switch (error?.code) {
+    case 'supabase_unavailable':
+      return 'Supabase REST endpoint is unavailable.';
+    case 'supabase_schema_missing':
+      return 'Supabase schema or required table is missing.';
+    case 'supabase_credentials_invalid':
+      return 'Supabase service credentials are invalid.';
+    case 'cloud_capability_unavailable':
+      return 'Cloud capability is unavailable.';
+    case 'auth_required':
+      return 'Authentication is required.';
+    case 'auth_invalid':
+      return 'Authentication token is invalid.';
+    case 'auth_forbidden':
+      return 'Authenticated user is not allowed.';
+    default:
+      return error?.status >= 500 ? 'Internal request failure.' : 'Request rejected.';
+  }
+}
+
 function loadDotenv({ cwd = process.cwd(), env = process.env } = {}) {
   const nodeEnv = env.NODE_ENV || 'development';
   const originalKeys = new Set(Object.keys(env));
@@ -696,6 +717,19 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'warn',
+        event: 'request_rejected',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: code,
+        safeSummary: safeRequestErrorSummary(error),
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
       return;
     }
@@ -703,6 +737,19 @@ async function handleRequestWithSessionReadController(
 
   if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential'].includes(path)) {
     statusCode = 503;
+    logEvent({
+      level: 'error',
+      event: 'request_rejected',
+      requestId,
+      method: req.method,
+      path,
+      statusCode,
+      errorCode: 'cloud_capability_unavailable',
+      safeSummary: 'Cloud capability is disabled by profile-only mode.',
+      durationMs: Math.round(performance.now() - startedAt),
+      clientIp,
+      origin
+    });
     sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     return;
   }
@@ -834,6 +881,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'POST' && path === '/api/sessions') {
+    let sessionCreateError = null;
     try {
       const body = await readJson(req);
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
@@ -861,9 +909,25 @@ async function handleRequestWithSessionReadController(
       statusCode = 201;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
+      sessionCreateError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      const errorCode = sessionCreateError ? errorCodeFor(sessionCreateError) : null;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info',
+        event: 'session_create',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode,
+        safeSummary: sessionCreateError ? safeRequestErrorSummary(sessionCreateError) : null,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }

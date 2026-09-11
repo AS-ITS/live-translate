@@ -30,6 +30,27 @@ test('updates a Session and preserves API error code', async () => {
   );
 });
 
+test('preserves Session API request diagnostics for failed commands', async () => {
+  const client = createSessionCommandApiClient({
+    fetchImpl: async () => response({
+      error: {
+        code: 'supabase_unavailable',
+        message: 'Local Supabase is unavailable.',
+        requestId: 'request-123'
+      }
+    }, { ok: false, status: 503 })
+  });
+
+  await assert.rejects(
+    client.create({ targetLanguageCode: 'en' }),
+    (error) => error.status === 503
+      && error.code === 'supabase_unavailable'
+      && error.requestId === 'request-123'
+      && error.serverMessage === 'Local Supabase is unavailable.'
+      && error.message.includes('Request ID: request-123')
+  );
+});
+
 function response(body, overrides = {}) {
   return {
     ok: true,

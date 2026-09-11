@@ -28,6 +28,9 @@ import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.
 import { createProfileService } from './profileService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
 import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
+import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
+import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -335,8 +338,10 @@ function errorPayload(code, requestId, details) {
   };
 }
 
+const structuredLogger = createStructuredLogger({ service: 'live-translate-api' });
+
 function logEvent(event) {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...event }));
+  structuredLogger.log(event);
 }
 
 function logProviderError(requestId, error) {
@@ -621,7 +626,9 @@ export function createRequestHandler(options = {}) {
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
     , profileService = createProfileService()
-  , credentialRepository = createGeminiCredentialRepository()
+    , credentialRepository = createGeminiCredentialRepository()
+    , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
+  , readinessCheck
   , strictCheckpointPathIds = true
   } = options;
 
@@ -667,6 +674,8 @@ export function createRequestHandler(options = {}) {
       meetingCheckpointMaxBytes,
       sessionAudioMaxBytes,
       translationExecutionMetrics
+      , observabilityMetricRepository
+      , readinessCheck
       , accessControl: requestAccessControl
       , profileService
       , credentialRepository
@@ -708,10 +717,15 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const hasCloudCredentialMode = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY && process.env.SUPABASE_JWKS_URL);
-    const ready = (Boolean(process.env.GEMINI_API_KEY) || hasCloudCredentialMode) && (process.env.NODE_ENV !== 'production' || isAuthConfigured()) && (process.env.NODE_ENV !== 'production' || Boolean(process.env.AUTH_ALLOWED_EMAIL_DOMAINS));
+    const hasSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY);
+    const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
+    let ready = hasSupabase || legacyLocalReady;
+    let dependencyCode = null;
+    if (ready && typeof readinessCheck === 'function') {
+      try { ready = Boolean(await readinessCheck()); } catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }
+    }
     statusCode = ready ? 200 : 503;
-    sendJson(res, statusCode, { ok: ready, requestId }, requestId);
+    sendJson(res, statusCode, ready ? { ok: true, requestId } : { ok: false, error: { code: dependencyCode || 'supabase_unavailable' }, requestId }, requestId);
     return;
   }
 
@@ -767,6 +781,26 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       statusCode = 500;
       sendJson(res, statusCode, errorPayload('internal_error', requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isSharedMeetingTelemetryPath(path)) {
+    try {
+      enforceRateLimit(`${clientIp}:${path}`);
+      const share = await resolveSharedMeeting(path, sessionShareService);
+      if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
+      if (observabilityMetricRepository) {
+        const metric = `viewer_${telemetry.eventType}_total`;
+        await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
+      }
+      statusCode = 202;
+      sendJson(res, statusCode, { accepted: true, requestId }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 400;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -2242,7 +2276,7 @@ function isPublicApiPath(method, path) {
     isSharedSessionEventsPath(path) ||
     isSharedMeetingDetailPath(path) ||
     isSharedMeetingEventsPath(path)
-  )) || (method === 'POST' && isSharedMeetingRealtimeTokenPath(path)) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
+  )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
 function isRecorderAuthorizedPath(method, path, req) {
@@ -3165,6 +3199,11 @@ function isSharedMeetingRealtimeTokenPath(path) {
     (path.split('/').length === 5 || path.split('/').length === 6);
 }
 
+function isSharedMeetingTelemetryPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/events/telemetry') &&
+    (path.split('/').length === 6 || path.split('/').length === 7);
+}
+
 function isSharedMeetingStartPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/start') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
@@ -3188,7 +3227,7 @@ async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token)$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }
@@ -3369,7 +3408,7 @@ if (IS_MAIN) {
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 
   server.listen(SERVER_PORT, SERVER_HOST, () => {
-    console.log(`Live Translate API listening on http://${SERVER_HOST}:${SERVER_PORT}`);
+    structuredLogger.log({ event: 'server_started', safeSummary: `Live Translate API listening on ${SERVER_HOST}:${SERVER_PORT}` });
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

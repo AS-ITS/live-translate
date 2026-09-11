@@ -75,10 +75,15 @@ function segmentRow(entity, ownerUserId) {
 
 async function hydrateSegment(client, row, ownerUserId) {
   const cueRows = await client.request('subtitle_cues', { query: `?select=*&${eq('owner_user_id', ownerUserId)}&${eq('segment_id', row.id)}&order=sequence.asc` });
-  const finalCues = cueRows.filter((cue) => cue.segment_id === row.id).map(cueFromRow);
-  const checkpoint = { ...(row.checkpoint || {}) };
-  if (finalCues.length > 0) checkpoint.finalCues = finalCues;
-  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot: row.settings_snapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
+  const storedCheckpoint = isPersistedCheckpoint(row.checkpoint) ? { ...row.checkpoint } : null;
+  const settingsSnapshot = row.settings_snapshot || {};
+  const finalCues = cueRows
+    .filter((cue) => cue.segment_id === row.id)
+    .map((cue) => cueFromRow(cue, { settingsSnapshot, mode: storedCheckpoint?.mode }));
+  const checkpoint = finalCues.length > 0
+    ? { ...(storedCheckpoint || { durableChunks: [], pendingPartial: null }), finalCues }
+    : storedCheckpoint;
+  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
 }
 
 function meetingFromRow(row) {
@@ -92,7 +97,7 @@ async function persistCues(client, entity, ownerUserId) {
   await client.request('subtitle_cues', {
     method: 'POST',
     headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
-    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText, translated_text: cue.translatedText || null, source_version: cue.sourceVersion || 1, translation_version: cue.translationVersion || 0, started_at: toSupabaseTimestamp(cue.startTimeMs), ended_at: toSupabaseTimestamp(cue.endTimeMs) }))
+    body: cues.map((cue) => ({ id: cue.cueId, owner_user_id: ownerUserId, session_id: cue.sessionId, segment_id: entity.id, sequence: cue.sequence, source_text: cue.sourceText, translated_text: cue.translatedText || null, source_version: cue.sourceVersion || 1, translation_version: cue.translationVersion || 0, started_at: cue.startTimeMs, ended_at: cue.endTimeMs }))
   });
 }
 
@@ -106,6 +111,40 @@ function toSupabaseTimestamp(value) {
   return value;
 }
 
-function cueFromRow(row) {
-  return { cueId: row.id, sessionId: row.session_id, segmentId: row.segment_id, sequence: row.sequence, sourceText: row.source_text, translatedText: row.translated_text || '', status: 'final', startTimeMs: row.started_at, endTimeMs: row.ended_at, rawSource: row.source_text, rawTranslation: row.translated_text || '' };
+function cueFromRow(row, { settingsSnapshot = {}, mode = null } = {}) {
+  const transcription = mode === 'transcription' || row.mode === 'transcription' || row.target_language_code === null;
+  const sourceLanguageCode = row.source_language_code || settingsSnapshot.sourceLanguageCode;
+  const targetLanguageCode = transcription ? null : (row.target_language_code || settingsSnapshot.targetLanguageCode);
+  return {
+    cueId: row.id,
+    sessionId: row.session_id,
+    segmentId: row.segment_id,
+    sequence: row.sequence,
+    sourceText: row.source_text,
+    translatedText: row.translated_text || '',
+    status: 'final',
+    startTimeMs: toMilliseconds(row.started_at),
+    endTimeMs: toMilliseconds(row.ended_at),
+    sourceLanguageCode,
+    targetLanguageCode,
+    ...(transcription ? { mode: 'transcription' } : {}),
+    rawSource: row.source_text,
+    rawTranslation: row.translated_text || '',
+    finalizedReason: 'final'
+  };
+}
+
+function toMilliseconds(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value)) return Number(value);
+  const milliseconds = Date.parse(value);
+  return Number.isNaN(milliseconds) ? value : milliseconds;
+}
+
+function isPersistedCheckpoint(value) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Array.isArray(value.durableChunks);
 }

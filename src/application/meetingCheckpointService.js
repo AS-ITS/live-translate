@@ -150,7 +150,9 @@ export function createMeetingCheckpointService({
       return {
         meetingId: segment.meetingId,
         segmentId: segment.id,
-        checkpoint: normalizeStoredCheckpoint(segment.checkpoint, segment.meetingId, segment.id)
+      checkpoint: segment.checkpoint === null || segment.checkpoint === undefined
+        ? null
+        : normalizeStoredCheckpoint(segment.checkpoint, segment.meetingId, segment.id)
       };
     },
 

@@ -1,4 +1,3 @@
-import crypto from 'node:crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 export const ACCESS_CONTROL_ERRORS = Object.freeze({
@@ -18,8 +17,7 @@ export function createAccessControl({ env = process.env } = {}) {
 
   return Object.freeze({
     isConfigured() {
-      return Boolean(jwks && env.SUPABASE_URL) ||
-        (typeof env.DEMO_ACCESS_TOKEN === 'string' && env.DEMO_ACCESS_TOKEN.length > 0);
+      return Boolean(jwks && env.SUPABASE_URL);
     },
 
     async validateRequest(req) {
@@ -28,44 +26,27 @@ export function createAccessControl({ env = process.env } = {}) {
         return;
       }
 
-      const authorization = typeof req?.headers?.authorization === 'string'
-        ? req.headers.authorization
-        : '';
+      const authorization = typeof req?.headers?.authorization === 'string' ? req.headers.authorization : '';
       const bearerToken = authorization.startsWith('Bearer ')
         ? authorization.slice('Bearer '.length)
         : '';
-      const demoToken = typeof env.DEMO_ACCESS_TOKEN === 'string' &&
-        typeof req?.headers?.['x-demo-access-token'] === 'string'
-        ? req.headers['x-demo-access-token']
-        : '';
-      const candidate = bearerToken || demoToken;
-      if (!candidate) throw accessError('auth_required');
+      if (!bearerToken) throw accessError('auth_required');
 
-      if (jwks) {
-        let claims;
-        try {
-          ({ payload: claims } = await jwtVerify(candidate, jwks, {
-            issuer: `${String(env.SUPABASE_URL).replace(/\/$/, '')}/auth/v1`,
-            audience: 'authenticated',
-          }));
-        } catch {
-          throw accessError('auth_invalid');
-        }
-
-        const email = claims.email || claims.user_metadata?.email;
-        if (claims.role !== 'authenticated' || typeof claims.sub !== 'string' ||
-          !email || !isAllowedEmailDomain(email, env.AUTH_ALLOWED_EMAIL_DOMAINS)) {
-          throw accessError('auth_forbidden');
-        }
-        return Object.freeze({ id: claims.sub, email, claims });
-      }
-
-      const expected = Buffer.from(env.DEMO_ACCESS_TOKEN || '');
-      const actual = Buffer.from(candidate);
-      if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+      let claims;
+      try {
+        ({ payload: claims } = await jwtVerify(bearerToken, jwks, {
+          issuer: `${String(env.SUPABASE_URL).replace(/\/$/, '')}/auth/v1`,
+          audience: 'authenticated',
+        }));
+      } catch {
         throw accessError('auth_invalid');
       }
-      return Object.freeze({ id: null, email: null, claims: { role: 'authenticated' } });
+
+      const email = claims.email || claims.user_metadata?.email;
+      if (claims.role !== 'authenticated' || typeof claims.sub !== 'string' || !email || !isAllowedEmailDomain(email, env.AUTH_ALLOWED_EMAIL_DOMAINS)) {
+        throw accessError('auth_forbidden');
+      }
+      return Object.freeze({ id: claims.sub, email, claims });
     },
   });
 }

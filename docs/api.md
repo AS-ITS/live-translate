@@ -208,7 +208,7 @@ device metadata.
 
 `WS /api/sessions/:sessionId/execution-events` streams execution status for one
 Session. The first message must be
-`{"type":"auth","token":"<DEMO_ACCESS_TOKEN>"}`; invalid or missing
+`{"type":"auth","token":"<supabase-access-token>"}`; invalid or missing
 authentication closes the connection. The token is never placed in the URL.
 
 Messages are safe snapshots containing no stack traces, API keys, ephemeral
@@ -1043,7 +1043,7 @@ Malformed session identifiers return `400 invalid_request`.
 ## Access control
 
 Private `/api/*` routes require `Authorization: Bearer <supabase-access-token>`.
-The legacy `X-Demo-Access-Token` header remains accepted for compatibility.
+The same Supabase access token is used for HTTP and execution-events WebSocket authentication.
 Supabase validation checks signature, issuer, audience, expiry, the
 `authenticated` role, and `AUTH_ALLOWED_EMAIL_DOMAINS`, returning fixed
 `401 auth_required`, `401 auth_invalid`, or `403 auth_forbidden` errors.

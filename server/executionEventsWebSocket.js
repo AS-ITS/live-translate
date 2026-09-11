@@ -14,10 +14,6 @@ export function attachExecutionEventsWebSocket({ server, accessControl, sessionR
   });
 
   webSocketServer.on('connection', async (client, request, sessionId) => {
-    if (process.env.P1_PROFILE_ONLY === 'true' || process.env.SUPABASE_JWKS_URL) {
-      client.close(1013, 'cloud_capability_unavailable');
-      return;
-    }
     let authenticated = false;
     let unsubscribe = null;
     const authTimeout = setTimeout(() => closeUnauthorized(), 5000);

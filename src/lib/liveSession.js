@@ -1982,8 +1982,8 @@ function createDefaultSessionClock() {
 
 function userMessageForErrorCode(code) {
   const messages = {
-    auth_required: '此示範尚未設定存取權限。請聯絡管理員。',
-    auth_invalid: '此示範尚未設定存取權限。請聯絡管理員。',
+    auth_required: '登入狀態已失效，請重新登入。',
+    auth_invalid: '登入狀態已失效，請重新登入。',
     auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
     invalid_origin: '此網站不允許請求即時翻譯。',
     provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',

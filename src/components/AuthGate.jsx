@@ -108,7 +108,18 @@ export function AuthGate({ children }) {
       }
     })
   }), [session, profile]);
-  if (!isSupabaseConfigured()) return children;
+  if (!isSupabaseConfigured()) {
+    return (
+      <AuthShell>
+        <AuthBrand />
+        <div className="auth-form-content">
+          <p className="auth-eyebrow">WORKSPACE ACCESS</p>
+          <h1 id="auth-title">登入服務尚未設定</h1>
+          <p className="auth-description">請設定 Supabase 登入後重新載入頁面。</p>
+        </div>
+      </AuthShell>
+    );
+  }
   if (loading) {
     return (
       <AuthShell>

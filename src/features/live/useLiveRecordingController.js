@@ -47,6 +47,19 @@ const MEETING_CHECKPOINT_SYNC_DELAY_MS = 5000;
  * the boundary explicit also lets the lifecycle implementation move here in
  * small batches without changing the page contract.
  */
+function isPersistableFinalCue(cue) {
+  return Boolean(
+    cue
+    && typeof cue.cueId === 'string' && cue.cueId.trim() !== ''
+    && typeof cue.sessionId === 'string' && cue.sessionId.trim() !== ''
+    && typeof cue.segmentId === 'string' && cue.segmentId.trim() !== ''
+    && Number.isInteger(cue.sequence) && cue.sequence > 0
+    && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
+    && typeof (cue.sourceText || cue.rawSource) === 'string'
+    && (cue.sourceText || cue.rawSource).trim() !== ''
+  );
+}
+
 export function useLiveRecordingController({
   routeMeetingId = null,
   targetLanguageCode = 'en',
@@ -814,6 +827,31 @@ export function useLiveRecordingController({
       } catch (error) {
         await session?.stop().catch(() => {});
         if (recovery.sessionStopRequestedRef.current) return;
+        if (error?.code === 'meeting_segment_invalid_state' && routeMeetingId) {
+          try {
+            const latestSegments = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: routeMeetingId });
+            const resumableSegment = [...latestSegments.segments].reverse().find((segment) => segment.status === 'active' && segment.liveSessionId);
+            if (resumableSegment) {
+              recovery.activeMeetingCheckpointRef.current = { meetingId: routeMeetingId, segmentId: resumableSegment.id };
+              recovery.setResumeDraft?.({
+                sessionId: await recovery.findActiveMeetingSessionId?.(routeMeetingId),
+                meetingId: routeMeetingId,
+                segmentId: resumableSegment.id,
+                transcriptState: recovery.getTranscriptState?.(),
+                hasTranscript: false,
+                hasBoundLiveSession: true
+              });
+              recovery.setStatus('idle');
+              recovery.setError('此會議已有正在錄製的段落，已切換為「繼續錄製」流程。');
+              return;
+            }
+            recovery.setStatus('idle');
+            recovery.setError('此會議目前沒有可恢復的錄音段落，請返回會議管理。');
+            return;
+          } catch {
+            // Fall through to the normal start failure cleanup and message.
+          }
+        }
         if (record?.id) {
           recovery.sessionControlLeaseRef.current?.release(record.id);
           recovery.setHasSessionControl(false);
@@ -961,7 +999,7 @@ export function useLiveRecordingController({
               idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
               durableChunks: [],
               pendingPartial: null,
-              finalCues: preparedCueState.finalCues.filter((item) => item.segmentId === draft.segmentId),
+      finalCues: preparedCueState.finalCues.filter((item) => item.segmentId === draft.segmentId && isPersistableFinalCue(item)),
               cueCheckpoint: recovery.cueCheckpointForState(preparedCueState)
             },
             nextLiveSessionId,

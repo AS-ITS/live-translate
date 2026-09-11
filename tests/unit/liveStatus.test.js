@@ -1,6 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { composeCheckpointStatusMessage, hasAudioStatusError } from '../../src/features/live/liveStatus.js';
+import test from 'node:test';
+import { composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
 
 test('composes checkpoint and active audio status messages', () => {
   assert.deepEqual(composeCheckpointStatusMessage({
@@ -27,4 +27,25 @@ test('reports audio errors only for enabled input or translated audio', () => {
     recordingState: { status: 'error' },
     translatedAudioState: { status: 'idle' }
   }), true);
+});
+
+test('maps checkpoint validation errors to safe Chinese messages', () => {
+  assert.equal(meetingCheckpointErrorMessageFor({ status: 400, code: 'subtitle_cue_invalid' }), '字幕資料格式無效，請重新開始錄製。');
+  assert.equal(meetingCheckpointErrorMessageFor({ status: 400, code: 'invalid_json' }), 'checkpoint 請求格式無效。');
+  assert.equal(meetingCheckpointErrorMessageFor({ status: 400, code: 'invalid_request' }), 'checkpoint 請求內容不完整。');
+  assert.equal(meetingCheckpointErrorMessageFor({ status: 400, code: 'internal_error' }), 'checkpoint 請求無效，請重新開始錄製。');
+  assert.equal(meetingCheckpointErrorMessageFor({ status: 500, code: 'subtitle_cue_invalid' }), '字幕資料格式無效，請重新開始錄製。');
+});
+
+test('includes checkpoint error details in the live status message', () => {
+  assert.deepEqual(composeCheckpointStatusMessage({
+    meetingCheckpointStatus: 'error',
+    checkpointErrorMessage: '字幕資料格式無效，請重新開始錄製。（請提供 Request ID：request-1）',
+    shouldRecordInputAudio: false,
+    recordingState: { status: 'idle' },
+    translatedAudioState: { status: 'idle' }
+  }), [
+    '會議模式：保存失敗，等待重試',
+    '字幕資料格式無效，請重新開始錄製。（請提供 Request ID：request-1）'
+  ]);
 });

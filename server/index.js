@@ -147,7 +147,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -165,7 +165,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -182,7 +182,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -296,11 +296,12 @@ function enforceRateLimit(clientIp) {
   }
 }
 
-function createHttpError(code) {
+function createHttpError(code, details = null) {
   const template = ERROR_RESPONSES[code] || ERROR_RESPONSES.internal_error;
   const error = new Error(template.message);
   error.status = template.status;
   error.code = code;
+  if (Array.isArray(details) && details.length > 0) error.details = details;
   return error;
 }
 
@@ -619,7 +620,8 @@ export function createRequestHandler(options = {}) {
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
     , profileService = createProfileService()
-    , credentialRepository = createGeminiCredentialRepository()
+  , credentialRepository = createGeminiCredentialRepository()
+  , strictCheckpointPathIds = true
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -666,6 +668,7 @@ export function createRequestHandler(options = {}) {
       , accessControl: requestAccessControl
       , profileService
       , credentialRepository
+      , strictCheckpointPathIds
     });
   };
 }
@@ -677,7 +680,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository() } = {}
+    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1523,6 +1526,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'POST' && isMeetingSegmentStartPath(path)) {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentStartPath(path);
@@ -1531,9 +1535,25 @@ async function handleRequestWithSessionReadController(
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      const errorCode = meetingCheckpointError ? errorCodeFor(meetingCheckpointError) : null;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info',
+        event: 'meeting_segment_start',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode,
+        errorMessage: meetingCheckpointError ? (ERROR_RESPONSES[errorCode]?.message || 'Meeting segment start failed.') : null,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }
@@ -1581,9 +1601,11 @@ async function handleRequestWithSessionReadController(
 
   if ((req.method === 'GET' || req.method === 'PUT') && isMeetingSegmentCheckpointPath(path)) {
     let meetingCheckpointError = null;
+    let checkpointParams = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
-      const { meetingId, segmentId } = parseMeetingSegmentCheckpointPath(path);
+      checkpointParams = parseMeetingSegmentCheckpointPath(path, { strictIds: strictCheckpointPathIds });
+      const { meetingId, segmentId } = checkpointParams;
       if (req.method === 'PUT') {
         await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       }
@@ -1600,8 +1622,30 @@ async function handleRequestWithSessionReadController(
       meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
+      const checkpointErrorCode = meetingCheckpointError ? errorCodeFor(meetingCheckpointError) : null;
+      if (meetingCheckpointError && statusCode >= 400 && statusCode < 500 && ['invalid_request', 'subtitle_cue_invalid'].includes(checkpointErrorCode)) {
+        const query = new URL(req.url || '/', 'http://localhost').search;
+        if (!checkpointParams && checkpointErrorCode === 'invalid_request') {
+          try {
+            checkpointParams = parseMeetingSegmentCheckpointPath(path, { strictIds: false });
+          } catch {
+            checkpointParams = null;
+          }
+        }
+        logEvent({
+          level: 'warn',
+          event: 'checkpoint-validation-failed',
+          requestId,
+          method: req.method,
+          path,
+          params: checkpointParams,
+          query,
+          bodyPresence: Number(req.headers?.['content-length'] || 0) > 0,
+          validationIssues: meetingCheckpointError.details || [meetingCheckpointError.message]
+        });
+      }
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
@@ -2460,17 +2504,23 @@ function parseMeetingCompletePath(path) {
   };
 }
 
-function parseMeetingSegmentCheckpointPath(path) {
+function parseMeetingSegmentCheckpointPath(path, { strictIds = true } = {}) {
   const prefix = '/api/meetings/';
   const suffix = '/checkpoint';
   const body = path.slice(prefix.length, -suffix.length);
   const separator = body.indexOf('/segments/');
   if (separator <= 0) throw createHttpError('invalid_request');
 
-  return {
-    meetingId: safeDecodePathComponent(body.slice(0, separator)),
-    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
-  };
+  const meetingId = safeDecodePathComponent(body.slice(0, separator));
+  const segmentId = safeDecodePathComponent(body.slice(separator + '/segments/'.length));
+  if (!meetingId) throw createHttpError('invalid_request', ['meetingId must be a non-empty path parameter.']);
+  if (!segmentId) throw createHttpError('invalid_request', ['segmentId must be a non-empty path parameter.']);
+  if (strictIds) {
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    if (!uuidPattern.test(meetingId)) throw createHttpError('invalid_request', ['meetingId must be a valid UUID.']);
+    if (!uuidPattern.test(segmentId)) throw createHttpError('invalid_request', ['segmentId must be a valid UUID.']);
+  }
+  return { meetingId, segmentId };
 }
 
 function parseMeetingSegmentRolloverPath(path) {

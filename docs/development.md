@@ -53,7 +53,6 @@ dev_backend_origin=http://127.0.0.1:3000
 DATA_DIR=./data
 SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
-DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 ```
 
 ## Vercel and Supabase foundation
@@ -84,7 +83,7 @@ non-secret template.
 Supabase mode requires a valid JWT, the `authenticated` role, and an email in
 `AUTH_ALLOWED_EMAIL_DOMAINS`. P1 enables only `GET /api/profile`; other private
 capabilities return `503 cloud_capability_unavailable` until ownership adapters
-are implemented. The legacy demo token remains only as a local fallback.
+are implemented. Supabase access tokens are required for all authenticated flows.
 
 ## P2 Cloud Data Mode
 

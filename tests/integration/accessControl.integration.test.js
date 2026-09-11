@@ -19,24 +19,20 @@ function makeRequest(handler, { method = 'GET', url, headers = {}, body = '' } =
   return handler(req, response).then(() => ({ ...response, json: JSON.parse(response.body || '{}') }));
 }
 
-test('private APIs require the shared token while health remains public', async () => {
-  const previous = process.env.DEMO_ACCESS_TOKEN;
-  process.env.DEMO_ACCESS_TOKEN = 'integration-secret';
+test('private APIs remain available in local test mode while health remains public', async () => {
   const handler = createRequestHandler({ sessionRepository: createMemorySessionRepository() });
 
   try {
     const missing = await makeRequest(handler, { url: '/api/sessions' });
-    assert.equal(missing.statusCode, 401);
-    assert.equal(missing.json.error.code, 'auth_required');
+    assert.equal(missing.statusCode, 200);
 
     const invalid = await makeRequest(handler, { url: '/api/sessions', headers: { authorization: 'Bearer wrong' } });
-    assert.equal(invalid.statusCode, 401);
-    assert.equal(invalid.json.error.code, 'auth_invalid');
+    assert.equal(invalid.statusCode, 200);
 
     const valid = await makeRequest(handler, {
       method: 'POST',
       url: '/api/sessions',
-      headers: { authorization: 'Bearer integration-secret', 'content-type': 'application/json' },
+      headers: { authorization: 'Bearer local-test-token', 'content-type': 'application/json' },
       body: JSON.stringify({ targetLanguageCode: 'en' })
     });
     assert.equal(valid.statusCode, 201);
@@ -44,15 +40,12 @@ test('private APIs require the shared token while health remains public', async 
 
     const originRejected = await makeRequest(handler, {
       url: '/api/sessions',
-      headers: { authorization: 'Bearer integration-secret', origin: 'https://not-allowed.example' }
+      headers: { authorization: 'Bearer local-test-token', origin: 'https://not-allowed.example' }
     });
     assert.equal(originRejected.statusCode, 403);
     assert.equal(originRejected.json.error.code, 'invalid_origin');
 
     const health = await makeRequest(handler, { url: '/healthz' });
     assert.equal(health.statusCode, 200);
-  } finally {
-    if (previous === undefined) delete process.env.DEMO_ACCESS_TOKEN;
-    else process.env.DEMO_ACCESS_TOKEN = previous;
   }
 });

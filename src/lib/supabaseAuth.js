@@ -4,16 +4,16 @@ const supabaseUrl = import.meta.env?.VITE_SUPABASE_URL;
 const supabasePublishableKey = import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY;
 
 export const supabase = supabaseUrl && supabasePublishableKey
-  ? createClient(supabaseUrl, supabasePublishableKey, { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true, detectSessionInUrl: true } })
+  ? createClient(supabaseUrl, supabasePublishableKey, {
+      auth: {
+        flowType: 'pkce',
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
+      },
+    })
   : null;
 
 export function isSupabaseConfigured() {
   return Boolean(supabase);
-}
-
-export let currentSupabaseSession = null;
-
-if (supabase) {
-  supabase.auth.getSession().then(({ data }) => { currentSupabaseSession = data.session; });
-  supabase.auth.onAuthStateChange((_event, session) => { currentSupabaseSession = session; });
 }

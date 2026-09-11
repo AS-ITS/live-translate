@@ -33,6 +33,18 @@ export function meetingCheckpointStatusLabel(status) {
   return MEETING_CHECKPOINT_STATUS_LABELS[status] || MEETING_CHECKPOINT_STATUS_LABELS.idle;
 }
 
+export function meetingCheckpointErrorMessageFor(error) {
+  const messages = {
+    subtitle_cue_invalid: '字幕資料格式無效，請重新開始錄製。',
+    invalid_json: 'checkpoint 請求格式無效。',
+    invalid_request: 'checkpoint 請求內容不完整。'
+  };
+  if (error?.status === 400 || messages[error?.code]) {
+    return messages[error?.code] || 'checkpoint 請求無效，請重新開始錄製。';
+  }
+  return '';
+}
+
 export function recordingStatusLabel(status) {
   return RECORDING_STATUS_LABELS[status] || RECORDING_STATUS_LABELS.idle;
 }
@@ -43,11 +55,13 @@ export function translatedAudioStatusLabel(status) {
 
 export function composeCheckpointStatusMessage({
   meetingCheckpointStatus,
+  checkpointErrorMessage = '',
   shouldRecordInputAudio,
   recordingState,
   translatedAudioState
 }) {
   const messages = [meetingCheckpointStatusLabel(meetingCheckpointStatus)];
+  if (checkpointErrorMessage) messages.push(checkpointErrorMessage);
   const inputAudioIsActive = shouldRecordInputAudio && ['recording', 'paused', 'finalizing', 'ready', 'saved', 'error'].includes(recordingState?.status);
   const translationAudioIsActive = ['recording', 'ready', 'saved', 'error'].includes(translatedAudioState?.status);
 

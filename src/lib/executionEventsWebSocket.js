@@ -28,7 +28,7 @@ export function subscribeToExecutionEvents({
     onStatus('connecting');
     socket = new WebSocketImpl(webSocketUrl(baseUrl, sessionId));
     socket.addEventListener('open', async () => {
-      socket.send(JSON.stringify({ type: 'auth', token: tokenFromHeaders() }));
+      socket.send(JSON.stringify({ type: 'auth', token: await tokenFromHeaders() }));
       reconnectAttempts = 0;
       stopPolling();
       try { await refetch(); } catch { /* REST remains available on the next event/poll. */ }
@@ -77,8 +77,8 @@ export function subscribeToExecutionEvents({
   }
 }
 
-function tokenFromHeaders() {
-  const authorization = accessTokenHeaders({}).Authorization || '';
+async function tokenFromHeaders() {
+  const authorization = (await accessTokenHeaders({})).Authorization || '';
   return authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
 }
 

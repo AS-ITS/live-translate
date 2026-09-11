@@ -41,3 +41,61 @@ test('Supabase meeting repository serializes numeric timestamps for Postgres', a
   assert.equal(body[0].created_at, '2026-09-11T03:55:06.814Z');
   assert.equal(body[0].updated_at, '2026-09-11T03:55:06.814Z');
 });
+
+test('Supabase meeting repository hydrates Cue offsets and language settings', async () => {
+  const repository = createSupabaseMeetingRepository({
+    env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        if (url.includes('/subtitle_cues?')) return [{
+          id: 'cue-1', session_id: 'session-1', segment_id: 'segment-1', sequence: 1,
+          source_text: '你好', translated_text: 'hello', started_at: '1200', ended_at: 2500
+        }];
+        return [{
+          id: 'segment-1', meeting_id: 'meeting-1', sequence: 0, status: 'completed',
+          started_at: '2026-09-11T00:00:00.000Z', ended_at: '2026-09-11T00:01:00.000Z',
+          created_at: '2026-09-11T00:00:00.000Z', updated_at: '2026-09-11T00:01:00.000Z',
+          settings_snapshot: { sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+          checkpoint: {}
+        }];
+      }
+    })
+  });
+
+  setRequestUser({ id: 'user-a' });
+  const segment = await repository.getMeetingSegment('segment-1');
+  setRequestUser(null);
+
+  assert.deepEqual(segment.checkpoint.finalCues[0], {
+    cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
+    sourceText: '你好', translatedText: 'hello', status: 'final', startTimeMs: 1200,
+    endTimeMs: 2500, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+    rawSource: '你好', rawTranslation: 'hello', finalizedReason: 'final'
+  });
+});
+
+test('Supabase meeting repository treats an empty checkpoint row as no checkpoint', async () => {
+  const repository = createSupabaseMeetingRepository({
+    env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        if (url.includes('/subtitle_cues?')) return [];
+        return [{
+          id: 'segment-1', meeting_id: 'meeting-1', sequence: 0, status: 'active',
+          started_at: '2026-09-11T00:00:00.000Z', checkpoint: {}, settings_snapshot: {},
+          created_at: '2026-09-11T00:00:00.000Z', updated_at: '2026-09-11T00:00:00.000Z'
+        }];
+      }
+    })
+  });
+
+  setRequestUser({ id: 'user-a' });
+  const segment = await repository.getMeetingSegment('segment-1');
+  setRequestUser(null);
+
+  assert.equal(segment.checkpoint, null);
+});

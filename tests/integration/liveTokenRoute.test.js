@@ -80,7 +80,6 @@ test.beforeEach(() => {
 test.afterEach(() => {
   resetMock();
   delete process.env.GEMINI_API_KEY;
-  delete process.env.DEMO_ACCESS_TOKEN;
   delete process.env.RATE_LIMIT_MAX;
   delete process.env.RATE_LIMIT_WINDOW_MS;
   delete process.env.dev_frontend_origin;
@@ -192,28 +191,6 @@ test('POST /api/live-token returns structured error response for invalid JSON', 
 
   assert.equal(response.status, 400);
   assert.equal(body.error.code, 'invalid_json');
-});
-
-test('POST /api/live-token requires configured demo access token', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
-  process.env.DEMO_ACCESS_TOKEN = 'demo-secret';
-
-  const missingResponse = await postJson({ targetLanguageCode: 'en' });
-  assert.equal(missingResponse.status, 401);
-  assert.equal(missingResponse.json().error.code, 'auth_required');
-
-  const invalidResponse = await request({
-    body: JSON.stringify({ targetLanguageCode: 'en' }),
-    headers: { 'x-demo-access-token': 'wrong-secret' }
-  });
-  assert.equal(invalidResponse.status, 401);
-  assert.equal(invalidResponse.json().error.code, 'auth_invalid');
-
-  const validResponse = await request({
-    body: JSON.stringify({ targetLanguageCode: 'en' }),
-    headers: { authorization: 'Bearer demo-secret' }
-  });
-  assert.equal(validResponse.status, 200);
 });
 
 test('POST /api/live-token rejects disallowed origin', async () => {

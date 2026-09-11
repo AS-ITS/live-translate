@@ -109,7 +109,6 @@ secrets:
 DATA_DIR=/var/data
 TRANSLATION_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
-DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 ```
 
 Attach a Render Persistent Disk mounted at `/var/data` when saved sessions,

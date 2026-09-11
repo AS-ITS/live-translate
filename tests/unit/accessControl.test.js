@@ -6,18 +6,24 @@ function request(headers = {}) {
   return { headers };
 }
 
-test('access control accepts Bearer and demo headers', async () => {
+test('access control requires Supabase configuration in production', async () => {
   const access = createAccessControl({ env: { NODE_ENV: 'production', DEMO_ACCESS_TOKEN: 'secret-token' } });
-  await assert.doesNotReject(access.validateRequest(request({ authorization: 'Bearer secret-token' })));
-  await assert.doesNotReject(access.validateRequest(request({ 'x-demo-access-token': 'secret-token' })));
-  await assert.rejects(access.validateRequest(request()), { code: 'auth_required', status: 401 });
+  assert.equal(access.isConfigured(), false);
+  await assert.rejects(access.validateRequest(request()), { code: 'auth_not_configured', status: 503 });
+});
+
+test('access control does not accept demo token headers', async () => {
+  const access = createAccessControl({ env: {
+    NODE_ENV: 'production',
+    SUPABASE_URL: 'https://project.supabase.co',
+    SUPABASE_JWKS_URL: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+    AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
+    DEMO_ACCESS_TOKEN: 'secret-token',
+  } });
+  await assert.rejects(access.validateRequest(request({ 'x-demo-access-token': 'secret-token' })), { code: 'auth_required', status: 401 });
   await assert.rejects(access.validateRequest(request({ authorization: 'Bearer wrong' })), { code: 'auth_invalid', status: 401 });
 });
 
-test('access control handles missing production configuration', async () => {
-  await assert.rejects(
-    createAccessControl({ env: { NODE_ENV: 'production' } }).validateRequest(request()),
-    { code: 'auth_not_configured', status: 503 },
-  );
+test('unconfigured non-production access remains available to local test adapters', async () => {
   await assert.doesNotReject(createAccessControl({ env: { NODE_ENV: 'test' } }).validateRequest(request()));
 });

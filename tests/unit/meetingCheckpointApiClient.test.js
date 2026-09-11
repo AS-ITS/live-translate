@@ -50,10 +50,21 @@ test('meeting checkpoint API client lists meeting segments and reads checkpoints
 
   assert.equal(segments.segments[0].id, 'segment-1');
   assert.equal(checkpoint.checkpoint.durableChunks[0].idempotencyKey, 'chunk-1');
+  assert.equal(calls[1].options.body, undefined);
+  assert.equal(calls[1].options.headers.Accept, 'application/json');
   assert.deepEqual(calls.map(({ url, options }) => ({ url, method: options.method })), [
     { url: '/api/meetings/meeting-1/segments', method: 'GET' },
     { url: '/api/meetings/meeting-1/segments/segment-1/checkpoint', method: 'GET' }
   ]);
+});
+
+test('meeting checkpoint API client accepts an empty checkpoint response', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ok({ meetingId: 'meeting-1', segmentId: 'segment-1', checkpoint: null })
+  });
+
+  const result = await client.getCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1' });
+  assert.equal(result.checkpoint, null);
 });
 
 test('meeting checkpoint API client completes a meeting', async () => {
@@ -242,6 +253,31 @@ test('meeting checkpoint API client preserves server error diagnostics', async (
   await assert.rejects(
     client.updateCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'checkpoint-1', durableChunks: [] }),
     (error) => error.status === 413 && error.code === 'request_too_large' && error.requestId === 'request-413'
+  );
+});
+
+test('meeting checkpoint API client preserves structured checkpoint error details', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 400,
+      headers: { get: () => null },
+      json: async () => ({ error: {
+        code: 'subtitle_cue_invalid',
+        message: 'Subtitle cue is invalid.',
+        requestId: 'request-cue-400',
+        details: ['segmentId must be a valid UUID.']
+      } })
+    })
+  });
+
+  await assert.rejects(
+    client.updateCheckpoint({ meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'checkpoint-1', durableChunks: [] }),
+    (error) => error.status === 400
+      && error.code === 'subtitle_cue_invalid'
+      && error.apiMessage === 'Subtitle cue is invalid.'
+      && error.details[0] === 'segmentId must be a valid UUID.'
+      && error.requestId === 'request-cue-400'
   );
 });
 

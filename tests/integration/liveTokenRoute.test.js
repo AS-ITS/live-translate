@@ -80,6 +80,11 @@ test.beforeEach(() => {
 test.afterEach(() => {
   resetMock();
   delete process.env.GEMINI_API_KEY;
+  delete process.env.NODE_ENV;
+  delete process.env.SUPABASE_URL;
+  delete process.env.SUPABASE_SECRET_KEY;
+  delete process.env.SUPABASE_JWKS_URL;
+  delete process.env.AUTH_ALLOWED_EMAIL_DOMAINS;
   delete process.env.RATE_LIMIT_MAX;
   delete process.env.RATE_LIMIT_WINDOW_MS;
   delete process.env.dev_frontend_origin;
@@ -229,6 +234,19 @@ test('GET /healthz and /readyz report service status', async () => {
   process.env.GEMINI_API_KEY = 'test-api-key';
   const readyResponse = await request({ method: 'GET', url: '/readyz' });
   assert.equal(readyResponse.status, 200);
+});
+
+test('GET /readyz stays unavailable when production auth configuration is incomplete', async () => {
+  process.env.NODE_ENV = 'production';
+  process.env.SUPABASE_URL = 'https://project.supabase.co';
+  process.env.SUPABASE_SECRET_KEY = 'service-role-key';
+  process.env.SUPABASE_JWKS_URL = '';
+  process.env.AUTH_ALLOWED_EMAIL_DOMAINS = '';
+
+  const response = await request({ method: 'GET', url: '/readyz' });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.json().error.code, 'supabase_unavailable');
 });
 
 test('GET /api/metrics returns the protected process-local queue snapshot', async () => {

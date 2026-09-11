@@ -126,9 +126,11 @@ The repository also contains the Issue #31 deployment foundation:
   `npm run db:lint`.
 - Development uses the local Supabase stack, preview uses an isolated Supabase
   branch, and production uses a separate Supabase project.
-- Apply all migrations through `20260910010000`. They create owner RLS, the
-  private `meeting-audio` bucket, Viewer Realtime authorization, and persisted
-  Cue broadcasts.
+- Apply all migrations through
+  `20260914000000_observability_metric_buckets.sql`. They create owner RLS,
+  the private `meeting-audio` bucket, Viewer Realtime authorization, persisted
+  Cue broadcasts, durable queue operations, event replay, and observability
+  metric buckets.
 
 Required cloud variables include `SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
 `SUPABASE_JWKS_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`,

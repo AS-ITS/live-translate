@@ -720,7 +720,12 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const hasSupabase = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY);
+    const hasSupabase = [
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SECRET_KEY,
+      process.env.SUPABASE_JWKS_URL,
+      process.env.AUTH_ALLOWED_EMAIL_DOMAINS
+    ].every((value) => typeof value === 'string' && value.trim().length > 0);
     const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
     let ready = hasSupabase || legacyLocalReady;
     let dependencyCode = null;

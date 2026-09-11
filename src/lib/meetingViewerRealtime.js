@@ -11,6 +11,7 @@ export function createMeetingViewerRealtimeController({
   basePath,
   onEvent,
   onSubscribed,
+  replayPath = `${basePath}/events`,
   onConnecting,
   onError,
   fetchImpl = globalThis.fetch,
@@ -44,7 +45,13 @@ export function createMeetingViewerRealtimeController({
         if (status === 'SUBSCRIBED') {
           reconnectAttempts = 0;
           try {
-            await onSubscribed?.();
+            await onSubscribed?.({
+              async replay(afterEventId = 0) {
+                const response = await fetchImpl(`${replayPath}?after=${encodeURIComponent(afterEventId)}`);
+                if (!response.ok) throw new Error('無法補抓遺失的即時字幕。');
+                return response.json();
+              }
+            });
           } catch (error) {
             onError?.(error);
             scheduleReconnect();

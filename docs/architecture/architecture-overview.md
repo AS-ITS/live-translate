@@ -1141,3 +1141,4 @@ glossary management UI/API, or cross-session history.
 - [docs/features/session-records-history.md](../features/session-records-history.md)
 - [docs/TESTING.md](../TESTING.md)
 - [docs/releases/v0.6.0-foundation.md](../releases/v0.6.0-foundation.md)
+- Meeting Viewer production delivery now stores sanitized finalized Cue events in owner-scoped Supabase `meeting_events`; reconnect replays events after the prior cursor before applying buffered Realtime broadcasts. Local SSE remains the development fallback.

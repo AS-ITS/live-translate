@@ -598,7 +598,8 @@ export function createRequestHandler(options = {}) {
     meetingDeletionService,
     sessionAudioArtifactRepository,
     meetingAudioService,
-    meetingCueService,
+  meetingCueService,
+  meetingEventRepository,
     viewerRealtimeTokenService,
     sessionApplicationService,
     translationProviderOptionsController,
@@ -647,6 +648,7 @@ export function createRequestHandler(options = {}) {
       sessionAudioArtifactRepository,
       meetingAudioService,
       meetingCueService,
+      meetingEventRepository,
       viewerRealtimeTokenService,
       ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
@@ -682,6 +684,7 @@ async function handleRequestWithSessionReadController(
   res,
     { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
+  const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -1374,7 +1377,9 @@ async function handleRequestWithSessionReadController(
     }
     const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
     if (share.role === 'viewer') {
-      const cursor = meetingEventBroadcaster?.cursor(share.meetingId) || { eventId: 0, cueSequence: 0 };
+      const cursor = meetingEventRepository
+        ? await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId })
+        : meetingEventBroadcaster?.cursor(share.meetingId) || { eventId: 0, cueSequence: 0 };
       payload.cursor = {
         eventId: cursor.eventId,
         cueSequence: Math.max(cursor.cueSequence, ...((payload.cues || []).map((cue) => Number(cue.sequence) || 0)))
@@ -1408,8 +1413,11 @@ async function handleRequestWithSessionReadController(
       const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
       if (meetingCueService) {
         await meetingCueService.persist({ meetingId, segmentId, sessionId, cue });
+        const event = meetingEventRepository
+          ? await meetingEventRepository.append({ meetingId, segmentId, cue })
+          : null;
         statusCode = 202;
-        sendJson(res, statusCode, { transport: 'supabase', cueSequence: cue.sequence }, requestId);
+        sendJson(res, statusCode, { transport: 'supabase', eventId: event?.eventId || null, cueSequence: cue.sequence }, requestId);
         return;
       }
       const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
@@ -1441,16 +1449,20 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && isSharedMeetingEventsPath(path)) {
-    if (viewerRealtimeTokenService) {
-      sendJson(res, 410, errorPayload('realtime_required', requestId), requestId);
-      return;
-    }
     const share = await resolveSharedMeeting(path, sessionShareService);
     if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
-    openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
+    if (viewerRealtimeTokenService && meetingEventRepository) {
+      const replay = await meetingEventRepository.listSince(share.meetingId, parseAfterEventId(req), { ownerUserId: share._ownerUserId });
+      const cursor = await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId });
+      sendJson(res, 200, { events: replay.map(publicMeetingCueEvent), cursor }, requestId);
+    } else if (meetingEventBroadcaster) {
+      openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
+    } else {
+      sendJson(res, 410, errorPayload('realtime_required', requestId), requestId);
+    }
     return;
   }
 
@@ -3284,9 +3296,14 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
 function publicMeetingCueEvent(event) {
   return {
     eventId: event.eventId,
+    eventType: event.eventType || event.type,
     type: event.type,
     meetingId: event.meetingId,
     segmentId: event.segmentId,
+    cueId: event.cueId || event.cue?.cueId,
+    cueSequence: event.cueSequence || event.cue?.sequence,
+    occurredAt: event.occurredAt || null,
+    committedAt: event.committedAt || (event.occurredAt ? Date.parse(event.occurredAt) : null),
     cue: event.cue,
     timing: event.timing
   };

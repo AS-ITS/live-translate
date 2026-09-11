@@ -68,6 +68,7 @@ import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseS
 import { createSupabaseMeetingAudioService } from '../src/infrastructure/supabaseMeetingAudioService.js';
 import { createSupabaseMeetingShareService } from '../src/infrastructure/supabaseMeetingShareService.js';
 import { createSupabaseMeetingCueService } from '../src/infrastructure/supabaseMeetingCueService.js';
+import { createSupabaseMeetingEventRepository } from '../src/infrastructure/supabaseMeetingEventRepository.js';
 import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.js';
 import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
 import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
@@ -171,6 +172,7 @@ export function createApplicationDependencies(options = {}) {
   } = options;
   const meetingAudioService = options.meetingAudioService;
   const meetingCueService = options.meetingCueService;
+  const meetingEventRepository = options.meetingEventRepository;
   const viewerRealtimeTokenService = options.viewerRealtimeTokenService;
   const resolvedTranslationExecutionMetrics = translationExecutionMetrics ?? createTranslationExecutionMetrics();
   const translationGlossary = glossaryController === undefined
@@ -395,6 +397,7 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(meetingCueService ? { meetingCueService } : {}),
+    ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
@@ -515,6 +518,11 @@ export function createProductionApplicationDependencies(options = {}) {
     ? applicationOptions.meetingCueService
     : cloudDataMode
       ? createSupabaseMeetingCueService({ env })
+      : undefined;
+  const meetingEventRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingEventRepository')
+    ? applicationOptions.meetingEventRepository
+    : cloudDataMode
+      ? createSupabaseMeetingEventRepository({ env })
       : undefined;
   const viewerRealtimeTokenService = Object.prototype.hasOwnProperty.call(applicationOptions, 'viewerRealtimeTokenService')
     ? applicationOptions.viewerRealtimeTokenService
@@ -637,6 +645,7 @@ export function createProductionApplicationDependencies(options = {}) {
     sessionShareService,
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(meetingCueService ? { meetingCueService } : {}),
+    ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
     ...(activeTranslationExecutionQueue !== undefined

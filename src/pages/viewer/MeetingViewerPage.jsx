@@ -101,8 +101,11 @@ export function MeetingViewerPage({ token, code }) {
           if (!snapshotReady) bufferedEvents.push(payload);
           else applyCuePayload(payload);
         },
-        onSubscribed: async () => {
+        onSubscribed: async ({ replay }) => {
+          const beforeSnapshot = Number(detailRef.current?.cursor?.eventId) || 0;
           await fetchSnapshot();
+          const recovered = await replay(beforeSnapshot);
+          recovered.events?.sort((left, right) => Number(left.eventId) - Number(right.eventId)).forEach(applyCuePayload);
           snapshotReady = true;
           const pending = bufferedEvents;
           bufferedEvents = [];

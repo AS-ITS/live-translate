@@ -51,9 +51,9 @@ returns boolean language plpgsql security definer set search_path = public, pgmq
 declare archived boolean;
 begin
   insert into public.background_job_dead_letters(queue_name, message_id, message, attempt, error_code)
-  values (queue_name, message_id, coalesce(message, '{}'::jsonb), greatest(attempt, 1), coalesce(error_code, 'background_job_retry_exhausted'))
+  values ($1, $2, coalesce($6, '{}'::jsonb), greatest($4, 1), coalesce($5, 'background_job_retry_exhausted'))
   on conflict (queue_name, message_id) do nothing;
-  archived := pgmq.archive(queue_name, message_id);
+  archived := pgmq.archive($1, $2);
   return archived;
 end;
 $$;

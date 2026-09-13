@@ -15,12 +15,12 @@ end;
 $$;
 
 create or replace function public.background_job_archive(
-  p_queue_name text,
-  p_message_id bigint,
-  p_read_ct bigint,
-  p_attempt integer,
-  p_error_code text,
-  p_message jsonb
+  queue_name text,
+  message_id bigint,
+  read_ct bigint,
+  attempt integer,
+  error_code text,
+  message jsonb
 )
 returns boolean
 language plpgsql
@@ -38,15 +38,15 @@ begin
     error_code
   )
   values (
-    p_queue_name,
-    p_message_id,
-    coalesce(p_message, '{}'::jsonb),
-    greatest(p_attempt, 1),
-    coalesce(p_error_code, 'background_job_retry_exhausted')
+    $1,
+    $2,
+    coalesce($6, '{}'::jsonb),
+    greatest($4, 1),
+    coalesce($5, 'background_job_retry_exhausted')
   )
   on conflict (queue_name, message_id) do nothing;
 
-  archived := pgmq.archive(p_queue_name, p_message_id);
+  archived := pgmq.archive($1, $2);
   return archived;
 end;
 $$;

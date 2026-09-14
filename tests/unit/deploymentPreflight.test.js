@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { formatPreflightResult, normalizeSmokeBaseUrl, runDeploymentPreflight } from '../../scripts/deployment-preflight.js';
 
-function response(status, body = {}) { return { status, async json() { return body; } }; }
+function response(status, body = {}, contentType = 'application/json') {
+  return { status, headers: { get(name) { return name.toLowerCase() === 'content-type' ? contentType : null; } }, async json() { return body; } };
+}
 
 function mockFetch(responses) {
   const calls = [];
@@ -41,4 +43,17 @@ test('deployment preflight reports malformed health responses and timeouts', asy
   assert.equal(result.passed, false);
   assert.equal(result.results[0].error, 'response did not contain ok=true');
   assert.match(result.results[1].error, /timed out/);
+});
+
+test('deployment preflight rejects SPA HTML from API routes', async () => {
+  const mock = mockFetch({
+    '/healthz': response(200, {}, 'text/html'),
+    '/readyz': response(200, { ok: true }),
+    '/api/meetings': response(401),
+    '/api/metrics': response(401),
+    '/api/internal/worker': response(401)
+  });
+  const result = await runDeploymentPreflight({ baseUrl: 'https://example.com', fetchImpl: mock.fetchImpl });
+  assert.equal(result.passed, false);
+  assert.equal(result.results[0].error, 'response was not JSON');
 });

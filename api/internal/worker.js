@@ -21,6 +21,7 @@ export function createWorkerHandler({
     const authorization = req.headers?.authorization || '';
     if (!expectedSecret || authorization !== `Bearer ${expectedSecret}`) {
       res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ error: 'Unauthorized.' }));
       return;
     }

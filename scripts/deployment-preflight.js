@@ -2,11 +2,11 @@ import { fileURLToPath } from 'node:url';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const CHECKS = Object.freeze([
-  { name: 'health', method: 'GET', path: '/healthz', expectedStatus: 200, requireOk: true },
-  { name: 'readiness', method: 'GET', path: '/readyz', expectedStatus: 200, requireOk: true },
-  { name: 'private API auth gate', method: 'GET', path: '/api/meetings', expectedStatus: 401 },
-  { name: 'metrics auth gate', method: 'GET', path: '/api/metrics', expectedStatus: 401 },
-  { name: 'worker auth gate', method: 'POST', path: '/api/internal/worker', expectedStatus: 401 }
+  { name: 'health', method: 'GET', path: '/healthz', expectedStatus: 200, requireOk: true, requireJson: true },
+  { name: 'readiness', method: 'GET', path: '/readyz', expectedStatus: 200, requireOk: true, requireJson: true },
+  { name: 'private API auth gate', method: 'GET', path: '/api/meetings', expectedStatus: 401, requireJson: true },
+  { name: 'metrics auth gate', method: 'GET', path: '/api/metrics', expectedStatus: 401, requireJson: true },
+  { name: 'worker auth gate', method: 'POST', path: '/api/internal/worker', expectedStatus: 401, requireJson: true }
 ]);
 
 export function normalizeSmokeBaseUrl(value) {
@@ -36,9 +36,11 @@ export function formatPreflightResult(result) {
 async function runCheck({ check, baseUrl, fetchImpl, timeoutMs }) {
   try {
     const response = await fetchWithTimeout(fetchImpl, `${baseUrl}${check.path}`, { method: check.method }, timeoutMs);
-    let validBody = true;
+    const contentType = response.headers?.get?.('content-type') || '';
+    const validContentType = !check.requireJson || contentType.toLowerCase().includes('application/json');
+    let validBody = validContentType;
     if (check.requireOk) validBody = (await response.json())?.ok === true;
-    return { name: check.name, ok: response.status === check.expectedStatus && validBody, status: response.status, ...(validBody ? {} : { error: 'response did not contain ok=true' }) };
+    return { name: check.name, ok: response.status === check.expectedStatus && validBody, status: response.status, ...(validBody ? {} : { error: validContentType ? 'response did not contain ok=true' : 'response was not JSON' }) };
   } catch (error) {
     return { name: check.name, ok: false, status: null, error: safeErrorMessage(error) };
   }

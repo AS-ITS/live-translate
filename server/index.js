@@ -926,6 +926,43 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if ((req.method === 'GET' || req.method === 'POST') && /^\/api\/meetings\/[^/]+\/members$/u.test(path)) {
+    try {
+      if (typeof profileService?.listMeetingMembers !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const meetingId = safeDecodePathComponent(path.split('/')[3]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+      const members = req.method === 'GET'
+        ? await profileService.listMeetingMembers(authenticatedUser, meetingId)
+        : [await profileService.addMeetingMember(authenticatedUser, meetingId, (await readJson(req, { maxBytes: 8 * 1024 }))?.email?.trim())];
+      statusCode = req.method === 'GET' ? 200 : 201;
+      sendJson(res, statusCode, { members }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && /^\/api\/meetings\/[^/]+\/members\/[^/]+$/u.test(path)) {
+    try {
+      if (typeof profileService?.removeMeetingMember !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const parts = path.split('/');
+      const meetingId = safeDecodePathComponent(parts[3]);
+      const memberId = safeDecodePathComponent(parts[5]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+      await profileService.removeMeetingMember(authenticatedUser, meetingId, memberId);
+      statusCode = 204;
+      res.writeHead(statusCode, { 'X-Request-Id': requestId });
+      res.end();
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && path === '/api/sessions') {
     try {
       const sessions = sessionApplicationService

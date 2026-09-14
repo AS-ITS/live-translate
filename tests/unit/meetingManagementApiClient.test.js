@@ -27,6 +27,24 @@ test('meeting management errors expose API code and request ID', async () => {
   );
 });
 
+test('meeting management client manages invited members', async () => {
+  const calls = [];
+  const client = createMeetingManagementApiClient({
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (options.method === 'POST') return jsonResponse({ members: [{ userId: 'member-1', email: 'member@example.com' }] }, { status: 201 });
+      return jsonResponse({ members: [{ userId: 'member-1', email: 'member@example.com' }] });
+    }
+  });
+
+  assert.deepEqual(await client.listMembers('meeting-1'), [{ userId: 'member-1', email: 'member@example.com' }]);
+  assert.deepEqual(await client.addMember('meeting-1', 'member@example.com'), { userId: 'member-1', email: 'member@example.com' });
+  await client.removeMember('meeting-1', 'member-1');
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/members');
+  assert.equal(JSON.parse(calls[1].options.body).email, 'member@example.com');
+  assert.equal(calls[2].options.method, 'DELETE');
+});
+
 test('meeting management error messages distinguish authentication and persistence failures', () => {
   assert.equal(
     meetingManagementErrorMessage({ code: 'auth_invalid', requestId: 'request-auth' }),

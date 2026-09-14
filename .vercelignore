@@ -1,0 +1,9 @@
+.codegraph
+.serena
+.playwright
+.playwright-cli
+test-results
+node_modules
+data
+.env
+.env.*

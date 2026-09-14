@@ -24,6 +24,8 @@
 
 ## Unreleased
 
+- Issue #33 follow-up: added member recording authorization, super-admin account management with atomic asset transfer, server-only audit log filtering, and Meeting Settings/account management UI. Viewer share IDs remain stable during transfer and Gemini credentials are excluded.
+
 - 修正 Meeting checkpoint HTTP 400 僅顯示泛用錯誤的問題；前端現在依安全的錯誤 code 顯示中文訊息與 Request ID，並在 checkpoint 邊界補齊 finalized Cue 必要欄位。
 
 - 修正 Supabase checkpoint 讀取既有 Cue 時的 hydration：offset 轉回毫秒數字，並補回語言欄位與 transcription mode；Cue offset 寫入改用 bigint 毫秒值。

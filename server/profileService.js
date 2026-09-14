@@ -20,7 +20,23 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       if (!profile) return fallback;
       return { ...profile, fullName: profile.full_name, avatarUrl: profile.avatar_url, role: profile.role || 'member', status: profile.status || 'active' };
     },
-    async listMeetingMembers(user, meetingId) {
+ async canRecordMeeting(user, meetingId) {
+ if (!user?.id || !meetingId) return false;
+ const profile = await this.getProfile(user);
+ if (profile.status !== 'active') return false;
+ if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
+ return Boolean((localMemberships.get(meetingId) || []).some((item) => item.userId === user.id));
+ }
+ const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(user.id)}&select=user_id`, 'GET');
+ return rows.length > 0;
+ },
+ async getMeetingOwner(meetingId) {
+ if (!meetingId) return null;
+ if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return (localMemberships.get(meetingId) || [])[0]?.ownerUserId || null;
+ const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&select=owner_user_id&limit=1`, 'GET');
+ return rows[0]?.owner_user_id || null;
+ },
+ async listMeetingMembers(user, meetingId) {
       if (!user?.id) throw accountError('auth_required');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
         return [...(localMemberships.get(meetingId) || [])];

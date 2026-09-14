@@ -14,6 +14,8 @@ import { createSessionShareService } from '../src/application/sessionShareServic
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
 import { createMeetingEventBroadcaster } from '../src/infrastructure/meetingEventBroadcaster.js';
 import { createRecorderGrantService } from '../src/application/recorderGrantService.js';
+import { createAdminService } from './adminService.js';
+import { createAuditLogService } from './auditLogService.js';
 import { authorizeRecorderRequest, hasRecorderHeaders } from '../src/application/recorderAuthorization.js';
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
@@ -706,7 +708,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
@@ -888,7 +890,22 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (req.method === 'GET' && path === '/api/profile') {
+ if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && isMemberMeetingRecordingPath(req.method, path)) {
+ try {
+ const meetingId = extractMemberMeetingId(path);
+ if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
+ const ownerUserId = await profileService?.getMeetingOwner?.(meetingId);
+ if (!ownerUserId) throw createHttpError('recorder_forbidden');
+ setRequestUser({ ...authenticatedUser, id: ownerUserId, actorUserId: authenticatedUser.id });
+ } catch (error) {
+ const code = errorCodeFor(error);
+ statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+ sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+ return;
+ }
+ }
+
+ if (req.method === 'GET' && path === '/api/profile') {
     try {
       statusCode = 200;
       sendJson(res, statusCode, { profile: await profileService.getProfile(authenticatedUser) }, requestId);
@@ -896,10 +913,37 @@ async function handleRequestWithSessionReadController(
       statusCode = 503;
       sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     }
-    return;
-  }
+ return;
+ }
 
-  if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
+ if (path === '/api/admin/users' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
+ try {
+ if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
+ if (!adminService) throw createHttpError('cloud_capability_unavailable');
+ if (req.method === 'GET' && path === '/api/admin/users') {
+ statusCode = 200;
+ sendJson(res, statusCode, { users: await adminService.listUsers() }, requestId);
+ } else if (req.method === 'POST') {
+ const match = path.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/u);
+ if (!match) throw createHttpError('invalid_request');
+ const userId = safeDecodePathComponent(match[1]);
+ const result = match[2] === 'enable'
+ ? await adminService.enableUser(authenticatedUser, userId, requestId)
+ : await adminService.disableUser(authenticatedUser, userId, (await readJson(req, { maxBytes: 16 * 1024 }))?.transferToUserId, requestId);
+ statusCode = 200;
+ sendJson(res, statusCode, { user: result }, requestId);
+ } else {
+ throw createHttpError('invalid_request');
+ }
+ } catch (error) {
+ const code = errorCodeFor(error);
+ statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+ sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+ }
+ return;
+ }
+
+ if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
     try {
       if (!authenticatedUser?.id) throw createHttpError('auth_required');
       if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
@@ -2369,6 +2413,18 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
   return false;
+}
+
+function isMemberMeetingRecordingPath(method, path) {
+ return (method === 'POST' && isMeetingCuePublishPath(path)) ||
+   (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
+   (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path));
+}
+
+function extractMemberMeetingId(path) {
+ const match = path.match(/^\/api\/meetings\/([^/]+)/);
+ if (!match) throw createHttpError('invalid_request');
+ return safeDecodePathComponent(match[1]);
 }
 
 async function authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService }) {

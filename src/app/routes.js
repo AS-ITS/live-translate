@@ -8,6 +8,7 @@ export const FEATURE_PAGES = new Set([
   'glossary',
   'viewer',
   'settings'
+  , 'admin'
 ]);
 
 export function pageFromLocation() {
@@ -63,6 +64,7 @@ export function canonicalHashForLocation() {
     return viewerQuery ? `#viewer?${viewerQuery}` : '#viewer';
   }
   if (pageName === 'settings') return GEMINI_SETTINGS_HASH;
+  if (pageName === 'admin') return '#admin';
   if (pageName === 'meeting-settings') {
     return params.toString() ? `#meeting-settings?${params.toString()}` : '#meeting-settings';
   }

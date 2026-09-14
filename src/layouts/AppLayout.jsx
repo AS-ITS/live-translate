@@ -46,6 +46,7 @@ export function AppLayout({
           </div>
           <div className="app-header-actions">
             {profile && showGeminiKeyAction ? <a className="button secondary header-key-action" href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+            {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin">帳號管理</a> : null}
             {profile ? (
               <details ref={accountMenuRef} className="account-menu">
                 <summary ref={accountTriggerRef} className="account-menu-trigger" aria-label="開啟帳號選單">

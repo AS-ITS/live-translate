@@ -41,6 +41,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [echoTargetLanguage, setEchoTargetLanguage] = useState(true);
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [shares, setShares] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [memberEmail, setMemberEmail] = useState('');
   const [createdShares, setCreatedShares] = useState([]);
   const [shareState, setShareState] = useState('idle');
   const [shareLayoutReady, setShareLayoutReady] = useState(false);
@@ -116,6 +118,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       const current = detail?.meeting || null;
       if (mode === 'edit' && !current) throw new Error('meeting_not_found');
       if (current) applyMeeting(current, glossaryEntries);
+      if (current?.id) managementClient.listMembers(current.id).then(setMembers).catch(() => setMembers([]));
       setIsLoading(false);
     }).catch(() => {
       if (!cancelled) {
@@ -124,7 +127,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       }
     });
     return () => { cancelled = true; };
-  }, [glossaryClient, meetingId, mode, readClient]);
+  }, [glossaryClient, managementClient, meetingId, mode, readClient]);
 
   useEffect(() => {
     if (isLoading || typeof window === 'undefined' || !('IntersectionObserver' in window)) return undefined;
@@ -502,6 +505,17 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   }
 
   const handleShareLayoutReady = useCallback(() => setShareLayoutReady(true), []);
+  async function inviteMember() {
+    const email = memberEmail.trim();
+    if (!email || !meeting?.id) return;
+    try { const member = await managementClient.addMember(meeting.id, email); setMembers((current) => current.some((item) => item.userId === member.userId) ? current : [...current, member]); setMemberEmail(''); }
+    catch { setError('無法邀請成員，請確認 email 對應到 active 帳號。'); }
+  }
+  async function removeMember(userId) {
+    if (!meeting?.id) return;
+    try { await managementClient.removeMember(meeting.id, userId); setMembers((current) => current.filter((item) => item.userId !== userId)); }
+    catch { setError('無法移除成員。'); }
+  }
   const hasAudioOutputSelection = supportsAudioContextOutputSelection();
 
   if (isLoading) return <section className="feature-page meeting-settings-page"><p>正在載入會議設定…</p></section>;
@@ -554,6 +568,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
               </section>
             </div>
           </section>
+
+          {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">ACCESS</p><h3 id="meeting-members-title">錄製成員</h3><p className="meeting-settings-card-description">成員只能錄製已加入的會議，不能修改設定、分享或匯出。</p></div></div><div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim()}>邀請成員</button></div>{members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)}>移除</button></div>)}</section> : null}
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>

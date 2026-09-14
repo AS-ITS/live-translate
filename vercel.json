@@ -4,8 +4,5 @@
   "rewrites": [
     { "source": "/healthz", "destination": "/api/healthz" },
     { "source": "/readyz", "destination": "/api/readyz" }
-  ],
-  "crons": [
-    { "path": "/api/internal/worker", "schedule": "*/1 * * * *" }
   ]
 }

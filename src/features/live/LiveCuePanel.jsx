@@ -4,6 +4,7 @@ import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { cueListForDisplay, sourceTextForCopy, sourceTextForDisplay, translationTextForCopy } from '../../lib/cueUi.js';
 import { transcriptTextForDisplay } from './liveTranscriptRecovery.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
+import { BackgroundTranslationNotice } from './BackgroundTranslationNotice.jsx';
 
 // Async translation/refinement updates the same Cue row without obscuring
 // the live transcript content.
@@ -68,6 +69,7 @@ export function LiveCuePanel({
           <div className="cue-section-list" data-testid="cue-paired-list">{cues.map((cue) => cue.status === 'final' ? <FinalCueRow key={cue.cueId} cue={cue} showSource={showSource} /> : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} showSource={showSource} />)}</div>
         </div> : null}
       </div>
+      <BackgroundTranslationNotice cues={cues} />
     </section>
   );
 }

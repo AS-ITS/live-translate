@@ -5,7 +5,7 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
   async function call(path, options = {}) {
     const response = await request(`${baseUrl}${path}`, options);
     const body = response.status === 204 ? null : await response.json();
-    if (!response.ok) { const error = new Error(body?.error?.message || '帳號操作失敗。'); error.code = body?.error?.code; error.status = response.status; throw error; }
+    if (!response.ok) { const error = new Error(body?.error?.message || '帳號操作失敗。'); error.code = body?.error?.code; error.status = response.status; error.requestId = response.headers?.get?.('x-request-id') || body?.error?.requestId || body?.requestId; throw error; }
     return body;
   }
   return Object.freeze({
@@ -14,4 +14,3 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
     disable: async (userId, transferToUserId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/disable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferToUserId }) })).user
   });
 }
-

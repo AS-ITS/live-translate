@@ -1,5 +1,16 @@
 # Testing
 
+## Account permissions
+
+Run the deterministic Issue #33 coverage without production Supabase or Gemini:
+
+```bash
+node --test tests/unit/meetingMembership.test.js tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/profileService.test.js tests/unit/profileHttpApi.test.js tests/integration/accountPermissions.integration.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountPermissions.spec.js
+```
+
+The account E2E seeds a deterministic Supabase session in browser storage and mocks every account API response.
+
 P1 identity tests use signed deterministic JWT fixtures and never call Google,
 Gemini, or Supabase production services. Validate the identity slice with:
 

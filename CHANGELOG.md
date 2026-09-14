@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-09-11
+
+- 修正部署環境建立會議後 Viewer 分享連結回傳 404 時只顯示泛用錯誤的問題；前端現在提供可辨識的 API 部署提示，並補上 Meeting Settings 實際使用的可重用分享路徑回歸測試。
 - Completed P1-B observability closeout: atomic operation-labelled metric buckets, 30-day cleanup isolation, queue/recovery/token/provider/Viewer telemetry wiring, and readiness-safe failure handling.
 
 ## 2026-09-11

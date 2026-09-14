@@ -67,11 +67,15 @@ export function meetingManagementErrorMessage(error, fallback = '會議操作失
     auth_forbidden: '目前帳號沒有權限執行此操作。',
     meeting_checkpoint_unavailable: '會議儲存服務目前未配置。',
     meeting_not_found: '找不到這場會議，請重新整理後再試。',
+    meeting_share_invalid: '分享連結服務找不到，請確認部署的 API 版本。',
     meeting_settings_locked: '已完成的會議不可修改設定。',
     unsupported_language: '選取的語言目前不支援。',
     cloud_capability_unavailable: '雲端會議服務目前無法使用。'
   };
-  const message = messages[error?.code] || error?.apiMessage || fallback;
+  const message = messages[error?.code]
+    || (error?.status === 404 ? '分享連結服務找不到，請確認部署的 API 版本。' : null)
+    || error?.apiMessage
+    || fallback;
   return error?.requestId ? `${message}（識別碼：${error.requestId}）` : message;
 }
 

@@ -320,7 +320,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
         }
         if (lastError) {
           setShareState('error');
-          setError('會議已建立，但分享連結產生失敗；請稍後重試。');
+          setError(meetingManagementErrorMessage(lastError, '會議已建立，但分享連結產生失敗；請稍後重試。'));
           setCreatedShares(results);
           return;
         }

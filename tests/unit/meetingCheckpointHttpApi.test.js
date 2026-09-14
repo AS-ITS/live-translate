@@ -168,6 +168,32 @@ test('meeting audio upload endpoints delegate metadata only and issue signed dow
   ]);
 });
 
+test('Meeting Settings share ensure route returns a reusable Viewer link', async () => {
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService });
+  const created = (await request(handler, {
+    method: 'POST',
+    url: '/api/meetings',
+    body: JSON.stringify({ draft: true, name: '可重用分享會議' })
+  })).json();
+
+  const first = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer', expiresAt: null, ensureExisting: true })
+  });
+  const second = await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer', expiresAt: null, ensureExisting: true })
+  });
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.equal(first.json().share.id, second.json().share.id);
+  assert.match(first.json().codeUrl, /^#viewer\?code=/);
+});
+
 test('Meeting Viewer exchanges an active viewer share for scoped Realtime authorization', async () => {
   const shareService = createSessionShareService();
   const viewerRealtimeTokenService = {

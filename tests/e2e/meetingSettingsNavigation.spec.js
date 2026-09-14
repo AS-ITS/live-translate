@@ -321,6 +321,41 @@ test('automatically creates shares when an existing meeting has no links', async
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
 });
 
+test('shows a deployment-specific message when the share route returns 404', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (navigator.mediaDevices) {
+      navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [] });
+    }
+  });
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() !== 'POST') return route.fallback();
+    return route.fulfill({ json: {
+      meeting: {
+        id: 'meeting-share-404',
+        name: '分享失敗會議',
+        status: 'created',
+        sourceLanguageCode: 'zh-Hant',
+        targetLanguageCode: 'en',
+        echoTargetLanguage: true,
+        shouldRecordInputAudio: false,
+        glossaryEntries: [],
+        privateGlossaryEntries: []
+      }
+    } });
+  });
+  await page.route('**/api/meetings/meeting-share-404/shares', async (route) =>
+    route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }));
+
+  await page.goto('/#meeting-settings?mode=create');
+  await page.getByRole('textbox', { name: /會議名稱/ }).fill('分享失敗會議');
+  await page.getByRole('button', { name: '測試並確認音訊' }).click();
+  await page.getByRole('button', { name: '建立會議' }).click();
+
+  await expect(page.getByText('分享連結服務找不到，請確認部署的 API 版本。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '重新產生分享' })).toBeVisible();
+});
+
 test('restores Meeting share QR codes and links after reloading the edit page', async ({ page }) => {
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
   await page.route(/\/api\/meetings\/meeting-3$/, async (route) => route.fulfill({ json: { meeting: {

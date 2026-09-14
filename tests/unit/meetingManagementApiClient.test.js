@@ -40,6 +40,14 @@ test('meeting management error messages distinguish authentication and persisten
     meetingManagementErrorMessage({ status: 500 }, '自訂錯誤。'),
     '自訂錯誤。'
   );
+  assert.equal(
+    meetingManagementErrorMessage({ status: 404 }),
+    '分享連結服務找不到，請確認部署的 API 版本。'
+  );
+  assert.equal(
+    meetingManagementErrorMessage({ code: 'meeting_share_invalid', status: 404 }),
+    '分享連結服務找不到，請確認部署的 API 版本。'
+  );
 });
 
 function jsonResponse(body, { status = 200 } = {}) {

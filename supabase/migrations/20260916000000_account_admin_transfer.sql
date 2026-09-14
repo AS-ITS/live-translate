@@ -25,6 +25,11 @@ alter table public.meeting_summaries alter constraint meeting_summaries_owner_us
 alter table public.audio_artifacts alter constraint audio_artifacts_owner_user_id_meeting_id_fkey deferrable initially deferred;
 alter table public.export_artifacts alter constraint export_artifacts_owner_user_id_meeting_id_fkey deferrable initially deferred;
 alter table public.viewer_shares alter constraint viewer_shares_owner_user_id_meeting_id_fkey deferrable initially deferred;
+alter table public.translation_queue_items alter constraint translation_queue_items_owner_user_id_fkey deferrable initially deferred;
+alter table public.translation_dead_letter_items alter constraint translation_dead_letter_items_owner_user_id_fkey deferrable initially deferred;
+alter table public.recorder_leases alter constraint recorder_leases_owner_user_id_session_id_fkey deferrable initially deferred;
+alter table public.meeting_events alter constraint meeting_events_owner_user_id_meeting_id_fkey deferrable initially deferred;
+alter table public.meeting_events alter constraint meeting_events_owner_user_id_segment_id_fkey deferrable initially deferred;
 
 create or replace function public.disable_user_with_transfer(target_user_id uuid, transfer_to_user_id uuid)
 returns public.profiles
@@ -67,7 +72,11 @@ begin
   update public.meeting_summaries set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
   update public.audio_artifacts set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
   update public.export_artifacts set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
-  update public.viewer_shares set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
+ update public.viewer_shares set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
+ update public.translation_queue_items set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
+ update public.translation_dead_letter_items set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
+ update public.recorder_leases set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
+ update public.meeting_events set owner_user_id = transfer_to_user_id where owner_user_id = target_user_id;
 
   update public.profiles set status = 'disabled', disabled_at = now(), updated_at = now() where id = target_user_id returning * into source_profile;
   return source_profile;

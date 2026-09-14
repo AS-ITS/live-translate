@@ -1,12 +1,12 @@
 import { createSessionRecord as createSessionRecordModel, createTranscriptItemForSession, finalizeSessionRecord as finalizeSessionRecordModel, summarizeTranscriptItems, updateSessionRecord as updateSessionRecordModel } from '../lib/sessionRecords.js';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseSessionRepository(options = {}) {
   const client = createSupabaseRestClient(options);
   if (!client) return null;
   const idFactory = options.idFactory;
-  const owner = () => currentRequestUserId() || failOwner();
+  const owner = () => currentRequestOwnerId() || failOwner();
   const repository = {
     // Startup runs outside an authenticated HTTP request. Persisted recovery
     // must not attempt to list owner-scoped records without request identity.

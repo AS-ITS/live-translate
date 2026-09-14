@@ -1,13 +1,13 @@
 import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseMeetingRepository(options = {}) {
   const client = createSupabaseRestClient(options);
   if (!client) return null;
   const owner = () => {
-    const userId = currentRequestUserId();
+    const userId = currentRequestOwnerId();
     if (!userId) { const error = new Error('Authenticated owner required.'); error.code = 'auth_required'; error.status = 401; throw error; }
     return userId;
   };

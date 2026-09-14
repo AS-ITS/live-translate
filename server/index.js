@@ -896,7 +896,7 @@ async function handleRequestWithSessionReadController(
  if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
  const ownerUserId = await profileService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
- setRequestUser({ ...authenticatedUser, id: ownerUserId, actorUserId: authenticatedUser.id });
+      setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
  } catch (error) {
  const code = errorCodeFor(error);
  statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -922,7 +922,7 @@ async function handleRequestWithSessionReadController(
  if (!adminService) throw createHttpError('cloud_capability_unavailable');
  if (req.method === 'GET' && path === '/api/admin/users') {
  statusCode = 200;
- sendJson(res, statusCode, { users: await adminService.listUsers() }, requestId);
+          sendJson(res, statusCode, { users: await adminService.listUsers(authenticatedUser) }, requestId);
  } else if (req.method === 'POST') {
  const match = path.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/u);
  if (!match) throw createHttpError('invalid_request');
@@ -1038,12 +1038,20 @@ async function handleRequestWithSessionReadController(
     let sessionCreateError = null;
     try {
       const body = await readJson(req);
+      if (body?.meetingId && authenticatedUser?.role !== 'super_admin') {
+        if (!await profileService?.canRecordMeeting?.(authenticatedUser, body.meetingId)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = await profileService?.getMeetingOwner?.(body.meetingId);
+        if (!ownerUserId) throw createHttpError('recorder_forbidden');
+        setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+      }
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
       }
       const sessionInput = {
         id: body?.id,
         name: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null,
+        meetingId: body?.meetingId || null,
+        segmentId: body?.segmentId || null,
         targetLanguageCode: body?.targetLanguageCode || 'en',
         targetLanguageLabel: body?.targetLanguageLabel || null,
         sourceLanguageCode: body?.sourceLanguageCode || null,
@@ -2416,9 +2424,11 @@ function isRecorderAuthorizedPath(method, path, req) {
 }
 
 function isMemberMeetingRecordingPath(method, path) {
- return (method === 'POST' && isMeetingCuePublishPath(path)) ||
-   (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
-   (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path));
+  return (method === 'POST' && isMeetingCuePublishPath(path)) ||
+    (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail)$/.test(path));
 }
 
 function extractMemberMeetingId(path) {

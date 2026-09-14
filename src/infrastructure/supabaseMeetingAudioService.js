@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export const MEETING_AUDIO_BUCKET = 'meeting-audio';
@@ -181,7 +181,7 @@ export function meetingAudioObjectPath({ ownerUserId, meetingId, segmentId }) {
 }
 
 function owner() {
-  const userId = currentRequestUserId();
+  const userId = currentRequestOwnerId();
   if (!userId) throw audioError('auth_required', 401);
   return userId;
 }

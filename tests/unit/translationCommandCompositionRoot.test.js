@@ -1068,6 +1068,10 @@ test('production runtime start awaits startup recovery before starting worker ru
         start() {
           calls.push('runtime.start');
         },
+        runOnce(options) {
+          calls.push(['runtime.runOnce', options]);
+          return { processed: 1, busy: false };
+        },
         stop() {
           calls.push('runtime.stop');
         },
@@ -1086,6 +1090,16 @@ test('production runtime start awaits startup recovery before starting worker ru
   assert.deepEqual(calls, ['recover', 'runtime.start']);
   dependencies.translationExecutionWorkerRuntime.stop();
   assert.deepEqual(calls, ['recover', 'runtime.start', 'runtime.stop']);
+  assert.deepEqual(
+    await dependencies.translationExecutionWorkerRuntime.runOnce({ limit: 3 }),
+    { processed: 1, busy: false }
+  );
+  assert.deepEqual(calls, [
+    'recover',
+    'runtime.start',
+    'runtime.stop',
+    ['runtime.runOnce', { limit: 3 }]
+  ]);
 });
 
 test('production composition allows worker and runner override without rebuilding worker dependencies', () => {

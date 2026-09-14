@@ -1211,6 +1211,10 @@ function createRecoveryBackedWorkerRuntime({ startupTranslationExecutionQueueRec
       return translationExecutionWorkerRuntime.wake?.();
     },
 
+    runOnce(options) {
+      return translationExecutionWorkerRuntime.runOnce(options);
+    },
+
     isRunning() {
       return translationExecutionWorkerRuntime.isRunning();
     }

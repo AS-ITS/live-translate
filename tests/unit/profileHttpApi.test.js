@@ -19,3 +19,23 @@ test('profile API returns the authenticated user profile only', async () => {
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json.profile, { id: 'user-a', email: 'a@example.com' });
 });
+
+test('profile API exposes only safe role and status metadata', async () => {
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => ({ id: 'admin', email: 'admin@example.com' }) },
+    profileService: { getProfile: async () => ({ id: 'admin', email: 'admin@example.com', role: 'super_admin', status: 'active' }) }
+  });
+  const response = await request(handler, { authorization: 'Bearer signed-token' });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json.profile, { id: 'admin', email: 'admin@example.com', role: 'super_admin', status: 'active' });
+});
+
+test('disabled profiles cannot access private APIs', async () => {
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => ({ id: 'disabled', email: 'disabled@example.com' }) },
+    profileService: { getProfile: async () => ({ id: 'disabled', email: 'disabled@example.com', role: 'member', status: 'disabled' }) }
+  });
+  const response = await request(handler, { authorization: 'Bearer signed-token' });
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json.error.code, 'auth_forbidden');
+});

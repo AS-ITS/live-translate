@@ -300,6 +300,18 @@ function enforceRateLimit(clientIp) {
   }
 }
 
+async function enrichAuthenticatedUser(user, profileService) {
+  if (!user?.id || typeof profileService?.getProfile !== 'function') return user;
+  const profile = await profileService.getProfile(user);
+  if (profile?.status === 'disabled') throw createHttpError('auth_forbidden');
+  return {
+    ...user,
+    role: profile?.role || user.role || 'member',
+    status: profile?.status || user.status || 'active',
+    profile,
+  };
+}
+
 function createHttpError(code, details = null) {
   const template = ERROR_RESPONSES[code] || ERROR_RESPONSES.internal_error;
   const error = new Error(template.message);
@@ -741,6 +753,7 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
@@ -865,6 +878,7 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);

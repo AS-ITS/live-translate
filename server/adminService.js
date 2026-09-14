@@ -25,8 +25,14 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     },
     async disableUser(actor, targetUserId, transferToUserId, requestId) {
       assertAdmin(actor);
-      if (actor.id === targetUserId) throw accountError('cannot_disable_self', 400);
-      if (!transferToUserId || transferToUserId === targetUserId) throw accountError('transfer_target_required', 400);
+      if (actor.id === targetUserId) {
+        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_disabled', request_id: requestId, result: 'failure' });
+        throw accountError('cannot_disable_self', 400);
+      }
+      if (!transferToUserId || transferToUserId === targetUserId) {
+        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'asset_transfer', request_id: requestId, result: 'failure' });
+        throw accountError('transfer_target_required', 400);
+      }
       try {
         const rows = await request('/rest/v1/rpc/disable_user_with_transfer', { method: 'POST', body: { target_user_id: targetUserId, transfer_to_user_id: transferToUserId } });
         await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'asset_transfer', request_id: requestId, result: 'success' });

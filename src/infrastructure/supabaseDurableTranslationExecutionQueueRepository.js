@@ -1,11 +1,11 @@
-import { currentRequestUserId, isWorkerRequestContext } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId, isWorkerRequestContext } from '../../server/requestIdentity.js';
 import { createDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseDurableTranslationExecutionQueueRepository({ env = process.env, fetchImpl = globalThis.fetch, clock = () => Date.now() } = {}) {
   const client = createSupabaseRestClient({ env, fetchImpl });
   if (!client) return null;
-  const owner = () => currentRequestUserId() || env.SUPABASE_WORKER_USER_ID || failOwner();
+  const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const ownerFilter = () => isWorkerRequestContext() ? '' : `&${eq('owner_user_id', owner())}`;
   const query = (id) => `?${eq('execution_id', id)}${ownerFilter()}`;
   const toItem = (row) => row && ({ executionId: row.execution_id, requestId: row.request_id, ownerUserId: row.owner_user_id, enqueuedAt: row.enqueued_at, status: row.status, availableAt: row.available_at, leaseId: row.lease_id, leaseExpiresAt: row.lease_expires_at, fenceToken: row.fence_token || 0, attempt: row.attempt || 0, lastFailure: row.last_failure || null });

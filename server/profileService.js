@@ -32,12 +32,17 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
  const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(user.id)}&select=user_id`, 'GET');
  return rows.length > 0;
  },
- async getMeetingOwner(meetingId) {
+    async getMeetingOwner(meetingId) {
  if (!meetingId) return null;
  if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return (localMemberships.get(meetingId) || [])[0]?.ownerUserId || null;
  const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&select=owner_user_id&limit=1`, 'GET');
- return rows[0]?.owner_user_id || null;
- },
+      return rows[0]?.owner_user_id || null;
+    },
+    async getSessionOwner(sessionId) {
+      if (!sessionId || !env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return null;
+      const rows = await restRequest(`/rest/v1/sessions?id=eq.${encodeURIComponent(sessionId)}&select=meeting_id,owner_user_id`, 'GET');
+      return rows[0] ? { meetingId: rows[0].meeting_id, ownerUserId: rows[0].owner_user_id } : null;
+    },
  async listMeetingMembers(user, meetingId) {
       if (!user?.id) throw accountError('auth_required');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
@@ -46,35 +51,49 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       const response = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&select=user_id,owner_user_id,created_at`, 'GET');
       return response.map((item) => ({ userId: item.user_id, ownerUserId: item.owner_user_id, meetingId, createdAt: item.created_at }));
     },
-    async addMeetingMember(user, meetingId, email) {
+    async addMeetingMember(user, meetingId, email, requestId) {
       if (!user?.id || !email) throw accountError('invalid_request');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
         const members = localMemberships.get(meetingId) || [];
         const member = { userId: email.toLowerCase(), email: email.toLowerCase(), ownerUserId: user.id, meetingId };
       if (!members.some((item) => item.email === member.email)) localMemberships.set(meetingId, [...members, member]);
-      await auditLogService?.record({ actor_user_id: user.id, target_user_id: member.userId, target_meeting_id: meetingId, action: 'member_invited', result: 'success' });
+      await auditLogService?.record({ actor_user_id: user.id, target_user_id: member.userId, target_meeting_id: meetingId, request_id: requestId, action: 'member_invited', result: 'success' });
       return member;
       }
       const profiles = await restRequest(`/rest/v1/profiles?email=eq.${encodeURIComponent(email)}&select=id,email,status`, 'GET');
       const target = profiles[0];
-      if (!target || target.status === 'disabled') throw accountError('auth_forbidden');
-      const rows = await restRequest('/rest/v1/meeting_members', 'POST', [{ owner_user_id: user.id, meeting_id: meetingId, user_id: target.id }]);
+      if (!target || target.status === 'disabled') {
+        await auditLogService?.record({ actor_user_id: user.id, target_meeting_id: meetingId, request_id: requestId, action: 'member_invited', result: 'failure' });
+        throw accountError('auth_forbidden');
+      }
+      let rows;
+      try {
+        rows = await restRequest('/rest/v1/meeting_members', 'POST', [{ owner_user_id: user.id, meeting_id: meetingId, user_id: target.id }]);
+      } catch (error) {
+        await auditLogService?.record({ actor_user_id: user.id, target_user_id: target.id, target_meeting_id: meetingId, request_id: requestId, action: 'member_invited', result: 'failure' });
+        throw error;
+      }
     const result = rows[0]
         ? { userId: rows[0].user_id, ownerUserId: rows[0].owner_user_id, meetingId, createdAt: rows[0].created_at, email: target.email }
       : { userId: target.id, email: target.email, ownerUserId: user.id, meetingId };
-    await auditLogService?.record({ actor_user_id: user.id, target_user_id: result.userId, target_meeting_id: meetingId, action: 'member_invited', result: 'success' });
+    await auditLogService?.record({ actor_user_id: user.id, target_user_id: result.userId, target_meeting_id: meetingId, request_id: requestId, action: 'member_invited', result: 'success' });
     return result;
     },
-    async removeMeetingMember(user, meetingId, memberId) {
+    async removeMeetingMember(user, meetingId, memberId, requestId) {
       if (!user?.id || !memberId) throw accountError('invalid_request');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
         const members = localMemberships.get(meetingId) || [];
       localMemberships.set(meetingId, members.filter((item) => item.userId !== memberId));
-      await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, action: 'member_removed', result: 'success' });
+      await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_removed', result: 'success' });
       return true;
       }
-    await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(memberId)}&owner_user_id=eq.${encodeURIComponent(user.id)}`, 'DELETE');
-    await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, action: 'member_removed', result: 'success' });
+    try {
+      await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(memberId)}&owner_user_id=eq.${encodeURIComponent(user.id)}`, 'DELETE');
+    } catch (error) {
+      await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_removed', result: 'failure' });
+      throw error;
+    }
+    await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_removed', result: 'success' });
     return true;
     },
   };

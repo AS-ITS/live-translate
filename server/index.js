@@ -890,11 +890,14 @@ async function handleRequestWithSessionReadController(
     }
   }
 
- if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && isMemberMeetingRecordingPath(req.method, path)) {
- try {
- const meetingId = extractMemberMeetingId(path);
- if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
- const ownerUserId = await profileService?.getMeetingOwner?.(meetingId);
+    if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
+      try {
+        const sessionContext = isMemberSessionRecordingPath(req.method, path)
+          ? await profileService?.getSessionOwner?.(extractSessionRecordingId(path))
+          : null;
+        const meetingId = sessionContext?.meetingId || extractMemberMeetingId(path);
+        if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = sessionContext?.ownerUserId || await profileService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
       setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
  } catch (error) {
@@ -976,8 +979,8 @@ async function handleRequestWithSessionReadController(
       const meetingId = safeDecodePathComponent(path.split('/')[3]);
       if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
       const members = req.method === 'GET'
-        ? await profileService.listMeetingMembers(authenticatedUser, meetingId)
-        : [await profileService.addMeetingMember(authenticatedUser, meetingId, (await readJson(req, { maxBytes: 8 * 1024 }))?.email?.trim())];
+          ? await profileService.listMeetingMembers(authenticatedUser, meetingId)
+          : [await profileService.addMeetingMember(authenticatedUser, meetingId, (await readJson(req, { maxBytes: 8 * 1024 }))?.email?.trim(), requestId)];
       statusCode = req.method === 'GET' ? 200 : 201;
       sendJson(res, statusCode, { members }, requestId);
     } catch (error) {
@@ -995,7 +998,7 @@ async function handleRequestWithSessionReadController(
       const meetingId = safeDecodePathComponent(parts[3]);
       const memberId = safeDecodePathComponent(parts[5]);
       if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
-      await profileService.removeMeetingMember(authenticatedUser, meetingId, memberId);
+        await profileService.removeMeetingMember(authenticatedUser, meetingId, memberId, requestId);
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
@@ -2429,6 +2432,17 @@ function isMemberMeetingRecordingPath(method, path) {
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) ||
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/.test(path)) ||
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail)$/.test(path));
+}
+
+function isMemberSessionRecordingPath(method, path) {
+  return (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) ||
+    (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)(?:\/segments\/\d+)?$/.test(path));
+}
+
+function extractSessionRecordingId(path) {
+  const match = path.match(/^\/api\/sessions\/([^/]+)/);
+  if (!match) throw createHttpError('invalid_request');
+  return safeDecodePathComponent(match[1]);
 }
 
 function extractMemberMeetingId(path) {

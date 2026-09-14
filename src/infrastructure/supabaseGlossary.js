@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 // Supabase-backed glossary port. The public shape intentionally matches the
@@ -7,7 +7,7 @@ import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 export function createSupabaseGlossary({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID } = {}) {
   const client = createSupabaseRestClient({ env, fetchImpl });
   if (!client) return null;
-  const owner = () => currentRequestUserId() || env.SUPABASE_WORKER_USER_ID || failOwner();
+  const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const rows = (table, query) => client.request(table, { query });
   const entryDTO = (row) => ({
     id: row.id, source: row.source, sourceLanguageCode: row.source_language_code,

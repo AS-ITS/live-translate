@@ -43,6 +43,9 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [shares, setShares] = useState([]);
   const [members, setMembers] = useState([]);
   const [memberEmail, setMemberEmail] = useState('');
+  const [memberBusy, setMemberBusy] = useState('');
+  const [memberNotice, setMemberNotice] = useState('');
+  const [memberError, setMemberError] = useState('');
   const [createdShares, setCreatedShares] = useState([]);
   const [shareState, setShareState] = useState('idle');
   const [shareLayoutReady, setShareLayoutReady] = useState(false);
@@ -508,13 +511,17 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   async function inviteMember() {
     const email = memberEmail.trim();
     if (!email || !meeting?.id) return;
-    try { const member = await managementClient.addMember(meeting.id, email); setMembers((current) => current.some((item) => item.userId === member.userId) ? current : [...current, member]); setMemberEmail(''); }
-    catch { setError('無法邀請成員，請確認 email 對應到 active 帳號。'); }
+    setMemberBusy(`invite:${email}`); setMemberNotice(''); setMemberError('');
+    try { const member = await managementClient.addMember(meeting.id, email); setMembers((current) => current.some((item) => item.userId === member.userId) ? current : [...current, member]); setMemberEmail(''); setMemberNotice('成員已加入。'); }
+    catch { setMemberError('無法邀請成員，請確認 email 對應到 active 帳號。'); }
+    finally { setMemberBusy(''); }
   }
   async function removeMember(userId) {
     if (!meeting?.id) return;
-    try { await managementClient.removeMember(meeting.id, userId); setMembers((current) => current.filter((item) => item.userId !== userId)); }
-    catch { setError('無法移除成員。'); }
+    setMemberBusy(`remove:${userId}`); setMemberNotice(''); setMemberError('');
+    try { await managementClient.removeMember(meeting.id, userId); setMembers((current) => current.filter((item) => item.userId !== userId)); setMemberNotice('成員已移除。'); }
+    catch { setMemberError('無法移除成員。'); }
+    finally { setMemberBusy(''); }
   }
   const hasAudioOutputSelection = supportsAudioContextOutputSelection();
 
@@ -569,7 +576,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             </div>
           </section>
 
-          {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">ACCESS</p><h3 id="meeting-members-title">錄製成員</h3><p className="meeting-settings-card-description">成員只能錄製已加入的會議，不能修改設定、分享或匯出。</p></div></div><div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim()}>邀請成員</button></div>{members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)}>移除</button></div>)}</section> : null}
+  {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">ACCESS</p><h3 id="meeting-members-title">錄製成員</h3><p className="meeting-settings-card-description">成員只能錄製已加入的會議，不能修改設定、分享或匯出。</p></div></div>{memberError ? <p className="error-message" role="alert">{memberError}</p> : null}{memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}<div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>{members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button></div>)}</section> : null}
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>

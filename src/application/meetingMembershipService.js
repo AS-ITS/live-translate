@@ -26,6 +26,10 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
       return (await ownerFor(meetingId)) === actor.id;
     },
 
+    async getMeetingOwner(meetingId) {
+      return ownerFor(meetingId);
+    },
+
     async list(meetingId, actor) {
       if (actor && !await this.canManage(meetingId, actor)) {
         const error = new Error('Access is not allowed.');

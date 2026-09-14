@@ -1359,6 +1359,8 @@ metadata.
 
 ## Account management and meeting membership
 
+Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. Disabled profiles are refreshed per private request and receive `403 auth_forbidden`.
+
 Private APIs refresh the server-side profile on every request. Disabled profiles receive `403 auth_forbidden`. Members must provide `meetingId` when creating a session and must have an active membership for that meeting; missing meetings and memberships return `403 recorder_forbidden`.
 
 `GET/POST /api/meetings/:meetingId/members` and `DELETE /api/meetings/:meetingId/members/:userId` are restricted to the meeting owner or an active `super_admin`. Admin user listing and enable/disable endpoints require an active `super_admin`; disable requests require `{ "transferToUserId": "<active-user-id>" }`.

@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-09-14
+- Wired the shared meeting membership authorization boundary into request composition, including resource-owner repository scope and audit REST failure detection.
 
 - Completed Issue #33 follow-up authorization hardening for member recording, meeting membership, admin operations, and disabled profiles.
 - Added strict safe audit action filtering and atomic owner transfer coverage. Gemini credentials are excluded from transfer.

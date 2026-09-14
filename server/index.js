@@ -28,6 +28,7 @@ import {
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
+import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
 import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
@@ -614,8 +615,9 @@ export function createRequestHandler(options = {}) {
     translationHistoryController,
     meetingRepository,
     meetingReadController,
-    meetingCheckpointService,
-    meetingDeletionService,
+ meetingCheckpointService,
+ meetingDeletionService,
+ meetingMembershipService,
     sessionAudioArtifactRepository,
     meetingAudioService,
   meetingCueService,
@@ -640,13 +642,23 @@ export function createRequestHandler(options = {}) {
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
-    , profileService = createProfileService()
+ , profileService = createProfileService()
+ , meetingMembershipService: injectedMeetingMembershipService
     , credentialRepository = createGeminiCredentialRepository()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
   , readinessCheck
-  , strictCheckpointPathIds = true
-  } = options;
+ , strictCheckpointPathIds = true
+ } = options;
+
+ const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
+   profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
+   membershipRepository: {
+     find: ({ meetingId, userId }) => profileService.canRecordMeeting({ id: userId }, meetingId),
+     list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
+   },
+   meetingRepository,
+ });
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
     assertTranslationCommandController(translationCommandController);
@@ -666,8 +678,9 @@ export function createRequestHandler(options = {}) {
       translationHistoryController,
       meetingRepository,
       meetingReadController,
-      meetingCheckpointService,
-      meetingDeletionService,
+ meetingCheckpointService,
+ meetingDeletionService,
+ meetingMembershipService: resolvedMeetingMembershipService,
       sessionAudioArtifactRepository,
       meetingAudioService,
       meetingCueService,
@@ -711,6 +724,7 @@ async function handleRequestWithSessionReadController(
  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
+  const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -890,6 +904,18 @@ async function handleRequestWithSessionReadController(
     }
   }
 
+    if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
+      try {
+        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+        if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+      } catch (error) {
+        const code = errorCodeFor(error);
+        statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+        sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+        return;
+      }
+    }
+
     if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
       try {
         const sessionContext = isMemberSessionRecordingPath(req.method, path)
@@ -899,8 +925,8 @@ async function handleRequestWithSessionReadController(
           ? await sessionRepository?.getSessionRecord?.(extractSessionRecordingId(path))
           : null;
         const meetingId = sessionContext?.meetingId || localSession?.sessionRecord?.meetingId || extractMemberMeetingId(path);
-        if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
-        const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await profileService?.getMeetingOwner?.(meetingId);
+        if (!await meetingMembershipService?.canRecord?.(meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await meetingMembershipService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
       setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
  } catch (error) {
@@ -2420,6 +2446,38 @@ function isPublicApiPath(method, path) {
     isSharedMeetingDetailPath(path) ||
     isSharedMeetingEventsPath(path)
   )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
+}
+
+async function authorizePrivateResource({ req, path, user, meetingMembershipService, profileService, sessionRepository }) {
+  const meetingMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
+  const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)/u);
+  if (meetingMatch && meetingMatch[1] !== 'glossary') {
+    const meetingId = safeDecodePathComponent(meetingMatch[1]);
+    const canRecord = isMemberMeetingRecordingPath(req.method, path);
+    const allowed = canRecord
+      ? await meetingMembershipService.canRecord(meetingId, user.id)
+      : await meetingMembershipService.canManage(meetingId, user);
+    if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
+    if (!ownerUserId) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    return { ownerUserId };
+  }
+  if (sessionMatch && sessionMatch[1] !== 'shares') {
+    const sessionId = safeDecodePathComponent(sessionMatch[1]);
+    const context = await profileService?.getSessionOwner?.(sessionId);
+    const local = !context ? await sessionRepository?.getSessionRecord?.(sessionId) : null;
+    const meetingId = context?.meetingId || local?.sessionRecord?.meetingId;
+    const ownerUserId = context?.ownerUserId || local?.sessionRecord?.ownerUserId;
+    if (meetingId) {
+      const canRecord = isMemberSessionRecordingPath(req.method, path);
+      const allowed = canRecord
+        ? await meetingMembershipService.canRecord(meetingId, user.id)
+        : await meetingMembershipService.canManage(meetingId, user);
+      if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+      if (ownerUserId) return { ownerUserId };
+    }
+  }
+  return null;
 }
 
 function isRecorderAuthorizedPath(method, path, req) {

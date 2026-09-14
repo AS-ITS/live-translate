@@ -2,6 +2,8 @@
 
 ## Account permissions
 
+Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.
+
 Run the deterministic Issue #33 coverage without production Supabase or Gemini:
 
 ```bash

@@ -5,11 +5,12 @@ const SENSITIVE_KEYS = /token|secret|key|audio|transcript|cue|credential|passwor
 export function createAuditLogService({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {
   const resolvedRepository = repository || (env.SUPABASE_URL && env.SUPABASE_SECRET_KEY ? {
     async append(entry) {
-      await fetchImpl(`${String(env.SUPABASE_URL).replace(/\/$/u, '')}/rest/v1/audit_logs`, {
+      const response = await fetchImpl(`${String(env.SUPABASE_URL).replace(/\/$/u, '')}/rest/v1/audit_logs`, {
         method: 'POST',
         headers: { apikey: env.SUPABASE_SECRET_KEY, Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(entry)
       });
+      if (!response?.ok) throw auditError('audit_write_failed');
     }
   } : null);
   return Object.freeze({

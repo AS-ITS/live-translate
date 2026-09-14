@@ -1,6 +1,6 @@
 const ACTIVE = 'active';
 
-export function createMeetingMembershipService({ membershipRepository, profileRepository, meetingRepository } = {}) {
+export function createMeetingMembershipService({ membershipRepository, profileRepository, meetingRepository, sessionRepository } = {}) {
   if (!membershipRepository) throw new TypeError('membershipRepository is required.');
 
   return Object.freeze({
@@ -30,6 +30,14 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
       return ownerFor(meetingId);
     },
 
+    async getSessionOwner(sessionId) {
+      if (!sessionId || typeof sessionRepository?.getSessionRecord !== 'function') return null;
+      const result = await sessionRepository.getSessionRecord(sessionId);
+      const record = result?.sessionRecord || result;
+      if (!record) return null;
+      return { meetingId: record.meetingId, ownerUserId: record.ownerUserId };
+    },
+
     async list(meetingId, actor) {
       if (actor && !await this.canManage(meetingId, actor)) {
         const error = new Error('Access is not allowed.');
@@ -37,7 +45,7 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
         error.status = 403;
         throw error;
       }
-      return membershipRepository.list({ meetingId });
+      return membershipRepository.list({ meetingId, actor });
     },
   });
 

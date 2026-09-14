@@ -23,6 +23,15 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       if (!profile) return fallback;
       return { ...profile, fullName: profile.full_name, avatarUrl: profile.avatar_url, role: profile.role || 'member', status: profile.status || 'active' };
     },
+    async findMeetingMembership(meetingId, userId) {
+      if (!meetingId || !userId) return null;
+      if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
+        return (localMemberships.get(meetingId) || []).find((item) => item.userId === userId) || null;
+      }
+      const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(userId)}&select=user_id,owner_user_id,created_at`, 'GET');
+      return rows[0] || null;
+    },
+
  async canRecordMeeting(user, meetingId) {
  if (!user?.id || !meetingId) return false;
  const profile = await this.getProfile(user);

@@ -2,7 +2,7 @@ import { createAuditLogService } from './auditLogService.js';
 
 const PUBLIC_PROFILE_FIELDS = 'id,email,full_name,avatar_url,role,status,disabled_at,created_at,updated_at';
 
-export function createAdminService({ env = process.env, fetchImpl = globalThis.fetch, auditLogService = createAuditLogService({ env, fetchImpl }) } = {}) {
+export function createAdminService({ env = process.env, fetchImpl = globalThis.fetch, auditLogService = createAuditLogService({ env, fetchImpl }), observability } = {}) {
   const base = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const secret = env.SUPABASE_SECRET_KEY;
   async function request(path, { method = 'GET', body } = {}) {
@@ -12,7 +12,17 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     return response.status === 204 ? [] : response.json();
   }
   function assertAdmin(actor) { if (!actor?.id || actor.role !== 'super_admin' || actor.status !== 'active') throw accountError('auth_forbidden', 403); }
-  async function audit(entry) { try { await auditLogService?.record(entry); } catch { /* Account actions remain safe when audit storage is unavailable. */ } }
+  async function audit(entry) {
+    try {
+      await auditLogService?.record(entry);
+    } catch {
+      try {
+        observability?.log?.({ event: 'audit_write_failed', action: entry.action, result: entry.result, requestId: entry.request_id });
+      } catch {
+        // Audit failure must never replace the account action's safe error.
+      }
+    }
+  }
   return Object.freeze({
     async listUsers(actor) { assertAdmin(actor); return request(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc`); },
     async enableUser(actor, targetUserId, requestId) {

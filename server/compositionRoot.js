@@ -204,7 +204,7 @@ export function createApplicationDependencies(options = {}) {
   const resolvedMeetingMembershipService = meetingMembershipService || createMeetingMembershipService({
     profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
     membershipRepository: {
-      find: ({ meetingId, userId }) => profileService.canRecordMeeting({ id: userId }, meetingId),
+      find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
       list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
     },
     meetingRepository: resolvedMeetingRepository,

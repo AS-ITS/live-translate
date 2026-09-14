@@ -25,3 +25,21 @@ test('admin rejects missing actor role and cannot disable itself', async () => {
   await assert.rejects(service.disableUser({ id: 'same' }, 'same', 'other', 'request-1'), { code: 'auth_forbidden', status: 403 });
   await assert.rejects(service.disableUser({ ...admin, id: 'same' }, 'same', 'other', 'request-1'), { code: 'cannot_disable_self', status: 400 });
 });
+
+test('audit write failure emits only safe observability fields', async () => {
+  const events = [];
+  const service = createAdminService({
+    env,
+    fetchImpl: async (url) => url.includes('profiles?id=in.')
+      ? json([{ id: 'user-2', status: 'active' }, { id: 'user-3', status: 'active' }])
+      : json({ error: 'rpc unavailable' }, 500),
+    auditLogService: { record: async () => { throw new Error('contains stack and credential token'); } },
+    observability: { log: (event) => events.push(event) }
+  });
+
+  await assert.rejects(service.disableUser(admin, 'user-2', 'user-3', 'request-1'), { code: 'supabase_request_failed' });
+  assert.deepEqual(events, [
+    { event: 'audit_write_failed', action: 'asset_transfer', result: 'failure', requestId: 'request-1' },
+    { event: 'audit_write_failed', action: 'user_disabled', result: 'failure', requestId: 'request-1' }
+  ]);
+});

@@ -654,7 +654,7 @@ export function createRequestHandler(options = {}) {
  const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
    profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
    membershipRepository: {
-     find: ({ meetingId, userId }) => profileService.canRecordMeeting({ id: userId }, meetingId),
+     find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
      list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
    },
    meetingRepository,
@@ -1072,12 +1072,12 @@ async function handleRequestWithSessionReadController(
       const body = await readJson(req);
       if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
       if (body?.meetingId && authenticatedUser?.role !== 'super_admin') {
-        if (!await profileService?.canRecordMeeting?.(authenticatedUser, body.meetingId)) throw createHttpError('recorder_forbidden');
-        const ownerUserId = await profileService?.getMeetingOwner?.(body.meetingId);
+        if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
       } else if (body?.meetingId) {
-        const ownerUserId = await profileService?.getMeetingOwner?.(body.meetingId);
+        const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
       }
@@ -2464,7 +2464,7 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
   }
   if (sessionMatch && sessionMatch[1] !== 'shares') {
     const sessionId = safeDecodePathComponent(sessionMatch[1]);
-    const context = await profileService?.getSessionOwner?.(sessionId);
+    const context = await meetingMembershipService?.getSessionOwner?.(sessionId) || await profileService?.getSessionOwner?.(sessionId);
     const local = !context ? await sessionRepository?.getSessionRecord?.(sessionId) : null;
     const meetingId = context?.meetingId || local?.sessionRecord?.meetingId;
     const ownerUserId = context?.ownerUserId || local?.sessionRecord?.ownerUserId;

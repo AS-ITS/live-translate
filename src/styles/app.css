@@ -11,3 +11,5 @@
 @import url('./live-viewer.css');
 @import url('./meeting-viewer.css');
 @import url('./recorder.css');
+@import url('./auth.css');
+ .profile-chip { align-self: center; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #475569; font-size: .875rem; }

@@ -18,6 +18,14 @@ Each phase should build on the previous phase without expanding scope unless exp
 Current milestone: Phase 4C closeout completed; the capability is ready for
 controlled manual Gemini validation.
 
+P1 closeout status: implementation is complete. P1 identity, P1-A2 durable
+Meeting Viewer event replay, P1-B observability, and the Flash translation and
+refinement pipeline are complete. Remaining work is production rollout
+verification: migrations, `/healthz`, `/readyz`, authenticated owner-scoped
+smoke checks, worker Cron behavior, metric cleanup, and alert configuration.
+Cross-host brokers, event outbox, and exactly-once event delivery remain
+reliability backlog items.
+
 Issue #29 Milestone 1 is completed: `#meetings` is the canonical Meeting
 Management home with client-side name/status filtering and status-aware actions.
 Issue #29 Milestone 2 is completed: status-aware Meeting Workspace tabs now
@@ -1739,7 +1747,7 @@ Deferred:
 
 ## 5. Phase 3 - Production
 
-Status: Future
+Status: Future capability expansion; P1 rollout verification is tracked above.
 
 ### Candidate Features
 

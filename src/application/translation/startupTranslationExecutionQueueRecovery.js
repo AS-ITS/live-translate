@@ -12,6 +12,8 @@ import {
   createNoopTranslationExecutionMetrics,
   TRANSLATION_EXECUTION_METRIC_NAMES
 } from './translationExecutionMetrics.js';
+import { runWithRequestUser, setRequestUser } from '../../../server/requestIdentity.js';
+import { OBSERVABILITY_METRIC_NAMES } from '../observability/observabilityMetricRegistry.js';
 
 export function createStartupTranslationExecutionQueueRecovery({
   durableRepository,
@@ -22,7 +24,8 @@ export function createStartupTranslationExecutionQueueRecovery({
   clock = () => new Date().toISOString(),
   leaseDurationMs = 300000,
   leaseIdFactory = randomUUID,
-  metrics = createNoopTranslationExecutionMetrics()
+    metrics = createNoopTranslationExecutionMetrics(),
+    observabilityMetrics
 } = {}) {
   assertDurableTranslationExecutionQueueRepository(durableRepository);
   assertTranslationExecutionQueue(activeQueue);
@@ -74,12 +77,14 @@ export function createStartupTranslationExecutionQueueRecovery({
       }
 
       for (const item of processingItems) {
-        if (!hasExpiredCompleteLease(item, now)) {
-          continue;
-        }
+        if (item.ownerUserId) setRequestUser({ id: item.ownerUserId, kind: 'worker' });
+      if (!hasExpiredCompleteLease(item, now)) {
+        continue;
+      }
+      safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.LEASE_RECLAIM);
 
         assertRecoveryTranslationRepository(translationRepository);
-        const execution = await translationRepository.findExecutionById(item.executionId);
+        const execution = await runWithRequestUser({ id: item.ownerUserId, kind: 'worker' }, () => translationRepository.findExecutionById(item.executionId));
         assertFoundExecution(execution, item.executionId);
         const outputs = await translationRepository.listTranslationOutputsByExecution(item.executionId);
 
@@ -151,9 +156,10 @@ export function createStartupTranslationExecutionQueueRecovery({
 
       async function enqueueOnce(item) {
         if (replayedExecutionIds.has(item.executionId)) return;
-        await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId });
-        replayedExecutionIds.add(item.executionId);
-        safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RECOVERY_TOTAL);
+        await activeQueue.enqueue({ executionId: item.executionId, requestId: item.requestId, ...(item.ownerUserId ? { ownerUserId: item.ownerUserId } : {}) });
+      replayedExecutionIds.add(item.executionId);
+      safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RECOVERY_TOTAL);
+      safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.RECOVERY_TOTAL, { operation: 'translation', provider: 'none', statusClass: 'none' });
       }
 
       function createRecoveryLease(recoveredAt) {
@@ -167,6 +173,7 @@ export function createStartupTranslationExecutionQueueRecovery({
       }
 
       async function acknowledgeTerminalItem(item, status) {
+        if (item.ownerUserId) setRequestUser({ id: item.ownerUserId, kind: 'worker' });
         assertRecoveryTranslationRepository(translationRepository);
         const execution = await translationRepository.findExecutionById(item.executionId);
         if (execution === null || execution === undefined) return;
@@ -188,6 +195,14 @@ function safeIncrement(metrics, name) {
     metrics.increment(name);
   } catch {
     // Metrics must never change recovery behavior.
+  }
+}
+
+function safeObsCounter(metrics, name, labels) {
+  try {
+    metrics?.recordCounter?.(name, 1, labels);
+  } catch {
+    // Observability must never change recovery behavior.
   }
 }
 

@@ -1,5 +1,14 @@
 # Testing
 
+P1 identity tests use signed deterministic JWT fixtures and never call Google,
+Gemini, or Supabase production services. Validate the identity slice with:
+
+```bash
+node --test tests/unit/accessControlSupabase.test.js tests/unit/accessControl.test.js tests/unit/accessToken.test.js
+npm run build
+npm run db:lint
+```
+
 ## Realtime subtitle pipeline strategy (P0 and P1 implemented)
 
 The four-stage pipeline is documented as a deterministic, mockable boundary.

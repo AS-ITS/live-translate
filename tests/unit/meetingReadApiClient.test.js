@@ -77,6 +77,28 @@ test('unexpected HTTP errors and malformed responses reject', async () => {
   await assert.rejects(malformedDetailClient.getMeetingDetail('meeting-1'), /must be an object/);
 });
 
+test('meeting history HTTP errors expose API code and request ID', async () => {
+  const client = createMeetingReadApiClient({
+    fetchImpl: async () => jsonResponse({
+      error: {
+        code: 'auth_invalid',
+        message: 'Access token is invalid.',
+        requestId: 'request-list-123'
+      }
+    }, { status: 401 })
+  });
+
+  await assert.rejects(
+    client.listMeetingHistory(),
+    (error) => {
+      assert.equal(error.status, 401);
+      assert.equal(error.code, 'auth_invalid');
+      assert.equal(error.requestId, 'request-list-123');
+      return true;
+    }
+  );
+});
+
 test('invalid inputs do not issue requests', async () => {
   let calls = 0;
   const client = createMeetingReadApiClient({

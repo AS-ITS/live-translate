@@ -1,4 +1,7 @@
-import { ArrowRight } from 'lucide-react';
+import { ArrowRight, ChevronDown, KeyRound, LogOut, RefreshCw, UserRound } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { useAuth } from '../components/AuthGate.jsx';
+import { GEMINI_SETTINGS_HASH } from '../app/routes.js';
 
 export function AppLayout({
   children,
@@ -8,8 +11,31 @@ export function AppLayout({
   subtitle,
   headerAction = null,
   showHeader = true,
+  showGeminiKeyAction = true,
   headerClassName = ''
 }) {
+  const { profile, signOut, switchAccount } = useAuth();
+  const accountMenuRef = useRef(null);
+  const accountTriggerRef = useRef(null);
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event) {
+      if (!accountMenuRef.current?.contains(event.target)) accountMenuRef.current?.removeAttribute('open');
+    }
+
+    function closeOnEscape(event) {
+      if (event.key !== 'Escape' || !accountMenuRef.current?.open) return;
+      accountMenuRef.current.removeAttribute('open');
+      accountTriggerRef.current?.focus();
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, []);
   return (
     <main className={`app-shell ${className}`.trim()}>
       {showHeader ? (
@@ -18,7 +44,30 @@ export function AppLayout({
             <h1 id={titleId}>{title}</h1>
             {subtitle ? <p>{subtitle}</p> : null}
           </div>
-          {headerAction}
+          <div className="app-header-actions">
+            {profile && showGeminiKeyAction ? <a className="button secondary header-key-action" href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+            {profile ? (
+              <details ref={accountMenuRef} className="account-menu">
+                <summary ref={accountTriggerRef} className="account-menu-trigger" aria-label="開啟帳號選單">
+                  <UserRound size={17} aria-hidden="true" />
+                  <span>{profile.fullName || '帳號'}</span>
+                  <ChevronDown size={16} aria-hidden="true" />
+                </summary>
+                <div className="account-menu-panel" role="menu">
+                  <p className="account-menu-email">{profile.email}</p>
+                  <button className="account-menu-switch" type="button" role="menuitem" onClick={() => { accountMenuRef.current?.removeAttribute('open'); void switchAccount?.(); }}>
+                    <RefreshCw size={16} aria-hidden="true" />
+                    切換帳號
+                  </button>
+                  <button className="account-menu-logout" type="button" role="menuitem" onClick={signOut}>
+                    <LogOut size={16} aria-hidden="true" />
+                    登出
+                  </button>
+                </div>
+              </details>
+            ) : null}
+            {headerAction}
+          </div>
         </header>
       ) : null}
       {children}

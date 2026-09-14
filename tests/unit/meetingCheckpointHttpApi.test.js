@@ -138,6 +138,58 @@ test('Meeting Viewer shares expose sanitized historical detail by token and shor
   }
 });
 
+test('meeting audio upload endpoints delegate metadata only and issue signed downloads', async () => {
+  const calls = [];
+  const meetingAudioService = {
+    async beginUpload(input) {
+      calls.push(['begin', input]);
+      return { id: 'artifact-1', status: 'uploading', bucket: 'meeting-audio', objectPath: 'user/meeting/segment/recording.webm', uploadEndpoint: 'https://storage.example/upload/resumable' };
+    },
+    async completeUpload(input) { calls.push(['complete', input]); return { id: input.artifactId, status: 'ready' }; },
+    async createDownloadUrl(input) { calls.push(['download', input]); return { url: 'https://storage.example/signed', expiresAt: 61_000, fileName: 'recording.webm' }; }
+  };
+  const handler = createHandler({ meetingAudioService });
+
+  const started = await request(handler, {
+    method: 'POST',
+    url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads',
+    body: JSON.stringify({ mimeType: 'audio/webm', byteSize: 4096 })
+  });
+  const completed = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete' });
+  const download = await request(handler, { method: 'POST', url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/download-url' });
+
+  assert.equal(started.status, 201, started.body);
+  assert.equal(completed.status, 200, completed.body);
+  assert.equal(download.status, 200, download.body);
+  assert.deepEqual(calls, [
+    ['begin', { meetingId: 'meeting-1', segmentId: 'segment-1', mimeType: 'audio/webm', byteSize: 4096 }],
+    ['complete', { meetingId: 'meeting-1', artifactId: 'artifact-1' }],
+    ['download', { meetingId: 'meeting-1', artifactId: 'artifact-1', expiresIn: 60 }]
+  ]);
+});
+
+test('Meeting Viewer exchanges an active viewer share for scoped Realtime authorization', async () => {
+  const shareService = createSessionShareService();
+  const viewerRealtimeTokenService = {
+    async issue(share) {
+      return { accessToken: `jwt:${share.id}`, expiresAt: 301_000, channel: `meeting:${share.meetingId}` };
+    }
+  };
+  const handler = createHandler({ sessionShareService: shareService, viewerRealtimeTokenService });
+  const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const share = (await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${created.meeting.id}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  })).json().share;
+
+  const response = await request(handler, { method: 'POST', url: `/api/shared-meetings/${share.token}/realtime-token` });
+
+  assert.equal(response.status, 200, response.body);
+  assert.equal(response.json().channel, `meeting:${created.meeting.id}`);
+  assert.equal(response.json().accessToken, `jwt:${share.id}`);
+});
+
 test('Meeting share management list rebuilds a stable code URL after the share service is reloaded', async () => {
   const directory = await (await import('node:fs/promises')).mkdtemp((await import('node:path')).join((await import('node:os')).tmpdir(), 'live-translate-meeting-share-list-'));
   const fileSystem = await import('node:fs/promises');
@@ -483,6 +535,24 @@ test('checkpoint accepts a monotonic merged Cue update', async () => {
   assert.equal(response.json().checkpoint.finalCues[0].sourceText, '你好世界');
 });
 
+test('checkpoint rejects an invalid final Cue with a structured error code', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const response = await request(handler, {
+    method: 'PUT',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`,
+    body: JSON.stringify(checkpoint({
+      meetingId: meeting.id,
+      segmentId: segment.id,
+      finalCues: [{ cueId: 'cue-1' }]
+    }))
+  });
+
+  assert.equal(response.status, 400);
+  assert.equal(response.json().error.code, 'subtitle_cue_invalid');
+  assert.match(response.json().error.requestId, /[0-9a-f-]{36}/);
+});
+
 test('POST /api/meetings/:meetingId/segments/:segmentId/rollover creates next segment', async () => {
   const handler = createHandler();
   const { meeting, segment } = (await request(handler, {
@@ -619,6 +689,56 @@ test('missing meeting or segment returns HTTP 404', async () => {
   assert.equal(missingSegment.json().error.code, 'meeting_segment_not_found');
 });
 
+test('GET checkpoint returns existing hydrated Cues with numeric offsets', async () => {
+  const repository = createMemoryMeetingRepository();
+  repository.createMeeting({ id: 'meeting-1', status: 'active', startedAt: 1000, createdAt: 1000 });
+  repository.createMeetingSegment({
+    id: 'segment-1', meetingId: 'meeting-1', sequence: 0, status: 'completed',
+    startedAt: 1000, endedAt: 3000, createdAt: 1000,
+    checkpoint: checkpoint({
+      meetingId: 'meeting-1',
+      segmentId: 'segment-1',
+      finalCues: [finalCue({ startTimeMs: 1200, endTimeMs: 2500 })]
+    })
+  });
+  const response = await request(createHandler({ meetingRepository: repository }), {
+    method: 'GET',
+    url: '/api/meetings/meeting-1/segments/segment-1/checkpoint'
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().checkpoint.finalCues[0].startTimeMs, 1200);
+  assert.equal(response.json().checkpoint.finalCues[0].sourceLanguageCode, 'zh-Hant');
+});
+
+test('checkpoint route accepts UUID paths and identifies invalid UUID fields', async () => {
+  const handler = createHandler({ strictCheckpointPathIds: true });
+  const valid = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/0897cdf1-4726-4362-81d4-75f0c695be30/segments/c5347c33-9eb1-4a2a-b562-892c9d8749db/checkpoint'
+  });
+  assert.notEqual(valid.status, 400);
+
+  const invalid = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/not-a-uuid/segments/c5347c33-9eb1-4a2a-b562-892c9d8749db/checkpoint'
+  });
+  assert.equal(invalid.status, 400);
+  assert.deepEqual(invalid.json().error.details, ['meetingId must be a valid UUID.']);
+});
+
+test('GET checkpoint identifies a segment without a stored checkpoint', async () => {
+  const handler = createHandler();
+  const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
+  const response = await request(handler, {
+    method: 'GET',
+    url: `/api/meetings/${meeting.id}/segments/${segment.id}/checkpoint`
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().checkpoint, null);
+});
+
 test('completes an interrupted meeting through the HTTP API', async () => {
   const handler = createHandler();
   const created = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
@@ -645,8 +765,20 @@ test('completes an interrupted meeting through the HTTP API', async () => {
   assert.equal(response.json().meeting.status, 'completed');
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster } = {}) {
-  const repository = createMemoryMeetingRepository();
+test('checkpoint route reports invalid segment UUID details and request id', async () => {
+  const handler = createHandler({ strictCheckpointPathIds: true });
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/0897cdf1-4726-4362-81d4-75f0c695be30/segments/c5347c3-9eb1-4a2a-b562-892c9d8749db/checkpoint'
+  });
+  assert.equal(response.status, 400);
+  const body = response.json();
+  assert.deepEqual(body.error.details, ['segmentId must be a valid UUID.']);
+  assert.equal(body.error.requestId, response.headers['X-Request-Id']);
+});
+
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, strictCheckpointPathIds = false } = {}) {
+  const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
   const meetingCheckpointService = createMeetingCheckpointService({
@@ -670,7 +802,10 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     meetingCheckpointService,
     ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
-    ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes })
+    ...(meetingAudioService ? { meetingAudioService } : {}),
+    ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+    ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes }),
+    strictCheckpointPathIds
   });
 }
 

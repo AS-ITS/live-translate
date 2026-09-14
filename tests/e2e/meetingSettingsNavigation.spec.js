@@ -1,4 +1,54 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from '@playwright/test'; test('continues loading meeting settings when glossary is unavailable', async ({ page }) => { await page.route('**/api/glossary', async (route) => route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_unavailable' } }) })); await page.goto('/#meeting-settings?mode=create'); await expect(page.getByRole('heading', { name: '基本資訊' })).toBeVisible(); await expect(page.getByRole('alert')).toHaveCount(0); await expect(page.locator('.warning-message')).toHaveText('共用詞彙目前無法載入，仍可使用私人詞彙。'); });
+
+test('requires a meeting name before saving', async ({ page }) => {
+  let createRequestCount = 0;
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() === 'POST') createRequestCount += 1;
+    await route.fallback();
+  });
+  await page.goto('/#meeting-settings?mode=create');
+
+  const nameInput = page.getByRole('textbox', { name: /會議名稱/ });
+  await page.getByRole('button', { name: '建立會議' }).click();
+
+  await expect(nameInput).toBeFocused();
+  await expect(page.locator('#meeting-name-error')).toContainText('請輸入會議名稱。');
+  await expect(nameInput).toHaveAttribute('aria-invalid', 'true');
+  await expect(createRequestCount).toBe(0);
+
+  await nameInput.fill('產品會議');
+  await expect(nameInput).toHaveAttribute('aria-invalid', 'false');
+  await expect(page.locator('#meeting-name-error')).toHaveCount(0);
+});
+
+test('requires microphone confirmation before saving', async ({ page }) => {
+  let createRequestCount = 0;
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.route('**/api/meetings', async (route) => {
+    if (route.request().method() === 'POST') createRequestCount += 1;
+    await route.fallback();
+  });
+  await page.goto('/#meeting-settings?mode=create');
+
+  await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
+  const confirmButton = page.getByRole('button', { name: '測試並確認音訊' });
+  await page.getByRole('button', { name: '建立會議' }).click();
+
+  await expect(confirmButton).toBeFocused();
+  await expect(page.locator('#meeting-audio-settings-title')).toBeInViewport();
+  await expect(page.locator('#meeting-audio-settings-error')).toContainText('請先測試並確認麥克風權限。');
+  await expect(confirmButton).toHaveAttribute('aria-invalid', 'true');
+  const controlRowLayout = await page.evaluate(() => {
+    const button = document.querySelector('.meeting-audio-controls > .button');
+    const status = document.querySelector('.meeting-audio-status');
+    const buttonRect = button.getBoundingClientRect();
+    const statusRect = status.getBoundingClientRect();
+    return statusRect.top < buttonRect.bottom && statusRect.bottom > buttonRect.top;
+  });
+  expect(controlRowLayout).toBe(true);
+  await expect(createRequestCount).toBe(0);
+});
 
 test('meeting settings steps navigate to each settings card', async ({ page }) => {
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
@@ -162,6 +212,11 @@ test('active step stays on the first step at the top and follows the 40% focus l
 });
 
 test('shows the share meeting step after creating a meeting', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (navigator.mediaDevices) {
+      navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [] });
+    }
+  });
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
   await page.addInitScript(() => {
     const originalDecode = HTMLImageElement.prototype.decode;
@@ -205,6 +260,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.locator('.meeting-settings-step')).toHaveCount(4);
   await expect(page.locator('.meeting-share-results')).toHaveCount(0);
 
+  await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
+  await page.getByRole('button', { name: '測試並確認音訊' }).click();
+  await expect(page.locator('.meeting-audio-status')).toHaveClass(/is-confirmed/);
   await page.getByRole('button', { name: '建立會議' }).click();
 
   await expect(page.locator('.meeting-settings-step')).toHaveCount(5);

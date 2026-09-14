@@ -6,7 +6,7 @@ function setHash(hash) {
 }
 
 test('live recording routes resolve to the independent page', async () => {
-  const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
+  const { MEETING_MANAGEMENT_HASH, pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
 
   setHash('#live?meetingId=meeting-1');
   assert.equal(pageInfoFromLocation().page, 'live-recording');
@@ -14,7 +14,20 @@ test('live recording routes resolve to the independent page', async () => {
 
   setHash('#live-recording?meetingId=meeting-1');
   assert.equal(pageInfoFromLocation().page, 'meetings');
-  assert.equal(canonicalHashForLocation(), '#meetings');
+  assert.equal(MEETING_MANAGEMENT_HASH, '#meetings');
+  assert.equal(canonicalHashForLocation(), MEETING_MANAGEMENT_HASH);
+});
+
+test('settings route has an explicit meeting management return target', async () => {
+  const { GEMINI_SETTINGS_HASH, MEETING_MANAGEMENT_HASH, pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
+
+  setHash(GEMINI_SETTINGS_HASH);
+  assert.equal(pageInfoFromLocation().page, 'settings');
+  assert.equal(canonicalHashForLocation(), GEMINI_SETTINGS_HASH);
+
+  setHash(MEETING_MANAGEMENT_HASH);
+  assert.equal(pageInfoFromLocation().page, 'meetings');
+  assert.equal(canonicalHashForLocation(), MEETING_MANAGEMENT_HASH);
 });
 
 test('meeting detail routes stay on the standalone record page', async () => {

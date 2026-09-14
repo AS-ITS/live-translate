@@ -1,6 +1,18 @@
 # Live Translate API and Events
 
+## Personal Gemini Credential
+
+Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.
+
+`POST /api/live-token` resolves the Gemini key for the authenticated user in cloud mode. A user without a configured key receives `gemini_credential_not_configured`; the response and request logs never contain the key.
+
 ## Realtime subtitle pipeline contract
+
+In cloud mode, execution status changes are persisted in Supabase and clients
+subscribe through Supabase Realtime. REST execution snapshots remain the
+authoritative recovery path after disconnects. The Vercel Cron worker processes
+durable translation jobs in bounded batches and does not rely on process-local
+polling.
 
 The API treats a finalized source Cue as the stable unit of downstream work.
 
@@ -119,10 +131,29 @@ status and does not change either the Meeting or global glossary. Confirmed
 rows are sent later as part of the existing Meeting create/update request's
 `privateGlossaryEntries` field.
 
-Issue #29 defines a future Meeting-scoped Viewer API, private glossary fields,
-and Meeting-level `cue.append` SSE events. The complete contract and delivery
-phases are documented in
+The Meeting-scoped Viewer API, private glossary fields, Storage upload, and
+Realtime contracts are documented in
 [Meeting Center and Live Viewer](features/meeting-center-live-viewer.md).
+
+### P3 Storage and Realtime override
+
+The following cloud contract supersedes the older process-local SSE contract
+below. `POST /api/meetings/:meetingId/segments/:segmentId/cues` persists a Final
+Cue before a database trigger broadcasts `cue.append`. A Viewer exchanges its
+share through `POST /api/shared-meetings/:token/realtime-token` (or the
+short-code variant), subscribes to private `meeting:<meetingId>`, then merges a
+REST snapshot. The share-scoped JWT expires in at most five minutes. Cloud SSE
+returns `410 realtime_required`; it remains available only as a local fallback.
+
+Original Segment audio uses metadata-only HTTP endpoints:
+
+- `POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` returns the
+  private Storage TUS endpoint/path for `{ mimeType, byteSize }`.
+- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/complete` verifies
+  the object; `/fail` records a failed upload.
+- `POST /api/meetings/:meetingId/audio-artifacts/:artifactId/download-url`
+  performs ownership validation and returns a 60-second signed URL with
+  `Cache-Control: no-store`.
 
 The Meeting-level Viewer capability is delivered incrementally. Existing
 Session share and Meeting checkpoint routes remain the current implementation
@@ -183,7 +214,7 @@ device metadata.
 
 `WS /api/sessions/:sessionId/execution-events` streams execution status for one
 Session. The first message must be
-`{"type":"auth","token":"<DEMO_ACCESS_TOKEN>"}`; invalid or missing
+`{"type":"auth","token":"<supabase-access-token>"}`; invalid or missing
 authentication closes the connection. The token is never placed in the URL.
 
 Messages are safe snapshots containing no stack traces, API keys, ephemeral
@@ -1017,17 +1048,14 @@ Malformed session identifiers return `400 invalid_request`.
 
 ## Access control
 
-Private `/api/*` routes require `Authorization: Bearer <DEMO_ACCESS_TOKEN>`.
-The legacy `X-Demo-Access-Token` header remains accepted for compatibility.
-Production returns `503 auth_not_configured` when `DEMO_ACCESS_TOKEN` is absent;
-development and test remain permissive when it is absent. Health/readiness and
-Viewer share routes (`GET /api/shared-sessions/:token` and `/events`) remain
-anonymous. Private requests also retain the configured origin check.
-
-The browser uses the build-time `VITE_DEMO_ACCESS_TOKEN`. It must match the
-server token and is visible in the frontend bundle; this v1 design does not
-provide per-user security. All authenticated users share the same private API
-permissions.
+Private `/api/*` routes require `Authorization: Bearer <supabase-access-token>`.
+The same Supabase access token is used for HTTP and execution-events WebSocket authentication.
+Supabase validation checks signature, issuer, audience, expiry, the
+`authenticated` role, and `AUTH_ALLOWED_EMAIL_DOMAINS`, returning fixed
+`401 auth_required`, `401 auth_invalid`, or `403 auth_forbidden` errors.
+`GET /api/profile` returns only the current user's profile. With
+`P1_PROFILE_ONLY=true`, unimplemented capabilities return
+`503 cloud_capability_unavailable`.
 
 ## `GET /api/metrics`
 

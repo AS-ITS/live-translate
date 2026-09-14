@@ -2,6 +2,7 @@ import { TranslationExecution, TranslationOutput } from '../domain/translation/i
 import { TRANSLATION_REPOSITORY_METHODS } from '../domain/translation/translationRepository.js';
 import { createRetryPolicy } from './translation/retryPolicy.js';
 import { createTranscriptPolishingRateLimiter } from './translation/transcriptPolishingRateLimiter.js';
+import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from './observability/observabilityMetricRegistry.js';
 
 export function createTranslationExecutionRunner({
   translationRepository,
@@ -10,7 +11,8 @@ export function createTranslationExecutionRunner({
   executionFenceGuard,
   logger = (event) => console.error(JSON.stringify(event)),
   clock = () => new Date().toISOString(),
-  transcriptPolishingRateLimiter = createTranscriptPolishingRateLimiter()
+  transcriptPolishingRateLimiter = createTranscriptPolishingRateLimiter(),
+  observabilityMetrics
 } = {}) {
   assertTranslationRepository(translationRepository);
   assertTranslationExecutionProvider(translationExecutionProvider);
@@ -41,7 +43,8 @@ export function createTranslationExecutionRunner({
           executionFenceGuard,
           executionFence,
           clock,
-          transcriptPolishingRateLimiter
+      transcriptPolishingRateLimiter,
+      observabilityMetrics
         }));
       } catch (error) {
         if (error.providerExecutionError !== true) throw error;
@@ -213,7 +216,8 @@ async function executeProviderWithRetry({
   executionFenceGuard,
   executionFence,
   clock,
-  transcriptPolishingRateLimiter
+  transcriptPolishingRateLimiter,
+  observabilityMetrics
 }) {
   let providerAttemptExecution = execution;
   let attempt = 1;

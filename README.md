@@ -1,5 +1,9 @@
 # Live Translate
 
+Local runtime persistence is Supabase-only. Start the local stack with
+`supabase start` and apply migrations with `supabase db reset`; `data/` is not
+read by the application.
+
 Live Translate is a browser-based real-time speech translation app. The React
 frontend captures microphone audio, requests a short-lived Gemini ephemeral
 token from the Node.js backend, then connects directly to the Gemini Live API.
@@ -105,12 +109,41 @@ secrets:
 DATA_DIR=/var/data
 TRANSLATION_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key
-DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
 ```
 
 Attach a Render Persistent Disk mounted at `/var/data` when saved sessions,
 durable queue state, glossary data, or dead-letter queue files must survive
 restarts.
+
+## Cloud deployment (P3)
+
+The repository also contains the Issue #31 deployment foundation:
+
+- Vercel uses `npm run build` and the catch-all Node Function under `api/`.
+- `/healthz`, `/readyz`, authenticated Meeting APIs, private Storage metadata,
+  and Viewer Realtime token exchange are available through the Function.
+- Local Supabase development uses `npm run db:start`, `npm run db:reset`, and
+  `npm run db:lint`.
+- Development uses the local Supabase stack, preview uses an isolated Supabase
+  branch, and production uses a separate Supabase project.
+- Apply all migrations through
+  `20260914000000_observability_metric_buckets.sql`. They create owner RLS,
+  the private `meeting-audio` bucket, Viewer Realtime authorization, persisted
+  Cue broadcasts, durable queue operations, event replay, and observability
+  metric buckets.
+
+Required cloud variables include `SUPABASE_URL`, `SUPABASE_SECRET_KEY`,
+`SUPABASE_JWKS_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`,
+`AUTH_ALLOWED_EMAIL_DOMAINS`, `APP_ORIGIN`, and
+`SUPABASE_REALTIME_SIGNING_PRIVATE_JWK`. The Realtime key is a private JWK whose
+`kid` matches a Supabase JWT signing key; never expose it through a `VITE_`
+variable.
+
+## Vercel Cron worker
+
+Vercel calls `/api/internal/worker` every minute. Configure `CRON_SECRET` and
+`WORKER_BATCH_SIZE`; the worker processes a bounded batch from the Supabase
+durable queue and does not rely on process-local polling.
 
 ## Tests
 

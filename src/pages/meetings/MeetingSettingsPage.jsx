@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 import { AlertCircle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, CircleDashed, Copy, Download, LoaderCircle, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
+import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
-import { createMeetingManagementApiClient } from '../../lib/meetingManagementApiClient.js';
+import { createMeetingManagementApiClient, meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
-import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
+import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const MEETING_SETTINGS_STEPS = [
@@ -44,6 +45,9 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [shareState, setShareState] = useState('idle');
   const [shareLayoutReady, setShareLayoutReady] = useState(false);
   const [error, setError] = useState('');
+  const [glossaryLoadWarning, setGlossaryLoadWarning] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [audioSettingsError, setAudioSettingsError] = useState('');
   const [notice, setNotice] = useState('');
   const [isLoading, setIsLoading] = useState(mode === 'edit');
   const [isSaving, setIsSaving] = useState(false);
@@ -57,6 +61,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const settingsSectionRefs = useRef([]);
   const shareSectionRef = useRef(null);
   const submitRowRef = useRef(null);
+  const nameInputRef = useRef(null);
+  const audioConfirmButtonRef = useRef(null);
   const shareEnsurePromiseRef = useRef(null);
   const autoScrolledMeetingIdRef = useRef(null);
 
@@ -86,12 +92,27 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
+    Promise.allSettled([
       glossaryClient.listEntries(),
       mode === 'edit' && meetingId ? readClient.getMeetingDetail(meetingId) : Promise.resolve(null)
-    ]).then(([glossaryEntries, detail]) => {
+    ]).then(([glossaryResult, meetingResult]) => {
       if (cancelled) return;
+
+      const glossaryEntries = glossaryResult.status === 'fulfilled' ? glossaryResult.value : [];
       setEntries(glossaryEntries);
+      if (glossaryResult.status === 'rejected') {
+        setGlossaryLoadWarning('共用詞彙目前無法載入，仍可使用私人詞彙。');
+      } else {
+        setGlossaryLoadWarning('');
+      }
+
+      if (meetingResult.status === 'rejected') {
+        setError('無法載入會議設定。');
+        setIsLoading(false);
+        return;
+      }
+
+      const detail = meetingResult.value;
       const current = detail?.meeting || null;
       if (mode === 'edit' && !current) throw new Error('meeting_not_found');
       if (current) applyMeeting(current, glossaryEntries);
@@ -318,6 +339,23 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   async function saveMeeting() {
     if (meeting?.status === 'completed') return;
+    if (!name.trim()) {
+      const message = '請輸入會議名稱。';
+      setNameError(message);
+      setError('');
+      nameInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      nameInputRef.current?.focus();
+      return;
+    }
+    const audioPreference = getMeetingAudioPreference(meeting?.id || meetingId);
+    if (audioTestStatus !== 'confirmed' && !hasConfirmedMeetingAudioPreference(audioPreference)) {
+      setAudioSettingsError('請先測試並確認麥克風權限。');
+      setError('');
+      focusAudioSettings();
+      return;
+    }
+    setNameError('');
+    setAudioSettingsError('');
     setIsSaving(true);
     setError('');
     setNotice('');
@@ -334,12 +372,19 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       const saved = meeting
         ? await managementClient.update(meeting.id, input)
         : await managementClient.create(input);
+      if (!meeting && audioTestStatus === 'confirmed') {
+        setMeetingAudioPreference(saved.id, {
+          inputDeviceId: selectedInputDeviceId,
+          outputDeviceId: selectedOutputDeviceId,
+          permissionStatus: 'confirmed'
+        });
+      }
       setMeeting(saved);
       setNotice(meeting ? '會議設定已更新。' : '會議已建立，正在產生分享連結…');
       if (!meeting) await createSharesWithRetry(saved.id);
       else setShareState('ready');
     } catch (requestError) {
-      setError(requestError?.status === 409 ? '已完成會議不可修改設定。' : '無法儲存會議設定。');
+      setError(meetingManagementErrorMessage(requestError, '無法儲存會議設定，請稍後再試。'));
     } finally {
       setIsSaving(false);
     }
@@ -353,6 +398,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       return;
     }
     setAudioTestStatus('testing');
+    setAudioSettingsError('');
     setError('');
     try {
       const stream = await requestAudioInputStream(selectedInputDeviceId);
@@ -360,7 +406,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       const refreshed = await refreshAudioDevices() || { inputs: [], outputs: [] };
       const selectedInput = refreshed.inputs.find((device) => device.deviceId === selectedInputDeviceId);
       const selectedOutput = refreshed.outputs.find((device) => device.deviceId === selectedOutputDeviceId);
-      const saved = setMeetingAudioPreference(meeting?.id || meetingId, {
+      const audioPreferenceMeetingId = meeting?.id || meetingId;
+      const saved = !audioPreferenceMeetingId || setMeetingAudioPreference(audioPreferenceMeetingId, {
         inputDeviceId: selectedInput?.deviceId || '',
         outputDeviceId: supportsAudioContextOutputSelection() ? selectedOutput?.deviceId || '' : '',
         inputDeviceLabel: selectedInput?.label || '瀏覽器預設麥克風',
@@ -383,16 +430,16 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     const preference = getMeetingAudioPreference(meeting?.id || meetingId);
     if (!hasConfirmedMeetingAudioPreference(preference)) {
       setError('請先在音訊設定完成麥克風確認，再開始錄製。');
-      setActiveStep(2);
-      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setAudioSettingsError('請先測試並確認麥克風權限。');
+      focusAudioSettings();
       return;
     }
     const devices = await navigator.mediaDevices?.enumerateDevices?.() || [];
     if (preference.inputDeviceId && !audioInputDevices(devices).some((device) => device.deviceId === preference.inputDeviceId)) {
       setError('所選麥克風已不存在，請重新確認音訊設定。');
       setAudioTestStatus('error');
-      setActiveStep(2);
-      settingsSectionRefs.current[2]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setAudioSettingsError('所選麥克風已不存在，請重新確認音訊設定。');
+      focusAudioSettings();
       return;
     }
     onOpenLive(meeting?.id || meetingId);
@@ -435,6 +482,15 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     });
   }
 
+  function focusAudioSettings() {
+    setActiveStep(2);
+    window.requestAnimationFrame(() => {
+      const section = settingsSectionRefs.current[2];
+      section?.scrollIntoView({ behavior: 'auto', block: 'start' });
+      window.requestAnimationFrame(() => audioConfirmButtonRef.current?.focus());
+    });
+  }
+
   function scrollToSubmitRow() {
     const row = submitRowRef.current;
     if (!row) return;
@@ -452,6 +508,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   return (
     <section className="feature-page meeting-settings-page" aria-labelledby="meeting-settings-title">
+      <GeminiCredentialNotice />
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {notice ? <p className="success-message" role="status">{notice}</p> : null}
       <div className="meeting-settings-layout meeting-management-grid">
@@ -462,7 +519,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
         <section className="meeting-settings-form control-panel" aria-label="會議設定表單">
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[0] = node; }} aria-labelledby="meeting-basic-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 1</p><h3 id="meeting-basic-settings-title">基本資訊</h3></div><span className="meeting-settings-card-number">1</span></div>
-            <label className="field meeting-name-field"><span>會議名稱</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：產品會議" maxLength={120} disabled={meeting?.status === 'completed'} /><small>建立後可分享會議連結給參與者。</small></label>
+            <label className={`field meeting-name-field${nameError ? ' has-error' : ''}`}><span>會議名稱 <em aria-hidden="true">*</em><span className="sr-only">（必填）</span></span><input ref={nameInputRef} value={name} onChange={(event) => { setName(event.target.value); if (nameError && event.target.value.trim()) setNameError(''); }} placeholder="例如：產品會議" maxLength={120} disabled={meeting?.status === 'completed'} required aria-invalid={nameError ? 'true' : 'false'} aria-describedby={nameError ? 'meeting-name-error' : undefined} />{nameError ? <small id="meeting-name-error" className="field-error" role="alert">{nameError}</small> : <small>建立後可分享會議連結給參與者。</small>}</label>
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[1] = node; }} aria-labelledby="meeting-language-settings-title">
@@ -473,12 +530,13 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[2] = node; }} aria-labelledby="meeting-audio-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 3</p><h3 id="meeting-audio-settings-title">音訊設定</h3></div><span className="meeting-settings-card-number">3</span></div>
             <div className="meeting-audio-options"><label className="meeting-audio-option"><span className="meeting-settings-icon"><Volume2 size={19} aria-hidden="true" /></span><span><strong>播放翻譯聲音</strong><small>讓參與者聽見即時翻譯結果。</small></span><span className="meeting-toggle"><input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label><label className="meeting-audio-option"><span className="meeting-settings-icon"><Mic size={19} aria-hidden="true" /></span><span><strong>保存原始聲音</strong><small>保存會議中的原始麥克風音訊。</small></span><span className="meeting-toggle"><input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label></div>
-            <div className="meeting-audio-controls">
+            <div className={`meeting-audio-controls${audioSettingsError ? ' has-error' : ''}`}>
               <div className={`meeting-audio-device-grid${hasAudioOutputSelection ? ' has-speaker' : ' microphone-only'}`}>
-              <label className="field"><span>麥克風</span><select aria-label="選擇會議麥克風" value={selectedInputDeviceId} onChange={(event) => setSelectedInputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設麥克風</option>{audioInputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label>
+              <label className="field"><span>麥克風</span><select aria-label="選擇會議麥克風" value={selectedInputDeviceId} onChange={(event) => { setSelectedInputDeviceId(event.target.value); setAudioTestStatus('idle'); setAudioPermissionStatus('unknown'); setAudioSettingsError(''); clearMeetingAudioPreference(meeting?.id || meetingId); }} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設麥克風</option>{audioInputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label>
               {hasAudioOutputSelection ? <label className="field"><span>揚聲器</span><select aria-label="選擇會議揚聲器" value={selectedOutputDeviceId} onChange={(event) => setSelectedOutputDeviceId(event.target.value)} disabled={meeting?.status === 'completed'}><option value="">瀏覽器預設揚聲器</option>{audioOutputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}</select></label> : null}
               </div>
-              <button className="button secondary" type="button" onClick={() => void confirmAudioSettings()} disabled={audioTestStatus === 'testing' || meeting?.status === 'completed'}>{audioTestStatus === 'testing' ? '測試中…' : '測試並確認音訊'}</button>
+              <button ref={audioConfirmButtonRef} className={`button secondary${audioSettingsError ? ' has-error' : ''}`} type="button" onClick={() => void confirmAudioSettings()} disabled={audioTestStatus === 'testing' || meeting?.status === 'completed'} aria-invalid={audioSettingsError ? 'true' : 'false'} aria-describedby={audioSettingsError ? 'meeting-audio-settings-error' : undefined}>{audioTestStatus === 'testing' ? '測試中…' : '測試並確認音訊'}</button>
+              {audioSettingsError ? <small id="meeting-audio-settings-error" className="field-error" role="alert">{audioSettingsError}</small> : null}
               <MeetingAudioStatus audioTestStatus={audioTestStatus} audioPermissionStatus={audioPermissionStatus} />
             </div>
           </section>
@@ -488,7 +546,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             <div className="meeting-dictionary-groups">
               <section className="meeting-dictionary-group meeting-global-glossary" aria-labelledby="meeting-global-glossary-title">
                 <button className="meeting-global-glossary-summary" type="button" aria-expanded={isGlobalGlossaryExpanded} onClick={() => setIsGlobalGlossaryExpanded((current) => !current)}><span className="meeting-settings-icon"><BookOpen size={18} aria-hidden="true" /></span><span><strong id="meeting-global-glossary-title">共用詞彙</strong><small>{availableGlossaryEntries.length === 0 ? '目前沒有可套用的共用詞彙。' : `已選 ${selectedGlossaryCount} 項，共 ${availableGlossaryEntries.length} 項可用`}</small></span><ChevronDown size={18} aria-hidden="true" /></button>
-                {isGlobalGlossaryExpanded ? <div className="meeting-global-glossary-content"><p className="meeting-dictionary-section-description">從共用詞彙中選擇要套用到本場會議的項目。</p>{availableGlossaryEntries.map((entry) => <label className={`glossary-choice${selectedGlossaryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}><input type="checkbox" aria-label={`套用詞彙：${entry.source}`} checked={selectedGlossaryIds.includes(entry.id)} onChange={() => setSelectedGlossaryIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} disabled={meeting?.status === 'completed'} /><span className="glossary-choice-content"><span className="glossary-choice-field"><small>聽到的詞彙</small><strong>{entry.source}</strong></span><span className="glossary-choice-field"><small>要顯示／播放的翻譯</small><strong>{entry.translations[targetLanguageCode]}</strong></span></span></label>)}{availableGlossaryEntries.length === 0 ? <p className="export-note">目前沒有可套用的共用詞彙。</p> : null}</div> : null}
+                {isGlobalGlossaryExpanded ? <div className="meeting-global-glossary-content"><p className="meeting-dictionary-section-description">從共用詞彙中選擇要套用到本場會議的項目。</p>{glossaryLoadWarning ? <p className="warning-message" role="status">{glossaryLoadWarning}</p> : null}{availableGlossaryEntries.map((entry) => <label className={`glossary-choice${selectedGlossaryIds.includes(entry.id) ? ' is-selected' : ''}`} key={entry.id}><input type="checkbox" aria-label={`套用詞彙：${entry.source}`} checked={selectedGlossaryIds.includes(entry.id)} onChange={() => setSelectedGlossaryIds((current) => current.includes(entry.id) ? current.filter((id) => id !== entry.id) : [...current, entry.id])} disabled={meeting?.status === 'completed'} /><span className="glossary-choice-content"><span className="glossary-choice-field"><small>聽到的詞彙</small><strong>{entry.source}</strong></span><span className="glossary-choice-field"><small>要顯示／播放的翻譯</small><strong>{entry.translations[targetLanguageCode]}</strong></span></span></label>)}{availableGlossaryEntries.length === 0 ? <p className="export-note">目前沒有可套用的共用詞彙。</p> : null}</div> : null}
               </section>
               <section className="meeting-dictionary-group meeting-private-glossary" aria-labelledby="meeting-private-glossary-title">
                 <div className="meeting-dictionary-section-heading"><div><h4 id="meeting-private-glossary-title">會議詞彙</h4><p className="meeting-settings-card-description">只套用於本場會議，不會影響其他會議。</p></div>{meeting?.status !== 'completed' ? <button className="button secondary" type="button" onClick={openPrivateImportDialog}><Download size={16} aria-hidden="true" />匯入詞彙</button> : null}</div>

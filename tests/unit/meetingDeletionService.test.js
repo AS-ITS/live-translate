@@ -5,6 +5,7 @@ import { createMeetingDeletionService } from '../../src/application/meetingDelet
 function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped'] } = {}) {
   const deletedSessions = [];
   const deletedAudio = [];
+  const deletedMeetingAudio = [];
   const deletedShares = [];
   const meeting = { id: 'meeting-1', status: meetingStatus };
   const segments = [
@@ -21,6 +22,7 @@ function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped
   return {
     deletedSessions,
     deletedAudio,
+    deletedMeetingAudio,
     deletedShares,
     service: createMeetingDeletionService({
       meetingRepository: {
@@ -35,6 +37,7 @@ function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped
       sessionAudioArtifactRepository: {
         async deleteMany(artifacts) { deletedAudio.push(artifacts); }
       },
+      async deleteMeetingAudio(id) { deletedMeetingAudio.push(id); },
       async revokeMeetingShares(id) { deletedShares.push(id); }
     })
   };
@@ -48,6 +51,7 @@ test('deletes all sessions, audio, segments, and shares for a meeting', async ()
   assert.equal(result.deletedSegmentCount, 2);
   assert.deepEqual(setup.deletedSessions, ['session-1', 'session-2']);
   assert.equal(setup.deletedAudio.length, 2);
+  assert.deepEqual(setup.deletedMeetingAudio, ['meeting-1']);
   assert.deepEqual(setup.deletedShares, ['meeting-1']);
 });
 

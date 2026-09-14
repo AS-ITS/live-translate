@@ -9,6 +9,32 @@ import {
   selectDefaultApplicationDependenciesFactory,
   startTranslationExecutionWorkerRuntime
 } from '../../server/index.js';
+import { createCloudFoundationHandler } from '../../server/cloudFoundation.js';
+
+test('cloud foundation handler is health-only and reports readiness from Supabase configuration', async () => {
+  const handler = createCloudFoundationHandler({ env: {
+    SUPABASE_URL: 'https://example.supabase.co',
+    SUPABASE_SECRET_KEY: 'secret',
+    SUPABASE_JWKS_URL: 'https://example.supabase.co/auth/v1/.well-known/jwks.json',
+    AUTH_ALLOWED_EMAIL_DOMAINS: 'example.com',
+  } });
+  const health = await request(handler, { method: 'GET', url: '/healthz' });
+  const ready = await request(handler, { method: 'GET', url: '/api/readyz' });
+  const unavailable = await request(handler, { method: 'POST', url: '/api/sessions' });
+
+  assert.equal(health.statusCode, 200);
+  assert.equal(ready.statusCode, 200);
+  assert.equal(unavailable.statusCode, 503);
+  assert.equal(unavailable.json.error.code, 'cloud_capability_unavailable');
+});
+
+test('cloud foundation readiness stays unavailable without Supabase configuration', async () => {
+  const handler = createCloudFoundationHandler({ env: {} });
+  const ready = await request(handler, { method: 'GET', url: '/readyz' });
+
+  assert.equal(ready.statusCode, 503);
+  assert.equal(ready.json.ok, false);
+});
 
 test('default server uses production dependencies when Gemini API key is configured', () => {
   assert.strictEqual(
@@ -129,6 +155,30 @@ test('translation execution worker runtime start failures are logged safely', as
   }]);
 });
 
+test('request-scoped session repositories skip startup queue recovery', async () => {
+  const calls = [];
+  startTranslationExecutionWorkerRuntime({
+    sessionRepository: {
+      requiresRequestIdentity: true,
+      async listSessionRecords() {
+        throw new Error('startup must not read owner-scoped records');
+      }
+    },
+    translationExecutionQueue: noopQueue(),
+    translationExecutionWorkerRuntime: {
+      async start() {
+        calls.push('start');
+      },
+      stop() {}
+    },
+    logger(event) {
+      calls.push(event.event);
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(calls, ['start']);
+});
+
 function sessionRepositoryWithTranslationState(translationCommandState) {
   return {
     async listSessionRecords() {
@@ -152,4 +202,23 @@ function noopQueue() {
   return {
     enqueue() {}
   };
+}
+
+function request(handler, { method, url }) {
+  const response = {
+    statusCode: 0,
+    headers: {},
+    body: '',
+    writeHead(status, headers) {
+      this.statusCode = status;
+      this.headers = headers;
+    },
+    end(body = '') {
+      this.body = body;
+    }
+  };
+  return Promise.resolve(handler({ method, url, headers: {} }, response)).then(() => ({
+    ...response,
+    json: JSON.parse(response.body || '{}')
+  }));
 }

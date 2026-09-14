@@ -63,17 +63,51 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify({ liveSessionId })
       });
-      await assertOkResponse(response);
+      try {
+        await assertOkResponse(response);
+      } catch (error) {
+        error.endpoint = `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/start`;
+        error.meetingId = meetingId;
+        error.segmentId = segmentId;
+        error.liveSessionId = liveSessionId;
+        if (import.meta.env?.DEV) {
+          console.error('[meeting-start-failed]', {
+            status: error.status,
+            code: error.code,
+            requestId: error.requestId,
+            endpoint: error.endpoint,
+            meetingId,
+            segmentId,
+            liveSessionId,
+            responseBody: error.responseBody
+          });
+        }
+        throw error;
+      }
       return parseStartMeetingResponse(response);
     },
 
     async getCheckpoint({ meetingId, segmentId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
-      const response = await fetchImpl(buildUrl(
+      const url = buildUrl(
         baseUrl,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
-      ), { method: 'GET', headers: authorizationHeadersFor(authorizationHeaders) });
+      );
+      const options = {
+        method: 'GET',
+        headers: { Accept: 'application/json', ...authorizationHeadersFor(authorizationHeaders) }
+      };
+      if (import.meta.env?.DEV) {
+        console.debug('[resume-checkpoint]', {
+          meetingId,
+          segmentId,
+          method: options.method,
+          url,
+          hasBody: Object.hasOwn(options, 'body')
+        });
+      }
+      const response = await fetchImpl(url, options);
       await assertOkResponse(response);
       return parseCheckpointResponse(response);
     },
@@ -198,7 +232,22 @@ async function assertOkResponse(response) {
   const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
   error.status = response.status;
   error.code = body?.error?.code || body?.code;
+  error.apiMessage = typeof body?.error?.message === 'string'
+    ? body.error.message
+    : typeof body?.message === 'string'
+      ? body.message
+      : null;
+  error.details = Array.isArray(body?.error?.details) ? body.error.details : [];
   error.requestId = response.headers?.get?.('x-request-id') || body?.requestId || body?.error?.requestId;
+  error.responseBody = body && typeof body === 'object' ? {
+    error: body.error && typeof body.error === 'object' ? {
+      ...(typeof body.error.code === 'string' ? { code: body.error.code } : {}),
+      ...(typeof body.error.message === 'string' ? { message: body.error.message } : {}),
+      ...(typeof body.error.requestId === 'string' ? { requestId: body.error.requestId } : {}),
+      ...(Array.isArray(body.error.details) ? { details: body.error.details } : {})
+    } : undefined
+  } : null;
+  if (!error.responseBody?.error) error.responseBody = null;
   throw error;
 }
 
@@ -228,7 +277,7 @@ async function parseStartMeetingResponse(response) {
 
 async function parseCheckpointResponse(response) {
   const body = await parseJsonResponse(response);
-  if (!body || typeof body !== 'object' || !body.checkpoint || !Array.isArray(body.checkpoint.durableChunks)) {
+  if (!body || typeof body !== 'object' || (body.checkpoint !== null && (!body.checkpoint || !Array.isArray(body.checkpoint.durableChunks)))) {
     throw new Error('Checkpoint response must contain checkpoint.durableChunks.');
   }
   return body;

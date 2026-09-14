@@ -8,6 +8,8 @@ import {
   createNoopTranslationExecutionMetrics,
   TRANSLATION_EXECUTION_METRIC_NAMES
 } from './translation/translationExecutionMetrics.js';
+import { setRequestUser } from '../../server/requestIdentity.js';
+import { OBSERVABILITY_METRIC_NAMES } from './observability/observabilityMetricRegistry.js';
 
 const IDLE_RESULT = Object.freeze({ status: 'idle' });
 const EXECUTION_NOT_PROCESSABLE_REASON = 'execution_not_processable';
@@ -31,6 +33,7 @@ export function createTranslationExecutionWorker({
   clock = () => new Date().toISOString(),
   leaseIdFactory = randomUUID,
   leaseHeartbeatScheduler = DEFAULT_LEASE_HEARTBEAT_SCHEDULER
+  , observabilityMetrics
 } = {}) {
   assertTranslationExecutionQueue(translationExecutionQueue);
   assertTranslationRepository(translationRepository);
@@ -48,9 +51,14 @@ export function createTranslationExecutionWorker({
 
       if (job === null || job === undefined) {
         safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+        safeObsGauge(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
         return IDLE_RESULT;
       }
+      if (job.ownerUserId) setRequestUser({ id: job.ownerUserId, kind: 'worker' });
       safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+      safeObsGauge(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
+      const executionStartedAt = epochMs(typeof clock === 'function' ? clock() : Date.now());
+      safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_STARTED);
 
       const execution = await translationRepository.findExecutionById(job.executionId);
       assertFoundExecution(execution, job.executionId);
@@ -60,6 +68,7 @@ export function createTranslationExecutionWorker({
 
       if (execution.status === 'cancelled') {
         safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.CANCELLED_TOTAL);
+        safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_CANCELLED);
         return acknowledgeCancelledExecution({
           durableTranslationExecutionQueueRepository,
           job,
@@ -71,6 +80,7 @@ export function createTranslationExecutionWorker({
 
       if (execution.status !== 'queued') {
         safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.SKIPPED_TOTAL);
+        safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_SKIPPED);
         return {
           processed: false,
           reason: EXECUTION_NOT_PROCESSABLE_REASON,
@@ -216,9 +226,12 @@ export function createTranslationExecutionWorker({
       if (runnerFailed) {
         if (retryQueued) {
           safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.RETRY_TOTAL);
+          safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_RETRY);
           return { status: 'retried', executionId: job.executionId };
         }
         safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.FAILED_TOTAL);
+        safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_FAILURE);
+        safeObsLatency(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_LATENCY, Math.max(0, epochMs(typeof clock === 'function' ? clock() : Date.now()) - executionStartedAt));
         throw runnerError;
       }
 
@@ -228,6 +241,8 @@ export function createTranslationExecutionWorker({
       }
 
       safeIncrement(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.PROCESSED_TOTAL);
+      safeObsCounter(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_COMPLETED);
+      safeObsLatency(observabilityMetrics, OBSERVABILITY_METRIC_NAMES.EXECUTION_LATENCY, Math.max(0, epochMs(typeof clock === 'function' ? clock() : Date.now()) - executionStartedAt));
       safeMarkSuccess(metrics);
       safeSetGauge(metrics, TRANSLATION_EXECUTION_METRIC_NAMES.QUEUE_DEPTH, translationExecutionQueue.size());
 
@@ -261,6 +276,23 @@ function safeMarkSuccess(metrics) {
   } catch {
     // Metrics must never change queue behavior.
   }
+}
+
+function safeObsCounter(observability, name, amount = 1, labels) {
+  try { observability?.recordCounter?.(name, amount, labels); } catch { /* observability is best effort */ }
+}
+
+function safeObsLatency(observability, name, value, labels) {
+  try { observability?.recordLatency?.(name, value, labels); } catch { /* observability is best effort */ }
+}
+
+function safeObsGauge(observability, name, value, labels) {
+  try { observability?.setGauge?.(name, value, labels); } catch { /* observability is best effort */ }
+}
+
+function epochMs(value) {
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }
 
 function isTerminalExecution(execution) {

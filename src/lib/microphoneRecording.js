@@ -18,6 +18,8 @@ export function createMicrophoneRecordingController(options = {}) {
   const MediaRecorderImpl = options.MediaRecorderImpl || globalThis.MediaRecorder;
   const BlobImpl = options.BlobImpl || globalThis.Blob;
   const collectChunks = options.collectChunks !== false;
+  const preferredMimeTypes = options.preferredMimeTypes || PREFERRED_MIME_TYPES;
+  const requireSupportedMimeType = options.requireSupportedMimeType === true;
   const now = options.now || (() => Date.now());
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
 
@@ -47,6 +49,10 @@ export function createMicrophoneRecordingController(options = {}) {
 
     if (!input.stream) {
       return fail('無法取得麥克風音訊進行錄音。');
+    }
+
+    if (requireSupportedMimeType && !selectedMimeType) {
+      return fail('此瀏覽器不支援 WebM 語音錄音。');
     }
 
     chunks = [];
@@ -142,7 +148,7 @@ export function createMicrophoneRecordingController(options = {}) {
     recorder = null;
     sessionId = input.sessionId || '';
     startedAt = input.startedAt ?? now();
-    selectedMimeType = chooseSupportedMimeType(MediaRecorderImpl);
+    selectedMimeType = chooseSupportedMimeType(MediaRecorderImpl, preferredMimeTypes);
     state = { ...IDLE_STATE };
   }
 
@@ -227,12 +233,12 @@ export function createMicrophoneRecordingController(options = {}) {
   };
 }
 
-export function chooseSupportedMimeType(MediaRecorderImpl = globalThis.MediaRecorder) {
+export function chooseSupportedMimeType(MediaRecorderImpl = globalThis.MediaRecorder, preferredMimeTypes = PREFERRED_MIME_TYPES) {
   if (!MediaRecorderImpl || typeof MediaRecorderImpl.isTypeSupported !== 'function') {
     return '';
   }
 
-  return PREFERRED_MIME_TYPES.find((mimeType) => MediaRecorderImpl.isTypeSupported(mimeType)) || '';
+  return preferredMimeTypes.find((mimeType) => MediaRecorderImpl.isTypeSupported(mimeType)) || '';
 }
 
 export function extensionForMimeType(mimeType = '') {

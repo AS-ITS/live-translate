@@ -1,6 +1,62 @@
 # Changelog
 
+## 2026-09-11
+- Completed P1-B observability closeout: atomic operation-labelled metric buckets, 30-day cleanup isolation, queue/recovery/token/provider/Viewer telemetry wiring, and readiness-safe failure handling.
+
+## 2026-09-11
+
+- Added atomic Supabase translation queue claim, renewal, acknowledgement, and
+  expired-lease recovery RPCs with fence-token ownership checks.
+- Added a P0 GitHub Actions validation gate for syntax, frontend builds,
+  security/cloud boundaries, durable worker behavior, Viewer realtime, and
+  Supabase migration linting.
+- Corrected the documented browser Supabase key name and expanded the runtime
+  environment template and Production smoke-test instructions.
+
+- Default local runtime Meeting and Segment IDs now use UUIDs, aligning file-backed development records with the Supabase checkpoint contract.
+- Restored the access-control integration test and documented the local/cloud runtime capability boundary and deployment smoke checks.
+
+- Local runtime persistence now uses Supabase for glossary, durable translation
+  queue, dead-letter records, recorder leases, and application metadata. JSON
+  files under `data/` remain test/migration fixtures only.
+
 ## Unreleased
+
+- 修正 Meeting checkpoint HTTP 400 僅顯示泛用錯誤的問題；前端現在依安全的錯誤 code 顯示中文訊息與 Request ID，並在 checkpoint 邊界補齊 finalized Cue 必要欄位。
+
+- 修正 Supabase checkpoint 讀取既有 Cue 時的 hydration：offset 轉回毫秒數字，並補回語言欄位與 transcription mode；Cue offset 寫入改用 bigint 毫秒值。
+
+- 修正續錄 checkpoint GET contract：明確使用無 body 的 GET、補上 request diagnostics，並讓無 checkpoint 與 UUID validation failure 可被明確辨識。
+
+- 修正 Gemini API Key 未設定時開始錄製只顯示泛用錯誤的問題，改為提供設定 Gemini Key 的入口。
+
+- 修正 Supabase 會議建立的 PostgreSQL timestamp 格式，並補齊全域字典的建立與更新時間欄位。
+
+- 修正首次進入會議設定時共用字典 503 會阻擋整個頁面的問題；字典暫時不可用時仍可建立會議。
+
+- 修正會議清單與全域字典分開載入，空的會議清單會正確顯示空狀態；字典載入失敗不再阻擋會議頁面。
+
+- 修正會議建立與列表載入錯誤被誤顯示成空列表或「無法儲存會議設定」的問題，現在會保留後端錯誤識別碼並提供重新載入。
+
+- 登入頁右側產品展示區改用中亮板岩藍，字幕預覽卡保留深板岩藍層次，降低整體視覺重量。
+
+- 登入頁 Panjaya 雙欄版型改用板岩藍配色，維持既有 Google OAuth 與其他產品頁面的藍綠色系。
+
+- 登入頁改為 Panjaya 雙欄版型：保留 Workspace Google OAuth，新增即時雙語字幕產品預覽、官方 Google 登入按鈕樣式與手機版響應式布局。
+
+- Issue #31 P3：瀏覽器以 TUS 將每段原始 WebM/Opus 直接上傳 private Supabase Storage，後端只處理 owner-scoped metadata、完成驗證與 60 秒下載 URL，避開 Vercel request body 限制；Meeting 刪除同步清理 Storage artifacts。
+- Issue #31 P3：Final Cue 先寫入 `subtitle_cues`，再由資料庫 trigger 發送 private Supabase Realtime `cue.append`；Viewer 使用五分鐘 share-scoped JWT、subscribe-first snapshot merge 與自動重連，production 不再依賴 process-local Meeting SSE 狀態。
+- Issue #31 P2 first milestone「安全可開會」：新增 Supabase Vault 個人 Gemini API Key 設定與 owner-scoped cloud repositories；`/api/live-token` 依登入者解密個人 Key，完整 Key 不回傳、不寫入 log。
+
+- Issue #31 P1 identity foundation：加入 Supabase Google PKCE 登入、Workspace domain
+  allowlist、JWT validation、Profile API、profile header/logout，以及 profiles 與私人
+  domain tables 的 owner-scoped composite foreign keys、RLS 與 grants；P1 owner-scoped
+  adapters now support the configured cloud capabilities and remain fail-closed when
+  Supabase configuration or readiness checks are unavailable。
+
+- Issue #31 P0 deployment foundation：request handler 改為 lazy composition，新增 Vercel
+  cloud Function 與 Supabase migration baseline；Vercel cloud shell 不啟動 file-backed
+  persistence、WebSocket 或 translation worker，現有本機 Node 與 Gemini Live 流程維持不變。
 
 - 收斂 Meeting Viewer 即時字幕畫面：移除時間與欄位標題，字幕列改為依內容自動高度，新增桌面與手機皆並排的原文顯示切換與回到最新字幕控制，並在桌面雙語欄位間加入分隔線；保留 SSE 與字幕排序／重連行為。
 
@@ -39,8 +95,6 @@
 - P0 語音優先切片已接入 production runtime：source-only Cue 在 Segment
   recovery、Stop 與 turn boundary 可 finalized 並保存，interim 不進 history/export；
   transcription-only controller 不會觸發舊的 numeric retranslation 或 polishing。
-- P1 Flash translation/refinement 尚未切換；本次未修改 public API、schema 或 queue。
-
 - 修正 GoAway 重連流程：GoAway 視為預期的 provider lifecycle event，使用 `timeLeft`
   只排程一次重連、保留最新 session resumption handle，並為 replacement Live session
   取得新的 single-use ephemeral token；smoke summary 另行統計 GoAway 重連成功與失敗。
@@ -405,9 +459,9 @@
   when the selected device is unavailable, with deterministic unit and E2E
   coverage.
 
-- Added shared Access Token v1 for private `/api/*` routes. Production now
-  requires `DEMO_ACCESS_TOKEN`; the browser uses the matching
-  `VITE_DEMO_ACCESS_TOKEN`. Health/readiness and anonymous share Viewer routes
+- Added shared Access Token v1 for private `/api/*` routes. Authenticated HTTP
+  and execution-events WebSocket requests now use the Supabase access token.
+  Health/readiness and anonymous share Viewer routes
   remain public, while per-user identity and RBAC remain deferred.
 
 - Phase 2B-2 frontend translation history/detail reads now centralize legacy and
@@ -1878,3 +1932,12 @@ These items are intentionally deferred:
 
 - Added meeting-scoped glossary snapshots. Users can select live glossary terms before starting a meeting; the snapshot is reused across meeting segments, reconnects, and saved transcript re-translation without following later global glossary changes.
 - 修正 Meeting 分享設定頁重新整理或重新進入後分享連結消失的問題。分享服務現在持久化短碼（仍只保存 token hash），管理端可重建短碼 URL 與 QR Code；匿名分享回應不暴露短碼，舊資料會在沒有可顯示連結時補建新的分享。
+- P1-A2：新增 owner-scoped `meeting_events` durable event history；finalized Meeting Cue 以 event identity 去重並提供 cursor replay，Viewer reconnect 會補抓遺失事件。
+# Unreleased
+
+- Added minute-bucket Supabase observability metrics, safe structured logging, readiness dependency hook, and share-scoped Viewer telemetry validation.
+- Completed P1-B observability wiring for worker/runtime lifecycle, Gemini provider status and latency metrics, Viewer reconnect/gap/duplicate/replay telemetry, and best-effort production metric persistence.
+## Unreleased
+
+- Moved background translation worker scheduling from Vercel Cron to a GitHub Actions workflow running every five minutes, with manual dispatch and concurrency protection.
+- Added visible queued and processing feedback for background translation, including last-update time, automatic refresh guidance, and a five-minute delay notice.

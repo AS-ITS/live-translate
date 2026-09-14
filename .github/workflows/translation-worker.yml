@@ -1,0 +1,30 @@
+name: Translation worker
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: translation-worker
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Process queued translations
+        env:
+          VERCEL_APP_URL: ${{ secrets.VERCEL_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: >-
+          curl --fail-with-body --silent --show-error
+          --request POST
+          --url "${VERCEL_APP_URL%/}/api/internal/worker"
+          --header "Authorization: Bearer ${CRON_SECRET}"
+          --header "Content-Type: application/json"

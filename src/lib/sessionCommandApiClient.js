@@ -22,14 +22,29 @@ export function createSessionCommandApiClient({ fetchImpl = globalThis.fetch } =
       body: JSON.stringify(body)
     });
     if (!response?.ok) {
-      const error = new Error(`Session command API request failed with HTTP ${response?.status}.`);
-      error.status = response?.status;
+      let payload = null;
+      let serverMessage = null;
+      let requestId = response?.headers?.get?.('X-Request-Id') || null;
+      let code = null;
       try {
-        const payload = await response.json();
-        error.code = payload?.error?.code;
+        payload = await response.json();
+        code = payload?.error?.code || null;
+        serverMessage = payload?.error?.message || null;
+        requestId = payload?.error?.requestId || requestId;
       } catch {
         // Keep the HTTP status as the stable fallback signal.
       }
+
+      const diagnostic = [code, requestId ? `Request ID: ${requestId}` : null]
+        .filter(Boolean)
+        .join(', ');
+      const error = new Error(
+        `Session command API request failed with HTTP ${response?.status}.${diagnostic ? ` (${diagnostic})` : ''}`
+      );
+      error.status = response?.status;
+      error.code = code;
+      error.requestId = requestId;
+      error.serverMessage = serverMessage;
       throw error;
     }
     return response.json();

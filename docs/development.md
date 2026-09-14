@@ -1,14 +1,32 @@
 # Live Translate Development Guide
 
+Local runtime persistence is Supabase-only. JSON files under `data/` are
+legacy test fixtures and are not read by the application.
+
+```bash
+supabase start
+supabase db reset
+supabase db lint
+```
+
+Copy the local API URL and service-role key from `supabase status` into the
+server-only `SUPABASE_URL` and `SUPABASE_SECRET_KEY` values in `.env`. Never
+commit or log the service key. Use `/readyz` to distinguish an unavailable
+Supabase endpoint, missing migrations, and invalid credentials.
+
 ## Environment Variables
 
 Backend environment variables:
 
 - `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
-- `DEMO_ACCESS_TOKEN`: Shared access token required by production private APIs.
-- `VITE_DEMO_ACCESS_TOKEN`: Browser build-time copy of `DEMO_ACCESS_TOKEN`; both
-  values must match. The token is included in the browser bundle, so this is
-  shared-token access control, not per-user security.
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY`: server-only Supabase values.
+- `SUPABASE_JWKS_URL`: Supabase public JWKS endpoint used to verify access tokens.
+- `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
+- `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`: browser-safe values.
+- `P1_PROFILE_ONLY=true`: optional compatibility switch that keeps non-Profile
+  cloud capabilities fail-closed. Leave unset for the current owner-scoped
+  cloud runtime.
+- Supabase P2 mode stores each user's Gemini API Key in Vault; apply the Vault migration before enabling personal-key token issuance.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `dev_frontend_origin`: Development frontend origin. Defaults to
@@ -37,17 +55,64 @@ dev_backend_origin=http://127.0.0.1:3000
 DATA_DIR=./data
 SESSION_SNAPSHOT_MAX_BYTES=26214400
 SESSION_AUDIO_MAX_BYTES=52428800
-DEMO_ACCESS_TOKEN=replace_with_a_long_random_demo_token
-VITE_DEMO_ACCESS_TOKEN=replace_with_the_same_demo_token_for_browser_demo
 ```
+
+## Vercel and Supabase cloud capabilities
+
+P0 keeps the local Node runtime unchanged and adds a cloud-only Function shell.
+Vercel Functions do not use the local WebSocket broadcaster or file-backed
+`data/` directory. Translation work is processed by the bounded Vercel Cron
+worker at `/api/internal/worker`. They expose health/readiness checks and return
+a structured `503` when a cloud dependency is unavailable.
+
+Use the Supabase CLI migration workflow locally:
+
+```bash
+npm run db:start
+npm run db:reset
+npm run db:lint
+```
+
+Vercel environment variables are configured per environment in the Vercel
+project. Keep `SUPABASE_SECRET_KEY` and future `KEY_ENCRYPTION_SECRET`
+server-only; never prefix them with `VITE_`. The 4.5 MB Vercel Function
+request/response limit means the current large snapshot, checkpoint, and audio
+routes remain disabled in the P0 cloud shell.
 
 Secrets must be kept out of git. Use `.env` locally and keep `.env.example` as a
 non-secret template.
 
-Production requires `DEMO_ACCESS_TOKEN`. Development and test remain
-permissive when it is unset. All authenticated browser users share the same
-read/write access to private Session, Meeting, Translation, and Glossary APIs;
-per-user identity, ownership, RBAC, audit actors, and SSO are deferred.
+Supabase mode requires a valid JWT, the `authenticated` role, and an email in
+`AUTH_ALLOWED_EMAIL_DOMAINS`. Supabase access tokens are required for all
+authenticated flows. P1 owner-scoped adapters support these cloud capabilities:
+
+| Capability | Persistence / boundary |
+| --- | --- |
+| Meetings, Segments, Sessions, finalized Cues | Supabase repositories under owner-scoped RLS |
+| Shares, recorder leases, audio metadata | Supabase repositories and private Storage metadata |
+| Glossary, translation queue, DLQ, execution status | Supabase repositories and atomic queue RPCs |
+| Meeting Viewer events | `meeting_events` persistence with cursor replay and Realtime delivery |
+| Observability | Service-role metric RPCs and UTC-minute buckets |
+
+If the required Supabase configuration is missing, or `/readyz` cannot verify
+the observability table and RPC, these cloud APIs remain fail-closed with a
+structured `503`.
+
+## Cloud rollout preflight
+
+When `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and `SUPABASE_JWKS_URL` are
+configured, new cloud writes use the owner-scoped Supabase repositories listed
+above. Existing file-backed records are not migrated automatically. Before
+production traffic, apply all migrations through
+`20260914000000_observability_metric_buckets.sql`, run `npm run db:lint`, and
+verify `/healthz` and `/readyz`. Readiness must confirm the observability table
+and atomic metric RPC. The worker cron must use `Authorization: Bearer
+$CRON_SECRET`; metric persistence is best-effort and must not change queue
+processing outcomes.
+
+Production smoke checks and alert thresholds are maintained in
+[`docs/observability-runbook.md`](observability-runbook.md). Production
+verification is a rollout task, not an unimplemented P1 capability.
 
 ## Local Development Setup
 
@@ -172,3 +237,30 @@ Frontend testing scope for MVP:
 - Automated real Gemini API integration tests.
 - Full benchmark runs.
 - Dataset generation or benchmark report regeneration.
+
+## Runtime capability matrix
+
+| Capability | Local Node runtime | Vercel/Supabase runtime |
+| --- | --- | --- |
+| Meeting, Segment, Session, Cue persistence | Supabase configuration required; JSON files are test-only fixtures | Owner-scoped Supabase repositories |
+| Checkpoint path IDs | UUIDs for newly created records; legacy test adapters may opt out of strict path validation | UUIDs required |
+| Translation execution | Local worker runtime | Bounded `/api/internal/worker` Cron batches |
+| Viewer delivery | Local SSE/WebSocket adapters | Supabase Realtime and signed Storage URLs |
+| Readiness | `/readyz` reports required runtime configuration | `/readyz` also requires Supabase auth configuration |
+
+For the safe deployment preflight, set `SMOKE_BASE_URL` and run `npm run test:deployment-preflight`. It verifies `/healthz`, `/readyz`, unauthenticated private API rejection, metrics auth rejection, and worker auth rejection without calling Gemini or processing queue items. For the full staging smoke check, separately verify a valid owner-scoped API request and one authenticated worker request with `Authorization: Bearer $CRON_SECRET`. A successful `/healthz` response alone does not prove that Supabase migrations, RLS, Storage, Realtime, or the worker are ready.
+## Production Gemini Smoke Test
+
+For the first Production Gemini smoke test, keep the request short and avoid
+the default long-meeting soak:
+
+```bash
+LIVE_SMOKE_DURATION_MS=60000 \
+LIVE_SMOKE_SPEECH_INTERVAL_MS=10000 \
+LIVE_SMOKE_REQUIRE_RECONNECT=false \
+npm run test:live-smoke
+```
+
+Run this once only after confirming the Production `GEMINI_API_KEY` is
+available to the smoke runner. Do not place that key in browser-exposed
+`VITE_` variables or commit it.

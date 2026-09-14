@@ -1,10 +1,13 @@
+export const MEETING_MANAGEMENT_HASH = '#meetings';
+export const GEMINI_SETTINGS_HASH = '#settings';
 export const FEATURE_PAGES = new Set([
   'live',
   'meetings',
   'meeting-settings',
   'meeting-detail',
   'glossary',
-  'viewer'
+  'viewer',
+  'settings'
 ]);
 
 export function pageFromLocation() {
@@ -59,11 +62,12 @@ export function canonicalHashForLocation() {
         : '';
     return viewerQuery ? `#viewer?${viewerQuery}` : '#viewer';
   }
+  if (pageName === 'settings') return GEMINI_SETTINGS_HASH;
   if (pageName === 'meeting-settings') {
     return params.toString() ? `#meeting-settings?${params.toString()}` : '#meeting-settings';
   }
   if (pageName === 'meeting-detail' && meetingId) {
     return `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&from=${encodeURIComponent(params.get('from') || 'meetings')}`;
   }
-  return '#meetings';
+  return MEETING_MANAGEMENT_HASH;
 }

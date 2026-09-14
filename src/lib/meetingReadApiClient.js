@@ -57,7 +57,19 @@ async function assertOkResponse(response) {
   }
 
   if (!response.ok) {
-    throw new Error(`Meeting read API request failed with HTTP ${response.status}.`);
+    const error = new Error(`Meeting read API request failed with HTTP ${response.status}.`);
+    error.status = response.status;
+    try {
+      const body = typeof response.clone === 'function'
+        ? await response.clone().json()
+        : await response.json();
+      error.code = body?.error?.code;
+      error.apiMessage = body?.error?.message;
+      error.requestId = body?.error?.requestId || body?.requestId;
+    } catch {
+      // Preserve the HTTP status when the error response is not JSON.
+    }
+    throw error;
   }
 }
 

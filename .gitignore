@@ -4,6 +4,8 @@ test-results/
 playwright-report/
 .playwright-cli/
 .zvec-grep/
+.codegraph/
+.serena/
 coverage/
 .env
 .env.development
@@ -19,3 +21,5 @@ translation-execution-queue.json
 translation-execution-dead-letter-queue.json
 translation-glossary.json
 data/
+supabase/.branches/
+supabase/.temp/

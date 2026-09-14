@@ -38,6 +38,19 @@ Relevant background docs:
 
 ## 2. System Context
 
+## P1 identity and data boundary
+
+Supabase Google OAuth uses PKCE in the browser. The backend validates the
+Supabase access JWT before private dispatch, including issuer, audience,
+expiry, authenticated role, and `AUTH_ALLOWED_EMAIL_DOMAINS`. Profile data is
+served by `GET /api/profile`; the service-role key is server-only. P1
+Supabase migrations apply owner-scoped composite foreign keys and RLS to all
+private tables, and the production composition now wires owner-scoped
+Supabase adapters for the supported cloud capabilities. If the required
+Supabase configuration is missing or readiness checks fail, cloud APIs remain
+fail-closed with `503 cloud_capability_unavailable` or the documented readiness
+error.
+
 ```mermaid
 flowchart LR
   User[User]
@@ -57,11 +70,10 @@ The backend only issues short-lived ephemeral tokens and enforces the access
 gate, origin validation, rate limit, and structured error handling around
 `POST /api/live-token`.
 
-Access Control v1 applies the shared `DEMO_ACCESS_TOKEN` gate to private
-`/api/*` routes. Browsers send the matching build-time `VITE_DEMO_ACCESS_TOKEN`
-as a Bearer token. Health/readiness and opaque share Viewer routes remain
-anonymous; the browser token is visible in its bundle and does not represent a
-per-user identity or permission system.
+P1 applies Supabase JWT validation to private `/api/*` routes. Browsers send
+the current Supabase session access token as a Bearer token. Health/readiness
+remain public. Supported cloud capabilities use owner-scoped adapters; missing
+configuration or an unhealthy dependency keeps those APIs fail-closed.
 
 Current Phase 2A implementation is still a simplified single-output session
 model. It uses `SessionRecord`, session-level `targetLanguageCode`,
@@ -80,7 +92,7 @@ Session-first implementation now creates a persisted `created` Session before
 opening Gemini Live, keeps lifecycle and transcript snapshots keyed by
 `sessionId` and `segmentId`, and exposes a read-only Viewer path through opaque
 share tokens and per-Session SSE events. The current broadcaster is
-process-local; multi-process event distribution remains later work. Share token
+process-local; production Meeting Viewer delivery uses Supabase Realtime. Share token
 records are file-backed and survive backend restart.
 
 Meeting-first recorder sharing creates a configurable Meeting draft and its
@@ -169,8 +181,9 @@ checkpoint persistence. Viewer reconnect uses a Meeting snapshot plus Cue
 cursor merge; it does not change the direct browser-to-Gemini path or Recorder
 authorization model. Milestone 5 implements this path with an independent Cue
 publish endpoint, bounded in-memory replay, SSE gap recovery, and deterministic
-Viewer latency validation. Cross-process delivery and durable replay remain
-deferred.
+Viewer latency validation. Those SSE/replay details remain only for local
+fallback; cloud delivery and durable replay are provided by Supabase Realtime
+and persisted Final Cues.
 
 ## 3. Runtime Architecture
 
@@ -971,6 +984,17 @@ contracts.
 
 Current state:
 
+- Supabase cloud mode stores owner-scoped Meetings, Segments, Sessions, Final
+  Cues, shares, audio metadata, glossary data, translation queue/DLQ records,
+  recorder leases, execution status, meeting events, and observability metrics
+  under RLS or service-role-only RPC boundaries as appropriate.
+- Original Segment audio is WebM/Opus uploaded by browser TUS directly to the
+  private `meeting-audio` bucket; Vercel handles metadata and signed URLs only.
+- Final Cue writes trigger private Supabase Realtime broadcasts, so production
+  does not require process-local Meeting event state.
+- Local Node development retains file-backed repositories, segmented WAV
+  artifacts, and SSE for compatibility.
+
 - Backend server runtime uses a JSON file-backed SessionRepository by default at
   `session-records.json` under `DATA_DIR`.
 - `SESSION_RECORDS_FILE` overrides the default file path when configured.
@@ -978,7 +1002,7 @@ Current state:
   translation command state across page refresh and server restart.
 - No `localStorage`.
 - No `IndexedDB`.
-- No database-backed persistence.
+- Cloud persistence is database-backed; file-backed adapters are local fallback.
 
 The file-backed adapter is intended for the current single-node internal-tool
 scope. It is not a multi-process locking or production database substitute.
@@ -1122,3 +1146,4 @@ glossary management UI/API, or cross-session history.
 - [docs/features/session-records-history.md](../features/session-records-history.md)
 - [docs/TESTING.md](../TESTING.md)
 - [docs/releases/v0.6.0-foundation.md](../releases/v0.6.0-foundation.md)
+- Meeting Viewer production delivery now stores sanitized finalized Cue events in owner-scoped Supabase `meeting_events`; reconnect replays events after the prior cursor before applying buffered Realtime broadcasts. Local SSE remains the development fallback.

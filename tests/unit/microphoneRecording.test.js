@@ -134,6 +134,20 @@ test('unsupported MediaRecorder reports error without throwing', async () => {
   assert.match(state.errorMessage, /不支援本機錄音/);
 });
 
+test('controller can require WebM instead of falling back to another container', async () => {
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ supportedTypes: new Set(['audio/mp4']) }),
+    BlobImpl: Blob,
+    preferredMimeTypes: ['audio/webm;codecs=opus', 'audio/webm'],
+    requireSupportedMimeType: true
+  });
+
+  const state = await controller.start({ stream: fakeStream(), sessionId: 'session-webm' });
+
+  assert.equal(state.status, 'error');
+  assert.match(state.errorMessage, /WebM/);
+});
+
 function fakeStream() {
   return { id: `stream-${Math.random()}` };
 }

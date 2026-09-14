@@ -1,4 +1,5 @@
 import { accessTokenHeaders } from './accessToken.js';
+import { supabase } from './supabaseAuth.js';
 
 const MAX_RECONNECT_ATTEMPTS_BEFORE_POLLING = 2;
 
@@ -12,6 +13,9 @@ export function subscribeToExecutionEvents({
   pollIntervalMs = 2000,
   baseUrl = ''
 } = {}) {
+  if (supabase && import.meta.env?.VITE_SUPABASE_URL) {
+    return subscribeToExecutionRealtime({ sessionId, client: supabase, onSnapshot, onStatus, refetch });
+  }
   if (!sessionId || typeof WebSocketImpl !== 'function') return () => {};
   let socket;
   let stopped = false;
@@ -28,7 +32,7 @@ export function subscribeToExecutionEvents({
     onStatus('connecting');
     socket = new WebSocketImpl(webSocketUrl(baseUrl, sessionId));
     socket.addEventListener('open', async () => {
-      socket.send(JSON.stringify({ type: 'auth', token: tokenFromHeaders() }));
+      socket.send(JSON.stringify({ type: 'auth', token: await tokenFromHeaders() }));
       reconnectAttempts = 0;
       stopPolling();
       try { await refetch(); } catch { /* REST remains available on the next event/poll. */ }
@@ -77,9 +81,44 @@ export function subscribeToExecutionEvents({
   }
 }
 
-function tokenFromHeaders() {
-  const authorization = accessTokenHeaders({}).Authorization || '';
+async function tokenFromHeaders() {
+  const authorization = (await accessTokenHeaders({})).Authorization || '';
   return authorization.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : '';
+}
+
+function subscribeToExecutionRealtime({ sessionId, client, onSnapshot, onStatus, refetch }) {
+  if (!sessionId) return () => {};
+  let stopped = false;
+  let channel;
+
+  const connect = async () => {
+    if (stopped) return;
+    onStatus('connecting');
+    channel = client
+      .channel(`execution-events:${sessionId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'translation_executions'
+      }, async () => {
+        if (!stopped) await refetch();
+      })
+      .subscribe(async (status) => {
+        if (stopped) return;
+        if (status === 'SUBSCRIBED') {
+          onStatus('connected');
+          await refetch();
+        } else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+          onStatus('disconnected');
+        }
+      });
+  };
+
+  connect().catch(() => onStatus('disconnected'));
+  return () => {
+    stopped = true;
+    if (channel) client.removeChannel(channel).catch(() => {});
+  };
 }
 
 function webSocketUrl(baseUrl, sessionId) {

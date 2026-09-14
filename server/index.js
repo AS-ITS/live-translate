@@ -25,6 +25,13 @@ import {
   validateAudioArtifactKind
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
+import { createProfileService } from './profileService.js';
+import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
+import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
+import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
+import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
+import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -39,9 +46,9 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = IS_PRODUCTION
-  ? 'http://127.0.0.1:8000'
-  : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173');
+const RESOLVED_ORIGIN = process.env.APP_ORIGIN
+  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+  || (IS_PRODUCTION ? 'http://127.0.0.1:8000' : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173'));
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -49,7 +56,13 @@ const rateLimitBuckets = new Map();
 const ERROR_RESPONSES = {
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
+  auth_forbidden: { status: 403, message: 'Access is not allowed.' },
   auth_not_configured: { status: 503, message: 'Access gate is not configured.' },
+  cloud_capability_unavailable: { status: 503, message: 'This cloud capability is not enabled yet.' },
+  supabase_unavailable: { status: 503, message: 'Local Supabase is unavailable.' },
+  supabase_schema_missing: { status: 503, message: 'Local Supabase migrations are missing.' },
+  supabase_credentials_invalid: { status: 503, message: 'Local Supabase service credentials are invalid.' },
+  supabase_request_failed: { status: 503, message: 'Local Supabase request failed.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
@@ -64,10 +77,17 @@ const ERROR_RESPONSES = {
   glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
+  gemini_credential_unavailable: { status: 503, message: 'Gemini credential storage is not configured.' },
+  gemini_credential_not_configured: { status: 409, message: 'Set a Gemini API Key before starting a meeting.' },
+  gemini_credential_invalid: { status: 400, message: 'Gemini API Key is invalid.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
   session_not_found: { status: 404, message: 'Session not found.' },
+  audio_artifact_not_found: { status: 404, message: 'Audio artifact not found.' },
+  audio_artifact_not_ready: { status: 409, message: 'Audio artifact is not ready.' },
+  audio_mime_type_unsupported: { status: 400, message: 'Audio MIME type is not supported.' },
+  realtime_required: { status: 410, message: 'Supabase Realtime is required for this Viewer.' },
   meeting_delete_active_not_allowed: { status: 409, message: 'Active meetings cannot be deleted.' },
   recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
   recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
@@ -131,7 +151,7 @@ function sendJson(res, status, payload, requestId) {
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -149,7 +169,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -166,7 +186,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
     'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Demo-Access-Token, X-File-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
@@ -253,10 +273,14 @@ function isAllowedOrigin(req) {
   return !origin || origin === RESOLVED_ORIGIN;
 }
 
-const accessControl = createAccessControl();
+function isProfileOnlyMode() {
+  return process.env.P1_PROFILE_ONLY === 'true';
+}
+
+const globalAccessControl = createAccessControl();
 
 function isAuthConfigured() {
-  return accessControl.isConfigured();
+  return globalAccessControl.isConfigured();
 }
 
 function enforceRateLimit(clientIp) {
@@ -276,11 +300,12 @@ function enforceRateLimit(clientIp) {
   }
 }
 
-function createHttpError(code) {
+function createHttpError(code, details = null) {
   const template = ERROR_RESPONSES[code] || ERROR_RESPONSES.internal_error;
   const error = new Error(template.message);
   error.status = template.status;
   error.code = code;
+  if (Array.isArray(details) && details.length > 0) error.details = details;
   return error;
 }
 
@@ -314,8 +339,10 @@ function errorPayload(code, requestId, details) {
   };
 }
 
+const structuredLogger = createStructuredLogger({ service: 'live-translate-api' });
+
 function logEvent(event) {
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), ...event }));
+  structuredLogger.log(event);
 }
 
 function logProviderError(requestId, error) {
@@ -328,6 +355,27 @@ function logProviderError(requestId, error) {
     errorName: cause?.name || 'Error',
     safeSummary: 'Gemini token creation failed'
   });
+}
+
+function safeRequestErrorSummary(error) {
+  switch (error?.code) {
+    case 'supabase_unavailable':
+      return 'Supabase REST endpoint is unavailable.';
+    case 'supabase_schema_missing':
+      return 'Supabase schema or required table is missing.';
+    case 'supabase_credentials_invalid':
+      return 'Supabase service credentials are invalid.';
+    case 'cloud_capability_unavailable':
+      return 'Cloud capability is unavailable.';
+    case 'auth_required':
+      return 'Authentication is required.';
+    case 'auth_invalid':
+      return 'Authentication token is invalid.';
+    case 'auth_forbidden':
+      return 'Authenticated user is not allowed.';
+    default:
+      return error?.status >= 500 ? 'Internal request failure.' : 'Request rejected.';
+  }
 }
 
 function loadDotenv({ cwd = process.cwd(), env = process.env } = {}) {
@@ -386,14 +434,20 @@ function parseDotenvValue(value) {
   return commentIndex === -1 ? value : value.slice(0, commentIndex).trimEnd();
 }
 
-const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
-  env: process.env
-});
-const defaultApplicationDependencies = createDefaultApplicationDependencies({
-  requestHandlerFactory: createRequestHandler,
-  includeSessionRetranslationCommandController: true
-});
-const { requestHandler: defaultRequestHandler } = defaultApplicationDependencies;
+let defaultApplicationDependencies;
+
+export function getDefaultApplicationDependencies() {
+  if (defaultApplicationDependencies === undefined) {
+    const createDefaultApplicationDependencies = selectDefaultApplicationDependenciesFactory({
+      env: process.env
+    });
+    defaultApplicationDependencies = createDefaultApplicationDependencies({
+      requestHandlerFactory: createRequestHandler,
+      includeSessionRetranslationCommandController: true
+    });
+  }
+  return defaultApplicationDependencies;
+}
 
 export function selectDefaultApplicationDependenciesFactory({ env = process.env } = {}) {
   return env.NODE_ENV === 'production' || hasConfiguredGeminiApiKey(env)
@@ -406,22 +460,31 @@ function hasConfiguredGeminiApiKey(env) {
 }
 
 export function startTranslationExecutionWorkerRuntime({
-  translationExecutionWorkerRuntime = defaultApplicationDependencies.translationExecutionWorkerRuntime,
-  sessionRepository = defaultApplicationDependencies.sessionRepository,
-  translationExecutionQueue = defaultApplicationDependencies.translationExecutionQueue,
+  translationExecutionWorkerRuntime,
+  sessionRepository,
+  translationExecutionQueue,
   logger = logEvent
 } = {}) {
+  if (translationExecutionWorkerRuntime === undefined || sessionRepository === undefined || translationExecutionQueue === undefined) {
+    const defaults = getDefaultApplicationDependencies();
+    translationExecutionWorkerRuntime ??= defaults.translationExecutionWorkerRuntime;
+    sessionRepository ??= defaults.sessionRepository;
+    translationExecutionQueue ??= defaults.translationExecutionQueue;
+  }
   if (!translationExecutionWorkerRuntime || typeof translationExecutionWorkerRuntime.start !== 'function') {
     return () => undefined;
   }
 
   let isStopped = false;
-  startRuntimeAfterPersistedQueueRecovery({
-    translationExecutionWorkerRuntime,
-    sessionRepository,
-    translationExecutionQueue,
-    logger
-  }).catch((error) => {
+  const startup = runWithRequestUser({ kind: 'worker' }, () => sessionRepository?.requiresRequestIdentity === true
+    ? translationExecutionWorkerRuntime.start()
+    : startRuntimeAfterPersistedQueueRecovery({
+      translationExecutionWorkerRuntime,
+      sessionRepository,
+      translationExecutionQueue,
+      logger
+    }));
+  Promise.resolve(startup).catch((error) => {
     logWorkerRuntimeError(logger, 'translation_execution_worker_runtime_start_failed', error);
   });
 
@@ -510,8 +573,20 @@ function logWorkerRuntimeError(logger, event, error) {
     level: 'error',
     event,
     errorName: error?.name || 'Error',
-    safeSummary: 'Translation execution worker runtime failed'
+    ...(error?.code ? { errorCode: error.code } : {}),
+    ...(Number.isInteger(error?.status) ? { errorStatus: error.status } : {}),
+    safeSummary: safeWorkerRuntimeSummary(error)
   });
+}
+
+function safeWorkerRuntimeSummary(error) {
+  switch (error?.code) {
+    case 'supabase_unavailable': return 'Supabase REST endpoint is unavailable';
+    case 'supabase_schema_missing': return 'Supabase migration or required table is missing';
+    case 'supabase_credentials_invalid': return 'Supabase service credentials are invalid';
+    case 'auth_required': return 'Worker owner context is missing';
+    default: return 'Translation execution worker runtime failed';
+  }
 }
 
 export function createRequestHandler(options = {}) {
@@ -528,6 +603,10 @@ export function createRequestHandler(options = {}) {
     meetingCheckpointService,
     meetingDeletionService,
     sessionAudioArtifactRepository,
+    meetingAudioService,
+  meetingCueService,
+  meetingEventRepository,
+    viewerRealtimeTokenService,
     sessionApplicationService,
     translationProviderOptionsController,
     glossaryController,
@@ -546,6 +625,13 @@ export function createRequestHandler(options = {}) {
     meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES,
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
+    , accessControl: requestAccessControl = globalAccessControl
+    , profileService = createProfileService()
+    , credentialRepository = createGeminiCredentialRepository()
+    , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
+    , observabilityMetrics
+  , readinessCheck
+  , strictCheckpointPathIds = true
   } = options;
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -569,6 +655,10 @@ export function createRequestHandler(options = {}) {
       meetingCheckpointService,
       meetingDeletionService,
       sessionAudioArtifactRepository,
+      meetingAudioService,
+      meetingCueService,
+      meetingEventRepository,
+      viewerRealtimeTokenService,
       ...(sessionApplicationService !== undefined ? { sessionApplicationService } : {}),
       translationProviderOptionsController,
       glossaryController,
@@ -586,26 +676,36 @@ export function createRequestHandler(options = {}) {
       meetingCheckpointMaxBytes,
       sessionAudioMaxBytes,
       translationExecutionMetrics
+      , observabilityMetricRepository
+      , observabilityMetrics
+      , readinessCheck
+      , accessControl: requestAccessControl
+      , profileService
+      , credentialRepository
+      , strictCheckpointPathIds
     });
   };
 }
 
 export async function handleRequest(req, res) {
-  return defaultRequestHandler(req, res);
+  return getDefaultApplicationDependencies().requestHandler(req, res);
 }
 
 async function handleRequestWithSessionReadController(
   req,
   res,
-  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = createMeetingEventBroadcaster(), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics() } = {}
+    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
+  const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
+  let authenticatedUser = null;
   let statusCode = 500;
   let targetLanguageCode;
+  setRequestUser(null);
 
   if (req.method === 'OPTIONS') {
     statusCode = 204;
@@ -620,9 +720,65 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const ready = Boolean(process.env.GEMINI_API_KEY) && (process.env.NODE_ENV !== 'production' || isAuthConfigured());
+    const hasSupabase = [
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SECRET_KEY,
+      process.env.SUPABASE_JWKS_URL,
+      process.env.AUTH_ALLOWED_EMAIL_DOMAINS
+    ].every((value) => typeof value === 'string' && value.trim().length > 0);
+    const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
+    let ready = hasSupabase || legacyLocalReady;
+    let dependencyCode = null;
+    if (ready && typeof readinessCheck === 'function') {
+      try { ready = Boolean(await readinessCheck()); } catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }
+    }
     statusCode = ready ? 200 : 503;
-    sendJson(res, statusCode, { ok: ready, requestId }, requestId);
+    sendJson(res, statusCode, ready ? { ok: true, requestId } : { ok: false, error: { code: dependencyCode || 'supabase_unavailable' }, requestId }, requestId);
+    return;
+  }
+
+  if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
+    try {
+      if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
+      authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'warn',
+        event: 'request_rejected',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: code,
+        safeSummary: safeRequestErrorSummary(error),
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      return;
+    }
+  }
+
+  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential'].includes(path)) {
+    statusCode = 503;
+    logEvent({
+      level: 'error',
+      event: 'request_rejected',
+      requestId,
+      method: req.method,
+      path,
+      statusCode,
+      errorCode: 'cloud_capability_unavailable',
+      safeSummary: 'Cloud capability is disabled by profile-only mode.',
+      durationMs: Math.round(performance.now() - startedAt),
+      clientIp,
+      origin
+    });
+    sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     return;
   }
 
@@ -633,6 +789,37 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       statusCode = 500;
       sendJson(res, statusCode, errorPayload('internal_error', requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isSharedMeetingTelemetryPath(path)) {
+    try {
+      enforceRateLimit(`${clientIp}:${path}`);
+      const share = await resolveSharedMeeting(path, sessionShareService);
+      if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
+      if (observabilityMetrics || observabilityMetricRepository) {
+        const metric = {
+          reconnect: OBSERVABILITY_METRIC_NAMES.VIEWER_RECONNECT,
+          event_gap: OBSERVABILITY_METRIC_NAMES.VIEWER_GAP,
+          event_duplicate: OBSERVABILITY_METRIC_NAMES.VIEWER_DUPLICATE,
+          replay_success: OBSERVABILITY_METRIC_NAMES.VIEWER_REPLAY_SUCCESS,
+          replay_failure: OBSERVABILITY_METRIC_NAMES.VIEWER_REPLAY_FAILURE
+        }[telemetry.eventType];
+        try {
+          if (observabilityMetrics) observabilityMetrics.recordCounter(metric, telemetry.count, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.timestampBucket);
+          else await observabilityMetricRepository.recordCounter(metric, { operation: 'viewer', provider: 'none', statusClass: 'none' }, telemetry.count, telemetry.timestampBucket);
+        } catch (error) {
+          logEvent({ level: 'warn', event: 'observability_metrics_write_failed', requestId, statusClass: 'other', safeSummary: 'Viewer telemetry persistence failed' });
+        }
+      }
+      statusCode = 202;
+      sendJson(res, statusCode, { accepted: true, requestId }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 400;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;
   }
@@ -677,13 +864,52 @@ async function handleRequestWithSessionReadController(
   if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
-      accessControl.validateRequest(req);
+      authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
       return;
     }
+  }
+
+  if (req.method === 'GET' && path === '/api/profile') {
+    try {
+      statusCode = 200;
+      sendJson(res, statusCode, { profile: await profileService.getProfile(authenticatedUser) }, requestId);
+    } catch (error) {
+      statusCode = 503;
+      sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
+    }
+    return;
+  }
+
+  if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
+    try {
+      if (!authenticatedUser?.id) throw createHttpError('auth_required');
+      if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
+      if (req.method === 'GET') {
+        const credential = await credentialRepository.get(authenticatedUser.id);
+        statusCode = 200;
+        sendJson(res, statusCode, { credential: credential || { configured: false, lastFour: null, keyVersion: null, verifiedAt: null } }, requestId);
+      } else if (req.method === 'PUT') {
+        const body = await readJson(req, { maxBytes: 16 * 1024 });
+        const credential = await credentialRepository.upsert(authenticatedUser.id, body?.apiKey);
+        statusCode = 200;
+        sendJson(res, statusCode, { credential }, requestId);
+      } else {
+        await credentialRepository.remove(authenticatedUser.id);
+        statusCode = 204;
+        res.writeHead(statusCode, { 'X-Request-Id': requestId });
+        res.end();
+      }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
   }
 
   if (req.method === 'GET' && path === '/api/sessions') {
@@ -714,6 +940,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'POST' && path === '/api/sessions') {
+    let sessionCreateError = null;
     try {
       const body = await readJson(req);
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
@@ -741,9 +968,25 @@ async function handleRequestWithSessionReadController(
       statusCode = 201;
       sendJson(res, statusCode, { session }, requestId);
     } catch (error) {
+      sessionCreateError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      const errorCode = sessionCreateError ? errorCodeFor(sessionCreateError) : null;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info',
+        event: 'session_create',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode,
+        safeSummary: sessionCreateError ? safeRequestErrorSummary(sessionCreateError) : null,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }
@@ -1082,6 +1325,48 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'POST' && isMeetingAudioUploadStartPath(path)) {
+    try {
+      if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
+      const { meetingId, segmentId } = parseMeetingAudioUploadStartPath(path);
+      const body = await readJson(req, { maxBytes: DEFAULT_JSON_REQUEST_MAX_BYTES });
+      statusCode = 201;
+      sendJson(res, statusCode, await meetingAudioService.beginUpload({
+        meetingId,
+        segmentId,
+        mimeType: body?.mimeType,
+        byteSize: body?.byteSize
+      }), requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isMeetingAudioArtifactActionPath(path)) {
+    try {
+      if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
+      const { meetingId, artifactId, action } = parseMeetingAudioArtifactActionPath(path);
+      let result;
+      if (action === 'complete') result = await meetingAudioService.completeUpload({ meetingId, artifactId });
+      else if (action === 'fail') result = await meetingAudioService.failUpload({ meetingId, artifactId });
+      else if (action === 'retry') result = await meetingAudioService.retryArtifact({ meetingId, artifactId });
+      else {
+        result = await meetingAudioService.createDownloadUrl({ meetingId, artifactId, expiresIn: 60 });
+        res.setHeader?.('Cache-Control', 'no-store');
+      }
+      statusCode = 200;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
   if (req.method === 'GET' && isMeetingAudioPath(path)) {
     try {
       const { meetingId, kind } = parseMeetingAudioPath(path);
@@ -1137,6 +1422,7 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
     const meeting = await meetingReadController?.getMeeting(share.meetingId);
     if (!meeting) {
       sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
@@ -1144,7 +1430,9 @@ async function handleRequestWithSessionReadController(
     }
     const payload = share.role === 'viewer' ? publicMeetingViewerDetail(meeting) : meeting;
     if (share.role === 'viewer') {
-      const cursor = meetingEventBroadcaster.cursor(share.meetingId);
+      const cursor = meetingEventRepository
+        ? await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId })
+        : meetingEventBroadcaster?.cursor(share.meetingId) || { eventId: 0, cueSequence: 0 };
       payload.cursor = {
         eventId: cursor.eventId,
         cueSequence: Math.max(cursor.cueSequence, ...((payload.cues || []).map((cue) => Number(cue.sequence) || 0)))
@@ -1156,7 +1444,7 @@ async function handleRequestWithSessionReadController(
 
   if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
     try {
-      if (!meetingEventBroadcaster || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
+      if ((!meetingEventBroadcaster && !meetingCueService) || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
       const body = await readJson(req, { maxBytes: 100_000 });
       const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
@@ -1176,9 +1464,35 @@ async function handleRequestWithSessionReadController(
         });
       }
       const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
+      if (meetingCueService) {
+        await meetingCueService.persist({ meetingId, segmentId, sessionId, cue });
+        const event = meetingEventRepository
+          ? await meetingEventRepository.append({ meetingId, segmentId, cue })
+          : null;
+        statusCode = 202;
+        sendJson(res, statusCode, { transport: 'supabase', eventId: event?.eventId || null, cueSequence: cue.sequence }, requestId);
+        return;
+      }
       const event = meetingEventBroadcaster.publish(meetingId, { segmentId, cue, producedAt: body?.producedAt });
       statusCode = 202;
       sendJson(res, statusCode, { eventId: event.eventId, cueSequence: event.cue.sequence }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && isSharedMeetingRealtimeTokenPath(path)) {
+    try {
+      if (!viewerRealtimeTokenService) throw createHttpError('cloud_capability_unavailable');
+      enforceRateLimit(clientIp);
+      const share = await resolveSharedMeeting(path, sessionShareService);
+      if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      statusCode = 200;
+      res.setHeader?.('Cache-Control', 'no-store');
+      sendJson(res, statusCode, await viewerRealtimeTokenService.issue(share), requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1193,7 +1507,15 @@ async function handleRequestWithSessionReadController(
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
-    openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
+    if (viewerRealtimeTokenService && meetingEventRepository) {
+      const replay = await meetingEventRepository.listSince(share.meetingId, parseAfterEventId(req), { ownerUserId: share._ownerUserId });
+      const cursor = await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId });
+      sendJson(res, 200, { events: replay.map(publicMeetingCueEvent), cursor }, requestId);
+    } else if (meetingEventBroadcaster) {
+      openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
+    } else {
+      sendJson(res, 410, errorPayload('realtime_required', requestId), requestId);
+    }
     return;
   }
 
@@ -1269,6 +1591,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'POST' && isMeetingSegmentStartPath(path)) {
+    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingSegmentStartPath(path);
@@ -1277,9 +1600,25 @@ async function handleRequestWithSessionReadController(
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
+      meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      const errorCode = meetingCheckpointError ? errorCodeFor(meetingCheckpointError) : null;
+      logEvent({
+        level: statusCode >= 500 ? 'error' : statusCode >= 400 ? 'warn' : 'info',
+        event: 'meeting_segment_start',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode,
+        errorMessage: meetingCheckpointError ? (ERROR_RESPONSES[errorCode]?.message || 'Meeting segment start failed.') : null,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }
@@ -1327,9 +1666,11 @@ async function handleRequestWithSessionReadController(
 
   if ((req.method === 'GET' || req.method === 'PUT') && isMeetingSegmentCheckpointPath(path)) {
     let meetingCheckpointError = null;
+    let checkpointParams = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
-      const { meetingId, segmentId } = parseMeetingSegmentCheckpointPath(path);
+      checkpointParams = parseMeetingSegmentCheckpointPath(path, { strictIds: strictCheckpointPathIds });
+      const { meetingId, segmentId } = checkpointParams;
       if (req.method === 'PUT') {
         await authorizeRecorderMeetingWrite({ req, meetingId, segmentId, sessionRepository, sessionShareService, recorderGrantService, recorderLeaseService });
       }
@@ -1346,8 +1687,30 @@ async function handleRequestWithSessionReadController(
       meetingCheckpointError = error;
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
+      const checkpointErrorCode = meetingCheckpointError ? errorCodeFor(meetingCheckpointError) : null;
+      if (meetingCheckpointError && statusCode >= 400 && statusCode < 500 && ['invalid_request', 'subtitle_cue_invalid'].includes(checkpointErrorCode)) {
+        const query = new URL(req.url || '/', 'http://localhost').search;
+        if (!checkpointParams && checkpointErrorCode === 'invalid_request') {
+          try {
+            checkpointParams = parseMeetingSegmentCheckpointPath(path, { strictIds: false });
+          } catch {
+            checkpointParams = null;
+          }
+        }
+        logEvent({
+          level: 'warn',
+          event: 'checkpoint-validation-failed',
+          requestId,
+          method: req.method,
+          path,
+          params: checkpointParams,
+          query,
+          bodyPresence: Number(req.headers?.['content-length'] || 0) > 0,
+          validationIssues: meetingCheckpointError.details || [meetingCheckpointError.message]
+        });
+      }
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
     return;
@@ -1836,7 +2199,17 @@ async function handleRequestWithSessionReadController(
       void auth;
     }
     targetLanguageCode = body.targetLanguageCode || 'en';
-    const token = await liveTokenCreator(tokenRequest);
+    const apiKey = authenticatedUser?.id && credentialRepository
+      ? await credentialRepository.resolveKey(authenticatedUser.id)
+      : null;
+    if (authenticatedUser?.id && credentialRepository && !apiKey) {
+      throw createHttpError('gemini_credential_not_configured');
+    }
+    const token = await liveTokenCreator(tokenRequest, apiKey ? { apiKey } : {});
+    try {
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass: '200' });
+      observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass: '200' });
+    } catch { /* Metrics are best effort. */ }
     statusCode = 200;
     sendJson(res, statusCode, token, requestId);
     logEvent({
@@ -1849,6 +2222,12 @@ async function handleRequestWithSessionReadController(
     });
   } catch (error) {
     const code = errorCodeFor(error);
+    try {
+      const statusClass = providerStatusClass(error?.status || statusCode);
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass });
+      observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_FAILURE, 1, { provider: 'gemini', operation: 'token', statusClass });
+      observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass });
+    } catch { /* Metrics are best effort. */ }
     statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
     if (code === 'provider_unavailable') {
       logProviderError(requestId, error);
@@ -1926,7 +2305,7 @@ function isPublicApiPath(method, path) {
     isSharedSessionEventsPath(path) ||
     isSharedMeetingDetailPath(path) ||
     isSharedMeetingEventsPath(path)
-  )) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
+  )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
 function isRecorderAuthorizedPath(method, path, req) {
@@ -2044,6 +2423,30 @@ function parseSessionAudioSegmentPath(path) {
 
 function isMeetingAudioPath(path) {
   return path.startsWith('/api/meetings/') && path.includes('/audio/') && path.length > '/api/meetings//audio/'.length;
+}
+
+function isMeetingAudioUploadStartPath(path) {
+  return /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/u.test(path);
+}
+
+function parseMeetingAudioUploadStartPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/audio-uploads$/u);
+  if (!match) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(match[1]), segmentId: safeDecodePathComponent(match[2]) };
+}
+
+function isMeetingAudioArtifactActionPath(path) {
+  return /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail|retry|download-url)$/u.test(path);
+}
+
+function parseMeetingAudioArtifactActionPath(path) {
+  const match = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/([^/]+)\/(complete|fail|retry|download-url)$/u);
+  if (!match) throw createHttpError('invalid_request');
+  return {
+    meetingId: safeDecodePathComponent(match[1]),
+    artifactId: safeDecodePathComponent(match[2]),
+    action: match[3]
+  };
 }
 
 function parseMeetingAudioPath(path) {
@@ -2176,17 +2579,23 @@ function parseMeetingCompletePath(path) {
   };
 }
 
-function parseMeetingSegmentCheckpointPath(path) {
+function parseMeetingSegmentCheckpointPath(path, { strictIds = true } = {}) {
   const prefix = '/api/meetings/';
   const suffix = '/checkpoint';
   const body = path.slice(prefix.length, -suffix.length);
   const separator = body.indexOf('/segments/');
   if (separator <= 0) throw createHttpError('invalid_request');
 
-  return {
-    meetingId: safeDecodePathComponent(body.slice(0, separator)),
-    segmentId: safeDecodePathComponent(body.slice(separator + '/segments/'.length))
-  };
+  const meetingId = safeDecodePathComponent(body.slice(0, separator));
+  const segmentId = safeDecodePathComponent(body.slice(separator + '/segments/'.length));
+  if (!meetingId) throw createHttpError('invalid_request', ['meetingId must be a non-empty path parameter.']);
+  if (!segmentId) throw createHttpError('invalid_request', ['segmentId must be a non-empty path parameter.']);
+  if (strictIds) {
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+    if (!uuidPattern.test(meetingId)) throw createHttpError('invalid_request', ['meetingId must be a valid UUID.']);
+    if (!uuidPattern.test(segmentId)) throw createHttpError('invalid_request', ['segmentId must be a valid UUID.']);
+  }
+  return { meetingId, segmentId };
 }
 
 function parseMeetingSegmentRolloverPath(path) {
@@ -2805,13 +3214,23 @@ function isSharedSessionEventsPath(path) {
 
 function isSharedMeetingDetailPath(path) {
   return path.startsWith('/api/shared-meetings/') && !path.endsWith('/start') &&
-    !path.endsWith('/events') &&
+    !path.endsWith('/events') && !path.endsWith('/realtime-token') &&
     (path.split('/').length === 4 || path.split('/').length === 5);
 }
 
 function isSharedMeetingEventsPath(path) {
   return path.startsWith('/api/shared-meetings/') && path.endsWith('/events') &&
     (path.split('/').length === 5 || path.split('/').length === 6);
+}
+
+function isSharedMeetingRealtimeTokenPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/realtime-token') &&
+    (path.split('/').length === 5 || path.split('/').length === 6);
+}
+
+function isSharedMeetingTelemetryPath(path) {
+  return path.startsWith('/api/shared-meetings/') && path.endsWith('/events/telemetry') &&
+    (path.split('/').length === 6 || path.split('/').length === 7);
 }
 
 function isSharedMeetingStartPath(path) {
@@ -2837,7 +3256,7 @@ async function assertMeetingShareRevocable(meetingId, shareId, meetingRepository
 }
 
 async function resolveSharedMeeting(path, sessionShareService) {
-  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events)$/, '');
+  const raw = path.slice('/api/shared-meetings/'.length).replace(/\/(?:start|events|realtime-token|events\/telemetry)$/, '');
   if (raw.startsWith('code/')) return sessionShareService.resolveCode(decodeURIComponent(raw.slice('code/'.length)));
   return sessionShareService.resolveShare(decodeURIComponent(raw));
 }
@@ -2945,9 +3364,14 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
 function publicMeetingCueEvent(event) {
   return {
     eventId: event.eventId,
+    eventType: event.eventType || event.type,
     type: event.type,
     meetingId: event.meetingId,
     segmentId: event.segmentId,
+    cueId: event.cueId || event.cue?.cueId,
+    cueSequence: event.cueSequence || event.cue?.sequence,
+    occurredAt: event.occurredAt || null,
+    committedAt: event.committedAt || (event.occurredAt ? Date.parse(event.occurredAt) : null),
     cue: event.cue,
     timing: event.timing
   };
@@ -3000,11 +3424,12 @@ function publicMeetingViewerDetail(detail) {
 }
 
 if (IS_MAIN) {
+  const defaultApplicationDependencies = getDefaultApplicationDependencies();
   await ensureDataDirectory();
   const server = http.createServer(handleRequest);
   attachExecutionEventsWebSocket({
     server,
-    accessControl,
+    accessControl: globalAccessControl,
     sessionReadController: defaultApplicationDependencies.sessionReadController,
     broadcaster: defaultApplicationDependencies.executionEventBroadcaster,
     WebSocketServerClass: WebSocketServer
@@ -3012,7 +3437,7 @@ if (IS_MAIN) {
   const stopTranslationExecutionWorkerRuntime = startTranslationExecutionWorkerRuntime();
 
   server.listen(SERVER_PORT, SERVER_HOST, () => {
-    console.log(`Live Translate API listening on http://${SERVER_HOST}:${SERVER_PORT}`);
+    structuredLogger.log({ event: 'server_started', safeSummary: `Live Translate API listening on ${SERVER_HOST}:${SERVER_PORT}` });
   });
 
   for (const signal of ['SIGINT', 'SIGTERM']) {

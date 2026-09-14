@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected } from '../../lib/meetingViewerState.js';
+import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
+import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -40,6 +42,7 @@ export function MeetingViewerPage({ token, code }) {
     const basePath = token
       ? `/api/shared-meetings/${encodeURIComponent(token)}`
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
+    const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
     async function fetchSnapshot() {
       const response = await fetch(basePath);
@@ -51,43 +54,92 @@ export function MeetingViewerPage({ token, code }) {
       setDetail(merged);
       return merged;
     }
+    function applyCuePayload(payload) {
+      const receivedAt = Date.now();
+      const next = applyMeetingCueEvent(detailRef.current, payload);
+      detailRef.current = next;
+      setDetail(next);
+      requestAnimationFrame(() => {
+        const sample = viewerLatencySample({
+          ...payload,
+          timing: { ...(payload.timing || {}), publishedAt: payload.committedAt || payload.timing?.publishedAt, receivedAt }
+        }, { renderedAt: Date.now() });
+        if (sample) latencySamplesRef.current.push(sample);
+      });
+    }
+    let sseConnected = false;
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
       if (cancelled) return;
       eventSourceRef.current?.close();
       const events = new EventSource(`${basePath}/events?after=${encodeURIComponent(afterEventId)}`);
       eventSourceRef.current = events;
-      events.onopen = () => setError('');
+      events.onopen = () => {
+        if (sseConnected) void telemetry.report('reconnect');
+        sseConnected = true;
+        setError('');
+      };
       events.addEventListener('cue.append', (event) => {
         try {
           const payload = JSON.parse(event.data);
-          const receivedAt = Date.now();
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
-            void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+            void telemetry.report('event_gap');
+          void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+            void telemetry.report('replay_failure');
+            if (!cancelled) setError(value.message);
+          });
             return;
           }
-          const next = applyMeetingCueEvent(detailRef.current, payload);
-          detailRef.current = next;
-          setDetail(next);
-          requestAnimationFrame(() => {
-            const sample = viewerLatencySample({ ...payload, timing: { ...(payload.timing || {}), receivedAt } }, { renderedAt: Date.now() });
-            if (sample) latencySamplesRef.current.push(sample);
-          });
+          if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
+          applyCuePayload(payload);
         } catch {
           if (!cancelled) setError('無法讀取即時字幕。');
         }
       });
       events.addEventListener('meeting.gap', () => {
-        void fetchSnapshot().catch((value) => { if (!cancelled) setError(value.message); });
+        void telemetry.report('event_gap');
+        void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+          void telemetry.report('replay_failure');
+          if (!cancelled) setError(value.message);
+        });
       });
       events.onerror = () => {
         if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
       };
     }
-    void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-      if (!cancelled) setError(value.message);
-    });
+    let realtimeController = null;
+    if (meetingViewerRealtimeEnabled()) {
+      let snapshotReady = false;
+      let bufferedEvents = [];
+      realtimeController = createMeetingViewerRealtimeController({
+        basePath,
+        onConnecting: () => { snapshotReady = false; },
+        onTelemetry: (eventType) => { void telemetry.report(eventType); },
+        onEvent: (payload) => {
+          if (!snapshotReady) bufferedEvents.push(payload);
+          else applyCuePayload(payload);
+        },
+        onSubscribed: async ({ replay }) => {
+          const beforeSnapshot = Number(detailRef.current?.cursor?.eventId) || 0;
+          await fetchSnapshot();
+          const recovered = await replay(beforeSnapshot);
+          recovered.events?.sort((left, right) => Number(left.eventId) - Number(right.eventId)).forEach(applyCuePayload);
+          snapshotReady = true;
+          const pending = bufferedEvents;
+          bufferedEvents = [];
+          pending.forEach(applyCuePayload);
+          if (!cancelled) setError('');
+        },
+        onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
+      });
+      realtimeController.start();
+    } else {
+      void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
+        if (!cancelled) setError(value.message);
+      });
+    }
     return () => {
       cancelled = true;
+      void realtimeController?.stop();
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };

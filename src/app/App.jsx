@@ -45,6 +45,7 @@ import { canonicalHashForLocation, pageFromLocation, pageInfoFromLocation } from
 import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
+import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from '../pages/live/LiveRecordingPage.jsx';
@@ -56,7 +57,7 @@ import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
-import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
@@ -114,6 +115,7 @@ export function App() {
   const [selectedOutputDeviceId, setSelectedOutputDeviceId] = useState('');
   const [deviceMessage, setDeviceMessage] = useState('');
   const [error, setError] = useState('');
+  const [liveErrorCode, setLiveErrorCode] = useState('');
   const [navigationNotice, setNavigationNotice] = useState('');
   const [meetingRecords, setMeetingRecords] = useState([]);
   const [selectedMeetingId, setSelectedMeetingId] = useState(null);
@@ -124,6 +126,7 @@ export function App() {
   const [selectedMeetingGlossaryIds, setSelectedMeetingGlossaryIds] = useState([]);
   const [privateMeetingGlossaryEntries, setPrivateMeetingGlossaryEntries] = useState([]);
   const [meetingCheckpointStatus, setMeetingCheckpointStatus] = useState('idle');
+  const [meetingCheckpointErrorMessage, setMeetingCheckpointErrorMessage] = useState('');
   const [shouldRecordInputAudio, setShouldRecordInputAudio] = useState(false);
   const [recordingState, setRecordingState] = useState({
     status: 'idle',
@@ -269,7 +272,7 @@ export function App() {
       activeMeetingCheckpointRef,
       meetingCheckpointApiClientRef,
       setMeetingCheckpointStatus,
-      clearCheckpointError: clearSessionSnapshotSyncError,
+      clearCheckpointError: clearMeetingCheckpointError,
       reportSnapshotError: reportSessionSnapshotSyncError,
       reportCheckpointError: reportMeetingCheckpointSyncError
     },
@@ -291,6 +294,10 @@ export function App() {
       sessionStopRequestedRef,
       suppressReconnectErrorRef,
       meetingCheckpointApiClientRef,
+      setResumeDraft,
+      getTranscriptState: () => transcriptRef.current,
+      findActiveMeetingSessionId: async (meetingId) => (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
+        .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
       setError,
       setStatusLabelOverride,
       setStatus,
@@ -975,6 +982,7 @@ export function App() {
       },
       onProviderReady: () => {
         if (!isCurrentLiveSessionInstance(callbackGeneration)) return;
+        setLiveErrorCode('');
         setStatusLabelOverride('');
       },
       onPlaybackStateChange: ({ state: playbackState } = {}) => {
@@ -1002,6 +1010,7 @@ export function App() {
           return;
         }
 
+        setLiveErrorCode(nextError.code || '');
         setError(nextError.message);
         setStatus('error');
         sessionRef.current = null;
@@ -1018,6 +1027,7 @@ export function App() {
       },
       onConnectionFailure: (failure) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        setLiveErrorCode(failure.rawError?.code || failure.rawEvent?.code || '');
         if (failure.source === 'microphone_disconnected' && failure.reasonHint === 'selected_device_missing') {
           selectedInputDeviceIdRef.current = '';
           setSelectedInputDeviceId('');
@@ -1275,8 +1285,26 @@ export function App() {
       return !previousCue || JSON.stringify(previousCue) !== JSON.stringify(cue);
     });
     const checkpoint = cueCheckpointForState(next);
+    const checkpointCues = changedCues.map((cue) => ({
+      ...cue,
+      sessionId: cue.sessionId || activeSessionRecordIdRef.current,
+      segmentId: cue.segmentId || activeMeetingCheckpointRef.current?.segmentId,
+      sourceLanguageCode: cue.sourceLanguageCode || sourceLanguageCode,
+      targetLanguageCode: cue.targetLanguageCode === undefined ? targetLanguageCode : cue.targetLanguageCode,
+      sourceText: cue.sourceText || cue.rawSource,
+      translatedText: cue.translatedText ?? cue.rawTranslation ?? '',
+      status: cue.status || 'final',
+      finalizedReason: cue.finalizedReason || 'final'
+    })).filter((cue) => (
+      typeof cue.cueId === 'string' && cue.cueId.trim() !== ''
+      && typeof cue.sessionId === 'string' && cue.sessionId.trim() !== ''
+      && typeof cue.segmentId === 'string' && cue.segmentId.trim() !== ''
+      && Number.isInteger(cue.sequence) && cue.sequence > 0
+      && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
+      && typeof cue.sourceText === 'string' && cue.sourceText.trim() !== ''
+    ));
     void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
-    liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(changedCues, checkpoint);
+    liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
 
   async function publishMeetingCues(cues, meetingCheckpoint, sessionId) {
@@ -1361,6 +1389,10 @@ export function App() {
       : current);
   }
 
+  function clearMeetingCheckpointError() {
+    setMeetingCheckpointErrorMessage('');
+  }
+
   function reportSessionSnapshotSyncError(error) {
     console.error('Session snapshot persistence failed.', error);
     if (error?.status === 413 || error?.code === 'request_too_large') {
@@ -1373,19 +1405,24 @@ export function App() {
   function reportMeetingCheckpointSyncError(error) {
     console.error('Meeting checkpoint persistence failed.', error);
     const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
+    const invalidMessage = meetingCheckpointErrorMessageFor(error);
+    if (invalidMessage) {
+      setMeetingCheckpointErrorMessage(`${invalidMessage}${diagnostic}`);
+      return;
+    }
     if (error?.status === 413 || error?.code === 'request_too_large') {
-      setError(`長會議同步內容超過伺服器保存上限，未同步片段會保留並重試；請調高 MEETING_CHECKPOINT_MAX_BYTES。${diagnostic}`);
+      setMeetingCheckpointErrorMessage(`長會議同步內容超過伺服器保存上限，未同步片段會保留並重試；請調高 MEETING_CHECKPOINT_MAX_BYTES。${diagnostic}`);
       return;
     }
     if (error?.status === 409 || error?.code === 'checkpoint_conflict') {
-      setError(`長會議同步發生 checkpoint 衝突，未同步片段會保留；請重新載入會議後再繼續。${diagnostic}`);
+      setMeetingCheckpointErrorMessage(`長會議同步發生 checkpoint 衝突，未同步片段會保留；請重新載入會議後再繼續。${diagnostic}`);
       return;
     }
     if (error?.status === 404 || error?.code === 'meeting_not_found' || error?.code === 'meeting_segment_not_found') {
-      setError(`長會議同步找不到目前的會議段落，未同步片段已保留。${diagnostic}`);
+      setMeetingCheckpointErrorMessage(`長會議同步找不到目前的會議段落，未同步片段已保留。${diagnostic}`);
       return;
     }
-    setError(`長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。${diagnostic}`);
+    setMeetingCheckpointErrorMessage(`長會議同步暫時失敗，已保留未同步片段並會在下一次同步時重試。${diagnostic}`);
   }
 
   function archiveActiveTranscriptSegment() {
@@ -1417,6 +1454,11 @@ export function App() {
     const nextTranscript = emptyTranscriptStateWithNextSequence(nextSequence);
     transcriptRef.current = nextTranscript;
     setTranscript(() => nextTranscript);
+  }
+
+  function isValidUuid(value) {
+    return typeof value === 'string'
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
   }
 
   async function refreshMeetingRecords() {
@@ -1460,14 +1502,64 @@ export function App() {
         return;
       }
 
-      const checkpoints = await Promise.all(segments.map((segment) => (
-        meetingCheckpointApiClientRef.current
-          .getCheckpoint({ meetingId, segmentId: segment.id })
-          .catch(() => null)
-      )));
-      if (meetingResumeDraftRequestIdRef.current !== requestId) {
-        return;
+    const checkpointReadErrors = [];
+    const checkpoints = await Promise.all(segments.map(async (segment) => {
+      const checkpointUrl = `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segment.id)}/checkpoint`;
+      const invalidMeetingId = !isValidUuid(meetingId);
+      const invalidSegmentId = !isValidUuid(segment.id);
+      if (invalidMeetingId || invalidSegmentId) {
+        const error = new Error('Checkpoint path contains an invalid UUID.');
+        error.status = 400;
+        error.code = 'invalid_request';
+        error.details = [invalidMeetingId
+          ? 'meetingId must be a valid UUID.'
+          : 'segmentId must be a valid UUID.'];
+        error.apiMessage = error.details[0];
+        error.requestId = globalThis.crypto?.randomUUID?.() || `resume-${Date.now()}`;
+        checkpointReadErrors.push({ segmentId: segment.id, error });
+        if (import.meta.env?.DEV) {
+          console.error('[resume-checkpoint]', {
+            meetingId,
+            segmentId: segment.id,
+            method: 'GET',
+            url: checkpointUrl,
+            hasBody: false,
+            status: error.status,
+            code: error.code,
+            requestId: error.requestId,
+            details: error.details
+          });
+        }
+        return null;
       }
+      try {
+        return await meetingCheckpointApiClientRef.current.getCheckpoint({ meetingId, segmentId: segment.id });
+      } catch (error) {
+        checkpointReadErrors.push({ segmentId: segment.id, error });
+        if (import.meta.env?.DEV) {
+          console.error('[resume-checkpoint-failed]', {
+            meetingId,
+            segmentId: segment.id,
+            status: error?.status,
+            code: error?.code,
+            requestId: error?.requestId,
+            message: error?.apiMessage || error?.message
+          });
+        }
+        return null;
+      }
+    }));
+    if (meetingResumeDraftRequestIdRef.current !== requestId) {
+      return;
+    }
+
+    const contractErrors = checkpointReadErrors.filter(({ error }) => error?.status !== 404);
+    if (contractErrors.length > 0) {
+      const requestId = contractErrors.find(({ error }) => error?.requestId)?.error.requestId;
+      setError(requestId
+        ? `部分 checkpoint 無法讀取（Request ID: ${requestId}），仍可繼續錄製。`
+        : '部分 checkpoint 無法讀取，仍可繼續錄製。');
+    }
 
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
@@ -1710,6 +1802,7 @@ export function App() {
     runtimeMeetingIdsRef.current.clear();
     setResumeDraft(null);
     setMeetingCheckpointStatus('idle');
+    setMeetingCheckpointErrorMessage('');
     setMeetingViewStats({ archivedSegmentCount: 0, loadedSegmentCount: 0 });
     setCopiedArticleStream('');
     setError('');
@@ -1827,6 +1920,7 @@ export function App() {
       </MeetingSettingsLayout>
       );
     },
+    settings: () => <GeminiCredentialPage />,
   };
 
   const workspaceView = () => {
@@ -1841,6 +1935,7 @@ export function App() {
     });
     const liveCheckpointMessages = composeCheckpointStatusMessage({
       meetingCheckpointStatus,
+      checkpointErrorMessage: meetingCheckpointErrorMessage,
       shouldRecordInputAudio,
       recordingState,
       translatedAudioState
@@ -1912,7 +2007,9 @@ export function App() {
       /> : null}
       {isLiveSurface ? <LiveRecordingPage
         error={liveController.error || meetingDetailError}
+        errorCode={liveErrorCode}
         status={meetingDetailError ? 'error' : liveController.status}
+        onOpenGeminiSettings={() => { window.location.hash = '#settings'; }}
         onRetry={() => {
           if (meetingDetailError) {
             void loadMeetingDetail(routeMeetingId);

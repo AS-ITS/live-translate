@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-09-14
+
+- Completed Issue #33 follow-up authorization hardening for member recording, meeting membership, admin operations, and disabled profiles.
+- Added strict safe audit action filtering and atomic owner transfer coverage. Gemini credentials are excluded from transfer.
+- Account management UI now reports loading, success, stable error codes, request IDs, and reloads users after changes.
+
 ## 2026-09-11
 
 - 修正部署環境建立會議後 Viewer 分享連結回傳 404 時只顯示泛用錯誤的問題；前端現在提供可辨識的 API 部署提示，並補上 Meeting Settings 實際使用的可重用分享路徑回歸測試。

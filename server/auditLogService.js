@@ -1,4 +1,6 @@
-const SENSITIVE_KEYS = /token|secret|key|audio|transcript|credential/i;
+const AUDIT_ACTIONS = new Set(['member_invited', 'member_removed', 'user_enabled', 'user_disabled', 'asset_transfer']);
+const SAFE_KEYS = new Set(['actor_user_id', 'target_user_id', 'target_meeting_id', 'request_id', 'action', 'result', 'created_at']);
+const SENSITIVE_KEYS = /token|secret|key|audio|transcript|cue|credential|password|authorization/i;
 
 export function createAuditLogService({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {
   const resolvedRepository = repository || (env.SUPABASE_URL && env.SUPABASE_SECRET_KEY ? {
@@ -12,10 +14,12 @@ export function createAuditLogService({ repository, env = process.env, fetchImpl
   } : null);
   return Object.freeze({
     async record(entry = {}) {
+      if (!AUDIT_ACTIONS.has(entry.action)) throw auditError('audit_action_invalid');
+      if (!['success', 'failure'].includes(entry.result)) throw auditError('audit_result_invalid');
       const safe = {};
       for (const [key, value] of Object.entries(entry)) {
         if (SENSITIVE_KEYS.test(key)) continue;
-        if (['actor_user_id', 'target_user_id', 'target_meeting_id', 'request_id', 'action', 'result', 'created_at'].includes(key)) safe[key] = value;
+        if (SAFE_KEYS.has(key)) safe[key] = value;
       }
       safe.created_at ||= new Date().toISOString();
       if (typeof resolvedRepository?.append === 'function') await resolvedRepository.append(safe);
@@ -23,3 +27,5 @@ export function createAuditLogService({ repository, env = process.env, fetchImpl
     }
   });
 }
+
+function auditError(code) { const error = new Error(code); error.code = code; return error; }

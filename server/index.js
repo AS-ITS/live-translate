@@ -895,9 +895,12 @@ async function handleRequestWithSessionReadController(
         const sessionContext = isMemberSessionRecordingPath(req.method, path)
           ? await profileService?.getSessionOwner?.(extractSessionRecordingId(path))
           : null;
-        const meetingId = sessionContext?.meetingId || extractMemberMeetingId(path);
+        const localSession = !sessionContext && isMemberSessionRecordingPath(req.method, path)
+          ? await sessionRepository?.getSessionRecord?.(extractSessionRecordingId(path))
+          : null;
+        const meetingId = sessionContext?.meetingId || localSession?.sessionRecord?.meetingId || extractMemberMeetingId(path);
         if (!await profileService?.canRecordMeeting?.(authenticatedUser, meetingId)) throw createHttpError('recorder_forbidden');
-        const ownerUserId = sessionContext?.ownerUserId || await profileService?.getMeetingOwner?.(meetingId);
+        const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await profileService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
       setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
  } catch (error) {
@@ -1041,8 +1044,13 @@ async function handleRequestWithSessionReadController(
     let sessionCreateError = null;
     try {
       const body = await readJson(req);
+      if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
       if (body?.meetingId && authenticatedUser?.role !== 'super_admin') {
         if (!await profileService?.canRecordMeeting?.(authenticatedUser, body.meetingId)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = await profileService?.getMeetingOwner?.(body.meetingId);
+        if (!ownerUserId) throw createHttpError('recorder_forbidden');
+        setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+      } else if (body?.meetingId) {
         const ownerUserId = await profileService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });

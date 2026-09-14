@@ -2,6 +2,7 @@ import { createAuditLogService } from './auditLogService.js';
 
 export function createProfileService({ env = process.env, fetchImpl = globalThis.fetch, auditLogService = createAuditLogService({ env, fetchImpl }) } = {}) {
   const localMemberships = new Map();
+  const localMeetingOwners = new Map();
   return {
     async getProfile(user) {
       if (!user?.id) throw new Error('Authenticated user identity required.');
@@ -27,24 +28,32 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
  const profile = await this.getProfile(user);
  if (profile.status !== 'active') return false;
  if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
- return Boolean((localMemberships.get(meetingId) || []).some((item) => item.userId === user.id));
+        return localMeetingOwners.get(meetingId) === user.id || Boolean((localMemberships.get(meetingId) || []).some((item) => item.userId === user.id));
  }
- const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(user.id)}&select=user_id`, 'GET');
- return rows.length > 0;
+    const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(user.id)}&select=user_id`, 'GET');
+    return rows.length > 0 || (await this.getMeetingOwner(meetingId)) === user.id;
  },
     async getMeetingOwner(meetingId) {
- if (!meetingId) return null;
- if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return (localMemberships.get(meetingId) || [])[0]?.ownerUserId || null;
- const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&select=owner_user_id&limit=1`, 'GET');
+      if (!meetingId) return null;
+      if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return localMeetingOwners.get(meetingId) || (localMemberships.get(meetingId) || [])[0]?.ownerUserId || null;
+      const rows = await restRequest(`/rest/v1/meetings?id=eq.${encodeURIComponent(meetingId)}&select=owner_user_id`, 'GET');
       return rows[0]?.owner_user_id || null;
+    },
+    async canManageMeeting(user, meetingId) {
+      if (!user?.id || !meetingId) return false;
+      const profile = await this.getProfile(user);
+      if (profile.status !== 'active') return false;
+      if (profile.role === 'super_admin') return true;
+      return (await this.getMeetingOwner(meetingId)) === user.id;
     },
     async getSessionOwner(sessionId) {
       if (!sessionId || !env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) return null;
       const rows = await restRequest(`/rest/v1/sessions?id=eq.${encodeURIComponent(sessionId)}&select=meeting_id,owner_user_id`, 'GET');
       return rows[0] ? { meetingId: rows[0].meeting_id, ownerUserId: rows[0].owner_user_id } : null;
     },
- async listMeetingMembers(user, meetingId) {
+    async listMeetingMembers(user, meetingId) {
       if (!user?.id) throw accountError('auth_required');
+      if (!await this.canManageMeeting(user, meetingId)) throw accountError('auth_forbidden');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
         return [...(localMemberships.get(meetingId) || [])];
       }
@@ -53,7 +62,10 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
     },
     async addMeetingMember(user, meetingId, email, requestId) {
       if (!user?.id || !email) throw accountError('invalid_request');
+      if (!await this.canManageMeeting(user, meetingId) && (await this.getMeetingOwner(meetingId)) !== null) throw accountError('auth_forbidden');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
+        if (!localMeetingOwners.has(meetingId)) localMeetingOwners.set(meetingId, user.id);
+        if (localMeetingOwners.get(meetingId) !== user.id) throw accountError('auth_forbidden');
         const members = localMemberships.get(meetingId) || [];
         const member = { userId: email.toLowerCase(), email: email.toLowerCase(), ownerUserId: user.id, meetingId };
       if (!members.some((item) => item.email === member.email)) localMemberships.set(meetingId, [...members, member]);
@@ -81,6 +93,7 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
     },
     async removeMeetingMember(user, meetingId, memberId, requestId) {
       if (!user?.id || !memberId) throw accountError('invalid_request');
+      if (!await this.canManageMeeting(user, meetingId)) throw accountError('auth_forbidden');
       if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY) {
         const members = localMemberships.get(meetingId) || [];
       localMemberships.set(meetingId, members.filter((item) => item.userId !== memberId));

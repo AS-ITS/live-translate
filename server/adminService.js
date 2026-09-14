@@ -11,7 +11,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     if (!response.ok) throw accountError(response.status === 404 ? 'account_not_found' : 'supabase_request_failed', response.status);
     return response.status === 204 ? [] : response.json();
   }
-  function assertAdmin(actor) { if (actor && (actor.role !== undefined || actor.status !== undefined) && (actor.role !== 'super_admin' || actor.status !== 'active')) throw accountError('auth_forbidden', 403); }
+  function assertAdmin(actor) { if (!actor?.id || actor.role !== 'super_admin' || actor.status !== 'active') throw accountError('auth_forbidden', 403); }
   async function audit(entry) { try { await auditLogService?.record(entry); } catch { /* Account actions remain safe when audit storage is unavailable. */ } }
   return Object.freeze({
     async listUsers(actor) { assertAdmin(actor); return request(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc`); },
@@ -19,6 +19,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       assertAdmin(actor);
       try {
         const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(targetUserId)}`, { method: 'PATCH', body: { status: 'active', disabled_at: null, updated_at: new Date().toISOString() } });
+        if (!rows[0]) throw accountError('account_not_found', 404);
         await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_enabled', request_id: requestId, result: 'success' });
         return rows[0];
       } catch (error) { await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_enabled', request_id: requestId, result: 'failure' }); throw error; }
@@ -34,6 +35,9 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
         throw accountError('transfer_target_required', 400);
       }
       try {
+        const targets = await request(`/rest/v1/profiles?id=in.(${encodeURIComponent(targetUserId)},${encodeURIComponent(transferToUserId)})&select=id,status`);
+        if (!targets.some((item) => item.id === targetUserId)) throw accountError('account_not_found', 404);
+        if (!targets.some((item) => item.id === transferToUserId && item.status === 'active')) throw accountError('transfer_target_invalid', 400);
         const rows = await request('/rest/v1/rpc/disable_user_with_transfer', { method: 'POST', body: { target_user_id: targetUserId, transfer_to_user_id: transferToUserId } });
         await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'asset_transfer', request_id: requestId, result: 'success' });
         await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_disabled', request_id: requestId, result: 'success' });

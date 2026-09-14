@@ -264,3 +264,6 @@ npm run test:live-smoke
 Run this once only after confirming the Production `GEMINI_API_KEY` is
 available to the smoke runner. Do not place that key in browser-exposed
 `VITE_` variables or commit it.
+### OAuth Workspace access
+
+Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.

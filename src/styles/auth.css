@@ -309,3 +309,6 @@
 @media (prefers-reduced-motion: reduce) {
   .auth-loading-icon { animation: none; }
 }
+.auth-account-email { margin: 1rem 0 0; color: var(--color-text); font-weight: 700; overflow-wrap: anywhere; }
+.auth-secondary-button { width: 100%; margin-top: .75rem; }
+.auth-error-code { margin: 1rem 0 0; color: var(--color-text-subtle); font-size: var(--text-xs); }

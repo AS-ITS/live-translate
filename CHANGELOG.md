@@ -1957,3 +1957,5 @@ These items are intentionally deferred:
 - Moved background translation worker scheduling from Vercel Cron to a GitHub Actions workflow running every five minutes, with manual dispatch and concurrency protection.
 - Added visible queued and processing feedback for background translation, including last-update time, automatic refresh guidance, and a five-minute delay notice.
 - Issue #33: added account role/status metadata, disabled-account enforcement, meeting membership schema, RLS helpers, and controlled super-admin bootstrap.
+## 2026-09-14
+- 修正未授權 Google 個人帳號登入後的死循環；前端現在顯示目前 email 與拒絕原因，並由使用者明確操作切換帳號，不再自動反覆登入或登出。

@@ -1,8 +1,9 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
-  "rewrites": [
-    { "source": "/healthz", "destination": "/api/healthz" },
-    { "source": "/readyz", "destination": "/api/readyz" }
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/[...path].js" },
+    { "src": "/healthz", "dest": "/api/[...path].js" },
+    { "src": "/readyz", "dest": "/api/[...path].js" }
   ]
 }

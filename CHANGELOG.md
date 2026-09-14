@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-14
+
+- Completed Issue #33 owner-scope propagation for session, translation execution, DLQ, and durable queue requests; actor and resource owner identities remain separate.
+
+## 2026-09-14
 - Wired the shared meeting membership authorization boundary into request composition, including resource-owner repository scope and audit REST failure detection.
 
 - Completed Issue #33 follow-up authorization hardening for member recording, meeting membership, admin operations, and disabled profiles.

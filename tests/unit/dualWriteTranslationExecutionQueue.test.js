@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createDualWriteTranslationExecutionQueue } from '../../src/infrastructure/dualWriteTranslationExecutionQueue.js';
 import { createFakeDurableTranslationExecutionQueueRepository } from '../../src/infrastructure/fakeDurableTranslationExecutionQueueRepository.js';
 import { createInMemoryTranslationExecutionQueue } from '../../src/infrastructure/inMemoryTranslationExecutionQueue.js';
+import { runWithRequestUser } from '../../server/requestIdentity.js';
 
 test('enqueue writes durable repository before primary queue', async () => {
   const calls = [];
@@ -352,3 +353,18 @@ function durableRepository(overrides = {}) {
     requeueExpiredProcessing() { return null; }
   };
 }
+
+test('dual-write queue uses resource owner instead of actor identity', async () => {
+  let durableItem;
+  const queue = createDualWriteTranslationExecutionQueue({
+    primaryQueue: primaryQueue(),
+    durableRepository: durableRepository({
+      contains() { return false; },
+      enqueue(item) { durableItem = item; }
+    }),
+    clock: fixedClock()
+  });
+
+  await runWithRequestUser({ id: 'admin-1', actorUserId: 'admin-1', ownerUserId: 'owner-1' }, () => queue.enqueue({ executionId: 'execution-1', requestId: 'request-1' }));
+  assert.equal(durableItem.ownerUserId, 'owner-1');
+});

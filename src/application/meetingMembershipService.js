@@ -31,7 +31,11 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
     },
 
     async getSessionOwner(sessionId) {
-      if (!sessionId || typeof sessionRepository?.getSessionRecord !== 'function') return null;
+      if (!sessionId) return null;
+      if (typeof sessionRepository?.getSessionOwner === 'function') {
+        return sessionRepository.getSessionOwner(sessionId);
+      }
+      if (typeof sessionRepository?.getSessionRecord !== 'function') return null;
       const result = await sessionRepository.getSessionRecord(sessionId);
       const record = result?.sessionRecord || result;
       if (!record) return null;

@@ -39,6 +39,11 @@ export function createSupabaseSessionRepository(options = {}) {
       const rows = await client.request('sessions', { query: `?select=*&${eq('owner_user_id', owner())}&order=created_at.desc` });
       return rows.map((row) => clone(row.payload || row));
     },
+    async getSessionOwner(id) {
+      const rows = await client.request('sessions', { query: `?select=meeting_id,owner_user_id&id=${encodeURIComponent(id)}` });
+      if (!rows[0]) return null;
+      return { meetingId: rows[0].meeting_id, ownerUserId: rows[0].owner_user_id };
+    },
     async getSessionRecord(id) {
       const rows = await client.request('sessions', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
       if (!rows[0]) return null;

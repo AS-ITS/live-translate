@@ -658,6 +658,7 @@ export function createRequestHandler(options = {}) {
      list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
    },
    meetingRepository,
+   sessionRepository,
  });
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
@@ -908,6 +909,8 @@ async function handleRequestWithSessionReadController(
       try {
         const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
         if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+        const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+        if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
       } catch (error) {
         const code = errorCodeFor(error);
         statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -919,7 +922,7 @@ async function handleRequestWithSessionReadController(
     if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
       try {
         const sessionContext = isMemberSessionRecordingPath(req.method, path)
-          ? await profileService?.getSessionOwner?.(extractSessionRecordingId(path))
+          ? await meetingMembershipService?.getSessionOwner?.(extractSessionRecordingId(path))
           : null;
         const localSession = !sessionContext && isMemberSessionRecordingPath(req.method, path)
           ? await sessionRepository?.getSessionRecord?.(extractSessionRecordingId(path))
@@ -1071,12 +1074,8 @@ async function handleRequestWithSessionReadController(
     try {
       const body = await readJson(req);
       if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
-      if (body?.meetingId && authenticatedUser?.role !== 'super_admin') {
+      if (body?.meetingId) {
         if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
-        const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
-        if (!ownerUserId) throw createHttpError('recorder_forbidden');
-        setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
-      } else if (body?.meetingId) {
         const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
@@ -2235,6 +2234,15 @@ async function handleRequestWithSessionReadController(
           ? translationOutputMaxBytes
           : DEFAULT_JSON_REQUEST_MAX_BYTES
       });
+      const scope = await authorizeTranslationResource({
+        req,
+        path,
+        body,
+        user: authenticatedUser,
+        meetingMembershipService,
+        translationRepository
+      });
+      if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
       const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
 
       statusCode = status;
@@ -2448,7 +2456,35 @@ function isPublicApiPath(method, path) {
   )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
-async function authorizePrivateResource({ req, path, user, meetingMembershipService, profileService, sessionRepository }) {
+async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository }) {
+  if (!user?.id || !translationRepository) return null;
+  let sessionId = body?.sessionId;
+  let executionId = body?.executionId;
+  if (path.startsWith('/api/translation-executions/')) {
+    executionId = safeDecodePathComponent(path.slice('/api/translation-executions/'.length).split('/')[0]);
+  } else if (path.includes('/translation-dead-letter-queue/')) {
+    executionId = extractDeadLetterExecutionId(path);
+  }
+  if (executionId && typeof translationRepository.findExecutionById === 'function') {
+    const execution = await translationRepository.findExecutionById(executionId);
+    if (!execution) throw createHttpError('auth_forbidden');
+    if (typeof translationRepository.findRequestById === 'function') {
+      const request = await translationRepository.findRequestById(execution.translationRequestId);
+      sessionId ||= request?.sessionId;
+    }
+  }
+  if (!sessionId && body?.translationRequestId && typeof translationRepository.findRequestById === 'function') {
+    const request = await translationRepository.findRequestById(body.translationRequestId);
+    sessionId = request?.sessionId;
+  }
+  if (!sessionId) return null;
+  const context = await meetingMembershipService.getSessionOwner(sessionId);
+  if (!context?.meetingId || !context.ownerUserId) throw createHttpError('auth_forbidden');
+  if (!await meetingMembershipService.canManage(context.meetingId, user)) throw createHttpError('auth_forbidden');
+  return { ownerUserId: context.ownerUserId };
+}
+
+async function authorizePrivateResource({ req, path, user, meetingMembershipService }) {
   const meetingMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
   const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)/u);
   if (meetingMatch && meetingMatch[1] !== 'glossary') {
@@ -2464,10 +2500,9 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
   }
   if (sessionMatch && sessionMatch[1] !== 'shares') {
     const sessionId = safeDecodePathComponent(sessionMatch[1]);
-    const context = await meetingMembershipService?.getSessionOwner?.(sessionId) || await profileService?.getSessionOwner?.(sessionId);
-    const local = !context ? await sessionRepository?.getSessionRecord?.(sessionId) : null;
-    const meetingId = context?.meetingId || local?.sessionRecord?.meetingId;
-    const ownerUserId = context?.ownerUserId || local?.sessionRecord?.ownerUserId;
+    const context = await meetingMembershipService.getSessionOwner(sessionId);
+    const meetingId = context?.meetingId;
+    const ownerUserId = context?.ownerUserId;
     if (meetingId) {
       const canRecord = isMemberSessionRecordingPath(req.method, path);
       const allowed = canRecord

@@ -7,7 +7,7 @@ Coverage includes actor/resource-owner separation, disabled-profile refresh, mem
 Run the deterministic Issue #33 coverage without production Supabase or Gemini:
 
 ```bash
-node --test tests/unit/meetingMembership.test.js tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/profileService.test.js tests/unit/profileHttpApi.test.js tests/integration/accountPermissions.integration.test.js
+node --test tests/unit/meetingMembership.test.js tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/profileService.test.js tests/unit/profileHttpApi.test.js tests/unit/dualWriteTranslationExecutionQueue.test.js tests/integration/accountPermissions.integration.test.js
 npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountPermissions.spec.js
 ```
 

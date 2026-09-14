@@ -201,14 +201,7 @@ export function createApplicationDependencies(options = {}) {
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository
     : createMemoryMeetingRepository();
-  const resolvedMeetingMembershipService = meetingMembershipService || createMeetingMembershipService({
-    profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
-    membershipRepository: {
-      find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
-      list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
-    },
-    meetingRepository: resolvedMeetingRepository,
-  });
+  let resolvedMeetingMembershipService = meetingMembershipService;
   const sessionReadDependencies = createSessionReadDependencies({
     ...sessionReadOptions,
     meetingRepository: resolvedMeetingRepository,
@@ -220,6 +213,15 @@ export function createApplicationDependencies(options = {}) {
           })
         }
       : {})
+  });
+  resolvedMeetingMembershipService ||= createMeetingMembershipService({
+    profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
+    membershipRepository: {
+      find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
+      list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
+    },
+    meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository,
   });
   const resolvedSessionApplicationService = sessionApplicationService ?? (
     hasSessionApplicationCommandContract(sessionReadDependencies.sessionRepository)

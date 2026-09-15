@@ -13,7 +13,7 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
       const ownerUserId = await ownerFor(meetingId);
       if (ownerUserId === userId) return true;
       const membership = await membershipRepository.find({ meetingId, userId });
-      return Boolean(membership);
+    return Boolean(membership && membership.canRecord !== false);
     },
 
     async canManage(meetingId, actor) {

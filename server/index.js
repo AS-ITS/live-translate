@@ -951,11 +951,20 @@ async function handleRequestWithSessionReadController(
  return;
  }
 
- if (path === '/api/admin/users' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
+  if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
  try {
  if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
  if (!adminService) throw createHttpError('cloud_capability_unavailable');
-    if (req.method === 'GET' && path === '/api/admin/users') {
+    if (req.method === 'GET' && path === '/api/admin/audit-logs') {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const page = Number(url.searchParams.get('page') || 1);
+      const pageSize = Number(url.searchParams.get('pageSize') || 25);
+      const action = url.searchParams.get('action') || 'all';
+      const result = url.searchParams.get('result') || 'all';
+      const query = url.searchParams.get('query') || '';
+      statusCode = 200;
+      sendJson(res, statusCode, await adminService.listAuditLogs(authenticatedUser, { page, pageSize, action, result, query }), requestId);
+    } else if (req.method === 'GET' && path === '/api/admin/users') {
       const url = new URL(req.url || '/', 'http://localhost');
       const page = Number(url.searchParams.get('page') || 1);
       const pageSize = Number(url.searchParams.get('pageSize') || 12);
@@ -1040,6 +1049,25 @@ async function handleRequestWithSessionReadController(
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'PATCH' && /^\/api\/meetings\/[^/]+\/members\/[^/]+$/u.test(path)) {
+    try {
+      if (typeof profileService?.updateMeetingMemberRecording !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const parts = path.split('/');
+      const meetingId = safeDecodePathComponent(parts[3]);
+      const memberId = safeDecodePathComponent(parts[5]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+      const body = await readJson(req, { maxBytes: 8 * 1024 });
+      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord);
+      statusCode = 200;
+      sendJson(res, statusCode, { member }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;

@@ -15,3 +15,8 @@ Meeting membership is represented by `meeting_members`, keyed by `(owner_user_id
 Super admins can list accounts and enable or disable accounts. Disabling requires an active transfer target and atomically transfers meetings, transcript assets, glossary entries, exports, and related records while preserving viewer share IDs. Gemini credentials are never transferred. Server-only audit records exclude secrets, tokens, audio, and transcript text.
 
 Viewer shares remain anonymous, opaque, read-only capabilities. They do not grant access to profiles, Gemini credentials, or authenticated owner APIs.
+## Recording controls and audit query
+
+Meeting owners can update `PATCH /api/meetings/:meetingId/members/:userId` with `{ "canRecord": false }`. New members default to `canRecord: true`; recording requires an active account, membership, and enabled recording permission.
+
+Active super admins can query `GET /api/admin/audit-logs` with `page`, `pageSize` (`25`, `50`, `100`), `action`, `result`, and `query`. Results expose only actor, target, meeting, request, action, result, and timestamp fields.

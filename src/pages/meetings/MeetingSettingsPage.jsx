@@ -523,6 +523,16 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     catch { setMemberError('無法移除成員。'); }
     finally { setMemberBusy(''); }
   }
+  async function updateMemberRecording(member) {
+    if (!meeting?.id) return;
+    setMemberBusy(`record:${member.userId}`); setMemberNotice(''); setMemberError('');
+    try {
+      const updated = await managementClient.updateMemberRecording(meeting.id, member.userId, member.canRecord === false);
+      setMembers((current) => current.map((item) => item.userId === member.userId ? { ...item, ...updated } : item));
+      setMemberNotice(updated?.canRecord === false ? '已停用該成員的錄製權限。' : '已開啟該成員的錄製權限。');
+    } catch { setMemberError('無法更新成員錄製權限。'); }
+    finally { setMemberBusy(''); }
+  }
   const hasAudioOutputSelection = supportsAudioContextOutputSelection();
 
   if (isLoading) return <section className="feature-page meeting-settings-page"><p>正在載入會議設定…</p></section>;
@@ -577,6 +587,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           </section>
 
   {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">ACCESS</p><h3 id="meeting-members-title">錄製成員</h3><p className="meeting-settings-card-description">成員只能錄製已加入的會議，不能修改設定、分享或匯出。</p></div></div>{memberError ? <p className="error-message" role="alert">{memberError}</p> : null}{memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}<div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>{members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button></div>)}</section> : null}
+
+          {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-recording-permissions-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">RECORDING ACCESS</p><h3 id="meeting-recording-permissions-title">錄製權限</h3><p className="meeting-settings-card-description">關閉後會保留成員關係，但該成員無法錄製本場會議。</p></div></div><div className="meeting-recording-permission-list">{members.map((member) => <label className="meeting-member-row" key={`recording-${member.userId}`}><span>{member.email || member.userId}</span><span><input type="checkbox" aria-label={`允許 ${member.email || member.userId} 錄製`} checked={member.canRecord !== false} onChange={() => void updateMemberRecording(member)} disabled={Boolean(memberBusy) || meeting.status === 'completed'} />允許錄製</span></label>)}</div></section> : null}
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>

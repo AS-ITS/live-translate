@@ -44,6 +44,13 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members/${encodeURIComponent(userId)}`), { method: 'DELETE' });
       await assertOk(response);
     },
+    async updateMemberRecording(meetingId, userId, canRecord) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members/${encodeURIComponent(userId)}`), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canRecord })
+      });
+      await assertOk(response);
+      return (await response.json())?.member || null;
+    },
     async listShares(meetingId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares`));
       await assertOk(response);

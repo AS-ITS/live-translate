@@ -1962,3 +1962,6 @@ These items are intentionally deferred:
 - Issue #33: added account role/status metadata, disabled-account enforcement, meeting membership schema, RLS helpers, and controlled super-admin bootstrap.
 ## 2026-09-14
 - 修正未授權 Google 個人帳號登入後的死循環；前端現在顯示目前 email 與拒絕原因，並由使用者明確操作切換帳號，不再自動反覆登入或登出。
+## Unreleased
+
+- Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.

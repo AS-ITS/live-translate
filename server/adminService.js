@@ -33,6 +33,39 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     }
   }
   return Object.freeze({
+    async listAuditLogs(actor, options = {}) {
+      assertAdmin(actor);
+      const page = Number(options.page ?? 1);
+      const pageSize = Number(options.pageSize ?? 25);
+      const action = options.action ?? 'all';
+      const result = options.result ?? 'all';
+      const query = String(options.query ?? '').trim();
+      const actions = ['member_invited', 'member_removed', 'user_enabled', 'user_disabled', 'asset_transfer'];
+      if (!Number.isInteger(page) || page < 1 || ![25, 50, 100].includes(pageSize) || (action !== 'all' && !actions.includes(action)) || !['all', 'success', 'failure'].includes(result) || query.length > 100) throw accountError('invalid_request', 400);
+      const filters = [];
+      if (action !== 'all') filters.push(`action=eq.${encodeURIComponent(action)}`);
+      if (result !== 'all') filters.push(`result=eq.${encodeURIComponent(result)}`);
+      if (query) {
+        const value = encodeURIComponent(query);
+        filters.push(`or=(actor_user_id.ilike.*${value}*,target_user_id.ilike.*${value}*,target_meeting_id.ilike.*${value}*,request_id.ilike.*${value}*)`);
+      }
+      const from = (page - 1) * pageSize;
+      const path = `/rest/v1/audit_logs?select=actor_user_id,target_user_id,target_meeting_id,request_id,action,result,created_at&order=created_at.desc${filters.length ? `&${filters.join('&')}` : ''}`;
+      const response = await requestResponse(path, { headers: { Prefer: 'count=exact,return=representation', Range: `${from}-${from + pageSize - 1}` } });
+      const rows = await response.json();
+      const logs = rows.map((row) => ({
+        actor_user_id: row.actor_user_id || null,
+        target_user_id: row.target_user_id || null,
+        target_meeting_id: row.target_meeting_id || null,
+        request_id: row.request_id || null,
+        action: row.action,
+        result: row.result,
+        created_at: row.created_at
+      }));
+      const total = Number((response.headers.get('content-range') || '').split('/').at(-1));
+      const safeTotal = Number.isFinite(total) ? total : 0;
+      return { logs, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
+    },
     async listUsers(actor, options = {}) {
       assertAdmin(actor);
       const page = Number(options.page ?? 1);

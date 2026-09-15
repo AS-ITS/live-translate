@@ -19,6 +19,7 @@
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
     "test:live-smoke": "./scripts/live-meeting-smoke.sh",
     "test:deployment-preflight": "node scripts/deployment-preflight.js",
+    "deploy:preview": "bash scripts/deploy-preview.sh",
     "check": "node --check server/index.js && node --check server/tokenService.js && node --check src/lib/audio.js"
   },
   "dependencies": {

@@ -195,3 +195,13 @@ commands.
 - Keep `/api/live-token` validation, access gate, rate limit, and origin checks.
 - The shell smoke-test entrypoint intentionally enables the real Gemini call
   after confirming `GEMINI_API_KEY`; run it only when quota usage is intended.
+## Preview deployment
+
+After linking this repository to the intended Vercel project once, deploy a Preview with:
+
+```bash
+vercel link
+npm run deploy:preview
+```
+
+The command deploys without the production flag, prints the Preview URL, and runs the deployment preflight against it. Configure Preview environment variables in Vercel before deploying, including `GEMINI_API_KEY` and the required Supabase settings.

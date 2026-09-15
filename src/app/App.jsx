@@ -1922,7 +1922,18 @@ export function App() {
       );
     },
     settings: () => <GeminiCredentialPage />,
-    admin: () => <AccountManagementPage />,
+    admin: () => (
+      <WorkspacePage
+        managementShell
+        className="account-management-shell"
+        title="帳號管理"
+        titleId="account-management-title"
+        subtitle="管理工作區成員與資產移轉。"
+        headerAction={<a className="button secondary meeting-header-action" href="#meetings">返回會議管理</a>}
+      >
+        <AccountManagementPage />
+      </WorkspacePage>
+    ),
   };
 
   const workspaceView = () => {

@@ -955,9 +955,15 @@ async function handleRequestWithSessionReadController(
  try {
  if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
  if (!adminService) throw createHttpError('cloud_capability_unavailable');
- if (req.method === 'GET' && path === '/api/admin/users') {
- statusCode = 200;
-          sendJson(res, statusCode, { users: await adminService.listUsers(authenticatedUser) }, requestId);
+    if (req.method === 'GET' && path === '/api/admin/users') {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const page = Number(url.searchParams.get('page') || 1);
+      const pageSize = Number(url.searchParams.get('pageSize') || 12);
+      const query = url.searchParams.get('query') || '';
+      const status = url.searchParams.get('status') || 'all';
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
+      statusCode = 200;
+      sendJson(res, statusCode, await adminService.listUsers(authenticatedUser, { page, pageSize, query, status }), requestId);
  } else if (req.method === 'POST') {
  const match = path.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/u);
  if (!match) throw createHttpError('invalid_request');

@@ -5,11 +5,20 @@ const PUBLIC_PROFILE_FIELDS = 'id,email,full_name,avatar_url,role,status,disable
 export function createAdminService({ env = process.env, fetchImpl = globalThis.fetch, auditLogService = createAuditLogService({ env, fetchImpl }), observability } = {}) {
   const base = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const secret = env.SUPABASE_SECRET_KEY;
-  async function request(path, { method = 'GET', body } = {}) {
+  async function requestResponse(path, { method = 'GET', body, headers = {} } = {}) {
     if (!base || !secret) throw accountError('cloud_capability_unavailable', 503);
-    const response = await fetchImpl(`${base}${path}`, { method, headers: { apikey: secret, Authorization: `Bearer ${secret}`, Prefer: 'return=representation', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    const response = await fetchImpl(`${base}${path}`, { method, headers: { apikey: secret, Authorization: `Bearer ${secret}`, Prefer: 'return=representation', ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     if (!response.ok) throw accountError(response.status === 404 ? 'account_not_found' : 'supabase_request_failed', response.status);
+    return response;
+  }
+  async function request(path, options = {}) {
+    const response = await requestResponse(path, options);
     return response.status === 204 ? [] : response.json();
+  }
+  async function requestCount(path) {
+    const response = await requestResponse(path, { headers: { Prefer: 'count=exact', Range: '0-0' } });
+    const total = Number((response.headers.get('content-range') || '').split('/').at(-1));
+    return Number.isFinite(total) ? total : 0;
   }
   function assertAdmin(actor) { if (!actor?.id || actor.role !== 'super_admin' || actor.status !== 'active') throw accountError('auth_forbidden', 403); }
   async function audit(entry) {
@@ -24,7 +33,32 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     }
   }
   return Object.freeze({
-    async listUsers(actor) { assertAdmin(actor); return request(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc`); },
+    async listUsers(actor, options = {}) {
+      assertAdmin(actor);
+      const page = Number(options.page ?? 1);
+      const pageSize = Number(options.pageSize ?? 12);
+      const status = options.status ?? 'all';
+      const query = String(options.query ?? '').trim();
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw accountError('invalid_request', 400);
+      const filters = [];
+      if (status !== 'all') filters.push(`status=eq.${status}`);
+      if (query) {
+        const encodedQuery = encodeURIComponent(query);
+        filters.push(`or=(email.ilike.*${encodedQuery}*,role.ilike.*${encodedQuery}*)`);
+      }
+      const from = (page - 1) * pageSize;
+      const listResponse = await requestResponse(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc${filters.length ? `&${filters.join('&')}` : ''}`, { headers: { Prefer: 'count=exact,return=representation', Range: `${from}-${from + pageSize - 1}` } });
+      const users = await listResponse.json();
+      const total = Number((listResponse.headers.get('content-range') || '').split('/').at(-1));
+      const [all, active, disabled, transferTargets] = await Promise.all([
+        requestCount('/rest/v1/profiles?select=id'),
+        requestCount('/rest/v1/profiles?select=id&status=eq.active'),
+        requestCount('/rest/v1/profiles?select=id&status=eq.disabled'),
+        request('/rest/v1/profiles?select=id,email&status=eq.active&order=email.asc')
+      ]);
+      const safeTotal = Number.isFinite(total) ? total : 0;
+      return { users, transferTargets, counts: { all, active, disabled }, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
+    },
     async enableUser(actor, targetUserId, requestId) {
       assertAdmin(actor);
       try {

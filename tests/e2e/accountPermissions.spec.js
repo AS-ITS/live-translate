@@ -8,7 +8,10 @@ test('account management shows active transfer targets and reloads after disable
   await page.route('**/api/admin/users', async (route) => route.fulfill({ json: { users: [
     { id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' },
     { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }
-  ] } }));
+  ], transferTargets: [
+    { id: 'source-1', email: 'source@example.com' },
+    { id: 'target-1', email: 'target@example.com' }
+  ], counts: { all: 2, active: disabled ? 1 : 2, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 2, totalPages: 1 } } }));
   await page.route('**/api/admin/users/source-1/disable', async (route) => {
     disabled = true;
     await route.fulfill({ json: { user: { id: 'source-1', status: 'disabled' } } });
@@ -26,11 +29,29 @@ test('account management shows active transfer targets and reloads after disable
   });
   await page.goto('/#admin');
   await expect(page.getByRole('heading', { name: '帳號管理' })).toBeVisible();
-  const sourceRow = page.locator('article').first();
-  await sourceRow.getByLabel('資產接手者').selectOption('target-1');
-  await sourceRow.getByRole('button', { name: '停用' }).click();
+  await expect(page.getByText('全部帳號')).toBeVisible();
+  await expect(page.locator('.account-summary-card strong').nth(0)).toHaveText('2');
+  await expect(page.locator('.account-summary-active strong')).toHaveText('2');
+  await expect(page.locator('.account-summary-disabled strong')).toHaveText('0');
+  const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
+  await searchInput.fill('source@example.com');
+  await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]').filter({ hasText: 'source@example.com' })).toHaveCount(1);
+  await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]').filter({ hasText: 'target@example.com' })).toHaveCount(0);
+  await searchInput.fill('');
+  await page.getByRole('combobox', { name: '篩選狀態' }).selectOption('disabled');
+  await expect(page.getByText('找不到符合條件的帳號。')).toBeVisible();
+  await page.getByRole('combobox', { name: '篩選狀態' }).selectOption('all');
+  const sourceRow = page.locator('.account-management-data-grid .ag-row').filter({ hasText: 'source@example.com' }).first();
+  await expect(sourceRow.locator('.account-table-status.is-active')).toHaveText('啟用中');
+  await sourceRow.getByRole('combobox', { name: '資產接手者：source@example.com' }).selectOption('target-1');
+  page.once('dialog', (dialog) => dialog.accept());
+  await sourceRow.getByRole('button', { name: '停用帳號' }).click();
   await expect(page.getByText('帳號狀態已更新。')).toBeVisible();
-  await expect(sourceRow.getByRole('button', { name: '啟用' })).toBeVisible();
+  await expect(sourceRow.getByRole('button', { name: '重新啟用帳號' })).toBeVisible();
+  await expect(sourceRow.locator('.account-table-status.is-disabled')).toHaveText('已停用');
+  await page.getByRole('combobox', { name: '篩選狀態' }).selectOption('disabled');
+  await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]').filter({ hasText: 'source@example.com' })).toHaveCount(1);
+  await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]').filter({ hasText: 'target@example.com' })).toHaveCount(0);
 });
 test('keeps an unauthorized personal account on an access-denied screen until account switch', async ({ page }) => {
   let profileRequests = 0;

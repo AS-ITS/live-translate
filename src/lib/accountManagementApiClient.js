@@ -9,7 +9,10 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
     return body;
   }
   return Object.freeze({
-    listUsers: async () => (await call('/api/admin/users')).users || [],
+    listUsers: async ({ page = 1, pageSize = 12, query = '', status = 'all' } = {}) => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, status });
+      return call(`/api/admin/users?${params.toString()}`);
+    },
     enable: async (userId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/enable`, { method: 'POST' })).user,
     disable: async (userId, transferToUserId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/disable`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transferToUserId }) })).user
   });

@@ -205,3 +205,12 @@ npm run deploy:preview
 ```
 
 The command deploys without the production flag, prints the Preview URL, and runs the deployment preflight against it. Configure Preview environment variables in Vercel before deploying, including `GEMINI_API_KEY` and the required Supabase settings.
+
+Apply pending Supabase migrations separately:
+
+```bash
+supabase link --project-ref <target-project-ref>
+npm run deploy:supabase
+```
+
+The migration command uses the currently linked Supabase project and does not create branches or switch projects automatically. Verify the linked project is the intended Preview or test environment before running it.

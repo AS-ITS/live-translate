@@ -1,5 +1,9 @@
 # Account Permissions
 
+## Super-admin account list API
+
+`GET /api/admin/users?page=1&pageSize=12&query=&status=all` returns only the requested page. `pageSize` accepts `12`, `24`, or `48`; `status` accepts `all`, `active`, or `disabled`; `query` searches email and stored role text and is limited to 100 characters. The response includes `pagination` with exact totals, `counts` for all statuses, and `transferTargets` containing every active account's `id` and `email`, so asset transfer remains possible across pages.
+
 Issue #33 establishes two authenticated account roles: `member` and `super_admin`.
 
 New profiles default to `member` and `active`. The server loads role/status from the owner-scoped `profiles` record after JWT validation. Disabled accounts receive `auth_forbidden` and cannot use private APIs.

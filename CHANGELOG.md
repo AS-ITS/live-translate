@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-09-15
+- Account management now uses server-side pagination, email/role search, status filtering, exact global counts, and complete active transfer targets.
+
 ## 2026-09-14
 
 - Completed Issue #33 owner-scope propagation for session, translation execution, DLQ, and durable queue requests; actor and resource owner identities remain separate.

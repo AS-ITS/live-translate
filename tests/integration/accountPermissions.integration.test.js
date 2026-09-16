@@ -87,3 +87,49 @@ test('HTTP private meeting routes separate actor and resource owner scope', asyn
   assert.equal(memberResponse.statusCode, 403);
   assert.equal(memberResponse.json.error.code, 'auth_forbidden');
 });
+
+test('member recording permission PATCH is owner-scoped over HTTP', async () => {
+  const users = {
+    owner: { id: 'owner-1', role: 'member', status: 'active' },
+    member: { id: 'member-1', role: 'member', status: 'active' },
+    otherOwner: { id: 'owner-2', role: 'member', status: 'active' },
+    admin: { id: 'admin-1', role: 'super_admin', status: 'active' }
+  };
+  let activeUser = users.owner;
+  const profileService = createProfileService({ env: {} });
+  await profileService.addMeetingMember(users.owner, 'meeting-1', users.member.id);
+  const meetingRepository = { getMeeting: async (meetingId) => meetingId === 'meeting-1' ? { id: meetingId, ownerUserId: users.owner.id } : null };
+  const meetingMembershipService = {
+    canManage: async (meetingId, user) => meetingId === 'meeting-1' && (user.id === users.owner.id || user.role === 'super_admin'),
+    canRecord: async () => true,
+    getMeetingOwner: async () => users.owner.id,
+    getSessionOwner: async () => null
+  };
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => activeUser },
+    profileService,
+    meetingRepository,
+    meetingMembershipService
+  });
+
+  const disabled = await makeRequest(handler, { method: 'PATCH', url: '/api/meetings/meeting-1/members/member-1', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ canRecord: false }) });
+  assert.equal(disabled.statusCode, 200);
+  assert.equal(disabled.json.member.canRecord, false);
+  assert.equal((await profileService.listMeetingMembers(users.owner, 'meeting-1'))[0].canRecord, false);
+
+  const invalid = await makeRequest(handler, { method: 'PATCH', url: '/api/meetings/meeting-1/members/member-1', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ canRecord: 'false' }) });
+  assert.equal(invalid.statusCode, 400);
+
+  activeUser = users.member;
+  const memberDenied = await makeRequest(handler, { method: 'PATCH', url: '/api/meetings/meeting-1/members/member-1', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ canRecord: true }) });
+  assert.equal(memberDenied.statusCode, 403);
+
+  activeUser = users.otherOwner;
+  const otherOwnerDenied = await makeRequest(handler, { method: 'PATCH', url: '/api/meetings/meeting-1/members/member-1', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ canRecord: true }) });
+  assert.equal(otherOwnerDenied.statusCode, 403);
+
+  activeUser = users.admin;
+  const restored = await makeRequest(handler, { method: 'PATCH', url: '/api/meetings/meeting-1/members/member-1', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ canRecord: true }) });
+  assert.equal(restored.statusCode, 200);
+  assert.equal(restored.json.member.canRecord, true);
+});

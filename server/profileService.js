@@ -59,7 +59,7 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
         if (localMeetingOwners.get(meetingId) !== user.id) throw accountError('auth_forbidden');
         const members = localMemberships.get(meetingId) || [];
         const member = { userId: email.toLowerCase(), email: email.toLowerCase(), ownerUserId: user.id, meetingId };
-        Object.defineProperty(member, 'canRecord', { value: true, writable: true, enumerable: false });
+        member.canRecord = true;
         if (!members.some((item) => item.email === member.email)) localMemberships.set(meetingId, [...members, member]);
         await auditLogService?.record({ actor_user_id: user.id, target_user_id: member.userId, target_meeting_id: meetingId, request_id: requestId, action: 'member_invited', result: 'success' });
         return member;

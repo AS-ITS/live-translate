@@ -1,6 +1,10 @@
 # Changelog
 
 ## 2026-09-15
+- Hardened account audit UUID searches to use exact ID filters and added an explicit audit-load error/retry state.
+- Added HTTP coverage for owner-scoped member recording permission changes; local member DTOs now expose `canRecord` normally.
+
+## 2026-09-15
 - Account management now uses server-side pagination, email/role search, status filtering, exact global counts, and complete active transfer targets.
 
 ## 2026-09-14

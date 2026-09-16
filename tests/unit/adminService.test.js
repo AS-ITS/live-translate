@@ -61,3 +61,20 @@ test('audit write failure emits only safe observability fields', async () => {
     { event: 'audit_write_failed', action: 'user_disabled', result: 'failure', requestId: 'request-1' }
   ]);
 });
+
+test('audit UUID searches use exact ID filters and request IDs remain partial matches', async () => {
+  const urls = [];
+  const service = createAdminService({ env, fetchImpl: async (url) => {
+    urls.push(url);
+    return json([], 200, '0-24/0');
+  } });
+  await service.listAuditLogs(admin, { query: '550e8400-e29b-41d4-a716-446655440000' });
+  assert.match(urls[0], /actor_user_id\.eq\.550e8400-e29b-41d4-a716-446655440000/);
+  assert.match(urls[0], /target_user_id\.eq\.550e8400-e29b-41d4-a716-446655440000/);
+  assert.match(urls[0], /target_meeting_id\.eq\.550e8400-e29b-41d4-a716-446655440000/);
+  assert.doesNotMatch(urls[0], /\.ilike/);
+  urls.length = 0;
+  await service.listAuditLogs(admin, { query: 'request-123' });
+  assert.match(urls[0], /request_id\.ilike\.\*request-123\*/);
+  assert.doesNotMatch(urls[0], /(?:actor_user_id|target_user_id|target_meeting_id)\.(?:eq|ilike)/);
+});

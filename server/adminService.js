@@ -47,7 +47,9 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       if (result !== 'all') filters.push(`result=eq.${encodeURIComponent(result)}`);
       if (query) {
         const value = encodeURIComponent(query);
-        filters.push(`or=(actor_user_id.ilike.*${value}*,target_user_id.ilike.*${value}*,target_meeting_id.ilike.*${value}*,request_id.ilike.*${value}*)`);
+        filters.push(isUuid(query)
+          ? `or=(actor_user_id.eq.${value},target_user_id.eq.${value},target_meeting_id.eq.${value})`
+          : `request_id.ilike.*${value}*`);
       }
       const from = (page - 1) * pageSize;
       const path = `/rest/v1/audit_logs?select=actor_user_id,target_user_id,target_meeting_id,request_id,action,result,created_at&order=created_at.desc${filters.length ? `&${filters.join('&')}` : ''}`;
@@ -129,3 +131,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
 }
 
 function accountError(code, status) { const error = new Error(code); error.code = code; error.status = status; return error; }
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
+}

@@ -18,7 +18,7 @@ export default defineConfig({
     {
       command: 'npm run dev -- --config tests/e2e/vite.e2e.config.js --port 5174',
       url: 'http://127.0.0.1:5174',
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 30_000
     }
   ],

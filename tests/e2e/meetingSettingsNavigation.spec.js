@@ -173,7 +173,7 @@ test('meeting settings imports private glossary rows and saves them with the mee
     savedBody = route.request().postDataJSON();
     return route.fulfill({ json: { meeting: { id: 'meeting-import', name: '產品會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: savedBody.privateGlossaryEntries } } });
   });
-  await page.route('**/api/meetings/meeting-import/shares', async (route) => route.fulfill({ json: { url: '#viewer?code=viewer-code', share: { id: 'share-1', role: 'viewer', shortCode: 'viewer-code' } } }));
+  await page.route(/\/api\/meetings\/meeting-import\/shares(?:\?.*)?$/, async (route) => route.fulfill({ json: { url: '#viewer?code=viewer-code', share: { id: 'share-1', role: 'viewer', shortCode: 'viewer-code' } } }));
 
   await page.goto('/#meeting-settings?mode=create');
   await page.getByRole('button', { name: '匯入詞彙' }).click();
@@ -245,7 +245,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
       }
     });
   });
-  await page.route('**/api/meetings/meeting-1/shares', async (route) => {
+  await page.route(/\/api\/meetings\/meeting-1\/shares(?:\?.*)?$/, async (route) => {
     const { role } = route.request().postDataJSON();
     await route.fulfill({
       json: {
@@ -263,7 +263,11 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
   await page.getByRole('button', { name: '測試並確認音訊' }).click();
   await expect(page.locator('.meeting-audio-status')).toHaveClass(/is-confirmed/);
+  const meetingResponse = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings$/.test(new URL(response.url()).pathname));
+  const shareResponse = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings\/meeting-1\/shares(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search));
   await page.getByRole('button', { name: '建立會議' }).click();
+  await expect((await meetingResponse).status()).toBe(200);
+  await expect((await shareResponse).status()).toBe(200);
 
   await expect(page.locator('.meeting-settings-step')).toHaveCount(5);
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
@@ -287,7 +291,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
-  await page.route(/\/api\/meetings\/meeting-2\/shares$/, async (route) => {
+  await page.route(/\/api\/meetings\/meeting-2\/shares(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'GET') return route.fulfill({ json: { shares: [] } });
     const { role } = route.request().postDataJSON();
     return route.fulfill({
@@ -344,7 +348,7 @@ test('shows a deployment-specific message when the share route returns 404', asy
       }
     } });
   });
-  await page.route('**/api/meetings/meeting-share-404/shares', async (route) =>
+  await page.route(/\/api\/meetings\/meeting-share-404\/shares(?:\?.*)?$/, async (route) =>
     route.fulfill({ status: 404, contentType: 'application/json', body: '{}' }));
 
   await page.goto('/#meeting-settings?mode=create');
@@ -362,7 +366,7 @@ test('restores Meeting share QR codes and links after reloading the edit page', 
     id: 'meeting-3', name: '可分享會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
     echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: []
   } } }));
-  await page.route(/\/api\/meetings\/meeting-3\/shares$/, async (route) => {
+  await page.route(/\/api\/meetings\/meeting-3\/shares(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'GET') return route.fulfill({ json: { shares: [
       { id: 'share-viewer', role: 'viewer', codeUrl: '#viewer?code=VIEWER2' }
     ] } });
@@ -377,4 +381,10 @@ test('restores Meeting share QR codes and links after reloading the edit page', 
   await page.reload();
   await expect(page.locator('.share-result')).toHaveCount(1);
   await expect(page.locator('.share-result img')).toHaveCount(1);
+});
+import { installE2EAuth } from './authBootstrap.js';
+
+test.beforeEach(async ({ page }) => {
+  await installE2EAuth(page);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
 });

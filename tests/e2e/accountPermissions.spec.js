@@ -6,7 +6,7 @@ function installSession(page) {
   });
 }
 
-test('account management shows users, audit logs, filters, pagination, and reloads after disable', async ({ page }) => {
+test('account management shows users and reloads after disable', async ({ page }) => {
   let disabled = false;
   let auditFailure = false;
   let auditCalls = 0;
@@ -42,12 +42,16 @@ test('account management shows users, audit logs, filters, pagination, and reloa
   await expect(page.getByText('帳號狀態已更新。')).toBeVisible();
   const disabledRow = page.locator('.account-management-data-grid .ag-row', { hasText: 'source@example.com' }).first();
   await expect(disabledRow.getByRole('button', { name: '重新啟用帳號' })).toBeVisible();
+  await expect(page.getByText('稽核紀錄')).toHaveCount(0);
+
+  await page.goto('/#audit');
+  await expect(page.getByRole('heading', { name: '稽核紀錄' })).toBeVisible();
   await expect(page.getByText('user_disabled')).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('member_invited');
   await expect(page.getByText('member_invited')).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('failure');
   await expect(page.getByText('failure')).toBeVisible();
-  await page.getByRole('button', { name: '下一頁' }).last().click();
+  await page.getByRole('button', { name: '下一頁' }).click();
   await expect(page.getByText('第 2 / 2 頁')).toBeVisible();
   auditFailure = true;
   await page.getByRole('button', { name: '重新載入稽核紀錄' }).click();

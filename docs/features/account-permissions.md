@@ -17,6 +17,9 @@ Super admins can list accounts and enable or disable accounts. Disabling require
 Viewer shares remain anonymous, opaque, read-only capabilities. They do not grant access to profiles, Gemini credentials, or authenticated owner APIs.
 ## Recording controls and audit query
 
+The super-admin UI presents audit records on the independent `#audit` page. The
+`#admin` page is reserved for account listing and account status operations.
+
 Meeting owners can update `PATCH /api/meetings/:meetingId/members/:userId` with `{ "canRecord": false }`. New members default to `canRecord: true`; recording requires an active account, membership, and enabled recording permission.
 
 Active super admins can query `GET /api/admin/audit-logs` with `page`, `pageSize` (`25`, `50`, `100`), `action`, `result`, and `query`. Results expose only actor, target, meeting, request, action, result, and timestamp fields.

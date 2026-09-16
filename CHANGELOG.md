@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-09-16
+
+- 將管理員稽核紀錄從帳號管理頁拆分為獨立的 `#audit` 頁面；保留原有搜尋、篩選、分頁與錯誤重試功能。
+
 ## 2026-09-15
 - Hardened account audit UUID searches to use exact ID filters and added an explicit audit-load error/retry state.
 - Added HTTP coverage for owner-scoped member recording permission changes; local member DTOs now expose `canRecord` normally.

@@ -1,5 +1,6 @@
 .account-management-shell { grid-template-rows: auto auto; align-content: start; row-gap: var(--space-4); }
 .account-management-page { display: grid; gap: var(--space-4); }
+.account-management-status:empty { display: none; }
 .account-management-status { min-height: 0; }
 .account-management-panel { padding: var(--space-5); }
 .account-management-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }

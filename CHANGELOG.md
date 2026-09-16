@@ -1,4 +1,8 @@
 # Changelog
+
+- Improved Meeting Settings discoverability for member recording authorization with a dedicated `成員與錄製權限` step and empty-state guidance.
+
+- Issue #33: Google Workspace domain matching is the first gate; new users are pending `member` profiles until an active `super_admin` approves them. Pending users can only read `GET /api/profile`, wait, sign out, or switch accounts. Existing active/disabled accounts and status management are preserved.
 - Added Google Workspace account approval flow: new domain users remain pending until a super_admin approves them.
 
 - Adjusted account management to rely on Google Workspace OAuth provisioning; removed password-based account creation.

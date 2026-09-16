@@ -14,7 +14,8 @@ const MEETING_SETTINGS_STEPS = [
   '基本資訊',
   '語言設定',
   '音訊設定',
-  '詞彙設定'
+  '詞彙設定',
+  '成員與錄製權限'
 ];
 
 export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, onOpenLive }) {
@@ -544,7 +545,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       {notice ? <p className="success-message" role="status">{notice}</p> : null}
       <div className="meeting-settings-layout meeting-management-grid">
         <nav className="meeting-settings-steps" aria-label="會議設定步驟">
-          {MEETING_SETTINGS_STEPS.map((label, index) => <button className={`meeting-settings-step${index === activeStep ? ' is-active' : ''}`} type="button" aria-current={index === activeStep ? 'step' : undefined} onClick={() => scrollToSettingsStep(index)} key={label}><span>{index + 1}</span><strong>{label}</strong></button>)}
+          {MEETING_SETTINGS_STEPS.map((label, index) => (index === 4 && !meeting ? null : <button className={`meeting-settings-step${index === activeStep ? ' is-active' : ''}`} type="button" aria-current={index === activeStep ? 'step' : undefined} onClick={() => scrollToSettingsStep(index)} key={label}><span>{index + 1}</span><strong>{label}</strong></button>))}
           {meeting ? <button className={`meeting-settings-step${activeStep === MEETING_SETTINGS_STEPS.length ? ' is-active' : ''}`} type="button" aria-current={activeStep === MEETING_SETTINGS_STEPS.length ? 'step' : undefined} onClick={() => scrollToSettingsStep(MEETING_SETTINGS_STEPS.length)}><span>{MEETING_SETTINGS_STEPS.length + 1}</span><strong>分享會議</strong></button> : null}
         </nav>
         <section className="meeting-settings-form control-panel" aria-label="會議設定表單">
@@ -586,7 +587,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
             </div>
           </section>
 
-  {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">ACCESS</p><h3 id="meeting-members-title">錄製成員</h3><p className="meeting-settings-card-description">成員只能錄製已加入的會議，不能修改設定、分享或匯出。</p></div></div>{memberError ? <p className="error-message" role="alert">{memberError}</p> : null}{memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}<div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>{members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button></div>)}</section> : null}
+ {meeting ? <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[4] = node; }} aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 5 · ACCESS</p><h3 id="meeting-members-title">成員與錄製權限</h3><p className="meeting-settings-card-description">邀請 active member 錄製本場會議；meeting owner 仍可管理會議設定、分享與匯出。</p></div><span className="meeting-settings-card-number">5</span></div>{memberError ? <p className="error-message" role="alert">{memberError}</p> : null}{memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}<div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>{members.length === 0 ? <p className="export-note">目前尚未加入其他成員。你仍可錄製自己建立的 meeting；若要讓其他 member 錄製，請先輸入 email 邀請。</p> : members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button></div>)}</section> : null}
 
           {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-recording-permissions-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">RECORDING ACCESS</p><h3 id="meeting-recording-permissions-title">錄製權限</h3><p className="meeting-settings-card-description">關閉後會保留成員關係，但該成員無法錄製本場會議。</p></div></div><div className="meeting-recording-permission-list">{members.map((member) => <label className="meeting-member-row" key={`recording-${member.userId}`}><span>{member.email || member.userId}</span><span><input type="checkbox" aria-label={`允許 ${member.email || member.userId} 錄製`} checked={member.canRecord !== false} onChange={() => void updateMemberRecording(member)} disabled={Boolean(memberBusy) || meeting.status === 'completed'} />允許錄製</span></label>)}</div></section> : null}
 

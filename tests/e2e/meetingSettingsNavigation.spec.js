@@ -277,7 +277,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(meetingResponse.status()).toBe(200);
   await expect(shareResponse.status()).toBe(200);
 
-  await expect(page.locator('.meeting-settings-step')).toHaveCount(5);
+  await expect(page.locator('.meeting-settings-step')).toHaveCount(6);
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
   await expect(page.locator('.meeting-share-results')).toBeVisible();
   await expect(page.locator('.share-result')).toHaveCount(1);
@@ -295,6 +295,8 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
 
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
+  await page.getByRole('button', { name: '成員與錄製權限' }).click();
+  await expect(page.locator('#meeting-members-title')).toBeInViewport();
 });
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {

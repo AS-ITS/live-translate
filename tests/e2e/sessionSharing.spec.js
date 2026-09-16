@@ -1,11 +1,18 @@
 import { expect, test } from '@playwright/test';
+import { installE2EAuth } from './authBootstrap.js';
+
+test.beforeEach(async ({ page }) => {
+  await installE2EAuth(page);
+});
 
 test('Meeting Viewer renders historical bilingual Cues without owner controls', async ({ page }) => {
   const cues = Array.from({ length: 40 }, (_, index) => ({ cueId: `cue-${index + 1}`, sequence: index + 1, startTimeMs: index * 1000, sourceText: `原文 ${index + 1}`, translatedText: `Translation ${index + 1}`, status: 'final' }));
   await page.route(/\/api\/shared-meetings\/meeting-viewer-token(?:\?.*)?$/, async (route) => route.fulfill({ json: { capability: { role: 'viewer', meetingId: 'meeting-1' }, meeting: { id: 'meeting-1', name: '產品會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }, cues, cursor: { eventId: 0, cueSequence: 1 } } }));
   await page.route(/\/api\/shared-meetings\/meeting-viewer-token\/events(?:\?.*)?$/, async (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
-  const snapshotResponse = page.waitForResponse((response) => response.request().method() === 'GET' && /\/api\/shared-meetings\/meeting-viewer-token(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search));
-  await page.goto('/#viewer?token=meeting-viewer-token');
+  const [snapshotResponse] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'GET' && /\/api\/shared-meetings\/meeting-viewer-token(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search)),
+    page.goto('/#viewer?token=meeting-viewer-token')
+  ]);
   await expect((await snapshotResponse).status()).toBe(200);
   await expect(page.getByRole('heading', { name: '產品會議' })).toBeVisible();
   await expect(page.getByText('原文 40', { exact: true })).toBeVisible();

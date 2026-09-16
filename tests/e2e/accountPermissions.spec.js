@@ -29,12 +29,14 @@ test('account management shows users, audit logs, filters, pagination, and reloa
   await searchInput.fill('source@example.com');
   await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]', { hasText: 'source@example.com' })).toHaveCount(1);
   await searchInput.fill('');
-  const sourceRow = page.locator('.account-management-data-grid .ag-row', { hasText: 'source@example.com' }).first();
+  const sourceRow = page.locator('.account-management-data-grid .ag-row').filter({ has: page.locator('.ag-cell[col-id="email"]', { hasText: /^source@example\.com$/ }) }).first();
   await sourceRow.getByRole('combobox', { name: '資產接手者：source@example.com' }).selectOption('target-1');
-  page.once('dialog', (dialog) => dialog.accept());
+  const currentSourceRow = page.locator('.account-management-data-grid .ag-row').filter({ has: page.locator('.ag-cell[col-id="email"]', { hasText: /^source@example\.com$/ }) }).first();
+  await expect(currentSourceRow.getByRole('button', { name: '停用帳號' })).toBeEnabled();
+  await page.evaluate(() => { window.confirm = () => true; });
   const disableResponse = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/admin\/users\/source-1\/disable(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search));
   const usersReload = page.waitForResponse((response) => response.request().method() === 'GET' && /\/api\/admin\/users(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search));
-  await sourceRow.getByRole('button', { name: '停用帳號' }).click({ force: true });
+  await currentSourceRow.getByRole('button', { name: '停用帳號' }).click({ force: true });
   await expect((await disableResponse).status()).toBe(200);
   await expect((await usersReload).status()).toBe(200);
   await expect(page.getByText('帳號狀態已更新。')).toBeVisible();

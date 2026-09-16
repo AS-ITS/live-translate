@@ -387,4 +387,7 @@ import { installE2EAuth } from './authBootstrap.js';
 test.beforeEach(async ({ page }) => {
   await installE2EAuth(page);
   await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => {
+    if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = async () => ({ getTracks: () => [] });
+  });
 });

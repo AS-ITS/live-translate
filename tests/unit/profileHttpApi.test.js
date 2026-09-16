@@ -3,9 +3,9 @@ import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 
-function request(handler, headers = {}) {
+function request(handler, headers = {}, url = '/api/profile') {
   const req = Readable.from([]);
-  req.method = 'GET'; req.url = '/api/profile'; req.headers = headers; req.socket = { remoteAddress: '127.0.0.1' };
+  req.method = 'GET'; req.url = url; req.headers = headers; req.socket = { remoteAddress: '127.0.0.1' };
   const response = { statusCode: 0, body: '', writeHead(status) { this.statusCode = status; }, end(body = '') { this.body = body; } };
   return handler(req, response).then(() => ({ ...response, json: JSON.parse(response.body) }));
 }
@@ -38,4 +38,17 @@ test('disabled profiles cannot access private APIs', async () => {
   const response = await request(handler, { authorization: 'Bearer signed-token' });
   assert.equal(response.statusCode, 403);
   assert.equal(response.json.error.code, 'auth_forbidden');
+});
+
+test('pending profiles can read their status but cannot access private APIs', async () => {
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => ({ id: 'pending', email: 'pending@example.com' }) },
+    profileService: { getProfile: async () => ({ id: 'pending', email: 'pending@example.com', role: 'member', status: 'pending' }) }
+  });
+  const profile = await request(handler, { authorization: 'Bearer signed-token' });
+  assert.equal(profile.statusCode, 200);
+  assert.equal(profile.json.profile.status, 'pending');
+  const privateResponse = await request(handler, { authorization: 'Bearer signed-token' }, '/api/profile/gemini-credential');
+  assert.equal(privateResponse.statusCode, 403);
+  assert.equal(privateResponse.json.error.code, 'auth_pending');
 });

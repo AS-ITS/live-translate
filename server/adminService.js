@@ -15,32 +15,6 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     const response = await requestResponse(path, options);
     return response.status === 204 ? [] : response.json();
   }
-  async function createAuthUser({ email, password }) {
-    if (!base || !secret) throw accountError('cloud_capability_unavailable', 503);
-    const response = await fetchImpl(`${base}/auth/v1/admin/users`, {
-      method: 'POST',
-      headers: { apikey: secret, Authorization: `Bearer ${secret}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, email_confirm: true })
-    });
-    if (!response.ok) {
-      let message = '';
-      try {
-        const body = await response.clone().json();
-        message = String(body?.msg || body?.message || '');
-      } catch { /* keep provider details private */ }
-      if (response.status === 422 && /already|exists|registered/i.test(message)) throw accountError('account_email_exists', 409);
-      if (response.status === 400 || response.status === 422) throw accountError('account_creation_invalid', 400);
-      throw accountError('supabase_request_failed', response.status);
-    }
-    return response.json();
-  }
-  async function deleteAuthUser(userId) {
-    if (!base || !secret) return;
-    await fetchImpl(`${base}/auth/v1/admin/users/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-      headers: { apikey: secret, Authorization: `Bearer ${secret}` }
-    });
-  }
   async function requestCount(path) {
     const response = await requestResponse(path, { headers: { Prefer: 'count=exact', Range: '0-0' } });
     const total = Number((response.headers.get('content-range') || '').split('/').at(-1));
@@ -59,30 +33,6 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
     }
   }
   return Object.freeze({
-    async createUser(actor, input = {}, requestId) {
-      assertAdmin(actor);
-      const email = String(input.email || '').trim();
-      const password = typeof input.password === 'string' ? input.password : '';
-      if (!email || !password || password !== input.confirmPassword) {
-        await audit({ actor_user_id: actor.id, action: 'user_created', request_id: requestId, result: 'failure' });
-        throw accountError('account_creation_invalid', 400);
-      }
-      let authUser;
-      try {
-        authUser = await createAuthUser({ email, password });
-        const profileRows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(authUser.id)}&select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}`);
-        const user = profileRows[0] || (await request('/rest/v1/profiles', { method: 'POST', body: { id: authUser.id, email, role: 'member', status: 'active' } }))[0];
-        if (!user) throw accountError('account_creation_failed', 503);
-        await audit({ actor_user_id: actor.id, target_user_id: user.id, action: 'user_created', request_id: requestId, result: 'success' });
-        return user;
-      } catch (error) {
-        if (authUser?.id) {
-          try { await deleteAuthUser(authUser.id); } catch { /* best-effort compensation */ }
-        }
-        await audit({ actor_user_id: actor.id, target_user_id: authUser?.id || null, action: 'user_created', request_id: requestId, result: 'failure' });
-        throw error;
-      }
-    },
     async listAuditLogs(actor, options = {}) {
       assertAdmin(actor);
       const page = Number(options.page ?? 1);
@@ -90,7 +40,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const action = options.action ?? 'all';
       const result = options.result ?? 'all';
       const query = String(options.query ?? '').trim();
-      const actions = ['member_invited', 'member_removed', 'user_created', 'user_enabled', 'user_disabled', 'asset_transfer'];
+      const actions = ['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer'];
       if (!Number.isInteger(page) || page < 1 || ![25, 50, 100].includes(pageSize) || (action !== 'all' && !actions.includes(action)) || !['all', 'success', 'failure'].includes(result) || query.length > 100) throw accountError('invalid_request', 400);
       const filters = [];
       if (action !== 'all') filters.push(`action=eq.${encodeURIComponent(action)}`);
@@ -124,7 +74,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const pageSize = Number(options.pageSize ?? 12);
       const status = options.status ?? 'all';
       const query = String(options.query ?? '').trim();
-      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw accountError('invalid_request', 400);
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'pending', 'disabled'].includes(status) || query.length > 100) throw accountError('invalid_request', 400);
       const filters = [];
       if (status !== 'all') filters.push(`status=eq.${status}`);
       if (query) {
@@ -135,14 +85,27 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const listResponse = await requestResponse(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc${filters.length ? `&${filters.join('&')}` : ''}`, { headers: { Prefer: 'count=exact,return=representation', Range: `${from}-${from + pageSize - 1}` } });
       const users = await listResponse.json();
       const total = Number((listResponse.headers.get('content-range') || '').split('/').at(-1));
-      const [all, active, disabled, transferTargets] = await Promise.all([
+      const [all, active, pending, disabled, transferTargets] = await Promise.all([
         requestCount('/rest/v1/profiles?select=id'),
         requestCount('/rest/v1/profiles?select=id&status=eq.active'),
+        requestCount('/rest/v1/profiles?select=id&status=eq.pending'),
         requestCount('/rest/v1/profiles?select=id&status=eq.disabled'),
         request('/rest/v1/profiles?select=id,email&status=eq.active&order=email.asc')
       ]);
       const safeTotal = Number.isFinite(total) ? total : 0;
-      return { users, transferTargets, counts: { all, active, disabled }, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
+      return { users, transferTargets, counts: { all, active, pending, disabled }, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
+    },
+    async approveUser(actor, targetUserId, requestId) {
+      assertAdmin(actor);
+      try {
+        const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(targetUserId)}&status=eq.pending`, { method: 'PATCH', body: { status: 'active', disabled_at: null, updated_at: new Date().toISOString() } });
+        if (!rows[0]) throw accountError('account_not_pending', 409);
+        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_approved', request_id: requestId, result: 'success' });
+        return rows[0];
+      } catch (error) {
+        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_approved', request_id: requestId, result: 'failure' });
+        throw error;
+      }
     },
     async enableUser(actor, targetUserId, requestId) {
       assertAdmin(actor);

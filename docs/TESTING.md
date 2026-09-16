@@ -1,8 +1,8 @@
 # Testing
 
-## Account creation
+## Google Workspace accounts
 
-Account creation is covered with deterministic admin-service and local E2E tests. The E2E flow mocks Supabase/Auth responses and verifies that an active super-admin can create an active member, the new account appears after reload, invalid details are rejected, and the existing account disable flow remains available. Tests never use a real password or Supabase Auth service.
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, profile provisioning defaults, disabled-account rejection, and super-admin access using signed JWT fixtures.
 
 ## Cloud validation
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
 
-const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, 'member_invited', 'member_removed', 'user_created', 'user_enabled', 'user_disabled', 'asset_transfer'].map((item) => typeof item === 'string' ? { value: item, label: item } : item);
+const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, 'member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer'].map((item) => typeof item === 'string' ? { value: item, label: item } : item);
 const AUDIT_RESULT_FILTERS = [{ value: 'all', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失敗' }];
 
 export function AuditLogPage() {

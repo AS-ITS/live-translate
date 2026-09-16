@@ -1,6 +1,7 @@
 # Changelog
+- Added Google Workspace account approval flow: new domain users remain pending until a super_admin approves them.
 
-- Added super-admin account creation for active member accounts with safe audit logging and local deterministic coverage.
+- Adjusted account management to rely on Google Workspace OAuth provisioning; removed password-based account creation.
 
 - Added manual cloud validation workflow with authenticated staging smoke and read-only production preflight.
 

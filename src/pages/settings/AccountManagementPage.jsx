@@ -1,6 +1,6 @@
 import { AgGridReact } from 'ag-grid-react';
-import { Search, ShieldCheck, SlidersHorizontal, UserPlus } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { Search, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { dataGridProps } from '../../lib/dataGrid.js';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
 
@@ -9,18 +9,19 @@ function accountRoleLabel(role) {
 }
 
 function accountStatusLabel(status) {
-  return status === 'active' ? '啟用中' : '已停用';
+  return status === 'active' ? '啟用中' : status === 'pending' ? '待確認' : '已停用';
 }
 
 const ACCOUNT_STATUS_FILTERS = [
   { value: 'all', label: '全部狀態' },
   { value: 'active', label: '啟用中' },
+  { value: 'pending', label: '待確認' },
   { value: 'disabled', label: '已停用' }
 ];
 
 function AccountStatusCell({ value }) {
   const isActive = value === 'active';
-  return <span className={`account-table-status ${isActive ? 'is-active' : 'is-disabled'}`} role="status" aria-label={`帳號狀態：${accountStatusLabel(value)}`}><span aria-hidden="true" />{accountStatusLabel(value)}</span>;
+  return <span className={`account-table-status ${isActive ? 'is-active' : value === 'pending' ? 'is-pending' : 'is-disabled'}`} role="status" aria-label={`帳號狀態：${accountStatusLabel(value)}`}><span aria-hidden="true" />{accountStatusLabel(value)}</span>;
 }
 
 function AccountRoleCell({ value }) {
@@ -40,6 +41,7 @@ function AccountTransferCell({ data, context }) {
 }
 
 function AccountActionsCell({ data, context }) {
+  if (data.status === 'pending') return <button className="button detail-button account-table-action" type="button" onClick={() => context.onApprove(data)} disabled={data.isBusy}>{data.isBusy ? '處理中…' : '核准帳號'}</button>;
   const isActive = data.status === 'active';
   const label = isActive ? '停用帳號' : '重新啟用帳號';
   return <button
@@ -66,11 +68,10 @@ export function AccountManagementPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0, totalPages: 0 });
-  const [counts, setCounts] = useState({ all: 0, active: 0, disabled: 0 });
+  const [counts, setCounts] = useState({ all: 0, active: 0, pending: 0, disabled: 0 });
   const [transferTargets, setTransferTargets] = useState([]);
-  const [isCreateOpen, setIsCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState({ email: '', password: '', confirmPassword: '' });
-  const [isCreating, setIsCreating] = useState(false);
+  const transferRef = useRef(transfer);
+  transferRef.current = transfer;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
@@ -85,7 +86,7 @@ export function AccountManagementPage() {
       setUsers(result.users || []);
       setTransferTargets(result.transferTargets || []);
       setPagination(result.pagination || { page, pageSize, total: 0, totalPages: 0 });
-      setCounts(result.counts || { all: 0, active: 0, disabled: 0 });
+      setCounts(result.counts || { all: 0, active: 0, pending: 0, disabled: 0 });
     } finally {
       setIsLoading(false);
     }
@@ -93,11 +94,17 @@ export function AccountManagementPage() {
 
   useEffect(() => { void reload().catch(setError); }, [client, page, pageSize, debouncedQuery, statusFilter]);
 
+  async function approveUser(user) {
+    setBusy(user.id); setNotice(''); setError(null);
+    try { await client.approve(user.id); await reload(); setNotice('帳號已核准，可登入使用系統。'); } catch (cause) { setError(cause); } finally { setBusy(''); }
+  }
+
   async function changeStatus(user) {
+    const transferTargetId = transferRef.current[user.id] || user.transferTargetId;
     if (user.status === 'active') {
-      const target = transferTargets.find((candidate) => candidate.id === transfer[user.id]);
-      if (!target) return;
-      const confirmed = window.confirm(`停用 ${user.email} 後，owner 資產會移轉給 ${target.email}。Gemini credential 不會移轉。確定要繼續嗎？`);
+      const target = transferTargets.find((candidate) => candidate.id === transferTargetId);
+      if (!transferTargetId) return;
+      const confirmed = window.confirm(`停用 ${user.email} 後，owner 資產會移轉給 ${target?.email || transferTargetId}。Gemini credential 不會移轉。確定要繼續嗎？`);
       if (!confirmed) return;
     }
 
@@ -105,7 +112,7 @@ export function AccountManagementPage() {
     setNotice('');
     setError(null);
     try {
-      if (user.status === 'active') await client.disable(user.id, transfer[user.id]);
+      if (user.status === 'active') await client.disable(user.id, transferTargetId);
       else await client.enable(user.id);
       await reload();
       setNotice('帳號狀態已更新。');
@@ -113,24 +120,6 @@ export function AccountManagementPage() {
       setError(cause);
     } finally {
       setBusy('');
-    }
-  }
-
-  async function createUser(event) {
-    event.preventDefault();
-    setIsCreating(true);
-    setNotice('');
-    setError(null);
-    try {
-      await client.createUser(createForm);
-      setCreateForm({ email: '', password: '', confirmPassword: '' });
-      setIsCreateOpen(false);
-      await reload();
-      setNotice('使用者帳號已建立。');
-    } catch (cause) {
-      setError(cause);
-    } finally {
-      setIsCreating(false);
     }
   }
 
@@ -148,9 +137,10 @@ export function AccountManagementPage() {
   ], []);
   const gridContext = useMemo(() => ({
     transferTargets,
+    onApprove: (user) => void approveUser(user),
     onTransferChange: (userId, targetId) => setTransfer((current) => ({ ...current, [userId]: targetId })),
     onChangeStatus: (user) => void changeStatus(user)
-  }), [transferTargets]);
+  }), [transferTargets, transfer, busy]);
 
   return <section className="feature-page account-management-page" aria-labelledby="account-list-title">
     <div className="account-management-status">
@@ -162,30 +152,13 @@ export function AccountManagementPage() {
         <div>
           <p className="eyebrow">ACCOUNT ACCESS</p>
           <h2 id="account-list-title">帳號列表</h2>
-          <p>管理工作區成員的存取狀態。停用帳號前必須將 owner 資產移轉給另一個 active 帳號。</p>
+          <p>Google Workspace 使用者首次以 Google 登入後會自動出現在列表。這裡管理工作區成員的存取狀態；停用帳號前必須將 owner 資產移轉給另一個 active 帳號。</p>
         </div>
-        <button className="button primary account-create-button" type="button" onClick={() => setIsCreateOpen(true)}>
-          <UserPlus size={16} aria-hidden="true" />新增使用者
-        </button>
       </div>
-      {isCreateOpen ? <div className="account-create-dialog-backdrop" role="presentation">
-        <section className="account-create-dialog" role="dialog" aria-modal="true" aria-labelledby="account-create-title">
-          <div className="account-create-dialog-header">
-            <div><p className="eyebrow">NEW ACCOUNT</p><h3 id="account-create-title">新增使用者</h3></div>
-            <button className="dialog-close-button" type="button" onClick={() => setIsCreateOpen(false)} disabled={isCreating} aria-label="關閉新增使用者">×</button>
-          </div>
-          <form onSubmit={createUser}>
-            <label className="field"><span>Email</span><input type="email" required autoComplete="off" value={createForm.email} onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))} /></label>
-            <label className="field"><span>初始密碼</span><input type="password" required autoComplete="new-password" value={createForm.password} onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))} /></label>
-            <label className="field"><span>確認密碼</span><input type="password" required autoComplete="new-password" value={createForm.confirmPassword} onChange={(event) => setCreateForm((current) => ({ ...current, confirmPassword: event.target.value }))} /></label>
-            <p className="account-create-note">新帳號會以「成員」角色建立並立即啟用。</p>
-            <div className="account-create-actions"><button className="button secondary" type="button" onClick={() => setIsCreateOpen(false)} disabled={isCreating}>取消</button><button className="button primary" type="submit" disabled={isCreating}>{isCreating ? '建立中…' : '建立帳號'}</button></div>
-          </form>
-        </section>
-      </div> : null}
       <div className="account-summary-grid" aria-label="帳號摘要">
         <div className="account-summary-card"><span>全部帳號</span><strong>{counts.all}</strong></div>
         <div className="account-summary-card account-summary-active"><span>啟用中</span><strong>{counts.active}</strong></div>
+        <div className="account-summary-card account-summary-pending"><span>待確認</span><strong>{counts.pending}</strong></div>
         <div className="account-summary-card account-summary-disabled"><span>已停用</span><strong>{counts.disabled}</strong></div>
       </div>
       <div className="account-table-toolbar">

@@ -1,10 +1,14 @@
 # Account Permissions
 
-## Super-admin account creation
+## Google Workspace account provisioning
 
-Active `super_admin` users can create an account with `POST /api/admin/users` using `{ "email": "...", "password": "...", "confirmPassword": "..." }`. The server creates the Supabase Auth user with confirmed email and creates or verifies its profile as an active `member`. The endpoint never accepts a role, returns credentials, or writes the password to audit logs. Duplicate email and invalid account details return stable errors. `super_admin` promotion remains outside this UI and uses the controlled bootstrap/promotion flow.
+Domain-matching Google Workspace users are provisioned as `pending` members on first sign-in. A super_admin must approve the profile before application access is granted; approval changes the status to `active`.
+
+Users do not create passwords in Live Translate. A user whose Google account matches `AUTH_ALLOWED_EMAIL_DOMAINS` can sign in through the existing Google OAuth flow; Supabase creates `auth.users` and the existing profile trigger provisions an active `member` profile on first sign-in. The account management page lists users after their first login and does not create Auth credentials. `super_admin` promotion remains outside this UI and uses the controlled bootstrap/promotion flow.
 
 ## Super-admin account list API
+
+The account API accepts `pending` as a status filter. `POST /api/admin/users/:id/approve` is restricted to active super_admin actors and performs only `pending -> active`.
 
 `GET /api/admin/users?page=1&pageSize=12&query=&status=all` returns only the requested page. `pageSize` accepts `12`, `24`, or `48`; `status` accepts `all`, `active`, or `disabled`; `query` searches email and stored role text and is limited to 100 characters. The response includes `pagination` with exact totals, `counts` for all statuses, and `transferTargets` containing every active account's `id` and `email`, so asset transfer remains possible across pages.
 

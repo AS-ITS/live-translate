@@ -7,7 +7,7 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
   return {
     async getProfile(user) {
       if (!user?.id) throw new Error('Authenticated user identity required.');
-      const fallback = { id: user.id, email: user.email, fullName: user.claims?.user_metadata?.full_name || null, avatarUrl: user.claims?.user_metadata?.avatar_url || null, role: user.role || 'member', status: user.status || 'active' };
+ const fallback = { id: user.id, email: user.email, fullName: user.claims?.user_metadata?.full_name || null, avatarUrl: user.claims?.user_metadata?.avatar_url || null, role: user.role || 'member', status: user.status || (cloud() ? 'pending' : 'active') };
       if (!cloud()) return fallback;
       const rows = await restRequest(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,email,full_name,avatar_url,role,status,created_at,updated_at`);
       const profile = rows[0];
@@ -66,7 +66,7 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       }
       const profiles = await restRequest(`/rest/v1/profiles?email=eq.${encodeURIComponent(email)}&select=id,email,status`);
       const target = profiles[0];
-      if (!target || target.status === 'disabled') throw accountError('auth_forbidden');
+      if (!target || target.status !== 'active') throw accountError('auth_forbidden');
       const rows = await restRequest('/rest/v1/meeting_members', 'POST', [{ owner_user_id: user.id, meeting_id: meetingId, user_id: target.id, can_record: true }]);
       const row = rows[0] || { user_id: target.id, owner_user_id: user.id };
       const result = { userId: row.user_id, ownerUserId: row.owner_user_id, meetingId, createdAt: row.created_at, canRecord: row.can_record !== false, email: target.email };

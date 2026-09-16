@@ -57,9 +57,7 @@ const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
 
 const ERROR_RESPONSES = {
-  account_creation_invalid: { status: 400, message: 'Account details are invalid.' },
-  account_creation_failed: { status: 503, message: 'Account could not be created.' },
-  account_email_exists: { status: 409, message: 'An account with this email already exists.' },
+  auth_pending: { status: 403, message: 'Account approval is pending.' },
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
   auth_forbidden: { status: 403, message: 'Access is not allowed.' },
@@ -908,7 +906,13 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-    if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
+if (authenticatedUser?.status === 'pending' && !(req.method === 'GET' && path === '/api/profile')) {
+  statusCode = ERROR_RESPONSES.auth_pending.status;
+  sendJson(res, statusCode, errorPayload('auth_pending', requestId), requestId);
+  return;
+}
+
+if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       try {
         const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
         if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
@@ -954,7 +958,23 @@ async function handleRequestWithSessionReadController(
  return;
  }
 
-  if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
+if (req.method === 'POST' && /^\/api\/admin\/users\/[^/]+\/approve$/u.test(path)) {
+  try {
+    if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
+    if (!adminService) throw createHttpError('cloud_capability_unavailable');
+    const match = path.match(/^\/api\/admin\/users\/([^/]+)\/approve$/u);
+    const result = await adminService.approveUser(authenticatedUser, safeDecodePathComponent(match[1]), requestId);
+    statusCode = 200;
+    sendJson(res, statusCode, { user: result }, requestId);
+  } catch (error) {
+    const code = errorCodeFor(error);
+    statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+  }
+  return;
+}
+
+if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
  try {
  if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
  if (!adminService) throw createHttpError('cloud_capability_unavailable');
@@ -967,17 +987,13 @@ async function handleRequestWithSessionReadController(
       const query = url.searchParams.get('query') || '';
       statusCode = 200;
       sendJson(res, statusCode, await adminService.listAuditLogs(authenticatedUser, { page, pageSize, action, result, query }), requestId);
-    } else if (req.method === 'POST' && path === '/api/admin/users') {
-      const body = await readJson(req, { maxBytes: 16 * 1024 });
-      statusCode = 201;
-      sendJson(res, statusCode, { user: await adminService.createUser(authenticatedUser, body, requestId) }, requestId);
     } else if (req.method === 'GET' && path === '/api/admin/users') {
       const url = new URL(req.url || '/', 'http://localhost');
       const page = Number(url.searchParams.get('page') || 1);
       const pageSize = Number(url.searchParams.get('pageSize') || 12);
       const query = url.searchParams.get('query') || '';
       const status = url.searchParams.get('status') || 'all';
-      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'pending', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
       statusCode = 200;
       sendJson(res, statusCode, await adminService.listUsers(authenticatedUser, { page, pageSize, query, status }), requestId);
  } else if (req.method === 'POST') {

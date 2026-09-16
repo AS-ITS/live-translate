@@ -7,7 +7,6 @@ test.beforeEach(async ({ page }) => {
 
 test('account management shows users and reloads after disable', async ({ page }) => {
   let disabled = false;
-  let created = false;
   let auditFailure = false;
   let auditCalls = 0;
   await page.route(/\/api\/profile(?:\?.*)?$/, async (route) => route.fulfill({ json: { profile: { id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' } } }));
@@ -19,23 +18,11 @@ test('account management shows users and reloads after disable', async ({ page }
   });
   await page.route(/\/api\/admin\/users(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
-    return route.fulfill({ json: { users: [{ id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }, ...(created ? [{ id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' }] : [])], transferTargets: [{ id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: created ? 3 : 2, active: created ? (disabled ? 2 : 3) : (disabled ? 1 : 2), disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: created ? 3 : 2, totalPages: 1 } } });
-  });
-  await page.route(/\/api\/admin\/users$/, async (route) => {
-    if (route.request().method() !== 'POST') return route.fallback();
-    created = true;
-    return route.fulfill({ status: 201, json: { user: { id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' } } });
+    return route.fulfill({ json: { users: [{ id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }], transferTargets: [{ id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 2, active: disabled ? 1 : 2, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 2, totalPages: 1 } } });
   });
   await page.route(/\/api\/admin\/users\/source-1\/disable(?:\?.*)?$/, async (route) => { disabled = true; await route.fulfill({ json: { user: { id: 'source-1', status: 'disabled' } } }); });
   await page.goto('/#admin');
-  await page.getByRole('button', { name: '新增使用者' }).click();
-  await page.getByRole('dialog').getByLabel('Email').fill('new@example.com');
-  await page.getByRole('dialog').getByLabel('初始密碼').fill('temporary-password');
-  await page.getByRole('dialog').getByLabel('確認密碼').fill('temporary-password');
-  await page.getByRole('dialog').getByRole('button', { name: '建立帳號' }).click();
-  await expect(page.getByText('使用者帳號已建立。')).toBeVisible();
-  await expect(page.locator('.account-management-data-grid')).toContainText('new@example.com');
-  await expect(page.locator('.account-summary-card strong').first()).toHaveText('3');
+  await expect(page.locator('.account-summary-card strong').first()).toHaveText('2');
   const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
   await searchInput.fill('source@example.com');
   await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]', { hasText: 'source@example.com' })).toHaveCount(1);
@@ -84,4 +71,11 @@ test('keeps an unauthorized personal account on an access-denied screen until ac
   await expect(page.getByRole('heading', { name: '此帳號無法使用此 Workspace' })).toBeVisible();
   await page.getByRole('button', { name: '切換 Google 帳號' }).click();
   await expect.poll(() => oauthUrl).toContain('prompt=select_account');
+});
+
+test('keeps a domain-matching pending account on the approval waiting screen', async ({ page }) => {
+  await page.route(/\/api\/profile(?:\?.*)?$/, async (route) => route.fulfill({ json: { profile: { id: 'pending-1', email: 'pending@example.com', role: 'member', status: 'pending' } } }));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: '等待管理員核准' })).toBeVisible();
+  await expect(page.getByText('pending@example.com')).toBeVisible();
 });

@@ -6,36 +6,13 @@ const env = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 
 const admin = { id: 'admin-1', role: 'super_admin', status: 'active' };
 const json = (body, status = 200, contentRange) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...(contentRange ? { 'content-range': contentRange } : {}) } });
 
-test('admin creates a confirmed active member without exposing the password', async () => {
-  const calls = [];
-  const audit = [];
-  const service = createAdminService({ env, fetchImpl: async (url, options = {}) => {
-    calls.push({ url, options });
-    if (url.endsWith('/auth/v1/admin/users')) return json({ id: 'new-user-1', email: 'new@example.com' });
-    if (url.includes('/rest/v1/profiles?id=eq.new-user-1')) return json([{ id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' }]);
-    throw new Error(`unexpected request: ${url}`);
-  }, auditLogService: { record: async (entry) => audit.push(entry) } });
-
-  const user = await service.createUser(admin, { email: ' new@example.com ', password: 'temporary-password', confirmPassword: 'temporary-password' }, 'request-create-1');
-  assert.deepEqual(user, { id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' });
-  assert.equal(calls[0].options.body.includes('temporary-password'), true);
-  assert.equal(audit[0].action, 'user_created');
-  assert.equal(audit.every((entry) => !JSON.stringify(entry).includes('temporary-password')), true);
-});
-
-test('admin rejects invalid account creation details', async () => {
-  const audit = [];
-  const service = createAdminService({ env, fetchImpl: async () => json({}), auditLogService: { record: async (entry) => audit.push(entry) } });
-  await assert.rejects(service.createUser(admin, { email: 'new@example.com', password: 'one', confirmPassword: 'two' }, 'request-create-2'), { code: 'account_creation_invalid', status: 400 });
-  assert.equal(audit[0].action, 'user_created');
-});
-
 test('admin lists safe profile fields and disables through transfer RPC', async () => {
   const calls = []; const audit = [];
   const service = createAdminService({ env, fetchImpl: async (url, options) => {
     calls.push({ url, options });
     if (url.includes('status=eq.active&order=email.asc')) return json([{ id: 'user-2', email: 'user@example.com' }]);
     if (url.includes('status=eq.active')) return json([{ id: 'user-2' }], 200, '0-0/1');
+    if (url.includes('status=eq.pending')) return json([{ id: 'user-4' }], 200, '0-0/1');
     if (url.includes('status=eq.disabled')) return json([{ id: 'user-3' }], 200, '0-0/1');
     if (url.includes('profiles?select=')) return json([{ id: 'user-2', email: 'user@example.com', role: 'member', status: 'active' }], 200, '0-0/1');
     if (url.includes('profiles?select=id')) return json([{ id: 'user-2' }], 200, '0-0/1');
@@ -45,7 +22,7 @@ test('admin lists safe profile fields and disables through transfer RPC', async 
   const listed = await service.listUsers(admin, { page: 1, pageSize: 12, query: 'user', status: 'active' });
   assert.equal(listed.users[0].id, 'user-2');
   assert.deepEqual(listed.pagination, { page: 1, pageSize: 12, total: 1, totalPages: 1 });
-  assert.deepEqual(listed.counts, { all: 1, active: 1, disabled: 1 });
+  assert.deepEqual(listed.counts, { all: 1, active: 1, pending: 1, disabled: 1 });
   assert.deepEqual(listed.transferTargets, [{ id: 'user-2', email: 'user@example.com' }]);
   assert.match(calls[0].url, /status=eq.active/);
   assert.equal(calls[0].options.headers.Range, '0-11');
@@ -64,8 +41,20 @@ test('admin list validates pagination and filter options', async () => {
   const service = createAdminService({ env, fetchImpl: async () => json([], 200, '*/0') });
   await assert.rejects(service.listUsers(admin, { page: 0 }), { code: 'invalid_request', status: 400 });
   await assert.rejects(service.listUsers(admin, { pageSize: 16 }), { code: 'invalid_request', status: 400 });
-  await assert.rejects(service.listUsers(admin, { status: 'pending' }), { code: 'invalid_request', status: 400 });
+  await assert.rejects(service.listUsers(admin, { status: 'unknown' }), { code: 'invalid_request', status: 400 });
   await assert.rejects(service.listUsers(admin, { query: 'x'.repeat(101) }), { code: 'invalid_request', status: 400 });
+});
+
+test('admin approves only pending users and audits the transition', async () => {
+  const audit = [];
+  const service = createAdminService({ env, fetchImpl: async (url, options = {}) => {
+    assert.match(url, /status=eq\.pending/);
+    assert.equal(options.method, 'PATCH');
+    return json([{ id: 'pending-1', status: 'active' }]);
+  }, auditLogService: { record: async (entry) => audit.push(entry) } });
+  const user = await service.approveUser(admin, 'pending-1', 'request-approve-1');
+  assert.equal(user.status, 'active');
+  assert.equal(audit[0].action, 'user_approved');
 });
 
 test('audit write failure emits only safe observability fields', async () => {

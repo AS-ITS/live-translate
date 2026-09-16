@@ -9,6 +9,7 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
     return body;
   }
   return Object.freeze({
+    createUser: async ({ email, password, confirmPassword }) => (await call('/api/admin/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password, confirmPassword }) })).user,
     listUsers: async ({ page = 1, pageSize = 12, query = '', status = 'all' } = {}) => {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, status });
       return call(`/api/admin/users?${params.toString()}`);

@@ -1,5 +1,29 @@
 # Testing
 
+## Account creation
+
+Account creation is covered with deterministic admin-service and local E2E tests. The E2E flow mocks Supabase/Auth responses and verifies that an active super-admin can create an active member, the new account appears after reload, invalid details are rejected, and the existing account disable flow remains available. Tests never use a real password or Supabase Auth service.
+
+## Cloud validation
+
+Cloud checks are split by deployment risk:
+
+- Local E2E keeps its existing local backend and Vite web servers.
+- Staging authenticated smoke uses a dedicated short-lived `CLOUD_TEST_ACCESS_TOKEN` to verify health, readiness, auth gates, profile access, Meeting creation/read/share, and cleanup. It does not automate Google OAuth or create a Gemini session.
+- Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
+
+```bash
+CLOUD_BASE_URL=https://staging.example.com \
+CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
+npm run test:e2e:cloud
+```
+
+```bash
+SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
+```
+
+The manual workflow `.github/workflows/cloud-validation.yml` expects `STAGING_BASE_URL`, `STAGING_TEST_ACCESS_TOKEN`, and `PRODUCTION_BASE_URL`. Staging data uses a unique `codex-cloud-smoke-` prefix and is deleted in a `finally` block. Real Gemini smoke remains a separate explicit opt-in.
+
 ## Account permissions
 
 Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.

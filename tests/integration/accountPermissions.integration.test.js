@@ -133,3 +133,36 @@ test('member recording permission PATCH is owner-scoped over HTTP', async () => 
   assert.equal(restored.statusCode, 200);
   assert.equal(restored.json.member.canRecord, true);
 });
+
+test('test session reset is test-only and remains behind the API auth gate', async () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  const deleted = [];
+  process.env.NODE_ENV = 'test';
+  const sessionRepository = {
+    async listSessionRecords() { return [{ id: 'session-1', audioArtifacts: [{ id: 'audio-1' }] }]; },
+    async deleteSessionRecord(id) { deleted.push(id); },
+  };
+  const handler = createRequestHandler({
+    sessionRepository,
+    sessionAudioArtifactRepository: { async deleteMany(artifacts) { deleted.push(...artifacts.map(({ id }) => `audio:${id}`)); } },
+    accessControl: { async validateRequest() {} },
+  });
+
+  try {
+    const resetResponse = await makeRequest(handler, { method: 'DELETE', url: '/api/test/sessions' });
+    assert.equal(resetResponse.statusCode, 204);
+    assert.deepEqual(deleted, ['audio:audio-1', 'session-1']);
+
+    process.env.NODE_ENV = 'development';
+    const protectedHandler = createRequestHandler({
+      sessionRepository,
+      accessControl: { async validateRequest() { throw Object.assign(new Error('authentication required'), { code: 'auth_required' }); } },
+    });
+    const protectedResponse = await makeRequest(protectedHandler, { method: 'DELETE', url: '/api/test/sessions' });
+    assert.equal(protectedResponse.statusCode, 401);
+    assert.equal(protectedResponse.json.error.code, 'auth_required');
+  } finally {
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  }
+});

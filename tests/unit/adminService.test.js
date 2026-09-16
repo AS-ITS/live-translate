@@ -6,6 +6,30 @@ const env = { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 
 const admin = { id: 'admin-1', role: 'super_admin', status: 'active' };
 const json = (body, status = 200, contentRange) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...(contentRange ? { 'content-range': contentRange } : {}) } });
 
+test('admin creates a confirmed active member without exposing the password', async () => {
+  const calls = [];
+  const audit = [];
+  const service = createAdminService({ env, fetchImpl: async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/auth/v1/admin/users')) return json({ id: 'new-user-1', email: 'new@example.com' });
+    if (url.includes('/rest/v1/profiles?id=eq.new-user-1')) return json([{ id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' }]);
+    throw new Error(`unexpected request: ${url}`);
+  }, auditLogService: { record: async (entry) => audit.push(entry) } });
+
+  const user = await service.createUser(admin, { email: ' new@example.com ', password: 'temporary-password', confirmPassword: 'temporary-password' }, 'request-create-1');
+  assert.deepEqual(user, { id: 'new-user-1', email: 'new@example.com', role: 'member', status: 'active' });
+  assert.equal(calls[0].options.body.includes('temporary-password'), true);
+  assert.equal(audit[0].action, 'user_created');
+  assert.equal(audit.every((entry) => !JSON.stringify(entry).includes('temporary-password')), true);
+});
+
+test('admin rejects invalid account creation details', async () => {
+  const audit = [];
+  const service = createAdminService({ env, fetchImpl: async () => json({}), auditLogService: { record: async (entry) => audit.push(entry) } });
+  await assert.rejects(service.createUser(admin, { email: 'new@example.com', password: 'one', confirmPassword: 'two' }, 'request-create-2'), { code: 'account_creation_invalid', status: 400 });
+  assert.equal(audit[0].action, 'user_created');
+});
+
 test('admin lists safe profile fields and disables through transfer RPC', async () => {
   const calls = []; const audit = [];
   const service = createAdminService({ env, fetchImpl: async (url, options) => {

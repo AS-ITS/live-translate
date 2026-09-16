@@ -176,6 +176,9 @@ test('meeting settings imports private glossary rows and saves them with the mee
   await page.route(/\/api\/meetings\/meeting-import\/shares(?:\?.*)?$/, async (route) => route.fulfill({ json: { url: '#viewer?code=viewer-code', share: { id: 'share-1', role: 'viewer', shortCode: 'viewer-code' } } }));
 
   await page.goto('/#meeting-settings?mode=create');
+  await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
+  await page.getByRole('button', { name: '測試並確認音訊' }).click();
+  await expect(page.locator('.meeting-audio-status')).toHaveClass(/is-confirmed/);
   await page.getByRole('button', { name: '匯入詞彙' }).click();
   const importHelp = page.getByRole('dialog', { name: '匯入會議詞彙' });
   await expect(importHelp).toContainText('XLSX 格式');
@@ -185,7 +188,10 @@ test('meeting settings imports private glossary rows and saves them with the mee
   await expect(page.getByRole('dialog', { name: '預覽匯入：terms.csv' })).toBeVisible();
   await page.getByRole('button', { name: '加入會議詞彙' }).click();
   await expect(page.locator('.meeting-private-entry')).toContainText('產品名稱');
-  await page.getByRole('button', { name: '建立會議' }).click();
+  await Promise.all([
+    page.waitForRequest((request) => request.method() === 'POST' && new URL(request.url()).pathname === '/api/meetings'),
+    page.getByRole('button', { name: '建立會議' }).click(),
+  ]);
   await expect.poll(() => savedBody?.privateGlossaryEntries).toEqual([{ source: '產品名稱', translations: { en: 'Product name' }, replacementAliases: {} }]);
 });
 
@@ -263,11 +269,13 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
   await page.getByRole('button', { name: '測試並確認音訊' }).click();
   await expect(page.locator('.meeting-audio-status')).toHaveClass(/is-confirmed/);
-  const meetingResponse = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings$/.test(new URL(response.url()).pathname));
-  const shareResponse = page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings\/meeting-1\/shares(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search));
-  await page.getByRole('button', { name: '建立會議' }).click();
-  await expect((await meetingResponse).status()).toBe(200);
-  await expect((await shareResponse).status()).toBe(200);
+  const [meetingResponse, shareResponse] = await Promise.all([
+    page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings$/.test(new URL(response.url()).pathname)),
+    page.waitForResponse((response) => response.request().method() === 'POST' && /\/api\/meetings\/meeting-1\/shares(?:\?.*)?$/.test(new URL(response.url()).pathname + new URL(response.url()).search)),
+    page.getByRole('button', { name: '建立會議' }).click(),
+  ]);
+  await expect(meetingResponse.status()).toBe(200);
+  await expect(shareResponse.status()).toBe(200);
 
   await expect(page.locator('.meeting-settings-step')).toHaveCount(5);
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();

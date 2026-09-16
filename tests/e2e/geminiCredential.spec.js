@@ -50,3 +50,9 @@ test('stacks the credential setup layout on a narrow viewport', async ({ page })
   })).toBe(1);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+import { installE2EAuth } from './authBootstrap.js';
+
+test.beforeEach(async ({ page }) => {
+  await installE2EAuth(page);
+});

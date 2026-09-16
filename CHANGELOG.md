@@ -1,5 +1,9 @@
 # Changelog
 
+- Added super-admin account creation for active member accounts with safe audit logging and local deterministic coverage.
+
+- Added manual cloud validation workflow with authenticated staging smoke and read-only production preflight.
+
 ## 2026-09-16
 
 - 將管理員稽核紀錄從帳號管理頁拆分為獨立的 `#audit` 頁面；保留原有搜尋、篩選、分頁與錯誤重試功能。

@@ -1,5 +1,5 @@
 import { AgGridReact } from 'ag-grid-react';
-import { Search, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { Search, ShieldCheck, SlidersHorizontal, UserPlus } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { dataGridProps } from '../../lib/dataGrid.js';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
@@ -68,6 +68,9 @@ export function AccountManagementPage() {
   const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0, totalPages: 0 });
   const [counts, setCounts] = useState({ all: 0, active: 0, disabled: 0 });
   const [transferTargets, setTransferTargets] = useState([]);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [createForm, setCreateForm] = useState({ email: '', password: '', confirmPassword: '' });
+  const [isCreating, setIsCreating] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
@@ -113,6 +116,24 @@ export function AccountManagementPage() {
     }
   }
 
+  async function createUser(event) {
+    event.preventDefault();
+    setIsCreating(true);
+    setNotice('');
+    setError(null);
+    try {
+      await client.createUser(createForm);
+      setCreateForm({ email: '', password: '', confirmPassword: '' });
+      setIsCreateOpen(false);
+      await reload();
+      setNotice('使用者帳號已建立。');
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
   const rowData = useMemo(() => users.map((user) => ({
     ...user,
     transferTargetId: transfer[user.id] || '',
@@ -143,7 +164,25 @@ export function AccountManagementPage() {
           <h2 id="account-list-title">帳號列表</h2>
           <p>管理工作區成員的存取狀態。停用帳號前必須將 owner 資產移轉給另一個 active 帳號。</p>
         </div>
+        <button className="button primary account-create-button" type="button" onClick={() => setIsCreateOpen(true)}>
+          <UserPlus size={16} aria-hidden="true" />新增使用者
+        </button>
       </div>
+      {isCreateOpen ? <div className="account-create-dialog-backdrop" role="presentation">
+        <section className="account-create-dialog" role="dialog" aria-modal="true" aria-labelledby="account-create-title">
+          <div className="account-create-dialog-header">
+            <div><p className="eyebrow">NEW ACCOUNT</p><h3 id="account-create-title">新增使用者</h3></div>
+            <button className="dialog-close-button" type="button" onClick={() => setIsCreateOpen(false)} disabled={isCreating} aria-label="關閉新增使用者">×</button>
+          </div>
+          <form onSubmit={createUser}>
+            <label className="field"><span>Email</span><input type="email" required autoComplete="off" value={createForm.email} onChange={(event) => setCreateForm((current) => ({ ...current, email: event.target.value }))} /></label>
+            <label className="field"><span>初始密碼</span><input type="password" required autoComplete="new-password" value={createForm.password} onChange={(event) => setCreateForm((current) => ({ ...current, password: event.target.value }))} /></label>
+            <label className="field"><span>確認密碼</span><input type="password" required autoComplete="new-password" value={createForm.confirmPassword} onChange={(event) => setCreateForm((current) => ({ ...current, confirmPassword: event.target.value }))} /></label>
+            <p className="account-create-note">新帳號會以「成員」角色建立並立即啟用。</p>
+            <div className="account-create-actions"><button className="button secondary" type="button" onClick={() => setIsCreateOpen(false)} disabled={isCreating}>取消</button><button className="button primary" type="submit" disabled={isCreating}>{isCreating ? '建立中…' : '建立帳號'}</button></div>
+          </form>
+        </section>
+      </div> : null}
       <div className="account-summary-grid" aria-label="帳號摘要">
         <div className="account-summary-card"><span>全部帳號</span><strong>{counts.all}</strong></div>
         <div className="account-summary-card account-summary-active"><span>啟用中</span><strong>{counts.active}</strong></div>

@@ -57,6 +57,9 @@ const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
 
 const ERROR_RESPONSES = {
+  account_creation_invalid: { status: 400, message: 'Account details are invalid.' },
+  account_creation_failed: { status: 503, message: 'Account could not be created.' },
+  account_email_exists: { status: 409, message: 'An account with this email already exists.' },
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
   auth_forbidden: { status: 403, message: 'Access is not allowed.' },
@@ -854,6 +857,22 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
+    try {
+      for (const record of await sessionRepository.listSessionRecords()) {
+        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
+        await sessionRepository.deleteSessionRecord(record.id);
+      }
+      statusCode = 204;
+      sendJson(res, statusCode, {}, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
+    }
+    return;
+  }
+
   if (isDeadLetterQueueRoute(req.method, path)) {
     try {
       if (!deadLetterQueueController) throw createHttpError('dead_letter_queue_unavailable');
@@ -871,22 +890,6 @@ async function handleRequestWithSessionReadController(
       sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
-    }
-    return;
-  }
-
-  if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
-    try {
-      for (const record of await sessionRepository.listSessionRecords()) {
-        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
-        await sessionRepository.deleteSessionRecord(record.id);
-      }
-      statusCode = 204;
-      sendJson(res, statusCode, {}, requestId);
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
     }
     return;
   }
@@ -964,6 +967,10 @@ async function handleRequestWithSessionReadController(
       const query = url.searchParams.get('query') || '';
       statusCode = 200;
       sendJson(res, statusCode, await adminService.listAuditLogs(authenticatedUser, { page, pageSize, action, result, query }), requestId);
+    } else if (req.method === 'POST' && path === '/api/admin/users') {
+      const body = await readJson(req, { maxBytes: 16 * 1024 });
+      statusCode = 201;
+      sendJson(res, statusCode, { user: await adminService.createUser(authenticatedUser, body, requestId) }, requestId);
     } else if (req.method === 'GET' && path === '/api/admin/users') {
       const url = new URL(req.url || '/', 'http://localhost');
       const page = Number(url.searchParams.get('page') || 1);

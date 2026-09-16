@@ -1357,6 +1357,10 @@ Handling requirements:
 TODO: Confirm exact SDK error event shape and whether close events include error
 metadata.
 
+## `POST /api/admin/users`
+
+Creates a Supabase Auth account for an active `super_admin`. Request body is `{ "email": "...", "password": "...", "confirmPassword": "..." }`. The new profile is always an active `member`; role elevation is not supported by this endpoint. The response contains safe profile fields only. Invalid details return `400`, duplicate email returns `409`, and provider failures return a safe `503` response. Passwords and credentials are never returned or audited.
+
 ## Account management and meeting membership
 
 Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. Disabled profiles are refreshed per private request and receive `403 auth_forbidden`.

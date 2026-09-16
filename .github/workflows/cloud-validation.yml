@@ -1,0 +1,41 @@
+name: Cloud validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    name: Staging authenticated smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run staging smoke
+        env:
+          CLOUD_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+          CLOUD_TEST_ACCESS_TOKEN: ${{ secrets.STAGING_TEST_ACCESS_TOKEN }}
+        run: npm run test:e2e:cloud
+
+  production:
+    name: Production preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run production preflight
+        env:
+          SMOKE_BASE_URL: ${{ secrets.PRODUCTION_BASE_URL }}
+        run: npm run test:cloud:preflight

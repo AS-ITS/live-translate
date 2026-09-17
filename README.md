@@ -13,6 +13,8 @@ credentials.
 
 ## Overview
 
+Google Workspace domain matching does not immediately grant access. New users start as pending `member` profiles and require approval by an active `super_admin`; pending users only see the approval waiting screen and may sign out or switch accounts.
+
 - Frontend: React, Vite, Web Audio API, and Gemini Live client logic.
 - Backend: Node.js service for token issuance, validation, and local APIs.
 - Live path: browser audio streams directly to Gemini Live API.

@@ -20,7 +20,7 @@ New profiles default to `member` and `pending`; existing `active` and `disabled`
 
 Meeting membership is represented by `meeting_members`, keyed by `(owner_user_id, meeting_id, user_id)`. Owners manage membership. Active members may record an assigned meeting, update its checkpoint, publish finalized cues, and upload that meeting's source audio. Meeting settings, shares, glossary, export, and deletion remain owner-only.
 
-Meeting Settings exposes a `成員與錄製權限` step after a meeting is created. A meeting owner can invite an active `member`; invited members default to `canRecord: true`, and the owner can revoke or restore that recording permission without changing the membership. A member can always record a meeting they own. `super_admin` retains all member capabilities and can manage membership for any meeting.
+Meeting Settings exposes a `成員與錄製權限` step after a meeting is created. A meeting owner can invite an active `member`; invited members default to `canRecord: true`, and the owner can revoke or restore that recording permission without changing the membership. A member can always record a meeting they own. An active `super_admin` retains all member capabilities and can record any meeting, including meetings owned by another account, without acquiring or changing the meeting owner. `super_admin` can also manage membership for any meeting.
 
 Super admins can list accounts and enable or disable accounts. Disabling requires an active transfer target and atomically transfers meetings, transcript assets, glossary entries, exports, and related records while preserving viewer share IDs. Gemini credentials are never transferred. Server-only audit records exclude secrets, tokens, audio, and transcript text.
 

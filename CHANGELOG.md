@@ -1,4 +1,5 @@
 # Changelog
+- Issue #33 follow-up: active `super_admin` recording authorization is consistent across authenticated meeting paths, and account disable E2E coverage now deterministically verifies confirmation, asset transfer, reload, and disabled state.
 
 - Improved Meeting Settings discoverability for member recording authorization with a dedicated `成員與錄製權限` step and empty-state guidance.
 

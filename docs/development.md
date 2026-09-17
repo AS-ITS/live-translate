@@ -114,6 +114,10 @@ Production smoke checks and alert thresholds are maintained in
 [`docs/observability-runbook.md`](observability-runbook.md). Production
 verification is a rollout task, not an unimplemented P1 capability.
 
+## Account approval behavior
+
+`AUTH_ALLOWED_EMAIL_DOMAINS` is the first gate only. A matching Google Workspace user is provisioned as a pending `member`; an active `super_admin` must approve the profile before private application APIs are available. Pending users may only read `/api/profile`, wait, sign out, or switch accounts.
+
 ## Local Development Setup
 
 1. Install dependencies only when needed for local development.

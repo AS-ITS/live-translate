@@ -23,6 +23,7 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       if (!user?.id || !meetingId) return false;
       const profile = await this.getProfile(user);
       if (profile.status !== 'active') return false;
+      if (profile.role === 'super_admin') return true;
       if (!cloud()) return localMeetingOwners.get(meetingId) === user.id || Boolean((localMemberships.get(meetingId) || []).some((item) => item.userId === user.id && item.canRecord !== false));
       const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(user.id)}&select=user_id,can_record`);
       return (rows.length > 0 && rows[0].can_record !== false) || (await this.getMeetingOwner(meetingId)) === user.id;

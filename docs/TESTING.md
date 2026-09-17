@@ -2,7 +2,11 @@
 
 ## Google Workspace accounts
 
-Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, profile provisioning defaults, disabled-account rejection, and super-admin access using signed JWT fixtures.
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.
+
+## Issue #33 account approval coverage
+
+Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
 
 ## Cloud validation
 

@@ -39,6 +39,19 @@ test('local member membership is required for recording and owner-only managemen
   await assert.rejects(profileService.listMeetingMembers(member, 'meeting-1'), { code: 'auth_forbidden' });
 });
 
+test('pending cloud profiles cannot be invited to a meeting', async () => {
+  const service = createProfileService({
+    env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async (url) => {
+      if (url.includes('/profiles?id=eq.owner-1')) return new Response(JSON.stringify([{ id: 'owner-1', role: 'member', status: 'active' }]));
+      if (url.includes('/meetings?id=eq.meeting-1')) return new Response(JSON.stringify([{ owner_user_id: 'owner-1' }]));
+      if (url.includes('/profiles?email=eq.pending%40example.com')) return new Response(JSON.stringify([{ id: 'pending-1', email: 'pending@example.com', status: 'pending' }]));
+      throw new Error(`unexpected request: ${url}`);
+    }
+  });
+  await assert.rejects(service.addMeetingMember({ id: 'owner-1', role: 'member', status: 'active' }, 'meeting-1', 'pending@example.com'), { code: 'auth_forbidden' });
+});
+
 test('admin adapter validates target and writes safe audit records around RPC failure', async () => {
   const entries = [];
   const auditLogService = createAuditLogService({ repository: { append: async (entry) => entries.push(entry) } });

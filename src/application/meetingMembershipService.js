@@ -10,6 +10,7 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
         ? await profileRepository.getProfile(userId)
         : null;
       if (profile && profile.status !== ACTIVE) return false;
+      if (profile?.role === 'super_admin') return true;
       const ownerUserId = await ownerFor(meetingId);
       if (ownerUserId === userId) return true;
       const membership = await membershipRepository.find({ meetingId, userId });

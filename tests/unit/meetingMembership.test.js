@@ -19,6 +19,24 @@ test('disabled account cannot record even when membership remains', async () => 
   assert.equal(await service.canRecord('meeting-1', 'member-1'), false);
 });
 
+test('active super admin can record any meeting without membership or ownership', async () => {
+  const service = createMeetingMembershipService({
+    profileRepository: { getProfile: async () => ({ status: 'active', role: 'super_admin' }) },
+    membershipRepository: { find: async () => null, list: async () => [] }
+  });
+  assert.equal(await service.canRecord('meeting-owned-by-someone-else', 'admin-1'), true);
+});
+
+test('pending and disabled super admins cannot record', async () => {
+  for (const status of ['pending', 'disabled']) {
+    const service = createMeetingMembershipService({
+      profileRepository: { getProfile: async () => ({ status, role: 'super_admin' }) },
+      membershipRepository: { find: async () => null, list: async () => [] }
+    });
+    assert.equal(await service.canRecord('meeting-1', 'admin-1'), false);
+  }
+});
+
 test('membership list preserves actor for the repository authorization boundary', async () => {
   const calls = [];
   const actor = { id: 'owner-1', role: 'super_admin', status: 'active' };

@@ -1367,6 +1367,10 @@ Private APIs refresh the server-side profile on every request. Disabled profiles
 
 Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. `gemini_credentials` are intentionally excluded.
 
+## Account approval access gate
+
+Google Workspace domain matching is the first gate, not immediate application access. New profiles are `member` plus `pending` until an active `super_admin` approves them with `POST /api/admin/users/:id/approve`, which performs `pending -> active`. `GET /api/profile` returns a pending profile; all other private APIs return `403 auth_pending`. Status management preserves `active -> disabled` and `disabled -> active`, and pending profiles cannot be invited to Meetings.
+
 ## Session End Event
 
 Purpose: clean up local resources after the Live API session ends.

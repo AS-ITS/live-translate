@@ -57,6 +57,16 @@ test('admin approves only pending users and audits the transition', async () => 
   assert.equal(audit[0].action, 'user_approved');
 });
 
+test('admin approval rejects non-active admins and already active users', async () => {
+  const service = createAdminService({
+    env,
+    fetchImpl: async () => json([]),
+    auditLogService: { record: async () => {} }
+  });
+  await assert.rejects(service.approveUser({ ...admin, status: 'disabled' }, 'pending-1', 'request-approve-2'), { code: 'auth_forbidden', status: 403 });
+  await assert.rejects(service.approveUser(admin, 'active-1', 'request-approve-3'), { code: 'account_not_pending', status: 409 });
+});
+
 test('audit write failure emits only safe observability fields', async () => {
   const events = [];
   const service = createAdminService({

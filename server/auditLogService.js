@@ -1,4 +1,4 @@
-const AUDIT_ACTIONS = new Set(['member_invited', 'member_removed', 'user_enabled', 'user_disabled', 'asset_transfer']);
+const AUDIT_ACTIONS = new Set(['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer']);
 const SAFE_KEYS = new Set(['actor_user_id', 'target_user_id', 'target_meeting_id', 'request_id', 'action', 'result', 'created_at']);
 const SENSITIVE_KEYS = /token|secret|key|audio|transcript|cue|credential|password|authorization/i;
 

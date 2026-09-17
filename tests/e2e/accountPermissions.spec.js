@@ -20,7 +20,7 @@ test('account management shows users and reloads after disable', async ({ page }
     if (route.request().method() !== 'GET') return route.fallback();
     return route.fulfill({ json: { users: [{ id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }], transferTargets: [{ id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 2, active: disabled ? 1 : 2, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 2, totalPages: 1 } } });
   });
-  await page.route(/\/api\/admin\/users\/source-1\/disable(?:\?.*)?$/, async (route) => { disabled = true; await route.fulfill({ json: { user: { id: 'source-1', status: 'disabled' } } }); });
+  page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/#admin');
   await expect(page.locator('.account-summary-card strong').first()).toHaveText('2');
   const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
@@ -31,35 +31,41 @@ test('account management shows users and reloads after disable', async ({ page }
   await sourceRow.getByRole('combobox', { name: '資產接手者：source@example.com' }).selectOption('target-1');
   const currentSourceRow = page.locator('.account-management-data-grid .ag-row').filter({ has: page.locator('.ag-cell[col-id="email"]', { hasText: /^source@example\.com$/ }) }).first();
   await expect(currentSourceRow.getByRole('button', { name: '停用帳號' })).toBeEnabled();
-  await page.evaluate(() => { window.confirm = () => true; });
+  let disableRequestBody;
+  await page.route(/\/api\/admin\/users\/source-1\/disable(?:\?.*)?$/, async (route) => {
+    disableRequestBody = route.request().postDataJSON();
+    disabled = true;
+    await route.fulfill({ json: { user: { id: 'source-1', status: 'disabled' } } });
+  });
   const [disableResponse, usersReload] = await Promise.all([
     page.waitForResponse((response) => response.request().method() === 'POST' && new URL(response.url()).pathname === '/api/admin/users/source-1/disable'),
     page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === '/api/admin/users'),
-    currentSourceRow.getByRole('button', { name: '停用帳號' }).click({ force: true }),
+    currentSourceRow.getByRole('button', { name: '停用帳號' }).evaluate((button) => button.click()),
   ]);
   expect(disableResponse.status()).toBe(200);
+  expect(disableRequestBody).toEqual({ transferToUserId: 'target-1' });
   expect(usersReload.status()).toBe(200);
   await expect(page.getByText('帳號狀態已更新。')).toBeVisible();
   const disabledRow = page.locator('.account-management-data-grid .ag-row', { hasText: 'source@example.com' }).first();
   await expect(disabledRow.getByRole('button', { name: '重新啟用帳號' })).toBeVisible();
-  await expect(page.locator('#admin')).not.toContainText('稽核紀錄');
+  await expect(page.getByRole('heading', { name: '稽核紀錄' })).toHaveCount(0);
 
   await page.goto('/#audit');
-  await expect(page.locator('#audit')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '稽核紀錄' })).toBeVisible();
-  await expect(page.getByText('user_disabled')).toBeVisible();
+  await expect(page.locator('#audit-log-page-title')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'user_disabled' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('member_invited');
-  await expect(page.getByText('member_invited')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'member_invited' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('failure');
-  await expect(page.getByText('failure')).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'failure' })).toBeVisible();
   await page.getByRole('button', { name: '下一頁' }).click();
   await expect(page.getByText('第 2 / 2 頁')).toBeVisible();
   auditFailure = true;
-  await page.getByRole('button', { name: '重新載入稽核紀錄' }).click();
+  await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('success');
+  await expect(page.getByRole('button', { name: '重新載入稽核紀錄' })).toBeVisible();
   await expect(page.getByRole('alert')).toContainText('cloud_capability_unavailable');
   expect(auditCalls).toBeGreaterThan(1);
   auditFailure = false;
-  await page.getByRole('button', { name: '重新載入稽核紀錄' }).click();
+  await page.getByRole('button', { name: '重新載入稽核紀錄' }).evaluate((button) => button.click());
   await expect(page.getByRole('alert')).toHaveCount(0);
 });
 

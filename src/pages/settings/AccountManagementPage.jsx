@@ -168,11 +168,6 @@ export function AccountManagementPage() {
         <div className="account-summary-card account-summary-pending"><span>待確認</span><strong>{counts.pending}</strong></div>
         <div className="account-summary-card account-summary-disabled"><span>已停用</span><strong>{counts.disabled}</strong></div>
       </div>
-      <div className="account-current-user" aria-label="目前登入帳號" data-testid="current-account-summary">
-        <div><span className="account-current-user-label">目前登入帳號</span><strong>{profile?.email || '目前帳號'}</strong></div>
-        <div><span className="account-current-user-label">角色</span><strong>{accountRoleLabel(profile?.role)}</strong></div>
-        <div><span className="account-current-user-label">狀態</span><AccountStatusCell value={profile?.status || 'active'} /></div>
-      </div>
       <div className="account-table-toolbar">
         <label className="field account-search-field">
           <span>搜尋帳號</span>

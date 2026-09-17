@@ -23,8 +23,6 @@ test('account management shows users and reloads after disable', async ({ page }
   page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/#admin');
   await expect(page.locator('.account-summary-card strong').first()).toHaveText('3');
-  await expect(page.getByTestId('current-account-summary')).toContainText('admin@example.com');
-  await expect(page.getByTestId('current-account-summary')).toContainText('啟用中');
   await expect(page.locator('.account-management-data-grid .ag-row').filter({ hasText: 'admin@example.com' }).getByText('目前帳號')).toBeVisible();
   const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
   await searchInput.fill('source@example.com');

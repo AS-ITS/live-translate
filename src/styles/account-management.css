@@ -26,7 +26,7 @@
 .account-table-toolbar .meeting-toolbar-input input { min-height: 2.75rem; }
 .account-table-toolbar .meeting-toolbar-input select { min-height: 2.75rem; }
 .account-management-table-scroll { min-width: 0; width: 100%; overflow-x: auto; }
-.account-management-data-grid { min-width: 920px; }
+.account-management-data-grid { min-width: 920px; height: 24rem; }
 .account-table-status, .account-table-role { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2rem; }
 .account-table-status { color: var(--color-success); font-weight: 700; }
 .account-table-status span { width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; }
@@ -49,6 +49,7 @@
 
 @media (max-width: 760px) {
   .account-summary-grid { grid-template-columns: 1fr; }
+  .account-management-data-grid { height: 18rem; }
   .account-table-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .account-search-field, .account-status-filter-field { min-width: 0; }
 }

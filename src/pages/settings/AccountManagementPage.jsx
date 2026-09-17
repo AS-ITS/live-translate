@@ -38,10 +38,12 @@ function AccountTransferCell({ data, context }) {
   const targets = context.transferTargets.filter((target) => target.id !== data.id);
   return <label className="account-table-transfer-field">
     <span className="sr-only">資產接手者：{data.email}</span>
-    <select aria-label={`資產接手者：${data.email}`} value={data.transferTargetId} onChange={(event) => context.onTransferChange(data.id, event.target.value)}>
-      <option value="">請選擇</option>
-      {targets.map((target) => <option key={target.id} value={target.id}>{target.email}</option>)}
-    </select>
+    <div className="meeting-toolbar-input meeting-toolbar-select">
+      <select aria-label={`資產接手者：${data.email}`} value={data.transferTargetId} onChange={(event) => context.onTransferChange(data.id, event.target.value)}>
+        <option value="">請選擇</option>
+        {targets.map((target) => <option key={target.id} value={target.id}>{target.email}</option>)}
+      </select>
+    </div>
   </label>;
 }
 

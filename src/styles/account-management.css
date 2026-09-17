@@ -1,0 +1,52 @@
+.account-management-shell { grid-template-rows: auto auto; align-content: start; row-gap: var(--space-4); }
+.account-management-page { display: grid; gap: var(--space-4); }
+.account-management-status:empty { display: none; }
+.account-management-status { min-height: 0; }
+.account-management-panel { padding: var(--space-5); }
+.account-management-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
+.account-management-panel-header h2 { margin: 0; font-size: var(--text-xl); line-height: 1.25; }
+.account-management-panel-header p:not(.eyebrow) { max-width: 65ch; margin: var(--space-2) 0 0; color: var(--color-text-muted); }
+.account-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); margin-bottom: var(--space-5); }
+.account-summary-card { display: grid; gap: var(--space-1); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-muted); }
+.account-summary-card span { color: var(--color-text-muted); font-size: var(--text-sm); }
+.account-summary-card strong { color: var(--color-text); font-size: var(--text-xl); line-height: 1; }
+.account-summary-active { border-color: #c9e8dc; background: var(--color-success-soft); }
+.account-summary-active strong { color: var(--color-success); }
+.account-summary-disabled { border-color: #d3e0eb; background: #f1f6f9; }
+.account-summary-disabled strong { color: #4d718b; }
+.account-summary-pending { border-color: #f1d7a8; background: #fff7e8; }
+.account-summary-pending strong, .account-table-status.is-pending { color: #a86d00; }
+.account-table-toolbar { display: flex; align-items: end; gap: var(--space-3); margin-bottom: var(--space-4); }
+.account-table-toolbar .field { margin: 0; }
+.account-search-field { flex: 1 1 auto; min-width: 16rem; }
+.account-status-filter-field { flex: 0 1 14rem; min-width: 12rem; }
+.account-table-toolbar .meeting-toolbar-input { min-height: 3.25rem; }
+.account-table-toolbar .meeting-toolbar-input input { min-height: 2.75rem; }
+.account-table-toolbar .meeting-toolbar-input select { min-height: 2.75rem; }
+.account-management-table-scroll { min-width: 0; width: 100%; overflow-x: auto; }
+.account-management-data-grid { min-width: 920px; }
+.account-table-status, .account-table-role { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2rem; }
+.account-table-status { color: var(--color-success); font-weight: 700; }
+.account-table-status span { width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; }
+.account-table-status.is-disabled { color: var(--color-danger); }
+.account-table-role { color: var(--color-text-muted); }
+.account-table-role svg { color: var(--color-warning); }
+.account-table-transfer-field { display: block; max-width: 19rem; margin: 0; }
+.account-table-transfer-field select { width: 100%; height: 2.5rem; min-height: 2.5rem; }
+.account-table-muted { color: var(--color-text-subtle); }
+.account-table-action { min-width: 8.5rem; white-space: nowrap; }
+.account-table-danger-action { border-color: var(--color-warning); background: var(--color-warning); color: #fff; }
+.account-table-danger-action:hover:not(:disabled) { border-color: #7f5000; background: #7f5000; }
+.account-management-empty { margin: 0; padding: var(--space-8) 0; color: var(--color-text-muted); text-align: center; }
+.account-management-pagination { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); min-height: 3.5rem; color: var(--color-text-muted); font-size: var(--text-sm); }
+.account-management-pagination label { display: inline-flex; align-items: center; gap: var(--space-2); }
+.account-management-pagination select, .account-management-pagination button { box-sizing: border-box; height: 2.25rem; min-height: 2.25rem; padding: 0 var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: inherit; }
+.account-management-pagination label select { height: 2.25rem; min-height: 2.25rem; }
+.account-management-pagination button:not(:disabled) { color: var(--color-text); cursor: pointer; }
+@media (max-width: 720px) { .account-management-pagination { justify-content: flex-start; } }
+
+@media (max-width: 760px) {
+  .account-summary-grid { grid-template-columns: 1fr; }
+  .account-table-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+  .account-search-field, .account-status-filter-field { min-width: 0; }
+}

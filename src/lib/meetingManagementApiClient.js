@@ -27,6 +27,30 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}`), { method: 'DELETE' });
       await assertOk(response);
     },
+    async listMembers(meetingId) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members`));
+      await assertOk(response);
+      const body = await response.json();
+      return Array.isArray(body?.members) ? body.members : [];
+    },
+    async addMember(meetingId, email) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members`), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email })
+      });
+      await assertOk(response);
+      return (await response.json())?.members?.[0] || null;
+    },
+    async removeMember(meetingId, userId) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members/${encodeURIComponent(userId)}`), { method: 'DELETE' });
+      await assertOk(response);
+    },
+    async updateMemberRecording(meetingId, userId, canRecord) {
+      const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/members/${encodeURIComponent(userId)}`), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ canRecord })
+      });
+      await assertOk(response);
+      return (await response.json())?.member || null;
+    },
     async listShares(meetingId) {
       const response = await request(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/shares`));
       await assertOk(response);

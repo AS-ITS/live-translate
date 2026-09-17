@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseMeetingEventRepository({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID, clock = () => Date.now() } = {}) {
@@ -7,7 +7,7 @@ export function createSupabaseMeetingEventRepository({ env = process.env, fetchI
   if (!client) return null;
 
   function owner(explicitOwner) {
-    const userId = explicitOwner || currentRequestUserId();
+    const userId = explicitOwner || currentRequestOwnerId();
     if (!userId) {
       const error = new Error('Authenticated owner required.');
       error.code = 'auth_required';

@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -119,7 +119,7 @@ function shareDTO(row) {
 }
 
 function owner() {
-  const userId = currentRequestUserId();
+  const userId = currentRequestOwnerId();
   if (!userId) {
     const error = new Error('Authenticated owner required.');
     error.code = 'auth_required';

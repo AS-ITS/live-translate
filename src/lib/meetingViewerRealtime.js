@@ -4,7 +4,8 @@ const TOKEN_REFRESH_SKEW_MS = 30_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export function meetingViewerRealtimeEnabled() {
-  return Boolean(supabase && import.meta.env?.VITE_SUPABASE_URL);
+  return import.meta.env?.VITE_MEETING_VIEWER_REALTIME_ENABLED !== 'false'
+    && Boolean(supabase && import.meta.env?.VITE_SUPABASE_URL);
 }
 
 export function createMeetingViewerRealtimeController({

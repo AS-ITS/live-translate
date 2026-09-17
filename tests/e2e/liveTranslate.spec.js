@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { installE2EAuth } from './authBootstrap.js';
 import { readFile } from 'node:fs/promises';
 
 test.beforeEach(async ({ page }) => {
@@ -14,7 +15,6 @@ test.beforeEach(async ({ page }) => {
   page.hasMeetingCheckpointMock = false;
 
   await page.addInitScript(() => {
-    window.localStorage.clear();
     window.__mockMicTracks = [];
     window.__mockAudioContexts = [];
     window.__mockAudioProcessors = [];
@@ -229,28 +229,23 @@ test.beforeEach(async ({ page }) => {
   });
 
   await page.route('**/api/meetings**', async (route) => {
-    const url = new URL(route.request().url());
-    if (route.request().method() !== 'GET' || url.pathname !== '/api/meetings') {
-      await route.fallback();
-      return;
-    }
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(page.useMockMeetings && page.url().includes('#live?meetingId=meeting-1') ? [{
-        id: 'meeting-1',
-        name: '測試會議',
-        status: 'created',
-        sourceLanguageCode: page.mockMeetingLanguage.sourceLanguageCode,
-        targetLanguageCode: page.mockMeetingLanguage.targetLanguageCode
-      }] : [])
-    });
-  });
-
-  await page.route('**/api/meetings/**', async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
+    if (method === 'GET' && url.pathname === '/api/meetings') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(page.useMockMeetings && page.url().includes('#live?meetingId=meeting-1') ? [{
+          id: 'meeting-1',
+          name: '測試會議',
+          status: 'created',
+          sourceLanguageCode: page.mockMeetingLanguage.sourceLanguageCode,
+          targetLanguageCode: page.mockMeetingLanguage.targetLanguageCode
+        }] : [])
+      });
+      return;
+    }
     if (method === 'GET' && url.pathname === '/api/meetings/meeting-1') {
       await route.fulfill({
         status: 200,
@@ -311,6 +306,7 @@ test.beforeEach(async ({ page }) => {
     options
   );
 
+  await installE2EAuth(page);
 });
 
 function sessionDetail(page) {
@@ -518,10 +514,10 @@ async function mockMeetingCheckpointApi(page, {
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-          body: JSON.stringify({
-            meetingId: 'meeting-1',
-            segmentId: segmentMatch[1],
-            checkpoint: checkpoints.get(segmentMatch[1])
+        body: JSON.stringify({
+          meetingId: 'meeting-1',
+          segmentId: segmentMatch[1],
+          checkpoint: checkpoints.get(segmentMatch[1])
         })
       });
       return;

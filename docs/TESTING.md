@@ -1,5 +1,46 @@
 # Testing
 
+## Google Workspace accounts
+
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.
+
+## Issue #33 account approval coverage
+
+Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
+
+## Cloud validation
+
+Cloud checks are split by deployment risk:
+
+- Local E2E keeps its existing local backend and Vite web servers.
+- Staging authenticated smoke uses a dedicated short-lived `CLOUD_TEST_ACCESS_TOKEN` to verify health, readiness, auth gates, profile access, Meeting creation/read/share, and cleanup. It does not automate Google OAuth or create a Gemini session.
+- Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
+
+```bash
+CLOUD_BASE_URL=https://staging.example.com \
+CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
+npm run test:e2e:cloud
+```
+
+```bash
+SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
+```
+
+The manual workflow `.github/workflows/cloud-validation.yml` expects `STAGING_BASE_URL`, `STAGING_TEST_ACCESS_TOKEN`, and `PRODUCTION_BASE_URL`. Staging data uses a unique `codex-cloud-smoke-` prefix and is deleted in a `finally` block. Real Gemini smoke remains a separate explicit opt-in.
+
+## Account permissions
+
+Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.
+
+Run the deterministic Issue #33 coverage without production Supabase or Gemini:
+
+```bash
+node --test tests/unit/meetingMembership.test.js tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/profileService.test.js tests/unit/profileHttpApi.test.js tests/unit/dualWriteTranslationExecutionQueue.test.js tests/integration/accountPermissions.integration.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountPermissions.spec.js
+```
+
+The account E2E seeds a deterministic Supabase session in browser storage and mocks every account API response.
+
 P1 identity tests use signed deterministic JWT fixtures and never call Google,
 Gemini, or Supabase production services. Validate the identity slice with:
 

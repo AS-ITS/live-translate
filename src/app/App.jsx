@@ -46,6 +46,8 @@ import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
 import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx';
+import { AccountManagementPage } from '../pages/settings/AccountManagementPage.jsx';
+import { AuditLogPage } from '../pages/settings/AuditLogPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage, liveMeetingStatusLabel } from '../pages/live/LiveRecordingPage.jsx';
@@ -1921,6 +1923,30 @@ export function App() {
       );
     },
     settings: () => <GeminiCredentialPage />,
+    admin: () => (
+      <WorkspacePage
+        managementShell
+        className="account-management-shell"
+        title="帳號管理"
+        titleId="account-management-title"
+        subtitle="管理工作區成員與資產移轉。"
+        headerAction={<a className="button secondary meeting-header-action" href="#meetings">返回會議管理</a>}
+      >
+        <AccountManagementPage />
+      </WorkspacePage>
+    ),
+    audit: () => (
+      <WorkspacePage
+        managementShell
+        className="account-management-shell"
+        title="稽核紀錄"
+        titleId="audit-log-page-title"
+        subtitle="查看工作區管理操作的安全紀錄。"
+        headerAction={<a className="button secondary meeting-header-action" href="#admin">返回帳號管理</a>}
+      >
+        <AuditLogPage />
+      </WorkspacePage>
+    ),
   };
 
   const workspaceView = () => {

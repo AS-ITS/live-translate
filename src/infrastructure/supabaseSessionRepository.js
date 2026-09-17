@@ -1,12 +1,12 @@
 import { createSessionRecord as createSessionRecordModel, createTranscriptItemForSession, finalizeSessionRecord as finalizeSessionRecordModel, summarizeTranscriptItems, updateSessionRecord as updateSessionRecordModel } from '../lib/sessionRecords.js';
-import { currentRequestUserId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseSessionRepository(options = {}) {
   const client = createSupabaseRestClient(options);
   if (!client) return null;
   const idFactory = options.idFactory;
-  const owner = () => currentRequestUserId() || failOwner();
+  const owner = () => currentRequestOwnerId() || failOwner();
   const repository = {
     // Startup runs outside an authenticated HTTP request. Persisted recovery
     // must not attempt to list owner-scoped records without request identity.
@@ -38,6 +38,11 @@ export function createSupabaseSessionRepository(options = {}) {
     async listSessionRecords() {
       const rows = await client.request('sessions', { query: `?select=*&${eq('owner_user_id', owner())}&order=created_at.desc` });
       return rows.map((row) => clone(row.payload || row));
+    },
+    async getSessionOwner(id) {
+      const rows = await client.request('sessions', { query: `?select=meeting_id,owner_user_id&id=${encodeURIComponent(id)}` });
+      if (!rows[0]) return null;
+      return { meetingId: rows[0].meeting_id, ownerUserId: rows[0].owner_user_id };
     },
     async getSessionRecord(id) {
       const rows = await client.request('sessions', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });

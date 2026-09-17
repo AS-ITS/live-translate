@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { authorizeRecorderRequest } from '../../src/application/recorderAuthorization.js';
+import { authorizeAuthenticatedMeetingRecorder, authorizeRecorderRequest } from '../../src/application/recorderAuthorization.js';
 
 function dependencies(overrides = {}) {
   return {
@@ -55,4 +55,14 @@ test('Viewer shares cannot authorize Recorder writes', async () => {
     }),
     (error) => error.code === 'recorder_forbidden'
   );
+});
+
+test('authenticated active member can record only an assigned meeting', async () => {
+  const membership = { canRecord: async (meetingId, userId) => meetingId === 'meeting-1' && userId === 'member-1' };
+  await assert.doesNotReject(authorizeAuthenticatedMeetingRecorder({ user: { id: 'member-1', role: 'member', status: 'active' }, meetingId: 'meeting-1', meetingMembershipService: membership }));
+  await assert.rejects(authorizeAuthenticatedMeetingRecorder({ user: { id: 'member-1', role: 'member', status: 'active' }, meetingId: 'meeting-2', meetingMembershipService: membership }), { code: 'recorder_forbidden' });
+});
+
+test('disabled authenticated member cannot record', async () => {
+  await assert.rejects(authorizeAuthenticatedMeetingRecorder({ user: { id: 'member-1', role: 'member', status: 'disabled' }, meetingId: 'meeting-1', meetingMembershipService: { canRecord: async () => true } }), { code: 'auth_forbidden' });
 });

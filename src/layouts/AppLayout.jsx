@@ -1,4 +1,4 @@
-import { ArrowRight, ChevronDown, KeyRound, LogOut, RefreshCw, UserRound } from 'lucide-react';
+import { ArrowRight, ChevronDown, ClipboardList, KeyRound, LogOut, RefreshCw, UserRound, UsersRound } from 'lucide-react';
 import { useEffect, useRef } from 'react';
 import { useAuth } from '../components/AuthGate.jsx';
 import { GEMINI_SETTINGS_HASH } from '../app/routes.js';
@@ -46,6 +46,8 @@ export function AppLayout({
           </div>
           <div className="app-header-actions">
             {profile && showGeminiKeyAction ? <a className="button secondary header-key-action" href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+            {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin"><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
+            {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#audit"><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
             {profile ? (
               <details ref={accountMenuRef} className="account-menu">
                 <summary ref={accountTriggerRef} className="account-menu-trigger" aria-label="開啟帳號選單">

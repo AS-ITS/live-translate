@@ -25,3 +25,9 @@ test('hides the notice when configured and shows it in meeting settings when unc
   await page.goto('/#meeting-settings?mode=create');
   await expect(page.locator('.gemini-credential-notice')).toContainText('尚未設定 Gemini API Key');
 });
+
+import { installE2EAuth } from './authBootstrap.js';
+
+test.beforeEach(async ({ page }) => {
+  await installE2EAuth(page);
+});

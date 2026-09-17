@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { createSessionQueryService } from '../src/application/sessionQueryService.js';
 import { createSessionApplicationService } from '../src/application/sessionApplicationService.js';
+import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
+import { createProfileService } from './profileService.js';
 import { createTranslationHistoryQueryService } from '../src/application/translationHistoryQueryService.js';
 import { createTranslationApplicationService } from '../src/application/translationApplicationService.js';
 import { createMeetingCheckpointService as createDefaultMeetingCheckpointService } from '../src/application/meetingCheckpointService.js';
@@ -169,6 +171,8 @@ export function createApplicationDependencies(options = {}) {
     sessionApplicationService,
     sessionApplicationServiceFactory = createSessionApplicationService,
     meetingRepository,
+    profileService = createProfileService({ env }),
+    meetingMembershipService,
     meetingCheckpointServiceFactory = createDefaultMeetingCheckpointService,
     meetingReadQueryServiceFactory = createDefaultMeetingReadQueryService,
     meetingReadControllerFactory = createDefaultMeetingReadController,
@@ -197,6 +201,7 @@ export function createApplicationDependencies(options = {}) {
   const resolvedMeetingRepository = Object.prototype.hasOwnProperty.call(options, 'meetingRepository')
     ? meetingRepository
     : createMemoryMeetingRepository();
+  let resolvedMeetingMembershipService = meetingMembershipService;
   const sessionReadDependencies = createSessionReadDependencies({
     ...sessionReadOptions,
     meetingRepository: resolvedMeetingRepository,
@@ -208,6 +213,15 @@ export function createApplicationDependencies(options = {}) {
           })
         }
       : {})
+  });
+  resolvedMeetingMembershipService ||= createMeetingMembershipService({
+    profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
+    membershipRepository: {
+      find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
+      list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
+    },
+    meetingRepository: resolvedMeetingRepository,
+    sessionRepository: sessionReadDependencies.sessionRepository,
   });
   const resolvedSessionApplicationService = sessionApplicationService ?? (
     hasSessionApplicationCommandContract(sessionReadDependencies.sessionRepository)
@@ -409,6 +423,7 @@ export function createApplicationDependencies(options = {}) {
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     meetingDeletionService,
+    meetingMembershipService: resolvedMeetingMembershipService,
     glossaryController: resolvedGlossaryController,
     ...(savedTranscriptRetranslationService ? { savedTranscriptRetranslationService } : {}),
     ...(savedTranscriptRetranslationController ? { savedTranscriptRetranslationController } : {}),

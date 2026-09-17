@@ -1,4 +1,36 @@
 # Changelog
+- Issue #33 follow-up: active `super_admin` recording authorization is consistent across authenticated meeting paths, and account disable E2E coverage now deterministically verifies confirmation, asset transfer, reload, and disabled state.
+
+- Improved Meeting Settings discoverability for member recording authorization with a dedicated `成員與錄製權限` step and empty-state guidance.
+
+- Issue #33: Google Workspace domain matching is the first gate; new users are pending `member` profiles until an active `super_admin` approves them. Pending users can only read `GET /api/profile`, wait, sign out, or switch accounts. Existing active/disabled accounts and status management are preserved.
+- Added Google Workspace account approval flow: new domain users remain pending until a super_admin approves them.
+
+- Adjusted account management to rely on Google Workspace OAuth provisioning; removed password-based account creation.
+
+- Added manual cloud validation workflow with authenticated staging smoke and read-only production preflight.
+
+## 2026-09-16
+
+- 將管理員稽核紀錄從帳號管理頁拆分為獨立的 `#audit` 頁面；保留原有搜尋、篩選、分頁與錯誤重試功能。
+
+## 2026-09-15
+- Hardened account audit UUID searches to use exact ID filters and added an explicit audit-load error/retry state.
+- Added HTTP coverage for owner-scoped member recording permission changes; local member DTOs now expose `canRecord` normally.
+
+## 2026-09-15
+- Account management now uses server-side pagination, email/role search, status filtering, exact global counts, and complete active transfer targets.
+
+## 2026-09-14
+
+- Completed Issue #33 owner-scope propagation for session, translation execution, DLQ, and durable queue requests; actor and resource owner identities remain separate.
+
+## 2026-09-14
+- Wired the shared meeting membership authorization boundary into request composition, including resource-owner repository scope and audit REST failure detection.
+
+- Completed Issue #33 follow-up authorization hardening for member recording, meeting membership, admin operations, and disabled profiles.
+- Added strict safe audit action filtering and atomic owner transfer coverage. Gemini credentials are excluded from transfer.
+- Account management UI now reports loading, success, stable error codes, request IDs, and reloads users after changes.
 
 ## 2026-09-11
 
@@ -23,6 +55,8 @@
   files under `data/` remain test/migration fixtures only.
 
 ## Unreleased
+
+- Issue #33 follow-up: added member recording authorization, super-admin account management with atomic asset transfer, server-only audit log filtering, and Meeting Settings/account management UI. Viewer share IDs remain stable during transfer and Gemini credentials are excluded.
 
 - 修正 Meeting checkpoint HTTP 400 僅顯示泛用錯誤的問題；前端現在依安全的錯誤 code 顯示中文訊息與 Request ID，並在 checkpoint 邊界補齊 finalized Cue 必要欄位。
 
@@ -1943,3 +1977,9 @@ These items are intentionally deferred:
 
 - Moved background translation worker scheduling from Vercel Cron to a GitHub Actions workflow running every five minutes, with manual dispatch and concurrency protection.
 - Added visible queued and processing feedback for background translation, including last-update time, automatic refresh guidance, and a five-minute delay notice.
+- Issue #33: added account role/status metadata, disabled-account enforcement, meeting membership schema, RLS helpers, and controlled super-admin bootstrap.
+## 2026-09-14
+- 修正未授權 Google 個人帳號登入後的死循環；前端現在顯示目前 email 與拒絕原因，並由使用者明確操作切換帳號，不再自動反覆登入或登出。
+## Unreleased
+
+- Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.

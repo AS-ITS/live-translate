@@ -13,6 +13,8 @@ credentials.
 
 ## Overview
 
+Google Workspace domain matching does not immediately grant access. New users start as pending `member` profiles and require approval by an active `super_admin`; pending users only see the approval waiting screen and may sign out or switch accounts.
+
 - Frontend: React, Vite, Web Audio API, and Gemini Live client logic.
 - Backend: Node.js service for token issuance, validation, and local APIs.
 - Live path: browser audio streams directly to Gemini Live API.
@@ -177,6 +179,10 @@ checks transcription reconnects plus the token request limit. See
 See [docs/TESTING.md](docs/TESTING.md) for the full testing policy and targeted
 commands.
 
+Cloud validation is manual and split into authenticated staging smoke and
+read-only production preflight. See [Cloud validation](docs/TESTING.md#cloud-validation)
+for required secrets and commands.
+
 ## Documentation
 
 - [docs/spec.md](docs/spec.md): product scope and core requirements.
@@ -195,3 +201,22 @@ commands.
 - Keep `/api/live-token` validation, access gate, rate limit, and origin checks.
 - The shell smoke-test entrypoint intentionally enables the real Gemini call
   after confirming `GEMINI_API_KEY`; run it only when quota usage is intended.
+## Preview deployment
+
+After linking this repository to the intended Vercel project once, deploy a Preview with:
+
+```bash
+vercel link
+npm run deploy:preview
+```
+
+The command deploys without the production flag, prints the Preview URL, and runs the deployment preflight against it. Configure Preview environment variables in Vercel before deploying, including `GEMINI_API_KEY` and the required Supabase settings.
+
+Apply pending Supabase migrations separately:
+
+```bash
+supabase link --project-ref <target-project-ref>
+npm run deploy:supabase
+```
+
+The migration command uses the currently linked Supabase project and does not create branches or switch projects automatically. Verify the linked project is the intended Preview or test environment before running it.

@@ -4,7 +4,7 @@ import {
 } from '../application/translation/translationExecutionQueue.js';
 import { assertDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
 import { DURABLE_TRANSLATION_EXECUTION_QUEUE_ITEM_STATUSES } from '../application/translation/durableTranslationExecutionQueueRepository.js';
-import { currentRequestUserId, isWorkerRequestContext, setRequestUser } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId, isWorkerRequestContext, setRequestUser } from '../../server/requestIdentity.js';
 
 export function createDualWriteTranslationExecutionQueue({ primaryQueue, durableRepository, clock } = {}) {
   assertTranslationExecutionQueue(primaryQueue);
@@ -13,7 +13,7 @@ export function createDualWriteTranslationExecutionQueue({ primaryQueue, durable
 
   return createTranslationExecutionQueue({
     async enqueue(item) {
-      const ownerUserId = item.ownerUserId || currentRequestUserId() || undefined;
+      const ownerUserId = item.ownerUserId || currentRequestOwnerId() || undefined;
       if (await durableRepository.contains(item.executionId)) {
         return undefined;
       }

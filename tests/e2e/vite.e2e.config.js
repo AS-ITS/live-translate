@@ -14,6 +14,7 @@ export default mergeConfig(baseConfig, {
       }
     }
   },
+  define: { 'import.meta.env.VITE_MEETING_VIEWER_REALTIME_ENABLED': JSON.stringify('false') },
   resolve: {
     alias: {
       '@google/genai': path.resolve(dirname, '../fixtures/mockGoogleGenAiBrowser.js')

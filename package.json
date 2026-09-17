@@ -17,8 +17,12 @@
     "test:unit": "node --test tests/unit/*.test.js",
     "test:integration": "node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integration/*.test.js",
     "test:e2e": "playwright test --config tests/e2e/playwright.config.js",
+    "test:e2e:cloud": "playwright test --config tests/e2e/playwright.cloud.config.js",
+    "test:cloud:preflight": "node scripts/deployment-preflight.js",
     "test:live-smoke": "./scripts/live-meeting-smoke.sh",
     "test:deployment-preflight": "node scripts/deployment-preflight.js",
+    "deploy:preview": "bash scripts/deploy-preview.sh",
+    "deploy:supabase": "bash scripts/deploy-supabase-migrations.sh",
     "check": "node --check server/index.js && node --check server/tokenService.js && node --check src/lib/audio.js"
   },
   "dependencies": {

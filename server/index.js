@@ -14,6 +14,8 @@ import { createSessionShareService } from '../src/application/sessionShareServic
 import { createSessionEventBroadcaster } from '../src/infrastructure/sessionEventBroadcaster.js';
 import { createMeetingEventBroadcaster } from '../src/infrastructure/meetingEventBroadcaster.js';
 import { createRecorderGrantService } from '../src/application/recorderGrantService.js';
+import { createAdminService } from './adminService.js';
+import { createAuditLogService } from './auditLogService.js';
 import { authorizeRecorderRequest, hasRecorderHeaders } from '../src/application/recorderAuthorization.js';
 import { attachExecutionEventsWebSocket } from './executionEventsWebSocket.js';
 import { createTranslationExecutionMetrics } from '../src/application/translation/translationExecutionMetrics.js';
@@ -26,6 +28,7 @@ import {
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
+import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
 import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
@@ -54,6 +57,7 @@ const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
 
 const ERROR_RESPONSES = {
+  auth_pending: { status: 403, message: 'Account approval is pending.' },
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
   auth_forbidden: { status: 403, message: 'Access is not allowed.' },
@@ -298,6 +302,18 @@ function enforceRateLimit(clientIp) {
   if (bucket.count > maxRequests) {
     throw createHttpError('rate_limited');
   }
+}
+
+async function enrichAuthenticatedUser(user, profileService) {
+  if (!user?.id || typeof profileService?.getProfile !== 'function') return user;
+  const profile = await profileService.getProfile(user);
+  if (profile?.status === 'disabled') throw createHttpError('auth_forbidden');
+  return {
+    ...user,
+    role: profile?.role || user.role || 'member',
+    status: profile?.status || user.status || 'active',
+    profile,
+  };
 }
 
 function createHttpError(code, details = null) {
@@ -600,8 +616,9 @@ export function createRequestHandler(options = {}) {
     translationHistoryController,
     meetingRepository,
     meetingReadController,
-    meetingCheckpointService,
-    meetingDeletionService,
+ meetingCheckpointService,
+ meetingDeletionService,
+ meetingMembershipService,
     sessionAudioArtifactRepository,
     meetingAudioService,
   meetingCueService,
@@ -626,13 +643,24 @@ export function createRequestHandler(options = {}) {
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
-    , profileService = createProfileService()
+ , profileService = createProfileService()
+ , meetingMembershipService: injectedMeetingMembershipService
     , credentialRepository = createGeminiCredentialRepository()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
   , readinessCheck
-  , strictCheckpointPathIds = true
-  } = options;
+ , strictCheckpointPathIds = true
+ } = options;
+
+ const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
+   profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
+   membershipRepository: {
+     find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
+     list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
+   },
+   meetingRepository,
+   sessionRepository,
+ });
 
   if (Object.prototype.hasOwnProperty.call(options, 'translationCommandController')) {
     assertTranslationCommandController(translationCommandController);
@@ -652,8 +680,9 @@ export function createRequestHandler(options = {}) {
       translationHistoryController,
       meetingRepository,
       meetingReadController,
-      meetingCheckpointService,
-      meetingDeletionService,
+ meetingCheckpointService,
+ meetingDeletionService,
+ meetingMembershipService: resolvedMeetingMembershipService,
       sessionAudioArtifactRepository,
       meetingAudioService,
       meetingCueService,
@@ -694,9 +723,10 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
-    { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
+  const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -741,6 +771,7 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
@@ -824,6 +855,22 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
+    try {
+      for (const record of await sessionRepository.listSessionRecords()) {
+        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
+        await sessionRepository.deleteSessionRecord(record.id);
+      }
+      statusCode = 204;
+      sendJson(res, statusCode, {}, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
+    }
+    return;
+  }
+
   if (isDeadLetterQueueRoute(req.method, path)) {
     try {
       if (!deadLetterQueueController) throw createHttpError('dead_letter_queue_unavailable');
@@ -845,26 +892,11 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
-  if (req.method === 'DELETE' && path === '/api/test/sessions' && process.env.NODE_ENV === 'test') {
-    try {
-      for (const record of await sessionRepository.listSessionRecords()) {
-        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
-        await sessionRepository.deleteSessionRecord(record.id);
-      }
-      statusCode = 204;
-      sendJson(res, statusCode, {}, requestId);
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId, error.details), requestId);
-    }
-    return;
-  }
-
   if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
     } catch (error) {
       const code = errorCodeFor(error);
@@ -874,7 +906,48 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (req.method === 'GET' && path === '/api/profile') {
+if (authenticatedUser?.status === 'pending' && !(req.method === 'GET' && path === '/api/profile')) {
+  statusCode = ERROR_RESPONSES.auth_pending.status;
+  sendJson(res, statusCode, errorPayload('auth_pending', requestId), requestId);
+  return;
+}
+
+if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
+      try {
+        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+        if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+        const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+        if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
+      } catch (error) {
+        const code = errorCodeFor(error);
+        statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+        sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+        return;
+      }
+    }
+
+    if (authenticatedUser?.role === 'member' && !hasRecorderHeaders(req) && (isMemberMeetingRecordingPath(req.method, path) || isMemberSessionRecordingPath(req.method, path))) {
+      try {
+        const sessionContext = isMemberSessionRecordingPath(req.method, path)
+          ? await meetingMembershipService?.getSessionOwner?.(extractSessionRecordingId(path))
+          : null;
+        const localSession = !sessionContext && isMemberSessionRecordingPath(req.method, path)
+          ? await sessionRepository?.getSessionRecord?.(extractSessionRecordingId(path))
+          : null;
+        const meetingId = sessionContext?.meetingId || localSession?.sessionRecord?.meetingId || extractMemberMeetingId(path);
+        if (!await meetingMembershipService?.canRecord?.(meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await meetingMembershipService?.getMeetingOwner?.(meetingId);
+ if (!ownerUserId) throw createHttpError('recorder_forbidden');
+      setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+ } catch (error) {
+ const code = errorCodeFor(error);
+ statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+ sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+ return;
+ }
+ }
+
+ if (req.method === 'GET' && path === '/api/profile') {
     try {
       statusCode = 200;
       sendJson(res, statusCode, { profile: await profileService.getProfile(authenticatedUser) }, requestId);
@@ -882,10 +955,68 @@ async function handleRequestWithSessionReadController(
       statusCode = 503;
       sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     }
-    return;
-  }
+ return;
+ }
 
-  if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
+if (req.method === 'POST' && /^\/api\/admin\/users\/[^/]+\/approve$/u.test(path)) {
+  try {
+    if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
+    if (!adminService) throw createHttpError('cloud_capability_unavailable');
+    const match = path.match(/^\/api\/admin\/users\/([^/]+)\/approve$/u);
+    const result = await adminService.approveUser(authenticatedUser, safeDecodePathComponent(match[1]), requestId);
+    statusCode = 200;
+    sendJson(res, statusCode, { user: result }, requestId);
+  } catch (error) {
+    const code = errorCodeFor(error);
+    statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+  }
+  return;
+}
+
+if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
+ try {
+ if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
+ if (!adminService) throw createHttpError('cloud_capability_unavailable');
+    if (req.method === 'GET' && path === '/api/admin/audit-logs') {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const page = Number(url.searchParams.get('page') || 1);
+      const pageSize = Number(url.searchParams.get('pageSize') || 25);
+      const action = url.searchParams.get('action') || 'all';
+      const result = url.searchParams.get('result') || 'all';
+      const query = url.searchParams.get('query') || '';
+      statusCode = 200;
+      sendJson(res, statusCode, await adminService.listAuditLogs(authenticatedUser, { page, pageSize, action, result, query }), requestId);
+    } else if (req.method === 'GET' && path === '/api/admin/users') {
+      const url = new URL(req.url || '/', 'http://localhost');
+      const page = Number(url.searchParams.get('page') || 1);
+      const pageSize = Number(url.searchParams.get('pageSize') || 12);
+      const query = url.searchParams.get('query') || '';
+      const status = url.searchParams.get('status') || 'all';
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'pending', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
+      statusCode = 200;
+      sendJson(res, statusCode, await adminService.listUsers(authenticatedUser, { page, pageSize, query, status }), requestId);
+ } else if (req.method === 'POST') {
+ const match = path.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/u);
+ if (!match) throw createHttpError('invalid_request');
+ const userId = safeDecodePathComponent(match[1]);
+ const result = match[2] === 'enable'
+ ? await adminService.enableUser(authenticatedUser, userId, requestId)
+ : await adminService.disableUser(authenticatedUser, userId, (await readJson(req, { maxBytes: 16 * 1024 }))?.transferToUserId, requestId);
+ statusCode = 200;
+ sendJson(res, statusCode, { user: result }, requestId);
+ } else {
+ throw createHttpError('invalid_request');
+ }
+ } catch (error) {
+ const code = errorCodeFor(error);
+ statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+ sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+ }
+ return;
+ }
+
+ if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
     try {
       if (!authenticatedUser?.id) throw createHttpError('auth_required');
       if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
@@ -904,6 +1035,62 @@ async function handleRequestWithSessionReadController(
         res.writeHead(statusCode, { 'X-Request-Id': requestId });
         res.end();
       }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if ((req.method === 'GET' || req.method === 'POST') && /^\/api\/meetings\/[^/]+\/members$/u.test(path)) {
+    try {
+      if (typeof profileService?.listMeetingMembers !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const meetingId = safeDecodePathComponent(path.split('/')[3]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+      const members = req.method === 'GET'
+          ? await profileService.listMeetingMembers(authenticatedUser, meetingId)
+          : [await profileService.addMeetingMember(authenticatedUser, meetingId, (await readJson(req, { maxBytes: 8 * 1024 }))?.email?.trim(), requestId)];
+      statusCode = req.method === 'GET' ? 200 : 201;
+      sendJson(res, statusCode, { members }, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'DELETE' && /^\/api\/meetings\/[^/]+\/members\/[^/]+$/u.test(path)) {
+    try {
+      if (typeof profileService?.removeMeetingMember !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const parts = path.split('/');
+      const meetingId = safeDecodePathComponent(parts[3]);
+      const memberId = safeDecodePathComponent(parts[5]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+        await profileService.removeMeetingMember(authenticatedUser, meetingId, memberId, requestId);
+      statusCode = 204;
+      res.writeHead(statusCode, { 'X-Request-Id': requestId });
+      res.end();
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (req.method === 'PATCH' && /^\/api\/meetings\/[^/]+\/members\/[^/]+$/u.test(path)) {
+    try {
+      if (typeof profileService?.updateMeetingMemberRecording !== 'function') throw createHttpError('cloud_capability_unavailable');
+      const parts = path.split('/');
+      const meetingId = safeDecodePathComponent(parts[3]);
+      const memberId = safeDecodePathComponent(parts[5]);
+      if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
+      const body = await readJson(req, { maxBytes: 8 * 1024 });
+      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord);
+      statusCode = 200;
+      sendJson(res, statusCode, { member }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -943,12 +1130,21 @@ async function handleRequestWithSessionReadController(
     let sessionCreateError = null;
     try {
       const body = await readJson(req);
+      if (authenticatedUser?.role === 'member' && !body?.meetingId) throw createHttpError('recorder_forbidden');
+      if (body?.meetingId) {
+        if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) throw createHttpError('recorder_forbidden');
+        const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
+        if (!ownerUserId) throw createHttpError('recorder_forbidden');
+        setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+      }
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
       }
       const sessionInput = {
         id: body?.id,
         name: typeof body?.name === 'string' && body.name.trim() ? body.name.trim() : null,
+        meetingId: body?.meetingId || null,
+        segmentId: body?.segmentId || null,
         targetLanguageCode: body?.targetLanguageCode || 'en',
         targetLanguageLabel: body?.targetLanguageLabel || null,
         sourceLanguageCode: body?.sourceLanguageCode || null,
@@ -2095,6 +2291,15 @@ async function handleRequestWithSessionReadController(
           ? translationOutputMaxBytes
           : DEFAULT_JSON_REQUEST_MAX_BYTES
       });
+      const scope = await authorizeTranslationResource({
+        req,
+        path,
+        body,
+        user: authenticatedUser,
+        meetingMembershipService,
+        translationRepository
+      });
+      if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
       const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
 
       statusCode = status;
@@ -2308,6 +2513,65 @@ function isPublicApiPath(method, path) {
   )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
+async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository }) {
+  if (!user?.id || !translationRepository) return null;
+  let sessionId = body?.sessionId;
+  let executionId = body?.executionId;
+  if (path.startsWith('/api/translation-executions/')) {
+    executionId = safeDecodePathComponent(path.slice('/api/translation-executions/'.length).split('/')[0]);
+  } else if (path.includes('/translation-dead-letter-queue/')) {
+    executionId = extractDeadLetterExecutionId(path);
+  }
+  if (executionId && typeof translationRepository.findExecutionById === 'function') {
+    const execution = await translationRepository.findExecutionById(executionId);
+    if (!execution) throw createHttpError('auth_forbidden');
+    if (typeof translationRepository.findRequestById === 'function') {
+      const request = await translationRepository.findRequestById(execution.translationRequestId);
+      sessionId ||= request?.sessionId;
+    }
+  }
+  if (!sessionId && body?.translationRequestId && typeof translationRepository.findRequestById === 'function') {
+    const request = await translationRepository.findRequestById(body.translationRequestId);
+    sessionId = request?.sessionId;
+  }
+  if (!sessionId) return null;
+  const context = await meetingMembershipService.getSessionOwner(sessionId);
+  if (!context?.meetingId || !context.ownerUserId) throw createHttpError('auth_forbidden');
+  if (!await meetingMembershipService.canManage(context.meetingId, user)) throw createHttpError('auth_forbidden');
+  return { ownerUserId: context.ownerUserId };
+}
+
+async function authorizePrivateResource({ req, path, user, meetingMembershipService }) {
+  const meetingMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
+  const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)/u);
+  if (meetingMatch && meetingMatch[1] !== 'glossary') {
+    const meetingId = safeDecodePathComponent(meetingMatch[1]);
+    const canRecord = isMemberMeetingRecordingPath(req.method, path);
+    const allowed = canRecord
+      ? await meetingMembershipService.canRecord(meetingId, user.id)
+      : await meetingMembershipService.canManage(meetingId, user);
+    if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
+    if (!ownerUserId) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    return { ownerUserId };
+  }
+  if (sessionMatch && sessionMatch[1] !== 'shares') {
+    const sessionId = safeDecodePathComponent(sessionMatch[1]);
+    const context = await meetingMembershipService.getSessionOwner(sessionId);
+    const meetingId = context?.meetingId;
+    const ownerUserId = context?.ownerUserId;
+    if (meetingId) {
+      const canRecord = isMemberSessionRecordingPath(req.method, path);
+      const allowed = canRecord
+        ? await meetingMembershipService.canRecord(meetingId, user.id)
+        : await meetingMembershipService.canManage(meetingId, user);
+      if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+      if (ownerUserId) return { ownerUserId };
+    }
+  }
+  return null;
+}
+
 function isRecorderAuthorizedPath(method, path, req) {
   if (!hasRecorderHeaders(req)) return false;
   if (method === 'POST' && path === '/api/live-token') return true;
@@ -2318,6 +2582,31 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
   return false;
+}
+
+function isMemberMeetingRecordingPath(method, path) {
+  return (method === 'POST' && isMeetingCuePublishPath(path)) ||
+    (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(complete|fail)$/.test(path));
+}
+
+function isMemberSessionRecordingPath(method, path) {
+  return (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) ||
+    (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)(?:\/segments\/\d+)?$/.test(path));
+}
+
+function extractSessionRecordingId(path) {
+  const match = path.match(/^\/api\/sessions\/([^/]+)/);
+  if (!match) throw createHttpError('invalid_request');
+  return safeDecodePathComponent(match[1]);
+}
+
+function extractMemberMeetingId(path) {
+ const match = path.match(/^\/api\/meetings\/([^/]+)/);
+ if (!match) throw createHttpError('invalid_request');
+ return safeDecodePathComponent(match[1]);
 }
 
 async function authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService }) {

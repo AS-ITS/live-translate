@@ -114,6 +114,10 @@ Production smoke checks and alert thresholds are maintained in
 [`docs/observability-runbook.md`](observability-runbook.md). Production
 verification is a rollout task, not an unimplemented P1 capability.
 
+## Account approval behavior
+
+`AUTH_ALLOWED_EMAIL_DOMAINS` is the first gate only. A matching Google Workspace user is provisioned as a pending `member`; an active `super_admin` must approve the profile before private application APIs are available. Pending users may only read `/api/profile`, wait, sign out, or switch accounts.
+
 ## Local Development Setup
 
 1. Install dependencies only when needed for local development.
@@ -264,3 +268,6 @@ npm run test:live-smoke
 Run this once only after confirming the Production `GEMINI_API_KEY` is
 available to the smoke runner. Do not place that key in browser-exposed
 `VITE_` variables or commit it.
+### OAuth Workspace access
+
+Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.

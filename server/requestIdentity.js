@@ -18,3 +18,13 @@ export function isWorkerRequestContext() {
 export function currentRequestUserId() {
   return storage.getStore()?.id || null;
 }
+
+export function currentRequestOwnerId() {
+  const context = storage.getStore();
+  return context?.ownerUserId || context?.id || null;
+}
+
+export function currentRequestActorId() {
+  const context = storage.getStore();
+  return context?.actorUserId || context?.id || null;
+}

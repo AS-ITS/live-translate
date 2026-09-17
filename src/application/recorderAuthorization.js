@@ -23,6 +23,13 @@ export function hasRecorderHeaders(request) {
   return Boolean(headers['x-recorder-token'] || headers['x-recorder-code'] || headers['x-recorder-grant'] || headers['x-recorder-lease-id'] || headers['x-recorder-fence-token']);
 }
 
+export async function authorizeAuthenticatedMeetingRecorder({ user, meetingId, meetingMembershipService } = {}) {
+  if (!user?.id || user.status === 'disabled') throw recorderError('auth_forbidden');
+  if (user.role === 'super_admin') return { userId: user.id, capability: 'meeting_record' };
+  if (!await meetingMembershipService?.canRecord?.(meetingId, user.id)) throw recorderError('recorder_forbidden');
+  return { userId: user.id, capability: 'meeting_record' };
+}
+
 function recorderError(code) {
   const error = new Error(code);
   error.code = code;

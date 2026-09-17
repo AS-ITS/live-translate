@@ -1,8 +1,10 @@
 .account-management-shell { grid-template-rows: auto minmax(0, 1fr); align-content: stretch; row-gap: var(--space-4); height: 100dvh; min-height: 0; overflow: hidden; }
 .account-management-page { display: grid; align-content: start; gap: var(--space-4); min-height: 0; }
+.audit-log-page { height: 100%; align-content: stretch; }
 .account-management-status:empty { display: none; }
 .account-management-status { min-height: 0; }
 .account-management-panel { height: fit-content; min-height: 0; padding: var(--space-5); overflow: hidden; }
+.audit-log-page .account-management-panel { display: flex; flex-direction: column; height: 100%; }
 .account-management-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
 .account-management-panel-header h2 { margin: 0; font-size: var(--text-xl); line-height: 1.25; }
 .account-management-panel-header p:not(.eyebrow) { max-width: 65ch; margin: var(--space-2) 0 0; color: var(--color-text-muted); }
@@ -29,6 +31,8 @@
 .account-table-toolbar .meeting-toolbar-input select { min-height: 2.75rem; }
 .account-management-table-region { height: min(24rem, max(16rem, calc(100dvh - 35rem))); min-height: 16rem; }
 .account-management-table-scroll { min-width: 0; width: 100%; height: 100%; min-height: 0; overflow-x: auto; }
+.audit-log-page .account-management-table-region { display: flex; flex: 1 1 auto; flex-direction: column; height: auto; min-height: 0; }
+.audit-log-page .account-management-table-scroll { flex: 1 1 auto; height: 100%; min-height: 0; }
 .account-management-data-grid, .account-audit-data-grid { height: 100%; min-height: 0; }
 .account-management-data-grid { min-width: 920px; }
 .account-audit-data-grid { min-width: 1280px; }

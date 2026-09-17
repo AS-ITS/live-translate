@@ -63,7 +63,7 @@ export function AuditLogPage() {
     return () => { cancelled = true; };
   }, [auditAction, auditPage, auditPageSize, auditQuery, auditResult, auditReloadKey, client]);
 
-  return <section className="feature-page account-management-page" aria-labelledby="audit-log-title">
+  return <section className="feature-page account-management-page audit-log-page" aria-labelledby="audit-log-title">
     <section className="history-panel account-management-panel" aria-label="稽核紀錄列表">
       <div className="account-management-panel-header">
         <div>

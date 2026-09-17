@@ -63,7 +63,7 @@
 .history-table-region { display: flex; flex-direction: column; min-height: 0; gap: var(--space-4); }
 .history-table-scroll { min-height: 0; flex: 1 1 auto; overflow: auto; }
 .history-data-grid { height: 100%; min-height: 0; }
-.data-grid .ag-root-wrapper, .data-grid .ag-root-wrapper-body { min-height: 0; }
+.data-grid .ag-root-wrapper, .data-grid .ag-root-wrapper-body { height: 100%; min-height: 0; }
 .retranslation-page { height: 100%; overflow: hidden; }
 .retranslation-workflow { min-height: 0; }
 .retranslation-session-data-grid { min-height: 18rem; }

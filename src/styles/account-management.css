@@ -1,8 +1,8 @@
 .account-management-shell { grid-template-rows: auto minmax(0, 1fr); align-content: stretch; row-gap: var(--space-4); height: 100dvh; min-height: 0; overflow: hidden; }
-.account-management-page { display: grid; gap: var(--space-4); min-height: 0; }
+.account-management-page { display: grid; align-content: start; gap: var(--space-4); min-height: 0; }
 .account-management-status:empty { display: none; }
 .account-management-status { min-height: 0; }
-.account-management-panel { min-height: 0; padding: var(--space-5); overflow: hidden; }
+.account-management-panel { height: fit-content; min-height: 0; padding: var(--space-5); overflow: hidden; }
 .account-management-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
 .account-management-panel-header h2 { margin: 0; font-size: var(--text-xl); line-height: 1.25; }
 .account-management-panel-header p:not(.eyebrow) { max-width: 65ch; margin: var(--space-2) 0 0; color: var(--color-text-muted); }

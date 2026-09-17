@@ -13,6 +13,7 @@ import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiCli
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
+import { createGeminiCredentialApiClient } from '../lib/geminiCredentialApiClient.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
@@ -170,6 +171,7 @@ export function App() {
   const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
+  const geminiCredentialApiClientRef = useRef(createGeminiCredentialApiClient());
   const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
   const activeMeetingCheckpointRef = useRef(null);
   const runtimeMeetingIdsRef = useRef(new Set());
@@ -1891,12 +1893,26 @@ export function App() {
       resumeDraft?.meetingId === routeMeetingId
     )
   );
-  const startLiveRecording = () => {
+  const startLiveRecording = async () => {
     if (!hasConfirmedMeetingAudioPreference(liveAudioPreference)) {
       setError('請先回到會議設定確認音訊裝置，再開始錄製。');
       window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
       return;
     }
+
+    setError('');
+    setLiveErrorCode('');
+    try {
+      const credential = await geminiCredentialApiClientRef.current.get();
+      if (credential?.configured === false) {
+        setLiveErrorCode('gemini_credential_not_configured');
+        setError('請先設定 Gemini API Key，再開始錄製。');
+        return;
+      }
+    } catch {
+      // The backend live-token check remains the source of truth if this preflight fails.
+    }
+
     void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
       ? liveController.actions.resumeMeetingSession()
       : liveController.actions.startSession());

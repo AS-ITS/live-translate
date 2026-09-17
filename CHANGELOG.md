@@ -1,4 +1,5 @@
 # Changelog
+- 即時會議開始錄音前會檢查登入帳號是否已設定 Gemini API Key；未設定時直接顯示設定入口，不啟動麥克風或錄音流程。
 - Account management now keeps the current signed-in account status visible and audit logs include application-level login outcomes for active, pending, and disabled profiles.
 - Staging validation now uses local Supabase, the local backend, and local E2E checks; manual cloud validation retains only the production read-only preflight and no longer requires staging secrets.
 - 整理 CI workflow：PR 與 main 執行 deterministic checks、Supabase local migration validation，並對 Vercel Preview 執行 deployment preflight；保留手動 cloud validation 與排程 translation worker。

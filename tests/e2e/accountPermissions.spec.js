@@ -9,11 +9,13 @@ test('account management shows users and reloads after disable', async ({ page }
   let disabled = false;
   let auditFailure = false;
   let auditCalls = 0;
+  const auditRequests = [];
   await page.route(/\/api\/profile(?:\?.*)?$/, async (route) => route.fulfill({ json: { profile: { id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' } } }));
   await page.route(/\/api\/admin\/audit-logs(?:\?.*)?$/, async (route) => {
     auditCalls += 1;
     if (auditFailure) return route.fulfill({ status: 503, json: { error: { code: 'cloud_capability_unavailable' }, requestId: 'audit-e2e-1' } });
     const url = new URL(route.request().url());
+    auditRequests.push({ page: url.searchParams.get('page'), pageSize: url.searchParams.get('pageSize') });
     return route.fulfill({ json: { logs: [{ actor_user_id: 'admin-1', target_user_id: 'source-1', target_meeting_id: 'meeting-1', request_id: 'request-1', action: url.searchParams.get('action') === 'all' ? 'user_disabled' : url.searchParams.get('action'), result: url.searchParams.get('result') === 'all' ? 'success' : url.searchParams.get('result'), created_at: '2026-09-15T00:00:00Z' }], pagination: { page: Number(url.searchParams.get('page') || 1), pageSize: 25, total: 26, totalPages: 2 } } });
   });
   await page.route(/\/api\/admin\/users(?:\?.*)?$/, async (route) => {
@@ -63,6 +65,10 @@ test('account management shows users and reloads after disable', async ({ page }
   await expect(page.getByRole('gridcell', { name: '失敗' })).toBeVisible();
   await page.getByRole('button', { name: '下一頁' }).click();
   await expect(page.getByText('第 2 / 2 頁')).toBeVisible();
+  await expect.poll(() => auditRequests.at(-1)?.page).toBe('2');
+  await page.getByRole('combobox', { name: '稽核紀錄每頁筆數' }).selectOption('50');
+  await expect(page.getByText('第 1 / 2 頁')).toBeVisible();
+  await expect.poll(() => auditRequests.at(-1)?.pageSize).toBe('50');
   auditFailure = true;
   await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('success');
   await expect(page.getByRole('button', { name: '重新載入稽核紀錄' })).toBeVisible();

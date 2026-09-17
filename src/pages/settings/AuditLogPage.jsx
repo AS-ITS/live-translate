@@ -6,6 +6,7 @@ import { dataGridProps } from '../../lib/dataGrid.js';
 const AUDIT_ACTION_LABELS = { member_invited: '邀請成員', member_removed: '移除成員', user_approved: '核准帳號', user_enabled: '啟用帳號', user_disabled: '停用帳號', asset_transfer: '資產移轉', auth_login: '登入' };
 const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, ...Object.entries(AUDIT_ACTION_LABELS).map(([value, label]) => ({ value, label }))];
 const AUDIT_RESULT_FILTERS = [{ value: 'all', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失敗' }];
+const AUDIT_PAGE_SIZES = [25, 50, 100];
 const AUDIT_COLUMN_DEFS = [
   { headerName: '時間', field: 'created_at', minWidth: 220, flex: 1.2 },
   { headerName: '動作', field: 'actionLabel', minWidth: 140, flex: 0.8 },
@@ -23,6 +24,7 @@ export function AuditLogPage() {
   const [auditResult, setAuditResult] = useState('all');
   const [auditQuery, setAuditQuery] = useState('');
   const [auditPage, setAuditPage] = useState(1);
+  const [auditPageSize, setAuditPageSize] = useState(25);
   const [auditPagination, setAuditPagination] = useState({ page: 1, pageSize: 25, total: 0, totalPages: 0 });
   const [auditLoading, setAuditLoading] = useState(true);
   const [auditError, setAuditError] = useState(null);
@@ -38,13 +40,13 @@ export function AuditLogPage() {
     requestLabel: log.request_id || '—'
   })), [auditLogs]);
 
-  useEffect(() => { setAuditPage(1); }, [auditAction, auditResult, auditQuery]);
+  useEffect(() => { setAuditPage(1); }, [auditAction, auditResult, auditQuery, auditPageSize]);
 
   useEffect(() => {
     let cancelled = false;
     setAuditLoading(true);
     setAuditError(null);
-    client.listAuditLogs({ page: auditPage, pageSize: 25, query: auditQuery, action: auditAction, result: auditResult }).then((response) => {
+    client.listAuditLogs({ page: auditPage, pageSize: auditPageSize, query: auditQuery, action: auditAction, result: auditResult }).then((response) => {
       if (!cancelled) {
         setAuditLogs(response.logs || []);
         setAuditPagination(response.pagination || auditPagination);
@@ -59,7 +61,7 @@ export function AuditLogPage() {
       if (!cancelled) setAuditLoading(false);
     });
     return () => { cancelled = true; };
-  }, [auditAction, auditPage, auditQuery, auditResult, auditReloadKey, client]);
+  }, [auditAction, auditPage, auditPageSize, auditQuery, auditResult, auditReloadKey, client]);
 
   return <section className="feature-page account-management-page" aria-labelledby="audit-log-title">
     <section className="history-panel account-management-panel" aria-label="稽核紀錄列表">
@@ -98,7 +100,7 @@ export function AuditLogPage() {
           />
         </div> : null}
       </div>
-      <div className="account-management-pagination" aria-label="稽核紀錄分頁"><span>共 {auditPagination.total} 筆</span><button type="button" onClick={() => setAuditPage((current) => current - 1)} disabled={auditLoading || auditPage <= 1}>上一頁</button><span>第 {auditPagination.totalPages ? auditPage : 0} / {auditPagination.totalPages} 頁</span><button type="button" onClick={() => setAuditPage((current) => current + 1)} disabled={auditLoading || auditPage >= auditPagination.totalPages}>下一頁</button></div>
+      <div className="account-management-pagination" aria-label="稽核紀錄分頁"><span>共 {auditPagination.total} 筆</span><label>每頁筆數<select aria-label="稽核紀錄每頁筆數" value={auditPageSize} onChange={(event) => setAuditPageSize(Number(event.target.value))}>{AUDIT_PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}</select></label><button type="button" onClick={() => setAuditPage((current) => current - 1)} disabled={auditLoading || auditPage <= 1}>上一頁</button><span>第 {auditPagination.totalPages ? auditPage : 0} / {auditPagination.totalPages} 頁</span><button type="button" onClick={() => setAuditPage((current) => current + 1)} disabled={auditLoading || auditPage >= auditPagination.totalPages}>下一頁</button></div>
     </section>
   </section>;
 }

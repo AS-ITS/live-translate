@@ -66,3 +66,18 @@ test('session owner resolution returns the persisted resource scope', async () =
     ownerUserId: 'owner-1'
   });
 });
+test('active members can access meeting settings without management rights', async () => {
+  const service = createMeetingMembershipService({
+    profileRepository: { getProfile: async () => ({ status: 'active', role: 'member' }) },
+    meetingRepository: { getMeeting: async () => null },
+    membershipRepository: {
+      find: async ({ meetingId, userId }) => meetingId === 'meeting-1' && userId === 'member-1'
+        ? { meetingId, userId }
+        : null,
+      list: async () => []
+    }
+  });
+
+  assert.equal(await service.canAccessMeeting('meeting-1', { id: 'member-1' }), true);
+  assert.equal(await service.canManage('meeting-1', { id: 'member-1' }), false);
+});

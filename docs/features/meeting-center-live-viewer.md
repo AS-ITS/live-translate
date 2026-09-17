@@ -158,12 +158,13 @@ later Segments, reconnects, exports, and historical reads.
 Viewer shares are Meeting-scoped while retaining the existing opaque token,
 short-code, expiry, revocation, and anonymous Viewer model.
 
-Owner API contract:
+Meeting access API contract:
 
 - `GET /api/meetings/:meetingId/shares` lists active share metadata.
+- Active meeting members may read and update ordinary Meeting settings, and may list or create Viewer shares.
 - `POST /api/meetings/:meetingId/shares` creates a Viewer share and returns the
   plaintext token and short-code URLs once.
-- `DELETE /api/meetings/:meetingId/shares/:shareId` revokes a share.
+- `DELETE /api/meetings/:meetingId/shares/:shareId` remains restricted to the Meeting owner or `super_admin`.
 
 Anonymous Viewer API contract:
 

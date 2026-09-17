@@ -107,6 +107,7 @@ test('HTTP private meeting routes separate actor and resource owner scope', asyn
     profileService: { getProfile: async () => activeUser, findMeetingMembership: async () => null },
     meetingMembershipService: {
       canManage: async (meetingId, actor) => meetingId === 'meeting-1' && actor.id === 'owner-1',
+      canAccessMeeting: async (meetingId, actor) => meetingId === 'meeting-1' && ['owner-1', 'member-1'].includes(actor.id),
       canRecord: async () => false,
       getMeetingOwner: async () => 'owner-1',
       getSessionOwner: async () => null
@@ -122,8 +123,42 @@ test('HTTP private meeting routes separate actor and resource owner scope', asyn
 
   activeUser = users.member;
   const memberResponse = await makeRequest(handler, { url: '/api/meetings/meeting-1' });
-  assert.equal(memberResponse.statusCode, 403);
-  assert.equal(memberResponse.json.error.code, 'auth_forbidden');
+  assert.equal(memberResponse.statusCode, 200);
+  assert.equal(memberResponse.json.meeting.permissions.canEditSettings, true);
+  assert.equal(memberResponse.json.meeting.permissions.canManageShares, false);
+});
+
+test('active meeting members can create shares but cannot revoke them over HTTP', async () => {
+  const users = {
+    owner: { id: 'owner-1', role: 'member', status: 'active' },
+    member: { id: 'member-1', role: 'member', status: 'active' }
+  };
+  let activeUser = users.member;
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => activeUser },
+    meetingRepository: {
+      getMeeting: async () => ({ id: 'meeting-1', ownerUserId: 'owner-1', status: 'active' })
+    },
+    meetingMembershipService: {
+      canAccessMeeting: async (meetingId, actor) => meetingId === 'meeting-1' && ['owner-1', 'member-1'].includes(actor.id),
+      canManage: async (meetingId, actor) => meetingId === 'meeting-1' && actor.id === 'owner-1',
+      canRecord: async () => false,
+      getMeetingOwner: async () => 'owner-1',
+      getSessionOwner: async () => null
+    },
+    sessionShareService: {
+      createMeetingShare: async (meetingId, options) => ({ id: 'share-1', meetingId, role: options.role, token: 'share-token' }),
+      revokeShare: async () => {}
+    }
+  });
+
+  const created = await makeRequest(handler, { method: 'POST', url: '/api/meetings/meeting-1/shares', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'viewer' }) });
+  assert.equal(created.statusCode, 201);
+  assert.equal(created.json.share.role, 'viewer');
+
+  const revoked = await makeRequest(handler, { method: 'DELETE', url: '/api/meetings/meeting-1/shares/share-1' });
+  assert.equal(revoked.statusCode, 403);
+  assert.equal(revoked.json.error.code, 'auth_forbidden');
 });
 
 test('member recording permission PATCH is owner-scoped over HTTP', async () => {

@@ -458,6 +458,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   }
 
   async function revokeShare(shareId) {
+    if (!canRevokeShares) return;
     try {
       await managementClient.revokeShare(meeting.id, shareId);
       setShares((current) => current.filter((share) => share.id !== shareId));
@@ -509,7 +510,10 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   }
 
   const handleShareLayoutReady = useCallback(() => setShareLayoutReady(true), []);
+  const canManageMembers = meeting?.permissions?.canManageMembers !== false;
+  const canRevokeShares = meeting?.permissions?.canManageShares !== false;
   async function inviteMember() {
+    if (!canManageMembers) return;
     const email = memberEmail.trim();
     if (!email || !meeting?.id) return;
     setMemberBusy(`invite:${email}`); setMemberNotice(''); setMemberError('');
@@ -518,14 +522,14 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
     finally { setMemberBusy(''); }
   }
   async function removeMember(userId) {
-    if (!meeting?.id) return;
+    if (!canManageMembers || !meeting?.id) return;
     setMemberBusy(`remove:${userId}`); setMemberNotice(''); setMemberError('');
     try { await managementClient.removeMember(meeting.id, userId); setMembers((current) => current.filter((item) => item.userId !== userId)); setMemberNotice('成員已移除。'); }
     catch { setMemberError('無法移除成員。'); }
     finally { setMemberBusy(''); }
   }
   async function updateMemberRecording(member) {
-    if (!meeting?.id) return;
+    if (!canManageMembers || !meeting?.id) return;
     setMemberBusy(`record:${member.userId}`); setMemberNotice(''); setMemberError('');
     try {
       const updated = await managementClient.updateMemberRecording(meeting.id, member.userId, member.canRecord === false);
@@ -591,7 +595,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
           {meeting ? <section className="meeting-settings-card" aria-labelledby="meeting-recording-permissions-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">RECORDING ACCESS</p><h3 id="meeting-recording-permissions-title">錄製權限</h3><p className="meeting-settings-card-description">關閉後會保留成員關係，但該成員無法錄製本場會議。</p></div></div><div className="meeting-recording-permission-list">{members.map((member) => <label className="meeting-member-row" key={`recording-${member.userId}`}><span>{member.email || member.userId}</span><span><input type="checkbox" aria-label={`允許 ${member.email || member.userId} 錄製`} checked={member.canRecord !== false} onChange={() => void updateMemberRecording(member)} disabled={Boolean(memberBusy) || meeting.status === 'completed'} />允許錄製</span></label>)}</div></section> : null}
 
-          {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed'} onLayoutReady={handleShareLayoutReady} /> : null}
+          {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed' || !canRevokeShares} onLayoutReady={handleShareLayoutReady} /> : null}
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>
         </section>
       </div>

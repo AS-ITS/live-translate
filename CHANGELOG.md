@@ -1,4 +1,5 @@
 # Changelog
+- Active Meeting members can edit ordinary Meeting settings and create or view Viewer shares; destructive management actions remain owner-scoped.
 - 即時會議開始錄音前會檢查登入帳號是否已設定 Gemini API Key；未設定時直接顯示設定入口，不啟動麥克風或錄音流程。
 - Account management now keeps the current signed-in account status visible and audit logs include application-level login outcomes for active, pending, and disabled profiles.
 - Staging validation now uses local Supabase, the local backend, and local E2E checks; manual cloud validation retains only the production read-only preflight and no longer requires staging secrets.

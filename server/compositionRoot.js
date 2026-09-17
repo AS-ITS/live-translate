@@ -218,6 +218,7 @@ export function createApplicationDependencies(options = {}) {
     profileRepository: { getProfile: (userId) => profileService.getProfile({ id: userId }) },
     membershipRepository: {
       find: ({ meetingId, userId }) => profileService.findMeetingMembership(meetingId, userId),
+      getMeetingOwner: (meetingId) => profileService.getMeetingOwner(meetingId),
       list: ({ meetingId, actor }) => profileService.listMeetingMembers(actor, meetingId),
     },
     meetingRepository: resolvedMeetingRepository,

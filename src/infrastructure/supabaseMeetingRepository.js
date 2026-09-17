@@ -1,6 +1,6 @@
 import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
-import { currentRequestOwnerId } from '../../server/requestIdentity.js';
+import { currentRequestOwnerId, currentRequestUserId } from '../../server/requestIdentity.js';
 import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseMeetingRepository(options = {}) {
@@ -34,7 +34,16 @@ export function createSupabaseMeetingRepository(options = {}) {
       return existing;
     },
     async listMeetings() {
-      const rows = await client.request('meetings', { query: `?select=*&${eq('owner_user_id', owner())}&order=created_at.desc` });
+      const ownerUserId = owner();
+      const actorUserId = currentRequestUserId() || ownerUserId;
+      const memberships = await client.request('meeting_members', {
+        query: `?select=meeting_id&${eq('user_id', actorUserId)}`
+      });
+      const meetingIds = memberships.map((item) => item.meeting_id).filter(Boolean);
+      const query = meetingIds.length > 0
+        ? `?select=*&or=(owner_user_id.eq.${encodeURIComponent(ownerUserId)},id.in.(${meetingIds.map(encodeURIComponent).join(',')}))&order=created_at.desc`
+        : `?select=*&${eq('owner_user_id', ownerUserId)}&order=created_at.desc`;
+      const rows = await client.request('meetings', { query });
       return rows.map(meetingFromRow);
     },
     async createMeetingSegment(input) {

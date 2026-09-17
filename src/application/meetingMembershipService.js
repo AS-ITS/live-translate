@@ -27,6 +27,17 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
       return (await ownerFor(meetingId)) === actor.id;
     },
 
+    async canAccessMeeting(meetingId, actor) {
+      if (!meetingId || !actor?.id) return false;
+      const profile = typeof profileRepository?.getProfile === 'function'
+        ? await profileRepository.getProfile(actor.id)
+        : actor;
+      if (!profile || profile.status !== ACTIVE) return false;
+      if (profile.role === 'super_admin') return true;
+      if ((await ownerFor(meetingId)) === actor.id) return true;
+      return Boolean(await membershipRepository.find({ meetingId, userId: actor.id }));
+    },
+
     async getMeetingOwner(meetingId) {
       return ownerFor(meetingId);
     },
@@ -57,7 +68,11 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
   async function ownerFor(meetingId) {
     if (typeof meetingRepository?.getMeeting === 'function') {
       const meeting = await meetingRepository.getMeeting(meetingId);
-      return meeting?.ownerUserId || meeting?.owner_user_id || null;
+      const ownerUserId = meeting?.ownerUserId || meeting?.owner_user_id;
+      if (ownerUserId) return ownerUserId;
+    }
+    if (typeof membershipRepository.getMeetingOwner === 'function') {
+      return membershipRepository.getMeetingOwner(meetingId);
     }
     const membership = await membershipRepository.find({ meetingId, owner: true });
     return membership?.ownerUserId || membership?.owner_user_id || null;

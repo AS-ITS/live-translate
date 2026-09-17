@@ -1429,7 +1429,13 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       }
 
       statusCode = 200;
-      sendJson(res, statusCode, meeting, requestId);
+      sendJson(res, statusCode, {
+        ...meeting,
+        meeting: {
+          ...meeting.meeting,
+          permissions: await meetingPermissionsFor(meetingId, authenticatedUser, meetingMembershipService)
+        }
+      }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -2574,9 +2580,13 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
   if (meetingMatch && meetingMatch[1] !== 'glossary') {
     const meetingId = safeDecodePathComponent(meetingMatch[1]);
     const canRecord = isMemberMeetingRecordingPath(req.method, path);
+    const canEditSettings = req.method === 'GET' || req.method === 'PATCH';
+    const canManageShares = isMeetingShareCollectionPath(path) && (req.method === 'GET' || req.method === 'POST');
     const allowed = canRecord
       ? await meetingMembershipService.canRecord(meetingId, user.id)
-      : await meetingMembershipService.canManage(meetingId, user);
+      : canEditSettings || canManageShares
+        ? await canAccessMeeting(meetingMembershipService, meetingId, user)
+        : await meetingMembershipService.canManage(meetingId, user);
     if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
     const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
     if (!ownerUserId) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
@@ -2597,6 +2607,26 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
     }
   }
   return null;
+}
+
+async function canAccessMeeting(meetingMembershipService, meetingId, user) {
+  if (typeof meetingMembershipService?.canAccessMeeting === 'function') {
+    return meetingMembershipService.canAccessMeeting(meetingId, user);
+  }
+  return meetingMembershipService?.canManage?.(meetingId, user);
+}
+
+async function meetingPermissionsFor(meetingId, user, meetingMembershipService) {
+  const canAccess = await canAccessMeeting(meetingMembershipService, meetingId, user);
+  const canManage = await meetingMembershipService?.canManage?.(meetingId, user);
+  return {
+    canEditSettings: canAccess,
+    canViewShares: canAccess,
+    canManageShares: Boolean(canManage),
+    canManageMembers: Boolean(canManage),
+    canDelete: Boolean(canManage),
+    canComplete: Boolean(canManage)
+  };
 }
 
 function isRecorderAuthorizedPath(method, path, req) {

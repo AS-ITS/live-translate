@@ -8,25 +8,45 @@ Google OAuth is not automated in the regular E2E suite. Deterministic identity t
 
 Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
 
-## Cloud validation
+## CI and cloud validation
+
+Pull requests and pushes to `main` run `.github/workflows/ci.yml` for syntax, build, security/cloud boundary, Issue #33 account permissions, durable worker, and Viewer checks. `.github/workflows/supabase-migrations.yml` starts a local Supabase stack, resets the database, and lints all migrations. It does not connect to a Supabase cloud project.
+
+Vercel's Git integration creates the Preview deployment. `.github/workflows/vercel-preview-check.yml` listens for a successful Vercel Preview deployment and runs the read-only deployment preflight against its URL. It does not deploy a second copy or call Gemini.
+
+## Local staging-equivalent validation
+
+Run staging-equivalent checks against the local Supabase stack and local backend:
+
+```bash
+npm run db:start
+npm run db:reset
+npm run db:lint
+npm run test:integration
+npm run test:e2e
+```
+
+These local tests do not call the Gemini production API. Local Supabase validates migrations, RLS, and the local data flow only; it does not replace confirmation that the production Supabase deployment and connections are configured correctly.
+
+For an additional deployment preflight after starting the local server, run:
+
+```bash
+SMOKE_BASE_URL=http://127.0.0.1:3000 npm run test:deployment-preflight
+```
+
+## Manual cloud validation
 
 Cloud checks are split by deployment risk:
 
 - Local E2E keeps its existing local backend and Vite web servers.
-- Staging authenticated smoke uses a dedicated short-lived `CLOUD_TEST_ACCESS_TOKEN` to verify health, readiness, auth gates, profile access, Meeting creation/read/share, and cleanup. It does not automate Google OAuth or create a Gemini session.
+- Staging cloud smoke is not enabled in GitHub Actions; use the local staging-equivalent validation above. The retained `tests/cloud/stagingSmoke.spec.js` is an optional asset for a future cloud check.
 - Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
-
-```bash
-CLOUD_BASE_URL=https://staging.example.com \
-CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
-npm run test:e2e:cloud
-```
 
 ```bash
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
 ```
 
-The manual workflow `.github/workflows/cloud-validation.yml` expects `STAGING_BASE_URL`, `STAGING_TEST_ACCESS_TOKEN`, and `PRODUCTION_BASE_URL`. Staging data uses a unique `codex-cloud-smoke-` prefix and is deleted in a `finally` block. Real Gemini smoke remains a separate explicit opt-in.
+The manual workflow `.github/workflows/cloud-validation.yml` is production-only and requires `PRODUCTION_BASE_URL`. It does not require staging secrets. Real Gemini smoke remains a separate explicit opt-in.
 
 ## Account permissions
 

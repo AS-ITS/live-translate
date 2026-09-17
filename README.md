@@ -179,9 +179,12 @@ checks transcription reconnects plus the token request limit. See
 See [docs/TESTING.md](docs/TESTING.md) for the full testing policy and targeted
 commands.
 
-Cloud validation is manual and split into authenticated staging smoke and
-read-only production preflight. See [Cloud validation](docs/TESTING.md#cloud-validation)
-for required secrets and commands.
+PR CI runs deterministic application checks, local Supabase migration reset/lint,
+and a read-only preflight against each successful Vercel Preview deployment.
+Cloud validation is production-only and runs a read-only preflight. Staging-equivalent
+validation uses local Supabase, the local backend, and local E2E tests. See
+[testing and cloud validation](docs/TESTING.md#manual-cloud-validation) for workflow details
+and commands.
 
 ## Documentation
 

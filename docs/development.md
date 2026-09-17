@@ -73,6 +73,22 @@ npm run db:reset
 npm run db:lint
 ```
 
+Use the local stack as the staging-equivalent validation environment:
+
+```bash
+npm run db:start
+npm run db:reset
+npm run db:lint
+npm run test:integration
+npm run test:e2e
+```
+
+These checks use local Supabase and do not call the Gemini production API. They validate local migrations, RLS, and data flow, but cannot replace production Supabase deployment and connection checks. After starting the local backend, an optional read-only deployment preflight is:
+
+```bash
+SMOKE_BASE_URL=http://127.0.0.1:3000 npm run test:deployment-preflight
+```
+
 Vercel environment variables are configured per environment in the Vercel
 project. Keep `SUPABASE_SECRET_KEY` and future `KEY_ENCRYPTION_SECRET`
 server-only; never prefix them with `VITE_`. The 4.5 MB Vercel Function

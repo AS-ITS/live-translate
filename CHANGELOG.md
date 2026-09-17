@@ -1,4 +1,5 @@
 # Changelog
+- Account management now keeps the current signed-in account status visible and audit logs include application-level login outcomes for active, pending, and disabled profiles.
 - Staging validation now uses local Supabase, the local backend, and local E2E checks; manual cloud validation retains only the production read-only preflight and no longer requires staging secrets.
 - 整理 CI workflow：PR 與 main 執行 deterministic checks、Supabase local migration validation，並對 Vercel Preview 執行 deployment preflight；保留手動 cloud validation 與排程 translation worker。
 - Issue #33 follow-up: active `super_admin` recording authorization is consistent across authenticated meeting paths, and account disable E2E coverage now deterministically verifies confirmation, asset transfer, reload, and disabled state.

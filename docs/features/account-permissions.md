@@ -33,3 +33,6 @@ Active super admins can query `GET /api/admin/audit-logs` with `page`, `pageSize
 ## Issue #33 approval clarification
 
 Domain matching is the first gate, not immediate application access. New profiles are `member` with `pending` status until an active `super_admin` approves them. Pending users may only read `GET /api/profile`, wait for approval, sign out, or switch accounts; they cannot use Meeting, Gemini, or admin APIs. There is no password flow, recorder role, or independent allowlist table. Existing `active` and `disabled` profiles remain unchanged by the migration.
+## Login audit and current account
+
+The account management page always shows the current signed-in account summary and marks its row when that account is present in the current page. Application-level login events use `auth_login` with `success` or `failure`; failure covers authenticated `pending` and `disabled` profiles, not provider-level OAuth failures.

@@ -645,7 +645,8 @@ export function createRequestHandler(options = {}) {
     , accessControl: requestAccessControl = globalAccessControl
  , profileService = createProfileService()
  , meetingMembershipService: injectedMeetingMembershipService
-    , credentialRepository = createGeminiCredentialRepository()
+ , credentialRepository = createGeminiCredentialRepository()
+ , authEventAuditLogService = createAuditLogService()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
   , readinessCheck
@@ -711,6 +712,7 @@ export function createRequestHandler(options = {}) {
       , accessControl: requestAccessControl
       , profileService
       , credentialRepository
+      , authEventAuditLogService
       , strictCheckpointPathIds
     });
   };
@@ -723,7 +725,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
- { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
@@ -794,7 +796,7 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential'].includes(path)) {
+  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential', '/api/auth-events'].includes(path)) {
     statusCode = 503;
     logEvent({
       level: 'error',
@@ -910,6 +912,31 @@ if (authenticatedUser?.status === 'pending' && !(req.method === 'GET' && path ==
   statusCode = ERROR_RESPONSES.auth_pending.status;
   sendJson(res, statusCode, errorPayload('auth_pending', requestId), requestId);
   return;
+}
+
+if (req.method === 'POST' && path === '/api/auth-events') {
+ try {
+  enforceRateLimit(`${clientIp}:auth-events`);
+  if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
+  const authUser = await requestAccessControl.validateRequest(req);
+  if (!authUser?.id) throw createHttpError('auth_required');
+  const body = await readJson(req, { maxBytes: 4 * 1024 });
+  if (body?.event !== 'login') throw createHttpError('invalid_request');
+  const profile = await profileService.getProfile(authUser);
+  const result = profile?.status === 'active' ? 'success' : 'failure';
+  try {
+   await authEventAuditLogService?.record({ actor_user_id: authUser.id, action: 'auth_login', result, request_id: requestId });
+  } catch {
+   logEvent({ level: 'warn', event: 'audit_write_failed', action: 'auth_login', result, requestId, safeSummary: 'Login audit write failed.' });
+  }
+  statusCode = 202;
+  sendJson(res, statusCode, { accepted: true, requestId }, requestId);
+ } catch (error) {
+  const code = errorCodeFor(error);
+  statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+  sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+ }
+ return;
 }
 
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
@@ -2510,7 +2537,7 @@ function isPublicApiPath(method, path) {
     isSharedSessionEventsPath(path) ||
     isSharedMeetingDetailPath(path) ||
     isSharedMeetingEventsPath(path)
-  )) || (method === 'POST' && (isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
+  )) || (method === 'POST' && (path === '/api/auth-events' || isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
 async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository }) {

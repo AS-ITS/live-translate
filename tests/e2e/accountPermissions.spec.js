@@ -18,11 +18,14 @@ test('account management shows users and reloads after disable', async ({ page }
   });
   await page.route(/\/api\/admin\/users(?:\?.*)?$/, async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
-    return route.fulfill({ json: { users: [{ id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }], transferTargets: [{ id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 2, active: disabled ? 1 : 2, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 2, totalPages: 1 } } });
+    return route.fulfill({ json: { users: [{ id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' }, { id: 'source-1', email: 'source@example.com', role: 'member', status: disabled ? 'disabled' : 'active' }, { id: 'target-1', email: 'target@example.com', role: 'member', status: 'active' }], transferTargets: [{ id: 'admin-1', email: 'admin@example.com' }, { id: 'source-1', email: 'source@example.com' }, { id: 'target-1', email: 'target@example.com' }], counts: { all: 3, active: disabled ? 2 : 3, disabled: disabled ? 1 : 0 }, pagination: { page: 1, pageSize: 12, total: 3, totalPages: 1 } } });
   });
   page.on('dialog', (dialog) => dialog.accept());
   await page.goto('/#admin');
-  await expect(page.locator('.account-summary-card strong').first()).toHaveText('2');
+  await expect(page.locator('.account-summary-card strong').first()).toHaveText('3');
+  await expect(page.getByTestId('current-account-summary')).toContainText('admin@example.com');
+  await expect(page.getByTestId('current-account-summary')).toContainText('啟用中');
+  await expect(page.locator('.account-management-data-grid .ag-row').filter({ hasText: 'admin@example.com' }).getByText('目前帳號')).toBeVisible();
   const searchInput = page.getByRole('textbox', { name: '搜尋帳號' });
   await searchInput.fill('source@example.com');
   await expect(page.locator('.account-management-data-grid .ag-cell[col-id="email"]', { hasText: 'source@example.com' })).toHaveCount(1);
@@ -46,17 +49,18 @@ test('account management shows users and reloads after disable', async ({ page }
   expect(disableRequestBody).toEqual({ transferToUserId: 'target-1' });
   expect(usersReload.status()).toBe(200);
   await expect(page.getByText('帳號狀態已更新。')).toBeVisible();
-  const disabledRow = page.locator('.account-management-data-grid .ag-row', { hasText: 'source@example.com' }).first();
-  await expect(disabledRow.getByRole('button', { name: '重新啟用帳號' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '重新啟用帳號' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '稽核紀錄' })).toHaveCount(0);
 
   await page.goto('/#audit');
   await expect(page.locator('#audit-log-page-title')).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'user_disabled' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '停用帳號' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('member_invited');
-  await expect(page.getByRole('cell', { name: 'member_invited' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '邀請成員' })).toBeVisible();
+  await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('auth_login');
+  await expect(page.getByRole('cell', { name: '登入' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('failure');
-  await expect(page.getByRole('cell', { name: 'failure' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '失敗' })).toBeVisible();
   await page.getByRole('button', { name: '下一頁' }).click();
   await expect(page.getByText('第 2 / 2 頁')).toBeVisible();
   auditFailure = true;

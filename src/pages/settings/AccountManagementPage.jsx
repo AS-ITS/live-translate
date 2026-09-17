@@ -3,6 +3,7 @@ import { Search, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { dataGridProps } from '../../lib/dataGrid.js';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
+import { useAuth } from '../../components/AuthGate.jsx';
 
 function accountRoleLabel(role) {
   return role === 'super_admin' ? '系統管理員' : role === 'owner' ? 'Owner' : '成員';
@@ -22,6 +23,10 @@ const ACCOUNT_STATUS_FILTERS = [
 function AccountStatusCell({ value }) {
   const isActive = value === 'active';
   return <span className={`account-table-status ${isActive ? 'is-active' : value === 'pending' ? 'is-pending' : 'is-disabled'}`} role="status" aria-label={`帳號狀態：${accountStatusLabel(value)}`}><span aria-hidden="true" />{accountStatusLabel(value)}</span>;
+}
+
+function AccountIdentityCell({ value, data }) {
+  return <span className="account-table-identity"><span>{value}</span>{data.isCurrentUser ? <span className="account-table-current-badge">目前帳號</span> : null}</span>;
 }
 
 function AccountRoleCell({ value }) {
@@ -55,6 +60,7 @@ function AccountActionsCell({ data, context }) {
 }
 
 export function AccountManagementPage() {
+  const { profile } = useAuth();
   const client = useMemo(() => createAccountManagementApiClient(), []);
   const [users, setUsers] = useState([]);
   const [transfer, setTransfer] = useState({});
@@ -126,10 +132,11 @@ export function AccountManagementPage() {
   const rowData = useMemo(() => users.map((user) => ({
     ...user,
     transferTargetId: transfer[user.id] || '',
-    isBusy: busy === user.id
-  })), [users, transfer, busy]);
+    isBusy: busy === user.id,
+    isCurrentUser: user.id === profile?.id
+  })), [users, transfer, busy, profile?.id]);
   const columnDefs = useMemo(() => [
-    { headerName: '帳號', field: 'email', minWidth: 260, flex: 1.4 },
+    { headerName: '帳號', field: 'email', minWidth: 260, flex: 1.4, cellRenderer: AccountIdentityCell },
     { headerName: '角色', field: 'role', width: 170, cellRenderer: AccountRoleCell },
     { headerName: '狀態', field: 'status', width: 150, cellRenderer: AccountStatusCell },
     { headerName: '資產接手者', field: 'transferTargetId', minWidth: 260, flex: 1.2, sortable: false, cellRenderer: AccountTransferCell },
@@ -160,6 +167,11 @@ export function AccountManagementPage() {
         <div className="account-summary-card account-summary-active"><span>啟用中</span><strong>{counts.active}</strong></div>
         <div className="account-summary-card account-summary-pending"><span>待確認</span><strong>{counts.pending}</strong></div>
         <div className="account-summary-card account-summary-disabled"><span>已停用</span><strong>{counts.disabled}</strong></div>
+      </div>
+      <div className="account-current-user" aria-label="目前登入帳號" data-testid="current-account-summary">
+        <div><span className="account-current-user-label">目前登入帳號</span><strong>{profile?.email || '目前帳號'}</strong></div>
+        <div><span className="account-current-user-label">角色</span><strong>{accountRoleLabel(profile?.role)}</strong></div>
+        <div><span className="account-current-user-label">狀態</span><AccountStatusCell value={profile?.status || 'active'} /></div>
       </div>
       <div className="account-table-toolbar">
         <label className="field account-search-field">

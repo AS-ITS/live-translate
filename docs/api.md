@@ -1419,3 +1419,6 @@ Current transcript polishing uses a structured source-and-translation result.
 Failed executions retain safe provider
 diagnostics (`status`, provider code/status/message, model, and config field
 names) without prompt text, transcript content, API keys, or tokens.
+## Application login audit event
+
+`POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server reads the authenticated profile status and writes `auth_login` with `result: success` for active profiles or `result: failure` for pending and disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.

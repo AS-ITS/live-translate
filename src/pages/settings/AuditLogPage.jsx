@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
 
-const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, 'member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer'].map((item) => typeof item === 'string' ? { value: item, label: item } : item);
+const AUDIT_ACTION_LABELS = { member_invited: '邀請成員', member_removed: '移除成員', user_approved: '核准帳號', user_enabled: '啟用帳號', user_disabled: '停用帳號', asset_transfer: '資產移轉', auth_login: '登入' };
+const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, ...Object.entries(AUDIT_ACTION_LABELS).map(([value, label]) => ({ value, label }))];
 const AUDIT_RESULT_FILTERS = [{ value: 'all', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失敗' }];
 
 export function AuditLogPage() {
@@ -65,7 +66,7 @@ export function AuditLogPage() {
       {auditError ? <div className="account-audit-error"><p className="error-message" role="alert">{auditError.apiMessage || auditError.code || '稽核紀錄載入失敗。'}{auditError.requestId ? `（識別碼：${auditError.requestId}）` : ''}</p><button type="button" onClick={() => setAuditReloadKey((current) => current + 1)}>重新載入稽核紀錄</button></div> : null}
       {auditLoading ? <p className="empty-state" role="status">載入稽核紀錄中…</p> : null}
       {!auditError && !auditLoading && auditLogs.length === 0 ? <p className="empty-state">目前沒有符合條件的稽核紀錄。</p> : null}
-      {auditLogs.length > 0 ? <div className="account-management-table-scroll"><table className="account-audit-table"><thead><tr><th>時間</th><th>動作</th><th>結果</th><th>Actor</th><th>Target</th><th>Meeting</th><th>Request</th></tr></thead><tbody>{auditLogs.map((log, index) => <tr key={`${log.created_at}-${index}`}><td>{log.created_at}</td><td>{log.action}</td><td>{log.result}</td><td>{log.actor_user_id || '—'}</td><td>{log.target_user_id || '—'}</td><td>{log.target_meeting_id || '—'}</td><td>{log.request_id || '—'}</td></tr>)}</tbody></table></div> : null}
+      {auditLogs.length > 0 ? <div className="account-management-table-scroll"><table className="account-audit-table"><thead><tr><th>時間</th><th>動作</th><th>結果</th><th>Actor</th><th>Target</th><th>Meeting</th><th>Request</th></tr></thead><tbody>{auditLogs.map((log, index) => <tr key={`${log.created_at}-${index}`}><td>{log.created_at}</td><td>{AUDIT_ACTION_LABELS[log.action] || log.action}</td><td>{log.result === 'success' ? '成功' : '失敗'}</td><td>{log.actor_user_id || '—'}</td><td>{log.target_user_id || '—'}</td><td>{log.target_meeting_id || '—'}</td><td>{log.request_id || '—'}</td></tr>)}</tbody></table></div> : null}
       <div className="account-management-pagination" aria-label="稽核紀錄分頁"><span>共 {auditPagination.total} 筆</span><button type="button" onClick={() => setAuditPage((current) => current - 1)} disabled={auditLoading || auditPage <= 1}>上一頁</button><span>第 {auditPagination.totalPages ? auditPage : 0} / {auditPagination.totalPages} 頁</span><button type="button" onClick={() => setAuditPage((current) => current + 1)} disabled={auditLoading || auditPage >= auditPagination.totalPages}>下一頁</button></div>
     </section>
   </section>;

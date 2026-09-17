@@ -11,6 +11,9 @@ const safe = await service.record({ action: 'asset_transfer', result: 'success',
 assert.equal(entries[0].action, 'asset_transfer');
 const approval = await service.record({ action: 'user_approved', result: 'success', target_user_id: 'pending' });
 assert.equal(approval.action, 'user_approved');
+const login = await service.record({ action: 'auth_login', result: 'failure', actor_user_id: 'pending', request_id: 'login-request' });
+assert.equal(login.action, 'auth_login');
+assert.equal(login.result, 'failure');
   await assert.rejects(service.record({ action: 'unknown', result: 'success' }), { code: 'audit_action_invalid' });
   await assert.rejects(service.record({ action: 'user_enabled', result: 'pending' }), { code: 'audit_result_invalid' });
 });

@@ -40,7 +40,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const action = options.action ?? 'all';
       const result = options.result ?? 'all';
       const query = String(options.query ?? '').trim();
-      const actions = ['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer'];
+      const actions = ['member_invited', 'member_removed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer', 'auth_login'];
       if (!Number.isInteger(page) || page < 1 || ![25, 50, 100].includes(pageSize) || (action !== 'all' && !actions.includes(action)) || !['all', 'success', 'failure'].includes(result) || query.length > 100) throw accountError('invalid_request', 400);
       const filters = [];
       if (action !== 'all') filters.push(`action=eq.${encodeURIComponent(action)}`);

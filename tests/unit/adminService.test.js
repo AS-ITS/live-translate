@@ -101,3 +101,14 @@ test('audit UUID searches use exact ID filters and request IDs remain partial ma
   assert.match(urls[0], /request_id\.ilike\.\*request-123\*/);
   assert.doesNotMatch(urls[0], /(?:actor_user_id|target_user_id|target_meeting_id)\.(?:eq|ilike)/);
 });
+
+test('admin audit filters accept login events', async () => {
+  const urls = [];
+  const service = createAdminService({ env, fetchImpl: async (url) => {
+    urls.push(url);
+    return json([], 200, '0-24/0');
+  } });
+  await service.listAuditLogs(admin, { action: 'auth_login', result: 'failure' });
+  assert.match(urls[0], /action=eq\.auth_login/);
+  assert.match(urls[0], /result=eq\.failure/);
+});

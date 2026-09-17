@@ -29,6 +29,31 @@ function makeRequest(handler, { method = 'GET', url, headers = {}, body = '' } =
 
 const admin = { id: 'admin-1', role: 'super_admin', status: 'active' };
 
+test('auth event audit records active and blocked profile outcomes', async () => {
+  const entries = [];
+  let user = { id: 'active-1', email: 'active@example.com' };
+  const handler = createRequestHandler({
+    accessControl: { validateRequest: () => user },
+    profileService: { getProfile: async () => ({ ...user, status: user.id === 'active-1' ? 'active' : user.id === 'pending-1' ? 'pending' : 'disabled' }) },
+    authEventAuditLogService: { record: async (entry) => entries.push(entry) }
+  });
+
+  const success = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });
+  assert.equal(success.statusCode, 202);
+  assert.equal(entries[0].action, 'auth_login');
+  assert.equal(entries[0].result, 'success');
+
+  user = { id: 'pending-1', email: 'pending@example.com' };
+  const failure = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });
+  assert.equal(failure.statusCode, 202);
+  assert.equal(entries[1].result, 'failure');
+
+  user = { id: 'disabled-1', email: 'disabled@example.com' };
+  const disabled = await makeRequest(handler, { method: 'POST', url: '/api/auth-events', headers: { authorization: 'Bearer signed-token', 'content-type': 'application/json' }, body: JSON.stringify({ event: 'login' }) });
+  assert.equal(disabled.statusCode, 202);
+  assert.equal(entries[2].result, 'failure');
+});
+
 test('local member membership is required for recording and owner-only management', async () => {
   const profileService = createProfileService({ env: {} });
   const owner = { id: 'owner-1', role: 'member', status: 'active' };

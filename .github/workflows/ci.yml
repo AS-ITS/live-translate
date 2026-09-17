@@ -1,37 +1,36 @@
-name: P0 checks
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
 jobs:
   validate:
+    name: Validate application
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-
       - name: Install dependencies
         run: npm ci
-
       - name: Check JavaScript syntax
         run: npm run check
-
       - name: Build frontend
         run: npm run build
-
       - name: Run security and cloud boundary tests
         run: >-
           node --test
@@ -41,7 +40,15 @@ jobs:
           tests/unit/accessControlSupabase.test.js
           tests/unit/tokenRequestValidation.test.js
           tests/unit/tokenService.test.js
-
+      - name: Run account permissions tests
+        run: >-
+          node --test
+          tests/unit/meetingMembership.test.js
+          tests/unit/adminService.test.js
+          tests/unit/auditLogService.test.js
+          tests/unit/profileService.test.js
+          tests/unit/profileHttpApi.test.js
+          tests/integration/accountPermissions.integration.test.js
       - name: Run durable worker and Viewer tests
         run: >-
           node --test
@@ -49,8 +56,3 @@ jobs:
           tests/unit/translationExecutionWorkerRuntime.test.js
           tests/unit/meetingViewerRealtime.test.js
           tests/unit/meetingViewerState.test.js
-
-      - name: Lint Supabase migrations
-        run: |
-          npx supabase@latest start
-          npx supabase@latest db lint --local

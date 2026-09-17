@@ -22,11 +22,15 @@
 .account-table-toolbar .field { margin: 0; }
 .account-search-field { flex: 1 1 auto; min-width: 16rem; }
 .account-status-filter-field { flex: 0 1 14rem; min-width: 12rem; }
+.account-audit-toolbar .account-audit-search-field input,
+.account-audit-toolbar .account-audit-filter-field select { box-sizing: border-box; height: var(--control-height); min-height: var(--control-height); }
 .account-table-toolbar .meeting-toolbar-input { box-sizing: border-box; height: 3.25rem; min-height: 3.25rem; }
 .account-table-toolbar .meeting-toolbar-input input { min-height: 2.75rem; }
 .account-table-toolbar .meeting-toolbar-input select { min-height: 2.75rem; }
-.account-management-table-scroll { min-width: 0; width: 100%; overflow-x: auto; }
-.account-management-data-grid { min-width: 920px; height: 24rem; }
+.account-management-table-region { min-height: 24rem; }
+.account-management-table-scroll { min-width: 0; width: 100%; min-height: 24rem; overflow-x: auto; }
+.account-management-data-grid { min-width: 920px; height: 24rem; min-height: 24rem; }
+.account-audit-data-grid { min-width: 1280px; height: 24rem; min-height: 24rem; }
 .account-table-status, .account-table-role { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2rem; }
 .account-table-status { color: var(--color-success); font-weight: 700; }
 .account-table-status span { width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; }
@@ -40,7 +44,7 @@
 .account-table-action { min-width: 8.5rem; white-space: nowrap; }
 .account-table-danger-action { border-color: var(--color-warning); background: var(--color-warning); color: #fff; }
 .account-table-danger-action:hover:not(:disabled) { border-color: #7f5000; background: #7f5000; }
-.account-management-empty { margin: 0; padding: var(--space-8) 0; color: var(--color-text-muted); text-align: center; }
+.account-management-empty { display: grid; min-height: 24rem; margin: 0; padding: var(--space-8) 0; place-items: center; box-sizing: border-box; color: var(--color-text-muted); text-align: center; }
 .account-management-pagination { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-3); min-height: 3.5rem; color: var(--color-text-muted); font-size: var(--text-sm); }
 .account-management-pagination label { display: inline-flex; align-items: center; gap: var(--space-2); }
 .account-management-pagination select, .account-management-pagination button { box-sizing: border-box; height: 2.25rem; min-height: 2.25rem; padding: 0 var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface); color: inherit; }
@@ -50,7 +54,9 @@
 
 @media (max-width: 760px) {
   .account-summary-grid { grid-template-columns: 1fr; }
-  .account-management-data-grid { height: 18rem; }
+  .account-management-table-region, .account-management-table-scroll { min-height: 18rem; }
+  .account-management-data-grid, .account-management-empty { height: 18rem; min-height: 18rem; }
+  .account-audit-data-grid { height: 18rem; min-height: 18rem; }
   .account-table-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .account-search-field, .account-status-filter-field { min-width: 0; }
 }

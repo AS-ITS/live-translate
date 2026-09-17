@@ -188,18 +188,20 @@ export function AccountManagementPage() {
           </div>
         </label>
       </div>
-      {isLoading && users.length === 0 ? <p className="empty-state account-management-empty" role="status">載入帳號中…</p> : null}
-      {!isLoading && users.length === 0 ? <p className="empty-state account-management-empty">{pagination.total ? '找不到符合條件的帳號。' : '目前沒有可管理的帳號。'}</p> : null}
-      {users.length > 0 ? <div className="account-management-table-scroll">
-        <AgGridReact
-          {...dataGridProps('account-management-data-grid', { fixedHeight: true, hidePaginationPanel: true })}
-          aria-label="帳號管理列表"
-          columnDefs={columnDefs}
-          context={gridContext}
-          rowData={rowData}
-          getRowId={({ data }) => data.id}
-        />
-      </div> : null}
+      <div className="account-management-table-region">
+        {isLoading && users.length === 0 ? <p className="empty-state account-management-empty" role="status">載入帳號中…</p> : null}
+        {!isLoading && users.length === 0 ? <p className="empty-state account-management-empty">{pagination.total ? '找不到符合條件的帳號。' : '目前沒有可管理的帳號。'}</p> : null}
+        {users.length > 0 ? <div className="account-management-table-scroll">
+          <AgGridReact
+            {...dataGridProps('account-management-data-grid', { fixedHeight: true, hidePaginationPanel: true })}
+            aria-label="帳號管理列表"
+            columnDefs={columnDefs}
+            context={gridContext}
+            rowData={rowData}
+            getRowId={({ data }) => data.id}
+          />
+        </div> : null}
+      </div>
       <div className="account-management-pagination" aria-label="帳號列表分頁">
         <span>顯示第 {pagination.total === 0 ? 0 : (page - 1) * pageSize + 1}–{Math.min(page * pageSize, pagination.total)} 筆，共 {pagination.total} 筆</span>
         <label>每頁筆數<select aria-label="每頁筆數" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}><option value="12">12</option><option value="24">24</option><option value="48">48</option></select></label>

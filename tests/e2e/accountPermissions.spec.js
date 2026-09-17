@@ -52,13 +52,15 @@ test('account management shows users and reloads after disable', async ({ page }
 
   await page.goto('/#audit');
   await expect(page.locator('#audit-log-page-title')).toBeVisible();
-  await expect(page.getByRole('cell', { name: '停用帳號' })).toBeVisible();
+  await expect(page.locator('.account-audit-data-grid')).toBeVisible();
+  await expect(page.locator('.account-audit-data-grid .ag-header-cell')).toHaveCount(7);
+  await expect(page.getByRole('gridcell', { name: '停用帳號' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('member_invited');
-  await expect(page.getByRole('cell', { name: '邀請成員' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: '邀請成員' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核動作' }).selectOption('auth_login');
-  await expect(page.getByRole('cell', { name: '登入' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: '登入' })).toBeVisible();
   await page.getByRole('combobox', { name: '篩選稽核結果' }).selectOption('failure');
-  await expect(page.getByRole('cell', { name: '失敗' })).toBeVisible();
+  await expect(page.getByRole('gridcell', { name: '失敗' })).toBeVisible();
   await page.getByRole('button', { name: '下一頁' }).click();
   await expect(page.getByText('第 2 / 2 頁')).toBeVisible();
   auditFailure = true;

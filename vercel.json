@@ -2,6 +2,7 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "routes": [
+    { "src": "/api/internal/worker", "dest": "/api/internal/worker.js" },
     { "src": "/api/(.*)", "dest": "/api/[...path].js" },
     { "src": "/healthz", "dest": "/api/[...path].js" },
     { "src": "/readyz", "dest": "/api/[...path].js" }

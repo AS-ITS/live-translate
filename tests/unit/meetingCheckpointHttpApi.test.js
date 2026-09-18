@@ -470,6 +470,41 @@ test('Meeting read requests log safe diagnostic fields for missing resources', a
   });
 });
 
+test('Meeting authorization rejection logs diagnostic fields before route handling', async () => {
+  const logs = [];
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'actor-1', role: 'member', status: 'active' }) },
+    meetingMembershipService: {
+      canAccessMeeting: async () => false,
+      getMeetingOwner: async () => 'owner-1'
+    },
+    requestLogger: (event) => logs.push(event)
+  });
+
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/meeting-1'
+  });
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(logs.at(-1), {
+    level: 'warn',
+    event: 'meeting_request',
+    requestId: response.headers['X-Request-Id'],
+    method: 'GET',
+    path: '/api/meetings/meeting-1',
+    statusCode: 403,
+    durationMs: logs.at(-1).durationMs,
+    clientIp: '127.0.0.1',
+    origin: '',
+    actorUserId: 'actor-1',
+    resourceOwnerId: 'owner-1',
+    meetingId: 'meeting-1',
+    errorCode: 'auth_forbidden',
+    supabaseProjectRef: null
+  });
+});
+
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
   const handler = createHandler();
   const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
@@ -830,7 +865,7 @@ test('checkpoint route reports invalid segment UUID details and request id', asy
   assert.equal(body.error.requestId, response.headers['X-Request-Id']);
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, strictCheckpointPathIds = false, requestLogger } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, accessControl, strictCheckpointPathIds = false, requestLogger } = {}) {
   const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -857,6 +892,8 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+    ...(meetingMembershipService ? { meetingMembershipService } : {}),
+    ...(accessControl ? { accessControl } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes }),
     ...(requestLogger ? { requestLogger } : {}),
     strictCheckpointPathIds

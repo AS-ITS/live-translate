@@ -403,10 +403,10 @@ function supabaseProjectRef(env = process.env) {
   }
 }
 
-function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode }) {
+function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode, resourceOwnerId }) {
   return {
     actorUserId: currentRequestActorId() || authenticatedUser?.actorUserId || authenticatedUser?.id || null,
-    resourceOwnerId: currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
+    resourceOwnerId: resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
     ...(meetingId ? { meetingId } : {}),
     statusCode,
     errorCode: errorCode || null,
@@ -762,6 +762,10 @@ async function handleRequestWithSessionReadController(
   let targetLanguageCode;
   let meetingDiagnosticId = null;
   let meetingDiagnosticErrorCode = null;
+  const meetingPathMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
+  if (meetingPathMatch && meetingPathMatch[1] !== 'glossary') {
+    meetingDiagnosticId = safeDecodePathComponent(meetingPathMatch[1]);
+  }
   setRequestUser(null);
 
   if (req.method === 'OPTIONS') {
@@ -966,14 +970,40 @@ if (req.method === 'POST' && path === '/api/auth-events') {
 
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       try {
-        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
-        if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
-        const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
-        if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
-      } catch (error) {
-        const code = errorCodeFor(error);
-        statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-        sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+    if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+    if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
+  } catch (error) {
+    const code = errorCodeFor(error);
+    statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+    if (meetingDiagnosticId) {
+      let resourceOwnerId = null;
+      try {
+        resourceOwnerId = await meetingMembershipService?.getMeetingOwner?.(meetingDiagnosticId);
+      } catch {
+        resourceOwnerId = null;
+      }
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'warn',
+        event: 'meeting_request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        ...meetingRequestDiagnostics({
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: code,
+          resourceOwnerId
+        })
+      });
+    }
+    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
         return;
       }
     }

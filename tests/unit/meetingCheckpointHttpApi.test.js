@@ -501,7 +501,7 @@ test('Meeting authorization rejection logs diagnostic fields before route handli
     durationMs: logs.at(-1).durationMs,
     clientIp: '127.0.0.1',
     origin: '',
-    authorizationStage: 'private_resource',
+    authStage: 'private_resource',
     actorUserId: 'actor-1',
     resourceOwnerId: 'owner-1',
     meetingId: 'meeting-1',
@@ -540,6 +540,28 @@ test('Meeting authorization diagnostics keep an unknown owner distinct from the 
   assert.equal(logs.at(-1).resourceOwnerId, null);
   assert.equal(logs.at(-1).ownerLookup, 'missing');
   assert.equal(logs.at(-1).ownerMatchesActor, null);
+});
+
+test('Super admins receive meeting_not_found when the owner lookup is missing', async () => {
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'admin-1', role: 'super_admin', status: 'active' }) },
+    profileService: {
+      getProfile: async (user) => ({ id: user.id, status: 'active', role: 'super_admin' }),
+      findMeetingMembership: async () => null
+    },
+    meetingMembershipService: {
+      canAccessMeeting: async () => true,
+      getMeetingOwner: async () => null
+    }
+  });
+
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/missing-meeting'
+  });
+
+  assert.equal(response.status, 404);
+  assert.equal(response.json().error.code, 'meeting_not_found');
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {

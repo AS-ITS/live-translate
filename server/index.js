@@ -1046,7 +1046,7 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
         origin,
-        authorizationStage,
+        authStage: authorizationStage,
         ...meetingRequestDiagnostics({
           meetingId: meetingDiagnosticId,
           authenticatedUser,
@@ -2703,7 +2703,9 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
         : await meetingMembershipService.canManage(meetingId, user);
     if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
     const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
-    if (!ownerUserId) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    if (!ownerUserId) {
+      throw createHttpError(user.role === 'super_admin' ? 'meeting_not_found' : (canRecord ? 'recorder_forbidden' : 'auth_forbidden'));
+    }
     return { ownerUserId };
   }
   if (sessionMatch && sessionMatch[1] !== 'shares') {

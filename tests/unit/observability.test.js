@@ -22,6 +22,13 @@ test('observability validates buckets, provider statuses, telemetry and redacts 
   assert.deepEqual(redactLogValue({ apiKey: 'secret', meetingId: 'meeting-1', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', meetingId: 'meeting-1', nested: { token: '[REDACTED]' } });
 });
 
+test('structured logs preserve non-sensitive auth stage diagnostics', () => {
+  assert.deepEqual(redactLogValue({ authStage: 'private_resource', authorization: 'Bearer secret' }), {
+    authStage: 'private_resource',
+    authorization: '[REDACTED]'
+  });
+});
+
 test('observed provider records safe success and failure metrics while preserving errors', async () => {
   const records = [];
   const metrics = { recordCounter: (...args) => records.push(['counter', ...args]), recordLatency: (...args) => records.push(['latency', ...args]) };

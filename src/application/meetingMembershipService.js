@@ -66,13 +66,14 @@ export function createMeetingMembershipService({ membershipRepository, profileRe
   });
 
   async function ownerFor(meetingId) {
+    if (typeof membershipRepository.getMeetingOwner === 'function') {
+      const ownerUserId = await membershipRepository.getMeetingOwner(meetingId);
+      if (ownerUserId) return ownerUserId;
+    }
     if (typeof meetingRepository?.getMeeting === 'function') {
       const meeting = await meetingRepository.getMeeting(meetingId);
       const ownerUserId = meeting?.ownerUserId || meeting?.owner_user_id;
       if (ownerUserId) return ownerUserId;
-    }
-    if (typeof membershipRepository.getMeetingOwner === 'function') {
-      return membershipRepository.getMeetingOwner(meetingId);
     }
     const membership = await membershipRepository.find({ meetingId, owner: true });
     return membership?.ownerUserId || membership?.owner_user_id || null;

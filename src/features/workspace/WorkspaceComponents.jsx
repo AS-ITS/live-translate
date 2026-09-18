@@ -10,6 +10,7 @@ import { createSessionReadApiClient } from '../../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
 import { meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
+import { meetingApiErrorMessage } from '../../lib/meetingApiError.js';
 import { createSessionSnapshotApiClient } from '../../lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from '../../lib/sessionCommandApiClient.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
@@ -308,7 +309,11 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
     try {
       const detail = await readClientRef.current.getMeetingDetail(id);
       const meeting = detail?.meeting;
-      if (!meeting) throw new Error('meeting_not_found');
+      if (!meeting) {
+        const error = new Error('Meeting not found.');
+        error.code = 'meeting_not_found';
+        throw error;
+      }
       setSelectedMeeting(meeting);
       setName(meeting?.name || '');
       setSourceLanguageCode(meeting?.sourceLanguageCode || DEFAULT_SOURCE_LANGUAGE_CODE);
@@ -317,8 +322,8 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
       setSelectedGlossaryIds(availableGlossaryEntries.filter((entry) => (meeting?.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[meetingTargetLanguageCode] === item.target)).map((entry) => entry.id));
       setPrivateGlossaryEntries(Array.isArray(meeting?.privateGlossaryEntries) ? meeting.privateGlossaryEntries : []);
       setViewMode('form');
-    } catch {
-      setError('無法載入會議設定。');
+    } catch (loadError) {
+      setError(meetingApiErrorMessage(loadError, '無法載入會議設定。'));
     }
   }
 

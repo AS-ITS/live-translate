@@ -1,4 +1,9 @@
 import { authenticatedFetch } from './accessToken.js';
+import { meetingApiErrorMessage } from './meetingApiError.js';
+
+export function meetingReadErrorMessage(error, fallback = '無法載入會議資料。') {
+  return meetingApiErrorMessage(error, fallback);
+}
 
 export function createMeetingReadApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') {
@@ -24,15 +29,6 @@ export function createMeetingReadApiClient({ fetchImpl = globalThis.fetch, baseU
       const response = await fetchImpl(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(normalizedMeetingId)}`), {
         method: 'GET'
       });
-
-      if (response?.status === 404) {
-        const body = await parseJsonResponse(response);
-        if (body?.error?.code === 'meeting_not_found') {
-          return null;
-        }
-
-        throw new Error('Meeting detail request failed with HTTP 404.');
-      }
 
       await assertOkResponse(response);
       const detail = await parseJsonResponse(response);

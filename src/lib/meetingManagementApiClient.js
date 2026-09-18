@@ -1,4 +1,5 @@
 import { authenticatedFetch } from './accessToken.js';
+import { meetingApiErrorMessage } from './meetingApiError.js';
 
 export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting management API client requires fetchImpl to be a function.');
@@ -85,22 +86,23 @@ export function createMeetingManagementApiClient({ fetchImpl = globalThis.fetch,
 }
 
 export function meetingManagementErrorMessage(error, fallback = '會議操作失敗，請稍後再試。') {
-  const messages = {
-    auth_required: '登入狀態已失效，請重新登入。',
-    auth_invalid: '登入狀態已失效，請重新登入。',
+  const managementMessages = {
     auth_forbidden: '目前帳號沒有權限執行此操作。',
     meeting_checkpoint_unavailable: '會議儲存服務目前未配置。',
-    meeting_not_found: '找不到這場會議，請重新整理後再試。',
-    meeting_share_invalid: '分享連結服務找不到，請確認部署的 API 版本。',
     meeting_settings_locked: '已完成的會議不可修改設定。',
-    unsupported_language: '選取的語言目前不支援。',
-    cloud_capability_unavailable: '雲端會議服務目前無法使用。'
+    unsupported_language: '選取的語言目前不支援。'
   };
-  const message = messages[error?.code]
-    || (error?.status === 404 ? '分享連結服務找不到，請確認部署的 API 版本。' : null)
-    || error?.apiMessage
-    || fallback;
-  return error?.requestId ? `${message}（識別碼：${error.requestId}）` : message;
+  const managementMessage = managementMessages[error?.code];
+  if (managementMessage) {
+    return error?.requestId ? `${managementMessage}（識別碼：${error.requestId}）` : managementMessage;
+  }
+
+  if (error?.code === 'meeting_share_invalid' || (error?.status === 404 && !error?.code)) {
+    const message = '分享連結服務找不到，請確認部署的 API 版本。';
+    return error?.requestId ? `${message}（識別碼：${error.requestId}）` : message;
+  }
+
+  return meetingApiErrorMessage(error, fallback);
 }
 
 async function parseMeeting(response) {

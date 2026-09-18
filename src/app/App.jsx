@@ -7,6 +7,7 @@ import { createMemorySessionRepository } from '../lib/sessionRepository.js';
 import { createSessionReadApiClient } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../lib/meetingReadApiClient.js';
+import { meetingApiErrorMessage } from '../lib/meetingApiError.js';
 import { createSessionSnapshotApiClient } from '../lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js';
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
@@ -1680,7 +1681,7 @@ export function App() {
       }
 
       setSelectedMeetingDetail(null);
-      setMeetingDetailError('會議詳細資料載入失敗。請重試。');
+      setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料載入失敗。請重試。'));
     }
   }
 
@@ -1714,9 +1715,9 @@ export function App() {
       }
       setSelectedMeetingDetail(detail);
       return true;
-    } catch {
+    } catch (loadError) {
       if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
-        setMeetingDetailError('會議詳細資料無法更新。');
+        setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料無法更新。'));
       }
 
       return false;

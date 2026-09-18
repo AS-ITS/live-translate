@@ -30,7 +30,7 @@ import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.
 import { createProfileService } from './profileService.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
-import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { currentRequestActorId, currentRequestOwnerId, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
@@ -394,6 +394,26 @@ function safeRequestErrorSummary(error) {
   }
 }
 
+function supabaseProjectRef(env = process.env) {
+  try {
+    const hostname = new URL(String(env.SUPABASE_URL || '')).hostname;
+    return hostname.endsWith('.supabase.co') ? hostname.slice(0, -'.supabase.co'.length) : null;
+  } catch {
+    return null;
+  }
+}
+
+function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode }) {
+  return {
+    actorUserId: currentRequestActorId() || authenticatedUser?.actorUserId || authenticatedUser?.id || null,
+    resourceOwnerId: currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
+    ...(meetingId ? { meetingId } : {}),
+    statusCode,
+    errorCode: errorCode || null,
+    supabaseProjectRef: supabaseProjectRef()
+  };
+}
+
 function loadDotenv({ cwd = process.cwd(), env = process.env } = {}) {
   const nodeEnv = env.NODE_ENV || 'development';
   const originalKeys = new Set(Object.keys(env));
@@ -651,6 +671,7 @@ export function createRequestHandler(options = {}) {
     , observabilityMetrics
   , readinessCheck
  , strictCheckpointPathIds = true
+ , requestLogger = logEvent
  } = options;
 
  const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
@@ -713,7 +734,8 @@ export function createRequestHandler(options = {}) {
       , profileService
       , credentialRepository
       , authEventAuditLogService
-      , strictCheckpointPathIds
+ , strictCheckpointPathIds
+ , requestLogger
     });
   };
 }
@@ -729,6 +751,7 @@ async function handleRequestWithSessionReadController(
 ) {
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
+  const requestLogger = arguments[2]?.requestLogger || logEvent;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -737,6 +760,8 @@ async function handleRequestWithSessionReadController(
   let authenticatedUser = null;
   let statusCode = 500;
   let targetLanguageCode;
+  let meetingDiagnosticId = null;
+  let meetingDiagnosticErrorCode = null;
   setRequestUser(null);
 
   if (req.method === 'OPTIONS') {
@@ -1389,10 +1414,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, meetings, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode }) });
     }
     return;
   }
@@ -1420,10 +1446,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
+      meetingDiagnosticId = meetingId;
       const meeting = await meetingReadController.getMeeting(meetingId);
 
       if (!meeting) {
         statusCode = 404;
+        meetingDiagnosticErrorCode = 'meeting_not_found';
         sendJson(res, statusCode, errorPayload('meeting_not_found', requestId), requestId);
         return;
       }
@@ -1438,10 +1466,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode }) });
     }
     return;
   }

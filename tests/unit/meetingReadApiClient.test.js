@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createMeetingReadApiClient } from '../../src/lib/meetingReadApiClient.js';
+import { createMeetingReadApiClient, meetingReadErrorMessage } from '../../src/lib/meetingReadApiClient.js';
 
 test('GET /api/meetings uses the correct URL and method', async () => {
   const calls = [];
@@ -45,14 +45,26 @@ test('meeting history and detail DTOs are returned unchanged', async () => {
   assert.strictEqual(await client.getMeetingDetail('meeting-1'), detail);
 });
 
-test('missing meeting detail returns null for meeting_not_found response', async () => {
+test('missing meeting detail preserves the structured 404 error and request ID', async () => {
   const client = createMeetingReadApiClient({
     fetchImpl() {
-      return jsonResponse({ error: { code: 'meeting_not_found' } }, { status: 404 });
+      return jsonResponse({ error: { code: 'meeting_not_found', requestId: 'request-missing-123' } }, { status: 404 });
     }
   });
 
-  assert.equal(await client.getMeetingDetail('missing-meeting'), null);
+  await assert.rejects(client.getMeetingDetail('missing-meeting'), (error) => {
+    assert.equal(error.status, 404);
+    assert.equal(error.code, 'meeting_not_found');
+    assert.equal(error.requestId, 'request-missing-123');
+    return true;
+  });
+});
+
+test('meeting read errors map status classes and preserve request IDs for UI', () => {
+  assert.equal(meetingReadErrorMessage({ status: 401, requestId: 'request-401' }), '登入狀態已失效，請重新登入。（識別碼：request-401）');
+  assert.equal(meetingReadErrorMessage({ status: 403, requestId: 'request-403' }), '目前帳號沒有權限查看這場會議。（識別碼：request-403）');
+  assert.equal(meetingReadErrorMessage({ status: 404, requestId: 'request-404' }), '找不到這場會議，請重新整理後再試。（識別碼：request-404）');
+  assert.equal(meetingReadErrorMessage({ status: 503, requestId: 'request-503' }), '雲端會議服務目前無法使用。（識別碼：request-503）');
 });
 
 test('unexpected HTTP errors and malformed responses reject', async () => {

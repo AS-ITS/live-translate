@@ -19,7 +19,7 @@ test('observability validates buckets, provider statuses, telemetry and redacts 
   assert.equal(providerStatusClass(503), '5xx');
   assert.deepEqual(validateViewerTelemetry({ eventType: 'event_gap', count: 2 }), { eventType: 'event_gap', count: 2 });
   assert.throws(() => validateViewerTelemetry({ eventType: 'unknown' }));
-  assert.deepEqual(redactLogValue({ apiKey: 'secret', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', nested: { token: '[REDACTED]' } });
+  assert.deepEqual(redactLogValue({ apiKey: 'secret', meetingId: 'meeting-1', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', meetingId: 'meeting-1', nested: { token: '[REDACTED]' } });
 });
 
 test('observed provider records safe success and failure metrics while preserving errors', async () => {

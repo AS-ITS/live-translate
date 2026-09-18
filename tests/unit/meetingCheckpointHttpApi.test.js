@@ -443,6 +443,33 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
   ]);
 });
 
+test('Meeting read requests log safe diagnostic fields for missing resources', async () => {
+  const logs = [];
+  const handler = createHandler({ requestLogger: (event) => logs.push(event) });
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/missing-meeting'
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(logs.at(-1), {
+    level: 'info',
+    event: 'meeting_request',
+    requestId: response.headers['X-Request-Id'],
+    method: 'GET',
+    path: '/api/meetings/missing-meeting',
+    durationMs: logs.at(-1).durationMs,
+    clientIp: '127.0.0.1',
+    origin: '',
+    actorUserId: null,
+    resourceOwnerId: null,
+    meetingId: 'missing-meeting',
+    statusCode: 404,
+    errorCode: 'meeting_not_found',
+    supabaseProjectRef: null
+  });
+});
+
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
   const handler = createHandler();
   const { meeting, segment } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
@@ -803,7 +830,7 @@ test('checkpoint route reports invalid segment UUID details and request id', asy
   assert.equal(body.error.requestId, response.headers['X-Request-Id']);
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, strictCheckpointPathIds = false } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, strictCheckpointPathIds = false, requestLogger } = {}) {
   const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -831,6 +858,7 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes }),
+    ...(requestLogger ? { requestLogger } : {}),
     strictCheckpointPathIds
   });
 }

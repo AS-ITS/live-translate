@@ -6,6 +6,7 @@ import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
 import { createMeetingManagementApiClient, meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
+import { meetingApiErrorMessage } from '../../lib/meetingApiError.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
 import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 
@@ -113,20 +114,24 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       }
 
       if (meetingResult.status === 'rejected') {
-        setError('無法載入會議設定。');
+        setError(meetingApiErrorMessage(meetingResult.reason, '無法載入會議設定。'));
         setIsLoading(false);
         return;
       }
 
       const detail = meetingResult.value;
       const current = detail?.meeting || null;
-      if (mode === 'edit' && !current) throw new Error('meeting_not_found');
+      if (mode === 'edit' && !current) {
+        setError(meetingApiErrorMessage({ code: 'meeting_not_found' }, '無法載入會議設定。'));
+        setIsLoading(false);
+        return;
+      }
       if (current) applyMeeting(current, glossaryEntries);
       if (current?.id) managementClient.listMembers(current.id).then(setMembers).catch(() => setMembers([]));
       setIsLoading(false);
-    }).catch(() => {
+    }).catch((loadError) => {
       if (!cancelled) {
-        setError('無法載入會議設定。');
+        setError(meetingApiErrorMessage(loadError, '無法載入會議設定。'));
         setIsLoading(false);
       }
     });

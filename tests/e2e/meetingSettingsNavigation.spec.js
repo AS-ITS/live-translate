@@ -281,6 +281,21 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
   await expect(page.locator('.meeting-share-results')).toBeVisible();
   await expect(page.locator('.share-result')).toHaveCount(1);
+  const settingsCardOrder = await page.locator('.meeting-settings-form > .meeting-settings-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('aria-labelledby')));
+  expect(settingsCardOrder).toEqual([
+    'meeting-basic-settings-title',
+    'meeting-language-settings-title',
+    'meeting-audio-settings-title',
+    'meeting-dictionary-settings-title',
+    'meeting-share-results-title',
+    'meeting-members-title',
+    'meeting-recording-permissions-title'
+  ]);
+  await expect(page.locator('.meeting-share-results .eyebrow')).toHaveText('STEP 5');
+  await expect(page.locator('.meeting-share-results .meeting-settings-card-number')).toHaveText('5');
+  const memberCard = page.locator('.meeting-settings-card').filter({ has: page.locator('#meeting-members-title') });
+  await expect(memberCard.locator('.eyebrow')).toHaveText('STEP 6 · ACCESS');
+  await expect(memberCard.locator('.meeting-settings-card-number')).toHaveText('6');
   const desktopShareLayout = await page.locator('.share-result').evaluate((card) => {
     const preview = card.querySelector('.share-result-preview').getBoundingClientRect();
     const details = card.querySelector('.share-result-details').getBoundingClientRect();
@@ -311,6 +326,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.getByRole('button', { name: '建立觀看連結' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '建立錄音分享連結' })).toHaveCount(0);
 
+  await page.getByRole('button', { name: '分享會議' }).click();
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
   await page.getByRole('button', { name: '成員與錄製權限' }).click();
   await expect(page.locator('#meeting-members-title')).toBeInViewport();

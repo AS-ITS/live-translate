@@ -281,6 +281,23 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.getByRole('button', { name: '分享會議' })).toBeVisible();
   await expect(page.locator('.meeting-share-results')).toBeVisible();
   await expect(page.locator('.share-result')).toHaveCount(1);
+  const desktopShareLayout = await page.locator('.share-result').evaluate((card) => {
+    const preview = card.querySelector('.share-result-preview').getBoundingClientRect();
+    const details = card.querySelector('.share-result-details').getBoundingClientRect();
+    const links = card.parentElement.getBoundingClientRect();
+    return {
+      cardWidth: card.getBoundingClientRect().width,
+      linksWidth: links.width,
+      previewRight: preview.right,
+      detailsLeft: details.left,
+      columns: getComputedStyle(card).gridTemplateColumns.split(' ').length
+    };
+  });
+  expect(desktopShareLayout.cardWidth).toBeGreaterThanOrEqual(desktopShareLayout.linksWidth - 1);
+  expect(desktopShareLayout.previewRight).toBeLessThanOrEqual(desktopShareLayout.detailsLeft);
+  expect(desktopShareLayout.columns).toBe(2);
+  await expect(page.locator('.share-result-details .share-url')).toBeVisible();
+  await expect(page.locator('.share-result-details .detail-button')).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const submitButton = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('儲存變更'));
     const section = document.querySelector('.meeting-share-results');
@@ -297,6 +314,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
   await page.getByRole('button', { name: '成員與錄製權限' }).click();
   await expect(page.locator('#meeting-members-title')).toBeInViewport();
+  await page.setViewportSize({ width: 600, height: 800 });
+  await expect.poll(() => page.locator('.share-result').evaluate((card) => getComputedStyle(card).gridTemplateColumns.split(' ').length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {

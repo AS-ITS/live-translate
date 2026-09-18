@@ -141,6 +141,10 @@ test('keeps both audio device selectors in a two-column layout when output selec
   await expect(page.getByLabel('選擇會議麥克風')).toBeVisible();
   await expect(page.getByLabel('選擇會議揚聲器')).toBeVisible();
   await expect.poll(() => deviceGrid.evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(' ').length)).toBe(2);
+  await expect.poll(() => deviceGrid.evaluate((node) => {
+    const selects = node.querySelectorAll('select');
+    return selects[1].getBoundingClientRect().left - selects[0].getBoundingClientRect().right;
+  })).toBeGreaterThan(0);
 });
 
 test('short desktop viewport can scroll the settings steps to the dictionary step', async ({ page }) => {
@@ -296,6 +300,12 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   const memberCard = page.locator('.meeting-settings-card').filter({ has: page.locator('#meeting-members-title') });
   await expect(memberCard.locator('.eyebrow')).toHaveText('STEP 6 · ACCESS');
   await expect(memberCard.locator('.meeting-settings-card-number')).toHaveText('6');
+  const memberInvite = memberCard.locator('.meeting-member-invite');
+  await expect.poll(() => memberInvite.evaluate((node) => {
+    const input = node.querySelector('input').getBoundingClientRect();
+    const button = node.querySelector('button').getBoundingClientRect();
+    return button.left - input.right;
+  })).toBeGreaterThan(0);
   const desktopShareLayout = await page.locator('.share-result').evaluate((card) => {
     const preview = card.querySelector('.share-result-preview').getBoundingClientRect();
     const details = card.querySelector('.share-result-details').getBoundingClientRect();

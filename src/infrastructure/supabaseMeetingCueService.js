@@ -1,8 +1,10 @@
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseMeetingCueService({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient({ env, fetchImpl });
+  if (!clientForRequest()) return null;
+  const client = { request: (...args) => clientForRequest().request(...args) };
 
   return Object.freeze({
     async persist({ meetingId, segmentId, sessionId, cue }) {

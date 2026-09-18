@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 
 export const MEETING_AUDIO_BUCKET = 'meeting-audio';
 export const MEETING_AUDIO_KIND = 'source_webm';
@@ -17,7 +17,7 @@ export function createSupabaseMeetingAudioService({
   clock = () => Date.now(),
   idFactory = randomUUID
 } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const secretKey = env.SUPABASE_SECRET_KEY;
   if (!client || !baseUrl || !secretKey || typeof fetchImpl !== 'function') return null;

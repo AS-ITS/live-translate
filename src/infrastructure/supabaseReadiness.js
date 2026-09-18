@@ -1,7 +1,7 @@
-import { createSupabaseRestClient } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient } from './supabaseRestClient.js';
 
 export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   if (!client) return async () => false;
   return async function check() {
     await client.healthCheck({ tables: ['observability_metric_buckets'] });

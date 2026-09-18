@@ -515,3 +515,17 @@ claim/heartbeat/release, duplicate claim (`409 recorder_already_active`),
 expiry, hash-only grant expiry/revocation, Recorder live-token authorization,
 snapshot/audio write authorization, and fence-token rejection. Do not call
 Gemini or run a full benchmark.
+## Issue #35 Phase 1–2 checks
+
+Run the focused boundary checks before broader API tests:
+
+```bash
+node --test \
+  tests/unit/cloudEnvironment.test.js \
+  tests/unit/supabaseRestClient.test.js \
+  tests/unit/accessToken.test.js \
+  tests/unit/supabaseRepositoryOwnership.test.js \
+  tests/unit/deploymentPreflight.test.js
+```
+
+These tests assert safe environment diagnostics, user JWT versus service-role headers, expiring-session refresh, and owner-scope repository behavior. Cloud smoke still requires a fresh Supabase access token and must not print it.

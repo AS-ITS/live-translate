@@ -287,3 +287,8 @@ available to the smoke runner. Do not place that key in browser-exposed
 ### OAuth Workspace access
 
 Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
+## Supabase request boundaries
+
+Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
+
+`/readyz` validates the server Supabase variables and confirms that `SUPABASE_URL`, `SUPABASE_JWKS_URL`, and `VITE_SUPABASE_URL` resolve to the same project without exposing configuration values. Missing or mismatched configuration remains fail-closed.

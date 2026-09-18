@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient } from './supabaseRequestClient.js';
 
 // Supabase-backed glossary port. The public shape intentionally matches the
 // legacy glossary service so controllers and providers stay storage-agnostic.
 export function createSupabaseGlossary({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient({ env, fetchImpl });
+  if (!clientForRequest()) return null;
+  const client = { request: (...args) => clientForRequest().request(...args) };
   const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const rows = (table, query) => client.request(table, { query });
   const entryDTO = (row) => ({

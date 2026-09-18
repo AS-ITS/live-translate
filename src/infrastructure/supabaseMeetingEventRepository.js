@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseMeetingEventRepository({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID, clock = () => Date.now() } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   if (!client) return null;
 
   function owner(explicitOwner) {

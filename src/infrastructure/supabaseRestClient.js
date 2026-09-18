@@ -1,4 +1,4 @@
-export function createSupabaseRestClient({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('Supabase client requires fetch.');
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const key = env.SUPABASE_SECRET_KEY;
@@ -75,6 +75,49 @@ export function createSupabaseRestClient({ env = process.env, fetchImpl = global
   }
 
   return Object.freeze({ request, rpc, healthCheck, baseUrl });
+}
+
+export function createSupabaseUserClient({ env = process.env, fetchImpl = globalThis.fetch, accessToken } = {}) {
+  if (typeof fetchImpl !== 'function') throw new TypeError('Supabase client requires fetch.');
+  const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
+  const key = env.VITE_SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_PUBLISHABLE_KEY;
+  if (!baseUrl || !key || !String(accessToken || '').trim()) return null;
+
+  async function request(table, { method = 'GET', query = '', body, headers = {} } = {}) {
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}/rest/v1/${table}${query}`, {
+        method,
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${accessToken}`,
+          Prefer: 'return=representation',
+          ...headers,
+          ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      });
+    } catch (cause) {
+      const error = new Error('Supabase REST endpoint is unavailable.');
+      error.code = 'supabase_unavailable';
+      error.status = 503;
+      error.cause = cause;
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error(`Supabase ${method} ${table} request failed.`);
+      error.status = response.status;
+      error.code = response.status === 404
+        ? 'supabase_schema_missing'
+        : (response.status === 401 || response.status === 403
+          ? 'supabase_credentials_invalid'
+          : 'supabase_request_failed');
+      throw error;
+    }
+    return response.status === 204 ? [] : response.json();
+  }
+
+  return Object.freeze({ request, baseUrl });
 }
 
 export function eq(name, value) {

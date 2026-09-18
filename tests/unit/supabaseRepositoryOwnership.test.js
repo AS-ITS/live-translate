@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { setRequestUser } from '../../server/requestIdentity.js';
+import { setRequestScope, setRequestUser } from '../../server/requestIdentity.js';
 import { createSupabaseMeetingRepository } from '../../src/infrastructure/supabaseMeetingRepository.js';
 
 test('Supabase meeting repository scopes reads and writes to request owner', async () => {
@@ -22,6 +22,29 @@ test('Supabase meeting repository scopes reads and writes to request owner', asy
 
   await repository.getMeeting('meeting-a');
   assert.match(calls[1].url, /owner_user_id=eq\.user-a/);
+  setRequestUser(null);
+});
+
+test('owner meeting CRUD uses the authenticated user client when available', async () => {
+  const calls = [];
+  const repository = createSupabaseMeetingRepository({
+    env: {
+      SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SECRET_KEY: 'service-key',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { ok: true, status: 200, async json() { return [{ id: 'meeting-a', owner_user_id: 'user-a', status: 'created', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', settings: {} }]; } };
+    }
+  });
+
+  setRequestUser({ id: 'user-a' });
+  setRequestScope({ actorUserId: 'user-a', resourceOwnerUserId: 'user-a', accessToken: 'user-jwt' });
+  await repository.getMeeting('meeting-a');
+  assert.equal(calls[0].init.headers.apikey, 'publishable-key');
+  assert.equal(calls[0].init.headers.Authorization, 'Bearer user-jwt');
+  setRequestScope(null);
   setRequestUser(null);
 });
 

@@ -7,7 +7,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
-import { createAccessControl } from './accessControl.js';
+import { createAccessControl, getBearerToken } from './accessControl.js';
 import { createApplicationDependencies, createProductionApplicationDependencies, ensureDataDirectory } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
@@ -28,9 +28,10 @@ import {
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
+import { cloudEnvironmentError } from './cloudEnvironment.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
-import { currentRequestActorId, currentRequestOwnerId, setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { currentRequestActorId, currentRequestOwnerId, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
@@ -808,6 +809,12 @@ async function handleRequestWithSessionReadController(
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
   let authenticatedUser = null;
+  let requestScope = null;
+  const updateRequestScope = (resourceOwnerUserId = null) => {
+    if (!requestScope) return;
+    requestScope = Object.freeze({ ...requestScope, resourceOwnerUserId: resourceOwnerUserId || requestScope.actorUserId });
+    setRequestScope(requestScope);
+  };
   let statusCode = 500;
   let targetLanguageCode;
   let meetingDiagnosticId = null;
@@ -831,15 +838,11 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const hasSupabase = [
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SECRET_KEY,
-      process.env.SUPABASE_JWKS_URL,
-      process.env.AUTH_ALLOWED_EMAIL_DOMAINS
-    ].every((value) => typeof value === 'string' && value.trim().length > 0);
+    const environmentError = cloudEnvironmentError();
+    const hasSupabase = !environmentError;
     const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
     let ready = hasSupabase || legacyLocalReady;
-    let dependencyCode = null;
+    let dependencyCode = environmentError?.code || null;
     if (ready && typeof readinessCheck === 'function') {
       try { ready = Boolean(await readinessCheck()); } catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }
     }
@@ -854,6 +857,10 @@ async function handleRequestWithSessionReadController(
       authenticatedUser = await requestAccessControl.validateRequest(req);
       authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
+      if (authenticatedUser?.id) {
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req) });
+        setRequestScope(requestScope);
+      }
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -979,6 +986,10 @@ async function handleRequestWithSessionReadController(
       authenticatedUser = await requestAccessControl.validateRequest(req);
       authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
+      if (authenticatedUser?.id) {
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req) });
+        setRequestScope(requestScope);
+      }
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1022,10 +1033,16 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       let authorizationStage = 'private_resource';
       try {
     const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
-    if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+    if (scope) {
+      setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+      updateRequestScope(scope.ownerUserId);
+    }
     authorizationStage = 'translation_resource';
     const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
-    if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
+    if (translationScope) {
+      setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
+      updateRequestScope(translationScope.ownerUserId);
+    }
   } catch (error) {
     const code = errorCodeFor(error);
     statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1076,6 +1093,7 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
         const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await meetingMembershipService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
       setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+      updateRequestScope(ownerUserId);
  } catch (error) {
  const code = errorCodeFor(error);
  statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1273,6 +1291,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+        updateRequestScope(ownerUserId);
       }
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
@@ -2471,7 +2490,10 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         meetingMembershipService,
         translationRepository
       });
-      if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+      if (scope) {
+        setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+        updateRequestScope(scope.ownerUserId);
+      }
       const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
 
       statusCode = status;

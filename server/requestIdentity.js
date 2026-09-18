@@ -6,6 +6,15 @@ export function setRequestUser(user) {
   storage.enterWith(user || null);
 }
 
+export function setRequestScope(scope) {
+  const current = storage.getStore() || {};
+  storage.enterWith({ ...current, requestScope: scope || null });
+}
+
+export function currentRequestScope() {
+  return storage.getStore()?.requestScope || null;
+}
+
 export function runWithRequestUser(user, callback) {
   if (typeof callback !== 'function') throw new TypeError('callback must be a function.');
   return storage.run(user || null, callback);

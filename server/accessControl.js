@@ -26,10 +26,7 @@ export function createAccessControl({ env = process.env } = {}) {
         return;
       }
 
-      const authorization = typeof req?.headers?.authorization === 'string' ? req.headers.authorization : '';
-      const bearerToken = authorization.startsWith('Bearer ')
-        ? authorization.slice('Bearer '.length)
-        : '';
+      const bearerToken = getBearerToken(req);
       if (!bearerToken) throw accessError('auth_required');
 
       let claims;
@@ -49,6 +46,13 @@ export function createAccessControl({ env = process.env } = {}) {
       return Object.freeze({ id: claims.sub, email, claims });
     },
   });
+}
+
+export function getBearerToken(req) {
+  const authorization = typeof req?.headers?.authorization === 'string' ? req.headers.authorization : '';
+  return authorization.startsWith('Bearer ')
+    ? authorization.slice('Bearer '.length)
+    : '';
 }
 
 function isAllowedEmailDomain(email, configuredDomains) {

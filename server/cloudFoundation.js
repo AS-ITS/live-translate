@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { createAccessControl } from './accessControl.js';
 import { createProfileService } from './profileService.js';
+import { cloudEnvironmentError } from './cloudEnvironment.js';
 
 const CLOUD_CAPABILITY_ERROR = 'cloud_capability_unavailable';
 
@@ -21,8 +22,9 @@ export function createCloudFoundationHandler({ env = process.env, accessControl 
     }
 
     if (req.method === 'GET' && normalizedPath === '/readyz') {
-      let ready = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY && env.SUPABASE_JWKS_URL && env.AUTH_ALLOWED_EMAIL_DOMAINS);
-      let dependencyCode = null;
+      const environmentError = cloudEnvironmentError({ env });
+      let ready = !environmentError;
+      let dependencyCode = environmentError?.code || null;
       if (ready && typeof readinessCheck === 'function') {
         try { ready = Boolean(await readinessCheck()); }
         catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }

@@ -4067,9 +4067,16 @@ test('Meeting home card layout captures desktop viewport references', async ({ p
     [1280, 800, '13-inch', 3],
     [1279, 768, 'compact-desktop', 2]
   ]) {
-    await page.setViewportSize({ width, height });
-    await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
-  }
+  await page.setViewportSize({ width, height });
+  await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const footerLayout = await page.locator('.meeting-card').first().evaluate((card) => {
+    const description = card.querySelector('.meeting-card-footer p').getBoundingClientRect();
+    const actions = card.querySelector('.meeting-card-actions').getBoundingClientRect();
+    return { descriptionBottom: description.bottom, descriptionWidth: description.width, actionsTop: actions.top, cardWidth: card.getBoundingClientRect().width };
+  });
+  expect(footerLayout.actionsTop).toBeGreaterThan(footerLayout.descriptionBottom);
+  expect(footerLayout.descriptionWidth).toBeGreaterThan(footerLayout.cardWidth * 0.8);
+  await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
+}
 });

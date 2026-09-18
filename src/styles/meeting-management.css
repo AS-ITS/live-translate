@@ -19,7 +19,8 @@
 .meeting-card-active { --meeting-card-accent: #36b8b1; --meeting-card-accent-strong: #0d7d82; --meeting-card-soft: #e8faf8; }
 .meeting-card-created, .meeting-card-interrupted { --meeting-card-accent: #f2c566; --meeting-card-accent-strong: #9a6400; --meeting-card-soft: #fff8e9; }
 .meeting-card-completed { --meeting-card-accent: #7895aa; --meeting-card-accent-strong: #4d718b; --meeting-card-soft: #f1f6f9; }
-.meeting-card-topline, .meeting-card-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.meeting-card-topline { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.meeting-card-footer { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: var(--space-3); margin-top: auto; }
 .meeting-status-badge { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2rem; padding: .25rem .7rem; border: 1px solid color-mix(in srgb, var(--meeting-card-accent-strong) 55%, white); border-radius: var(--radius-pill); color: var(--meeting-card-accent-strong); font-size: var(--text-sm); font-weight: 700; }
 .meeting-status-dot { width: .625rem; height: .625rem; border-radius: 50%; background: var(--meeting-card-accent-strong); }
 .meeting-card-icon { display: grid; width: 3.5rem; height: 3.5rem; place-items: center; border-radius: 50%; color: var(--meeting-card-accent-strong); background: var(--meeting-card-soft); }
@@ -28,8 +29,7 @@
 .meeting-card-metadata span { display: flex; align-items: center; gap: var(--space-2); }
 .meeting-card-metadata svg, .meeting-card-footer svg { flex: 0 0 auto; color: var(--meeting-card-accent-strong, var(--color-primary)); }
 .meeting-card-divider { height: 1px; margin: var(--space-5) 0 var(--space-4); background: var(--color-border); }
-.meeting-card-footer { align-items: flex-end; margin-top: auto; }
-.meeting-card-footer p { display: flex; align-items: flex-start; gap: var(--space-2); max-width: 60%; margin: 0; color: var(--color-text-muted); }
+.meeting-card-footer p { display: flex; align-items: flex-start; gap: var(--space-2); width: 100%; margin: 0; color: var(--color-text-muted); }
 .meeting-card-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .meeting-card-action { flex: 0 0 auto; border-color: var(--meeting-card-accent-strong); background: var(--meeting-card-accent-strong); color: #fff; text-align: center; white-space: nowrap; }
 .meeting-card-action-label { display: block; width: 100%; text-align: center; }

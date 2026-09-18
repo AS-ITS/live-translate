@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 import { createMeetingReadController } from '../../server/meetingReadController.js';
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
+import { createMeetingDeletionService } from '../../src/application/meetingDeletionService.js';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 import { createSessionShareService } from '../../src/application/sessionShareService.js';
@@ -309,7 +310,7 @@ test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects sta
   const active = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
   const rejected = await request(handler, { method: 'DELETE', url: `/api/meetings/${active.meeting.id}` });
   assert.equal(rejected.status, 409);
-  assert.equal(rejected.json().error.code, 'meeting_delete_not_allowed');
+  assert.equal(rejected.json().error.code, 'meeting_delete_active_not_allowed');
 });
 
 test('GET /api/meetings/:meetingId/segments returns ordered segments', async () => {
@@ -543,6 +544,7 @@ test('Meeting authorization diagnostics keep an unknown owner distinct from the 
 });
 
 test('Super admins receive meeting_not_found when the owner lookup is missing', async () => {
+  const logs = [];
   const handler = createHandler({
     accessControl: { validateRequest: async () => ({ id: 'admin-1', role: 'super_admin', status: 'active' }) },
     profileService: {
@@ -552,7 +554,8 @@ test('Super admins receive meeting_not_found when the owner lookup is missing', 
     meetingMembershipService: {
       canAccessMeeting: async () => true,
       getMeetingOwner: async () => null
-    }
+    },
+    requestLogger: (event) => logs.push(event)
   });
 
   const response = await request(handler, {
@@ -561,7 +564,12 @@ test('Super admins receive meeting_not_found when the owner lookup is missing', 
   });
 
   assert.equal(response.status, 404);
-  assert.equal(response.json().error.code, 'meeting_not_found');
+  const body = response.json();
+  assert.equal(body.error.code, 'meeting_not_found');
+  assert.equal(body.error.requestId, response.headers['X-Request-Id']);
+  assert.equal(logs.at(-1).authStage, 'private_resource');
+  assert.equal(logs.at(-1).ownerLookup, 'missing');
+  assert.equal(logs.at(-1).supabaseProjectRef, null);
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
@@ -924,7 +932,7 @@ test('checkpoint route reports invalid segment UUID details and request id', asy
   assert.equal(body.error.requestId, response.headers['X-Request-Id']);
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, accessControl, profileService, strictCheckpointPathIds = false, requestLogger } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, meetingDeletionService: injectedMeetingDeletionService, accessControl, profileService, strictCheckpointPathIds = false, requestLogger } = {}) {
   const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -940,6 +948,13 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
   const meetingReadController = createMeetingReadController({
     meetingReadQueryService: createMeetingReadQueryService({ meetingRepository: repository })
   });
+  const meetingDeletionService = injectedMeetingDeletionService || createMeetingDeletionService({
+    meetingRepository: repository,
+    sessionRepository: {
+      async listSessionRecords() { return []; },
+      async deleteSessionRecord() { return true; }
+    }
+  });
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
@@ -947,6 +962,7 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
+    meetingDeletionService,
     ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
     ...(meetingAudioService ? { meetingAudioService } : {}),

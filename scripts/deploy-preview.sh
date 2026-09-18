@@ -29,7 +29,7 @@ if ! deployment_output="$(vercel deploy --yes 2>&1)"; then
 fi
 printf '%s\n' "$deployment_output"
 
-preview_url="$(printf '%s\n' "$deployment_output" | rg -o 'https://[^[:space:]]+' | tail -n 1 || true)"
+preview_url="$(printf '%s\n' "$deployment_output" | rg -o 'https://[^[:space:]]+' | rg -v 'vercel.com|github.com' | tail -n 1 || true)"
 preview_url="${preview_url%%[\",]*}"
 if [[ -z "$preview_url" ]]; then
   echo "Preview deployment succeeded, but its URL could not be detected." >&2

@@ -97,7 +97,7 @@ async function hydrateSegment(client, row, ownerUserId) {
 
 function meetingFromRow(row) {
   const settings = row.settings || {};
-  return new Meeting({ ...row, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
+  return new Meeting({ ...row, ownerUserId: row.owner_user_id, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
 }
 
 async function persistCues(client, entity, ownerUserId) {

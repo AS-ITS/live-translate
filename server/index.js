@@ -1609,20 +1609,45 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
   if (req.method === 'DELETE' && isMeetingDetailPath(path)) {
     try {
-      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      if (!meetingDeletionService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
-      const result = await meetingCheckpointService.deleteMeeting({ meetingId });
-      if (sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function') {
-        await sessionShareService.revokeMeetingShares(meetingId);
-      }
+      await meetingDeletionService.deleteMeeting({ meetingId });
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
       return;
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+        meetingId: meetingDiagnosticId,
+        authenticatedUser,
+        profileService,
+        meetingMembershipService
+      });
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        authStage: 'private_resource',
+        ...meetingRequestDiagnostics({
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: code,
+          resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+          resourceOwnerKnown: true
+        }),
+        ...authorizationDiagnostics
+      });
     }
     return;
   }

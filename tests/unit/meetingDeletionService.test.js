@@ -65,3 +65,24 @@ test('rejects deletion while a meeting or session is active', async () => {
     (error) => error.code === 'meeting_delete_active_not_allowed'
   );
 });
+
+test('returns meeting_not_found without attempting cascade deletion', async () => {
+  const deleted = [];
+  const service = createMeetingDeletionService({
+    meetingRepository: {
+      async getMeeting() { return null; },
+      async listMeetingSegments() { return []; },
+      async deleteMeeting() { deleted.push('meeting'); }
+    },
+    sessionRepository: {
+      async listSessionRecords() { return []; },
+      async deleteSessionRecord() { deleted.push('session'); }
+    }
+  });
+
+  await assert.rejects(
+    service.deleteMeeting({ meetingId: 'missing-meeting' }),
+    (error) => error.code === 'meeting_not_found'
+  );
+  assert.deepEqual(deleted, []);
+});

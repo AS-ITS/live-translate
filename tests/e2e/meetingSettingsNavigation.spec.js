@@ -371,19 +371,24 @@ test('shows a deployment-specific message when the share route returns 404', asy
 });
 
 test('restores Meeting share QR codes and links after reloading the edit page', async ({ page }) => {
+  const meetingId = '11111111-1111-4111-8111-111111111111';
+  const detailRequestUrls = [];
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
-  await page.route(/\/api\/meetings\/meeting-3$/, async (route) => route.fulfill({ json: { meeting: {
-    id: 'meeting-3', name: '可分享會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
+  await page.route(new RegExp(`/api/meetings/${meetingId.replaceAll('-', '\\-')}$`), async (route) => {
+    detailRequestUrls.push(route.request().url());
+    return route.fulfill({ json: { meeting: {
+    id: meetingId, name: '可分享會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
     echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: []
-  } } }));
-  await page.route(/\/api\/meetings\/meeting-3\/shares(?:\?.*)?$/, async (route) => {
+  } } });
+  });
+  await page.route(new RegExp(`/api/meetings/${meetingId.replaceAll('-', '\\-')}/shares(?:\\?.*)?$`), async (route) => {
     if (route.request().method() === 'GET') return route.fulfill({ json: { shares: [
       { id: 'share-viewer', role: 'viewer', codeUrl: '#viewer?code=VIEWER2' }
     ] } });
     return route.fallback();
   });
 
-  await page.goto('/#meeting-settings?mode=edit&meetingId=meeting-3');
+  await page.goto(`/#meeting-settings?mode=edit&meetingId=${meetingId}`);
   await expect(page.locator('.share-result')).toHaveCount(1);
   await expect(page.locator('.share-url a').nth(0)).toContainText('#viewer?code=VIEWER2');
   await expect(page.locator('.share-result img')).toHaveCount(1);
@@ -391,6 +396,27 @@ test('restores Meeting share QR codes and links after reloading the edit page', 
   await page.reload();
   await expect(page.locator('.share-result')).toHaveCount(1);
   await expect(page.locator('.share-result img')).toHaveCount(1);
+  expect(detailRequestUrls).toHaveLength(2);
+  expect(detailRequestUrls.every((url) => new URL(url).pathname === `/api/meetings/${meetingId}`)).toBe(true);
+});
+
+test('shows the meeting_not_found request ID when an edit meeting is missing', async ({ page }) => {
+  const meetingId = 'f5e14262-c4f5-4b26-ac77-236c36de2355';
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.route(new RegExp(`/api/meetings/${meetingId.replaceAll('-', '\\-')}$`), async (route) => route.fulfill({
+    status: 404,
+    contentType: 'application/json',
+    body: JSON.stringify({ error: { code: 'meeting_not_found' }, requestId: 'meeting-settings-404' })
+  }));
+
+  const missingResponsePromise = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/meetings/${meetingId}`);
+  await page.goto(`/#meeting-settings?mode=edit&meetingId=${meetingId}`);
+  const missingResponse = await missingResponsePromise;
+  expect(missingResponse.status()).toBe(404);
+  expect((await missingResponse.json()).error.code).toBe('meeting_not_found');
+
+  await expect(page.getByRole('alert')).toContainText('找不到這場會議');
+  await expect(page.getByRole('alert')).toContainText('meeting-settings-404');
 });
 import { installE2EAuth } from './authBootstrap.js';
 

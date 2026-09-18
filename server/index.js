@@ -403,14 +403,64 @@ function supabaseProjectRef(env = process.env) {
   }
 }
 
-function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode, resourceOwnerId }) {
+function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode, resourceOwnerId, resourceOwnerKnown = false }) {
   return {
     actorUserId: currentRequestActorId() || authenticatedUser?.actorUserId || authenticatedUser?.id || null,
-    resourceOwnerId: resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
+    resourceOwnerId: resourceOwnerKnown
+      ? resourceOwnerId || null
+      : resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
     ...(meetingId ? { meetingId } : {}),
     statusCode,
     errorCode: errorCode || null,
     supabaseProjectRef: supabaseProjectRef()
+  };
+}
+
+async function collectMeetingAuthorizationDiagnostics({ meetingId, authenticatedUser, profileService, meetingMembershipService }) {
+  let resourceOwnerId = null;
+  let ownerLookup = 'missing';
+  try {
+    resourceOwnerId = await meetingMembershipService?.getMeetingOwner?.(meetingId) || null;
+    ownerLookup = resourceOwnerId ? 'found' : 'missing';
+  } catch {
+    ownerLookup = 'error';
+  }
+
+  let actorProfileStatus = null;
+  let actorProfileRole = null;
+  let actorProfileLookup = 'unavailable';
+  try {
+    if (typeof profileService?.getProfile === 'function') {
+      const profile = await profileService.getProfile(authenticatedUser);
+      actorProfileLookup = profile ? 'found' : 'missing';
+      actorProfileStatus = profile?.status || null;
+      actorProfileRole = profile?.role || null;
+    }
+  } catch {
+    actorProfileLookup = 'error';
+  }
+
+  let membership = 'unavailable';
+  try {
+    if (typeof profileService?.findMeetingMembership === 'function') {
+      membership = await profileService.findMeetingMembership(meetingId, authenticatedUser?.id)
+        ? 'present'
+        : 'absent';
+    }
+  } catch {
+    membership = 'error';
+  }
+
+  return {
+    resourceOwnerId,
+    ownerLookup,
+    ownerMatchesActor: resourceOwnerId && authenticatedUser?.id
+      ? resourceOwnerId === authenticatedUser.id
+      : null,
+    actorProfileLookup,
+    actorProfileStatus,
+    actorProfileRole,
+    membership
   };
 }
 
@@ -969,21 +1019,23 @@ if (req.method === 'POST' && path === '/api/auth-events') {
 }
 
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
+      let authorizationStage = 'private_resource';
       try {
     const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
     if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+    authorizationStage = 'translation_resource';
     const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
     if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
   } catch (error) {
     const code = errorCodeFor(error);
     statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
     if (meetingDiagnosticId) {
-      let resourceOwnerId = null;
-      try {
-        resourceOwnerId = await meetingMembershipService?.getMeetingOwner?.(meetingDiagnosticId);
-      } catch {
-        resourceOwnerId = null;
-      }
+      const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+        meetingId: meetingDiagnosticId,
+        authenticatedUser,
+        profileService,
+        meetingMembershipService
+      });
       requestLogger({
         level: statusCode >= 500 ? 'error' : 'warn',
         event: 'meeting_request',
@@ -994,13 +1046,16 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
         origin,
+        authorizationStage,
         ...meetingRequestDiagnostics({
           meetingId: meetingDiagnosticId,
           authenticatedUser,
           statusCode,
           errorCode: code,
-          resourceOwnerId
-        })
+          resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+          resourceOwnerKnown: true
+        }),
+        ...authorizationDiagnostics
       });
     }
     sendJson(res, statusCode, errorPayload(code, requestId), requestId);

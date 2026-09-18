@@ -301,6 +301,7 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(memberCard.locator('.eyebrow')).toHaveText('STEP 6 · ACCESS');
   await expect(memberCard.locator('.meeting-settings-card-number')).toHaveText('6');
   const memberInvite = memberCard.locator('.meeting-member-invite');
+  await expect(memberInvite.locator('input')).toHaveCSS('height', '56px');
   await expect.poll(() => memberInvite.evaluate((node) => {
     const input = node.querySelector('input').getBoundingClientRect();
     const button = node.querySelector('button').getBoundingClientRect();

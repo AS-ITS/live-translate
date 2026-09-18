@@ -569,16 +569,32 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                 <div className="meeting-card-divider" />
                 <div className="meeting-card-footer">
                   <p><StatusIcon size={19} aria-hidden="true" />{meetingCardDescription(meeting.status)}</p>
-                  <button
-                    className="button meeting-card-action"
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openMeetingCard(meeting);
-                    }}
-                  >
-                    <span className="meeting-card-action-label">{meetingCardActionLabel(meeting.status)}</span>
-                  </button>
+                  <div className="meeting-card-actions">
+                    <button
+                      className="button meeting-card-action"
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openMeetingCard(meeting);
+                      }}
+                    >
+                      <span className="meeting-card-action-label">{meetingCardActionLabel(meeting.status)}</span>
+                    </button>
+                    {meeting.status === 'created' ? (
+                      <button
+                        className="button detail-button danger-button meeting-card-delete"
+                        type="button"
+                        aria-label={`刪除 ${meeting.name || meeting.id || '未命名會議'}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void deleteMeeting(meeting);
+                        }}
+                      >
+                        <Trash2 size={16} aria-hidden="true" />
+                        刪除
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               </article>
             );

@@ -30,6 +30,7 @@
 .meeting-card-divider { height: 1px; margin: var(--space-5) 0 var(--space-4); background: var(--color-border); }
 .meeting-card-footer { align-items: flex-end; margin-top: auto; }
 .meeting-card-footer p { display: flex; align-items: flex-start; gap: var(--space-2); max-width: 60%; margin: 0; color: var(--color-text-muted); }
+.meeting-card-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-2); }
 .meeting-card-action { flex: 0 0 auto; border-color: var(--meeting-card-accent-strong); background: var(--meeting-card-accent-strong); color: #fff; text-align: center; white-space: nowrap; }
 .meeting-card-action-label { display: block; width: 100%; text-align: center; }
 .meeting-card-action:hover:not(:disabled) { background: color-mix(in srgb, var(--meeting-card-accent-strong) 85%, black); }
@@ -80,6 +81,7 @@
   .meeting-card { min-height: 0; padding: var(--space-5); }
   .meeting-card-footer { align-items: stretch; flex-direction: column; }
   .meeting-card-footer p { max-width: none; }
-  .meeting-card-action { width: 100%; }
+  .meeting-card-actions { width: 100%; flex-direction: column; }
+  .meeting-card-actions .button { width: 100%; }
   .history-metadata { grid-template-columns: 1fr; }
 }

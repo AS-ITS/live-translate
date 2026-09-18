@@ -3603,7 +3603,7 @@ test('meeting management uses the live workspace layout and preserves create flo
 
   await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(page.locator('.meeting-management-page ul.history-list')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /既有產品會議/ })).toBeVisible();
+  await expect(page.locator('.meeting-card').filter({ hasText: '既有產品會議' }).getByRole('button', { name: '編輯並開始會議', exact: true })).toBeVisible();
 
   const meetingCardLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     const gridRect = element.getBoundingClientRect();

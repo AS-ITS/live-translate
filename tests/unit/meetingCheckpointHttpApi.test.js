@@ -47,7 +47,7 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   const updateResponse = await request(handler, {
     method: 'PATCH',
     url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: [] }] })
   });
   assert.equal(updateResponse.status, 200);
   assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');

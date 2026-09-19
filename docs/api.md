@@ -448,6 +448,7 @@ Returns `201 Created`:
 ```
 
 ## `PATCH /api/meetings/:meetingId`
+`privateGlossaryEntries[].replacementAliases` uses the canonical language-to-aliases object format. Legacy empty-array values (`[]`) are normalized to `{}`; non-empty arrays remain invalid.
 
 Updates Meeting name, source/target languages, translated-audio playback,
 original-audio recording, shared glossary entries, and

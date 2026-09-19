@@ -304,7 +304,9 @@ function normalizePrivateGlossaryEntries(value) {
       return [languageCode, translation.trim()];
     }));
     if (Object.keys(translations).length === 0) throw new TypeError(`Meeting private glossary entry ${index}.translations must not be empty.`);
-    const aliases = entry.replacementAliases ?? {};
+    const aliases = Array.isArray(entry.replacementAliases) && entry.replacementAliases.length === 0
+      ? {}
+      : entry.replacementAliases ?? {};
     if (typeof aliases !== 'object' || Array.isArray(aliases)) throw new TypeError(`Meeting private glossary entry ${index}.replacementAliases must be an object.`);
     const replacementAliases = Object.fromEntries(Object.entries(aliases).map(([languageCode, values]) => {
       if (!Array.isArray(values) || values.some((alias) => typeof alias !== 'string' || alias.trim() === '')) throw new TypeError(`Meeting private glossary entry ${index}.replacementAliases is invalid.`);

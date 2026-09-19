@@ -36,6 +36,7 @@ import { validateViewerTelemetry } from '../src/application/observability/teleme
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
+import { createExportController } from './exportController.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -702,6 +703,7 @@ export function createRequestHandler(options = {}) {
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
     translationExecutionWorkerRuntime,
+    exportArtifactService,
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
     translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES,
@@ -767,7 +769,8 @@ export function createRequestHandler(options = {}) {
       glossaryController,
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
-      translationExecutionWorkerRuntime,
+    translationExecutionWorkerRuntime,
+    exportArtifactService,
       liveTokenCreator,
       sessionShareService,
       translationOutputMaxBytes,
@@ -801,6 +804,7 @@ async function handleRequestWithSessionReadController(
   res,
  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
+  const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
@@ -1527,6 +1531,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } finally {
       logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
     }
+    return;
+  }
+
+  const exportController = createExportController({ exportArtifactService });
+  if (exportController?.matches(path)) {
+    await exportController.handle({ req, res, path, requestId });
     return;
   }
 

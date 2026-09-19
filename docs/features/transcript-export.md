@@ -1,6 +1,19 @@
 # Transcript Export
 
-Status: Cue-backed Session export implemented (WP5A); legacy fallback retained
+Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle added
+
+P7 adds the Supabase cloud lifecycle for Meeting exports. Cloud TXT, SRT, and VTT
+exports are server-canonical and asynchronous. The API reads persisted Final
+Cues first, falls back to persisted transcript items when no Final Cues exist,
+stores the result in the private `meeting-exports` bucket, and exposes only a
+60-second signed download URL. Local file-backed mode keeps the existing
+browser-only export path.
+
+The export artifact key is `(owner_user_id, meeting_id, source_hash, format,
+stream)`. Repeating a request for the same source is idempotent. `queued` and
+`processing` artifacts are polled by the cloud UI every two seconds for up to
+60 seconds; `failed` and `stale` artifacts can be retried without exposing
+storage paths or transcript text in logs.
 
 ## 1. Feature Overview
 
@@ -58,12 +71,26 @@ finalized in the browser.
 - Preserve the existing Start / Stop flow.
 - Add no real Gemini API dependency for validation.
 
-## 3. Non-Goals
+## 3. P7 Cloud API
+
+Owner-only endpoints are available in Supabase cloud mode:
+
+- `POST /api/meetings/:meetingId/exports` with `{ "format": "txt", "stream": "translation" }` returns `202` for a queued artifact.
+- `GET /api/meetings/:meetingId/exports` lists artifact metadata.
+- `GET /api/meetings/:meetingId/exports/:exportId` returns one artifact status.
+- `POST /api/meetings/:meetingId/exports/:exportId/download-url` returns a 60-second signed URL only when ready.
+- `DELETE /api/meetings/:meetingId/exports/:exportId` removes the Storage object before metadata.
+
+Timed formats do not accept `stream: "both"`. The shared `export_jobs` PGMQ
+worker uses the existing visibility timeout, retry, and dead-letter behavior.
+Meeting deletion stops if export Storage cleanup fails.
+
+## 4. Non-Goals
 
 - Translation history.
 - Session history persistence.
 - Database storage.
-- Backend-owned export endpoint.
+- Local browser-only export migration to Supabase (deferred to P8).
 - User accounts or access-control changes.
 - Editing transcript text before export.
 - Exporting raw audio.
@@ -72,7 +99,7 @@ finalized in the browser.
 - Changing Gemini Live API session behavior.
 - Calling the real Gemini API in tests.
 
-## 4. Export Formats
+## 5. Export Formats
 
 ### TXT
 
@@ -163,7 +190,7 @@ WEBVTT
 Bonjour.
 ```
 
-## 5. User Flow
+## 6. User Flow
 
 1. The user completes a translation session or has transcript text visible.
 2. The user opens export controls from the transcript area.
@@ -185,7 +212,7 @@ Current minimal UI:
   stream at a time.
 - Keeps transcript text available after Stop.
 
-## 6. Transcript Data Dependency
+## 7. Transcript Data Dependency
 
 Transcript Export depends on the transcript item model implemented in
 `src/lib/transcript.js`.
@@ -228,7 +255,7 @@ Data rules:
 - SRT and VTT must treat `startedAt` and `finalizedAt` as approximate frontend
   timing until real segment timestamps are confirmed.
 
-## 7. UI Behavior
+## 8. UI Behavior
 
 - Export controls should appear near the transcript display or transcript action
   area.
@@ -247,7 +274,7 @@ Data rules:
 - The UI should avoid adding broad layout or visual redesign as part of this
   feature.
 
-## 8. Error Handling
+## 9. Error Handling
 
 - If no transcript text exists, show an unavailable state instead of downloading
   an empty file.
@@ -261,7 +288,7 @@ Data rules:
 - Export errors must not expose secrets, ephemeral tokens, or internal stack
   traces.
 
-## 9. Testing Requirements
+## 10. Testing Requirements
 
 Tests should be deterministic and must not call the real Gemini API.
 
@@ -296,7 +323,7 @@ E2E test coverage, if UI controls are implemented:
 Integration tests are not required unless a backend export endpoint is selected
 later.
 
-## 10. Acceptance Criteria
+## 11. Acceptance Criteria
 
 - `docs/features/transcript-export.md` defines the Transcript Export feature
   scope.

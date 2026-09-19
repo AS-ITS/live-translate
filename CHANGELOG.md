@@ -1994,3 +1994,4 @@ These items are intentionally deferred:
 ## Unreleased
 
 - Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.
+- Added P7 asynchronous cloud Meeting export lifecycle: canonical server-side TXT/SRT/VTT generation from persisted Final Cues, idempotent `export_artifacts`, private `meeting-exports` Storage, signed download URLs, `export_jobs` worker retries/dead-letter handling, deletion cleanup, and cloud polling UI. Local browser-only export remains compatible.

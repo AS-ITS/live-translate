@@ -11,6 +11,7 @@ export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = gl
         'meeting_segments',
         'sessions',
         'subtitle_cues',
+        'export_artifacts',
         'meeting_members',
         'viewer_shares',
         'audio_artifacts',
@@ -68,7 +69,7 @@ export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = gl
           }
         }
       ],
-      storageBuckets: ['meeting-audio']
+      storageBuckets: ['meeting-audio', 'meeting-exports']
     });
     return true;
   };

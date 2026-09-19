@@ -294,3 +294,7 @@ Google OAuth can complete successfully while `GET /api/profile` rejects a person
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
 
 `/readyz` validates the server Supabase variables and confirms that `SUPABASE_URL`, `SUPABASE_JWKS_URL`, and `VITE_SUPABASE_URL` resolve to the same project without exposing configuration values. Missing or mismatched configuration remains fail-closed.
+P7 cloud Meeting exports use `export_artifacts` metadata, the private
+`meeting-exports` Storage bucket, and the existing PGMQ worker pattern through
+the `export_jobs` queue. Readiness checks the bucket; missing cloud export
+dependencies fail closed with `503`.

@@ -1,5 +1,32 @@
 # Live Translate API and Events
 
+## Meeting export lifecycle (P7)
+
+Supabase cloud mode provides owner-only asynchronous Meeting export endpoints:
+
+```http
+POST /api/meetings/:meetingId/exports
+Content-Type: application/json
+
+{"format":"txt","stream":"translation"}
+```
+
+`format` is `txt`, `srt`, or `vtt`; `stream` is `source`, `translation`, or
+`both`. `srt` and `vtt` reject `both` with `400 export_invalid_stream`. A
+successful request returns `202` and an export artifact with `queued` status.
+
+```http
+GET  /api/meetings/:meetingId/exports
+GET  /api/meetings/:meetingId/exports/:exportId
+POST /api/meetings/:meetingId/exports/:exportId/download-url
+DELETE /api/meetings/:meetingId/exports/:exportId
+```
+
+Only `ready` artifacts produce a download URL. The URL expires after 60
+seconds. The API never returns Storage paths, signed URLs in logs, transcript
+text, JWTs, or Storage credentials. Local file-backed mode continues to use
+the existing browser export path.
+
 ## Personal Gemini Credential
 
 Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.

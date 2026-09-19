@@ -86,3 +86,37 @@ test('returns meeting_not_found without attempting cascade deletion', async () =
   );
   assert.deepEqual(deleted, []);
 });
+
+test('cleans export artifacts before meeting cascade and stops on storage failure', async () => {
+  const events = [];
+  const service = createMeetingDeletionService({
+    meetingRepository: {
+      async getMeeting() { return { id: 'meeting-1', status: 'completed' }; },
+      async listMeetingSegments() { return []; },
+      async deleteMeeting() { events.push('meeting'); }
+    },
+    sessionRepository: {
+      async listSessionRecords() { return []; },
+      async deleteSessionRecord() { events.push('session'); }
+    },
+    async deleteMeetingExports(id) { events.push(`exports:${id}`); }
+  });
+
+  await service.deleteMeeting({ meetingId: 'meeting-1' });
+  assert.deepEqual(events, ['exports:meeting-1', 'meeting']);
+
+  const failingService = createMeetingDeletionService({
+    meetingRepository: {
+      async getMeeting() { return { id: 'meeting-1', status: 'completed' }; },
+      async listMeetingSegments() { return []; },
+      async deleteMeeting() { events.push('should-not-delete'); }
+    },
+    sessionRepository: {
+      async listSessionRecords() { return []; },
+      async deleteSessionRecord() { events.push('should-not-delete'); }
+    },
+    async deleteMeetingExports() { throw Object.assign(new Error('storage down'), { code: 'export_storage_delete_failed' }); }
+  });
+  await assert.rejects(failingService.deleteMeeting({ meetingId: 'meeting-1' }), (error) => error.code === 'export_storage_delete_failed');
+  assert.equal(events.includes('should-not-delete'), false);
+});

@@ -96,6 +96,8 @@ import {
 } from '../../lib/audio.js';
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from '../../app/routes.js';
 import { AudioArtifactDownloads } from '../history/AudioArtifactDownloads.jsx';
+import { CloudMeetingExportPanel } from '../meetings/CloudMeetingExportPanel.jsx';
+import { isSupabaseConfigured } from '../../lib/supabaseAuth.js';
 import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 
 const RECONNECT_FAILED_MESSAGE = '無法重新連線即時字幕。準備就緒後可以開始新的工作階段。';
@@ -747,6 +749,14 @@ export function MeetingExportSection({ detail, detailError = '', onRetry }) {
   if (detail === undefined) return <MeetingDetailState title="正在載入匯出內容"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
   if (!detail) return <MeetingDetailState title="無法取得匯出內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
 
+  if (isSupabaseConfigured()) {
+    return (
+      <section className="meeting-record-section meeting-export-section" aria-label="匯出">
+        <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
+        <CloudMeetingExportPanel meetingId={detail.meeting?.id} />
+      </section>
+    );
+  }
   const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
   const exportSources = meetingExportSources(detail, meetingExportFormat);
   const finalCues = exportSources.cues;
@@ -907,7 +917,8 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
         historySection="source"
       />
 
-      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出" data-history-section="export">
+      {isSupabaseConfigured() ? <CloudMeetingExportPanel meetingId={meetingId} /> : null}
+      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出" data-history-section="export" style={isSupabaseConfigured() ? { display: 'none' } : undefined}>
         <div className="controls saved-export-controls">
           <label className="field">
             <span>整場匯出格式</span>

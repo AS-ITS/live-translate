@@ -538,3 +538,15 @@ supabase migration up --include-all
 ```
 
 The production API must fail closed with `503 cloud_capability_unavailable` when the server-side Supabase contract is invalid; this guard is separate from browser-safe client configuration and must not be bypassed by file-backed fallback repositories.
+P7 cloud export lifecycle coverage, without Gemini or production Storage:
+
+```bash
+node --test tests/unit/exportArtifactService.test.js tests/unit/exportWorker.test.js tests/unit/meetingExportSource.test.js tests/unit/workerEndpoint.test.js
+```
+
+Migration validation must include the private `meeting-exports` bucket,
+owner-only Storage policies, `export_artifacts` constraints, and `export_jobs`:
+
+```bash
+npm run db:lint
+```

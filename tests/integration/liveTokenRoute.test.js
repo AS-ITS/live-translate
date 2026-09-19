@@ -246,7 +246,7 @@ test('GET /readyz stays unavailable when production auth configuration is incomp
   const response = await request({ method: 'GET', url: '/readyz' });
 
   assert.equal(response.status, 503);
-  assert.equal(response.json().error.code, 'supabase_unavailable');
+  assert.equal(response.json().error.code, 'supabase_jwks_url_missing');
 });
 
 test('GET /api/metrics returns the protected process-local queue snapshot', async () => {

@@ -66,6 +66,7 @@ const ERROR_RESPONSES = {
   cloud_capability_unavailable: { status: 503, message: 'This cloud capability is not enabled yet.' },
   supabase_unavailable: { status: 503, message: 'Local Supabase is unavailable.' },
   supabase_schema_missing: { status: 503, message: 'Local Supabase migrations are missing.' },
+  supabase_storage_missing: { status: 503, message: 'Supabase Storage configuration is missing.' },
   supabase_credentials_invalid: { status: 503, message: 'Local Supabase service credentials are invalid.' },
   supabase_request_failed: { status: 503, message: 'Local Supabase request failed.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
@@ -838,7 +839,7 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const environmentError = cloudEnvironmentError();
+    const environmentError = cloudEnvironmentError({ requireBrowserConfig: IS_PRODUCTION });
     const hasSupabase = !environmentError;
     const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
     let ready = hasSupabase || legacyLocalReady;
@@ -848,6 +849,25 @@ async function handleRequestWithSessionReadController(
     }
     statusCode = ready ? 200 : 503;
     sendJson(res, statusCode, ready ? { ok: true, requestId } : { ok: false, error: { code: dependencyCode || 'supabase_unavailable' }, requestId }, requestId);
+    return;
+  }
+
+  if (IS_PRODUCTION && path.startsWith('/api/') && cloudEnvironmentError({ requireBrowserConfig: true })) {
+    statusCode = 503;
+    logEvent({
+      level: 'error',
+      event: 'request_rejected',
+      requestId,
+      method: req.method,
+      path,
+      statusCode,
+      errorCode: 'cloud_capability_unavailable',
+      safeSummary: 'Production cloud environment is not ready.',
+      durationMs: Math.round(performance.now() - startedAt),
+      clientIp,
+      origin
+    });
+    sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
     return;
   }
 

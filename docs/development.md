@@ -111,8 +111,8 @@ authenticated flows. P1 owner-scoped adapters support these cloud capabilities:
 | Observability | Service-role metric RPCs and UTC-minute buckets |
 
 If the required Supabase configuration is missing, or `/readyz` cannot verify
-the observability table and RPC, these cloud APIs remain fail-closed with a
-structured `503`.
+the core tables, metric/queue RPCs, or private `meeting-audio` Storage bucket,
+these cloud APIs remain fail-closed with structured `503` responses.
 
 ## Cloud rollout preflight
 
@@ -129,6 +129,8 @@ processing outcomes.
 Production smoke checks and alert thresholds are maintained in
 [`docs/observability-runbook.md`](observability-runbook.md). Production
 verification is a rollout task, not an unimplemented P1 capability.
+
+The cloud rollout preflight must apply all migrations through the current migration head, run `npm run db:lint`, and verify `/healthz` plus `/readyz`. Readiness probes the core persistence tables, metric/queue RPCs, and private `meeting-audio` Storage bucket. In production, an invalid server-side cloud contract rejects `/api/*` with `503 cloud_capability_unavailable` so file-backed fallback cannot receive production traffic.
 
 ## Account approval behavior
 

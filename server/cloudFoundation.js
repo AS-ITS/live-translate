@@ -22,7 +22,7 @@ export function createCloudFoundationHandler({ env = process.env, accessControl 
     }
 
     if (req.method === 'GET' && normalizedPath === '/readyz') {
-      const environmentError = cloudEnvironmentError({ env });
+      const environmentError = cloudEnvironmentError({ env, requireBrowserConfig: env.NODE_ENV === 'production' });
       let ready = !environmentError;
       let dependencyCode = environmentError?.code || null;
       if (ready && typeof readinessCheck === 'function') {

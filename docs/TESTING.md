@@ -529,3 +529,12 @@ node --test \
 ```
 
 These tests assert safe environment diagnostics, user JWT versus service-role headers, expiring-session refresh, and owner-scope repository behavior. Cloud smoke still requires a fresh Supabase access token and must not print it.
+
+Readiness coverage also verifies the core persistence tables, translation metric/queue RPCs, and private `meeting-audio` Storage bucket through the service-role client. Run the local migration checks before relying on readiness results:
+
+```bash
+supabase db lint
+supabase migration up --include-all
+```
+
+The production API must fail closed with `503 cloud_capability_unavailable` when the server-side Supabase contract is invalid; this guard is separate from browser-safe client configuration and must not be bypassed by file-backed fallback repositories.

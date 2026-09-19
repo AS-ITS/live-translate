@@ -2,12 +2,14 @@ import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
 import { currentRequestOwnerId, currentRequestUserId } from '../../server/requestIdentity.js';
 import { eq } from './supabaseRestClient.js';
-import { createSupabaseRequestClient } from './supabaseRequestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseMeetingRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
-  if (!clientForRequest()) return null;
-  const client = { request: (...args) => clientForRequest().request(...args) };
+  const client = {
+    request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args),
+    rpc: (...args) => requireSupabaseRequestClient(clientForRequest).rpc(...args)
+  };
   const owner = () => {
     const userId = currentRequestOwnerId();
     if (!userId) { const error = new Error('Authenticated owner required.'); error.code = 'auth_required'; error.status = 401; throw error; }
@@ -19,6 +21,26 @@ export function createSupabaseMeetingRepository(options = {}) {
       const entity = new Meeting(input);
       const rows = await client.request('meetings', { method: 'POST', body: [meetingRow(entity, owner())] });
       return meetingFromRow(rows[0]);
+    },
+    async createMeetingWithInitialSegment({ meeting, segment }) {
+      const ownerUserId = owner();
+      const meetingEntity = new Meeting({ ...meeting, ownerUserId });
+      const segmentEntity = new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
+      const result = await client.rpc('create_meeting_with_initial_segment', {
+        p_meeting: meetingRow(meetingEntity, ownerUserId),
+        p_segment: segmentRow(segmentEntity, ownerUserId)
+      });
+      const payload = Array.isArray(result) ? result[0] : result;
+      if (!payload?.meeting || !payload?.segment) {
+        const error = new Error('Supabase meeting creation RPC returned an invalid result.');
+        error.code = 'supabase_request_failed';
+        error.status = 503;
+        throw error;
+      }
+      return {
+        meeting: meetingFromRow(payload.meeting),
+        segment: await hydrateSegment(client, payload.segment, ownerUserId)
+      };
     },
     async getMeeting(id) {
       const rows = await client.request('meetings', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
@@ -73,7 +95,12 @@ export function createSupabaseMeetingRepository(options = {}) {
       return rows[0] ? hydrateSegment(client, rows[0], userId) : null;
     }
   };
-  return Object.freeze(Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)])));
+  const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
+  Object.defineProperty(exposed, 'createMeetingWithInitialSegment', {
+    value: repository.createMeetingWithInitialSegment.bind(repository),
+    enumerable: false
+  });
+  return Object.freeze(exposed);
 }
 
 function meetingRow(entity, ownerUserId) {

@@ -154,15 +154,46 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
       error.status = response.status;
       error.code = response.status === 404
         ? 'supabase_schema_missing'
-        : (response.status === 401 || response.status === 403
-          ? 'supabase_credentials_invalid'
-          : 'supabase_request_failed');
+        : (response.status === 401
+          ? 'auth_invalid'
+          : (response.status === 403 ? 'auth_forbidden' : 'supabase_request_failed'));
       throw error;
     }
     return response.status === 204 ? [] : response.json();
   }
 
-  return Object.freeze({ request, baseUrl });
+  async function rpc(functionName, body = {}) {
+    let response;
+    try {
+      response = await fetchImpl(`${baseUrl}/rest/v1/rpc/${functionName}`, {
+        method: 'POST',
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          Prefer: 'return=representation'
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (cause) {
+      const error = new Error('Supabase RPC endpoint is unavailable.');
+      error.code = 'supabase_unavailable';
+      error.status = 503;
+      error.cause = cause;
+      throw error;
+    }
+    if (!response.ok) {
+      const error = new Error(`Supabase RPC ${functionName} request failed.`);
+      error.status = response.status;
+      error.code = response.status === 401 ? 'auth_invalid'
+        : (response.status === 403 ? 'auth_forbidden'
+          : (response.status === 404 ? 'supabase_schema_missing' : 'supabase_request_failed'));
+      throw error;
+    }
+    return response.status === 204 ? [] : response.json();
+  }
+
+  return Object.freeze({ request, rpc, baseUrl });
 }
 
 export function eq(name, value) {

@@ -1,5 +1,7 @@
 # Changelog
 
+- Issue #35 Supabase-first closeout: authenticated repositories now preserve the actor JWT across owner/member resource scopes, fail closed when the user client is unavailable, add atomic cloud Meeting plus initial Segment creation, complete member read-only RLS policies, owner-only export/audio guards, recording-permission audit events, and log redaction coverage. Local data migration remains out of scope.
+
 - P8 cloud-only transcript export: Meeting and legacy Session UI no longer
   generate browser TXT/SRT/VTT files. Supabase cloud mode remains on the P7
   asynchronous export lifecycle; local mode shows an unavailable message.

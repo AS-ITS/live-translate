@@ -1,10 +1,11 @@
-import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
 import { mapMeetingToDetailDTO } from '../readModels/meetingReadModels.js';
 import { meetingExportSource } from '../lib/meetingExportSource.js';
 
 export function createSupabaseMeetingExportSource({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForContext = createSupabaseContextClient({ env, fetchImpl });
+  const client = { request: (...args) => requireSupabaseContextClient(clientForContext).request(...args) };
 
   return Object.freeze({
     async read({ ownerUserId, meetingId }) {

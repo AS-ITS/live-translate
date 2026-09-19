@@ -1,8 +1,9 @@
-import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
 
 export function createSupabaseExportArtifactRepository({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForContext = createSupabaseContextClient({ env, fetchImpl });
+  const client = { request: (...args) => requireSupabaseContextClient(clientForContext).request(...args) };
 
   return Object.freeze({
     async findByKey({ ownerUserId, meetingId, sourceHash, format, stream }) {

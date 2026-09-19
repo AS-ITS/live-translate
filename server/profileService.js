@@ -1,9 +1,12 @@
 import { createAuditLogService } from './auditLogService.js';
+import { currentRequestScope } from './requestIdentity.js';
+import { createSupabaseContextClient, requireSupabaseContextClient } from '../src/infrastructure/supabaseRequestClient.js';
 
 export function createProfileService({ env = process.env, fetchImpl = globalThis.fetch, auditLogService = createAuditLogService({ env, fetchImpl }) } = {}) {
   const localMemberships = new Map();
   const localMeetingOwners = new Map();
   const cloud = () => env.SUPABASE_URL && env.SUPABASE_SECRET_KEY;
+  const clientForContext = createSupabaseContextClient({ env, fetchImpl });
   return {
     async getProfile(user) {
       if (!user?.id) throw new Error('Authenticated user identity required.');
@@ -82,24 +85,37 @@ export function createProfileService({ env = process.env, fetchImpl = globalThis
       await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_removed', result: 'success' });
       return true;
     },
-    async updateMeetingMemberRecording(user, meetingId, memberId, canRecord) {
+    async updateMeetingMemberRecording(user, meetingId, memberId, canRecord, requestId) {
       if (!user?.id || !memberId || typeof canRecord !== 'boolean') throw accountError('invalid_request');
       if (!await this.canManageMeeting(user, meetingId)) throw accountError('auth_forbidden');
       if (!cloud()) {
         const member = (localMemberships.get(meetingId) || []).find((item) => item.userId === memberId);
         if (!member) throw accountError('account_not_found');
         member.canRecord = canRecord;
+        await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_recording_permission_changed', result: 'success' });
         return member;
       }
       const rows = await restRequest(`/rest/v1/meeting_members?meeting_id=eq.${encodeURIComponent(meetingId)}&user_id=eq.${encodeURIComponent(memberId)}&owner_user_id=eq.${encodeURIComponent(user.id)}`, 'PATCH', { can_record: canRecord });
       if (!rows[0]) throw accountError('account_not_found');
+      await auditLogService?.record({ actor_user_id: user.id, target_user_id: memberId, target_meeting_id: meetingId, request_id: requestId, action: 'member_recording_permission_changed', result: 'success' });
       return { userId: rows[0].user_id, ownerUserId: rows[0].owner_user_id, meetingId, createdAt: rows[0].created_at, canRecord: rows[0].can_record !== false };
     }
   };
 
   async function restRequest(path, method = 'GET', body) {
+    const scoped = currentRequestScope()
+      ? requireSupabaseContextClient(clientForContext)
+      : clientForContext();
+    const match = path.match(/^\/rest\/v1\/([^?]+)(.*)$/u);
+    if (scoped && match) {
+      return scoped.request(match[1], { method, query: match[2] || '', body });
+    }
     const response = await fetchImpl(`${env.SUPABASE_URL.replace(/\/$/u, '')}${path}`, { method, headers: { apikey: env.SUPABASE_SECRET_KEY, Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`, Prefer: 'return=representation', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-    if (!response.ok) throw accountError(response.status === 404 ? 'meeting_not_found' : 'supabase_request_failed');
+    if (!response.ok) {
+      const error = accountError(response.status === 404 ? 'meeting_not_found' : 'supabase_request_failed');
+      error.status = response.status;
+      throw error;
+    }
     return response.status === 204 ? [] : response.json();
   }
 }

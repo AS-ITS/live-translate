@@ -879,12 +879,14 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
-      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
       if (authenticatedUser?.id) {
-        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req) });
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req), capability: 'user' });
         setRequestScope(requestScope);
       }
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
+      setRequestUser(authenticatedUser);
+      setRequestScope(requestScope);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1008,12 +1010,14 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
-      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
       if (authenticatedUser?.id) {
-        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req) });
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req), capability: 'user' });
         setRequestScope(requestScope);
       }
+      authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
+      setRequestUser(authenticatedUser);
+      setRequestScope(requestScope);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1267,7 +1271,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const memberId = safeDecodePathComponent(parts[5]);
       if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
       const body = await readJson(req, { maxBytes: 8 * 1024 });
-      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord);
+      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord, requestId);
       statusCode = 200;
       sendJson(res, statusCode, { member }, requestId);
     } catch (error) {
@@ -1536,6 +1540,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
   const exportController = createExportController({ exportArtifactService });
   if (exportController?.matches(path)) {
+    if (authenticatedUser?.role !== 'super_admin' && currentRequestActorId() !== currentRequestOwnerId()) {
+      statusCode = 403;
+      sendJson(res, statusCode, errorPayload('auth_forbidden', requestId), requestId);
+      return;
+    }
     await exportController.handle({ req, res, path, requestId });
     return;
   }
@@ -1766,6 +1775,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
       const { meetingId, artifactId, action } = parseMeetingAudioArtifactActionPath(path);
+      if (action === 'download-url' && authenticatedUser?.role !== 'super_admin' && currentRequestActorId() !== currentRequestOwnerId()) {
+        throw createHttpError('auth_forbidden');
+      }
       let result;
       if (action === 'complete') result = await meetingAudioService.completeUpload({ meetingId, artifactId });
       else if (action === 'fail') result = await meetingAudioService.failUpload({ meetingId, artifactId });

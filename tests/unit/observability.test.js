@@ -19,7 +19,7 @@ test('observability validates buckets, provider statuses, telemetry and redacts 
   assert.equal(providerStatusClass(503), '5xx');
   assert.deepEqual(validateViewerTelemetry({ eventType: 'event_gap', count: 2 }), { eventType: 'event_gap', count: 2 });
   assert.throws(() => validateViewerTelemetry({ eventType: 'unknown' }));
-  assert.deepEqual(redactLogValue({ apiKey: 'secret', meetingId: 'meeting-1', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', meetingId: 'meeting-1', nested: { token: '[REDACTED]' } });
+assert.deepEqual(redactLogValue({ apiKey: 'secret', meetingId: 'meeting-1', signedUrl: 'https://signed.example', audio: 'bytes', transcriptText: 'secret text', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', meetingId: 'meeting-1', signedUrl: '[REDACTED]', audio: '[REDACTED]', transcriptText: '[REDACTED]', nested: { token: '[REDACTED]' } });
 });
 
 test('structured logs preserve non-sensitive auth stage diagnostics', () => {

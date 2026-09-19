@@ -2,6 +2,11 @@
 
 ## Meeting export lifecycle (P7)
 
+Assigned members can read the meeting data explicitly covered by RLS and can
+write recording data only while active with `can_record=true`. They cannot
+modify owner settings, membership/share state, glossary data, exports, or
+delete the meeting. Export and signed audio download URLs remain owner-scoped.
+
 Supabase cloud mode provides owner-only asynchronous Meeting export endpoints:
 
 ```http

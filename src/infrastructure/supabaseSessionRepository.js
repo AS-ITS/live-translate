@@ -1,12 +1,11 @@
 import { createSessionRecord as createSessionRecordModel, createTranscriptItemForSession, finalizeSessionRecord as finalizeSessionRecordModel, summarizeTranscriptItems, updateSessionRecord as updateSessionRecordModel } from '../lib/sessionRecords.js';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { eq } from './supabaseRestClient.js';
-import { createSupabaseRequestClient } from './supabaseRequestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseSessionRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
-  if (!clientForRequest()) return null;
-  const client = { request: (...args) => clientForRequest().request(...args) };
+  const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
   const idFactory = options.idFactory;
   const owner = () => currentRequestOwnerId() || failOwner();
   const repository = {

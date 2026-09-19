@@ -5,6 +5,9 @@ preferences; output routing remains browser-limited
 
 ## 1. Feature Overview
 
+Meeting Settings can be saved before the audio preflight is completed. The
+preflight remains required before entering the Live recorder.
+
 Audio Device Selection is a Phase 2 internal-tool feature that lets the user
 choose which microphone is used for live translation input and, in a future
 browser-limited phase, which speaker or audio output device is used for

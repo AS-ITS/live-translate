@@ -22,7 +22,7 @@ test('requires a meeting name before saving', async ({ page }) => {
   await expect(page.locator('#meeting-name-error')).toHaveCount(0);
 });
 
-test('requires microphone confirmation before saving', async ({ page }) => {
+test('allows saving before microphone confirmation', async ({ page }) => {
   let createRequestCount = 0;
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
   await page.route('**/api/meetings', async (route) => {
@@ -32,22 +32,10 @@ test('requires microphone confirmation before saving', async ({ page }) => {
   await page.goto('/#meeting-settings?mode=create');
 
   await page.getByRole('textbox', { name: /會議名稱/ }).fill('產品會議');
-  const confirmButton = page.getByRole('button', { name: '測試並確認音訊' });
   await page.getByRole('button', { name: '建立會議' }).click();
 
-  await expect(confirmButton).toBeFocused();
-  await expect(page.locator('#meeting-audio-settings-title')).toBeInViewport();
-  await expect(page.locator('#meeting-audio-settings-error')).toContainText('請先測試並確認麥克風權限。');
-  await expect(confirmButton).toHaveAttribute('aria-invalid', 'true');
-  const controlRowLayout = await page.evaluate(() => {
-    const button = document.querySelector('.meeting-audio-controls > .button');
-    const status = document.querySelector('.meeting-audio-status');
-    const buttonRect = button.getBoundingClientRect();
-    const statusRect = status.getBoundingClientRect();
-    return statusRect.top < buttonRect.bottom && statusRect.bottom > buttonRect.top;
-  });
-  expect(controlRowLayout).toBe(true);
-  await expect(createRequestCount).toBe(0);
+  await expect.poll(() => createRequestCount).toBe(1);
+  await expect(page.locator('#meeting-audio-settings-error')).toHaveCount(0);
 });
 
 test('meeting settings steps navigate to each settings card', async ({ page }) => {

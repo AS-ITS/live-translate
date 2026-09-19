@@ -363,13 +363,6 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       nameInputRef.current?.focus();
       return;
     }
-    const audioPreference = getMeetingAudioPreference(meeting?.id || meetingId);
-    if (audioTestStatus !== 'confirmed' && !hasConfirmedMeetingAudioPreference(audioPreference)) {
-      setAudioSettingsError('請先測試並確認麥克風權限。');
-      setError('');
-      focusAudioSettings();
-      return;
-    }
     setNameError('');
     setAudioSettingsError('');
     setIsSaving(true);

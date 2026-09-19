@@ -1,5 +1,6 @@
 # Changelog
 
+- 修正 Meeting Settings 捲動到「錄製權限」卡片時，第六步「成員與錄製權限」未維持 active 的問題。
 - Issue #35 Phase 1–2 groundwork: readiness validates Supabase project alignment, owner CRUD can use an authenticated user-scoped Supabase client, service-role access is explicitly named, and expiring browser sessions refresh before private API requests.
 - Meeting Settings edit-load diagnostics now preserve HTTP status, structured error code, request ID, and safe actor/resource context; the UI distinguishes authentication, permission, missing-meeting, and cloud-service failures while glossary loading remains independent.
 - Active Meeting members can edit ordinary Meeting settings and create or view Viewer shares; destructive management actions remain owner-scoped.

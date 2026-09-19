@@ -41,7 +41,6 @@ import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '.
 import { applyCueRefinementExecutionStates, completedCueRefinementOutputs, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../../lib/cueRefinement.js';
 import { effectiveSourceForCue, effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../../lib/cueContent.js';
 import { mergeRetranslationHistoryIntoDetail } from '../../lib/sessionTranslationHistory.js';
-import { createExportApplicationService } from '../../application/exportApplicationService.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -49,16 +48,6 @@ import {
   createActiveSessionRecord,
   finalizeActiveSessionRecord
 } from '../../lib/sessionRecordLifecycle.js';
-import {
-  buildSavedSessionFileName,
-  canExportSavedSession
-} from '../../lib/sessionRecordExport.js';
-import { canExportTranscript } from '../../lib/transcriptExport.js';
-import { meetingExportSources } from '../../lib/meetingTranscriptExport.js';
-import {
-  canExportCues,
-  wrapSubtitleText
-} from '../../lib/subtitleCueExport.js';
 import { toTraditionalChineseSourceContent, toTraditionalChineseText } from '../../lib/chineseText.js';
 import {
   applyTranscriptEvent,
@@ -122,7 +111,6 @@ const TRANSCRIPT_POLISHING_INTERVAL_MS = Number.parseInt(import.meta.env?.VITE_T
 const TRANSCRIPT_POLISHING_MIN_CHARS = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MIN_CHARS || '200', 10);
 const TRANSCRIPT_POLISHING_MAX_RPM = Number.parseInt(import.meta.env?.VITE_TRANSCRIPT_POLISHING_MAX_RPM || '15', 10);
 const SEGMENT_SWITCH_INTERVAL_MS = 10 * 60 * 1000;
-const exportApplicationService = createExportApplicationService();
 const TRANSLATED_AUDIO_IDLE_STATE = {
   status: 'idle',
   blob: null,
@@ -742,45 +730,28 @@ export function MeetingTranslationSection({ detail, detailError = '', onRetry })
 }
 
 export function MeetingExportSection({ detail, detailError = '', onRetry }) {
-  const [meetingExportFormat, setMeetingExportFormat] = useState('txt');
-  const [meetingExportStream, setMeetingExportStream] = useState('translation');
-  const [meetingExportError, setMeetingExportError] = useState('');
-
   if (detail === undefined) return <MeetingDetailState title="正在載入匯出內容"><p className="history-empty">正在載入已儲存的會議…</p></MeetingDetailState>;
   if (!detail) return <MeetingDetailState title="無法取得匯出內容"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
 
-  if (isSupabaseConfigured()) {
-    return (
-      <section className="meeting-record-section meeting-export-section" aria-label="匯出">
-        <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
-        <CloudMeetingExportPanel meetingId={detail.meeting?.id} />
-      </section>
-    );
-  }
-  const transcriptItems = Array.isArray(detail.transcriptItems) ? detail.transcriptItems : [];
-  const exportSources = meetingExportSources(detail, meetingExportFormat);
-  const finalCues = exportSources.cues;
-  const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
-  const canDownload = meetingExportFormat !== 'txt' && finalCues.length > 0
-    ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
-    : canExportTranscript(transcriptItems, { format: meetingExportFormat, stream: meetingExportStream, timeOrigin });
-  const unavailableReason = meetingExportUnavailableReason({ canExport: canDownload, format: meetingExportFormat, stream: meetingExportStream });
-
-  function downloadMeetingTranscript() {
-    setMeetingExportError('');
-    try {
-      const content = exportApplicationService.exportTranscript({ items: transcriptItems, cues: finalCues, options: { format: meetingExportFormat, stream: meetingExportStream, timeOrigin } });
-      downloadTextFile(content, buildMeetingTranscriptFileName(detail.meeting, { format: meetingExportFormat, stream: meetingExportStream }), contentTypeForFormat(meetingExportFormat));
-    } catch {
-      setMeetingExportError('所選選項無法匯出整場會議逐字稿。');
-    }
-  }
-
   return (
-    <section className="meeting-record-section meeting-export-section" aria-label="匯出">
+    <section className="meeting-record-section meeting-export-section" aria-label="匯出" data-history-section="export">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
       <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
-      <section className="meeting-export-block" aria-label="字幕匯出"><h3>字幕匯出</h3><div className="meeting-export-controls"><label className="field"><span>字幕匯出格式</span><select value={meetingExportFormat} onChange={(event) => setMeetingExportFormat(event.target.value)}><option value="txt">TXT</option><option value="srt">SRT</option><option value="vtt">VTT</option></select></label><label className="field"><span>匯出內容</span><select value={meetingExportStream} onChange={(event) => setMeetingExportStream(event.target.value)}><option value="translation">翻譯</option><option value="source">原文</option><option value="both">兩者</option></select></label><button className="button primary" type="button" onClick={downloadMeetingTranscript} disabled={!canDownload}><Download size={16} aria-hidden="true" />下載字幕檔案</button></div><p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；舊紀錄沒有 Final Cue 時會使用逐字稿 fallback。</p>{unavailableReason ? <p className="export-note">{unavailableReason}</p> : null}{meetingExportError ? <p className="error-message" role="alert">{meetingExportError}</p> : null}</section>
+      {isSupabaseConfigured() ? <CloudMeetingExportPanel meetingId={detail.meeting?.id} /> : <CloudExportUnavailableNotice />}
+    </section>
+  );
+}
+
+export function CloudExportUnavailableNotice({ meetingId = '' }) {
+  const meetingHref = isSupabaseConfigured() && meetingId
+    ? `#meeting-detail?meetingId=${encodeURIComponent(meetingId)}&section=export`
+    : '';
+
+  return (
+    <section className="meeting-export-block cloud-export-unavailable" aria-label="字幕匯出" data-testid="cloud-export-unavailable" data-history-section="export">
+      <h3>字幕匯出</h3>
+      <p className="export-note">字幕匯出僅支援 Supabase cloud mode。此 local runtime 不會直接產生瀏覽器檔案。</p>
+      {meetingHref ? <a className="button secondary" href={meetingHref}>前往會議 cloud 匯出</a> : null}
     </section>
   );
 }
@@ -790,27 +761,12 @@ export function MeetingDetailState({ title, children }) {
 }
 
 export function MeetingDetail({ detail, detailError = '', activeSection = 'overview', onRetryDetail }) {
-  const [meetingExportFormat, setMeetingExportFormat] = useState('txt');
-  const [meetingExportStream, setMeetingExportStream] = useState('translation');
-  const [meetingExportError, setMeetingExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
 
   const meetingId = detail?.meeting?.id;
-  const transcriptItems = useMemo(
-    () => Array.isArray(detail?.transcriptItems) ? detail.transcriptItems : [],
-    [detail?.transcriptItems]
-  );
-  const exportSources = useMemo(
-    () => meetingExportSources(detail, meetingExportFormat),
-    [detail, meetingExportFormat]
-  );
-  const finalCues = exportSources.cues;
   const readingContent = useMemo(() => meetingReadingContent(detail), [detail]);
 
   useEffect(() => {
-    setMeetingExportFormat('txt');
-    setMeetingExportStream('translation');
-    setMeetingExportError('');
     setReadingTab('translationArticle');
   }, [meetingId]);
 
@@ -847,46 +803,6 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
     );
   }
 
-  const timeOrigin = detail.meeting?.startedAt ?? transcriptItems[0]?.startedAt ?? null;
-  const canDownloadMeetingTranscript = meetingExportFormat !== 'txt' && finalCues.length > 0
-    ? canExportCues(finalCues, { format: meetingExportFormat, stream: meetingExportStream })
-    : canExportTranscript(transcriptItems, {
-        format: meetingExportFormat,
-        stream: meetingExportStream,
-        timeOrigin
-      });
-  const exportUnavailableReason = meetingExportUnavailableReason({
-    canExport: canDownloadMeetingTranscript,
-    format: meetingExportFormat,
-    stream: meetingExportStream
-  });
-
-  function downloadMeetingTranscript() {
-    setMeetingExportError('');
-
-    try {
-      const content = exportApplicationService.exportTranscript({
-        items: transcriptItems,
-        cues: finalCues,
-        options: {
-          format: meetingExportFormat,
-          stream: meetingExportStream,
-          timeOrigin
-        }
-      });
-      downloadTextFile(
-        content,
-        buildMeetingTranscriptFileName(detail.meeting, {
-          format: meetingExportFormat,
-          stream: meetingExportStream
-        }),
-        contentTypeForFormat(meetingExportFormat)
-      );
-    } catch {
-      setMeetingExportError('所選選項無法匯出整場會議逐字稿。');
-    }
-  }
-
   return (
     <section className="session-detail meeting-detail" aria-label="會議詳細資料">
       <div className="session-detail-header">
@@ -917,41 +833,9 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
         historySection="source"
       />
 
-      {isSupabaseConfigured() ? <CloudMeetingExportPanel meetingId={meetingId} /> : null}
-      <section className="saved-export-panel" aria-label="整場會議逐字稿匯出" data-history-section="export" style={isSupabaseConfigured() ? { display: 'none' } : undefined}>
-        <div className="controls saved-export-controls">
-          <label className="field">
-            <span>整場匯出格式</span>
-            <select value={meetingExportFormat} onChange={(event) => setMeetingExportFormat(event.target.value)}>
-              <option value="txt">TXT</option>
-              <option value="srt">SRT</option>
-              <option value="vtt">VTT</option>
-            </select>
-          </label>
-
-          <label className="field">
-            <span>整場匯出內容</span>
-            <select value={meetingExportStream} onChange={(event) => setMeetingExportStream(event.target.value)}>
-              <option value="translation">翻譯</option>
-              <option value="source">原文</option>
-              <option value="both">兩者</option>
-            </select>
-          </label>
-
-          <button
-            className="button detail-button"
-            type="button"
-            onClick={downloadMeetingTranscript}
-            disabled={!canDownloadMeetingTranscript}
-          >
-            <Download size={16} aria-hidden="true" />
-            下載整場逐字稿
-          </button>
-        </div>
-        <p className="export-note">整場字幕優先依已保存的 Final Cue 輸出；中斷或失敗段落已保存的內容仍會保留。舊紀錄沒有 Final Cue 時會使用逐字稿分組 fallback。</p>
-        {exportUnavailableReason ? <p className="export-note">{exportUnavailableReason}</p> : null}
-        {meetingExportError ? <p className="error-message">{meetingExportError}</p> : null}
-      </section>
+      {isSupabaseConfigured()
+        ? <CloudMeetingExportPanel meetingId={meetingId} />
+        : <CloudExportUnavailableNotice meetingId={meetingId} />}
     </section>
   );
 }
@@ -1522,16 +1406,10 @@ export function GlossaryPanel({ entries: sharedEntries = [], onEntriesChange }) 
 }
 
 export function SessionDetail({ detail, historyRecord, activeSection = 'overview', detailError = '', onRetryDetail }) {
-  const [savedExportFormat, setSavedExportFormat] = useState('txt');
-  const [savedExportStream, setSavedExportStream] = useState('translation');
-  const [savedExportError, setSavedExportError] = useState('');
   const [readingTab, setReadingTab] = useState('translationArticle');
   const sessionRecordId = detail?.session?.id;
 
   useEffect(() => {
-    setSavedExportFormat('txt');
-    setSavedExportStream('translation');
-    setSavedExportError('');
     setReadingTab('translationArticle');
   }, [sessionRecordId]);
 
@@ -1566,11 +1444,6 @@ export function SessionDetail({ detail, historyRecord, activeSection = 'overview
     () => readingContentForDetail(detail, { sourceItems, translationItems, sessionRecord }),
     [detail, sourceItems, translationItems, sessionRecord]
   );
-  const exportDetail = useMemo(
-    () => exportDetailForSessionDetailDTO(detail, historyRecord),
-    [detail, historyRecord]
-  );
-
   if (detail === undefined) {
     return (
       <section className="session-detail" aria-label="工作階段詳細資料">
@@ -1591,30 +1464,6 @@ export function SessionDetail({ detail, historyRecord, activeSection = 'overview
         <p className="error-message" role="alert">{detailError || '此翻譯紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetryDetail}>重試</button></p>
       </section>
     );
-  }
-
-  const canDownloadSavedTranscript = canExportSavedSession(exportDetail, { format: savedExportFormat, stream: savedExportStream });
-  const savedExportUnavailableReason = savedSessionExportUnavailableReason(exportDetail, { format: savedExportFormat, stream: savedExportStream });
-
-  function downloadSavedTranscript() {
-    setSavedExportError('');
-
-    try {
-      const content = exportApplicationService.exportCombinedSessionView({
-        sessionDetail: exportDetail,
-        options: {
-          format: savedExportFormat,
-          stream: savedExportStream
-        }
-      });
-      const fileName = buildSavedSessionFileName(exportDetail.sessionRecord, {
-        format: savedExportFormat,
-        stream: savedExportStream
-      });
-      downloadTextFile(content, fileName, contentTypeForFormat(savedExportFormat));
-    } catch {
-      setSavedExportError('所選選項無法匯出已儲存的逐字稿。');
-    }
   }
 
   return (
@@ -1700,40 +1549,7 @@ export function SessionDetail({ detail, historyRecord, activeSection = 'overview
           historySection="source"
         />
       )}
-      <section className="saved-export-panel" aria-label="已儲存逐字稿匯出" data-history-section="export">
-        <div className="controls saved-export-controls">
-          <label className="field">
-            <span>已儲存逐字稿匯出格式</span>
-            <select value={savedExportFormat} onChange={(event) => setSavedExportFormat(event.target.value)}>
-              <option value="txt">TXT</option>
-              <option value="srt">SRT</option>
-              <option value="vtt">VTT</option>
-            </select>
-          </label>
-
-          <label className="field">
-            <span>已儲存逐字稿匯出內容</span>
-            <select value={savedExportStream} onChange={(event) => setSavedExportStream(event.target.value)}>
-            <option value="translation">翻譯</option>
-            <option value="source">原文</option>
-            <option value="both">兩者</option>
-            </select>
-          </label>
-
-          <button
-            className="button detail-button"
-            type="button"
-            onClick={downloadSavedTranscript}
-            disabled={!canDownloadSavedTranscript}
-          >
-            <Download size={16} aria-hidden="true" />
-            下載已儲存的逐字稿
-          </button>
-        </div>
-        <p className="export-note">已儲存字幕的時間碼採用原始工作階段觀察時間。</p>
-        {savedExportUnavailableReason ? <p className="export-note">{savedExportUnavailableReason}</p> : null}
-        {savedExportError ? <p className="error-message">{savedExportError}</p> : null}
-      </section>
+      <CloudExportUnavailableNotice meetingId={sessionRecord.meetingId} />
     </section>
   );
 }
@@ -2127,51 +1943,6 @@ function sessionRecordForDetailDTO(detail, historyRecord) {
   };
 }
 
-function exportDetailForSessionDetailDTO(detail, historyRecord) {
-  return {
-    sessionRecord: sessionRecordForDetailDTO(detail, historyRecord),
-    cues: Array.isArray(detail?.cues) ? detail.cues : [],
-    transcriptItems: [
-      ...(detail?.sourceTranscript?.items || []),
-      ...translationExportItemsForDetail(detail)
-    ]
-  };
-}
-
-function translationExportItemsForDetail(detail) {
-  const selectedItems = detail?.selectedTranslationOutput?.items || [];
-  if (selectedItems.length > 0) {
-    return selectedItems;
-  }
-
-  const article = detail?.readingContent?.translationArticle;
-  if (!article || article.status !== 'available' || typeof article.text !== 'string' || article.text.trim().length === 0) {
-    return [];
-  }
-
-  return [{
-    id: `${detail?.selectedTranslationOutput?.id || 'formal-output'}:article`,
-    stream: 'translation',
-    status: 'final',
-    text: article.text,
-    sequence: Number.MAX_SAFE_INTEGER,
-    startedAt: detail?.session?.startedAt ?? null,
-    finalizedAt: article.completedAt ?? detail?.session?.endedAt ?? null
-  }];
-}
-
-function savedSessionExportUnavailableReason(detail, options) {
-  if ((options.format === 'srt' || options.format === 'vtt') && options.stream === 'both') {
-    return 'SRT 與 VTT 一次只能匯出一個內容。';
-  }
-
-  if (!canExportSavedSession(detail, options)) {
-    return '所選選項無法匯出已儲存的逐字稿。';
-  }
-
-  return '';
-}
-
 function meetingReadingContent(detail) {
   const source = detail?.readingContent?.sourceTranscript;
   const translation = detail?.readingContent?.translationArticle;
@@ -2212,30 +1983,6 @@ function meetingReadingContent(detail) {
           completedAt: detail?.meeting?.endedAt ?? null
         }
   };
-}
-
-function meetingExportUnavailableReason({ canExport, format, stream }) {
-  if ((format === 'srt' || format === 'vtt') && stream === 'both') {
-    return 'SRT 與 VTT 一次只能匯出一個內容。';
-  }
-
-  if (!canExport) {
-    return '所選選項無法匯出整場會議逐字稿。';
-  }
-
-  return '';
-}
-
-function buildMeetingTranscriptFileName(meeting = {}, options = {}) {
-  const format = String(options.format || 'txt').replace(/[^a-zA-Z0-9]+/g, '') || 'txt';
-  const stream = String(options.stream || 'translation').replace(/[^a-zA-Z0-9._-]+/g, '-') || 'translation';
-  const startedAt = meeting.startedAt ? new Date(meeting.startedAt) : new Date();
-  const stamp = Number.isNaN(startedAt.getTime())
-    ? new Date().toISOString()
-    : startedAt.toISOString();
-  const safeStamp = stamp.replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-  const safeMeetingId = String(meeting.id || 'meeting').replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80);
-  return `live-translate-meeting-${safeMeetingId}-${safeStamp}-${stream}.${format}`;
 }
 
 function meetingTitle(record = {}) {
@@ -2347,28 +2094,6 @@ function meetingRecordSortTime(record) {
   return Number.isFinite(endedAt) ? endedAt : 0;
 }
 
-function contentTypeForFormat(format) {
-  const types = {
-    txt: 'text/plain;charset=utf-8',
-    srt: 'application/x-subrip;charset=utf-8',
-    vtt: 'text/vtt;charset=utf-8'
-  };
-
-  return types[format] || 'text/plain;charset=utf-8';
-}
-
-function downloadTextFile(content, fileName, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.style.display = 'none';
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-}
 function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

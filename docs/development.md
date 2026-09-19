@@ -298,3 +298,9 @@ P7 cloud Meeting exports use `export_artifacts` metadata, the private
 `meeting-exports` Storage bucket, and the existing PGMQ worker pattern through
 the `export_jobs` queue. Readiness checks the bucket; missing cloud export
 dependencies fail closed with `503`.
+
+P8 makes transcript export cloud-only. Supabase deployments use the P7
+asynchronous export panel and signed download URLs. Local file-backed mode
+keeps meeting and transcript reads available but shows an export-unavailable
+message; it does not generate browser transcript files and does not migrate
+local JSON or audio data.

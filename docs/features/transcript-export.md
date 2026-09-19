@@ -1,13 +1,13 @@
 # Transcript Export
 
-Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle added
+Status: Cue-backed Session export implemented (WP5A); P7 cloud lifecycle and P8 cloud-only path completed
 
 P7 adds the Supabase cloud lifecycle for Meeting exports. Cloud TXT, SRT, and VTT
 exports are server-canonical and asynchronous. The API reads persisted Final
 Cues first, falls back to persisted transcript items when no Final Cues exist,
 stores the result in the private `meeting-exports` bucket, and exposes only a
 60-second signed download URL. Local file-backed mode keeps the existing
-browser-only export path.
+browser download path is disabled in local mode.
 
 The export artifact key is `(owner_user_id, meeting_id, source_hash, format,
 stream)`. Repeating a request for the same source is idempotent. `queued` and
@@ -64,11 +64,14 @@ finalized in the browser.
 - Use the transcript item model produced by `src/lib/transcript.js`.
 - Preserve transcript ordering by `sequence`.
 - Support source and translated transcript streams.
-- Export only available transcript text; do not require persistence.
+- Export only persisted Final Cues when available, with the persisted
+  transcript-item fallback for older records.
 - Prefer refined Cue values by default and support explicit raw export.
 - Handle missing timing data gracefully.
 - Keep export behavior deterministic and unit-testable.
 - Preserve the existing Start / Stop flow.
+- Use the P7 server-canonical export lifecycle for every supported transcript
+  download.
 - Add no real Gemini API dependency for validation.
 
 ## 3. P7 Cloud API
@@ -85,12 +88,20 @@ Timed formats do not accept `stream: "both"`. The shared `export_jobs` PGMQ
 worker uses the existing visibility timeout, retry, and dead-letter behavior.
 Meeting deletion stops if export Storage cleanup fails.
 
-## 4. Non-Goals
+## 4. P8 Cloud-only path
+
+All user-visible transcript downloads use the cloud export lifecycle above.
+Supabase cloud mode renders the asynchronous export panel. Local file-backed
+mode does not generate TXT, SRT, or VTT files in the browser; it shows a
+message directing users to a Supabase cloud deployment instead. Existing
+local JSON, audio, and transcript data are not migrated by P8.
+
+## 5. Non-Goals
 
 - Translation history.
 - Session history persistence.
 - Database storage.
-- Local browser-only export migration to Supabase (deferred to P8).
+- Migrating existing local JSON or audio data into Supabase.
 - User accounts or access-control changes.
 - Editing transcript text before export.
 - Exporting raw audio.
@@ -99,7 +110,7 @@ Meeting deletion stops if export Storage cleanup fails.
 - Changing Gemini Live API session behavior.
 - Calling the real Gemini API in tests.
 
-## 5. Export Formats
+## 6. Export Formats
 
 ### TXT
 

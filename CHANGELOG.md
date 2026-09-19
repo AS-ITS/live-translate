@@ -1,5 +1,9 @@
 # Changelog
 
+- P8 cloud-only transcript export: Meeting and legacy Session UI no longer
+  generate browser TXT/SRT/VTT files. Supabase cloud mode remains on the P7
+  asynchronous export lifecycle; local mode shows an unavailable message.
+
 - Issue #35 Phase 1/3 groundwork: readiness now probes core Supabase tables, metric/queue RPCs, and the private audio Storage bucket; production API requests fail closed when the cloud contract is invalid; added member recording RLS policies and supporting indexes.
 - 修正 Meeting Settings 捲到底時仍停留在第五步的問題，現在會切換到最後一個設定項目。
 - 修正 Meeting Settings 捲動到「錄製權限」卡片時，第六步「成員與錄製權限」未維持 active 的問題。

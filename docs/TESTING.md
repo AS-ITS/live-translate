@@ -502,12 +502,13 @@ intended to spend real Gemini API quota.
 
 ### Subtitle Cue export (WP5A)
 
-Session detail export tests should use persisted final Cues as the primary
-fixture. Verify TXT, SRT, and VTT content from the same sequence-sorted Cue
-list, including session-relative timestamps, partial filtering, duplicate and
-timeline validation, and export-time wrapping. A Session with no Cues keeps
-the legacy transcript export fallback. Do not use DOM layout or Cue UI line
-wrapping as export input.
+Server export tests should use persisted Final Cues as the primary fixture.
+Verify TXT, SRT, and VTT content from the same sequence-sorted Cue list,
+including partial filtering, duplicate timeline validation, source-hash
+idempotency, artifact retry, and signed URL readiness. P8 UI tests must also
+verify that Supabase cloud mode uses the asynchronous export panel while local
+mode shows the unavailable message and never creates a browser transcript
+download. Do not use DOM layout or Cue UI line wrapping as export input.
 # Recorder sharing validation
 
 Use mocked request contexts to verify Recorder share role migration, lease

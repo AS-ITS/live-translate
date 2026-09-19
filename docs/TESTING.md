@@ -34,6 +34,21 @@ For an additional deployment preflight after starting the local server, run:
 SMOKE_BASE_URL=http://127.0.0.1:3000 npm run test:deployment-preflight
 ```
 
+## Issue #35 local RLS matrix
+
+After local Supabase is running, execute the real PostgREST/Auth allow/deny matrix:
+
+```bash
+eval "$(supabase status -o env)"
+RUN_SUPABASE_RLS_TESTS=true \
+SUPABASE_TEST_URL="$API_URL" \
+SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY" \
+SUPABASE_TEST_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
+npm run test:integration:supabase-rls
+```
+
+The test creates disposable local users and removes them with the service-role admin endpoint. It rejects non-local URLs unless `ALLOW_REMOTE_RLS_TESTS=true`; it never prints credentials or transcript data.
+
 ## Manual cloud validation
 
 Cloud checks are split by deployment risk:
@@ -44,6 +59,14 @@ Cloud checks are split by deployment risk:
 
 ```bash
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
+```
+
+For staging authenticated reload coverage, provide a non-production staging URL and disposable owner token:
+
+```bash
+CLOUD_BASE_URL=https://staging.example.com \
+CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
+npm run test:e2e:cloud -- tests/cloud/issue35Reload.spec.js tests/cloud/stagingSmoke.spec.js
 ```
 
 The manual workflow `.github/workflows/cloud-validation.yml` is production-only and requires `PRODUCTION_BASE_URL`. It does not require staging secrets. Real Gemini smoke remains a separate explicit opt-in.

@@ -200,7 +200,7 @@ function productionOptions({ env, clock }) {
   return {
     env,
     clock,
-    requestHandlerFactory: createRequestHandler,
+    requestHandlerFactory: (options) => createRequestHandler({ ...options, strictCheckpointPathIds: false }),
     translationExecutionProvider: { async execute() {} },
     resolveSavedTranscriptTranslationProvider() {
       return { async translate() {} };

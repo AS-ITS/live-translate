@@ -43,6 +43,14 @@ jobs:
         run: npx supabase@latest db reset --local
       - name: Lint local migrations
         run: npx supabase@latest db lint --local
+      - name: Run local RLS allow/deny matrix
+        run: |
+          eval "$(npx supabase@latest status -o env)"
+          RUN_SUPABASE_RLS_TESTS=true \
+            SUPABASE_TEST_URL="$API_URL" \
+            SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY" \
+            SUPABASE_TEST_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
+            npm run test:integration:supabase-rls
       - name: Stop local Supabase
         if: always()
         run: npx supabase@latest stop

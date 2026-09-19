@@ -159,6 +159,12 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
         setActiveStep(0);
         return;
       }
+      const scrollElement = document.scrollingElement || document.documentElement;
+      const isAtBottom = window.innerHeight + window.scrollY >= scrollElement.scrollHeight - 2;
+      if (isAtBottom) {
+        setActiveStep(sections[sections.length - 1].stepIndex);
+        return;
+      }
       const focusY = Math.max(headerOffset, window.innerHeight * focusLineRatio);
       const sectionRects = sections.map((item) => ({ ...item, rect: item.section.getBoundingClientRect() }));
       const focusedSection = sectionRects.find(({ rect }) => rect.top <= focusY && rect.bottom > focusY);

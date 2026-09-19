@@ -332,6 +332,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await page.locator('#meeting-recording-permissions-title').scrollIntoViewIfNeeded();
   await expect(page.locator('#meeting-recording-permissions-title')).toBeInViewport();
   await expect(page.getByRole('button', { name: '成員與錄製權限' })).toHaveAttribute('aria-current', 'step');
+  await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' }));
+  await expect.poll(() => page.evaluate(() => Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight)).toBe(true);
+  await expect(page.getByRole('button', { name: '成員與錄製權限' })).toHaveAttribute('aria-current', 'step');
   await page.setViewportSize({ width: 600, height: 800 });
   await expect.poll(() => page.locator('.share-result').evaluate((card) => getComputedStyle(card).gridTemplateColumns.split(' ').length)).toBe(1);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);

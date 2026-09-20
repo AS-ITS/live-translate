@@ -29,6 +29,20 @@ test('structured logs preserve non-sensitive auth stage diagnostics', () => {
   });
 });
 
+test('structured logs redact JWT and credential-shaped values by key', () => {
+  assert.deepEqual(redactLogValue({
+    jwt: 'header.payload.signature',
+    apiKey: 'AIza-secret',
+    shareToken: 'share-secret',
+    signedUrl: 'https://storage.example/signed'
+  }), {
+    jwt: '[REDACTED]',
+    apiKey: '[REDACTED]',
+    shareToken: '[REDACTED]',
+    signedUrl: '[REDACTED]'
+  });
+});
+
 test('observed provider records safe success and failure metrics while preserving errors', async () => {
   const records = [];
   const metrics = { recordCounter: (...args) => records.push(['counter', ...args]), recordLatency: (...args) => records.push(['latency', ...args]) };

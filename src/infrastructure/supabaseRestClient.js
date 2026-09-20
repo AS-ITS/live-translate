@@ -22,6 +22,7 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
     if (!response.ok) {
       const error = new Error(`Supabase ${method} ${table} request failed.`);
       error.status = response.status;
+      error.supabaseStatus = response.status;
       error.code = response.status === 404
         ? 'supabase_schema_missing'
         : (response.status === 401 || response.status === 403
@@ -71,6 +72,7 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
     if (!response.ok) {
       const error = new Error(`Supabase Storage bucket ${bucketId} request failed.`);
       error.status = response.status;
+      error.supabaseStatus = response.status;
       error.code = response.status === 404
         ? 'supabase_storage_missing'
         : (response.status === 401 || response.status === 403
@@ -105,6 +107,7 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
     if (!response.ok) {
       const error = new Error(`Supabase RPC ${functionName} failed.`);
       error.status = response.status;
+      error.supabaseStatus = response.status;
       error.code = response.status === 404
         ? 'supabase_schema_missing'
         : (response.status === 401 || response.status === 403
@@ -152,6 +155,7 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
     if (!response.ok) {
       const error = new Error(`Supabase ${method} ${table} request failed.`);
       error.status = response.status;
+      error.supabaseStatus = response.status;
       error.code = response.status === 404
         ? 'supabase_schema_missing'
         : (response.status === 401
@@ -185,6 +189,7 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
     if (!response.ok) {
       const error = new Error(`Supabase RPC ${functionName} request failed.`);
       error.status = response.status;
+      error.supabaseStatus = response.status;
       error.code = response.status === 401 ? 'auth_invalid'
         : (response.status === 403 ? 'auth_forbidden'
           : (response.status === 404 ? 'supabase_schema_missing' : 'supabase_request_failed'));

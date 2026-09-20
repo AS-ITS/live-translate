@@ -1,5 +1,7 @@
 # Changelog
 
+- Issue #35 closeout: added Node 22/24 long-meeting soak CI coverage, authenticated staging browser reload coverage, safe Meeting request diagnostics, and deployment/storage evidence guidance.
+
 - Issue #35 Supabase-first closeout: authenticated repositories now preserve the actor JWT across owner/member resource scopes, fail closed when the user client is unavailable, add atomic cloud Meeting plus initial Segment creation, complete member read-only RLS policies, owner-only export/audio guards, recording-permission audit events, and log redaction coverage. Local data migration remains out of scope.
 
 - P8 cloud-only transcript export: Meeting and legacy Session UI no longer

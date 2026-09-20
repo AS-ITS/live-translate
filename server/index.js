@@ -406,14 +406,19 @@ function supabaseProjectRef(env = process.env) {
   }
 }
 
-function meetingRequestDiagnostics({ meetingId, authenticatedUser, statusCode, errorCode, resourceOwnerId, resourceOwnerKnown = false }) {
+function meetingRequestDiagnostics({ operation = 'meeting.request', meetingId, authenticatedUser, statusCode, errorCode, supabaseStatus = null, resourceOwnerId, resourceOwnerKnown = false }) {
   return {
+    operation,
     actorUserId: currentRequestActorId() || authenticatedUser?.actorUserId || authenticatedUser?.id || null,
+    resourceOwnerUserId: resourceOwnerKnown
+      ? resourceOwnerId || null
+      : resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
     resourceOwnerId: resourceOwnerKnown
       ? resourceOwnerId || null
       : resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
     ...(meetingId ? { meetingId } : {}),
     statusCode,
+    supabaseStatus: Number.isInteger(supabaseStatus) ? supabaseStatus : null,
     errorCode: errorCode || null,
     supabaseProjectRef: supabaseProjectRef()
   };
@@ -824,6 +829,7 @@ async function handleRequestWithSessionReadController(
   let targetLanguageCode;
   let meetingDiagnosticId = null;
   let meetingDiagnosticErrorCode = null;
+  let meetingDiagnosticSupabaseStatus = null;
   const meetingPathMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
   if (meetingPathMatch && meetingPathMatch[1] !== 'glossary') {
     meetingDiagnosticId = safeDecodePathComponent(meetingPathMatch[1]);
@@ -890,6 +896,39 @@ async function handleRequestWithSessionReadController(
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
+      if (meetingDiagnosticId) {
+        const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          profileService,
+          meetingMembershipService
+        });
+        requestLogger({
+          level: statusCode >= 500 ? 'error' : 'warn',
+          event: 'meeting_request',
+          operation: `${req.method} ${path}`,
+          requestId,
+          method: req.method,
+          path,
+          statusCode,
+          durationMs: Math.round(performance.now() - startedAt),
+          clientIp,
+          origin,
+          authStage: 'authentication',
+          ...meetingRequestDiagnostics({
+            operation: `${req.method} ${path}`,
+            meetingId: meetingDiagnosticId,
+            authenticatedUser,
+            statusCode,
+            errorCode: code,
+            supabaseStatus: meetingDiagnosticSupabaseStatus,
+            resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+            resourceOwnerKnown: true
+          }),
+          ...authorizationDiagnostics
+        });
+      }
       logEvent({
         level: statusCode >= 500 ? 'error' : 'warn',
         event: 'request_rejected',
@@ -1071,10 +1110,11 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
       updateRequestScope(translationScope.ownerUserId);
     }
-  } catch (error) {
-    const code = errorCodeFor(error);
-    statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-    if (meetingDiagnosticId) {
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
+      if (meetingDiagnosticId) {
       const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
         meetingId: meetingDiagnosticId,
         authenticatedUser,
@@ -1093,10 +1133,12 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
         origin,
         authStage: authorizationStage,
         ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
           meetingId: meetingDiagnosticId,
           authenticatedUser,
           statusCode,
           errorCode: code,
+          supabaseStatus: meetingDiagnosticSupabaseStatus,
           resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
           resourceOwnerKnown: true
         }),
@@ -1558,10 +1600,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } catch (error) {
       const code = errorCodeFor(error);
       meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode }) });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ operation: `${req.method} ${path}`, meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode, supabaseStatus: meetingDiagnosticSupabaseStatus }) });
     }
     return;
   }
@@ -1610,10 +1653,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } catch (error) {
       const code = errorCodeFor(error);
       meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode }) });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ operation: `${req.method} ${path}`, meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode, supabaseStatus: meetingDiagnosticSupabaseStatus }) });
     }
     return;
   }
@@ -1677,6 +1721,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } catch (error) {
       const code = errorCodeFor(error);
       meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
       const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
@@ -1697,10 +1742,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         origin,
         authStage: 'private_resource',
         ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
           meetingId: meetingDiagnosticId,
           authenticatedUser,
           statusCode,
           errorCode: code,
+          supabaseStatus: meetingDiagnosticSupabaseStatus,
           resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
           resourceOwnerKnown: true
         }),
@@ -1729,6 +1776,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const meetingId = parseMeetingDetailPath(path).meetingId;
+      meetingDiagnosticId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (body?.sourceLanguageCode && !isSupportedLanguage(body.sourceLanguageCode)) throw createHttpError('unsupported_language');
@@ -1745,8 +1793,31 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        operation: `${req.method} ${path}`,
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: meetingDiagnosticErrorCode,
+          supabaseStatus: meetingDiagnosticSupabaseStatus
+        })
+      });
     }
     return;
   }
@@ -1825,22 +1896,42 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'POST' && path === '/api/meetings') {
-    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const input = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (input?.targetLanguageCode && !isSupportedLanguage(input.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (input?.sourceLanguageCode && !isSupportedLanguage(input.sourceLanguageCode)) throw createHttpError('unsupported_language');
       const result = await meetingCheckpointService.createMeeting({ ...input, draft: input?.draft === true });
+      meetingDiagnosticId = result?.meeting?.id || null;
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
-      meetingCheckpointError = error;
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        operation: `${req.method} ${path}`,
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: meetingDiagnosticErrorCode,
+          supabaseStatus: meetingDiagnosticSupabaseStatus
+        })
+      });
     }
     return;
   }

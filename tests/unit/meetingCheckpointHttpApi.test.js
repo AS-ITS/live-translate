@@ -456,6 +456,7 @@ test('Meeting read requests log safe diagnostic fields for missing resources', a
   assert.deepEqual(logs.at(-1), {
     level: 'info',
     event: 'meeting_request',
+    operation: 'GET /api/meetings/missing-meeting',
     requestId: response.headers['X-Request-Id'],
     method: 'GET',
     path: '/api/meetings/missing-meeting',
@@ -463,10 +464,12 @@ test('Meeting read requests log safe diagnostic fields for missing resources', a
     clientIp: '127.0.0.1',
     origin: '',
     actorUserId: null,
+    resourceOwnerUserId: null,
     resourceOwnerId: null,
     meetingId: 'missing-meeting',
     statusCode: 404,
     errorCode: 'meeting_not_found',
+    supabaseStatus: null,
     supabaseProjectRef: null
   });
 });
@@ -495,6 +498,7 @@ test('Meeting authorization rejection logs diagnostic fields before route handli
   assert.deepEqual(logs.at(-1), {
     level: 'warn',
     event: 'meeting_request',
+    operation: 'GET /api/meetings/meeting-1',
     requestId: response.headers['X-Request-Id'],
     method: 'GET',
     path: '/api/meetings/meeting-1',
@@ -504,9 +508,11 @@ test('Meeting authorization rejection logs diagnostic fields before route handli
     origin: '',
     authStage: 'private_resource',
     actorUserId: 'actor-1',
+    resourceOwnerUserId: 'owner-1',
     resourceOwnerId: 'owner-1',
     meetingId: 'meeting-1',
     errorCode: 'auth_forbidden',
+    supabaseStatus: null,
     supabaseProjectRef: null,
     ownerLookup: 'found',
     ownerMatchesActor: false,

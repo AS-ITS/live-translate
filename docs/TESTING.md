@@ -61,12 +61,19 @@ Cloud checks are split by deployment risk:
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
 ```
 
-For staging authenticated reload coverage, provide a non-production staging URL and disposable owner token:
+For staging authenticated reload coverage, provide a non-production staging URL, matching Supabase URL, and disposable owner token. The browser test injects the Supabase session directly and never automates Google OAuth:
 
 ```bash
 CLOUD_BASE_URL=https://staging.example.com \
+CLOUD_SUPABASE_URL=https://staging-project.supabase.co \
 CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
-npm run test:e2e:cloud -- tests/cloud/issue35Reload.spec.js tests/cloud/stagingSmoke.spec.js
+npm run test:e2e:cloud -- tests/cloud/issue35Reload.spec.js tests/cloud/stagingSmoke.spec.js tests/cloud/issue35BrowserReload.spec.js
+```
+
+Run the no-Gemini Storage/export lifecycle separately when staging worker and private Storage evidence are available:
+
+```bash
+npm run test:e2e:cloud -- tests/cloud/issue35StorageLifecycle.spec.js
 ```
 
 The manual workflow `.github/workflows/cloud-validation.yml` is production-only and requires `PRODUCTION_BASE_URL`. It does not require staging secrets. Real Gemini smoke remains a separate explicit opt-in.

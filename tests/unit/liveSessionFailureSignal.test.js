@@ -22,6 +22,7 @@ test('live token setup preserves missing Gemini credential error details', async
         assert.equal(error.code, 'gemini_credential_not_configured');
         assert.equal(error.status, 409);
         assert.equal(error.message, '請先設定 Gemini API Key，再開始即時翻譯。');
+        assert.equal(error.userMessage, '請先設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
         return true;
       }
     );

@@ -5,7 +5,8 @@ import {
   isRecoverableFailure,
   requiresFreshToken,
   requiresUserAction,
-  shouldStopRecovery
+  shouldStopRecovery,
+  withHttpStatus
 } from '../../src/lib/connectionFailures.js';
 
 test('classifies permission denied DOMException', () => {
@@ -60,7 +61,15 @@ test('classifies token expired from Live error payload message', () => {
 
 test('classifies auth failed from HTTP authorization statuses', () => {
   assert.equal(classifyConnectionFailure({ status: 401 }).reason, 'auth_failed');
+  assert.equal(classifyConnectionFailure({ status: 401 }).httpStatus, 401);
   assert.equal(classifyConnectionFailure({ response: { status: 403 } }).reason, 'auth_failed');
+  assert.equal(classifyConnectionFailure({ response: { status: 403 } }).httpStatus, 403);
+});
+
+test('appends only valid HTTP statuses to safe messages', () => {
+  assert.equal(withHttpStatus('存取失敗。', 403), '存取失敗。（HTTP 403）');
+  assert.equal(withHttpStatus('存取失敗。', 700), '存取失敗。');
+  assert.equal(withHttpStatus('存取失敗。', undefined), '存取失敗。');
 });
 
 test('classifies rate limited from HTTP 429', () => {

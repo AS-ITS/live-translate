@@ -24,6 +24,12 @@ test('maps auth_failed to error manual recovery state', () => {
   assert.equal(uiState.stopVisible, false);
 });
 
+test('includes HTTP status in visible authorization failures', () => {
+  const uiState = failureUiStateForClassification(classifyConnectionFailure({ status: 403 }));
+
+  assert.equal(uiState.message, '存取失敗。請檢查存取權杖或設定。（HTTP 403）');
+});
+
 test('maps rate_limited to error manual recovery state', () => {
   const uiState = failureUiStateForClassification(classifyConnectionFailure('rate_limited'));
 

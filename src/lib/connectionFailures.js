@@ -89,7 +89,15 @@ const STOP_RECOVERY_REASONS = new Set([
 export function classifyConnectionFailure(input = {}) {
   const normalized = normalizeInput(input);
   const reason = tokenExpirationReason(normalized) || explicitReason(normalized) || inferReason(normalized);
-  return classificationFor(reason);
+  return classificationFor(reason, normalized);
+}
+
+export function withHttpStatus(message, status) {
+  const numericStatus = Number(status);
+  if (!Number.isInteger(numericStatus) || numericStatus < 100 || numericStatus > 599) {
+    return message;
+  }
+  return `${message}（HTTP ${numericStatus}）`;
 }
 
 export function isRecoverableFailure(classification) {
@@ -108,7 +116,7 @@ export function shouldStopRecovery(classification) {
   return Boolean(classification?.stopRecovery);
 }
 
-function classificationFor(reason) {
+function classificationFor(reason, input = {}) {
   const safeReason = REASONS[reason] ? reason : 'unknown_error';
   return {
     reason: safeReason,
@@ -117,7 +125,10 @@ function classificationFor(reason) {
     requiresUserAction: USER_ACTION_REASONS.has(safeReason),
     requiresFreshToken: FRESH_TOKEN_REASONS.has(safeReason),
     stopRecovery: STOP_RECOVERY_REASONS.has(safeReason),
-    safeMessage: SAFE_MESSAGES[safeReason]
+    safeMessage: SAFE_MESSAGES[safeReason],
+    ...(Number.isInteger(input.status) && input.status >= 100 && input.status <= 599
+      ? { httpStatus: input.status }
+      : {})
   };
 }
 

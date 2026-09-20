@@ -11,6 +11,7 @@ import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDev
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
+import { withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -280,7 +281,7 @@ export class LiveTranslateSession {
       const startupError = new Error(userMessageForErrorCode(errorCode));
       startupError.code = errorCode;
       startupError.status = tokenResponse.status;
-      startupError.userMessage = '無法取得即時權杖。';
+      startupError.userMessage = withHttpStatus(userMessageForErrorCode(errorCode), tokenResponse.status);
       throw startupError;
     }
     const response = await tokenResponse.json();

@@ -21,11 +21,35 @@ test('live token setup preserves missing Gemini credential error details', async
       (error) => {
         assert.equal(error.code, 'gemini_credential_not_configured');
         assert.equal(error.status, 409);
-        assert.equal(error.message, '請先設定 Gemini API Key，再開始即時翻譯。');
-        assert.equal(error.userMessage, '請先設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
+        assert.equal(error.message, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。');
+        assert.equal(error.userMessage, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
         return true;
       }
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('live token origin failure does not collapse into generic authorization copy', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 403,
+    async json() {
+      return { error: { code: 'invalid_origin' } };
+    }
+  });
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+    await assert.rejects(session.getTokenResponse(), (error) => {
+      assert.equal(error.code, 'invalid_origin');
+      assert.equal(error.status, 403);
+      assert.equal(error.message, '此網站不允許請求即時翻譯，請檢查前端網址設定。');
+      assert.equal(error.userMessage, '此網站不允許請求即時翻譯，請檢查前端網址設定。（HTTP 403）');
+      return true;
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -383,6 +407,31 @@ test('GoAway schedules one reconnect and forces a fresh token', async () => {
   } finally {
     globalThis.setTimeout = previousSetTimeout;
   }
+});
+
+test('provider reconnect rotates live session id across meeting segments', async () => {
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-session-1',
+    segmentId: 'segment-1',
+    targetLanguageCode: 'en'
+  });
+  let connectOptions = null;
+  session.connectProvider = async (options) => {
+    connectOptions = options;
+    return true;
+  };
+
+  assert.equal(
+    await session.reconnectProvider({
+      segmentId: 'segment-2',
+      liveSessionId: 'live-session-2',
+      forceRefresh: true
+    }),
+    true
+  );
+  assert.equal(session.segmentId, 'segment-2');
+  assert.equal(session.liveSessionId, 'live-session-2');
+  assert.deepEqual(connectOptions, { forceRefresh: true });
 });
 
 test('turn completion finalizes preceding input and output transcript partials', () => {

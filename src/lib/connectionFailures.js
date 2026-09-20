@@ -45,6 +45,23 @@ const SAFE_MESSAGES = {
   unknown_error: '即時翻譯失敗。請再試一次。'
 };
 
+const ERROR_CODE_MESSAGES = {
+  auth_required: '登入狀態已失效，請重新登入。',
+  auth_invalid: '登入狀態已失效，請重新登入。',
+  auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
+  auth_forbidden: '目前帳號沒有錄音權限，請聯絡管理員。',
+  invalid_origin: '此網站不允許請求即時翻譯，請檢查前端網址設定。',
+  provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
+  gemini_credential_not_configured: '請先在伺服器設定 Gemini API Key，再開始即時翻譯。',
+  gemini_credential_unavailable: 'Gemini API Key 設定服務目前無法使用。請稍後再試。',
+  gemini_credential_invalid: 'Gemini API Key 無效，請重新設定。',
+  rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',
+  server_misconfigured: '伺服器尚未設定即時翻譯。',
+  unsupported_language: '不支援所選的目標語言。',
+  invalid_json: '無法準備即時翻譯請求。',
+  request_too_large: '即時翻譯請求過大。'
+};
+
 const NON_RECOVERABLE_REASONS = new Set([
   'permission_denied',
   'permission_revoked',
@@ -101,6 +118,10 @@ export function withHttpStatus(message, status) {
   return typeof message === 'string' && message.includes(suffix)
     ? message
     : `${message}${suffix}`;
+}
+
+export function userMessageForErrorCode(code) {
+  return ERROR_CODE_MESSAGES[code] || null;
 }
 
 export function httpStatusFromError(input) {

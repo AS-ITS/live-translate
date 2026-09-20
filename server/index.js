@@ -51,9 +51,13 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = process.env.APP_ORIGIN
-  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
-  || (IS_PRODUCTION ? 'http://127.0.0.1:8000' : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173'));
+const RESOLVED_ORIGIN = IS_PRODUCTION
+  ? (process.env.APP_ORIGIN
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+    || 'http://127.0.0.1:8000')
+  : (process.env.dev_frontend_origin
+    || process.env.APP_ORIGIN
+    || 'http://127.0.0.1:5173');
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();

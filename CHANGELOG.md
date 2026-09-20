@@ -1,4 +1,5 @@
 # Changelog
+- Live recording startup now reports origin, authentication, and Gemini credential failures separately; local development prefers `dev_frontend_origin`, microphone recording emits bounded timeslice chunks, and long-meeting segment rollover rotates to a unique Live session ID with a fresh ephemeral token.
 
 - Issue #35 closeout: added Node 22/24 long-meeting soak CI coverage, authenticated staging browser reload coverage, safe Meeting request diagnostics, and deployment/storage evidence guidance.
 

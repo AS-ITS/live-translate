@@ -11,7 +11,7 @@ import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDev
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
-import { httpStatusFromError, withHttpStatus } from './connectionFailures.js';
+import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -278,10 +278,11 @@ export class LiveTranslateSession {
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
       const errorCode = error.error?.code || 'token_request_failed';
-      const startupError = new Error(userMessageForErrorCode(errorCode));
+      const startupMessage = userMessageForErrorCode(errorCode) || '無法準備即時翻譯請求。';
+      const startupError = new Error(startupMessage);
       startupError.code = errorCode;
       startupError.status = tokenResponse.status;
-      startupError.userMessage = withHttpStatus(userMessageForErrorCode(errorCode), tokenResponse.status);
+      startupError.userMessage = withHttpStatus(startupMessage, tokenResponse.status);
       throw startupError;
     }
     const response = await tokenResponse.json();
@@ -377,10 +378,15 @@ export class LiveTranslateSession {
     return error;
   }
 
-  async reconnectProvider({ segmentId = this.segmentId, forceRefresh = false } = {}) {
+  async reconnectProvider({
+    segmentId = this.segmentId,
+    liveSessionId = this.liveSessionId,
+    forceRefresh = false
+  } = {}) {
     if (this.closed) return false;
     if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
     this.segmentId = segmentId;
+    this.liveSessionId = liveSessionId || this.liveSessionId;
     this.providerReconnectInProgress = (async () => {
       this.providerReady = false;
       this.inputSendingEnabled = false;
@@ -1992,24 +1998,4 @@ function createDefaultSessionClock() {
     const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
     return Math.max(0, now - startedAt);
   };
-}
-
-function userMessageForErrorCode(code) {
-  const messages = {
-    auth_required: '登入狀態已失效，請重新登入。',
-    auth_invalid: '登入狀態已失效，請重新登入。',
-    auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
-    invalid_origin: '此網站不允許請求即時翻譯。',
-    provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
-    gemini_credential_not_configured: '請先設定 Gemini API Key，再開始即時翻譯。',
-    gemini_credential_unavailable: 'Gemini API Key 設定服務目前無法使用。請稍後再試。',
-    gemini_credential_invalid: 'Gemini API Key 無效，請重新設定。',
-    rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',
-    server_misconfigured: '伺服器尚未設定即時翻譯。',
-    unsupported_language: '不支援所選的目標語言。',
-    invalid_json: '無法準備即時翻譯請求。',
-    request_too_large: '即時翻譯請求過大。'
-  };
-
-  return messages[code] || '無法開始即時翻譯。請再試一次。';
 }

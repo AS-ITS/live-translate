@@ -1068,6 +1068,7 @@ export function useLiveRecordingController({
       recovery.setError('');
       recovery.setStatusLabelOverride('切換下一段中');
       recovery.setStatus('switching-segment');
+      const nextLiveSessionId = recovery.generateLiveSessionId();
 
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('segment-rollover');
@@ -1091,12 +1092,16 @@ export function useLiveRecordingController({
           durableChunks: [],
           pendingPartial: null
         },
-        nextLiveSessionId: previousSession.liveSessionId
+        nextLiveSessionId
       });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
       cueController.flushSubtitleCues('segment-rollover');
-      const providerResumed = await previousSession.reconnectProvider({ segmentId: rollover.segment.id, forceRefresh: true });
+      const providerResumed = await previousSession.reconnectProvider({
+        segmentId: rollover.segment.id,
+        liveSessionId: nextLiveSessionId,
+        forceRefresh: true
+      });
       if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
@@ -1110,7 +1115,7 @@ export function useLiveRecordingController({
     checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
     if (cloudMeetingAudioEnabled()) {
       await audioController.startRecordingForSession({
-        id: previousSession.liveSessionId,
+        id: nextLiveSessionId,
         startedAt: Date.now()
       });
     }

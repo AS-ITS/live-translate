@@ -7,6 +7,7 @@ import {
   requiresFreshToken,
   requiresUserAction,
   shouldStopRecovery,
+  userMessageForErrorCode,
   withHttpStatus
 } from '../../src/lib/connectionFailures.js';
 
@@ -83,6 +84,18 @@ test('appends only valid HTTP statuses to safe messages', () => {
   assert.equal(withHttpStatus('存取失敗。', 403), '存取失敗。（HTTP 403）');
   assert.equal(withHttpStatus('存取失敗。', 700), '存取失敗。');
   assert.equal(withHttpStatus('存取失敗。', undefined), '存取失敗。');
+});
+
+test('keeps startup authorization errors specific to their source code', () => {
+  assert.equal(
+    userMessageForErrorCode('invalid_origin'),
+    '此網站不允許請求即時翻譯，請檢查前端網址設定。'
+  );
+  assert.equal(
+    userMessageForErrorCode('gemini_credential_not_configured'),
+    '請先在伺服器設定 Gemini API Key，再開始即時翻譯。'
+  );
+  assert.equal(userMessageForErrorCode('unknown_code'), null);
 });
 
 test('classifies rate limited from HTTP 429', () => {

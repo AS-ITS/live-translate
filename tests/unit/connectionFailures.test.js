@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   classifyConnectionFailure,
+  httpStatusFromError,
   isRecoverableFailure,
   requiresFreshToken,
   requiresUserAction,
@@ -64,6 +65,18 @@ test('classifies auth failed from HTTP authorization statuses', () => {
   assert.equal(classifyConnectionFailure({ status: 401 }).httpStatus, 401);
   assert.equal(classifyConnectionFailure({ response: { status: 403 } }).reason, 'auth_failed');
   assert.equal(classifyConnectionFailure({ response: { status: 403 } }).httpStatus, 403);
+});
+
+test('classifies nested provider HTTP authorization status', () => {
+  const classification = classifyConnectionFailure({
+    error: { error: { status: 403, code: 'auth_failed' } },
+    context: 'live_error'
+  });
+
+  assert.equal(classification.reason, 'auth_failed');
+  assert.equal(classification.httpStatus, 403);
+  assert.equal(httpStatusFromError({ error: { status: 403 } }), 403);
+  assert.equal(httpStatusFromError({ response: { status: 401 } }), 401);
 });
 
 test('appends only valid HTTP statuses to safe messages', () => {

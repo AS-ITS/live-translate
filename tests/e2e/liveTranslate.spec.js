@@ -3303,13 +3303,13 @@ test('auth failed shows friendly message without reconnect', async ({ page }) =>
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitError({
-      code: 'auth_failed',
+      error: { status: 403, code: 'auth_failed' },
       message: 'raw auth failure token abc123 at Provider.stack'
     });
   });
 
   await expect(page.getByText('存取失敗', { exact: true })).toBeVisible();
-  await expect(page.getByText('存取失敗。請檢查存取權杖或設定。')).toBeVisible();
+  await expect(page.getByText('存取失敗。請檢查存取權杖或設定。（HTTP 403）')).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before auth failure')).toBeVisible();

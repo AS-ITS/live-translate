@@ -134,6 +134,20 @@ test('live error triggers connection failure after cleanup', async () => {
   assert.equal(failures[0].afterCleanup, true);
 });
 
+test('live error preserves nested provider status, code, and error object', async () => {
+  const failures = [];
+  const providerError = { status: 403, code: 'auth_failed', message: 'forbidden' };
+  const event = { error: providerError, message: 'Live API authorization failed' };
+  const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
+
+  await session.handleSessionError(event);
+
+  assert.equal(failures[0].rawError.status, 403);
+  assert.equal(failures[0].rawError.code, 'auth_failed');
+  assert.equal(failures[0].rawError.error, providerError);
+  assert.equal(failures[0].diagnostic.status, 403);
+});
+
 test('connection failure payload includes afterCleanup true', async () => {
   let failurePayload;
   const session = createTestSession({

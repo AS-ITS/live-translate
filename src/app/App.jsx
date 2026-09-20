@@ -17,6 +17,7 @@ import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { createGeminiCredentialApiClient } from '../lib/geminiCredentialApiClient.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
+import { withHttpStatus } from '../lib/connectionFailures.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from '../lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLifecycle.js';
@@ -898,9 +899,10 @@ export function App() {
     });
     const noDefaultInputDevice =
       classification.reason === 'selected_device_missing' && !selectedInputDeviceId;
-    const message = nextError?.userMessage || (noDefaultInputDevice
+    const baseMessage = nextError?.userMessage || (noDefaultInputDevice
       ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
       : classification.safeMessage || nextError?.message || fallbackMessage);
+    const message = withHttpStatus(baseMessage, classification.httpStatus);
 
     const diagnostic = safeReconnectDiagnostic({
       source: 'startup',

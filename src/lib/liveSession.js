@@ -11,7 +11,7 @@ import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDev
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
-import { withHttpStatus } from './connectionFailures.js';
+import { httpStatusFromError, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -1290,8 +1290,21 @@ export class LiveTranslateSession {
       this.logLiveEvent('stale.callback.ignored', { kind: 'error', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
-    const message = event?.message || event?.error?.message || 'Live API error';
+    const message = event?.message || event?.error?.message || event?.error?.error?.message || 'Live API error';
     const error = event instanceof Error ? event : new Error(message);
+    if (event && typeof event === 'object' && error !== event) {
+      Object.assign(error, event);
+    }
+    if (event?.error && error.error !== event.error) {
+      error.error = event.error;
+    }
+    if (error.code == null) {
+      error.code = event?.code ?? event?.error?.code ?? event?.error?.error?.code;
+    }
+    if (error.status == null) {
+      const status = httpStatusFromError(event);
+      if (status !== null) error.status = status;
+    }
     if (!this.providerReconnectInProgress && this.providerReconnectAttempts < 3) {
       try {
         const resumed = await this.reconnectProvider({ forceRefresh: true });
@@ -1892,7 +1905,7 @@ function safeFailureDiagnostic(failure, session) {
     source: failure.source || 'unknown',
     reasonHint: failure.reasonHint || 'unknown_error',
     code: safeDiagnosticValue(rawEvent.code || rawError.code),
-    status: safeDiagnosticStatus(rawEvent.status || rawError.status || rawError.response?.status),
+    status: safeDiagnosticStatus(httpStatusFromError(rawEvent) ?? httpStatusFromError(rawError)),
     providerReason: safeDiagnosticText(rawEvent.reason || rawError.reason),
     connectionEpoch: session.connectionEpoch,
     liveSessionId: session.liveSessionId,

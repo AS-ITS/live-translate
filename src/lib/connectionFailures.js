@@ -97,7 +97,30 @@ export function withHttpStatus(message, status) {
   if (!Number.isInteger(numericStatus) || numericStatus < 100 || numericStatus > 599) {
     return message;
   }
-  return `${message}（HTTP ${numericStatus}）`;
+  const suffix = `（HTTP ${numericStatus}）`;
+  return typeof message === 'string' && message.includes(suffix)
+    ? message
+    : `${message}${suffix}`;
+}
+
+export function httpStatusFromError(input) {
+  const candidates = [
+    input?.status,
+    input?.error?.status,
+    input?.error?.error?.status,
+    input?.response?.status,
+    input?.error?.response?.status,
+    input?.error?.error?.response?.status
+  ];
+
+  for (const candidate of candidates) {
+    const numericStatus = Number(candidate);
+    if (Number.isInteger(numericStatus) && numericStatus >= 100 && numericStatus <= 599) {
+      return numericStatus;
+    }
+  }
+
+  return null;
 }
 
 export function isRecoverableFailure(classification) {
@@ -143,7 +166,9 @@ function normalizeInput(input) {
     error,
     name: input?.name || error?.name,
     code: input?.code || input?.error?.code || error?.code,
-    status: input?.status || input?.response?.status || error?.status || error?.response?.status,
+    status: httpStatusFromError(input)
+      ?? httpStatusFromError(input?.rawError)
+      ?? httpStatusFromError(input?.rawEvent),
     message: input?.message || input?.error?.message || error?.message,
     reason: input?.reason || input?.error?.reason || error?.reason,
     context: input?.context || error?.context,

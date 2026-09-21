@@ -514,7 +514,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const canCreateProductionProviderComposition = needsProductionProviderComposition && hasGlobalGeminiApiKey;
   const cloudDataMode = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY);
   const translationGlossary = cloudDataMode
-    ? createSupabaseGlossary({ env, idFactory: () => `glossary-${randomUUID()}` })
+    ? createSupabaseGlossary({ env, idFactory: randomUUID })
     : translationGlossaryFactory({
       filePath: translationGlossaryFilePathFor(env),
       fileSystem: translationGlossaryFileSystem,

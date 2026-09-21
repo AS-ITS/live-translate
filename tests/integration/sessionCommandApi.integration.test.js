@@ -7,18 +7,22 @@ import { createMemorySessionRepository } from '../../src/lib/sessionRepository.j
 test('POST /api/sessions returns a safe diagnostic and logs Supabase failures', async () => {
   const sessionRepository = createMemorySessionRepository({ idFactory: () => 'session-1', now: () => 1000 });
   sessionRepository.createSessionRecord = async () => {
-    const error = new Error('Supabase REST endpoint is unavailable.');
+    const error = new Error('PostgREST rejected request with password=super-secret');
     error.code = 'supabase_unavailable';
     error.status = 503;
+    error.supabaseStatus = 400;
     error.cause = new Error('secret should never be logged');
     throw error;
   };
 
   const handler = createRequestHandler({ sessionRepository });
   const server = http.createServer(handler);
-  const originalLog = console.log;
+  const originalStdoutWrite = process.stdout.write;
   const logs = [];
-  console.log = (line) => logs.push(String(line));
+  process.stdout.write = (chunk) => {
+    logs.push(String(chunk));
+    return true;
+  };
 
   try {
     await listen(server);
@@ -28,14 +32,23 @@ test('POST /api/sessions returns a safe diagnostic and logs Supabase failures', 
     assert.equal(response.body.error.code, 'supabase_unavailable');
     assert.equal(response.body.error.requestId, response.headers['x-request-id']);
 
-    const event = logs.map((line) => JSON.parse(line)).find((item) => item.event === 'session_create');
+    const parsedLogs = logs.flatMap((line) => {
+      try {
+        return [JSON.parse(line)];
+      } catch {
+        return [];
+      }
+    });
+    const event = parsedLogs.find((item) => item.event === 'session_create');
     assert.equal(event.statusCode, 503);
     assert.equal(event.errorCode, 'supabase_unavailable');
+    assert.equal(event.supabaseStatus, 400);
     assert.equal(event.safeSummary, 'Supabase REST endpoint is unavailable.');
+    assert.ok(!logs.some((line) => line.includes('PostgREST rejected request')));
     assert.ok(!logs.some((line) => line.includes('secret should never be logged')));
     assert.ok(!logs.some((line) => line.includes('stack')));
   } finally {
-    console.log = originalLog;
+    process.stdout.write = originalStdoutWrite;
     await close(server);
   }
 });

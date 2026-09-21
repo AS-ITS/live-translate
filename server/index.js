@@ -1408,6 +1408,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         path,
         statusCode,
         errorCode,
+        supabaseStatus: Number.isInteger(sessionCreateError?.supabaseStatus) ? sessionCreateError.supabaseStatus : null,
         safeSummary: sessionCreateError ? safeRequestErrorSummary(sessionCreateError) : null,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,

@@ -26,7 +26,7 @@ const AUDIO_CALLBACK_GAP_REPORT_MS = 250;
 const LOCAL_SILENCE_FINALIZE_MS = 1800;
 const TOKEN_REFRESH_SAFETY_MS = 5 * 60 * 1000;
 const SPEECH_ACTIVITY_RMS_THRESHOLD = 0.01;
-const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || import.meta.env?.VITE_LIVE_TRANSLATE_DIAGNOSTICS === 'true');
+const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || (typeof __LIVE_TRANSLATE_DIAGNOSTICS__ !== 'undefined' && __LIVE_TRANSLATE_DIAGNOSTICS__));
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 let nextAudioTurnSequence = 0;

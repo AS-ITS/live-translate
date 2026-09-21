@@ -68,7 +68,7 @@ import { createRecordingDiagnostics } from '../lib/recordingDiagnostics.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
-const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || import.meta.env?.VITE_LIVE_TRANSLATE_DIAGNOSTICS === 'true');
+const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || (typeof __LIVE_TRANSLATE_DIAGNOSTICS__ !== 'undefined' && __LIVE_TRANSLATE_DIAGNOSTICS__));
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';

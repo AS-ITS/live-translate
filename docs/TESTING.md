@@ -60,7 +60,9 @@ Cloud checks are split by deployment risk:
 ## Issue #37 Phase 0 recording diagnostics
 
 Staging performance runs may opt in to the redacted browser diagnostics API by
-building the frontend with `VITE_LIVE_TRANSLATE_DIAGNOSTICS=true`. This flag
+building the frontend with the private Vercel variable
+`LIVE_TRANSLATE_DIAGNOSTICS=true`. Vite injects only a boolean build constant;
+the environment variable itself is never read by browser code. This flag
 exposes numeric recorder/upload metrics and the sanitized LiveSession snapshot;
 it does not enable verbose Live event logging or expose transcript text, tokens,
 signed URLs, or audio payloads. Production must leave the flag unset.

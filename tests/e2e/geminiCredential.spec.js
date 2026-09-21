@@ -32,7 +32,11 @@ test('guides a user through Gemini API Key setup', async ({ page }) => {
 
   await expect.poll(() => savedKey).toBe('test-api-key');
   await expect(page.getByText('已安全儲存。')).toBeVisible();
-  await expect(page.getByText('末四碼 test')).toBeVisible();
+  const keyRow = page.locator('.gemini-credential-key-row');
+  await expect(keyRow).toBeVisible();
+  await expect(keyRow.getByText('…test', { exact: true })).toBeVisible();
+  await expect(keyRow.getByText('Gemini API Key', { exact: true })).toBeVisible();
+  await expect(page.locator('body')).not.toContainText('test-api-key');
   await expect(page.getByText('已設定', { exact: true })).toBeVisible();
 });
 
@@ -44,6 +48,7 @@ test('stacks the credential setup layout on a narrow viewport', async ({ page })
   await page.setViewportSize({ width: 600, height: 800 });
   await page.goto('/#settings');
 
+  await expect(page.locator('.gemini-credential-key-row')).toHaveCount(0);
   await expect.poll(() => page.locator('.gemini-credential-layout').evaluate((node) => {
     const columns = getComputedStyle(node).gridTemplateColumns.trim().split(/\s+/u);
     return columns.length;

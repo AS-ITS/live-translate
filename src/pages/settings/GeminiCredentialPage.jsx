@@ -10,6 +10,7 @@ export function GeminiCredentialPage() {
   const [apiKey, setApiKey] = useState('');
   const [status, setStatus] = useState('loading');
   const [message, setMessage] = useState('');
+  const lastFour = credential?.lastFour ?? '';
 
   useEffect(() => {
     let active = true;
@@ -73,7 +74,10 @@ export function GeminiCredentialPage() {
             </div>
             {status === 'loading' ? <p className="gemini-credential-loading">正在載入設定…</p> : status === 'error' ? <p className="error-message" role="alert">{message}</p> : (
               <form className="gemini-credential-form" onSubmit={save}>
-                <p className="gemini-credential-status-detail">{credential?.configured ? `目前使用中的 Key：末四碼 ${credential.lastFour || '****'}` : '尚未設定 Key，請先完成左側教學。'}</p>
+                {credential?.configured ? <div className="gemini-credential-key-row" role="group" aria-label={`已設定的 Gemini API Key，末四碼 ${lastFour || '未提供'}`}>
+                  <strong className="gemini-credential-key-value">…{lastFour}</strong>
+                  <span className="gemini-credential-key-label">Gemini API Key</span>
+                </div> : <p className="gemini-credential-status-detail">尚未設定 Key，請先完成左側教學。</p>}
                 <label className="field"><span>貼上你的 Gemini API Key</span><input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" required /></label>
                 <div className="gemini-credential-actions"><button className="button primary" type="submit"><Save size={16} aria-hidden="true" />儲存 Key</button>{credential?.configured ? <button className="button secondary" type="button" onClick={remove}><Trash2 size={16} aria-hidden="true" />移除 Key</button> : null}</div>
               </form>

@@ -23,6 +23,9 @@
 .gemini-credential-status.is-configured { background: var(--color-success-soft); color: var(--color-success); }
 .gemini-credential-form { display: grid; gap: var(--space-5); }
 .gemini-credential-form .field { margin-top: var(--space-2); }
+.gemini-credential-key-row { display: grid; gap: var(--space-1); min-width: 0; padding: var(--space-3) 0; border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); }
+.gemini-credential-key-value { min-width: 0; overflow-wrap: anywhere; color: var(--color-primary); font-size: var(--text-lg); line-height: 1.2; }
+.gemini-credential-key-label { min-width: 0; overflow-wrap: anywhere; color: var(--color-text-muted); font-size: var(--text-sm); }
 .gemini-credential-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .gemini-credential-loading { margin: 0; color: var(--color-text-muted); }
 .meeting-settings-header { position: sticky; top: 0; z-index: 2; }

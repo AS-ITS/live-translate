@@ -15,7 +15,8 @@ export function createSessionSnapshotApiClient({ fetchImpl = globalThis.fetch } 
         error.status = response?.status;
         try {
           const body = await response.json();
-          error.code = body?.error?.code;
+          error.code = body?.error?.code || body?.code;
+          error.requestId = body?.error?.requestId || body?.requestId || response.headers?.get?.('x-request-id');
         } catch {
           // Keep the HTTP status as the stable fallback signal.
         }

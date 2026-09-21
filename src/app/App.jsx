@@ -176,8 +176,9 @@ export function App() {
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
   const geminiCredentialApiClientRef = useRef(createGeminiCredentialApiClient());
-  const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
-  const activeMeetingCheckpointRef = useRef(null);
+const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
+const meetingRecordsRequestRef = useRef(null);
+const activeMeetingCheckpointRef = useRef(null);
   const runtimeMeetingIdsRef = useRef(new Set());
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
@@ -1320,21 +1321,49 @@ export function App() {
       && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
       && typeof cue.sourceText === 'string' && cue.sourceText.trim() !== ''
     ));
-    void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
+    const activeMeetingCheckpoint = activeMeetingCheckpointRef.current;
+    const activeSessionId = activeSessionRecordIdRef.current;
+    const publishableCues = changedCues.filter((cue) => (
+      (!cue.sessionId || cue.sessionId === activeSessionId)
+      && (!cue.segmentId || cue.segmentId === activeMeetingCheckpoint?.segmentId)
+    ));
+    void publishMeetingCues(publishableCues, activeMeetingCheckpoint, activeSessionId);
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
 
   async function publishMeetingCues(cues, meetingCheckpoint, sessionId) {
     if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
-    await Promise.all(cues.filter((cue) => cue?.status === 'final').map((cue) => (
-      meetingCueApiClientRef.current.publish({
-        meetingId: meetingCheckpoint.meetingId,
-        segmentId: meetingCheckpoint.segmentId,
-        sessionId,
-        cue,
-        producedAt: cue.finalizedAt || Date.now()
-      }).catch(() => null)
-    )));
+    if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+      || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
+      || activeSessionRecordIdRef.current !== sessionId) {
+      return;
+    }
+
+    const finalCues = cues.filter((cue) => (
+      cue?.status === 'final'
+      && (!cue.sessionId || cue.sessionId === sessionId)
+      && (!cue.segmentId || cue.segmentId === meetingCheckpoint.segmentId)
+    ));
+    await Promise.all(finalCues.map(async (cue) => {
+      try {
+        await meetingCueApiClientRef.current.publish({
+          meetingId: meetingCheckpoint.meetingId,
+          segmentId: meetingCheckpoint.segmentId,
+          sessionId,
+          cue,
+          producedAt: cue.finalizedAt || Date.now()
+        });
+      } catch (error) {
+        if (error?.status === 403 || error?.status === 404 || error?.status === 409) return;
+        if (import.meta.env?.DEV) {
+          console.warn('[meeting-cue-publish]', {
+            status: Number.isInteger(error?.status) ? error.status : null,
+            code: typeof error?.code === 'string' ? error.code : null,
+            requestId: typeof error?.requestId === 'string' ? error.requestId : null
+          });
+        }
+      }
+    }));
   }
 
   function cueCheckpointForState(state) {
@@ -1410,8 +1439,16 @@ export function App() {
     setMeetingCheckpointErrorMessage('');
   }
 
+  function safePersistenceDiagnostic(error) {
+    return {
+      status: Number.isInteger(error?.status) ? error.status : null,
+      code: typeof error?.code === 'string' ? error.code : null,
+      requestId: typeof error?.requestId === 'string' ? error.requestId : null
+    };
+  }
+
   function reportSessionSnapshotSyncError(error) {
-    console.error('Session snapshot persistence failed.', error);
+    console.error('Session snapshot persistence failed.', safePersistenceDiagnostic(error));
     if (error?.status === 413 || error?.code === 'request_too_large') {
       setError('翻譯紀錄內容超過伺服器保存上限，但目前逐字稿仍保留在畫面上。請調高 SESSION_SNAPSHOT_MAX_BYTES 或稍後重新儲存翻譯紀錄。');
       return;
@@ -1420,7 +1457,7 @@ export function App() {
   }
 
   function reportMeetingCheckpointSyncError(error) {
-    console.error('Meeting checkpoint persistence failed.', error);
+    console.error('Meeting checkpoint persistence failed.', safePersistenceDiagnostic(error));
     const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
     const invalidMessage = meetingCheckpointErrorMessageFor(error);
     if (invalidMessage) {
@@ -1479,21 +1516,36 @@ export function App() {
   }
 
   async function refreshMeetingRecords() {
-    try {
-      const meetings = await meetingReadApiClientRef.current.listMeetingHistory();
-      setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
-      return meetings;
-    } catch {
-      return null;
-    }
+    if (meetingRecordsRequestRef.current) return meetingRecordsRequestRef.current;
+
+    const request = meetingReadApiClientRef.current.listMeetingHistory()
+      .then((meetings) => {
+        setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
+        return meetings;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (meetingRecordsRequestRef.current === request) meetingRecordsRequestRef.current = null;
+      });
+    meetingRecordsRequestRef.current = request;
+    return request;
   }
 
   async function getSessionDetailWithTranslationHistory(sessionId) {
-    const [sessionDetail, translationHistory] = await Promise.all([
+    const [sessionDetailResult, translationHistoryResult] = await Promise.allSettled([
       sessionReadApiClientRef.current.getSessionDetail(sessionId),
       sessionReadApiClientRef.current.getSessionTranslations(sessionId)
     ]);
-    return mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory);
+    const detailError = sessionDetailResult.status === 'rejected' ? sessionDetailResult.reason : null;
+    const translationError = translationHistoryResult.status === 'rejected' ? translationHistoryResult.reason : null;
+    if (detailError && !isSessionReadCloudUnavailable(detailError)) throw detailError;
+    if (translationError && !isSessionReadCloudUnavailable(translationError) && !sessionDetailResult.value) {
+      throw translationError;
+    }
+    return mergeRetranslationHistoryIntoDetail(
+      sessionDetailResult.status === 'fulfilled' ? sessionDetailResult.value : null,
+      translationHistoryResult.status === 'fulfilled' ? translationHistoryResult.value : null
+    );
   }
 
   async function loadMeetingResumeDraft(meetingId) {

@@ -691,7 +691,7 @@ const activeMeetingCheckpointRef = useRef(null);
     enqueueCuePersistence(current, next);
   }
 
-  function applyPersistedRefinedSubtitleCues(detail) {
+  function applyPersistedRefinedSubtitleCues(detail, { persist = true } = {}) {
     const current = subtitleCueStateRef.current;
     const refinedCues = refinedSubtitleCuesForDisplay(detail?.cues, {
       inputHash: current.refinedSubtitleInputHash
@@ -711,19 +711,36 @@ const activeMeetingCheckpointRef = useRef(null);
     };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
-    enqueueCuePersistence(current, next);
+    if (persist) {
+      enqueueCuePersistence(current, next);
+    }
     return true;
   }
 
-  function applyPersistedFinalCues(persistedCues = []) {
+  function mergeDisplayedCues(existingCues = [], incomingCues = []) {
+    const existing = Array.isArray(existingCues) ? existingCues : [];
+    const incoming = Array.isArray(incomingCues) ? incomingCues.filter((cue) => cue?.cueId) : [];
+    const mergedExisting = mergeCuesByIdPreferRefinement(existing, incoming);
+    const existingIds = new Set(existing.map((cue) => cue?.cueId).filter(Boolean));
+    return [...mergedExisting, ...incoming.filter((cue) => !existingIds.has(cue.cueId))]
+      .sort((left, right) => (
+        (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0)
+        || (Number(left?.startTimeMs) || 0) - (Number(right?.startTimeMs) || 0)
+        || String(left?.cueId || '').localeCompare(String(right?.cueId || ''))
+      ));
+  }
+
+  function applyPersistedFinalCues(persistedCues = [], { persist = true } = {}) {
     if (!Array.isArray(persistedCues) || persistedCues.length === 0) return;
     const current = subtitleCueStateRef.current;
-    const mergedCues = mergeCuesByIdPreferRefinement(current.finalCues, persistedCues);
+    const mergedCues = mergeDisplayedCues(current.finalCues, persistedCues);
     if (mergedCues.every((cue, index) => cue === current.finalCues[index])) return;
     const next = { ...current, finalCues: mergedCues };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
-    enqueueCuePersistence(current, next);
+    if (persist) {
+      enqueueCuePersistence(current, next);
+    }
   }
 
   useEffect(() => {
@@ -760,6 +777,8 @@ const activeMeetingCheckpointRef = useRef(null);
         setTargetLanguageCode(nextTargetLanguageCode);
         setEchoTargetLanguage(meeting.echoTargetLanguage !== false);
         setShouldRecordInputAudio(meeting.shouldRecordInputAudio === true);
+        applyPersistedFinalCues(rawCuesFromDetail(detail?.cues), { persist: false });
+        applyPersistedRefinedSubtitleCues(detail, { persist: false });
         setSelectedMeetingGlossaryIds((current) => {
           if (current.length > 0) return current;
           return glossaryEntries.filter((entry) => (meeting.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[nextTargetLanguageCode] === item.target)).map((entry) => entry.id);
@@ -1641,11 +1660,19 @@ const activeMeetingCheckpointRef = useRef(null);
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.startTimeMs - right.startTimeMs);
       const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
       if (persistedCues.length > 0 || latestCueCheckpoint) {
+        const currentCueState = subtitleCueStateRef.current;
+        const mergedFinalCues = mergeDisplayedCues(currentCueState.finalCues, persistedCues);
+        const restoredRefinedSubtitleCues = mergeDisplayedCues(currentCueState.refinedSubtitleCues, refinedSubtitleCues);
         const restoredCueState = createSubtitleCueState({
+          ...currentCueState,
           ...(latestCueCheckpoint || {}),
-          finalCues: persistedCues,
-          refinedSubtitleCues,
-          nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
+          finalCues: mergedFinalCues,
+          refinedSubtitleCues: restoredRefinedSubtitleCues,
+          nextSequence: Math.max(
+            currentCueState.nextSequence || 1,
+            latestCueCheckpoint?.nextSequence || 1,
+            (mergedFinalCues.at(-1)?.sequence || 0) + 1
+          )
         });
         const restoredFinalCues = markCuesCompletedByRefinedSubtitleCues(
           restoredCueState.finalCues,

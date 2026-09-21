@@ -400,6 +400,7 @@ async function mockMeetingCheckpointApi(page, {
   failCheckpointAttempts = 0,
   waitForSegmentList = null,
   delayMeetingListMs = 0,
+  meetingDetailCues = [],
   sourceLanguageCode = 'zh-Hant',
   targetLanguageCode = 'en',
   initialSegmentStatus = 'created',
@@ -447,7 +448,8 @@ async function mockMeetingCheckpointApi(page, {
             status: 'created',
             sourceLanguageCode,
             targetLanguageCode
-          }
+          },
+          cues: meetingDetailCues
         })
       });
       return;
@@ -2117,6 +2119,45 @@ test('checkpoint sync retries a temporary failure and clears the error after suc
   await expect.poll(() => checkpointRequests.length, { timeout: 12000 }).toBe(2);
   await expect(page.getByText('會議模式：已保存')).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: '長會議同步' })).toBeHidden();
+});
+
+test('existing meeting subtitles render before checkpoint load', async ({ page }) => {
+  const existingCue = {
+    cueId: 'cue:session-existing:segment-1:1',
+    sessionId: 'session-existing',
+    segmentId: 'segment-1',
+    sequence: 1,
+    startTimeMs: 1000,
+    endTimeMs: 2500,
+    status: 'final',
+    sourceText: '既有字幕原文',
+    translatedText: 'Existing subtitle translation',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en'
+  };
+  let releaseSegmentList;
+  const segmentListReady = new Promise((resolve) => { releaseSegmentList = resolve; });
+  const checkpointRequests = await mockMeetingCheckpointApi(page, {
+    meetingDetailCues: [existingCue],
+    waitForSegmentList: () => segmentListReady
+  });
+
+  await gotoMockMeetingLive(page);
+  const row = cueRow(page, existingCue.cueId);
+  await expect(row).toBeVisible({ timeout: 3000 });
+  await expectCueRow(row, {
+    sourceText: existingCue.sourceText,
+    translatedText: existingCue.translatedText
+  });
+  expect(checkpointRequests).toHaveLength(0);
+
+  releaseSegmentList();
+  await expect(row).toBeVisible();
+  await expectCueRow(row, {
+    sourceText: existingCue.sourceText,
+    translatedText: existingCue.translatedText
+  });
+  expect(checkpointRequests).toHaveLength(0);
 });
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {

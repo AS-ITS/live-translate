@@ -63,8 +63,8 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify({ liveSessionId })
       });
-      try {
-        await assertOkResponse(response);
+    try {
+      await assertOkResponse(response, { operation: 'start-meeting' });
       } catch (error) {
         error.endpoint = `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/start`;
         error.meetingId = meetingId;
@@ -108,7 +108,14 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         });
       }
       const response = await fetchImpl(url, options);
-      await assertOkResponse(response);
+      try {
+        await assertOkResponse(response, { operation: 'get-checkpoint' });
+      } catch (error) {
+        error.endpoint = url;
+        error.meetingId = meetingId;
+        error.segmentId = segmentId;
+        throw error;
+      }
       return parseCheckpointResponse(response);
     },
 
@@ -138,7 +145,14 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           ...body
         })
       });
-      await assertOkResponse(response);
+      try {
+        await assertOkResponse(response, { operation: 'update-checkpoint' });
+      } catch (error) {
+        error.endpoint = `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`;
+        error.meetingId = meetingId;
+        error.segmentId = segmentId;
+        throw error;
+      }
       return parseCheckpointResponse(response);
     },
 
@@ -161,7 +175,7 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           nextLiveSessionId
         })
       });
-      await assertOkResponse(response);
+      await assertOkResponse(response, { operation: 'rollover-segment' });
       return parseRolloverResponse(response);
     },
 
@@ -203,7 +217,14 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
           outcome
         })
       });
-      await assertOkResponse(response);
+      try {
+        await assertOkResponse(response, { operation: 'recover-segment' });
+      } catch (error) {
+        error.endpoint = `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/recover`;
+        error.meetingId = meetingId;
+        error.segmentId = segmentId;
+        throw error;
+      }
       return parseRecoverResponse(response);
     }
   });
@@ -218,7 +239,7 @@ function authorizationHeadersFor(value) {
   return typeof value === 'function' ? (value() || {}) : (value || {});
 }
 
-async function assertOkResponse(response) {
+async function assertOkResponse(response, { operation = null } = {}) {
   if (!response || typeof response !== 'object') throw new Error('Meeting checkpoint API request did not return a response.');
   if (response.ok) return;
 
@@ -231,6 +252,7 @@ async function assertOkResponse(response) {
 
   const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
   error.status = response.status;
+  error.operation = operation;
   error.code = body?.error?.code || body?.code;
   error.apiMessage = typeof body?.error?.message === 'string'
     ? body.error.message

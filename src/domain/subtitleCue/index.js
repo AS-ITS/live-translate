@@ -115,7 +115,7 @@ function previousCueFor(cues, sequence) {
 }
 
 function sameCue(left, right) {
-  return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);
+  return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status'].every((field) => left[field] === right[field]);
 }
 
 function isPreferredRefinementUpdate(existing, incoming) {

@@ -1478,6 +1478,7 @@ const activeMeetingCheckpointRef = useRef(null);
     return {
       status: Number.isInteger(error?.status) ? error.status : null,
       code: typeof error?.code === 'string' ? error.code : null,
+      operation: typeof error?.operation === 'string' ? error.operation : null,
       requestId: typeof error?.requestId === 'string' ? error.requestId : null
     };
   }

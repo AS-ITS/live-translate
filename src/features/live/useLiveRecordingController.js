@@ -854,6 +854,11 @@ export function useLiveRecordingController({
             // Fall through to the normal start failure cleanup and message.
           }
         }
+        await controller.interruptActiveMeeting({
+          failureReason: 'live_connect_failed',
+          failureCategory: 'provider'
+        }).catch(() => {});
+        await audioController.cleanup().catch(() => {});
         if (record?.id) {
           recovery.sessionControlLeaseRef.current?.release(record.id);
           recovery.setHasSessionControl(false);

@@ -1758,17 +1758,16 @@ test('ending a live recording returns to meeting management', async ({ page }) =
 
 test('captures and drains first speech while provider connect is delayed', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
-  await mockSingleMeetingList(page);
-  await page.goto('/');
-  await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
+  await gotoMockMeetingLive(page);
+  await page.evaluate(() => { window.__mockLiveConnectDelayMs = 8000; });
   await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('正在連線，已暫存音訊')).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length), { timeout: 12000 }).toBe(1);
+  expect(await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(0);
 
   await emitMicrophoneAudio(page);
   await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug.getSnapshot().preRollBufferedChunkCount)).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(1);
-  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].sentInputs.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length), { timeout: 12000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions[0].sentInputs.length), { timeout: 12000 }).toBe(1);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   const snapshot = await page.evaluate(() => window.__liveTranslateDebug.getSnapshot());
@@ -2130,6 +2129,8 @@ test('checkpoint sync retries a temporary failure and clears the error after suc
 
   await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'retry source', 'retry translation');
 

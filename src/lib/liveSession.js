@@ -235,6 +235,8 @@ export class LiveTranslateSession {
         this.firstPcmRejecter = reject;
       });
     }
+    // Start capture before provider setup so speech during the handshake is buffered.
+    await this.attachAudioCaptureAfterSetup();
     const connected = await this.connectProvider();
     if (!connected) return false;
     await this.waitForFirstPcm();
@@ -649,6 +651,9 @@ export class LiveTranslateSession {
       await this.handleMicrophoneDisconnected();
       return false;
     }
+    // A provider handshake can legitimately outlast the audio callback watchdog.
+    // Defer stall recovery until there is a provider session to receive the pre-roll.
+    if (!this.session || !this.providerReady) return true;
     const lastCallbackAt = this.lastAudioCallbackAt || this.captureStartedAt;
     if (!lastCallbackAt || now - lastCallbackAt < AUDIO_CALLBACK_STALL_MS) return true;
     if (this.captureProcessorMode === 'worklet') {

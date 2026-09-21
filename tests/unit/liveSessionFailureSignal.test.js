@@ -957,6 +957,8 @@ test('healthy audio callbacks reset the transient capture-stall recovery budget'
   };
   session.mediaStream = { getTracks: () => [] };
   session.chunker = { push() { return []; }, reset() {} };
+  session.session = { sendRealtimeInput() {} };
+  session.providerReady = true;
 
   session.setupAudioCapture();
   processors[0].onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });

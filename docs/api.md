@@ -1,5 +1,37 @@
 # Live Translate API and Events
 
+## Meeting export lifecycle (P7)
+
+Assigned members can read the meeting data explicitly covered by RLS and can
+write recording data only while active with `can_record=true`. They cannot
+modify owner settings, membership/share state, glossary data, exports, or
+delete the meeting. Export and signed audio download URLs remain owner-scoped.
+
+Supabase cloud mode provides owner-only asynchronous Meeting export endpoints:
+
+```http
+POST /api/meetings/:meetingId/exports
+Content-Type: application/json
+
+{"format":"txt","stream":"translation"}
+```
+
+`format` is `txt`, `srt`, or `vtt`; `stream` is `source`, `translation`, or
+`both`. `srt` and `vtt` reject `both` with `400 export_invalid_stream`. A
+successful request returns `202` and an export artifact with `queued` status.
+
+```http
+GET  /api/meetings/:meetingId/exports
+GET  /api/meetings/:meetingId/exports/:exportId
+POST /api/meetings/:meetingId/exports/:exportId/download-url
+DELETE /api/meetings/:meetingId/exports/:exportId
+```
+
+Only `ready` artifacts produce a download URL. The URL expires after 60
+seconds. The API never returns Storage paths, signed URLs in logs, transcript
+text, JWTs, or Storage credentials. Local file-backed mode continues to use
+the existing browser export path.
+
 ## Personal Gemini Credential
 
 Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.
@@ -448,6 +480,7 @@ Returns `201 Created`:
 ```
 
 ## `PATCH /api/meetings/:meetingId`
+`privateGlossaryEntries[].replacementAliases` uses the canonical language-to-aliases object format. Legacy empty-array values (`[]`) are normalized to `{}`; non-empty arrays remain invalid.
 
 Updates Meeting name, source/target languages, translated-audio playback,
 original-audio recording, shared glossary entries, and

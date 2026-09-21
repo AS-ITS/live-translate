@@ -11,6 +11,7 @@ import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDev
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
+import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -277,10 +278,11 @@ export class LiveTranslateSession {
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
       const errorCode = error.error?.code || 'token_request_failed';
-      const startupError = new Error(userMessageForErrorCode(errorCode));
+      const startupMessage = userMessageForErrorCode(errorCode) || '無法準備即時翻譯請求。';
+      const startupError = new Error(startupMessage);
       startupError.code = errorCode;
       startupError.status = tokenResponse.status;
-      startupError.userMessage = '無法取得即時權杖。';
+      startupError.userMessage = withHttpStatus(startupMessage, tokenResponse.status);
       throw startupError;
     }
     const response = await tokenResponse.json();
@@ -376,10 +378,15 @@ export class LiveTranslateSession {
     return error;
   }
 
-  async reconnectProvider({ segmentId = this.segmentId, forceRefresh = false } = {}) {
+  async reconnectProvider({
+    segmentId = this.segmentId,
+    liveSessionId = this.liveSessionId,
+    forceRefresh = false
+  } = {}) {
     if (this.closed) return false;
     if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
     this.segmentId = segmentId;
+    this.liveSessionId = liveSessionId || this.liveSessionId;
     this.providerReconnectInProgress = (async () => {
       this.providerReady = false;
       this.inputSendingEnabled = false;
@@ -1040,12 +1047,30 @@ export class LiveTranslateSession {
       this.lastOutputTranscriptText,
       content?.outputTranscription?.text
     );
+    const providerTurnIndex = firstDefined(
+      content?.turnIndex,
+      content?.turn?.index,
+      content?.turn?.turnIndex,
+      message?.turnIndex
+    );
+    const likelyFragmentContinuation = isLikelyTranscriptContinuation(
+      this.lastInputTranscriptText,
+      content?.inputTranscription?.text || content?.interimInputTranscription?.text,
+      { stream: 'source', turnIndex: providerTurnIndex }
+    ) || isLikelyTranscriptContinuation(
+      this.lastOutputTranscriptText,
+      content?.outputTranscription?.text,
+      { stream: 'translation', turnIndex: providerTurnIndex }
+    );
     const inputTextMergeMode = transcriptMergeMode(this.lastInputTranscriptText, content?.inputTranscription?.text || content?.interimInputTranscription?.text);
     const outputTextMergeMode = transcriptMergeMode(this.lastOutputTranscriptText, content?.outputTranscription?.text);
-    const eventAudioTurnId = (inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
-      || cumulativeInputContinuation || cumulativeOutputContinuation)
+    const providerTurnId = providerTurnIndex === undefined || providerTurnIndex === null
+      ? null
+      : `provider-turn-${this.connectionEpoch}-${providerTurnIndex}`;
+    const eventAudioTurnId = providerTurnId || ((inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
+      || cumulativeInputContinuation || cumulativeOutputContinuation || likelyFragmentContinuation)
       ? (this.activeTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
-      : this.audioTurnId;
+      : this.audioTurnId);
     if (content?.inputTranscription?.text || content?.interimInputTranscription?.text || content?.outputTranscription?.text) {
       this.activeTranscriptAudioTurnId = eventAudioTurnId;
     }
@@ -1289,8 +1314,21 @@ export class LiveTranslateSession {
       this.logLiveEvent('stale.callback.ignored', { kind: 'error', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
-    const message = event?.message || event?.error?.message || 'Live API error';
+    const message = event?.message || event?.error?.message || event?.error?.error?.message || 'Live API error';
     const error = event instanceof Error ? event : new Error(message);
+    if (event && typeof event === 'object' && error !== event) {
+      Object.assign(error, event);
+    }
+    if (event?.error && error.error !== event.error) {
+      error.error = event.error;
+    }
+    if (error.code == null) {
+      error.code = event?.code ?? event?.error?.code ?? event?.error?.error?.code;
+    }
+    if (error.status == null) {
+      const status = httpStatusFromError(event);
+      if (status !== null) error.status = status;
+    }
     if (!this.providerReconnectInProgress && this.providerReconnectAttempts < 3) {
       try {
         const resumed = await this.reconnectProvider({ forceRefresh: true });
@@ -1848,6 +1886,23 @@ function transcriptMergeMode(previousText, incomingText) {
   return relation === 'extension' || relation === 'revision' || relation === 'same' ? 'snapshot' : 'append';
 }
 
+function isLikelyTranscriptContinuation(previousText, incomingText, { stream, turnIndex } = {}) {
+  const previous = String(previousText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  if (!previous || !incoming || turnIndex !== undefined && turnIndex !== null) return false;
+  if (endsTranscriptSentence(previous)) return false;
+  if (/^\d[\d\s,.，、]*$/u.test(incoming)) return true;
+  return /[,，、:：;；]$/u.test(previous) && stream === 'source';
+}
+
+function endsTranscriptSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(String(text || '').trim());
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
+}
+
 function summarizeLiveEvent(message) {
   const content = message?.serverContent;
   const parts = content?.modelTurn?.parts || [];
@@ -1891,7 +1946,7 @@ function safeFailureDiagnostic(failure, session) {
     source: failure.source || 'unknown',
     reasonHint: failure.reasonHint || 'unknown_error',
     code: safeDiagnosticValue(rawEvent.code || rawError.code),
-    status: safeDiagnosticStatus(rawEvent.status || rawError.status || rawError.response?.status),
+    status: safeDiagnosticStatus(httpStatusFromError(rawEvent) ?? httpStatusFromError(rawError)),
     providerReason: safeDiagnosticText(rawEvent.reason || rawError.reason),
     connectionEpoch: session.connectionEpoch,
     liveSessionId: session.liveSessionId,
@@ -1978,24 +2033,4 @@ function createDefaultSessionClock() {
     const now = typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : 0;
     return Math.max(0, now - startedAt);
   };
-}
-
-function userMessageForErrorCode(code) {
-  const messages = {
-    auth_required: '登入狀態已失效，請重新登入。',
-    auth_invalid: '登入狀態已失效，請重新登入。',
-    auth_not_configured: '存取權杖未設定或無效，請聯絡管理員。',
-    invalid_origin: '此網站不允許請求即時翻譯。',
-    provider_unavailable: '即時翻譯服務暫時無法使用。請再試一次。',
-    gemini_credential_not_configured: '請先設定 Gemini API Key，再開始即時翻譯。',
-    gemini_credential_unavailable: 'Gemini API Key 設定服務目前無法使用。請稍後再試。',
-    gemini_credential_invalid: 'Gemini API Key 無效，請重新設定。',
-    rate_limited: '開始即時翻譯的請求過於頻繁。請稍候再試。',
-    server_misconfigured: '伺服器尚未設定即時翻譯。',
-    unsupported_language: '不支援所選的目標語言。',
-    invalid_json: '無法準備即時翻譯請求。',
-    request_too_large: '即時翻譯請求過大。'
-  };
-
-  return messages[code] || '無法開始即時翻譯。請再試一次。';
 }

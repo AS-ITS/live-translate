@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
 
 test('composes checkpoint and active audio status messages', () => {
   assert.deepEqual(composeCheckpointStatusMessage({
@@ -48,4 +48,16 @@ test('includes checkpoint error details in the live status message', () => {
     '會議模式：保存失敗，等待重試',
     '字幕資料格式無效，請重新開始錄製。（請提供 Request ID：request-1）'
   ]);
+});
+
+test('classifies nested provider authorization status from a live error event', () => {
+  const classification = classifyFailureSignal({
+    source: 'live_error',
+    rawError: new Error('provider authorization failed'),
+    rawEvent: { error: { status: 403, code: 'auth_failed' } },
+    reasonHint: 'provider_error'
+  });
+
+  assert.equal(classification.reason, 'auth_failed');
+  assert.equal(classification.httpStatus, 403);
 });

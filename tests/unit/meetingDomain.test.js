@@ -74,6 +74,24 @@ test('Meeting supports legal lifecycle transitions', () => {
   }, TypeError);
 });
 
+test('Meeting normalizes legacy empty private glossary aliases', () => {
+  const meeting = new Meeting({
+    id: 'meeting-1',
+    createdAt: 1000,
+    privateGlossaryEntries: [{
+      source: '專案代號',
+      translations: { en: 'Project Codename' },
+      replacementAliases: []
+    }]
+  });
+
+  assert.deepEqual(meeting.privateGlossaryEntries, [{
+    source: '專案代號',
+    translations: { en: 'Project Codename' },
+    replacementAliases: {}
+  }]);
+});
+
 test('Meeting rejects invalid data and illegal transitions', () => {
   const created = new Meeting({ id: 'meeting-1', createdAt: 1000 });
   const active = created.activate(1100);

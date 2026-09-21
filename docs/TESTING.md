@@ -34,6 +34,21 @@ For an additional deployment preflight after starting the local server, run:
 SMOKE_BASE_URL=http://127.0.0.1:3000 npm run test:deployment-preflight
 ```
 
+## Issue #35 local RLS matrix
+
+After local Supabase is running, execute the real PostgREST/Auth allow/deny matrix:
+
+```bash
+eval "$(supabase status -o env)"
+RUN_SUPABASE_RLS_TESTS=true \
+SUPABASE_TEST_URL="$API_URL" \
+SUPABASE_TEST_PUBLISHABLE_KEY="$ANON_KEY" \
+SUPABASE_TEST_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
+npm run test:integration:supabase-rls
+```
+
+The test creates disposable local users and removes them with the service-role admin endpoint. It rejects non-local URLs unless `ALLOW_REMOTE_RLS_TESTS=true`; it never prints credentials or transcript data.
+
 ## Manual cloud validation
 
 Cloud checks are split by deployment risk:
@@ -44,6 +59,21 @@ Cloud checks are split by deployment risk:
 
 ```bash
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
+```
+
+For staging authenticated reload coverage, provide a non-production staging URL, matching Supabase URL, and disposable owner token. The browser test injects the Supabase session directly and never automates Google OAuth:
+
+```bash
+CLOUD_BASE_URL=https://staging.example.com \
+CLOUD_SUPABASE_URL=https://staging-project.supabase.co \
+CLOUD_TEST_ACCESS_TOKEN="$STAGING_TEST_ACCESS_TOKEN" \
+npm run test:e2e:cloud -- tests/cloud/issue35Reload.spec.js tests/cloud/stagingSmoke.spec.js tests/cloud/issue35BrowserReload.spec.js
+```
+
+Run the no-Gemini Storage/export lifecycle separately when staging worker and private Storage evidence are available:
+
+```bash
+npm run test:e2e:cloud -- tests/cloud/issue35StorageLifecycle.spec.js
 ```
 
 The manual workflow `.github/workflows/cloud-validation.yml` is production-only and requires `PRODUCTION_BASE_URL`. It does not require staging secrets. Real Gemini smoke remains a separate explicit opt-in.
@@ -502,12 +532,13 @@ intended to spend real Gemini API quota.
 
 ### Subtitle Cue export (WP5A)
 
-Session detail export tests should use persisted final Cues as the primary
-fixture. Verify TXT, SRT, and VTT content from the same sequence-sorted Cue
-list, including session-relative timestamps, partial filtering, duplicate and
-timeline validation, and export-time wrapping. A Session with no Cues keeps
-the legacy transcript export fallback. Do not use DOM layout or Cue UI line
-wrapping as export input.
+Server export tests should use persisted Final Cues as the primary fixture.
+Verify TXT, SRT, and VTT content from the same sequence-sorted Cue list,
+including partial filtering, duplicate timeline validation, source-hash
+idempotency, artifact retry, and signed URL readiness. P8 UI tests must also
+verify that Supabase cloud mode uses the asynchronous export panel while local
+mode shows the unavailable message and never creates a browser transcript
+download. Do not use DOM layout or Cue UI line wrapping as export input.
 # Recorder sharing validation
 
 Use mocked request contexts to verify Recorder share role migration, lease
@@ -515,3 +546,38 @@ claim/heartbeat/release, duplicate claim (`409 recorder_already_active`),
 expiry, hash-only grant expiry/revocation, Recorder live-token authorization,
 snapshot/audio write authorization, and fence-token rejection. Do not call
 Gemini or run a full benchmark.
+## Issue #35 Phase 1–2 checks
+
+Run the focused boundary checks before broader API tests:
+
+```bash
+node --test \
+  tests/unit/cloudEnvironment.test.js \
+  tests/unit/supabaseRestClient.test.js \
+  tests/unit/accessToken.test.js \
+  tests/unit/supabaseRepositoryOwnership.test.js \
+  tests/unit/deploymentPreflight.test.js
+```
+
+These tests assert safe environment diagnostics, user JWT versus service-role headers, expiring-session refresh, and owner-scope repository behavior. Cloud smoke still requires a fresh Supabase access token and must not print it.
+
+Readiness coverage also verifies the core persistence tables, translation metric/queue RPCs, and private `meeting-audio` Storage bucket through the service-role client. Run the local migration checks before relying on readiness results:
+
+```bash
+supabase db lint
+supabase migration up --include-all
+```
+
+The production API must fail closed with `503 cloud_capability_unavailable` when the server-side Supabase contract is invalid; this guard is separate from browser-safe client configuration and must not be bypassed by file-backed fallback repositories.
+P7 cloud export lifecycle coverage, without Gemini or production Storage:
+
+```bash
+node --test tests/unit/exportArtifactService.test.js tests/unit/exportWorker.test.js tests/unit/meetingExportSource.test.js tests/unit/workerEndpoint.test.js
+```
+
+Migration validation must include the private `meeting-exports` bucket,
+owner-only Storage policies, `export_artifacts` constraints, and `export_jobs`:
+
+```bash
+npm run db:lint
+```

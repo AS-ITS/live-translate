@@ -81,3 +81,33 @@ test('active members can access meeting settings without management rights', asy
   assert.equal(await service.canAccessMeeting('meeting-1', { id: 'member-1' }), true);
   assert.equal(await service.canManage('meeting-1', { id: 'member-1' }), false);
 });
+
+test('owner lookup prefers the unscoped membership owner resolver', async () => {
+  const service = createMeetingMembershipService({
+    profileRepository: { getProfile: async () => ({ status: 'active', role: 'super_admin' }) },
+    meetingRepository: { getMeeting: async () => null },
+    membershipRepository: {
+      getMeetingOwner: async () => 'owner-1',
+      find: async () => null,
+      list: async () => []
+    }
+  });
+
+  assert.equal(await service.getMeetingOwner('meeting-1'), 'owner-1');
+});
+
+test('owner lookup falls back to an owner-scoped meeting repository', async () => {
+  const service = createMeetingMembershipService({
+    profileRepository: { getProfile: async () => ({ status: 'active', role: 'super_admin' }) },
+    membershipRepository: {
+      getMeetingOwner: async () => null,
+      find: async () => null,
+      list: async () => []
+    },
+    meetingRepository: {
+      getMeeting: async () => ({ ownerUserId: 'owner-1' })
+    }
+  });
+
+  assert.equal(await service.getMeetingOwner('meeting-1'), 'owner-1');
+});

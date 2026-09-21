@@ -1,4 +1,4 @@
-import { classifyConnectionFailure } from '../../lib/connectionFailures.js';
+import { classifyConnectionFailure, httpStatusFromError } from '../../lib/connectionFailures.js';
 
 const MEETING_CHECKPOINT_STATUS_LABELS = {
   idle: '會議模式：尚未啟用',
@@ -88,7 +88,7 @@ export function classifyFailureSignal(failure) {
     rawError: failure.rawError,
     rawEvent: failure.rawEvent,
     code: failure.rawError?.code || failure.rawEvent?.code,
-    status: failure.rawError?.status || failure.rawEvent?.status,
+    status: httpStatusFromError(failure.rawError) ?? httpStatusFromError(failure.rawEvent),
     context: failure.source
   });
 

@@ -18,3 +18,13 @@ Alert starting points: queue depth rising for 10 minutes, execution failure rate
 Run the safe deployment preflight with `SMOKE_BASE_URL=https://staging.example.com npm run test:deployment-preflight`; it checks health, readiness, and authentication rejection without creating tokens or processing queue items. For full staging validation, separately apply migrations, issue one test token, verify one metric bucket, and confirm logs contain no API key, token, audio, transcript, or execution/meeting identifiers. Roll back the application first if request behavior regresses, then revert the migration only after confirming no dependent deployment is active.
 
 Telemetry accepts only `reconnect`, `event_gap`, `event_duplicate`, `replay_success`, and `replay_failure`; it stores counts only. Existing monitoring infrastructure owns alert delivery. 
+
+## Issue #35 deployment evidence
+
+Capture the following safe summary for each staging or production verification. Do not copy credentials, JWTs, signed URLs, share tokens, audio bytes, transcript text, or Supabase response bodies.
+
+- `CLOUD_SUPABASE_URL` project ref matches the browser build and server `SUPABASE_URL` project ref.
+- The deployed migration head is `20260923000000_issue35_supabase_first.sql`; local and CI migration lint passed.
+- `/healthz` and `/readyz` returned `200`; `/api/meetings`, `/api/metrics`, and `/api/internal/worker` rejected unauthenticated requests with `401`.
+- Private Storage buckets `meeting-audio` and `meeting-exports` exist. Staging lifecycle evidence records owner upload/signed-url scope and post-delete metadata/object cleanup.
+- Meeting request logs contain `operation`, `actorUserId`, `resourceOwnerUserId`, `meetingId`, `statusCode`, `supabaseStatus`, `errorCode`, `requestId`, and `durationMs`. Correlate create and reload request IDs with Vercel and Supabase logs.

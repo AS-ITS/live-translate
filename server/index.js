@@ -7,7 +7,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
 import { createLiveToken } from './tokenService.js';
-import { createAccessControl } from './accessControl.js';
+import { createAccessControl, getBearerToken } from './accessControl.js';
 import { createApplicationDependencies, createProductionApplicationDependencies, ensureDataDirectory } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
 import { createSessionShareService } from '../src/application/sessionShareService.js';
@@ -28,13 +28,15 @@ import {
 } from '../src/infrastructure/sessionAudioArtifacts.js';
 import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.js';
 import { createProfileService } from './profileService.js';
+import { cloudEnvironmentError } from './cloudEnvironment.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
 import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
-import { setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { currentRequestActorId, currentRequestOwnerId, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
+import { createExportController } from './exportController.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -49,9 +51,13 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = process.env.APP_ORIGIN
-  || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
-  || (IS_PRODUCTION ? 'http://127.0.0.1:8000' : (process.env.dev_frontend_origin || 'http://127.0.0.1:5173'));
+const RESOLVED_ORIGIN = IS_PRODUCTION
+  ? (process.env.APP_ORIGIN
+    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
+    || 'http://127.0.0.1:8000')
+  : (process.env.dev_frontend_origin
+    || process.env.APP_ORIGIN
+    || 'http://127.0.0.1:5173');
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -65,6 +71,7 @@ const ERROR_RESPONSES = {
   cloud_capability_unavailable: { status: 503, message: 'This cloud capability is not enabled yet.' },
   supabase_unavailable: { status: 503, message: 'Local Supabase is unavailable.' },
   supabase_schema_missing: { status: 503, message: 'Local Supabase migrations are missing.' },
+  supabase_storage_missing: { status: 503, message: 'Supabase Storage configuration is missing.' },
   supabase_credentials_invalid: { status: 503, message: 'Local Supabase service credentials are invalid.' },
   supabase_request_failed: { status: 503, message: 'Local Supabase request failed.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
@@ -394,6 +401,81 @@ function safeRequestErrorSummary(error) {
   }
 }
 
+function supabaseProjectRef(env = process.env) {
+  try {
+    const hostname = new URL(String(env.SUPABASE_URL || '')).hostname;
+    return hostname.endsWith('.supabase.co') ? hostname.slice(0, -'.supabase.co'.length) : null;
+  } catch {
+    return null;
+  }
+}
+
+function meetingRequestDiagnostics({ operation = 'meeting.request', meetingId, authenticatedUser, statusCode, errorCode, supabaseStatus = null, resourceOwnerId, resourceOwnerKnown = false }) {
+  return {
+    operation,
+    actorUserId: currentRequestActorId() || authenticatedUser?.actorUserId || authenticatedUser?.id || null,
+    resourceOwnerUserId: resourceOwnerKnown
+      ? resourceOwnerId || null
+      : resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
+    resourceOwnerId: resourceOwnerKnown
+      ? resourceOwnerId || null
+      : resourceOwnerId || currentRequestOwnerId() || authenticatedUser?.ownerUserId || null,
+    ...(meetingId ? { meetingId } : {}),
+    statusCode,
+    supabaseStatus: Number.isInteger(supabaseStatus) ? supabaseStatus : null,
+    errorCode: errorCode || null,
+    supabaseProjectRef: supabaseProjectRef()
+  };
+}
+
+async function collectMeetingAuthorizationDiagnostics({ meetingId, authenticatedUser, profileService, meetingMembershipService }) {
+  let resourceOwnerId = null;
+  let ownerLookup = 'missing';
+  try {
+    resourceOwnerId = await meetingMembershipService?.getMeetingOwner?.(meetingId) || null;
+    ownerLookup = resourceOwnerId ? 'found' : 'missing';
+  } catch {
+    ownerLookup = 'error';
+  }
+
+  let actorProfileStatus = null;
+  let actorProfileRole = null;
+  let actorProfileLookup = 'unavailable';
+  try {
+    if (typeof profileService?.getProfile === 'function') {
+      const profile = await profileService.getProfile(authenticatedUser);
+      actorProfileLookup = profile ? 'found' : 'missing';
+      actorProfileStatus = profile?.status || null;
+      actorProfileRole = profile?.role || null;
+    }
+  } catch {
+    actorProfileLookup = 'error';
+  }
+
+  let membership = 'unavailable';
+  try {
+    if (typeof profileService?.findMeetingMembership === 'function') {
+      membership = await profileService.findMeetingMembership(meetingId, authenticatedUser?.id)
+        ? 'present'
+        : 'absent';
+    }
+  } catch {
+    membership = 'error';
+  }
+
+  return {
+    resourceOwnerId,
+    ownerLookup,
+    ownerMatchesActor: resourceOwnerId && authenticatedUser?.id
+      ? resourceOwnerId === authenticatedUser.id
+      : null,
+    actorProfileLookup,
+    actorProfileStatus,
+    actorProfileRole,
+    membership
+  };
+}
+
 function loadDotenv({ cwd = process.cwd(), env = process.env } = {}) {
   const nodeEnv = env.NODE_ENV || 'development';
   const originalKeys = new Set(Object.keys(env));
@@ -630,6 +712,7 @@ export function createRequestHandler(options = {}) {
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
     translationExecutionWorkerRuntime,
+    exportArtifactService,
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
     translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES,
@@ -651,6 +734,7 @@ export function createRequestHandler(options = {}) {
     , observabilityMetrics
   , readinessCheck
  , strictCheckpointPathIds = true
+ , requestLogger = logEvent
  } = options;
 
  const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
@@ -694,7 +778,8 @@ export function createRequestHandler(options = {}) {
       glossaryController,
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
-      translationExecutionWorkerRuntime,
+    translationExecutionWorkerRuntime,
+    exportArtifactService,
       liveTokenCreator,
       sessionShareService,
       translationOutputMaxBytes,
@@ -713,7 +798,8 @@ export function createRequestHandler(options = {}) {
       , profileService
       , credentialRepository
       , authEventAuditLogService
-      , strictCheckpointPathIds
+ , strictCheckpointPathIds
+ , requestLogger
     });
   };
 }
@@ -727,16 +813,31 @@ async function handleRequestWithSessionReadController(
   res,
  { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
 ) {
+  const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
+  const requestLogger = arguments[2]?.requestLogger || logEvent;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
   let authenticatedUser = null;
+  let requestScope = null;
+  const updateRequestScope = (resourceOwnerUserId = null) => {
+    if (!requestScope) return;
+    requestScope = Object.freeze({ ...requestScope, resourceOwnerUserId: resourceOwnerUserId || requestScope.actorUserId });
+    setRequestScope(requestScope);
+  };
   let statusCode = 500;
   let targetLanguageCode;
+  let meetingDiagnosticId = null;
+  let meetingDiagnosticErrorCode = null;
+  let meetingDiagnosticSupabaseStatus = null;
+  const meetingPathMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
+  if (meetingPathMatch && meetingPathMatch[1] !== 'glossary') {
+    meetingDiagnosticId = safeDecodePathComponent(meetingPathMatch[1]);
+  }
   setRequestUser(null);
 
   if (req.method === 'OPTIONS') {
@@ -752,15 +853,11 @@ async function handleRequestWithSessionReadController(
   }
 
   if (req.method === 'GET' && path === '/readyz') {
-    const hasSupabase = [
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SECRET_KEY,
-      process.env.SUPABASE_JWKS_URL,
-      process.env.AUTH_ALLOWED_EMAIL_DOMAINS
-    ].every((value) => typeof value === 'string' && value.trim().length > 0);
+    const environmentError = cloudEnvironmentError({ requireBrowserConfig: IS_PRODUCTION });
+    const hasSupabase = !environmentError;
     const legacyLocalReady = process.env.NODE_ENV !== 'production' && Boolean(process.env.GEMINI_API_KEY);
     let ready = hasSupabase || legacyLocalReady;
-    let dependencyCode = null;
+    let dependencyCode = environmentError?.code || null;
     if (ready && typeof readinessCheck === 'function') {
       try { ready = Boolean(await readinessCheck()); } catch (error) { ready = false; dependencyCode = error?.code || 'supabase_unavailable'; }
     }
@@ -769,15 +866,73 @@ async function handleRequestWithSessionReadController(
     return;
   }
 
+  if (IS_PRODUCTION && path.startsWith('/api/') && cloudEnvironmentError({ requireBrowserConfig: true })) {
+    statusCode = 503;
+    logEvent({
+      level: 'error',
+      event: 'request_rejected',
+      requestId,
+      method: req.method,
+      path,
+      statusCode,
+      errorCode: 'cloud_capability_unavailable',
+      safeSummary: 'Production cloud environment is not ready.',
+      durationMs: Math.round(performance.now() - startedAt),
+      clientIp,
+      origin
+    });
+    sendJson(res, statusCode, errorPayload('cloud_capability_unavailable', requestId), requestId);
+    return;
+  }
+
   if (path.startsWith('/api/') && !isPublicApiPath(req.method, path) && !isRecorderAuthorizedPath(req.method, path, req)) {
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
+      if (authenticatedUser?.id) {
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req), capability: 'user' });
+        setRequestScope(requestScope);
+      }
       authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
+      setRequestScope(requestScope);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
+      if (meetingDiagnosticId) {
+        const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          profileService,
+          meetingMembershipService
+        });
+        requestLogger({
+          level: statusCode >= 500 ? 'error' : 'warn',
+          event: 'meeting_request',
+          operation: `${req.method} ${path}`,
+          requestId,
+          method: req.method,
+          path,
+          statusCode,
+          durationMs: Math.round(performance.now() - startedAt),
+          clientIp,
+          origin,
+          authStage: 'authentication',
+          ...meetingRequestDiagnostics({
+            operation: `${req.method} ${path}`,
+            meetingId: meetingDiagnosticId,
+            authenticatedUser,
+            statusCode,
+            errorCode: code,
+            supabaseStatus: meetingDiagnosticSupabaseStatus,
+            resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+            resourceOwnerKnown: true
+          }),
+          ...authorizationDiagnostics
+        });
+      }
       logEvent({
         level: statusCode >= 500 ? 'error' : 'warn',
         event: 'request_rejected',
@@ -898,8 +1053,14 @@ async function handleRequestWithSessionReadController(
     try {
       if (!isAllowedOrigin(req)) throw createHttpError('invalid_origin');
       authenticatedUser = await requestAccessControl.validateRequest(req);
+      setRequestUser(authenticatedUser);
+      if (authenticatedUser?.id) {
+        requestScope = Object.freeze({ actorUserId: authenticatedUser.id, resourceOwnerUserId: authenticatedUser.id, accessToken: getBearerToken(req), capability: 'user' });
+        setRequestScope(requestScope);
+      }
       authenticatedUser = await enrichAuthenticatedUser(authenticatedUser, profileService);
       setRequestUser(authenticatedUser);
+      setRequestScope(requestScope);
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -940,15 +1101,55 @@ if (req.method === 'POST' && path === '/api/auth-events') {
 }
 
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
+      let authorizationStage = 'private_resource';
       try {
-        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
-        if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
-        const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
-        if (translationScope) setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
-      } catch (error) {
-        const code = errorCodeFor(error);
-        statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-        sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+    if (scope) {
+      setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+      updateRequestScope(scope.ownerUserId);
+    }
+    authorizationStage = 'translation_resource';
+    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+    if (translationScope) {
+      setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
+      updateRequestScope(translationScope.ownerUserId);
+    }
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
+      if (meetingDiagnosticId) {
+      const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+        meetingId: meetingDiagnosticId,
+        authenticatedUser,
+        profileService,
+        meetingMembershipService
+      });
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'warn',
+        event: 'meeting_request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        authStage: authorizationStage,
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: code,
+          supabaseStatus: meetingDiagnosticSupabaseStatus,
+          resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+          resourceOwnerKnown: true
+        }),
+        ...authorizationDiagnostics
+      });
+    }
+    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
         return;
       }
     }
@@ -966,6 +1167,7 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
         const ownerUserId = sessionContext?.ownerUserId || localSession?.sessionRecord?.ownerUserId || await meetingMembershipService?.getMeetingOwner?.(meetingId);
  if (!ownerUserId) throw createHttpError('recorder_forbidden');
       setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+      updateRequestScope(ownerUserId);
  } catch (error) {
  const code = errorCodeFor(error);
  statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
@@ -1115,7 +1317,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const memberId = safeDecodePathComponent(parts[5]);
       if (!await meetingRepository?.getMeeting?.(meetingId)) throw createHttpError('meeting_not_found');
       const body = await readJson(req, { maxBytes: 8 * 1024 });
-      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord);
+      const member = await profileService.updateMeetingMemberRecording(authenticatedUser, meetingId, memberId, body?.canRecord, requestId);
       statusCode = 200;
       sendJson(res, statusCode, { member }, requestId);
     } catch (error) {
@@ -1163,6 +1365,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
         if (!ownerUserId) throw createHttpError('recorder_forbidden');
         setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+        updateRequestScope(ownerUserId);
       }
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) {
         throw createHttpError('unsupported_language');
@@ -1205,6 +1408,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         path,
         statusCode,
         errorCode,
+        supabaseStatus: Number.isInteger(sessionCreateError?.supabaseStatus) ? sessionCreateError.supabaseStatus : null,
         safeSummary: sessionCreateError ? safeRequestErrorSummary(sessionCreateError) : null,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
@@ -1381,6 +1585,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     return;
   }
 
+  const exportController = createExportController({ exportArtifactService });
+  if (exportController?.matches(path)) {
+    if (authenticatedUser?.role !== 'super_admin' && currentRequestActorId() !== currentRequestOwnerId()) {
+      statusCode = 403;
+      sendJson(res, statusCode, errorPayload('auth_forbidden', requestId), requestId);
+      return;
+    }
+    await exportController.handle({ req, res, path, requestId });
+    return;
+  }
+
   if (req.method === 'GET' && path === '/api/meetings') {
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
@@ -1389,10 +1604,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, meetings, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ operation: `${req.method} ${path}`, meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode, supabaseStatus: meetingDiagnosticSupabaseStatus }) });
     }
     return;
   }
@@ -1420,10 +1637,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
+      meetingDiagnosticId = meetingId;
       const meeting = await meetingReadController.getMeeting(meetingId);
 
       if (!meeting) {
         statusCode = 404;
+        meetingDiagnosticErrorCode = 'meeting_not_found';
         sendJson(res, statusCode, errorPayload('meeting_not_found', requestId), requestId);
         return;
       }
@@ -1438,10 +1657,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       }, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({ level: statusCode >= 500 ? 'error' : 'info', event: 'meeting_request', requestId, method: req.method, path, durationMs: Math.round(performance.now() - startedAt), clientIp, origin, ...meetingRequestDiagnostics({ operation: `${req.method} ${path}`, meetingId: meetingDiagnosticId, authenticatedUser, statusCode, errorCode: meetingDiagnosticErrorCode, supabaseStatus: meetingDiagnosticSupabaseStatus }) });
     }
     return;
   }
@@ -1495,20 +1716,48 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
   if (req.method === 'DELETE' && isMeetingDetailPath(path)) {
     try {
-      if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
+      if (!meetingDeletionService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
-      const result = await meetingCheckpointService.deleteMeeting({ meetingId });
-      if (sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function') {
-        await sessionShareService.revokeMeetingShares(meetingId);
-      }
+      await meetingDeletionService.deleteMeeting({ meetingId });
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
       return;
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      const authorizationDiagnostics = await collectMeetingAuthorizationDiagnostics({
+        meetingId: meetingDiagnosticId,
+        authenticatedUser,
+        profileService,
+        meetingMembershipService
+      });
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        authStage: 'private_resource',
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: code,
+          supabaseStatus: meetingDiagnosticSupabaseStatus,
+          resourceOwnerId: authorizationDiagnostics.resourceOwnerId,
+          resourceOwnerKnown: true
+        }),
+        ...authorizationDiagnostics
+      });
     }
     return;
   }
@@ -1532,6 +1781,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const meetingId = parseMeetingDetailPath(path).meetingId;
+      meetingDiagnosticId = meetingId;
       const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (body?.targetLanguageCode && !isSupportedLanguage(body.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (body?.sourceLanguageCode && !isSupportedLanguage(body.sourceLanguageCode)) throw createHttpError('unsupported_language');
@@ -1548,8 +1798,31 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        operation: `${req.method} ${path}`,
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: meetingDiagnosticErrorCode,
+          supabaseStatus: meetingDiagnosticSupabaseStatus
+        })
+      });
     }
     return;
   }
@@ -1578,6 +1851,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingAudioService) throw createHttpError('cloud_capability_unavailable');
       const { meetingId, artifactId, action } = parseMeetingAudioArtifactActionPath(path);
+      if (action === 'download-url' && authenticatedUser?.role !== 'super_admin' && currentRequestActorId() !== currentRequestOwnerId()) {
+        throw createHttpError('auth_forbidden');
+      }
       let result;
       if (action === 'complete') result = await meetingAudioService.completeUpload({ meetingId, artifactId });
       else if (action === 'fail') result = await meetingAudioService.failUpload({ meetingId, artifactId });
@@ -1625,22 +1901,42 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'POST' && path === '/api/meetings') {
-    let meetingCheckpointError = null;
     try {
       if (!meetingCheckpointService) throw createHttpError('meeting_checkpoint_unavailable');
       const input = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
       if (input?.targetLanguageCode && !isSupportedLanguage(input.targetLanguageCode)) throw createHttpError('unsupported_language');
       if (input?.sourceLanguageCode && !isSupportedLanguage(input.sourceLanguageCode)) throw createHttpError('unsupported_language');
       const result = await meetingCheckpointService.createMeeting({ ...input, draft: input?.draft === true });
+      meetingDiagnosticId = result?.meeting?.id || null;
       statusCode = 201;
       sendJson(res, statusCode, result, requestId);
     } catch (error) {
-      meetingCheckpointError = error;
       const code = errorCodeFor(error);
+      meetingDiagnosticErrorCode = code;
+      meetingDiagnosticSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'meeting_request',
+        operation: `${req.method} ${path}`,
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        ...meetingRequestDiagnostics({
+          operation: `${req.method} ${path}`,
+          meetingId: meetingDiagnosticId,
+          authenticatedUser,
+          statusCode,
+          errorCode: meetingDiagnosticErrorCode,
+          supabaseStatus: meetingDiagnosticSupabaseStatus
+        })
+      });
     }
     return;
   }
@@ -2262,6 +2558,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'GET' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
+    let sessionReadErrorCode = null;
+    let sessionReadSupabaseStatus = null;
     try {
       const sessionId = path.slice('/api/sessions/'.length);
       const session = sessionApplicationService
@@ -2297,10 +2595,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, session, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      sessionReadErrorCode = code;
+      sessionReadSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({
+      requestLogger({
         level: statusCode >= 500 ? 'error' : 'info',
         event: 'request',
         requestId,
@@ -2309,13 +2609,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         statusCode,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
-        origin
+        origin,
+        errorCode: sessionReadErrorCode,
+        supabaseStatus: sessionReadSupabaseStatus
       });
     }
     return;
   }
 
   if (isTranslationCommandRoute(req.method, path)) {
+    let translationErrorCode = null;
+    let translationSupabaseStatus = null;
     try {
       assertTranslationCommandController(translationCommandController);
 
@@ -2332,17 +2636,22 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         meetingMembershipService,
         translationRepository
       });
-      if (scope) setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+      if (scope) {
+        setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
+        updateRequestScope(scope.ownerUserId);
+      }
       const { status, result } = handleTranslationCommand(req.method, path, body, translationCommandController);
 
       statusCode = status;
       sendJson(res, statusCode, await result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      translationErrorCode = code;
+      translationSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({
+      requestLogger({
         level: statusCode >= 500 ? 'error' : 'info',
         event: 'request',
         requestId,
@@ -2351,7 +2660,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         statusCode,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
-        origin
+        origin,
+        errorCode: translationErrorCode,
+        supabaseStatus: translationSupabaseStatus
       });
     }
     return;
@@ -2589,7 +2900,9 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
         : await meetingMembershipService.canManage(meetingId, user);
     if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
     const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
-    if (!ownerUserId) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
+    if (!ownerUserId) {
+      throw createHttpError(user.role === 'super_admin' ? 'meeting_not_found' : (canRecord ? 'recorder_forbidden' : 'auth_forbidden'));
+    }
     return { ownerUserId };
   }
   if (sessionMatch && sessionMatch[1] !== 'shares') {

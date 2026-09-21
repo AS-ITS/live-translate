@@ -79,6 +79,7 @@ import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src
 import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createSupabaseReadinessCheck } from '../src/infrastructure/supabaseReadiness.js';
+import { createSupabaseExportComposition } from '../src/infrastructure/supabaseExportComposition.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -140,6 +141,7 @@ export function createApplicationDependencies(options = {}) {
     includeSessionRetranslationCommandController = false,
     idGenerator = createDefaultIdGenerator(),
     clock = () => Date.now(),
+    exportArtifactService,
     cancelQueuedTranslationExecutionServiceFactory = createDefaultCancelQueuedTranslationExecutionService,
     manualRetryFailedTranslationExecutionServiceFactory = createDefaultManualRetryFailedTranslationExecutionService,
     deadLetterQueueRepository,
@@ -363,6 +365,9 @@ export function createApplicationDependencies(options = {}) {
     deleteMeetingAudio: meetingAudioService
       ? (meetingId) => meetingAudioService.deleteMeetingArtifacts(meetingId)
       : undefined,
+    deleteMeetingExports: exportArtifactService
+      ? (meetingId) => exportArtifactService.deleteMeeting({ meetingId })
+      : undefined,
     revokeMeetingShares: sessionShareService && typeof sessionShareService.revokeMeetingShares === 'function'
       ? (meetingId) => sessionShareService.revokeMeetingShares(meetingId)
       : undefined
@@ -384,6 +389,7 @@ export function createApplicationDependencies(options = {}) {
       ...(meetingAudioService ? { meetingAudioService } : {}),
       ...(meetingCueService ? { meetingCueService } : {}),
       ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+      ...(exportArtifactService ? { exportArtifactService } : {}),
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
       ...(resolvedSessionApplicationService !== undefined
@@ -420,6 +426,7 @@ export function createApplicationDependencies(options = {}) {
     ...(meetingCueService ? { meetingCueService } : {}),
     ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+    ...(exportArtifactService ? { exportArtifactService } : {}),
     recorderLeaseService,
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
@@ -507,7 +514,7 @@ export function createProductionApplicationDependencies(options = {}) {
   const canCreateProductionProviderComposition = needsProductionProviderComposition && hasGlobalGeminiApiKey;
   const cloudDataMode = Boolean(env.SUPABASE_URL && env.SUPABASE_SECRET_KEY);
   const translationGlossary = cloudDataMode
-    ? createSupabaseGlossary({ env, idFactory: () => `glossary-${randomUUID()}` })
+    ? createSupabaseGlossary({ env, idFactory: randomUUID })
     : translationGlossaryFactory({
       filePath: translationGlossaryFilePathFor(env),
       fileSystem: translationGlossaryFileSystem,
@@ -665,8 +672,12 @@ export function createProductionApplicationDependencies(options = {}) {
         clock: translationQueueClock.now.bind(translationQueueClock)
       })
     : undefined;
+  const exportComposition = cloudDataMode
+    ? createSupabaseExportComposition({ env, clock: translationQueueClock.now.bind(translationQueueClock) })
+    : null;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
+    ...(exportComposition ? { exportArtifactService: exportComposition.exportArtifactService } : {}),
     ...(cloudDataMode && !Object.prototype.hasOwnProperty.call(applicationOptions, 'idGenerator')
       ? { idGenerator: () => randomUUID() }
       : {}),
@@ -733,6 +744,10 @@ export function createProductionApplicationDependencies(options = {}) {
 
   return {
     ...applicationDependencies,
+    ...(exportComposition ? {
+      exportArtifactService: exportComposition.exportArtifactService,
+      exportWorker: exportComposition.exportWorker
+    } : {}),
     ...(translationExecutionWorkerRuntime !== undefined ? { translationExecutionWorkerRuntime } : {}),
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }

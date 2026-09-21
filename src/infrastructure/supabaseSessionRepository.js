@@ -1,10 +1,11 @@
 import { createSessionRecord as createSessionRecordModel, createTranscriptItemForSession, finalizeSessionRecord as finalizeSessionRecordModel, summarizeTranscriptItems, updateSessionRecord as updateSessionRecordModel } from '../lib/sessionRecords.js';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseSessionRepository(options = {}) {
-  const client = createSupabaseRestClient(options);
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient(options);
+  const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
   const idFactory = options.idFactory;
   const owner = () => currentRequestOwnerId() || failOwner();
   const repository = {
@@ -59,7 +60,16 @@ export function createSupabaseSessionRepository(options = {}) {
 }
 
 function sessionRow(record, ownerUserId, transcriptItems = []) {
-  return { id: record.id, owner_user_id: ownerUserId, meeting_id: record.meetingId, segment_id: record.segmentId, status: record.status, source_language_code: record.sourceLanguageCode, target_language_code: record.targetLanguageCode, started_at: record.startedAt, ended_at: record.endedAt, created_at: record.createdAt, payload: record, transcript_items: transcriptItems };
+  return { id: record.id, owner_user_id: ownerUserId, meeting_id: record.meetingId, segment_id: record.segmentId, status: record.status, source_language_code: record.sourceLanguageCode, target_language_code: record.targetLanguageCode, started_at: toSupabaseTimestamp(record.startedAt), ended_at: toSupabaseTimestamp(record.endedAt), created_at: toSupabaseTimestamp(record.createdAt), payload: record, transcript_items: transcriptItems };
+}
+function toSupabaseTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return new Date(value).toISOString();
+  if (typeof value === 'string') {
+    const milliseconds = Date.parse(value);
+    if (!Number.isNaN(milliseconds)) return new Date(milliseconds).toISOString();
+  }
+  return value;
 }
 function clone(value) { return value === undefined ? value : JSON.parse(JSON.stringify(value)); }
 function failOwner() { const error = new Error('Authenticated owner required.'); error.code = 'auth_required'; error.status = 401; throw error; }

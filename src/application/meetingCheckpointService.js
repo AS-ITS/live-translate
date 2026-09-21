@@ -1,4 +1,4 @@
-import { isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
+import { Meeting, MeetingSegment, isTerminalMeetingSegmentStatus } from '../domain/meeting/index.js';
 import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../domain/subtitleCue/index.js';
 import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
 
@@ -28,8 +28,38 @@ export function createMeetingCheckpointService({
       draft = false
     } = {}) {
       const now = clock();
+      const meetingId = idGenerator('meeting');
+      const segmentId = idGenerator('segment');
+      if (typeof meetingRepository.createMeetingWithInitialSegment === 'function') {
+        const initialMeeting = new Meeting({
+          id: meetingId,
+          createdAt: now,
+          updatedAt: now,
+          status: draft ? 'created' : 'active',
+          startedAt: draft ? null : now,
+          glossaryEntries,
+          name,
+          sourceLanguageCode,
+          targetLanguageCode,
+          echoTargetLanguage,
+          shouldRecordInputAudio,
+          privateGlossaryEntries
+        });
+        const initialSegment = new MeetingSegment({
+          id: segmentId,
+          meetingId,
+          sequence: 0,
+          status: draft ? 'created' : 'active',
+          startedAt: draft ? null : now,
+          liveSessionId: liveSessionId === null ? null : validateRequiredString(liveSessionId, 'liveSessionId'),
+          settingsSnapshot: meetingSettingsSnapshot(initialMeeting),
+          createdAt: now,
+          updatedAt: now
+        });
+        return meetingRepository.createMeetingWithInitialSegment({ meeting: initialMeeting, segment: initialSegment });
+      }
       const meeting = await meetingRepository.createMeeting({
-        id: idGenerator('meeting'),
+        id: meetingId,
         createdAt: now,
         glossaryEntries,
         name,
@@ -43,7 +73,7 @@ export function createMeetingCheckpointService({
         ? meeting
         : await meetingRepository.updateMeeting(meeting.activate(now));
       const segment = await meetingRepository.createMeetingSegment({
-        id: idGenerator('segment'),
+        id: segmentId,
         meetingId: activeMeeting.id,
         sequence: 0,
         liveSessionId: liveSessionId === null ? null : validateRequiredString(liveSessionId, 'liveSessionId'),

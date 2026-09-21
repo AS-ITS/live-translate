@@ -18,12 +18,14 @@ export function createSessionSnapshotSyncCoordinator({
   }
 
   const pendingSessionIds = new Set();
+  const blockedSessionIds = new Set();
   let timer = null;
   let queue = Promise.resolve();
 
   return Object.freeze({
     schedule(sessionId) {
       if (!validSessionId(sessionId)) return;
+      if (blockedSessionIds.has(sessionId)) return;
 
       pendingSessionIds.add(sessionId);
       if (timer) return;
@@ -48,7 +50,8 @@ export function createSessionSnapshotSyncCoordinator({
         pendingSessionIds.delete(sessionId);
       }
 
-      return enqueueSync(sessionIds);
+      if (validSessionId(sessionId)) blockedSessionIds.delete(sessionId);
+      return enqueueSync(sessionIds, { force: true });
     },
 
     cancel() {
@@ -57,6 +60,7 @@ export function createSessionSnapshotSyncCoordinator({
         timer = null;
       }
       pendingSessionIds.clear();
+      blockedSessionIds.clear();
     }
   });
 
@@ -66,8 +70,10 @@ export function createSessionSnapshotSyncCoordinator({
     return sessionIds;
   }
 
-  function enqueueSync(sessionIds) {
-    const uniqueSessionIds = Array.from(new Set(sessionIds.filter(validSessionId)));
+  function enqueueSync(sessionIds, { force = false } = {}) {
+    const uniqueSessionIds = Array.from(new Set(sessionIds.filter((sessionId) => (
+      validSessionId(sessionId) && (force || !blockedSessionIds.has(sessionId))
+    ))));
     if (uniqueSessionIds.length === 0) {
       return queue;
     }
@@ -77,8 +83,10 @@ export function createSessionSnapshotSyncCoordinator({
       for (const sessionId of uniqueSessionIds) {
         try {
           await syncSessionSnapshot(sessionId);
+          blockedSessionIds.delete(sessionId);
         } catch (error) {
           ok = false;
+          if (isCloudCapabilityUnavailable(error)) blockedSessionIds.add(sessionId);
           onError?.(error, sessionId);
         }
       }
@@ -87,6 +95,13 @@ export function createSessionSnapshotSyncCoordinator({
 
     return queue;
   }
+}
+
+function isCloudCapabilityUnavailable(error) {
+  return error?.status === 503
+    || error?.code === 'cloud_capability_unavailable'
+    || error?.code === 'supabase_unavailable'
+    || error?.code === 'supabase_request_failed';
 }
 
 function validSessionId(sessionId) {

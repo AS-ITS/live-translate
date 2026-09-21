@@ -73,6 +73,7 @@ test('controller records start, pause, resume, and finalize chunks into one blob
   assert.equal(finalized.extension, 'webm');
   assert.equal(finalized.fileName, 'live-translate-input-audio-session-1-20260730-010203.webm');
   assert.equal(await finalized.blob.text(), 'firstsecond');
+  assert.equal(recorderInstances[0].startTimesliceMs, 1000);
 });
 
 test('controller can track recording state without retaining MediaRecorder chunks', async () => {
@@ -168,8 +169,9 @@ function mockMediaRecorderClass({ supportedTypes = new Set(['audio/webm;codecs=o
       instances.push(this);
     }
 
-    start() {
+    start(timesliceMs) {
       this.state = 'recording';
+      this.startTimesliceMs = timesliceMs;
     }
 
     stop() {

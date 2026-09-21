@@ -20,6 +20,9 @@ export function createMicrophoneRecordingController(options = {}) {
   const collectChunks = options.collectChunks !== false;
   const preferredMimeTypes = options.preferredMimeTypes || PREFERRED_MIME_TYPES;
   const requireSupportedMimeType = options.requireSupportedMimeType === true;
+  const timesliceMs = Number.isFinite(options.timesliceMs) && options.timesliceMs > 0
+    ? options.timesliceMs
+    : 1000;
   const now = options.now || (() => Date.now());
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
 
@@ -174,7 +177,7 @@ export function createMicrophoneRecordingController(options = {}) {
     };
 
     try {
-      recorder.start();
+      recorder.start(timesliceMs);
     } catch (error) {
       recorder = null;
       return fail(error?.message || '無法啟動本機錄音。');

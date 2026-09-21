@@ -400,6 +400,7 @@ async function mockMeetingCheckpointApi(page, {
   failCheckpointAttempts = 0,
   waitForSegmentList = null,
   delayMeetingListMs = 0,
+  meetingDetailCues = [],
   sourceLanguageCode = 'zh-Hant',
   targetLanguageCode = 'en',
   initialSegmentStatus = 'created',
@@ -447,7 +448,8 @@ async function mockMeetingCheckpointApi(page, {
             status: 'created',
             sourceLanguageCode,
             targetLanguageCode
-          }
+          },
+          cues: meetingDetailCues
         })
       });
       return;
@@ -1616,19 +1618,33 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
 });
 
 test('missing Gemini API Key is shown before live recording starts', async ({ page }) => {
+  let credentialRequests = 0;
   await page.unroute('**/api/profile/gemini-credential');
-  await page.route('**/api/profile/gemini-credential', async (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ credential: { configured: false } })
-  }));
+  await page.route('**/api/profile/gemini-credential', async (route) => {
+    credentialRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ credential: { configured: false } })
+    });
+  });
   await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page);
 
-  await page.getByRole('button', { name: '開始錄製' }).click();
+  const startButton = page.locator('button.meeting-live-action-button').first();
+  const buttonBox = await startButton.boundingBox();
+  if (!buttonBox) throw new Error('Start recording button is not visible.');
+  await Promise.all([
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2)
+  ]);
 
+  await expect(startButton).toBeDisabled();
   await expect(page.getByRole('alert')).toHaveText('請先設定 Gemini API Key，再開始錄製。');
   await expect(page.getByRole('button', { name: '設定 Gemini Key' })).toBeVisible();
+  expect(credentialRequests).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.length)).toBe(0);
 });
@@ -1752,11 +1768,11 @@ test('captures and drains first speech while provider connect is delayed', async
 
 test('keeps capturing while a continuous turn emits many partial transcript updates', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
-  await page.goto('/#live?meetingId=meeting-1');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
     const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
     for (let index = 0; index < 250; index += 1) {
@@ -1828,6 +1844,24 @@ test('renders two separate Cues for two consecutive sentences', async ({ page })
   expect(cueLogs.some((log) => log.includes('same-turn-final'))).toBe(false);
   expect(cueLogs.some((log) => log.includes('duplicate') || log.includes('already-finalized'))).toBe(false);
   console.log(`[two-cue-browser] ${JSON.stringify({ cueIds, cueLogs })}`);
+});
+
+test('keeps numeric tail fragments in the live subtitle', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (const text of ['測試', '測試測試', '123', '3']) {
+      liveSession.emitMessage({ serverContent: { inputTranscription: { text } } });
+    }
+  });
+
+  await expectCueRow(partialCueRows(page).first(), { sourceText: '測試測試123' });
 });
 
 test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {
@@ -2085,6 +2119,45 @@ test('checkpoint sync retries a temporary failure and clears the error after suc
   await expect.poll(() => checkpointRequests.length, { timeout: 12000 }).toBe(2);
   await expect(page.getByText('會議模式：已保存')).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: '長會議同步' })).toBeHidden();
+});
+
+test('existing meeting subtitles render before checkpoint load', async ({ page }) => {
+  const existingCue = {
+    cueId: 'cue:session-existing:segment-1:1',
+    sessionId: 'session-existing',
+    segmentId: 'segment-1',
+    sequence: 1,
+    startTimeMs: 1000,
+    endTimeMs: 2500,
+    status: 'final',
+    sourceText: '既有字幕原文',
+    translatedText: 'Existing subtitle translation',
+    sourceLanguageCode: 'zh-Hant',
+    targetLanguageCode: 'en'
+  };
+  let releaseSegmentList;
+  const segmentListReady = new Promise((resolve) => { releaseSegmentList = resolve; });
+  const checkpointRequests = await mockMeetingCheckpointApi(page, {
+    meetingDetailCues: [existingCue],
+    waitForSegmentList: () => segmentListReady
+  });
+
+  await gotoMockMeetingLive(page);
+  const row = cueRow(page, existingCue.cueId);
+  await expect(row).toBeVisible({ timeout: 3000 });
+  await expectCueRow(row, {
+    sourceText: existingCue.sourceText,
+    translatedText: existingCue.translatedText
+  });
+  expect(checkpointRequests).toHaveLength(0);
+
+  releaseSegmentList();
+  await expect(row).toBeVisible();
+  await expectCueRow(row, {
+    sourceText: existingCue.sourceText,
+    translatedText: existingCue.translatedText
+  });
+  expect(checkpointRequests).toHaveLength(0);
 });
 
 test('reload with meeting id restores checkpoint and allows manual resume', async ({ page }) => {
@@ -3303,13 +3376,13 @@ test('auth failed shows friendly message without reconnect', async ({ page }) =>
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions[0].emitError({
-      code: 'auth_failed',
+      error: { status: 403, code: 'auth_failed' },
       message: 'raw auth failure token abc123 at Provider.stack'
     });
   });
 
   await expect(page.getByText('存取失敗', { exact: true })).toBeVisible();
-  await expect(page.getByText('存取失敗。請檢查存取權杖或設定。')).toBeVisible();
+  await expect(page.getByText('存取失敗。請檢查存取權杖或設定。（HTTP 403）')).toBeVisible();
   await expect(page.getByRole('button', { name: '開始' })).toBeEnabled();
   await expect(page.getByRole('button', { name: '結束本次工作階段' })).toBeHidden();
   await expect(page.getByText('before auth failure')).toBeVisible();
@@ -3603,7 +3676,7 @@ test('meeting management uses the live workspace layout and preserves create flo
 
   await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(page.locator('.meeting-management-page ul.history-list')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /既有產品會議/ })).toBeVisible();
+  await expect(page.locator('.meeting-card').filter({ hasText: '既有產品會議' }).getByRole('button', { name: '編輯並開始會議', exact: true })).toBeVisible();
 
   const meetingCardLayout = await page.locator('.meeting-card-grid').evaluate((element) => {
     const gridRect = element.getBoundingClientRect();
@@ -4067,9 +4140,16 @@ test('Meeting home card layout captures desktop viewport references', async ({ p
     [1280, 800, '13-inch', 3],
     [1279, 768, 'compact-desktop', 2]
   ]) {
-    await page.setViewportSize({ width, height });
-    await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
-    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-    await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
-  }
+  await page.setViewportSize({ width, height });
+  await expect.poll(() => page.locator('.meeting-card-grid').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(expectedColumns);
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  const footerLayout = await page.locator('.meeting-card').first().evaluate((card) => {
+    const description = card.querySelector('.meeting-card-footer p').getBoundingClientRect();
+    const actions = card.querySelector('.meeting-card-actions').getBoundingClientRect();
+    return { descriptionBottom: description.bottom, descriptionWidth: description.width, actionsTop: actions.top, cardWidth: card.getBoundingClientRect().width };
+  });
+  expect(footerLayout.actionsTop).toBeGreaterThan(footerLayout.descriptionBottom);
+  expect(footerLayout.descriptionWidth).toBeGreaterThan(footerLayout.cardWidth * 0.8);
+  await page.screenshot({ path: `/private/tmp/live-translate-meeting-management-${name}.png`, fullPage: true });
+}
 });

@@ -2,10 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   classifyConnectionFailure,
+  httpStatusFromError,
   isRecoverableFailure,
   requiresFreshToken,
   requiresUserAction,
-  shouldStopRecovery
+  shouldStopRecovery,
+  userMessageForErrorCode,
+  withHttpStatus
 } from '../../src/lib/connectionFailures.js';
 
 test('classifies permission denied DOMException', () => {
@@ -60,7 +63,39 @@ test('classifies token expired from Live error payload message', () => {
 
 test('classifies auth failed from HTTP authorization statuses', () => {
   assert.equal(classifyConnectionFailure({ status: 401 }).reason, 'auth_failed');
+  assert.equal(classifyConnectionFailure({ status: 401 }).httpStatus, 401);
   assert.equal(classifyConnectionFailure({ response: { status: 403 } }).reason, 'auth_failed');
+  assert.equal(classifyConnectionFailure({ response: { status: 403 } }).httpStatus, 403);
+});
+
+test('classifies nested provider HTTP authorization status', () => {
+  const classification = classifyConnectionFailure({
+    error: { error: { status: 403, code: 'auth_failed' } },
+    context: 'live_error'
+  });
+
+  assert.equal(classification.reason, 'auth_failed');
+  assert.equal(classification.httpStatus, 403);
+  assert.equal(httpStatusFromError({ error: { status: 403 } }), 403);
+  assert.equal(httpStatusFromError({ response: { status: 401 } }), 401);
+});
+
+test('appends only valid HTTP statuses to safe messages', () => {
+  assert.equal(withHttpStatus('存取失敗。', 403), '存取失敗。（HTTP 403）');
+  assert.equal(withHttpStatus('存取失敗。', 700), '存取失敗。');
+  assert.equal(withHttpStatus('存取失敗。', undefined), '存取失敗。');
+});
+
+test('keeps startup authorization errors specific to their source code', () => {
+  assert.equal(
+    userMessageForErrorCode('invalid_origin'),
+    '此網站不允許請求即時翻譯，請檢查前端網址設定。'
+  );
+  assert.equal(
+    userMessageForErrorCode('gemini_credential_not_configured'),
+    '請先在伺服器設定 Gemini API Key，再開始即時翻譯。'
+  );
+  assert.equal(userMessageForErrorCode('unknown_code'), null);
 });
 
 test('classifies rate limited from HTTP 429', () => {

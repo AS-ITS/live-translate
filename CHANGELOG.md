@@ -1,4 +1,21 @@
 # Changelog
+- 修正即時字幕同一語音輪次的累積片段與數字尾段被覆蓋；Session read / translation API 503 改為安全記錄狀態與錯誤碼並停止無限輪詢。
+
+- Live recording startup now reports origin, authentication, and Gemini credential failures separately; local development prefers `dev_frontend_origin`, microphone recording emits bounded timeslice chunks, and long-meeting segment rollover rotates to a unique Live session ID with a fresh ephemeral token.
+
+- Issue #35 closeout: added Node 22/24 long-meeting soak CI coverage, authenticated staging browser reload coverage, safe Meeting request diagnostics, and deployment/storage evidence guidance.
+
+- Issue #35 Supabase-first closeout: authenticated repositories now preserve the actor JWT across owner/member resource scopes, fail closed when the user client is unavailable, add atomic cloud Meeting plus initial Segment creation, complete member read-only RLS policies, owner-only export/audio guards, recording-permission audit events, and log redaction coverage. Local data migration remains out of scope.
+
+- P8 cloud-only transcript export: Meeting and legacy Session UI no longer
+  generate browser TXT/SRT/VTT files. Supabase cloud mode remains on the P7
+  asynchronous export lifecycle; local mode shows an unavailable message.
+
+- Issue #35 Phase 1/3 groundwork: readiness now probes core Supabase tables, metric/queue RPCs, and the private audio Storage bucket; production API requests fail closed when the cloud contract is invalid; added member recording RLS policies and supporting indexes.
+- 修正 Meeting Settings 捲到底時仍停留在第五步的問題，現在會切換到最後一個設定項目。
+- 修正 Meeting Settings 捲動到「錄製權限」卡片時，第六步「成員與錄製權限」未維持 active 的問題。
+- Issue #35 Phase 1–2 groundwork: readiness validates Supabase project alignment, owner CRUD can use an authenticated user-scoped Supabase client, service-role access is explicitly named, and expiring browser sessions refresh before private API requests.
+- Meeting Settings edit-load diagnostics now preserve HTTP status, structured error code, request ID, and safe actor/resource context; the UI distinguishes authentication, permission, missing-meeting, and cloud-service failures while glossary loading remains independent.
 - Active Meeting members can edit ordinary Meeting settings and create or view Viewer shares; destructive management actions remain owner-scoped.
 - 即時會議開始錄音前會檢查登入帳號是否已設定 Gemini API Key；未設定時直接顯示設定入口，不啟動麥克風或錄音流程。
 - Account management now keeps the current signed-in account status visible and audit logs include application-level login outcomes for active, pending, and disabled profiles.
@@ -60,6 +77,7 @@
   files under `data/` remain test/migration fixtures only.
 
 ## Unreleased
+- 修正 Supabase Session 寫入 PostgreSQL timestamp 時，將 JavaScript 毫秒 timestamp 正規化為 ISO 8601，並在 `session_create` log 補上底層 Supabase HTTP status。
 
 - Issue #33 follow-up: added member recording authorization, super-admin account management with atomic asset transfer, server-only audit log filtering, and Meeting Settings/account management UI. Viewer share IDs remain stable during transfer and Gemini credentials are excluded.
 
@@ -1988,3 +2006,4 @@ These items are intentionally deferred:
 ## Unreleased
 
 - Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.
+- Added P7 asynchronous cloud Meeting export lifecycle: canonical server-side TXT/SRT/VTT generation from persisted Final Cues, idempotent `export_artifacts`, private `meeting-exports` Storage, signed download URLs, `export_jobs` worker retries/dead-letter handling, deletion cleanup, and cloud polling UI. Local browser-only export remains compatible.

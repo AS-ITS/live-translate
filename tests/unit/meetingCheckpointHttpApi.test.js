@@ -4,6 +4,7 @@ import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
 import { createMeetingReadController } from '../../server/meetingReadController.js';
 import { createMeetingCheckpointService } from '../../src/application/meetingCheckpointService.js';
+import { createMeetingDeletionService } from '../../src/application/meetingDeletionService.js';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createMemoryMeetingRepository } from '../../src/infrastructure/meetingRepositoryAdapter.js';
 import { createSessionShareService } from '../../src/application/sessionShareService.js';
@@ -46,7 +47,7 @@ test('Meeting Management creates a draft, updates settings, and starts its first
   const updateResponse = await request(handler, {
     method: 'PATCH',
     url: `/api/meetings/${created.meeting.id}`,
-    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' } }] })
+    body: JSON.stringify({ name: '更新後產品會議', targetLanguageCode: 'ja', echoTargetLanguage: true, shouldRecordInputAudio: false, glossaryEntries: [], privateGlossaryEntries: [{ source: '專案代號', translations: { ja: 'プロジェクトコード' }, replacementAliases: [] }] })
   });
   assert.equal(updateResponse.status, 200);
   assert.equal(updateResponse.json().meeting.targetLanguageCode, 'ja');
@@ -309,7 +310,7 @@ test('DELETE /api/meetings/:meetingId deletes an unstarted draft and rejects sta
   const active = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();
   const rejected = await request(handler, { method: 'DELETE', url: `/api/meetings/${active.meeting.id}` });
   assert.equal(rejected.status, 409);
-  assert.equal(rejected.json().error.code, 'meeting_delete_not_allowed');
+  assert.equal(rejected.json().error.code, 'meeting_delete_active_not_allowed');
 });
 
 test('GET /api/meetings/:meetingId/segments returns ordered segments', async () => {
@@ -441,6 +442,140 @@ test('GET /api/meetings/:meetingId returns composed meeting detail with transcri
   assert.deepEqual(body.cues.map(({ cueId, segmentId, translatedText }) => ({ cueId, segmentId, translatedText })), [
     { cueId: 'cue:meeting:segment-1:1', segmentId: 'segment-1', translatedText: 'segment one translation' }
   ]);
+});
+
+test('Meeting read requests log safe diagnostic fields for missing resources', async () => {
+  const logs = [];
+  const handler = createHandler({ requestLogger: (event) => logs.push(event) });
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/missing-meeting'
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(logs.at(-1), {
+    level: 'info',
+    event: 'meeting_request',
+    operation: 'GET /api/meetings/missing-meeting',
+    requestId: response.headers['X-Request-Id'],
+    method: 'GET',
+    path: '/api/meetings/missing-meeting',
+    durationMs: logs.at(-1).durationMs,
+    clientIp: '127.0.0.1',
+    origin: '',
+    actorUserId: null,
+    resourceOwnerUserId: null,
+    resourceOwnerId: null,
+    meetingId: 'missing-meeting',
+    statusCode: 404,
+    errorCode: 'meeting_not_found',
+    supabaseStatus: null,
+    supabaseProjectRef: null
+  });
+});
+
+test('Meeting authorization rejection logs diagnostic fields before route handling', async () => {
+  const logs = [];
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'actor-1', role: 'member', status: 'active' }) },
+    profileService: {
+      getProfile: async (user) => ({ id: user.id, status: 'active', role: 'member' }),
+      findMeetingMembership: async () => null
+    },
+    meetingMembershipService: {
+      canAccessMeeting: async () => false,
+      getMeetingOwner: async () => 'owner-1'
+    },
+    requestLogger: (event) => logs.push(event)
+  });
+
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/meeting-1'
+  });
+
+  assert.equal(response.status, 403);
+  assert.deepEqual(logs.at(-1), {
+    level: 'warn',
+    event: 'meeting_request',
+    operation: 'GET /api/meetings/meeting-1',
+    requestId: response.headers['X-Request-Id'],
+    method: 'GET',
+    path: '/api/meetings/meeting-1',
+    statusCode: 403,
+    durationMs: logs.at(-1).durationMs,
+    clientIp: '127.0.0.1',
+    origin: '',
+    authStage: 'private_resource',
+    actorUserId: 'actor-1',
+    resourceOwnerUserId: 'owner-1',
+    resourceOwnerId: 'owner-1',
+    meetingId: 'meeting-1',
+    errorCode: 'auth_forbidden',
+    supabaseStatus: null,
+    supabaseProjectRef: null,
+    ownerLookup: 'found',
+    ownerMatchesActor: false,
+    actorProfileLookup: 'found',
+    actorProfileStatus: 'active',
+    actorProfileRole: 'member',
+    membership: 'absent'
+  });
+});
+
+test('Meeting authorization diagnostics keep an unknown owner distinct from the actor', async () => {
+  const logs = [];
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'actor-1', role: 'member', status: 'active' }) },
+    profileService: {
+      getProfile: async (user) => ({ id: user.id, status: 'active', role: 'member' }),
+      findMeetingMembership: async () => null
+    },
+    meetingMembershipService: {
+      canAccessMeeting: async () => false,
+      getMeetingOwner: async () => null
+    },
+    requestLogger: (event) => logs.push(event)
+  });
+
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/meeting-1'
+  });
+
+  assert.equal(response.status, 403);
+  assert.equal(logs.at(-1).resourceOwnerId, null);
+  assert.equal(logs.at(-1).ownerLookup, 'missing');
+  assert.equal(logs.at(-1).ownerMatchesActor, null);
+});
+
+test('Super admins receive meeting_not_found when the owner lookup is missing', async () => {
+  const logs = [];
+  const handler = createHandler({
+    accessControl: { validateRequest: async () => ({ id: 'admin-1', role: 'super_admin', status: 'active' }) },
+    profileService: {
+      getProfile: async (user) => ({ id: user.id, status: 'active', role: 'super_admin' }),
+      findMeetingMembership: async () => null
+    },
+    meetingMembershipService: {
+      canAccessMeeting: async () => true,
+      getMeetingOwner: async () => null
+    },
+    requestLogger: (event) => logs.push(event)
+  });
+
+  const response = await request(handler, {
+    method: 'GET',
+    url: '/api/meetings/missing-meeting'
+  });
+
+  assert.equal(response.status, 404);
+  const body = response.json();
+  assert.equal(body.error.code, 'meeting_not_found');
+  assert.equal(body.error.requestId, response.headers['X-Request-Id']);
+  assert.equal(logs.at(-1).authStage, 'private_resource');
+  assert.equal(logs.at(-1).ownerLookup, 'missing');
+  assert.equal(logs.at(-1).supabaseProjectRef, null);
 });
 
 test('PUT and GET checkpoint persist durable chunks idempotently', async () => {
@@ -803,7 +938,7 @@ test('checkpoint route reports invalid segment UUID details and request id', asy
   assert.equal(body.error.requestId, response.headers['X-Request-Id']);
 });
 
-function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, strictCheckpointPathIds = false } = {}) {
+function createHandler({ meetingCheckpointMaxBytes, sessionShareService, sessionRepository, meetingEventBroadcaster, meetingAudioService, viewerRealtimeTokenService, meetingRepository, meetingMembershipService, meetingDeletionService: injectedMeetingDeletionService, accessControl, profileService, strictCheckpointPathIds = false, requestLogger } = {}) {
   const repository = meetingRepository || createMemoryMeetingRepository();
   let meetingId = 0;
   let segmentId = 0;
@@ -819,6 +954,13 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
   const meetingReadController = createMeetingReadController({
     meetingReadQueryService: createMeetingReadQueryService({ meetingRepository: repository })
   });
+  const meetingDeletionService = injectedMeetingDeletionService || createMeetingDeletionService({
+    meetingRepository: repository,
+    sessionRepository: {
+      async listSessionRecords() { return []; },
+      async deleteSessionRecord() { return true; }
+    }
+  });
 
   return createRequestHandler({
     sessionReadController: sessionReadController(),
@@ -826,11 +968,16 @@ function createHandler({ meetingCheckpointMaxBytes, sessionShareService, session
     meetingRepository: repository,
     meetingReadController,
     meetingCheckpointService,
+    meetingDeletionService,
     ...(sessionShareService ? { sessionShareService } : {}),
     ...(meetingEventBroadcaster ? { meetingEventBroadcaster } : {}),
     ...(meetingAudioService ? { meetingAudioService } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
+    ...(meetingMembershipService ? { meetingMembershipService } : {}),
+    ...(accessControl ? { accessControl } : {}),
+    ...(profileService ? { profileService } : {}),
     ...(meetingCheckpointMaxBytes === undefined ? {} : { meetingCheckpointMaxBytes }),
+    ...(requestLogger ? { requestLogger } : {}),
     strictCheckpointPathIds
   });
 }

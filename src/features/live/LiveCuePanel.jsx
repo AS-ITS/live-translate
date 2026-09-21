@@ -59,7 +59,6 @@ export function LiveCuePanel({
           <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} />
           {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">
             {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>
-              <div className="cue-row-meta"><span className="cue-partial-status">已保存逐字稿</span></div>
               <div className="cue-text-toggle">
                 {showSource && item.stream === 'source' ? <SourceCueText text={wrapSubtitleText(transcriptTextForDisplay(item), item.sourceLanguageCode)} /> : null}
                 {item.stream === 'translation' ? <TranslatedCueText text={wrapSubtitleText(item.text, item.targetLanguageCode)} /> : null}

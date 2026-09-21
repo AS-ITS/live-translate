@@ -1,4 +1,4 @@
-const SECRET_KEY = /(api[_-]?key|token|authorization|transcript|audio|prompt|response|payload|sessionid|meetingid|executionid)/i;
+const SECRET_KEY = /(api[_-]?key|jwt|token|authorization|transcript|audio|prompt|response|payload|sessionid|executionid|signed|share|url)/i;
 
 export function redactLogValue(value, key = '') {
   if (SECRET_KEY.test(key)) return '[REDACTED]';

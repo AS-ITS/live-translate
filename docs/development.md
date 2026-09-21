@@ -111,8 +111,8 @@ authenticated flows. P1 owner-scoped adapters support these cloud capabilities:
 | Observability | Service-role metric RPCs and UTC-minute buckets |
 
 If the required Supabase configuration is missing, or `/readyz` cannot verify
-the observability table and RPC, these cloud APIs remain fail-closed with a
-structured `503`.
+the core tables, metric/queue RPCs, or private `meeting-audio` Storage bucket,
+these cloud APIs remain fail-closed with structured `503` responses.
 
 ## Cloud rollout preflight
 
@@ -129,6 +129,8 @@ processing outcomes.
 Production smoke checks and alert thresholds are maintained in
 [`docs/observability-runbook.md`](observability-runbook.md). Production
 verification is a rollout task, not an unimplemented P1 capability.
+
+The cloud rollout preflight must apply all migrations through the current migration head, run `npm run db:lint`, and verify `/healthz` plus `/readyz`. Readiness probes the core persistence tables, metric/queue RPCs, and private `meeting-audio` Storage bucket. In production, an invalid server-side cloud contract rejects `/api/*` with `503 cloud_capability_unavailable` so file-backed fallback cannot receive production traffic.
 
 ## Account approval behavior
 
@@ -287,3 +289,18 @@ available to the smoke runner. Do not place that key in browser-exposed
 ### OAuth Workspace access
 
 Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
+## Supabase request boundaries
+
+Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.
+
+`/readyz` validates the server Supabase variables and confirms that `SUPABASE_URL`, `SUPABASE_JWKS_URL`, and `VITE_SUPABASE_URL` resolve to the same project without exposing configuration values. Missing or mismatched configuration remains fail-closed.
+P7 cloud Meeting exports use `export_artifacts` metadata, the private
+`meeting-exports` Storage bucket, and the existing PGMQ worker pattern through
+the `export_jobs` queue. Readiness checks the bucket; missing cloud export
+dependencies fail closed with `503`.
+
+P8 makes transcript export cloud-only. Supabase deployments use the P7
+asynchronous export panel and signed download URLs. Local file-backed mode
+keeps meeting and transcript reads available but shows an export-unavailable
+message; it does not generate browser transcript files and does not migrate
+local JSON or audio data.

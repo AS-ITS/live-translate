@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseRecorderLeaseService({ env = process.env, fetchImpl = globalThis.fetch, clock = () => Date.now(), ttlMs = 10_000 } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   if (!client) return null;
   const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const query = (sessionId) => `?${eq('session_id', sessionId)}&${eq('owner_user_id', owner())}`;

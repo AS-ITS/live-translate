@@ -11,7 +11,22 @@ export function createMeetingCueApiClient({ fetchImpl = globalThis.fetch, baseUr
       });
       if (!response?.ok) {
         const error = new Error(`Meeting cue publish failed with HTTP ${response?.status}.`);
-        error.status = response?.status;
+        const status = Number(response?.status);
+        if (Number.isInteger(status) && status >= 100 && status <= 599) {
+          error.status = status;
+        }
+        try {
+          const body = await response.json();
+          const bodyError = body?.error || body;
+          if (typeof bodyError?.code === 'string' && /^[a-z0-9][a-z0-9_:-]*$/iu.test(bodyError.code)) {
+            error.code = bodyError.code;
+          }
+          if (typeof bodyError?.requestId === 'string' && bodyError.requestId.trim() !== '') {
+            error.requestId = bodyError.requestId;
+          }
+        } catch {
+          // Keep status as the stable safe diagnostic when the body is unavailable.
+        }
         throw error;
       }
       return response.json();

@@ -980,6 +980,14 @@ Lightweight Phase 2B-1 domain event contracts:
 These are not Event Sourcing, broker, replay, persisted event history, or outbox
 contracts.
 
+Authenticated cloud CRUD carries an explicit request scope containing the actor,
+resource owner, access token, and capability. `user` requests use the caller
+JWT with the publishable Supabase key even when the actor is an assigned member;
+`worker`, `admin`, and `readiness` capabilities are the only service-role paths.
+If a user-scoped client is unavailable, the API fails closed with
+`cloud_capability_unavailable` and does not fall back to file storage or a
+service-role request.
+
 ## 15. Current Storage Model
 
 Current state:

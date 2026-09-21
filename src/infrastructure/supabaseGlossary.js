@@ -1,12 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const DEFAULT_CLOUD_CATEGORIES = [
+  { label: '產品名稱', sortOrder: 0, system: false },
+  { label: '部門／職能', sortOrder: 1, system: false },
+  { label: '縮寫', sortOrder: 2, system: false },
+  { label: '會議常用語', sortOrder: 3, system: false },
+  { label: '技術名詞', sortOrder: 4, system: false },
+  { label: '其他', sortOrder: 5, system: false }
+];
 
 // Supabase-backed glossary port. The public shape intentionally matches the
 // legacy glossary service so controllers and providers stay storage-agnostic.
 export function createSupabaseGlossary({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient({ env, fetchImpl });
+  const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
   const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const rows = (table, query) => client.request(table, { query });
   const entryDTO = (row) => ({
@@ -31,7 +42,22 @@ export function createSupabaseGlossary({ env = process.env, fetchImpl = globalTh
     },
     async listCategories() {
       const userId = owner();
-      const result = await rows('glossary_categories', `?select=*&${eq('owner_user_id', userId)}&order=sort_order.asc`);
+      let result = await rows('glossary_categories', `?select=*&${eq('owner_user_id', userId)}&order=sort_order.asc`);
+      if (result.length === 0) {
+        await client.request('glossary_categories', {
+          method: 'POST',
+          query: '?on_conflict=owner_user_id,label',
+          headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
+          body: DEFAULT_CLOUD_CATEGORIES.map((category) => ({
+            id: idFactory(),
+            owner_user_id: userId,
+            label: category.label,
+            sort_order: category.sortOrder,
+            system: category.system
+          }))
+        });
+        result = await rows('glossary_categories', `?select=*&${eq('owner_user_id', userId)}&order=sort_order.asc`);
+      }
       return result.map((row) => ({ id: row.id, label: row.label, sortOrder: row.sort_order, system: row.system === true }));
     },
     async createCategory(input = {}) {
@@ -81,7 +107,8 @@ export function createSupabaseGlossary({ env = process.env, fetchImpl = globalTh
   }
   function normalizeEntry(input) {
     const target = Object.keys(input.translations || {})[0] || input.targetLanguageCode || 'en';
-    return { source: input.source, translation: input.translation || input.translations?.[target], source_language_code: input.sourceLanguageCode, target_language_code: target, category_id: input.category || input.categoryId || null, scope: input.scope || 'both', tags: input.tags || [], enabled: input.enabled !== false, notes: input.notes || '' };
+    const categoryId = input.category || input.categoryId || null;
+    return { source: input.source, translation: input.translation || input.translations?.[target], source_language_code: input.sourceLanguageCode, target_language_code: target, category_id: UUID_PATTERN.test(String(categoryId)) ? categoryId : null, scope: input.scope || 'both', tags: input.tags || [], enabled: input.enabled !== false, notes: input.notes || '' };
   }
 }
 

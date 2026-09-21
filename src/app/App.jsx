@@ -4,9 +4,10 @@ import { targetLanguageLabelFor } from '../lib/languages.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream } from '../lib/mediaDevices.js';
 import { createMemorySessionRepository } from '../lib/sessionRepository.js';
-import { createSessionReadApiClient } from '../lib/sessionReadApiClient.js';
+import { createSessionReadApiClient, isSessionReadCloudUnavailable } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../lib/meetingReadApiClient.js';
+import { meetingApiErrorMessage } from '../lib/meetingApiError.js';
 import { createSessionSnapshotApiClient } from '../lib/sessionSnapshotApiClient.js';
 import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js';
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
@@ -16,6 +17,7 @@ import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { createGeminiCredentialApiClient } from '../lib/geminiCredentialApiClient.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
+import { userMessageForErrorCode, withHttpStatus } from '../lib/connectionFailures.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
 import { formatTranslationCommandPersistenceError } from '../lib/translationCommandError.js';
 import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLifecycle.js';
@@ -147,7 +149,9 @@ export function App() {
   const [polishingState, setPolishingState] = useState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
   const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
+  const [isStartingLiveRecording, setIsStartingLiveRecording] = useState(false);
   const sessionRef = useRef(null);
+  const startLiveRecordingInFlightRef = useRef(false);
   const pendingMicrophoneStreamRef = useRef(null);
   const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const inputAudioUploadChunksRef = useRef([]);
@@ -172,8 +176,9 @@ export function App() {
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
   const geminiCredentialApiClientRef = useRef(createGeminiCredentialApiClient());
-  const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
-  const activeMeetingCheckpointRef = useRef(null);
+const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
+const meetingRecordsRequestRef = useRef(null);
+const activeMeetingCheckpointRef = useRef(null);
   const runtimeMeetingIdsRef = useRef(new Set());
   const liveSessionIdSequenceRef = useRef(0);
   const segmentSwitchCancelledRef = useRef(false);
@@ -557,6 +562,7 @@ export function App() {
   useEffect(() => {
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
+    let timer = null;
     const poll = async () => {
       try {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
@@ -600,12 +606,16 @@ export function App() {
             executionId: latestExecution.id
           });
         }
-      } catch {
+      } catch (error) {
+        if (isSessionReadCloudUnavailable(error)) {
+          if (timer) window.clearInterval(timer);
+          return;
+        }
         // Polishing read failures are isolated from the Live session.
       }
     };
     void poll();
-    const timer = window.setInterval(poll, 2000);
+    timer = window.setInterval(poll, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [status]);
 
@@ -681,7 +691,7 @@ export function App() {
     enqueueCuePersistence(current, next);
   }
 
-  function applyPersistedRefinedSubtitleCues(detail) {
+  function applyPersistedRefinedSubtitleCues(detail, { persist = true } = {}) {
     const current = subtitleCueStateRef.current;
     const refinedCues = refinedSubtitleCuesForDisplay(detail?.cues, {
       inputHash: current.refinedSubtitleInputHash
@@ -701,19 +711,36 @@ export function App() {
     };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
-    enqueueCuePersistence(current, next);
+    if (persist) {
+      enqueueCuePersistence(current, next);
+    }
     return true;
   }
 
-  function applyPersistedFinalCues(persistedCues = []) {
+  function mergeDisplayedCues(existingCues = [], incomingCues = []) {
+    const existing = Array.isArray(existingCues) ? existingCues : [];
+    const incoming = Array.isArray(incomingCues) ? incomingCues.filter((cue) => cue?.cueId) : [];
+    const mergedExisting = mergeCuesByIdPreferRefinement(existing, incoming);
+    const existingIds = new Set(existing.map((cue) => cue?.cueId).filter(Boolean));
+    return [...mergedExisting, ...incoming.filter((cue) => !existingIds.has(cue.cueId))]
+      .sort((left, right) => (
+        (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0)
+        || (Number(left?.startTimeMs) || 0) - (Number(right?.startTimeMs) || 0)
+        || String(left?.cueId || '').localeCompare(String(right?.cueId || ''))
+      ));
+  }
+
+  function applyPersistedFinalCues(persistedCues = [], { persist = true } = {}) {
     if (!Array.isArray(persistedCues) || persistedCues.length === 0) return;
     const current = subtitleCueStateRef.current;
-    const mergedCues = mergeCuesByIdPreferRefinement(current.finalCues, persistedCues);
+    const mergedCues = mergeDisplayedCues(current.finalCues, persistedCues);
     if (mergedCues.every((cue, index) => cue === current.finalCues[index])) return;
     const next = { ...current, finalCues: mergedCues };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
-    enqueueCuePersistence(current, next);
+    if (persist) {
+      enqueueCuePersistence(current, next);
+    }
   }
 
   useEffect(() => {
@@ -750,6 +777,8 @@ export function App() {
         setTargetLanguageCode(nextTargetLanguageCode);
         setEchoTargetLanguage(meeting.echoTargetLanguage !== false);
         setShouldRecordInputAudio(meeting.shouldRecordInputAudio === true);
+        applyPersistedFinalCues(rawCuesFromDetail(detail?.cues), { persist: false });
+        applyPersistedRefinedSubtitleCues(detail, { persist: false });
         setSelectedMeetingGlossaryIds((current) => {
           if (current.length > 0) return current;
           return glossaryEntries.filter((entry) => (meeting.glossaryEntries || []).some((item) => item.source === entry.source && entry.translations?.[nextTargetLanguageCode] === item.target)).map((entry) => entry.id);
@@ -897,9 +926,12 @@ export function App() {
     });
     const noDefaultInputDevice =
       classification.reason === 'selected_device_missing' && !selectedInputDeviceId;
-    const message = nextError?.userMessage || (noDefaultInputDevice
+    const errorCode = nextError?.code || nextError?.error?.code || nextError?.error?.error?.code;
+    const codeMessage = userMessageForErrorCode(errorCode);
+    const baseMessage = nextError?.userMessage || codeMessage || (noDefaultInputDevice
       ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
       : classification.safeMessage || nextError?.message || fallbackMessage);
+    const message = withHttpStatus(baseMessage, classification.httpStatus);
 
     const diagnostic = safeReconnectDiagnostic({
       source: 'startup',
@@ -1254,11 +1286,12 @@ export function App() {
           enqueueCuePersistence(current, next);
           return;
         }
-      } catch {
+      } catch (error) {
         // Raw final Cues remain visible while the asynchronous refinement is pending.
+        if (isSessionReadCloudUnavailable(error)) return;
       }
       pollRefinedSubtitleResult(sessionId, inputHash, attempt + 1);
-    }, 1000);
+    }, Math.min(1000 * (2 ** attempt), 8000));
   }
 
   async function retryPolishingExecution(executionId) {
@@ -1307,21 +1340,49 @@ export function App() {
       && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
       && typeof cue.sourceText === 'string' && cue.sourceText.trim() !== ''
     ));
-    void publishMeetingCues(changedCues, activeMeetingCheckpointRef.current, activeSessionRecordIdRef.current);
+    const activeMeetingCheckpoint = activeMeetingCheckpointRef.current;
+    const activeSessionId = activeSessionRecordIdRef.current;
+    const publishableCues = changedCues.filter((cue) => (
+      (!cue.sessionId || cue.sessionId === activeSessionId)
+      && (!cue.segmentId || cue.segmentId === activeMeetingCheckpoint?.segmentId)
+    ));
+    void publishMeetingCues(publishableCues, activeMeetingCheckpoint, activeSessionId);
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
 
   async function publishMeetingCues(cues, meetingCheckpoint, sessionId) {
     if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
-    await Promise.all(cues.filter((cue) => cue?.status === 'final').map((cue) => (
-      meetingCueApiClientRef.current.publish({
-        meetingId: meetingCheckpoint.meetingId,
-        segmentId: meetingCheckpoint.segmentId,
-        sessionId,
-        cue,
-        producedAt: cue.finalizedAt || Date.now()
-      }).catch(() => null)
-    )));
+    if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+      || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
+      || activeSessionRecordIdRef.current !== sessionId) {
+      return;
+    }
+
+    const finalCues = cues.filter((cue) => (
+      cue?.status === 'final'
+      && (!cue.sessionId || cue.sessionId === sessionId)
+      && (!cue.segmentId || cue.segmentId === meetingCheckpoint.segmentId)
+    ));
+    await Promise.all(finalCues.map(async (cue) => {
+      try {
+        await meetingCueApiClientRef.current.publish({
+          meetingId: meetingCheckpoint.meetingId,
+          segmentId: meetingCheckpoint.segmentId,
+          sessionId,
+          cue,
+          producedAt: cue.finalizedAt || Date.now()
+        });
+      } catch (error) {
+        if (error?.status === 403 || error?.status === 404 || error?.status === 409) return;
+        if (import.meta.env?.DEV) {
+          console.warn('[meeting-cue-publish]', {
+            status: Number.isInteger(error?.status) ? error.status : null,
+            code: typeof error?.code === 'string' ? error.code : null,
+            requestId: typeof error?.requestId === 'string' ? error.requestId : null
+          });
+        }
+      }
+    }));
   }
 
   function cueCheckpointForState(state) {
@@ -1397,8 +1458,16 @@ export function App() {
     setMeetingCheckpointErrorMessage('');
   }
 
+  function safePersistenceDiagnostic(error) {
+    return {
+      status: Number.isInteger(error?.status) ? error.status : null,
+      code: typeof error?.code === 'string' ? error.code : null,
+      requestId: typeof error?.requestId === 'string' ? error.requestId : null
+    };
+  }
+
   function reportSessionSnapshotSyncError(error) {
-    console.error('Session snapshot persistence failed.', error);
+    console.error('Session snapshot persistence failed.', safePersistenceDiagnostic(error));
     if (error?.status === 413 || error?.code === 'request_too_large') {
       setError('翻譯紀錄內容超過伺服器保存上限，但目前逐字稿仍保留在畫面上。請調高 SESSION_SNAPSHOT_MAX_BYTES 或稍後重新儲存翻譯紀錄。');
       return;
@@ -1407,7 +1476,7 @@ export function App() {
   }
 
   function reportMeetingCheckpointSyncError(error) {
-    console.error('Meeting checkpoint persistence failed.', error);
+    console.error('Meeting checkpoint persistence failed.', safePersistenceDiagnostic(error));
     const diagnostic = error?.requestId ? `（請提供 Request ID：${error.requestId}）` : '';
     const invalidMessage = meetingCheckpointErrorMessageFor(error);
     if (invalidMessage) {
@@ -1466,21 +1535,36 @@ export function App() {
   }
 
   async function refreshMeetingRecords() {
-    try {
-      const meetings = await meetingReadApiClientRef.current.listMeetingHistory();
-      setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
-      return meetings;
-    } catch {
-      return null;
-    }
+    if (meetingRecordsRequestRef.current) return meetingRecordsRequestRef.current;
+
+    const request = meetingReadApiClientRef.current.listMeetingHistory()
+      .then((meetings) => {
+        setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
+        return meetings;
+      })
+      .catch(() => null)
+      .finally(() => {
+        if (meetingRecordsRequestRef.current === request) meetingRecordsRequestRef.current = null;
+      });
+    meetingRecordsRequestRef.current = request;
+    return request;
   }
 
   async function getSessionDetailWithTranslationHistory(sessionId) {
-    const [sessionDetail, translationHistory] = await Promise.all([
+    const [sessionDetailResult, translationHistoryResult] = await Promise.allSettled([
       sessionReadApiClientRef.current.getSessionDetail(sessionId),
       sessionReadApiClientRef.current.getSessionTranslations(sessionId)
     ]);
-    return mergeRetranslationHistoryIntoDetail(sessionDetail, translationHistory);
+    const detailError = sessionDetailResult.status === 'rejected' ? sessionDetailResult.reason : null;
+    const translationError = translationHistoryResult.status === 'rejected' ? translationHistoryResult.reason : null;
+    if (detailError && !isSessionReadCloudUnavailable(detailError)) throw detailError;
+    if (translationError && !isSessionReadCloudUnavailable(translationError) && !sessionDetailResult.value) {
+      throw translationError;
+    }
+    return mergeRetranslationHistoryIntoDetail(
+      sessionDetailResult.status === 'fulfilled' ? sessionDetailResult.value : null,
+      translationHistoryResult.status === 'fulfilled' ? translationHistoryResult.value : null
+    );
   }
 
   async function loadMeetingResumeDraft(meetingId) {
@@ -1576,11 +1660,19 @@ export function App() {
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.startTimeMs - right.startTimeMs);
       const latestCueCheckpoint = [...checkpoints].reverse().map((result) => result?.checkpoint?.cueCheckpoint).find(Boolean);
       if (persistedCues.length > 0 || latestCueCheckpoint) {
+        const currentCueState = subtitleCueStateRef.current;
+        const mergedFinalCues = mergeDisplayedCues(currentCueState.finalCues, persistedCues);
+        const restoredRefinedSubtitleCues = mergeDisplayedCues(currentCueState.refinedSubtitleCues, refinedSubtitleCues);
         const restoredCueState = createSubtitleCueState({
+          ...currentCueState,
           ...(latestCueCheckpoint || {}),
-          finalCues: persistedCues,
-          refinedSubtitleCues,
-          nextSequence: Math.max(latestCueCheckpoint?.nextSequence || 1, (persistedCues.at(-1)?.sequence || 0) + 1)
+          finalCues: mergedFinalCues,
+          refinedSubtitleCues: restoredRefinedSubtitleCues,
+          nextSequence: Math.max(
+            currentCueState.nextSequence || 1,
+            latestCueCheckpoint?.nextSequence || 1,
+            (mergedFinalCues.at(-1)?.sequence || 0) + 1
+          )
         });
         const restoredFinalCues = markCuesCompletedByRefinedSubtitleCues(
           restoredCueState.finalCues,
@@ -1680,7 +1772,7 @@ export function App() {
       }
 
       setSelectedMeetingDetail(null);
-      setMeetingDetailError('會議詳細資料載入失敗。請重試。');
+      setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料載入失敗。請重試。'));
     }
   }
 
@@ -1714,9 +1806,9 @@ export function App() {
       }
       setSelectedMeetingDetail(detail);
       return true;
-    } catch {
+    } catch (loadError) {
       if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
-        setMeetingDetailError('會議詳細資料無法更新。');
+        setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料無法更新。'));
       }
 
       return false;
@@ -1899,23 +1991,31 @@ export function App() {
       window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
       return;
     }
+    if (startLiveRecordingInFlightRef.current) return;
 
-    setError('');
-    setLiveErrorCode('');
+    startLiveRecordingInFlightRef.current = true;
+    setIsStartingLiveRecording(true);
     try {
-      const credential = await geminiCredentialApiClientRef.current.get();
-      if (credential?.configured === false) {
-        setLiveErrorCode('gemini_credential_not_configured');
-        setError('請先設定 Gemini API Key，再開始錄製。');
-        return;
+      setError('');
+      setLiveErrorCode('');
+      try {
+        const credential = await geminiCredentialApiClientRef.current.get();
+        if (credential?.configured === false) {
+          setLiveErrorCode('gemini_credential_not_configured');
+          setError('請先設定 Gemini API Key，再開始錄製。');
+          return;
+        }
+      } catch {
+        // The backend live-token check remains the source of truth if this preflight fails.
       }
-    } catch {
-      // The backend live-token check remains the source of truth if this preflight fails.
-    }
 
-    void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
-      ? liveController.actions.resumeMeetingSession()
-      : liveController.actions.startSession());
+      await (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
+        ? liveController.actions.resumeMeetingSession()
+        : liveController.actions.startSession());
+    } finally {
+      startLiveRecordingInFlightRef.current = false;
+      setIsStartingLiveRecording(false);
+    }
   };
   const views = {
     viewer: () => {
@@ -2138,10 +2238,14 @@ export function App() {
                     className="button primary meeting-live-action-button"
                     type="button"
                     onClick={startLiveRecording}
-                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}
+                    disabled={isActive || isStartingLiveRecording || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {liveController.isActive ? '正在開始' : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
+                    {isStartingLiveRecording
+                      ? '正在檢查設定…'
+                      : liveController.isActive
+                        ? '正在開始'
+                        : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
                   </button>
                 ) : null}
                 {routeMeetingId && liveController.resumeDraft?.meetingId === routeMeetingId && !liveController.isActive && liveController.status === 'idle' ? (

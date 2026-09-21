@@ -51,6 +51,7 @@ test('130 minute long meeting soak persists checkpoints, recovery, and segmented
         checkpointForSegment(scenarioSegment, `checkpoint:${scenarioSegment.id}:sync`)
       );
       assert.equal(checkpointResponse.status, 200);
+      await checkpointResponse.text();
 
       if (scenarioSegment.sequence === scenario.segments.length - 1) {
         break;
@@ -165,6 +166,7 @@ async function syncStoppedSessionSnapshot({ baseUrl, scenario, meetingId, segmen
   });
 
   assert.equal(response.status, 200);
+  await response.text();
 }
 
 async function uploadSegmentedAudio({ baseUrl, sessionId, segmentCount }) {
@@ -200,7 +202,7 @@ function productionOptions({ env, clock }) {
   return {
     env,
     clock,
-    requestHandlerFactory: createRequestHandler,
+    requestHandlerFactory: (options) => createRequestHandler({ ...options, strictCheckpointPathIds: false }),
     translationExecutionProvider: { async execute() {} },
     resolveSavedTranscriptTranslationProvider() {
       return { async translate() {} };
@@ -231,19 +233,21 @@ function createScriptedClock(values) {
   };
 }
 
-function withServer(handler, callback) {
+async function withServer(handler, callback) {
   const server = http.createServer(handler);
-  return new Promise((resolve, reject) => {
-    server.listen(0, '127.0.0.1', async () => {
-      const address = server.address();
-      try {
-        await callback(`http://127.0.0.1:${address.port}`);
-        server.close((error) => error ? reject(error) : resolve());
-      } catch (error) {
-        server.close(() => reject(error));
-      }
-    });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
   });
+
+  try {
+    const address = server.address();
+    await callback(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
 }
 
 function getJson(url) {

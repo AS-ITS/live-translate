@@ -323,3 +323,27 @@ test('LiveTranscriptionSession ignores translated output and audio callbacks', (
   assert.deepEqual(output, []);
   assert.deepEqual(audio, []);
 });
+
+test('Live session keeps numeric tail fragments in the same live Cue', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-numeric-tail',
+    sessionId: 'session-numeric-tail',
+    segmentId: 'segment-numeric-tail',
+    targetLanguageCode: null,
+    mode: 'transcription',
+    sessionClock: () => (clock += 50),
+    onCueEvent: (event) => {
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  for (const text of ['測試', '測試測試', '123', '3']) {
+    session.handleMessage({ serverContent: { inputTranscription: { text }, turnComplete: true } });
+  }
+
+  cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 1000, reason: 'turnComplete' });
+  assert.equal(cueState.finalCues.length, 1);
+  assert.equal(cueState.finalCues[0].sourceText, '測試測試123');
+});

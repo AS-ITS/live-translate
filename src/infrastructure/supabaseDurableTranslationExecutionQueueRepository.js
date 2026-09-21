@@ -1,9 +1,9 @@
 import { currentRequestOwnerId, isWorkerRequestContext } from '../../server/requestIdentity.js';
 import { createDurableTranslationExecutionQueueRepository } from '../application/translation/durableTranslationExecutionQueueRepository.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 
 export function createSupabaseDurableTranslationExecutionQueueRepository({ env = process.env, fetchImpl = globalThis.fetch, clock = () => Date.now() } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   if (!client) return null;
   const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const ownerFilter = () => isWorkerRequestContext() ? '' : `&${eq('owner_user_id', owner())}`;

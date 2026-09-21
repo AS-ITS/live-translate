@@ -19,7 +19,28 @@ test('observability validates buckets, provider statuses, telemetry and redacts 
   assert.equal(providerStatusClass(503), '5xx');
   assert.deepEqual(validateViewerTelemetry({ eventType: 'event_gap', count: 2 }), { eventType: 'event_gap', count: 2 });
   assert.throws(() => validateViewerTelemetry({ eventType: 'unknown' }));
-  assert.deepEqual(redactLogValue({ apiKey: 'secret', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', nested: { token: '[REDACTED]' } });
+assert.deepEqual(redactLogValue({ apiKey: 'secret', meetingId: 'meeting-1', signedUrl: 'https://signed.example', audio: 'bytes', transcriptText: 'secret text', nested: { token: 'secret' } }), { apiKey: '[REDACTED]', meetingId: 'meeting-1', signedUrl: '[REDACTED]', audio: '[REDACTED]', transcriptText: '[REDACTED]', nested: { token: '[REDACTED]' } });
+});
+
+test('structured logs preserve non-sensitive auth stage diagnostics', () => {
+  assert.deepEqual(redactLogValue({ authStage: 'private_resource', authorization: 'Bearer secret' }), {
+    authStage: 'private_resource',
+    authorization: '[REDACTED]'
+  });
+});
+
+test('structured logs redact JWT and credential-shaped values by key', () => {
+  assert.deepEqual(redactLogValue({
+    jwt: 'header.payload.signature',
+    apiKey: 'AIza-secret',
+    shareToken: 'share-secret',
+    signedUrl: 'https://storage.example/signed'
+  }), {
+    jwt: '[REDACTED]',
+    apiKey: '[REDACTED]',
+    shareToken: '[REDACTED]',
+    signedUrl: '[REDACTED]'
+  });
 });
 
 test('observed provider records safe success and failure metrics while preserving errors', async () => {

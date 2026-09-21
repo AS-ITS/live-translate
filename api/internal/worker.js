@@ -42,6 +42,19 @@ export function createWorkerHandler({
         { kind: 'worker' },
         () => dependencies.translationExecutionWorkerRuntime.runOnce({ limit })
       );
+      if (dependencies.exportWorker?.runOnce) {
+        let exports;
+        try {
+          exports = await runAsUser({ kind: 'worker' }, () => dependencies.exportWorker.runOnce({ limit }));
+        } catch (error) {
+          logger?.log?.({ level: 'error', event: 'export_worker_failed', requestId: getRequestId(req), errorCode: error?.code || 'unknown' });
+          exports = { processed: 0, failed: 1 };
+        }
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok: true, translation: result, exports }));
+        return;
+      }
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ ok: true, ...result }));

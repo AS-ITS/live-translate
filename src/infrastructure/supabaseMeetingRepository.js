@@ -1,11 +1,15 @@
 import { Meeting, MeetingSegment } from '../domain/meeting/index.js';
 import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.js';
 import { currentRequestOwnerId, currentRequestUserId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 export function createSupabaseMeetingRepository(options = {}) {
-  const client = createSupabaseRestClient(options);
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient(options);
+  const client = {
+    request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args),
+    rpc: (...args) => requireSupabaseRequestClient(clientForRequest).rpc(...args)
+  };
   const owner = () => {
     const userId = currentRequestOwnerId();
     if (!userId) { const error = new Error('Authenticated owner required.'); error.code = 'auth_required'; error.status = 401; throw error; }
@@ -17,6 +21,26 @@ export function createSupabaseMeetingRepository(options = {}) {
       const entity = new Meeting(input);
       const rows = await client.request('meetings', { method: 'POST', body: [meetingRow(entity, owner())] });
       return meetingFromRow(rows[0]);
+    },
+    async createMeetingWithInitialSegment({ meeting, segment }) {
+      const ownerUserId = owner();
+      const meetingEntity = new Meeting({ ...meeting, ownerUserId });
+      const segmentEntity = new MeetingSegment({ ...segment, meetingId: meetingEntity.id, ownerUserId });
+      const result = await client.rpc('create_meeting_with_initial_segment', {
+        p_meeting: meetingRow(meetingEntity, ownerUserId),
+        p_segment: segmentRow(segmentEntity, ownerUserId)
+      });
+      const payload = Array.isArray(result) ? result[0] : result;
+      if (!payload?.meeting || !payload?.segment) {
+        const error = new Error('Supabase meeting creation RPC returned an invalid result.');
+        error.code = 'supabase_request_failed';
+        error.status = 503;
+        throw error;
+      }
+      return {
+        meeting: meetingFromRow(payload.meeting),
+        segment: await hydrateSegment(client, payload.segment, ownerUserId)
+      };
     },
     async getMeeting(id) {
       const rows = await client.request('meetings', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
@@ -71,7 +95,12 @@ export function createSupabaseMeetingRepository(options = {}) {
       return rows[0] ? hydrateSegment(client, rows[0], userId) : null;
     }
   };
-  return Object.freeze(Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)])));
+  const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
+  Object.defineProperty(exposed, 'createMeetingWithInitialSegment', {
+    value: repository.createMeetingWithInitialSegment.bind(repository),
+    enumerable: false
+  });
+  return Object.freeze(exposed);
 }
 
 function meetingRow(entity, ownerUserId) {
@@ -97,7 +126,7 @@ async function hydrateSegment(client, row, ownerUserId) {
 
 function meetingFromRow(row) {
   const settings = row.settings || {};
-  return new Meeting({ ...row, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
+  return new Meeting({ ...row, ownerUserId: row.owner_user_id, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
 }
 
 async function persistCues(client, entity, ownerUserId) {

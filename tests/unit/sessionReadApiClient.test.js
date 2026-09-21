@@ -152,6 +152,24 @@ test('unexpected HTTP errors reject', async () => {
   await assert.rejects(unexpectedNotFoundClient.getSessionDetail('session-1'), /HTTP 404/);
 });
 
+test('503 session read errors expose only safe status and error code', async () => {
+  const client = createSessionReadApiClient({
+    fetchImpl() {
+      return jsonResponse({
+        error: { code: 'cloud_capability_unavailable', message: 'Cloud capability unavailable.' },
+        requestId: 'request-1'
+      }, { status: 503 });
+    }
+  });
+
+  await assert.rejects(client.getSessionDetail('session-1'), (error) => {
+    assert.equal(error.status, 503);
+    assert.equal(error.code, 'cloud_capability_unavailable');
+    assert.match(error.message, /Cloud capability unavailable/);
+    return true;
+  });
+});
+
 test('invalid JSON or malformed responses reject safely', async () => {
   const invalidJsonClient = createSessionReadApiClient({
     fetchImpl() {

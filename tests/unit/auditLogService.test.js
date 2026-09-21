@@ -11,6 +11,10 @@ const safe = await service.record({ action: 'asset_transfer', result: 'success',
 assert.equal(entries[0].action, 'asset_transfer');
 const approval = await service.record({ action: 'user_approved', result: 'success', target_user_id: 'pending' });
 assert.equal(approval.action, 'user_approved');
+const permission = await service.record({ action: 'member_recording_permission_changed', result: 'success', target_user_id: 'member', target_meeting_id: 'meeting', signed_url: 'https://signed.example', transcript_text: 'must not persist' });
+assert.equal(permission.action, 'member_recording_permission_changed');
+assert.equal(permission.signed_url, undefined);
+assert.equal(permission.transcript_text, undefined);
 const login = await service.record({ action: 'auth_login', result: 'failure', actor_user_id: 'pending', request_id: 'login-request' });
 assert.equal(login.action, 'auth_login');
 assert.equal(login.result, 'failure');

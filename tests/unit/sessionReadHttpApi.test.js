@@ -75,6 +75,36 @@ test('GET /api/sessions/:sessionId returns HTTP 404 when service returns null', 
   assert.equal(body.error.code, 'session_not_found');
 });
 
+test('GET /api/sessions/:sessionId returns safe 503 and logs only status and code', async () => {
+  const logs = [];
+  const handler = createHandler({
+    getSessionDetail() {
+      const error = new Error('Supabase response body must not be logged.');
+      error.status = 503;
+      error.code = 'supabase_request_failed';
+      error.supabaseStatus = 503;
+      return Promise.reject(error);
+    },
+    requestLogger(event) {
+      logs.push(event);
+    }
+  });
+
+  const response = await request(handler, { method: 'GET', url: '/api/sessions/session-1' });
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(response.json().error, {
+    code: 'supabase_request_failed',
+    message: 'Local Supabase request failed.',
+    requestId: response.json().error.requestId
+  });
+  const requestLog = logs.at(-1);
+  assert.equal(requestLog.errorCode, 'supabase_request_failed');
+  assert.equal(requestLog.supabaseStatus, 503);
+  assert.equal(Object.hasOwn(requestLog, 'responseBody'), false);
+  assert.equal(Object.hasOwn(requestLog, 'stack'), false);
+});
+
 test('DELETE /api/sessions/:sessionId deletes finalized session records', async () => {
   const calls = [];
   const handler = createHandler({
@@ -710,7 +740,8 @@ function createHandler(serviceOverrides = {}) {
       ? { translationHistoryController: createTranslationHistoryController(serviceOverrides.translationHistory) }
       : {}),
     ...(serviceOverrides.sessionSnapshotMaxBytes ? { sessionSnapshotMaxBytes: serviceOverrides.sessionSnapshotMaxBytes } : {}),
-    ...(serviceOverrides.sessionAudioMaxBytes ? { sessionAudioMaxBytes: serviceOverrides.sessionAudioMaxBytes } : {})
+    ...(serviceOverrides.sessionAudioMaxBytes ? { sessionAudioMaxBytes: serviceOverrides.sessionAudioMaxBytes } : {}),
+    ...(serviceOverrides.requestLogger ? { requestLogger: serviceOverrides.requestLogger } : {})
   });
 }
 

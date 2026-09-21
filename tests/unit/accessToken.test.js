@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { accessTokenHeaders, authenticatedFetch } from '../../src/lib/accessToken.js';
+import { accessTokenHeaders, authenticatedFetch, currentSession } from '../../src/lib/accessToken.js';
 
 function fakeSupabase(session) {
   const calls = { getSession: 0, signOut: 0 };
@@ -67,4 +67,23 @@ test('auth API failures clear the Supabase session without logging the token', a
   }, supabase)('/api/private');
   assert.deepEqual(requestedHeaders, { Authorization: 'Bearer secret-token' });
   assert.equal(supabase.calls.signOut, 1);
+});
+
+test('access token headers refresh an expiring session before sending it', async () => {
+  const calls = { refreshSession: 0 };
+  const supabase = {
+    auth: {
+      async getSession() {
+        return { data: { session: { access_token: 'expiring-token', expires_at: Math.floor(Date.now() / 1000) + 1 } } };
+      },
+      async refreshSession() {
+        calls.refreshSession += 1;
+        return { data: { session: { access_token: 'refreshed-token', expires_at: Math.floor(Date.now() / 1000) + 3600 } } };
+      }
+    }
+  };
+
+  assert.equal((await accessTokenHeaders({}, supabase)).Authorization, 'Bearer refreshed-token');
+  assert.equal(calls.refreshSession, 1);
+  assert.equal((await currentSession(supabase)).access_token, 'refreshed-token');
 });

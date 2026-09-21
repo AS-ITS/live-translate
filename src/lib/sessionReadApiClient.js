@@ -126,9 +126,26 @@ async function assertOkResponse(response) {
     throw new Error('Session read API request did not return a response.');
   }
 
-  if (!response.ok) {
-    throw new Error(`Session read API request failed with HTTP ${response.status}.`);
+  if (response.ok) return;
+
+  let body = null;
+  try {
+    body = await parseJsonResponse(response);
+  } catch {
+    // The status remains the authoritative safe diagnostic when the body is not JSON.
   }
+
+  const error = new Error(body?.error?.message || `Session read API request failed with HTTP ${response.status}.`);
+  const status = Number(response.status);
+  if (Number.isInteger(status) && status >= 100 && status <= 599) error.status = status;
+  const code = body?.error?.code || body?.code;
+  if (typeof code === 'string' && /^[a-z0-9][a-z0-9_:-]*$/iu.test(code)) error.code = code;
+  throw error;
+}
+
+export function isSessionReadCloudUnavailable(error) {
+  return error?.status === 503 || error?.code === 'cloud_capability_unavailable'
+    || error?.code === 'supabase_unavailable' || error?.code === 'supabase_request_failed';
 }
 
 async function parseJsonResponse(response) {

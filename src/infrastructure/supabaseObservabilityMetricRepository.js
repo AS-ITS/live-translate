@@ -1,8 +1,8 @@
-import { createSupabaseRestClient } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient } from './supabaseRestClient.js';
 import { minuteBucket, normalizeMetricLabels } from '../application/observability/observabilityMetricRegistry.js';
 
 export function createSupabaseObservabilityMetricRepository({ env = process.env, fetchImpl = globalThis.fetch, clock = () => new Date(), instanceId = env.OBSERVABILITY_INSTANCE_ID || `instance-${process.pid}` } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
+  const client = createSupabaseServiceRoleClient({ env, fetchImpl });
   if (!client) return null;
   async function recordCounter(metricName, labels = {}, amount = 1, at = clock()) {
     return record(metricName, labels, { count: amount }, at);

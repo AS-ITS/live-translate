@@ -1,3 +1,5 @@
+import { withHttpStatus } from './connectionFailures.js';
+
 const MANUAL_RECOVERY_MESSAGES = {
   auth_failed: '存取失敗。請檢查存取權杖或設定。',
   rate_limited: '請求過於頻繁。請稍候再試。'
@@ -12,11 +14,12 @@ const STATUS_LABELS = {
 export function failureUiStateForClassification(classification = {}) {
   const reason = classification.reason || 'unknown_error';
   const safeMessage = classification.safeMessage || '即時翻譯失敗。請再試一次。';
+  const visibleSafeMessage = withHttpStatus(safeMessage, classification.httpStatus);
   const baseState = {
     reason,
     status: 'error',
     statusLabel: '',
-    message: safeMessage,
+    message: visibleSafeMessage,
     safeMessage,
     shouldReconnect: false,
     suppressSessionError: true,
@@ -30,7 +33,7 @@ export function failureUiStateForClassification(classification = {}) {
       ...baseState,
       status: 'error',
       statusLabel: STATUS_LABELS[reason],
-      message: MANUAL_RECOVERY_MESSAGES[reason]
+      message: withHttpStatus(MANUAL_RECOVERY_MESSAGES[reason], classification.httpStatus)
     };
   }
 

@@ -98,14 +98,65 @@ export function unrepresentedTranscriptItems({ archivedTranscript, transcript, c
     ...(transcript?.translation?.finalItems || [])
   ];
   const seenIds = new Set();
-  return items
+  const unrepresented = items
     .filter((item) => item?.status === 'final' && typeof item.text === 'string' && item.text.trim())
     .filter((item) => {
       if (item.id && seenIds.has(item.id)) return false;
       if (item.id) seenIds.add(item.id);
       return !cues.some((cue) => transcriptItemCoveredByCue(item, cue));
-    })
+    });
+  return mergeFallbackTranscriptItems(unrepresented)
     .sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id));
+}
+
+export function mergeFallbackTranscriptItems(items = []) {
+  const merged = [];
+  const lastIndexByStream = new Map();
+  for (const item of items.slice().sort((left, right) => left.sequence - right.sequence || left.id.localeCompare(right.id))) {
+    const previousIndex = lastIndexByStream.get(item.stream);
+    const previous = Number.isInteger(previousIndex) ? merged[previousIndex] : null;
+    if (previous && canMergeFallbackTranscriptItems(previous, item)) {
+      merged[previousIndex] = {
+        ...previous,
+        text: mergeFallbackText(previous.text, item.text),
+        finalizedAt: Math.max(previous.finalizedAt || 0, item.finalizedAt || 0) || previous.finalizedAt || item.finalizedAt,
+        ...(item.audioTurnId ? { audioTurnId: item.audioTurnId } : {})
+      };
+      continue;
+    }
+    lastIndexByStream.set(item.stream, merged.length);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function canMergeFallbackTranscriptItems(previous, next) {
+  if (!previous || !next || previous.stream !== next.stream) return false;
+  if (!matchingTranscriptScope(previous, next)) return false;
+  if (previous.audioTurnId && next.audioTurnId) return previous.audioTurnId === next.audioTurnId;
+  const previousText = String(previous.text || '').trim();
+  const nextText = String(next.text || '').trim();
+  if (!previousText || !nextText || endsSentence(previousText)) return false;
+  if (nextText.startsWith(previousText) || previousText.startsWith(nextText)) return true;
+  if (/^\d[\d\s,.，、]*$/u.test(nextText)) return true;
+  return /[,，、:：;；]$/u.test(previousText) && !/^\d[\d\s,.，、]*$/u.test(previousText);
+}
+
+function mergeFallbackText(previousText, nextText) {
+  const previous = String(previousText || '').trim();
+  const next = String(nextText || '').trim();
+  if (!previous) return next;
+  if (!next || next.startsWith(previous)) return next || previous;
+  if (previous.startsWith(next) || (next.length < previous.length && previous.endsWith(next))) return previous;
+  const separator = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(previous)
+    && /^[\d\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(next)
+    ? ''
+    : ' ';
+  return `${previous}${separator}${next}`;
+}
+
+function endsSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(String(text || '').trim());
 }
 export function transcriptItemCoveredByCue(item, cue) {
   if (!cue || !['final', 'partial'].includes(cue.status) || (cue.stream && cue.stream !== item.stream)) return false;

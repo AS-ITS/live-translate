@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -9,8 +10,8 @@ export function createSupabaseMeetingShareService({
   fetchImpl = globalThis.fetch,
   clock = () => Date.now()
 } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForRequest = createSupabaseRequestClient({ env, fetchImpl });
+  const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
 
   return Object.freeze({
     requiresRequestIdentity: true,

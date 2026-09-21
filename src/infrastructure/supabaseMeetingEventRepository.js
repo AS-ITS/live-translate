@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { createSupabaseRestClient, eq } from './supabaseRestClient.js';
+import { eq } from './supabaseRestClient.js';
+import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
 
 export function createSupabaseMeetingEventRepository({ env = process.env, fetchImpl = globalThis.fetch, idFactory = randomUUID, clock = () => Date.now() } = {}) {
-  const client = createSupabaseRestClient({ env, fetchImpl });
-  if (!client) return null;
+  const clientForContext = createSupabaseContextClient({ env, fetchImpl });
+  const client = { request: (...args) => requireSupabaseContextClient(clientForContext).request(...args) };
 
   function owner(explicitOwner) {
     const userId = explicitOwner || currentRequestOwnerId();

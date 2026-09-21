@@ -120,6 +120,23 @@ test('missing audio turn identity keeps normalized text fallback', () => {
   }), true);
 });
 
+test('unrepresented transcript fallback merges adjacent numeric fragments and hides no content', () => {
+  const items = unrepresentedTranscriptItems({
+    transcript: {
+      source: {
+        finalItems: [
+          { id: 'source-1', stream: 'source', status: 'final', sequence: 1, text: '測試測試' },
+          { id: 'source-2', stream: 'source', status: 'final', sequence: 2, text: '123' },
+          { id: 'source-3', stream: 'source', status: 'final', sequence: 3, text: '3' }
+        ]
+      }
+    },
+    cues: []
+  });
+
+  assert.deepEqual(items.map((item) => item.text), ['測試測試123']);
+});
+
 test('matching text does not cover an item from a different scope', () => {
   assert.equal(transcriptItemCoveredByCue({
     sessionId: 'session-2',

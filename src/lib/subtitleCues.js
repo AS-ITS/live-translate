@@ -561,7 +561,7 @@ function mergeCueText(currentText, incomingText, context = {}) {
 
 function needsTextSeparator(currentText, incomingText, context = {}) {
   if (containsCjk(currentText)
-    && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
+    && /^[\d\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incomingText)) {
     return false;
   }
   if (/^[\s\p{P}\p{S}]/u.test(incomingText)) return false;

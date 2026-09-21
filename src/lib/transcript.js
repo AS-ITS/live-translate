@@ -246,7 +246,10 @@ function applyFinalEvent(state, event) {
   const streamState = state[event.stream];
   const lastFinal = streamState.finalItems.at(-1);
   if (isSameTurnSourceSnapshot(lastFinal, event)) {
-    const updatedFinal = finalizeTranscriptItem(lastFinal, event, eventTime(event));
+    const updatedFinal = finalizeTranscriptItem(lastFinal, {
+      ...event,
+      text: mergeSameTurnTranscriptText(lastFinal.text, event.text)
+    }, eventTime(event));
     return replaceStreamState(state, event.stream, {
       ...streamState,
       finalItems: [...streamState.finalItems.slice(0, -1), updatedFinal]
@@ -297,9 +300,45 @@ function applyFinalEvent(state, event) {
 function isSameTurnSourceSnapshot(lastFinal, event) {
   if (!lastFinal || event.stream !== 'source' || !event.isFinal) return false;
   if (!lastFinal.audioTurnId || !event.audioTurnId || lastFinal.audioTurnId !== event.audioTurnId) return false;
-  return ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
+  const sameScope = ['sessionId', 'liveSessionId', 'segmentId'].every((field) => (
     !lastFinal[field] || !event[field] || lastFinal[field] === event[field]
   ));
+  if (!sameScope) return false;
+  const current = String(lastFinal.text || '').trim();
+  const incoming = String(event.text || '').trim();
+  return incoming.startsWith(current) || current.startsWith(incoming)
+    || isTextRevision(current, incoming)
+    || isLikelyTranscriptContinuation(current, incoming);
+}
+
+function isLikelyTranscriptContinuation(previousText, incomingText) {
+  if (!previousText || !incomingText || endsTranscriptSentence(previousText)) return false;
+  if (/^\d[\d\s,.，、]*$/u.test(incomingText)) return true;
+  return /[,，、:：;；]$/u.test(previousText);
+}
+
+function mergeSameTurnTranscriptText(currentText, incomingText) {
+  const current = String(currentText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  if (!current) return incoming;
+  if (!incoming || incoming.startsWith(current)) return incoming || current;
+  if (current.startsWith(incoming) || (incoming.length < current.length && current.endsWith(incoming))) return current;
+  if (isTextRevision(current, incoming)) return incoming;
+  const separator = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]$/u.test(current)
+    && /^[\d\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(incoming)
+    ? ''
+    : ' ';
+  return `${current}${separator}${incoming}`;
+}
+
+function isTextRevision(currentText, incomingText) {
+  const current = String(currentText || '').replace(/[\s\p{P}\p{S}]/gu, '');
+  const incoming = String(incomingText || '').replace(/[\s\p{P}\p{S}]/gu, '');
+  if (current.length < 2 || incoming.length < 2) return false;
+  const limit = Math.min(current.length, incoming.length);
+  let common = 0;
+  while (common < limit && current[common] === incoming[common]) common += 1;
+  return common >= 2 && common / limit >= 0.5;
 }
 
 function findCumulativeFinalExtension(lastFinal, event) {

@@ -2558,6 +2558,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'GET' && path.startsWith('/api/sessions/') && path.length > '/api/sessions/'.length) {
+    let sessionReadErrorCode = null;
+    let sessionReadSupabaseStatus = null;
     try {
       const sessionId = path.slice('/api/sessions/'.length);
       const session = sessionApplicationService
@@ -2593,10 +2595,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, session, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      sessionReadErrorCode = code;
+      sessionReadSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({
+      requestLogger({
         level: statusCode >= 500 ? 'error' : 'info',
         event: 'request',
         requestId,
@@ -2605,13 +2609,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         statusCode,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
-        origin
+        origin,
+        errorCode: sessionReadErrorCode,
+        supabaseStatus: sessionReadSupabaseStatus
       });
     }
     return;
   }
 
   if (isTranslationCommandRoute(req.method, path)) {
+    let translationErrorCode = null;
+    let translationSupabaseStatus = null;
     try {
       assertTranslationCommandController(translationCommandController);
 
@@ -2638,10 +2646,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, statusCode, await result, requestId);
     } catch (error) {
       const code = errorCodeFor(error);
+      translationErrorCode = code;
+      translationSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({
+      requestLogger({
         level: statusCode >= 500 ? 'error' : 'info',
         event: 'request',
         requestId,
@@ -2650,7 +2660,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         statusCode,
         durationMs: Math.round(performance.now() - startedAt),
         clientIp,
-        origin
+        origin,
+        errorCode: translationErrorCode,
+        supabaseStatus: translationSupabaseStatus
       });
     }
     return;

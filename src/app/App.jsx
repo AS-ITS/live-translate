@@ -4,7 +4,7 @@ import { targetLanguageLabelFor } from '../lib/languages.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream } from '../lib/mediaDevices.js';
 import { createMemorySessionRepository } from '../lib/sessionRepository.js';
-import { createSessionReadApiClient } from '../lib/sessionReadApiClient.js';
+import { createSessionReadApiClient, isSessionReadCloudUnavailable } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../lib/meetingReadApiClient.js';
 import { meetingApiErrorMessage } from '../lib/meetingApiError.js';
@@ -149,7 +149,9 @@ export function App() {
   const [polishingState, setPolishingState] = useState({ status: 'idle', text: '', version: null, updatedAt: null, error: '' });
   const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
+  const [isStartingLiveRecording, setIsStartingLiveRecording] = useState(false);
   const sessionRef = useRef(null);
+  const startLiveRecordingInFlightRef = useRef(false);
   const pendingMicrophoneStreamRef = useRef(null);
   const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const inputAudioUploadChunksRef = useRef([]);
@@ -559,6 +561,7 @@ export function App() {
   useEffect(() => {
     if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
     let cancelled = false;
+    let timer = null;
     const poll = async () => {
       try {
         const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
@@ -602,12 +605,16 @@ export function App() {
             executionId: latestExecution.id
           });
         }
-      } catch {
+      } catch (error) {
+        if (isSessionReadCloudUnavailable(error)) {
+          if (timer) window.clearInterval(timer);
+          return;
+        }
         // Polishing read failures are isolated from the Live session.
       }
     };
     void poll();
-    const timer = window.setInterval(poll, 2000);
+    timer = window.setInterval(poll, 2000);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [status]);
 
@@ -1259,11 +1266,12 @@ export function App() {
           enqueueCuePersistence(current, next);
           return;
         }
-      } catch {
+      } catch (error) {
         // Raw final Cues remain visible while the asynchronous refinement is pending.
+        if (isSessionReadCloudUnavailable(error)) return;
       }
       pollRefinedSubtitleResult(sessionId, inputHash, attempt + 1);
-    }, 1000);
+    }, Math.min(1000 * (2 ** attempt), 8000));
   }
 
   async function retryPolishingExecution(executionId) {
@@ -1904,23 +1912,31 @@ export function App() {
       window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
       return;
     }
+    if (startLiveRecordingInFlightRef.current) return;
 
-    setError('');
-    setLiveErrorCode('');
+    startLiveRecordingInFlightRef.current = true;
+    setIsStartingLiveRecording(true);
     try {
-      const credential = await geminiCredentialApiClientRef.current.get();
-      if (credential?.configured === false) {
-        setLiveErrorCode('gemini_credential_not_configured');
-        setError('請先設定 Gemini API Key，再開始錄製。');
-        return;
+      setError('');
+      setLiveErrorCode('');
+      try {
+        const credential = await geminiCredentialApiClientRef.current.get();
+        if (credential?.configured === false) {
+          setLiveErrorCode('gemini_credential_not_configured');
+          setError('請先設定 Gemini API Key，再開始錄製。');
+          return;
+        }
+      } catch {
+        // The backend live-token check remains the source of truth if this preflight fails.
       }
-    } catch {
-      // The backend live-token check remains the source of truth if this preflight fails.
-    }
 
-    void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
-      ? liveController.actions.resumeMeetingSession()
-      : liveController.actions.startSession());
+      await (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
+        ? liveController.actions.resumeMeetingSession()
+        : liveController.actions.startSession());
+    } finally {
+      startLiveRecordingInFlightRef.current = false;
+      setIsStartingLiveRecording(false);
+    }
   };
   const views = {
     viewer: () => {
@@ -2143,10 +2159,14 @@ export function App() {
                     className="button primary meeting-live-action-button"
                     type="button"
                     onClick={startLiveRecording}
-                    disabled={isActive || Boolean(controlLeaseSnapshot && !hasSessionControl)}
+                    disabled={isActive || isStartingLiveRecording || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {liveController.isActive ? '正在開始' : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
+                    {isStartingLiveRecording
+                      ? '正在檢查設定…'
+                      : liveController.isActive
+                        ? '正在開始'
+                        : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
                   </button>
                 ) : null}
                 {routeMeetingId && liveController.resumeDraft?.meetingId === routeMeetingId && !liveController.isActive && liveController.status === 'idle' ? (

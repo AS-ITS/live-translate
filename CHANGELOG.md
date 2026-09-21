@@ -1,4 +1,6 @@
 # Changelog
+- 修正即時字幕同一語音輪次的累積片段與數字尾段被覆蓋；Session read / translation API 503 改為安全記錄狀態與錯誤碼並停止無限輪詢。
+
 - Live recording startup now reports origin, authentication, and Gemini credential failures separately; local development prefers `dev_frontend_origin`, microphone recording emits bounded timeslice chunks, and long-meeting segment rollover rotates to a unique Live session ID with a fresh ephemeral token.
 
 - Issue #35 closeout: added Node 22/24 long-meeting soak CI coverage, authenticated staging browser reload coverage, safe Meeting request diagnostics, and deployment/storage evidence guidance.

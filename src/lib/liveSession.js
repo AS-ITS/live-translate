@@ -1047,12 +1047,30 @@ export class LiveTranslateSession {
       this.lastOutputTranscriptText,
       content?.outputTranscription?.text
     );
+    const providerTurnIndex = firstDefined(
+      content?.turnIndex,
+      content?.turn?.index,
+      content?.turn?.turnIndex,
+      message?.turnIndex
+    );
+    const likelyFragmentContinuation = isLikelyTranscriptContinuation(
+      this.lastInputTranscriptText,
+      content?.inputTranscription?.text || content?.interimInputTranscription?.text,
+      { stream: 'source', turnIndex: providerTurnIndex }
+    ) || isLikelyTranscriptContinuation(
+      this.lastOutputTranscriptText,
+      content?.outputTranscription?.text,
+      { stream: 'translation', turnIndex: providerTurnIndex }
+    );
     const inputTextMergeMode = transcriptMergeMode(this.lastInputTranscriptText, content?.inputTranscription?.text || content?.interimInputTranscription?.text);
     const outputTextMergeMode = transcriptMergeMode(this.lastOutputTranscriptText, content?.outputTranscription?.text);
-    const eventAudioTurnId = (inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
-      || cumulativeInputContinuation || cumulativeOutputContinuation)
+    const providerTurnId = providerTurnIndex === undefined || providerTurnIndex === null
+      ? null
+      : `provider-turn-${this.connectionEpoch}-${providerTurnIndex}`;
+    const eventAudioTurnId = providerTurnId || ((inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
+      || cumulativeInputContinuation || cumulativeOutputContinuation || likelyFragmentContinuation)
       ? (this.activeTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
-      : this.audioTurnId;
+      : this.audioTurnId);
     if (content?.inputTranscription?.text || content?.interimInputTranscription?.text || content?.outputTranscription?.text) {
       this.activeTranscriptAudioTurnId = eventAudioTurnId;
     }
@@ -1866,6 +1884,23 @@ function transcriptMergeMode(previousText, incomingText) {
   if (!previous || !incoming) return 'initial';
   const relation = cumulativeTextRelation(previous, incoming);
   return relation === 'extension' || relation === 'revision' || relation === 'same' ? 'snapshot' : 'append';
+}
+
+function isLikelyTranscriptContinuation(previousText, incomingText, { stream, turnIndex } = {}) {
+  const previous = String(previousText || '').trim();
+  const incoming = String(incomingText || '').trim();
+  if (!previous || !incoming || turnIndex !== undefined && turnIndex !== null) return false;
+  if (endsTranscriptSentence(previous)) return false;
+  if (/^\d[\d\s,.，、]*$/u.test(incoming)) return true;
+  return /[,，、:：;；]$/u.test(previous) && stream === 'source';
+}
+
+function endsTranscriptSentence(text) {
+  return /[.!?。！？…]+["'”’」』）)]*$/u.test(String(text || '').trim());
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '');
 }
 
 function summarizeLiveEvent(message) {

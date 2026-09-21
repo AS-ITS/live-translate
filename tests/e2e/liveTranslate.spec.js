@@ -1616,19 +1616,33 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
 });
 
 test('missing Gemini API Key is shown before live recording starts', async ({ page }) => {
+  let credentialRequests = 0;
   await page.unroute('**/api/profile/gemini-credential');
-  await page.route('**/api/profile/gemini-credential', async (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ credential: { configured: false } })
-  }));
+  await page.route('**/api/profile/gemini-credential', async (route) => {
+    credentialRequests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ credential: { configured: false } })
+    });
+  });
   await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page);
 
-  await page.getByRole('button', { name: '開始錄製' }).click();
+  const startButton = page.locator('button.meeting-live-action-button').first();
+  const buttonBox = await startButton.boundingBox();
+  if (!buttonBox) throw new Error('Start recording button is not visible.');
+  await Promise.all([
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
+    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2)
+  ]);
 
+  await expect(startButton).toBeDisabled();
   await expect(page.getByRole('alert')).toHaveText('請先設定 Gemini API Key，再開始錄製。');
   await expect(page.getByRole('button', { name: '設定 Gemini Key' })).toBeVisible();
+  expect(credentialRequests).toBe(1);
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.length)).toBe(0);
 });
@@ -1752,11 +1766,11 @@ test('captures and drains first speech while provider connect is delayed', async
 
 test('keeps capturing while a continuous turn emits many partial transcript updates', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
-  await page.goto('/#live?meetingId=meeting-1');
+  await gotoMockMeetingLive(page);
   await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
   await page.evaluate(() => {
     const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
     for (let index = 0; index < 250; index += 1) {
@@ -1828,6 +1842,24 @@ test('renders two separate Cues for two consecutive sentences', async ({ page })
   expect(cueLogs.some((log) => log.includes('same-turn-final'))).toBe(false);
   expect(cueLogs.some((log) => log.includes('duplicate') || log.includes('already-finalized'))).toBe(false);
   console.log(`[two-cue-browser] ${JSON.stringify({ cueIds, cueLogs })}`);
+});
+
+test('keeps numeric tail fragments in the live subtitle', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (const text of ['測試', '測試測試', '123', '3']) {
+      liveSession.emitMessage({ serverContent: { inputTranscription: { text } } });
+    }
+  });
+
+  await expectCueRow(partialCueRows(page).first(), { sourceText: '測試測試123' });
 });
 
 test('keeps page fixed while the live subtitle list scrolls independently', async ({ page }) => {

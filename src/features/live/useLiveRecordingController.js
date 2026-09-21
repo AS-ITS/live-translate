@@ -99,6 +99,7 @@ export function useLiveRecordingController({
       if (!recordingControllerRef.current) {
         recordingControllerRef.current = createMicrophoneRecordingController({
           onStateChange: audio.setRecordingState,
+          diagnostics: audio.recordingDiagnostics,
           collectChunks: cloudMeetingAudioEnabled(),
           ...(cloudMeetingAudioEnabled() ? {
             preferredMimeTypes: ['audio/webm;codecs=opus', 'audio/webm'],
@@ -531,7 +532,8 @@ export function useLiveRecordingController({
       const artifact = await uploadMeetingSegmentAudio({
         meetingId: checkpoint.meetingId,
         segmentId: checkpoint.segmentId,
-        blob: state.blob
+        blob: state.blob,
+        diagnostics: audio.recordingDiagnostics
       });
       audio.setRecordingState?.({ ...state, status: 'saved', blob: null, artifact, errorMessage: '' });
       recovery.meetingDetailCacheRef.current.delete(checkpoint.meetingId);

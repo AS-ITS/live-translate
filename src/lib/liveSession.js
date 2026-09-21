@@ -13,6 +13,7 @@ import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
 import { authenticatedFetch } from './accessToken.js';
 import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
+import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency } from './latencyHistogram.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -21,9 +22,11 @@ const AUDIO_WORKLET_FIRST_CALLBACK_TIMEOUT_MS = 3000;
 const MAX_PENDING_INPUT_AUDIO_CHUNKS = 64;
 const MAX_PRE_ROLL_BYTES = 480000;
 const AUDIO_CALLBACK_STALL_MS = 3000;
+const AUDIO_CALLBACK_GAP_REPORT_MS = 250;
 const LOCAL_SILENCE_FINALIZE_MS = 1800;
 const TOKEN_REFRESH_SAFETY_MS = 5 * 60 * 1000;
 const SPEECH_ACTIVITY_RMS_THRESHOLD = 0.01;
+const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || import.meta.env?.VITE_LIVE_TRANSLATE_DIAGNOSTICS === 'true');
 const LIVE_EVENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 let nextAudioTurnSequence = 0;
@@ -114,6 +117,10 @@ export class LiveTranslateSession {
     this.providerFirstServerEventSeen = false;
     this.audioCallbackCount = 0;
     this.lastAudioCallbackType = null;
+    this.audioCallbackGapCount = 0;
+    this.maxAudioCallbackGapMs = 0;
+    this.lastAudioCallbackGapMs = null;
+    this.audioCallbackGapHistogram = createLatencyHistogram();
     this.lastWorkletProcessCount = null;
     this.pcmGeneratedCount = 0;
     this.pcmGeneratedBytes = 0;
@@ -417,6 +424,10 @@ export class LiveTranslateSession {
     this.captureEnabled = true;
     this.captureStartedAt = Date.now();
     this.lastAudioCallbackAt = null;
+    this.audioCallbackGapCount = 0;
+    this.maxAudioCallbackGapMs = 0;
+    this.lastAudioCallbackGapMs = null;
+    this.audioCallbackGapHistogram = createLatencyHistogram();
     this.lastWorkletProcessCount = null;
     this.trace('capture_started');
     this.logLiveEvent('audio.processor.selected', {
@@ -433,7 +444,13 @@ export class LiveTranslateSession {
       }
 
       this.audioCallbackCount += 1;
-      this.lastAudioCallbackAt = Date.now();
+      const callbackAt = Date.now();
+      const callbackGapMs = this.lastAudioCallbackAt === null ? 0 : Math.max(0, callbackAt - this.lastAudioCallbackAt);
+      this.lastAudioCallbackGapMs = callbackGapMs;
+      this.maxAudioCallbackGapMs = Math.max(this.maxAudioCallbackGapMs, callbackGapMs);
+      recordLatency(this.audioCallbackGapHistogram, callbackGapMs);
+      if (callbackGapMs >= AUDIO_CALLBACK_GAP_REPORT_MS) this.audioCallbackGapCount += 1;
+      this.lastAudioCallbackAt = callbackAt;
       this.lastAudioCallbackType = this.captureProcessorMode;
       this.audioCaptureStage = `${this.captureProcessorMode}_callback`;
       if (this.audioCallbackCount === 1) this.trace('audio.callback.first');
@@ -1617,7 +1634,7 @@ export class LiveTranslateSession {
     };
   }
 
-  getDebugSnapshot() {
+  getDebugSnapshot({ includeText = LIVE_EVENT_LOG_ENABLED } = {}) {
     return {
       activeConnectionEpoch: this.closed ? null : this.connectionEpoch,
       activeSessionId: this.closed ? null : this.sessionId,
@@ -1637,6 +1654,10 @@ export class LiveTranslateSession {
       audioCaptureStage: this.audioCaptureStage,
       startupStage: this.startupStage,
       audioCallbackCount: this.audioCallbackCount,
+      audioCallbackGapCount: this.audioCallbackGapCount,
+      maxAudioCallbackGapMs: this.maxAudioCallbackGapMs,
+      lastAudioCallbackGapMs: this.lastAudioCallbackGapMs,
+      audioCallbackGapP95Ms: percentileFromLatencyHistogram(this.audioCallbackGapHistogram),
       lastWorkletProcessCount: this.lastWorkletProcessCount,
       lastAudioCallbackType: this.lastAudioCallbackType,
       audioContextState: this.audioContext?.state || null,
@@ -1655,8 +1676,8 @@ export class LiveTranslateSession {
       lastPcmSendAt: this.lastPcmSendAt,
       failureDiagnostics: this.failureDiagnostics.map((failure) => ({ ...failure })),
       lastAudioStreamEnd: this.lastAudioStreamEnd,
-      pendingInputTranscript: this.pendingInputTranscript?.text || '',
-      pendingOutputTranscript: this.pendingOutputTranscript?.text || '',
+      pendingInputTranscript: includeText ? this.pendingInputTranscript?.text || '' : null,
+      pendingOutputTranscript: includeText ? this.pendingOutputTranscript?.text || '' : null,
       cueStateOwner: this.cueStateOwner,
       lastCueTransitionReason: this.lastCueTransitionReason
     };
@@ -1952,6 +1973,10 @@ function safeFailureDiagnostic(failure, session) {
     liveSessionId: session.liveSessionId,
     segmentId: session.segmentId,
     audioCallbackCount: session.audioCallbackCount,
+    audioCallbackGapCount: session.audioCallbackGapCount,
+    maxAudioCallbackGapMs: session.maxAudioCallbackGapMs,
+    lastAudioCallbackGapMs: session.lastAudioCallbackGapMs,
+    audioCallbackGapP95Ms: percentileFromLatencyHistogram(session.audioCallbackGapHistogram),
     captureProcessorMode: session.captureProcessorMode,
     captureGraphGeneration: session.captureGraphGeneration,
     activeCaptureGraphGeneration: session.activeCaptureGraphGeneration,
@@ -1983,9 +2008,9 @@ function safeDiagnosticText(value) {
 }
 
 function exposeLiveTranslateDebug() {
-  if (typeof window === 'undefined' || !LIVE_EVENT_LOG_ENABLED) return;
+  if (typeof window === 'undefined' || !LIVE_DIAGNOSTICS_ENABLED) return;
   window.__liveTranslateDebug = window.__liveTranslateDebug || {};
-  window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.() || {
+  window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.({ includeText: LIVE_EVENT_LOG_ENABLED }) || {
     activeConnectionEpoch: null,
     activeSessionId: null,
     activeLiveSessionId: null,
@@ -2003,6 +2028,10 @@ function exposeLiveTranslateDebug() {
       activeCaptureGraphGeneration: null,
       audioCaptureStage: 'not_started',
       audioCallbackCount: 0,
+      audioCallbackGapCount: 0,
+      maxAudioCallbackGapMs: 0,
+      lastAudioCallbackGapMs: null,
+      audioCallbackGapP95Ms: 0,
       lastWorkletProcessCount: null,
       lastAudioCallbackType: null,
       audioContextState: null,
@@ -2020,8 +2049,8 @@ function exposeLiveTranslateDebug() {
     lastPcmSendAt: null,
     lastAudioStreamEnd: null,
     failureDiagnostics: [],
-    pendingInputTranscript: '',
-    pendingOutputTranscript: '',
+    pendingInputTranscript: LIVE_EVENT_LOG_ENABLED ? '' : null,
+    pendingOutputTranscript: LIVE_EVENT_LOG_ENABLED ? '' : null,
     cueStateOwner: null,
     lastCueTransitionReason: null
   };

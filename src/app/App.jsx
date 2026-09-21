@@ -64,9 +64,11 @@ import { createAudioUploadSegmentState } from '../features/live/liveAudioBinding
 import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
+import { createRecordingDiagnostics } from '../lib/recordingDiagnostics.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
 
 const TRANSCRIPT_SEGMENT_LOG_ENABLED = Boolean(import.meta.env?.DEV);
+const LIVE_DIAGNOSTICS_ENABLED = Boolean(import.meta.env?.DEV || import.meta.env?.VITE_LIVE_TRANSLATE_DIAGNOSTICS === 'true');
 const LIVE_CUE_IDLE_FINALIZE_MS = DEFAULT_TURN_COMPLETE_DEBOUNCE_MS;
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const TRANSCRIPT_POLISHING_ENABLED = import.meta.env?.VITE_TRANSCRIPT_POLISHING_ENABLED !== 'false';
@@ -161,6 +163,19 @@ export function App() {
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
   const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
+  const recordingDiagnosticsRef = useRef(createRecordingDiagnostics({ enabled: LIVE_DIAGNOSTICS_ENABLED }));
+  useEffect(() => {
+    if (!LIVE_DIAGNOSTICS_ENABLED || typeof window === 'undefined') return undefined;
+    const debugApi = {
+      getSnapshot: () => recordingDiagnosticsRef.current.snapshot(),
+      reset: () => recordingDiagnosticsRef.current.reset()
+    };
+    window.__liveTranslateRecordingDebug = debugApi;
+    return () => {
+      if (window.__liveTranslateRecordingDebug === debugApi) delete window.__liveTranslateRecordingDebug;
+      recordingDiagnosticsRef.current.destroy();
+    };
+  }, []);
   const transcriptRef = useRef(transcript);
   const subtitleCueStateRef = useRef(subtitleCueState);
   const transcriptTimeOriginRef = useRef(null);
@@ -249,6 +264,7 @@ const activeMeetingCheckpointRef = useRef(null);
       translationChunksRef: translatedAudioUploadChunksRef,
       translationMetadataRef: translatedAudioMetadataRef,
       segmentsRef: audioUploadSegmentsRef,
+      recordingDiagnostics: recordingDiagnosticsRef.current,
       setRecordingState,
       setTranslatedAudioState,
       upload: {

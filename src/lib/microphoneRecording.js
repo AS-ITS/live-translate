@@ -25,6 +25,7 @@ export function createMicrophoneRecordingController(options = {}) {
     : 1000;
   const now = options.now || (() => Date.now());
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
+  const diagnostics = options.diagnostics || null;
 
   let recorder = null;
   let chunks = [];
@@ -59,7 +60,7 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     chunks = [];
-    return startRecorder(input.stream);
+    return startRecorder(input.stream, { beginDiagnostics: true });
   }
 
   async function pause() {
@@ -97,6 +98,7 @@ export function createMicrophoneRecordingController(options = {}) {
     if (state.status === 'ready') {
       return getState();
     }
+    diagnostics?.beginFinalize?.();
 
     if (recorder) {
       setState({ status: 'finalizing' });
@@ -115,6 +117,7 @@ export function createMicrophoneRecordingController(options = {}) {
     const mimeType = selectedMimeType || chunks.find((chunk) => chunk?.type)?.type || '';
     const extension = extensionForMimeType(mimeType);
     const blob = new BlobImpl(chunks, mimeType ? { type: mimeType } : undefined);
+    diagnostics?.finishFinalize?.(blob);
     return setState({
       status: 'ready',
       blob,
@@ -155,7 +158,7 @@ export function createMicrophoneRecordingController(options = {}) {
     state = { ...IDLE_STATE };
   }
 
-  function startRecorder(stream) {
+  function startRecorder(stream, { beginDiagnostics = false } = {}) {
     try {
       recorder = selectedMimeType
         ? new MediaRecorderImpl(stream, { mimeType: selectedMimeType })
@@ -166,9 +169,11 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     const recorderMimeType = recorder.mimeType || selectedMimeType;
+    if (beginDiagnostics) diagnostics?.reset?.({ mimeType: recorderMimeType });
     selectedMimeType = recorderMimeType;
     recorder.ondataavailable = (event) => {
       if (collectChunks && event?.data && dataHasContent(event.data)) {
+        diagnostics?.recordRecorderChunk?.(event.data);
         chunks.push(event.data);
       }
     };
@@ -232,7 +237,8 @@ export function createMicrophoneRecordingController(options = {}) {
     resume,
     finalize,
     cleanup,
-    getState
+    getState,
+    getDiagnostics: () => diagnostics?.snapshot?.() || null
   };
 }
 

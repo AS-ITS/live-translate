@@ -86,6 +86,10 @@ test('unexpected close triggers connection failure after cleanup', async () => {
     liveSessionId: failures[0].diagnostic.liveSessionId,
     segmentId: failures[0].diagnostic.segmentId,
     audioCallbackCount: 0,
+    audioCallbackGapCount: 0,
+    maxAudioCallbackGapMs: 0,
+    lastAudioCallbackGapMs: null,
+    audioCallbackGapP95Ms: 0,
     captureProcessorMode: 'script',
     captureGraphGeneration: 0,
     activeCaptureGraphGeneration: null,
@@ -115,6 +119,14 @@ test('failure diagnostics expose provider codes without exposing credentials', a
   assert.equal(failures[0].diagnostic.providerReason, '[redacted]');
   assert.equal(session.getDebugSnapshot().failureDiagnostics.length, 1);
   assert.equal(JSON.stringify(session.getDebugSnapshot()).includes('secret-token-value'), false);
+});
+
+test('staging-safe debug snapshots redact pending transcript text', () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  const snapshot = session.getDebugSnapshot({ includeText: false });
+
+  assert.equal(snapshot.pendingInputTranscript, null);
+  assert.equal(snapshot.pendingOutputTranscript, null);
 });
 
 test('expected user stop does not trigger connection failure', async () => {

@@ -831,6 +831,23 @@ test('live recording can start while the meeting list is still loading', async (
   await expect(page.getByText('聆聽中')).toBeVisible();
 });
 
+test('recording diagnostics debug API exposes bounded numeric metadata', async ({ page }) => {
+  await gotoMockMeetingLive(page);
+
+  await expect.poll(
+    () => page.evaluate(() => window.__liveTranslateRecordingDebug?.getSnapshot?.()),
+    { timeout: 5000 }
+  ).not.toBeUndefined();
+  const snapshot = await page.evaluate(() => window.__liveTranslateRecordingDebug.getSnapshot());
+  expect(snapshot).toMatchObject({
+    chunkCount: 0,
+    totalChunkBytes: 0,
+    chunkCallbackGapP95Ms: 0,
+    upload: null
+  });
+  expect(JSON.stringify(snapshot)).not.toMatch(/transcript|token|signed.?url|audio bytes/i);
+});
+
 test('live recording falls back when AudioWorklet has no callback', async ({ page }) => {
   await page.addInitScript(() => {
     const AudioContextImpl = window.AudioContext;

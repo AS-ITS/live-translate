@@ -57,6 +57,33 @@ Cloud checks are split by deployment risk:
 - Staging cloud smoke is not enabled in GitHub Actions; use the local staging-equivalent validation above. The retained `tests/cloud/stagingSmoke.spec.js` is an optional asset for a future cloud check.
 - Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
 
+## Issue #37 Phase 0 recording diagnostics
+
+Staging performance runs may opt in to the redacted browser diagnostics API by
+building the frontend with `VITE_LIVE_TRANSLATE_DIAGNOSTICS=true`. This flag
+exposes numeric recorder/upload metrics and the sanitized LiveSession snapshot;
+it does not enable verbose Live event logging or expose transcript text, tokens,
+signed URLs, or audio payloads. Production must leave the flag unset.
+
+Run three paired five-minute recordings in both Chrome on macOS and Safari on
+macOS. Each pair uses the same staging Meeting, microphone, network condition,
+and short speech script: one recording-off control, followed by one
+recording-on treatment. Include one pause/resume treatment pair and wait for
+the final audio artifact to reach a terminal status before collecting the
+snapshot.
+
+At the end of each run, collect:
+
+- `window.__liveTranslateRecordingDebug.getSnapshot()`
+- `window.__liveTranslateDebug.getSnapshot()`
+- browser, OS, browser version, commit/build identifier, and run mode
+
+Compare treatment runs with their control. Treat two or more treatment runs
+with a callback-gap p95 increase above 20%, a new 500ms-or-longer gap, or any
+audio loss/recovery failure as evidence for the OPFS gate. The default
+15-minute segment rollover is not exercised by a five-minute run; rollover
+upload contention therefore remains explicitly unverified.
+
 ```bash
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
 ```

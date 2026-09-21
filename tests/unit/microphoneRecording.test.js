@@ -6,6 +6,7 @@ import {
   createMicrophoneRecordingController,
   extensionForMimeType
 } from '../../src/lib/microphoneRecording.js';
+import { createRecordingDiagnostics } from '../../src/lib/recordingDiagnostics.js';
 
 test('chooseSupportedMimeType uses preferred supported recording format', () => {
   const MediaRecorderImpl = mockMediaRecorderClass({
@@ -74,6 +75,25 @@ test('controller records start, pause, resume, and finalize chunks into one blob
   assert.equal(finalized.fileName, 'live-translate-input-audio-session-1-20260730-010203.webm');
   assert.equal(await finalized.blob.text(), 'firstsecond');
   assert.equal(recorderInstances[0].startTimesliceMs, 1000);
+});
+
+test('controller records bounded diagnostics without changing recording state shape', async () => {
+  const recorderInstances = [];
+  const diagnostics = createRecordingDiagnostics({ enabled: true, now: () => 100 });
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    diagnostics
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-diagnostics' });
+  recorderInstances[0].emitChunk(new Blob(['first'], { type: 'audio/webm' }));
+  const finalized = await controller.finalize();
+
+  assert.equal(finalized.status, 'ready');
+  assert.equal(controller.getDiagnostics().chunkCount, 1);
+  assert.equal(controller.getDiagnostics().finalizedBlobBytes, 5);
+  assert.equal(controller.getState().diagnostics, undefined);
 });
 
 test('controller can track recording state without retaining MediaRecorder chunks', async () => {

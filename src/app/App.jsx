@@ -4,7 +4,7 @@ import { targetLanguageLabelFor } from '../lib/languages.js';
 import { failureUiStateForClassification } from '../lib/failureUiState.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream } from '../lib/mediaDevices.js';
 import { createMemorySessionRepository } from '../lib/sessionRepository.js';
-import { createSessionReadApiClient, isSessionReadCloudUnavailable } from '../lib/sessionReadApiClient.js';
+import { createSessionReadApiClient, isSessionReadCloudUnavailable, readSessionDetailWithTranslationHistory } from '../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../lib/meetingReadApiClient.js';
 import { meetingApiErrorMessage } from '../lib/meetingApiError.js';
@@ -25,7 +25,6 @@ import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLi
 import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '../lib/transcriptPolishing.js';
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
-import { mergeRetranslationHistoryIntoDetail } from '../lib/sessionTranslationHistory.js';
 import {
   appendNewFinalTranscriptItems,
   buildFinalizePatch,
@@ -156,6 +155,7 @@ export function App() {
   const sessionRef = useRef(null);
   const startLiveRecordingInFlightRef = useRef(false);
   const sessionSnapshotCloudErrorSessionsRef = useRef(new Set());
+  const sessionReadCloudErrorSessionsRef = useRef(new Set());
   const pendingMicrophoneStreamRef = useRef(null);
   const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const inputAudioUploadChunksRef = useRef([]);
@@ -583,8 +583,8 @@ const activeMeetingCheckpointRef = useRef(null);
     let cancelled = false;
     let timer = null;
     const poll = async () => {
+      const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
       try {
-        const sessionId = activeSessionRecordIdRef.current || polishingSessionIdRef.current;
         const detail = await getSessionDetailWithTranslationHistory(sessionId);
         applyInitialTranslationOutputs(detail);
         const outputs = completedPolishingOutputs(detail);
@@ -627,6 +627,10 @@ const activeMeetingCheckpointRef = useRef(null);
         }
       } catch (error) {
         if (isSessionReadCloudUnavailable(error)) {
+          if (sessionId && !sessionReadCloudErrorSessionsRef.current.has(sessionId)) {
+            sessionReadCloudErrorSessionsRef.current.add(sessionId);
+            console.warn('Session read polling unavailable.', safePersistenceDiagnostic(error));
+          }
           if (timer) window.clearInterval(timer);
           return;
         }
@@ -1586,20 +1590,10 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   async function getSessionDetailWithTranslationHistory(sessionId) {
-    const [sessionDetailResult, translationHistoryResult] = await Promise.allSettled([
-      sessionReadApiClientRef.current.getSessionDetail(sessionId),
-      sessionReadApiClientRef.current.getSessionTranslations(sessionId)
-    ]);
-    const detailError = sessionDetailResult.status === 'rejected' ? sessionDetailResult.reason : null;
-    const translationError = translationHistoryResult.status === 'rejected' ? translationHistoryResult.reason : null;
-    if (detailError && !isSessionReadCloudUnavailable(detailError)) throw detailError;
-    if (translationError && !isSessionReadCloudUnavailable(translationError) && !sessionDetailResult.value) {
-      throw translationError;
-    }
-    return mergeRetranslationHistoryIntoDetail(
-      sessionDetailResult.status === 'fulfilled' ? sessionDetailResult.value : null,
-      translationHistoryResult.status === 'fulfilled' ? translationHistoryResult.value : null
-    );
+    return readSessionDetailWithTranslationHistory({
+      apiClient: sessionReadApiClientRef.current,
+      sessionId
+    });
   }
 
   async function loadMeetingResumeDraft(meetingId) {

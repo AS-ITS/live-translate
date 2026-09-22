@@ -2527,6 +2527,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'GET' && isSessionTranslationHistoryPath(path)) {
+    let translationErrorCode = null;
+    let translationSupabaseStatus = null;
     try {
       const { sessionId, targetLanguageCode } = parseSessionTranslationHistoryPath(req.url || path);
       if (targetLanguageCode !== undefined && !isSupportedLanguage(targetLanguageCode)) throw createHttpError('unsupported_language');
@@ -2534,7 +2536,25 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (!result) { statusCode = 404; sendJson(res, statusCode, errorPayload('session_not_found', requestId), requestId); return; }
       statusCode = 200; sendJson(res, statusCode, result, requestId);
     } catch (error) {
-      const code = errorCodeFor(error); statusCode = ERROR_RESPONSES[code]?.status || error.status || 500; sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      const code = errorCodeFor(error);
+      translationErrorCode = code;
+      translationSupabaseStatus = Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null;
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    } finally {
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin,
+        errorCode: translationErrorCode,
+        supabaseStatus: translationSupabaseStatus
+      });
     }
     return;
   }

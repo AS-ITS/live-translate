@@ -1,4 +1,5 @@
 import { authenticatedFetch } from './accessToken.js';
+import { mergeRetranslationHistoryIntoDetail } from './sessionTranslationHistory.js';
 
 export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') {
@@ -115,6 +116,32 @@ export function createSessionReadApiClient({ fetchImpl = globalThis.fetch, baseU
   };
 }
 
+export async function readSessionDetailWithTranslationHistory({ apiClient, sessionId } = {}) {
+  if (!apiClient || typeof apiClient.getSessionDetail !== 'function' || typeof apiClient.getSessionTranslations !== 'function') {
+    throw new TypeError('session read API client must expose detail and translation history readers.');
+  }
+
+  const [sessionDetailResult, translationHistoryResult] = await Promise.allSettled([
+    apiClient.getSessionDetail(sessionId),
+    apiClient.getSessionTranslations(sessionId)
+  ]);
+  const detailError = sessionDetailResult.status === 'rejected' ? sessionDetailResult.reason : null;
+  const translationError = translationHistoryResult.status === 'rejected' ? translationHistoryResult.reason : null;
+
+  if (detailError && !isSessionReadCloudUnavailable(detailError)) throw detailError;
+  if (translationError && !isSessionReadCloudUnavailable(translationError) && !sessionDetailResult.value) {
+    throw translationError;
+  }
+  if (isSessionReadCloudUnavailable(detailError) && isSessionReadCloudUnavailable(translationError)) {
+    throw detailError;
+  }
+
+  return mergeRetranslationHistoryIntoDetail(
+    sessionDetailResult.status === 'fulfilled' ? sessionDetailResult.value : null,
+    translationHistoryResult.status === 'fulfilled' ? translationHistoryResult.value : null
+  );
+}
+
 function buildUrl(baseUrl, path) {
   const normalizedBaseUrl = String(baseUrl || '').replace(/\/+$/, '');
 
@@ -140,6 +167,8 @@ async function assertOkResponse(response) {
   if (Number.isInteger(status) && status >= 100 && status <= 599) error.status = status;
   const code = body?.error?.code || body?.code;
   if (typeof code === 'string' && /^[a-z0-9][a-z0-9_:-]*$/iu.test(code)) error.code = code;
+  const requestId = body?.error?.requestId || body?.requestId || response.headers?.get?.('x-request-id');
+  if (typeof requestId === 'string' && requestId.trim() !== '') error.requestId = requestId;
   throw error;
 }
 

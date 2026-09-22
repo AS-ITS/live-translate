@@ -19,6 +19,7 @@ import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSes
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 import { finalizePendingTranscriptItems, transcriptItemsForStream } from '../../lib/transcript.js';
 import { createRecoverySingleFlight } from '../../lib/recoverySingleFlight.js';
+import { createSegmentTransitionLock } from '../../lib/segmentTransitionLock.js';
 import { stopSessionSafely } from '../../lib/stopSessionSafely.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
@@ -90,6 +91,7 @@ export function useLiveRecordingController({
   const startOperationRef = useRef(null);
   const audioUploadControllerRef = useRef(null);
   const recoverySingleFlightRef = useRef(null);
+  const segmentTransitionLockRef = useRef(null);
   const audioUpload = useMemo(() => {
     if (!audioUploadControllerRef.current && audio.upload) {
       audioUploadControllerRef.current = createLiveAudioBindings(audio.upload);
@@ -467,6 +469,10 @@ export function useLiveRecordingController({
       recoverySingleFlightRef.current = createRecoverySingleFlight();
     }
     const recoverySingleFlight = recoverySingleFlightRef.current;
+    if (!segmentTransitionLockRef.current) {
+      segmentTransitionLockRef.current = createSegmentTransitionLock();
+    }
+    const segmentTransitionLock = segmentTransitionLockRef.current;
     const recoveryKeyFor = (meetingCheckpoint) => (
       meetingCheckpoint?.meetingId && meetingCheckpoint?.segmentId
         ? `${meetingCheckpoint.meetingId}:${meetingCheckpoint.segmentId}`
@@ -925,21 +931,28 @@ export function useLiveRecordingController({
     async startReconnectSession({ generationId, classification }) {
       if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) return;
 
+      const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
+      const transitionKey = recoveryKeyFor(meetingCheckpoint);
+      if (!transitionKey) return;
+      const releaseTransition = segmentTransitionLock.tryAcquire(transitionKey);
+      if (!releaseTransition) return;
+
       recovery.setError('');
       recovery.invalidateLiveSessionCallbacks();
       recovery.setStatusLabelOverride('');
       recovery.setStatus('reconnecting');
       recovery.cancelSegmentSwitch?.();
 
-      const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
       const nextLiveSessionId = recovery.generateLiveSessionId();
       let recoveredSegment;
       let reconnectStage = 'create_session';
-      const session = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
-      recovery.reconnectSessionRef.current = session;
-
+      let session = null;
       try {
-        if (!meetingCheckpoint) throw new Error('Missing active meeting checkpoint.');
+        session = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
+        recovery.reconnectSessionRef.current = session;
+
+        try {
+          if (!meetingCheckpoint) throw new Error('Missing active meeting checkpoint.');
         reconnectStage = 'flush_audio';
         await audioController.pauseRawAudioRecording();
         await recovery.finalizePendingTranscriptItemsForStop();
@@ -1017,6 +1030,9 @@ export function useLiveRecordingController({
       recovery.startSegmentSwitch?.();
       recovery.setStatusLabelOverride('');
       recovery.setStatus('listening');
+      } finally {
+        releaseTransition();
+      }
     },
     async resumeMeetingSession() {
       if (!recovery.resumeDraft || recovery.isActive) return;
@@ -1129,11 +1145,18 @@ export function useLiveRecordingController({
       const previousSession = recovery.sessionRef.current;
       if (!meetingCheckpoint || !previousSession || recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 
-      recovery.invalidateLiveSessionCallbacks();
-      recovery.setError('');
-      recovery.setStatusLabelOverride('切換下一段中');
-      recovery.setStatus('switching-segment');
-      const nextLiveSessionId = recovery.generateLiveSessionId();
+      const transitionKey = recoveryKeyFor(meetingCheckpoint);
+      if (!transitionKey) return;
+      const releaseTransition = segmentTransitionLock.tryAcquire(transitionKey);
+      if (!releaseTransition) return;
+
+      try {
+        recovery.reconnectController().cancel();
+        recovery.invalidateLiveSessionCallbacks();
+        recovery.setError('');
+        recovery.setStatusLabelOverride('切換下一段中');
+        recovery.setStatus('switching-segment');
+        const nextLiveSessionId = recovery.generateLiveSessionId();
 
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('segment-rollover');
@@ -1192,8 +1215,11 @@ export function useLiveRecordingController({
         startedAt: Date.now()
       });
     }
-    recovery.setStatusLabelOverride('下一段已開始');
-      recovery.setStatus('listening');
+        recovery.setStatusLabelOverride('下一段已開始');
+        recovery.setStatus('listening');
+      } finally {
+        releaseTransition();
+      }
     },
     reconnectController() {
       if (!reconnectControllerRef.current) {

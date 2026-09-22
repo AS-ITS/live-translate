@@ -2,6 +2,7 @@
 
 ## 2026-09-22
 
+- 修正長會議 rollover 與 provider reconnect 同時操作同一 Segment 時的 recovery race；同一段落現在只允許一個 transition，避免重複 `/recover` 回傳 409 並誤顯示即時翻譯失敗。
 - 修正錄音期間 Session detail 與 translation history 同時遇到雲端 503 時仍每兩秒輪詢的問題；保留畫面字幕與錄音，並補上安全的 request ID 與 Supabase 診斷記錄。
 - 修正錄音啟動在 Segment API 失敗時，因未建立 session 的清理流程再次讀取 `.catch` 而遮蔽原始錯誤的問題。
 - Session snapshot 遇到雲端 503 時停止背景重試與重複 UI 錯誤，保留錄音與畫面上的逐字稿；明確 retry 仍可重新同步。

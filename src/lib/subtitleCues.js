@@ -335,7 +335,8 @@ function moveClosedCurrentCue(state, event) {
     // A late counterpart or cumulative revision remains paired with the
     // boundary-marked Cue. A genuinely new stream value starts a new pending
     // pair, without finalizing the old one.
-    if (!isSameUpdate && existing && event.stream === (current.sourceText ? 'source' : 'translation')) {
+    if (!isSameUpdate && existing && event.stream === (current.sourceText ? 'source' : 'translation')
+      && !hasSameAudioTurnId(current, event)) {
       return moveCueToNextState(state, current, event);
     }
   }

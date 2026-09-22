@@ -165,6 +165,7 @@ export function App() {
   const audioUploadSegmentsRef = useRef(createAudioUploadSegmentState());
   const audioUploadRetryTimersRef = useRef({ input: null, translation: null });
   const audioUploadRetryAttemptsRef = useRef({ input: 0, translation: 0 });
+  const meetingCuePublishQueuesRef = useRef(new Map());
   const recordingDiagnosticsRef = useRef(createRecordingDiagnostics({ enabled: LIVE_DIAGNOSTICS_ENABLED }));
   useEffect(() => {
     if (!LIVE_DIAGNOSTICS_ENABLED || typeof window === 'undefined') return undefined;
@@ -1392,7 +1393,16 @@ const activeMeetingCheckpointRef = useRef(null);
       && (!cue.sessionId || cue.sessionId === sessionId)
       && (!cue.segmentId || cue.segmentId === meetingCheckpoint.segmentId)
     ));
-    await Promise.all(finalCues.map(async (cue) => {
+    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId)));
+  }
+
+  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId) {
+    const key = `${sessionId}:${cue.cueId}`;
+    const previous = meetingCuePublishQueuesRef.current.get(key) || Promise.resolve();
+    const next = previous.catch(() => {}).then(async () => {
+      if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+        || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
+        || activeSessionRecordIdRef.current !== sessionId) return;
       try {
         await meetingCueApiClientRef.current.publish({
           meetingId: meetingCheckpoint.meetingId,
@@ -1411,7 +1421,12 @@ const activeMeetingCheckpointRef = useRef(null);
           });
         }
       }
-    }));
+    });
+    meetingCuePublishQueuesRef.current.set(key, next);
+    void next.finally(() => {
+      if (meetingCuePublishQueuesRef.current.get(key) === next) meetingCuePublishQueuesRef.current.delete(key);
+    }).catch(() => {});
+    return next;
   }
 
   function cueCheckpointForState(state) {

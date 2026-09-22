@@ -1319,6 +1319,35 @@ test('normalizer marks late input and output transcript events as final', () => 
   assert.equal(events[1].isLateTranscript, true);
 });
 
+test('same audio turn keeps a late CJK suffix in the existing cue after a boundary', () => {
+  let state = createSubtitleCueState();
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'source-prefix',
+    stream: 'source',
+    text: '你',
+    audioTurnId: 'audio-turn-1',
+    sessionTimeMs: 100,
+    isFinal: true
+  }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'boundary',
+    audioTurnId: 'audio-turn-1',
+    turnComplete: true,
+    sessionTimeMs: 110
+  }));
+  state = applySubtitleCueEvent(state, baseEvent({
+    eventId: 'source-suffix',
+    stream: 'source',
+    text: '好。',
+    audioTurnId: 'audio-turn-1',
+    sessionTimeMs: 120,
+    isFinal: true
+  }));
+
+  assert.equal(state.currentCue?.sourceText, '你好。');
+  assert.equal(state.pendingCues.length, 0);
+});
+
 function baseEvent(overrides = {}) {
   return {
     sessionId: 'session-1',

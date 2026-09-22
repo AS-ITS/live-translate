@@ -1968,11 +1968,15 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   }
 
   if (req.method === 'POST' && isMeetingCuePublishPath(path)) {
+    const cueRequestContext = {};
     try {
       if ((!meetingEventBroadcaster && !meetingCueService) || !sessionRepository) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId, segmentId } = parseMeetingCuePublishPath(path);
+      cueRequestContext.meetingId = meetingId;
+      cueRequestContext.segmentId = segmentId;
       const body = await readJson(req, { maxBytes: 100_000 });
       const sessionId = body?.sessionId || req.headers?.['x-recorder-session-id'];
+      cueRequestContext.sessionId = sessionId || null;
       const existing = await sessionRepository.getSessionRecord(sessionId);
       if (!existing?.sessionRecord || existing.sessionRecord.meetingId !== meetingId || existing.sessionRecord.segmentId !== segmentId) {
         throw createHttpError('recorder_session_mismatch');
@@ -1989,8 +1993,10 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         });
       }
       const cue = normalizePublishedCue(body?.cue, { meetingId, segmentId, sessionId });
+      cueRequestContext.cueId = cue.cueId;
+      cueRequestContext.sequence = cue.sequence;
       if (meetingCueService) {
-        await meetingCueService.persist({ meetingId, segmentId, sessionId, cue });
+        await meetingCueService.persist({ meetingId, segmentId, sessionId, sessionRecord: existing.sessionRecord, cue });
         const event = meetingEventRepository
           ? await meetingEventRepository.append({ meetingId, segmentId, cue })
           : null;
@@ -2004,6 +2010,17 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } catch (error) {
       const code = errorCodeFor(error);
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      requestLogger({
+        level: statusCode >= 500 ? 'error' : 'warn',
+        event: 'meeting_cue_publish_failed',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: code,
+        ...cueRequestContext,
+        durationMs: Math.round(performance.now() - startedAt)
+      });
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     }
     return;

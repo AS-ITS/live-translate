@@ -6,11 +6,17 @@ export function createSupabaseMeetingCueService({ env = process.env, fetchImpl =
   const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
 
   return Object.freeze({
-    async persist({ meetingId, segmentId, sessionId, cue }) {
-      const sessions = await client.request('sessions', {
-        query: `?select=owner_user_id,id,meeting_id,segment_id&${eq('id', sessionId)}&${eq('meeting_id', meetingId)}&${eq('segment_id', segmentId)}`
-      });
-      const session = sessions[0];
+    async persist({ meetingId, segmentId, sessionId, sessionRecord = null, cue }) {
+      const session = sessionRecord
+        ? {
+            id: sessionRecord.id,
+            meeting_id: sessionRecord.meetingId,
+            segment_id: sessionRecord.segmentId,
+            owner_user_id: sessionRecord.ownerUserId
+          }
+        : (await client.request('sessions', {
+            query: `?select=owner_user_id,id,meeting_id,segment_id&${eq('id', sessionId)}&${eq('meeting_id', meetingId)}&${eq('segment_id', segmentId)}`
+          }))[0];
       if (!session) {
         const error = new Error('Recorder Session does not match the Meeting Segment.');
         error.code = 'recorder_session_mismatch';

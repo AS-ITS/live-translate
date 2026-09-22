@@ -18,6 +18,7 @@ import { selectedMeetingGlossaryEntries } from '../../lib/meetingGlossary.js';
 import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSessionRecord } from '../../lib/sessionRecordLifecycle.js';
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 import { finalizePendingTranscriptItems, transcriptItemsForStream } from '../../lib/transcript.js';
+import { createRecoverySingleFlight } from '../../lib/recoverySingleFlight.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
   status: 'skipped',
@@ -87,6 +88,7 @@ export function useLiveRecordingController({
   const recordingControllerRef = useRef(null);
   const startOperationRef = useRef(null);
   const audioUploadControllerRef = useRef(null);
+  const recoverySingleFlightRef = useRef(null);
   const audioUpload = useMemo(() => {
     if (!audioUploadControllerRef.current && audio.upload) {
       audioUploadControllerRef.current = createLiveAudioBindings(audio.upload);
@@ -457,6 +459,15 @@ export function useLiveRecordingController({
   }), [checkpointController, transcript]);
 
   const recoveryController = useMemo(() => {
+    if (!recoverySingleFlightRef.current) {
+      recoverySingleFlightRef.current = createRecoverySingleFlight();
+    }
+    const recoverySingleFlight = recoverySingleFlightRef.current;
+    const recoveryKeyFor = (meetingCheckpoint) => (
+      meetingCheckpoint?.meetingId && meetingCheckpoint?.segmentId
+        ? `${meetingCheckpoint.meetingId}:${meetingCheckpoint.segmentId}`
+        : null
+    );
     const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       const persisted = existingSessionId
@@ -495,7 +506,7 @@ export function useLiveRecordingController({
       audioController.prepareTranslatedAudioDownload(record);
       const initialItems = controller.appendInitialTranscriptItems(record.id, initialTranscript);
       checkpointController.markPendingSessionSnapshotItems(record.id, initialItems);
-      await checkpointController.flushSessionSnapshot(record.id);
+      void checkpointController.flushSessionSnapshot(record.id).catch(() => {});
       return record;
     },
     appendInitialTranscriptItems(sessionId, initialTranscript) {
@@ -609,34 +620,46 @@ export function useLiveRecordingController({
         recovery.activeMeetingCheckpointRef.current = null;
       }
     },
-    async interruptActiveMeeting({ failureReason, failureCategory } = {}) {
-      const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
-      if (!meetingCheckpoint) return null;
+      async interruptActiveMeeting({ failureReason, failureCategory } = {}) {
+        const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
+        if (!meetingCheckpoint) return null;
+        const recoveryKey = recoveryKeyFor(meetingCheckpoint);
+        if (!recoveryKey) return null;
 
-      try {
-        await checkpointController.flushMeetingCheckpointSync();
-        return await recovery.meetingCheckpointApiClientRef.current.recoverSegment({
-          meetingId: meetingCheckpoint.meetingId,
-          segmentId: meetingCheckpoint.segmentId,
-          idempotencyKey: `interrupt:${meetingCheckpoint.segmentId}:${failureReason}`,
-          checkpoint: {
-            idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:interrupt:${failureReason}`,
-            durableChunks: [],
-            pendingPartial: null
-          },
-          nextLiveSessionId: null,
-          failureReason: failureReason || 'unknown_error',
-          failureCategory: failureCategory || 'unknown',
-          outcome: 'interrupted'
+        return recoverySingleFlight.run(`${recoveryKey}:recover`, async () => {
+          try {
+            await checkpointController.flushMeetingCheckpointSync();
+            return await recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+              meetingId: meetingCheckpoint.meetingId,
+              segmentId: meetingCheckpoint.segmentId,
+              idempotencyKey: `interrupt:${meetingCheckpoint.segmentId}:${failureReason}`,
+              checkpoint: {
+                idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:interrupt:${failureReason}`,
+                durableChunks: [],
+                pendingPartial: null
+              },
+              nextLiveSessionId: null,
+              failureReason: failureReason || 'unknown_error',
+              failureCategory: failureCategory || 'unknown',
+              outcome: 'interrupted'
+            });
+          } catch {
+            return null;
+          }
         });
-      } catch {
-        return null;
-      }
-    },
-    async finalizeFailedSession({ status = 'failed', failureReason, failureCategory } = {}) {
-      await this.interruptActiveMeeting({ failureReason, failureCategory });
-      await this.finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
-    },
+      },
+      async finalizeFailedSession({ status = 'failed', failureReason, failureCategory } = {}) {
+        const meetingCheckpoint = recovery.activeMeetingCheckpointRef.current;
+        const recoveryKey = recoveryKeyFor(meetingCheckpoint);
+        if (!recoveryKey) {
+          await this.finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
+          return;
+        }
+        await recoverySingleFlight.run(`${recoveryKey}:finalize`, async () => {
+          await this.interruptActiveMeeting({ failureReason, failureCategory });
+          await this.finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
+        });
+      },
     async completeResumableMeeting() {
       const currentMeetingId = recovery.getRouteMeetingId?.();
       if (!recovery.resumeDraft || !currentMeetingId || recovery.resumeDraft.meetingId !== currentMeetingId || state.isActive || state.status !== 'idle') return;
@@ -695,6 +718,7 @@ export function useLiveRecordingController({
       recovery.invalidateLiveSessionCallbacks();
       recovery.sessionStopRequestedRef.current = false;
       recovery.reconnectController().reset();
+      recoverySingleFlight.clearAll();
       recovery.reconnectFailureDiagnosticRef.current = null;
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = false;
@@ -780,6 +804,7 @@ export function useLiveRecordingController({
       recovery.sessionStopRequestedRef.current = false;
       recovery.meetingResumeDraftRequestIdRef.current += 1;
       recovery.reconnectController().reset();
+      recoverySingleFlight.clearAll();
       recovery.reconnectFailureDiagnosticRef.current = null;
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = false;
@@ -789,6 +814,7 @@ export function useLiveRecordingController({
       recovery.setStatusLabelOverride('');
       let session;
       let record = null;
+      const startupStartedAt = Date.now();
       recovery.setStatus('requesting-permission');
       try {
         await audioController.cleanup();
@@ -815,7 +841,7 @@ export function useLiveRecordingController({
         record = await controller.createCurrentSessionRecord(meetingCheckpoint);
         if (!recovery.sessionControlLeaseRef.current?.tryAcquire(record.id)) throw new Error('目前已有工作階段由其他頁籤控制。');
         recovery.setHasSessionControl(true);
-        session = await recovery.createSession({ preserveTranscript: false, liveSessionId });
+        session = await recovery.createSession({ preserveTranscript: false, liveSessionId, startupStartedAt });
         recovery.sessionRef.current = session;
         const started = await session.start();
         if (!started) throw new Error('首個音訊資料未成功送出。');
@@ -905,20 +931,24 @@ export function useLiveRecordingController({
         recovery.archiveActiveTranscriptSegment();
 
         reconnectStage = 'recover_segment';
-        recoveredSegment = await recovery.meetingCheckpointApiClientRef.current.recoverSegment({
-          meetingId: meetingCheckpoint.meetingId,
-          segmentId: meetingCheckpoint.segmentId,
-          idempotencyKey: `recover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
-          checkpoint: {
-            idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:recover:${nextLiveSessionId}`,
-            durableChunks: [],
-            pendingPartial: null
-          },
-          nextLiveSessionId,
-          failureReason: classification.reason,
-          failureCategory: classification.category,
-          outcome: 'interrupted'
-        });
+        const recoveryKey = recoveryKeyFor(meetingCheckpoint);
+        if (!recoveryKey) throw new Error('Missing active meeting checkpoint key.');
+        recoveredSegment = await recoverySingleFlight.run(`${recoveryKey}:recover`, () => (
+          recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+            meetingId: meetingCheckpoint.meetingId,
+            segmentId: meetingCheckpoint.segmentId,
+            idempotencyKey: `recover:${meetingCheckpoint.segmentId}:${nextLiveSessionId}`,
+            checkpoint: {
+              idempotencyKey: `checkpoint:${meetingCheckpoint.segmentId}:recover:${nextLiveSessionId}`,
+              durableChunks: [],
+              pendingPartial: null
+            },
+            nextLiveSessionId,
+            failureReason: classification.reason,
+            failureCategory: classification.category,
+            outcome: 'interrupted'
+          })
+        ));
 
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
           await session.stop().catch(() => {});
@@ -998,22 +1028,24 @@ export function useLiveRecordingController({
         const currentSegment = segmentsResult.segments.find((segment) => segment.id === draft.segmentId);
         const resumed = currentSegment?.status === 'created'
           ? await recovery.meetingCheckpointApiClientRef.current.startMeeting({ meetingId: draft.meetingId, segmentId: draft.segmentId, liveSessionId: nextLiveSessionId })
-          : await recovery.meetingCheckpointApiClientRef.current.recoverSegment({
-            meetingId: draft.meetingId,
-            segmentId: draft.segmentId,
-            idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
-            checkpoint: {
-              idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
-              durableChunks: [],
-              pendingPartial: null,
-      finalCues: preparedCueState.finalCues.filter((item) => item.segmentId === draft.segmentId && isPersistableFinalCue(item)),
-              cueCheckpoint: recovery.cueCheckpointForState(preparedCueState)
-            },
-            nextLiveSessionId,
-            failureReason: 'manual_resume',
-            failureCategory: 'user_intent',
-            outcome: 'interrupted'
-          });
+          : await recoverySingleFlight.run(`${draft.meetingId}:${draft.segmentId}:recover`, () => (
+            recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+              meetingId: draft.meetingId,
+              segmentId: draft.segmentId,
+              idempotencyKey: `recover:${draft.segmentId}:${nextLiveSessionId}`,
+              checkpoint: {
+                idempotencyKey: `checkpoint:${draft.segmentId}:resume:${nextLiveSessionId}`,
+                durableChunks: [],
+                pendingPartial: null,
+                finalCues: preparedCueState.finalCues.filter((item) => item.segmentId === draft.segmentId && isPersistableFinalCue(item)),
+                cueCheckpoint: recovery.cueCheckpointForState(preparedCueState)
+              },
+              nextLiveSessionId,
+              failureReason: 'manual_resume',
+              failureCategory: 'user_intent',
+              outcome: 'interrupted'
+            })
+          ));
         const nextMeetingCheckpoint = { meetingId: draft.meetingId, segmentId: resumed.segment.id };
         recoveredMeetingCheckpoint = nextMeetingCheckpoint;
         recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
@@ -1035,16 +1067,18 @@ export function useLiveRecordingController({
       } catch (error) {
         await session?.stop().catch(() => {});
         if (recoveredMeetingCheckpoint) {
-          await recovery.meetingCheckpointApiClientRef.current.recoverSegment({
-            meetingId: recoveredMeetingCheckpoint.meetingId,
-            segmentId: recoveredMeetingCheckpoint.segmentId,
-            idempotencyKey: `resume-failed:${recoveredMeetingCheckpoint.segmentId}:${resumedLiveSessionId || 'unknown'}`,
-            checkpoint: { idempotencyKey: `checkpoint:${recoveredMeetingCheckpoint.segmentId}:resume-failed`, durableChunks: [], pendingPartial: null },
-            nextLiveSessionId: null,
-            failureReason: 'resume_start_failed',
-            failureCategory: 'startup',
-            outcome: 'interrupted'
-          }).catch(() => {});
+          await recoverySingleFlight.run(`${recoveredMeetingCheckpoint.meetingId}:${recoveredMeetingCheckpoint.segmentId}:recover`, () => (
+            recovery.meetingCheckpointApiClientRef.current.recoverSegment({
+              meetingId: recoveredMeetingCheckpoint.meetingId,
+              segmentId: recoveredMeetingCheckpoint.segmentId,
+              idempotencyKey: `resume-failed:${recoveredMeetingCheckpoint.segmentId}:${resumedLiveSessionId || 'unknown'}`,
+              checkpoint: { idempotencyKey: `checkpoint:${recoveredMeetingCheckpoint.segmentId}:resume-failed`, durableChunks: [], pendingPartial: null },
+              nextLiveSessionId: null,
+              failureReason: 'resume_start_failed',
+              failureCategory: 'startup',
+              outcome: 'interrupted'
+            })
+          )).catch(() => {});
         }
         const failedSessionRecordId = resumedSessionRecordId || recovery.activeSessionRecordIdRef.current;
         if (failedSessionRecordId) {

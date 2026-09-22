@@ -209,6 +209,7 @@ const activeMeetingCheckpointRef = useRef(null);
   const polishingSessionIdRef = useRef(null);
   const suppressReconnectErrorRef = useRef(false);
   const reconnectFailureDiagnosticRef = useRef(null);
+  const handledLiveFailureGenerationsRef = useRef(new Set());
   const detailRequestIdRef = useRef(0);
   const meetingDetailRequestIdRef = useRef(0);
   const selectedMeetingIdRef = useRef(null);
@@ -963,7 +964,7 @@ const activeMeetingCheckpointRef = useRef(null);
     setStatus('error');
   }
 
-  async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId() }) {
+  async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId(), startupStartedAt = null }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
@@ -997,6 +998,7 @@ const activeMeetingCheckpointRef = useRef(null);
       active: false
     };
     liveSessionCallbackGenerationRef.current = callbackGeneration;
+    handledLiveFailureGenerationsRef.current.clear();
 
     const session = new LiveTranslateSession({
       liveSessionId,
@@ -1004,6 +1006,7 @@ const activeMeetingCheckpointRef = useRef(null);
       sessionId: activeSessionRecordIdRef.current,
       meetingId: activeMeetingCheckpointRef.current?.meetingId || null,
       segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
+      startupStartedAt,
       sessionClock: () => sessionTimeForSubtitleCues(),
       sourceLanguageCode,
       targetLanguageCode,
@@ -1057,6 +1060,8 @@ const activeMeetingCheckpointRef = useRef(null);
       },
       onError: (nextError) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        if (handledLiveFailureGenerationsRef.current.has(callbackGeneration.generation)) return;
+        handledLiveFailureGenerationsRef.current.add(callbackGeneration.generation);
         if (suppressReconnectErrorRef.current) {
           suppressReconnectErrorRef.current = false;
           return;
@@ -1079,6 +1084,8 @@ const activeMeetingCheckpointRef = useRef(null);
       },
       onConnectionFailure: (failure) => {
         if (!isCurrentLiveSessionCallback(callbackGeneration)) return;
+        if (handledLiveFailureGenerationsRef.current.has(callbackGeneration.generation)) return;
+        handledLiveFailureGenerationsRef.current.add(callbackGeneration.generation);
         setLiveErrorCode(failure.rawError?.code || failure.rawEvent?.code || '');
         if (failure.source === 'microphone_disconnected' && failure.reasonHint === 'selected_device_missing') {
           selectedInputDeviceIdRef.current = '';

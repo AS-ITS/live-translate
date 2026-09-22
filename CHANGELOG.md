@@ -1,4 +1,9 @@
 # Changelog
+
+## 2026-09-22
+
+- 修正 live recording recovery race，同一 Meeting Segment 的 recover/finalize 現在使用 single-flight，避免 provider error 與 connection failure 重複送出 `/recover`。
+- Live startup debug snapshot 新增 mic、capture、token、provider setup、first PCM、server event、source transcript 與 subtitle cue timing milestones；session record snapshot 不再阻塞首個 PCM。
 - 修正即時字幕同一語音輪次的累積片段與數字尾段被覆蓋；Session read / translation API 503 改為安全記錄狀態與錯誤碼並停止無限輪詢。
 
 - Live recording startup now reports origin, authentication, and Gemini credential failures separately; local development prefers `dev_frontend_origin`, microphone recording emits bounded timeslice chunks, and long-meeting segment rollover rotates to a unique Live session ID with a fresh ephemeral token.

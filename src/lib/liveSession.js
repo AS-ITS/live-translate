@@ -65,8 +65,10 @@ export class LiveTranslateSession {
     audioTurnId = null,
     silenceFinalizeMs = LOCAL_SILENCE_FINALIZE_MS,
     speechActivityRmsThreshold = SPEECH_ACTIVITY_RMS_THRESHOLD,
-    firstPcmTimeoutMs = LIVE_SETUP_TIMEOUT_MS
-    , mode = 'translation'
+    firstPcmTimeoutMs = LIVE_SETUP_TIMEOUT_MS,
+    startupStartedAt = null,
+    onStartupMilestone,
+    mode = 'translation'
   }) {
     this.mode = mode;
     this.targetLanguageCode = targetLanguageCode;
@@ -104,6 +106,12 @@ export class LiveTranslateSession {
     this.silenceFinalizeMs = silenceFinalizeMs;
     this.speechActivityRmsThreshold = speechActivityRmsThreshold;
     this.firstPcmTimeoutMs = firstPcmTimeoutMs;
+    this.startupStartedAt = Number.isFinite(startupStartedAt) ? startupStartedAt : Date.now();
+    this.onStartupMilestone = onStartupMilestone;
+    this.startupTimings = {};
+    if (Number.isFinite(startupStartedAt)) {
+      this.startupTimings.start_click = { at: startupStartedAt, durationMs: 0 };
+    }
     this.inputSendingEnabled = false;
     this.captureEnabled = false;
     this.preRollDraining = false;
@@ -193,6 +201,7 @@ export class LiveTranslateSession {
 
   async start({ inputStream = null } = {}) {
     if (this.startPromise) return this.startPromise;
+    this.markStartupMilestone('session_start');
     this.startPromise = this.startLifecycle({ inputStream }).catch(async (error) => {
       this.logLiveEvent('startup:failure', { stage: this.audioCaptureStage, message: error?.message || String(error) });
       await this.cleanup({ closeSession: true, reason: 'startup-failure' });
@@ -226,6 +235,7 @@ export class LiveTranslateSession {
       trackReadyState: track.readyState,
       trackEnabled: track.enabled !== false
     });
+    this.markStartupMilestone('microphone_stream_ready');
     this.onMicrophoneReady?.({ mediaStream: this.mediaStream });
     this.startupStage = 'live_token';
     this.onConnecting?.();
@@ -266,6 +276,7 @@ export class LiveTranslateSession {
     if (!forceRefresh && this.tokenState && expiresAt - Date.now() > TOKEN_REFRESH_SAFETY_MS) return this.tokenState;
     let tokenResponse;
     try {
+      this.markStartupMilestone('live_token_request_start');
       tokenResponse = await fetchWithTimeout('/api/live-token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...this.authorizationHeaders },
@@ -280,6 +291,7 @@ export class LiveTranslateSession {
       }, TOKEN_TIMEOUT_MS);
     } catch (error) {
       this.startupStage = 'live_token';
+      this.markStartupMilestone('live_token_request_end', { failed: true });
       error.userMessage ||= '無法取得即時權杖。';
       this.logLiveEvent('liveToken:failure', { message: error?.message || String(error) });
       throw error;
@@ -288,14 +300,16 @@ export class LiveTranslateSession {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
       const errorCode = error.error?.code || 'token_request_failed';
       const startupMessage = userMessageForErrorCode(errorCode) || '無法準備即時翻譯請求。';
-      const startupError = new Error(startupMessage);
-      startupError.code = errorCode;
-      startupError.status = tokenResponse.status;
+    const startupError = new Error(startupMessage);
+    startupError.code = errorCode;
+    startupError.status = tokenResponse.status;
+    this.markStartupMilestone('live_token_request_end', { failed: true });
       startupError.userMessage = withHttpStatus(startupMessage, tokenResponse.status);
       throw startupError;
     }
     const response = await tokenResponse.json();
     this.logLiveEvent('liveToken:success', { expiresAt: response.expiresAt || null });
+    this.markStartupMilestone('live_token_request_end');
     this.tokenState = { ...response, fetchedAt: Date.now() };
     this.liveGlossaryEntries = Array.isArray(response.liveGlossaryEntries) ? response.liveGlossaryEntries : [];
     return this.tokenState;
@@ -329,6 +343,7 @@ export class LiveTranslateSession {
       return false;
     }
     this.session = connectedSession;
+    this.markStartupMilestone('provider_socket_open');
     this.logLiveEvent('socket:open', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
     this.trace('connect.resolved');
     this.providerReady = true;
@@ -373,6 +388,7 @@ export class LiveTranslateSession {
     await this.setOutputDevice(this.outputDeviceId);
     this.chunker = createPcmChunker({ sourceRate: this.audioContext.sampleRate });
     if (!this.setupAudioCapture()) throw this.startupError('audio_graph_attach_failed', '音訊 graph 無法建立。');
+    this.markStartupMilestone('capture_started', { captureProcessorMode: this.captureProcessorMode });
     this.onCaptureStateChange?.({ state: 'capturing', connectionEpoch: this.connectionEpoch });
   }
 
@@ -385,6 +401,22 @@ export class LiveTranslateSession {
     error.reasonHint = reason;
     this.recordFailureDiagnostic({ source: 'startup', reasonHint: reason, rawError: error });
     return error;
+  }
+
+  markStartupMilestone(name, details = {}) {
+    if (typeof name !== 'string' || name.trim() === '' || this.startupTimings[name]) return;
+    const at = Date.now();
+    const milestone = {
+      at,
+      durationMs: Math.max(0, at - this.startupStartedAt)
+    };
+    this.startupTimings[name] = milestone;
+    try {
+      this.onStartupMilestone?.({ name, ...milestone, ...details });
+    } catch {
+      // Diagnostics must never interrupt audio or provider startup.
+    }
+    this.logLiveEvent('startup:milestone', { name, ...milestone });
   }
 
   async reconnectProvider({
@@ -798,6 +830,7 @@ export class LiveTranslateSession {
     this.pcmGeneratedCount += 1;
     this.pcmGeneratedBytes += bytes.byteLength;
     this.firstPcmGeneratedAt ||= generatedAt;
+    this.markStartupMilestone('first_pcm_generated');
     this.lastPcmGeneratedAt = generatedAt;
     const record = {
       connectionEpoch: epoch,
@@ -858,6 +891,7 @@ export class LiveTranslateSession {
     }, 'pcm');
     if (!this.firstPcmChunkSent && outcome.result !== 'sync-throw' && outcome.result !== 'unsupported') {
       this.firstPcmChunkSent = true;
+      this.markStartupMilestone('first_pcm_sent', { result: outcome.result });
       const elapsedMs = Math.max(0, Date.now() - (this.captureStartedAt || Date.now()));
       this.logLiveEvent('audio.firstPcmChunkSent', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       this.logLiveEvent('firstPcmChunk:sent', {
@@ -1035,6 +1069,7 @@ export class LiveTranslateSession {
       this.trace('session.resumption.updated');
     }
     if (message?.setupComplete) {
+      this.markStartupMilestone('provider_setup_complete');
       this.logLiveEvent('socket:setupComplete', { connectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       if (this.setupCompleteResolver?.providerEpoch === epoch) this.setupCompleteResolver.resolve(true);
       return;
@@ -1046,6 +1081,7 @@ export class LiveTranslateSession {
     const content = message.serverContent;
     if (!this.providerFirstServerEventSeen) {
       this.providerFirstServerEventSeen = true;
+      this.markStartupMilestone('first_provider_server_event');
       this.trace('provider.firstServerEvent', { kind: 'message' });
     }
     const isFinal = Boolean(content?.turnComplete || content?.generationComplete);
@@ -1159,7 +1195,8 @@ export class LiveTranslateSession {
         eventId: event.eventId
       });
       if (!(isRetranslationResponse && event.stream === 'source')) {
-        this.onCueEvent?.(event);
+      this.markStartupMilestone('first_subtitle_cue');
+      this.onCueEvent?.(event);
       }
     }
     this.logLiveEvent('message.received', {
@@ -1189,6 +1226,7 @@ export class LiveTranslateSession {
           : { sourceLanguageDetection: content.inputTranscription.sourceLanguageDetection })
       }, transcriptEventId);
       this.logLiveEvent('inputTranscription.callback', { transcript });
+      this.markStartupMilestone('first_source_transcript');
       this.trace(transcript.isFinal ? 'input.final.received' : 'input.partial.received', { text: transcript.text });
       this.onInputTranscript?.(transcript);
       this.lastInputTranscriptText = transcript.text;
@@ -1210,6 +1248,7 @@ export class LiveTranslateSession {
           : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
       }, transcriptEventId);
       this.logLiveEvent('interimInputTranscription.callback', { transcript });
+      this.markStartupMilestone('first_source_transcript');
       this.trace('input.partial.received', { text: transcript.text });
       this.onInputTranscript?.(transcript);
       this.lastInputTranscriptText = transcript.text;
@@ -1658,6 +1697,7 @@ export class LiveTranslateSession {
       activeCaptureGraphGeneration: this.activeCaptureGraphGeneration,
       audioCaptureStage: this.audioCaptureStage,
       startupStage: this.startupStage,
+      startupTimings: { ...this.startupTimings },
       audioCallbackCount: this.audioCallbackCount,
       audioCallbackGapCount: this.audioCallbackGapCount,
       maxAudioCallbackGapMs: this.maxAudioCallbackGapMs,

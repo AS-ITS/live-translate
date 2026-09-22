@@ -2525,8 +2525,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         return;
       }
       const body = await readJson(req);
-      const allowedKeys = new Set(['name', 'status', 'targetLanguageCode', 'targetLanguageLabel', 'sourceLanguageCode', 'segmentId']);
+      const allowedKeys = new Set(['name', 'status', 'targetLanguageCode', 'targetLanguageLabel', 'sourceLanguageCode', 'meetingId', 'segmentId']);
       const patch = Object.fromEntries(Object.entries(body || {}).filter(([key]) => allowedKeys.has(key)));
+      if (patch.meetingId !== undefined && (typeof patch.meetingId !== 'string' || patch.meetingId.trim() === '')) {
+        throw createHttpError('invalid_request');
+      }
       if (patch.segmentId !== undefined && (typeof patch.segmentId !== 'string' || patch.segmentId.trim() === '')) {
         throw createHttpError('invalid_request');
       }

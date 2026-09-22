@@ -483,14 +483,21 @@ export function useLiveRecordingController({
         }
       }
     };
-    const controller = ({
+  const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       recovery.polishingSessionIdRef.current = null;
+      const sessionBinding = meetingCheckpoint?.meetingId && meetingCheckpoint?.segmentId
+        ? { meetingId: meetingCheckpoint.meetingId, segmentId: meetingCheckpoint.segmentId }
+        : {};
       const persisted = existingSessionId
-        ? await recovery.sessionCommandApiClientRef.current.update(existingSessionId, { status: 'active' })
-        : await recovery.sessionCommandApiClientRef.current.create({
-          name: sessionName.trim() || `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
-          targetLanguageCode,
+      ? await recovery.sessionCommandApiClientRef.current.update(existingSessionId, {
+        status: 'active',
+        ...sessionBinding
+      })
+      : await recovery.sessionCommandApiClientRef.current.create({
+        name: sessionName.trim() || `即時翻譯 ${new Date().toLocaleString('zh-TW')}`,
+        ...sessionBinding,
+        targetLanguageCode,
           targetLanguageLabel: recovery.targetLanguageLabelFor(targetLanguageCode),
           sourceLanguageCode,
           echoTargetLanguage,
@@ -901,7 +908,7 @@ export function useLiveRecordingController({
           failureReason: 'live_connect_failed',
           failureCategory: 'provider'
         }).catch(() => {});
-        await audioController.cleanup().catch(() => {});
+        await Promise.resolve(audioController.cleanup()).catch(() => {});
         if (record?.id) {
           recovery.sessionControlLeaseRef.current?.release(record.id);
           recovery.setHasSessionControl(false);

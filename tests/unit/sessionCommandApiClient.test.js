@@ -11,12 +11,22 @@ test('creates a Session through the command API', async () => {
     }
   });
 
-  const result = await client.create({ name: 'Product meeting', targetLanguageCode: 'en' });
+ const result = await client.create({
+ meetingId: 'meeting-1',
+ name: 'Product meeting',
+ segmentId: 'segment-1',
+ targetLanguageCode: 'en'
+ });
 
   assert.deepEqual(result.session, { id: 'session-1', status: 'created' });
   assert.equal(calls[0].url, '/api/sessions');
   assert.equal(calls[0].options.method, 'POST');
-  assert.deepEqual(JSON.parse(calls[0].options.body), { name: 'Product meeting', targetLanguageCode: 'en' });
+ assert.deepEqual(JSON.parse(calls[0].options.body), {
+ meetingId: 'meeting-1',
+ name: 'Product meeting',
+ segmentId: 'segment-1',
+ targetLanguageCode: 'en'
+ });
 });
 
 test('updates a Session and preserves API error code', async () => {

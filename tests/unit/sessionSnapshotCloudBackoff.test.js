@@ -47,6 +47,25 @@ test('explicit snapshot flush can retry a cloud-blocked session', async () => {
 
   coordinator.schedule('session-1');
   assert.equal(await coordinator.flush(), false);
-  assert.equal(await coordinator.flush('session-1'), true);
+  assert.equal(await coordinator.retry('session-1'), true);
   assert.deepEqual(calls, ['session-1', 'session-1']);
+});
+
+test('ordinary snapshot flush does not retry a cloud-blocked session', async () => {
+  const calls = [];
+  const coordinator = createSessionSnapshotSyncCoordinator({
+    syncSessionSnapshot: async (sessionId) => {
+      calls.push(sessionId);
+      const error = new Error('cloud unavailable');
+      error.status = 503;
+      throw error;
+    },
+    setTimeoutFn: (callback) => callback,
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.schedule('session-1');
+  await coordinator.flush();
+  assert.equal(await coordinator.flush('session-1'), false);
+  assert.deepEqual(calls, ['session-1']);
 });

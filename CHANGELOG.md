@@ -2,6 +2,9 @@
 
 ## 2026-09-22
 
+- 修正錄音啟動在 Segment API 失敗時，因未建立 session 的清理流程再次讀取 `.catch` 而遮蔽原始錯誤的問題。
+- Session snapshot 遇到雲端 503 時停止背景重試與重複 UI 錯誤，保留錄音與畫面上的逐字稿；明確 retry 仍可重新同步。
+- Recovery reset 不再無條件清除仍可能進行中的 single-flight 狀態，避免同一 Segment 重複送出 recover。
 - 修正 live recording recovery race，同一 Meeting Segment 的 recover/finalize 現在使用 single-flight，避免 provider error 與 connection failure 重複送出 `/recover`。
 - Live startup debug snapshot 新增 mic、capture、token、provider setup、first PCM、server event、source transcript 與 subtitle cue timing milestones；session record snapshot 不再阻塞首個 PCM。
 - 修正即時字幕同一語音輪次的累積片段與數字尾段被覆蓋；Session read / translation API 503 改為安全記錄狀態與錯誤碼並停止無限輪詢。

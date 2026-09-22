@@ -15,6 +15,7 @@ import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { createGeminiCredentialApiClient } from '../lib/geminiCredentialApiClient.js';
+import { stopSessionSafely } from '../lib/stopSessionSafely.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
 import { userMessageForErrorCode, withHttpStatus } from '../lib/connectionFailures.js';
@@ -154,6 +155,7 @@ export function App() {
   const [isStartingLiveRecording, setIsStartingLiveRecording] = useState(false);
   const sessionRef = useRef(null);
   const startLiveRecordingInFlightRef = useRef(false);
+  const sessionSnapshotCloudErrorSessionsRef = useRef(new Set());
   const pendingMicrophoneStreamRef = useRef(null);
   const liveSessionCallbackGenerationRef = useRef({ generation: 0, active: false });
   const inputAudioUploadChunksRef = useRef([]);
@@ -822,7 +824,7 @@ const activeMeetingCheckpointRef = useRef(null);
     liveController.audio.cancelAudioUploadRetries();
     liveController.segmentSwitch.cancel();
     for (const session of sessions) {
-      void session?.stop().catch(() => {});
+      void stopSessionSafely(session);
     }
     void Promise.resolve(liveController.audio.cleanup()).catch(() => {});
   }, []);
@@ -1490,7 +1492,16 @@ const activeMeetingCheckpointRef = useRef(null);
     };
   }
 
-  function reportSessionSnapshotSyncError(error) {
+  function reportSessionSnapshotSyncError(error, sessionId) {
+    if (isSessionReadCloudUnavailable(error)) {
+      const diagnosticKey = sessionId || 'unknown-session';
+      if (!sessionSnapshotCloudErrorSessionsRef.current.has(diagnosticKey)) {
+        sessionSnapshotCloudErrorSessionsRef.current.add(diagnosticKey);
+        console.warn('Session snapshot persistence unavailable.', safePersistenceDiagnostic(error));
+      }
+      return;
+    }
+
     console.error('Session snapshot persistence failed.', safePersistenceDiagnostic(error));
     if (error?.status === 413 || error?.code === 'request_too_large') {
       setError('翻譯紀錄內容超過伺服器保存上限，但目前逐字稿仍保留在畫面上。請調高 SESSION_SNAPSHOT_MAX_BYTES 或稍後重新儲存翻譯紀錄。');

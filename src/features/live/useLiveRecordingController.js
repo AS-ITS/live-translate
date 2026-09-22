@@ -19,6 +19,7 @@ import { appendNewFinalTranscriptItems, buildSessionRecordInput, createActiveSes
 import { clearMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 import { finalizePendingTranscriptItems, transcriptItemsForStream } from '../../lib/transcript.js';
 import { createRecoverySingleFlight } from '../../lib/recoverySingleFlight.js';
+import { stopSessionSafely } from '../../lib/stopSessionSafely.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
   status: 'skipped',
@@ -387,6 +388,9 @@ export function useLiveRecordingController({
     flushSessionSnapshot(sessionId) {
       return this.sessionSnapshotSyncCoordinator().flush(sessionId);
     },
+    retrySessionSnapshot(sessionId) {
+      return this.sessionSnapshotSyncCoordinator().retry(sessionId);
+    },
     meetingCheckpointSyncCoordinator() {
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
@@ -468,6 +472,17 @@ export function useLiveRecordingController({
         ? `${meetingCheckpoint.meetingId}:${meetingCheckpoint.segmentId}`
         : null
     );
+    const clearSettledRecoveryForCheckpoint = (meetingCheckpoint) => {
+      const recoveryKey = recoveryKeyFor(meetingCheckpoint);
+      if (!recoveryKey) return;
+
+      for (const suffix of [':recover', ':finalize']) {
+        const key = `${recoveryKey}${suffix}`;
+        if (!recoverySingleFlight.isInFlight(key)) {
+          recoverySingleFlight.clear(key);
+        }
+      }
+    };
     const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
       const persisted = existingSessionId
@@ -693,8 +708,8 @@ export function useLiveRecordingController({
       recovery.reconnectSessionRef.current = null;
       recovery.sessionRef.current = null;
       const inputAudioState = await audioController.finalizeRawAudioRecording();
-      await reconnectingSession?.stop().catch(() => {});
-      if (activeSession !== reconnectingSession) await activeSession?.stop().catch(() => {});
+      await stopSessionSafely(reconnectingSession);
+      if (activeSession !== reconnectingSession) await stopSessionSafely(activeSession);
       cueController.flushQueuedLiveCueEvents();
       recovery.invalidateLiveSessionCallbacks();
       recovery.setLiveCueUpdatesAllowed(false);
@@ -718,7 +733,7 @@ export function useLiveRecordingController({
       recovery.invalidateLiveSessionCallbacks();
       recovery.sessionStopRequestedRef.current = false;
       recovery.reconnectController().reset();
-      recoverySingleFlight.clearAll();
+      clearSettledRecoveryForCheckpoint(recovery.activeMeetingCheckpointRef.current);
       recovery.reconnectFailureDiagnosticRef.current = null;
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = false;
@@ -745,7 +760,7 @@ export function useLiveRecordingController({
         recovery.setStatus('listening');
         recovery.startSegmentSwitch?.();
       } catch (error) {
-        await session?.stop().catch(() => {});
+        await stopSessionSafely(session);
         if (recovery.sessionStopRequestedRef.current) return;
         recovery.sessionRef.current = null;
         recovery.applyStartFailure(error, '無法繼續即時字幕。');
@@ -761,8 +776,8 @@ export function useLiveRecordingController({
       const reconnectingSession = recovery.reconnectSessionRef.current;
       recovery.reconnectSessionRef.current = null;
       await audioController.pauseRawAudioRecording();
-      await reconnectingSession?.stop().catch(() => {});
-      await recovery.sessionRef.current?.stop();
+      await stopSessionSafely(reconnectingSession);
+      await stopSessionSafely(recovery.sessionRef.current);
       recovery.sessionRef.current = null;
       recovery.invalidateLiveSessionCallbacks();
       recovery.setLiveCueUpdatesAllowed(false);
@@ -804,7 +819,7 @@ export function useLiveRecordingController({
       recovery.sessionStopRequestedRef.current = false;
       recovery.meetingResumeDraftRequestIdRef.current += 1;
       recovery.reconnectController().reset();
-      recoverySingleFlight.clearAll();
+      clearSettledRecoveryForCheckpoint(recovery.activeMeetingCheckpointRef.current);
       recovery.reconnectFailureDiagnosticRef.current = null;
       recovery.cancelSegmentSwitch?.();
       recovery.segmentSwitchCancelledRef.current = false;
@@ -853,7 +868,7 @@ export function useLiveRecordingController({
         recovery.updateLiveMeetingUrl(meetingCheckpoint.meetingId);
         recovery.startSegmentSwitch?.();
       } catch (error) {
-        await session?.stop().catch(() => {});
+        await stopSessionSafely(session);
         if (recovery.sessionStopRequestedRef.current) return;
         if (error?.code === 'meeting_segment_invalid_state' && routeMeetingId) {
           try {
@@ -921,7 +936,7 @@ export function useLiveRecordingController({
         await recovery.finalizePendingTranscriptItemsForStop();
         cueController.flushSubtitleCues('reconnect');
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
-          await session.stop().catch(() => {});
+          await stopSessionSafely(session);
           return;
         }
 
@@ -951,13 +966,13 @@ export function useLiveRecordingController({
         ));
 
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
-          await session.stop().catch(() => {});
+          await stopSessionSafely(session);
           return;
         }
         reconnectStage = 'connect_live_session';
         await session.start();
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
-          await session.stop().catch(() => {});
+          await stopSessionSafely(session);
           return;
         }
         recovery.activateLiveSessionCallbacks(session.callbackGeneration);
@@ -965,10 +980,10 @@ export function useLiveRecordingController({
         await audioController.resumeRawAudioRecording();
       } catch (error) {
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
-          await session.stop().catch(() => {});
+          await stopSessionSafely(session);
           return;
         }
-        await session.stop().catch(() => {});
+        await stopSessionSafely(session);
         recovery.reconnectSessionRef.current = null;
         recovery.sessionRef.current = null;
         recovery.setStatusLabelOverride('');
@@ -982,7 +997,7 @@ export function useLiveRecordingController({
       }
 
       if (!recovery.isCurrentGeneration?.(generationId) || recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
-        await session.stop().catch(() => {});
+        await stopSessionSafely(session);
         return;
       }
       recovery.reconnectSessionRef.current = null;
@@ -1065,7 +1080,7 @@ export function useLiveRecordingController({
         recovery.setStatus('listening');
         recovery.startSegmentSwitch?.();
       } catch (error) {
-        await session?.stop().catch(() => {});
+        await stopSessionSafely(session);
         if (recoveredMeetingCheckpoint) {
           await recoverySingleFlight.run(`${recoveredMeetingCheckpoint.meetingId}:${recoveredMeetingCheckpoint.segmentId}:recover`, () => (
             recovery.meetingCheckpointApiClientRef.current.recoverSegment({

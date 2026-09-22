@@ -37,7 +37,7 @@ export function createSessionSnapshotSyncCoordinator({
       }, Math.max(0, delayMs));
     },
 
-    flush(sessionId) {
+    flush(sessionId, { retryBlocked = false } = {}) {
       if (timer) {
         clearTimeoutFn(timer);
         timer = null;
@@ -50,8 +50,12 @@ export function createSessionSnapshotSyncCoordinator({
         pendingSessionIds.delete(sessionId);
       }
 
-      if (validSessionId(sessionId)) blockedSessionIds.delete(sessionId);
-      return enqueueSync(sessionIds, { force: true });
+      if (validSessionId(sessionId) && retryBlocked) blockedSessionIds.delete(sessionId);
+      return enqueueSync(sessionIds, { force: retryBlocked });
+    },
+
+    retry(sessionId) {
+      return this.flush(sessionId, { retryBlocked: true });
     },
 
     cancel() {

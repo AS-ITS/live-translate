@@ -321,6 +321,7 @@ const activeMeetingCheckpointRef = useRef(null);
       sessionRef,
       segmentSwitchCancelledRef,
       sessionStopRequestedRef,
+      flushMeetingCuePublishes,
       suppressReconnectErrorRef,
       meetingCheckpointApiClientRef,
       setResumeDraft,
@@ -580,7 +581,8 @@ const activeMeetingCheckpointRef = useRef(null);
   }, [page, isLiveSurface]);
 
   useEffect(() => {
-    if (!(activeSessionRecordIdRef.current || polishingSessionIdRef.current) || status === 'idle') return undefined;
+    const canReadBackgroundSessionData = status === 'stopped' || status === 'error';
+    if (!canReadBackgroundSessionData || !(activeSessionRecordIdRef.current || polishingSessionIdRef.current)) return undefined;
     let cancelled = false;
     let timer = null;
     const poll = async () => {
@@ -1396,6 +1398,14 @@ const activeMeetingCheckpointRef = useRef(null);
     await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId)));
   }
 
+  async function flushMeetingCuePublishes(sessionId) {
+    if (!sessionId) return;
+    const queued = [...meetingCuePublishQueuesRef.current.entries()]
+      .filter(([key]) => key.startsWith(`${sessionId}:`))
+      .map(([, promise]) => promise);
+    await Promise.allSettled(queued);
+  }
+
   function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId) {
     const key = `${sessionId}:${cue.cueId}`;
     const previous = meetingCuePublishQueuesRef.current.get(key) || Promise.resolve();
@@ -1403,22 +1413,30 @@ const activeMeetingCheckpointRef = useRef(null);
       if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
         || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
         || activeSessionRecordIdRef.current !== sessionId) return;
-      try {
-        await meetingCueApiClientRef.current.publish({
-          meetingId: meetingCheckpoint.meetingId,
-          segmentId: meetingCheckpoint.segmentId,
-          sessionId,
-          cue,
-          producedAt: cue.finalizedAt || Date.now()
-        });
-      } catch (error) {
-        if (error?.status === 403 || error?.status === 404 || error?.status === 409) return;
-        if (import.meta.env?.DEV) {
-          console.warn('[meeting-cue-publish]', {
-            status: Number.isInteger(error?.status) ? error.status : null,
-            code: typeof error?.code === 'string' ? error.code : null,
-            requestId: typeof error?.requestId === 'string' ? error.requestId : null
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+          || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
+          || activeSessionRecordIdRef.current !== sessionId)) return;
+        try {
+          await meetingCueApiClientRef.current.publish({
+            meetingId: meetingCheckpoint.meetingId,
+            segmentId: meetingCheckpoint.segmentId,
+            sessionId,
+            cue,
+            producedAt: cue.finalizedAt || Date.now()
           });
+          return;
+        } catch (error) {
+          const retryableBindingFailure = error?.status === 403 || error?.status === 404 || error?.status === 409;
+          if (retryableBindingFailure && attempt === 0) continue;
+          if (import.meta.env?.DEV) {
+            console.warn('[meeting-cue-publish]', {
+              status: Number.isInteger(error?.status) ? error.status : null,
+              code: typeof error?.code === 'string' ? error.code : null,
+              requestId: typeof error?.requestId === 'string' ? error.requestId : null
+            });
+          }
+          return;
         }
       }
     });

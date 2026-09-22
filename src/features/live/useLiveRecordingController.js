@@ -485,6 +485,7 @@ export function useLiveRecordingController({
     };
     const controller = ({
     async createCurrentSessionRecord(meetingCheckpoint = recovery.activeMeetingCheckpointRef.current, initialTranscript = null, existingSessionId = null) {
+      recovery.polishingSessionIdRef.current = null;
       const persisted = existingSessionId
         ? await recovery.sessionCommandApiClientRef.current.update(existingSessionId, { status: 'active' })
         : await recovery.sessionCommandApiClientRef.current.create({
@@ -598,6 +599,7 @@ export function useLiveRecordingController({
     async finalizeCurrentSessionRecord(options) {
       const sessionId = recovery.activeSessionRecordIdRef.current;
       const translatedAudioFinalState = audioController.finalizeTranslatedAudioDownload(sessionId);
+      recovery.polishingSessionIdRef.current = sessionId || null;
       recovery.activeSessionRecordIdRef.current = null;
       const meetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || null;
 
@@ -1128,6 +1130,7 @@ export function useLiveRecordingController({
 
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('segment-rollover');
+      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 
     const flushed = await checkpointController.flushMeetingCheckpointSync();
@@ -1152,6 +1155,13 @@ export function useLiveRecordingController({
       });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+      const sessionId = recovery.activeSessionRecordIdRef.current;
+      if (sessionId) {
+        await recovery.sessionCommandApiClientRef.current.update(sessionId, {
+          status: 'active',
+          segmentId: rollover.segment.id
+        });
+      }
       cueController.flushSubtitleCues('segment-rollover');
       const providerResumed = await previousSession.reconnectProvider({
         segmentId: rollover.segment.id,

@@ -1130,9 +1130,15 @@ initial status is `created`. The request may include `name`,
 
 ### `PATCH /api/sessions/:sessionId`
 
-Updates Session metadata or lifecycle status. Supported statuses are `created`,
-`active`, `paused`, `stopped`, `failed`, and `expired`; invalid transitions are
-rejected.
+Updates Session metadata, lifecycle status, or the current Meeting Segment
+binding. Supported fields include `name`, `targetLanguageCode`,
+`targetLanguageLabel`, `sourceLanguageCode`, and `segmentId`; supported statuses
+are `created`, `active`, `paused`, `stopped`, `failed`, and `expired`, and invalid
+transitions are rejected. During long-meeting rollover, the old Segment is
+checkpointed and its queued Cues are published before the same Session is
+rebound to the new `segmentId`; new Cues are accepted only after that binding
+update succeeds. Existing Meeting, Session, and Segment authorization checks
+remain in force.
 
 ### Sharing
 

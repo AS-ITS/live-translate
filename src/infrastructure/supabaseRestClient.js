@@ -1,4 +1,12 @@
-export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
+const SUPABASE_GET_RETRY_ATTEMPTS = 3;
+const SUPABASE_GET_RETRY_DELAY_MS = 50;
+
+export function createSupabaseServiceRoleClient({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  getRetryAttempts = SUPABASE_GET_RETRY_ATTEMPTS,
+  getRetryDelayMs = SUPABASE_GET_RETRY_DELAY_MS
+} = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('Supabase client requires fetch.');
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const key = env.SUPABASE_SECRET_KEY;
@@ -7,11 +15,11 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
   async function request(table, { method = 'GET', query = '', body, headers = {} } = {}) {
     let response;
     try {
-      response = await fetchImpl(`${baseUrl}/rest/v1/${table}${query}`, {
+      response = await fetchWithGetRetry(fetchImpl, `${baseUrl}/rest/v1/${table}${query}`, {
       method,
       headers: { apikey: key, Authorization: `Bearer ${key}`, Prefer: 'return=representation', ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) })
-      });
+      }, { maxAttempts: getRetryAttempts, delayMs: getRetryDelayMs });
     } catch (cause) {
       const error = new Error('Supabase REST endpoint is unavailable.');
       error.code = 'supabase_unavailable';
@@ -54,13 +62,13 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
 
     let response;
     try {
-      response = await fetchImpl(`${baseUrl}/storage/v1/bucket/${normalizedBucketId}`, {
+      response = await fetchWithGetRetry(fetchImpl, `${baseUrl}/storage/v1/bucket/${normalizedBucketId}`, {
         method: 'GET',
         headers: {
           apikey: key,
           Authorization: `Bearer ${key}`
         }
-      });
+      }, { maxAttempts: getRetryAttempts, delayMs: getRetryDelayMs });
     } catch (cause) {
       const error = new Error('Supabase Storage endpoint is unavailable.');
       error.code = 'supabase_unavailable';
@@ -125,7 +133,13 @@ export function createSupabaseServiceRoleClient({ env = process.env, fetchImpl =
   return Object.freeze({ request, rpc, healthCheck, storageBucket, baseUrl });
 }
 
-export function createSupabaseUserClient({ env = process.env, fetchImpl = globalThis.fetch, accessToken } = {}) {
+export function createSupabaseUserClient({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  accessToken,
+  getRetryAttempts = SUPABASE_GET_RETRY_ATTEMPTS,
+  getRetryDelayMs = SUPABASE_GET_RETRY_DELAY_MS
+} = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('Supabase client requires fetch.');
   const baseUrl = String(env.SUPABASE_URL || '').replace(/\/$/u, '');
   const key = env.VITE_SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_PUBLISHABLE_KEY;
@@ -134,7 +148,7 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
   async function request(table, { method = 'GET', query = '', body, headers = {} } = {}) {
     let response;
     try {
-      response = await fetchImpl(`${baseUrl}/rest/v1/${table}${query}`, {
+      response = await fetchWithGetRetry(fetchImpl, `${baseUrl}/rest/v1/${table}${query}`, {
         method,
         headers: {
           apikey: key,
@@ -144,7 +158,7 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
         },
         ...(body === undefined ? {} : { body: JSON.stringify(body) })
-      });
+      }, { maxAttempts: getRetryAttempts, delayMs: getRetryDelayMs });
     } catch (cause) {
       const error = new Error('Supabase REST endpoint is unavailable.');
       error.code = 'supabase_unavailable';
@@ -203,4 +217,30 @@ export function createSupabaseUserClient({ env = process.env, fetchImpl = global
 
 export function eq(name, value) {
   return `${encodeURIComponent(name)}=eq.${encodeURIComponent(value)}`;
+}
+
+async function fetchWithGetRetry(fetchImpl, url, options, { maxAttempts, delayMs } = {}) {
+  const method = String(options?.method || 'GET').toUpperCase();
+  const attempts = method === 'GET'
+    ? Math.max(1, Math.floor(Number(maxAttempts) || SUPABASE_GET_RETRY_ATTEMPTS))
+    : 1;
+  const delay = Math.max(0, Number(delayMs) || 0);
+  let lastCause;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchImpl(url, options);
+      if (method === 'GET' && attempt < attempts && (response.status === 503 || response.status === 504)) {
+        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+      return response;
+    } catch (cause) {
+      lastCause = cause;
+      if (method !== 'GET' || attempt >= attempts) throw cause;
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastCause || new Error('Supabase request failed.');
 }

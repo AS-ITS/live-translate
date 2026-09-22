@@ -1725,6 +1725,7 @@ test('starts and stops a mocked Gemini Live translation session', async ({ page 
   await emitPartialTranscript(page, '麥克風', 'microphone and mic');
   await emitMicrophoneAudio(page);
   await emitOutputAudio(page);
+  await expect(page.getByTestId('background-translation-notice')).toHaveCount(0);
   await expect(partialCueRows(page)).toHaveCount(1);
   await expectCueRow(partialCueRows(page).first(), {
     sourceText: '麥克風',

@@ -68,7 +68,7 @@ export function LiveCuePanel({
           <div className="cue-section-list" data-testid="cue-paired-list">{cues.map((cue) => cue.status === 'final' ? <FinalCueRow key={cue.cueId} cue={cue} showSource={showSource} /> : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} showSource={showSource} />)}</div>
         </div> : null}
       </div>
-      <BackgroundTranslationNotice cues={cues} />
+      {isStopped ? <BackgroundTranslationNotice cues={cues} /> : null}
     </section>
   );
 }

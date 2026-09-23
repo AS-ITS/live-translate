@@ -229,8 +229,10 @@ uploads, or unrelated background work before notifying Viewers.
 
 ## Viewer Ordering and Reconnect
 
-The Viewer uses `cueId` as the idempotency key and orders Cues by Segment
-sequence followed by Cue sequence. A newer version may replace the same Cue;
+The initial snapshot returns the latest 100 Cues and an opaque cursor for
+loading older pages. Each older page is merged by Cue ID without duplicates or
+omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by
+Segment sequence followed by Cue sequence. A newer version may replace the same Cue;
 a stale version cannot overwrite a newer one.
 
 Reconnect behavior:

@@ -13,11 +13,15 @@ export function MeetingViewerPage({ token, code }) {
   const viewportRef = useRef(null);
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
+  const nextViewerCursorRef = useRef(null);
+  const loadingOlderRef = useRef(false);
   const latencySamplesRef = useRef([]);
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
   const [showSource, setShowSource] = useState(true);
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const [hasOlderCues, setHasOlderCues] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const estimatedRowHeight = 64;
 
   useEffect(() => {
@@ -44,11 +48,15 @@ export function MeetingViewerPage({ token, code }) {
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
-    async function fetchSnapshot() {
-      const response = await fetch(basePath);
+    async function fetchSnapshot(before = null) {
+      const snapshotUrl = new URL(basePath, window.location.origin);
+      if (before) snapshotUrl.searchParams.set('before', before);
+      const response = await fetch(`${snapshotUrl.pathname}${snapshotUrl.search}`);
       if (!response.ok) throw new Error('分享連結無效或已過期。');
       const value = await response.json();
       if (cancelled) return value;
+      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
+      setHasOlderCues(Boolean(value.pagination?.hasMore));
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
@@ -139,11 +147,38 @@ export function MeetingViewerPage({ token, code }) {
     }
     return () => {
       cancelled = true;
+      nextViewerCursorRef.current = null;
+      loadingOlderRef.current = false;
       void realtimeController?.stop();
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };
   }, [token, code]);
+
+  async function loadOlderCues() {
+    const cursor = nextViewerCursorRef.current;
+    if (!cursor || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    setIsLoadingOlder(true);
+    const basePath = token
+      ? `/api/shared-meetings/${encodeURIComponent(token)}`
+      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
+    try {
+      const response = await fetch(`${basePath}?before=${encodeURIComponent(cursor)}`);
+      if (!response.ok) throw new Error('無法載入較舊字幕。');
+      const value = await response.json();
+      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
+      setHasOlderCues(Boolean(value.pagination?.hasMore));
+      const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
+      detailRef.current = merged;
+      setDetail(merged);
+    } catch (value) {
+      setError(value.message || '無法載入較舊字幕。');
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingOlder(false);
+    }
+  }
 
   const cues = useMemo(() => {
     if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
@@ -232,6 +267,7 @@ export function MeetingViewerPage({ token, code }) {
             </div> : null}
           </div>
           {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
+            {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
             <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
               <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
                 {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: rowLayout.offsets[startIndex + index], left: 0, right: 0 }} data-cue-index={startIndex + index} data-testid="meeting-viewer-cue-row">

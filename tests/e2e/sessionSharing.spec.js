@@ -22,3 +22,30 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await expect(page.locator('.viewer-cue-source')).toHaveCount(0);
   await expect(page.locator('.viewer-cue-translation').first()).toBeVisible();
 });
+test('Meeting Viewer loads older Cues with the opaque pagination cursor', async ({ page }) => {
+  const latestCues = Array.from({ length: 100 }, (_, index) => ({
+    cueId: `cue-${index + 6}`,
+    sequence: index + 6,
+    startTimeMs: index * 1000,
+    sourceText: `原文 ${index + 6}`,
+    translatedText: `Translation ${index + 6}`,
+    status: 'final'
+  }));
+  let requestedBefore = '';
+  await page.route(/\/api\/shared-meetings\/meeting-viewer-token(?:\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    requestedBefore = url.searchParams.get('before') || '';
+    await route.fulfill({ json: {
+      meeting: { id: 'meeting-1', name: '產品會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+      cues: requestedBefore ? Array.from({ length: 5 }, (_, index) => ({ cueId: `cue-${index + 1}`, sequence: index + 1, sourceText: `原文 ${index + 1}`, translatedText: `Translation ${index + 1}`, status: 'final' })) : latestCues,
+      pagination: requestedBefore ? { limit: 100, hasMore: false, nextCursor: null } : { limit: 100, hasMore: true, nextCursor: 'older-cursor' }
+    } });
+  });
+  await page.route(/\/api\/shared-meetings\/meeting-viewer-token\/events(?:\?.*)?$/, async (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
+
+  await page.goto('/#viewer?token=meeting-viewer-token');
+  await expect(page.getByTestId('viewer-load-older-button')).toBeVisible();
+  await page.getByTestId('viewer-load-older-button').click();
+  await expect.poll(() => requestedBefore).toBe('older-cursor');
+  await expect(page.getByTestId('viewer-load-older-button')).toHaveCount(0);
+});

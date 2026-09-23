@@ -68,6 +68,23 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
   };
 }
 
+export function mapMeetingToViewerDTO({ meeting, cues = [], hasMore = false, nextCursor = null, limit = cues.length } = {}) {
+  return {
+    meeting: mapMeetingToHistoryListItem({ meeting, segments: [] }),
+    cues: [...cues].sort((left, right) => (
+      (Number(left?.segmentSequence) || 0) - (Number(right?.segmentSequence) || 0) ||
+      (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0) ||
+      String(left?.cueId || '').localeCompare(String(right?.cueId || ''))
+    )),
+    pagination: {
+      limit,
+      hasMore: Boolean(hasMore),
+      nextCursor: nextCursor || null
+    },
+    recordKind: 'meetingViewer'
+  };
+}
+
 function sanitizeCloudAudioArtifacts(artifacts) {
   if (!Array.isArray(artifacts)) return [];
   return artifacts
@@ -89,7 +106,7 @@ function sanitizeCloudAudioArtifacts(artifacts) {
     .sort((left, right) => (left.segmentSequence ?? Number.MAX_SAFE_INTEGER) - (right.segmentSequence ?? Number.MAX_SAFE_INTEGER));
 }
 
-function finalCuesFromSegments(segments = []) {
+export function finalCuesFromSegments(segments = []) {
   return segments
     .flatMap((segment) => (segment?.checkpoint?.refinedSubtitleStatus === 'completed' && Array.isArray(segment?.checkpoint?.refinedSubtitleCues) && segment.checkpoint.refinedSubtitleCues.length > 0
       ? segment.checkpoint.refinedSubtitleCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))

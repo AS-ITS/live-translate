@@ -1,8 +1,16 @@
 import {
   mapMeetingToDetailDTO,
-  mapMeetingToHistoryListItem
+  mapMeetingToHistoryListItem,
+  mapMeetingToViewerDTO,
+  finalCuesFromSegments
 } from '../readModels/meetingReadModels.js';
 import { audioArtifactDownloadByteLength } from '../infrastructure/sessionAudioArtifacts.js';
+import {
+  compareViewerCues,
+  decodeViewerCursor,
+  encodeViewerCursor,
+  normalizeViewerPageSize
+} from '../lib/meetingViewerPagination.js';
 
 export function createMeetingReadQueryService({ meetingRepository, sessionRepository, meetingAudioService } = {}) {
   assertMeetingRepository(meetingRepository);
@@ -37,6 +45,38 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
         segments,
         audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, segments),
         cloudAudioArtifacts: attachSegmentSequence(cloudAudioArtifacts, segments)
+      });
+    },
+
+    async getMeetingViewerPage(meetingId, options = {}) {
+      const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
+      const limit = normalizeViewerPageSize(options.limit);
+      const before = decodeViewerCursor(options.before);
+      const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
+      if (!meeting) return null;
+
+      if (typeof meetingRepository.getMeetingViewerPage === 'function') {
+        const page = await meetingRepository.getMeetingViewerPage(normalizedMeetingId, { before, limit });
+        return mapMeetingToViewerDTO({ meeting, limit, ...page });
+      }
+
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
+      const sequenceBySegmentId = new Map(segments.map((segment) => [segment.id, segment.sequence]));
+      const cues = finalCuesFromSegments(segments)
+        .map((cue) => ({ ...cue, segmentSequence: sequenceBySegmentId.get(cue.segmentId) ?? 0 }))
+        .sort(compareViewerCues);
+      const end = before ? cues.findIndex((cue) => compareViewerCues(cue, before) >= 0) : cues.length;
+      const eligible = cues.slice(0, end < 0 ? cues.length : end);
+      const page = eligible.slice(Math.max(0, eligible.length - limit - 1));
+      const hasMore = page.length > limit;
+      const visibleCues = page.slice(hasMore ? 1 : 0);
+      const oldest = visibleCues[0];
+      return mapMeetingToViewerDTO({
+        meeting,
+        cues: visibleCues,
+        hasMore,
+        limit,
+        nextCursor: hasMore && oldest ? encodeViewerCursor(oldest) : null
       });
     }
   });

@@ -8,6 +8,13 @@ export function createMeetingReadController({ meetingReadQueryService } = {}) {
 
     getMeeting(meetingId) {
       return meetingReadQueryService.getMeetingDetail(meetingId);
+    },
+
+    getMeetingViewerPage(meetingId, options) {
+      if (typeof meetingReadQueryService.getMeetingViewerPage === 'function') {
+        return meetingReadQueryService.getMeetingViewerPage(meetingId, options);
+      }
+      return meetingReadQueryService.getMeetingDetail(meetingId);
     }
   };
 }

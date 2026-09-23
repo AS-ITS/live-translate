@@ -2029,7 +2029,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       return;
     }
     if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
-    const meeting = await meetingReadController?.getMeeting(share.meetingId);
+    const meeting = share.role === 'viewer'
+      ? await meetingReadController?.getMeetingViewerPage(share.meetingId, parseViewerPageOptions(req))
+      : await meetingReadController?.getMeeting(share.meetingId);
     if (!meeting) {
       sendJson(res, 404, errorPayload('meeting_not_found', requestId), requestId);
       return;
@@ -4190,6 +4192,15 @@ function parseAfterEventId(req) {
   const headerValue = req.headers?.['last-event-id'];
   const parsed = Number.parseInt(queryValue || headerValue || '0', 10);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function parseViewerPageOptions(req) {
+  const url = new URL(req.url || '/', 'http://localhost');
+  const limitValue = url.searchParams.get('limit');
+  return {
+    before: url.searchParams.get('before') || null,
+    ...(limitValue === null ? {} : { limit: Number(limitValue) })
+  };
 }
 
 function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {

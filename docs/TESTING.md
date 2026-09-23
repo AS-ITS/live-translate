@@ -57,6 +57,16 @@ Cloud checks are split by deployment risk:
 - Staging cloud smoke is not enabled in GitHub Actions; use the local staging-equivalent validation above. The retained `tests/cloud/stagingSmoke.spec.js` is an optional asset for a future cloud check.
 - Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
 
+## Issue #37 Phase 2 Viewer pagination
+
+The deterministic Viewer pagination checks cover cursor validation, latest-100
+windowing, older-page merging, and the bounded Supabase joined Cue query:
+
+```bash
+node --test tests/unit/meetingViewerPagination.test.js \
+  tests/unit/supabaseMeetingViewerPage.test.js
+```
+
 ## Issue #37 Phase 1 lifecycle v2
 
 The deterministic unit checks cover HTTP forwarding/conflict mapping, API

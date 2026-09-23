@@ -3,6 +3,7 @@ import { MEETING_REPOSITORY_METHODS } from '../domain/meeting/meetingRepository.
 import { currentRequestOwnerId, currentRequestUserId } from '../../server/requestIdentity.js';
 import { eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
+import { compareViewerCues, encodeViewerCursor } from '../lib/meetingViewerPagination.js';
 
 export function createSupabaseMeetingRepository(options = {}) {
   const clientForRequest = createSupabaseRequestClient(options);
@@ -87,6 +88,39 @@ export function createSupabaseMeetingRepository(options = {}) {
       const rows = await client.request('meeting_segments', { query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', userId)}&order=sequence.asc` });
       return Promise.all(rows.map((row) => hydrateSegment(client, row, userId)));
     },
+    async getMeetingViewerPage(meetingId, { before = null, limit = 100 } = {}) {
+      const userId = owner();
+      const meetingRows = await client.request('meetings', {
+        query: `?select=*&${eq('id', meetingId)}&${eq('owner_user_id', userId)}`
+      });
+      if (!meetingRows[0]) return null;
+
+      const select = '*,meeting_segments!inner(sequence,settings_snapshot)';
+      const base = `?select=${select}&${eq('owner_user_id', userId)}&${eq('meeting_segments.meeting_id', meetingId)}`;
+      const queries = before
+        ? [
+          `${base}&meeting_segments.sequence=lt.${before.segmentSequence}&order=meeting_segments(sequence).desc,sequence.desc,id.desc&limit=${limit + 1}`,
+          `${base}&${eq('meeting_segments.sequence', before.segmentSequence)}&sequence=lt.${before.sequence}&order=sequence.desc,id.desc&limit=${limit + 1}`
+        ]
+        : [`${base}&order=meeting_segments(sequence).desc,sequence.desc,id.desc&limit=${limit + 1}`];
+      const resultSets = await Promise.all(queries.map((query) => client.request('subtitle_cues', { query })));
+      const byCueId = new Map();
+      for (const row of resultSets.flat()) {
+        const relation = Array.isArray(row.meeting_segments) ? row.meeting_segments[0] : row.meeting_segments;
+        const cue = cueFromRow(row, { settingsSnapshot: relation?.settings_snapshot || {} });
+        byCueId.set(cue.cueId, { ...cue, segmentSequence: Number(relation?.sequence) || 0 });
+      }
+      const newestFirst = [...byCueId.values()].sort((left, right) => compareViewerCues(right, left));
+      const page = newestFirst.slice(0, limit + 1);
+      const hasMore = page.length > limit;
+      const visibleCues = page.slice(0, limit).sort(compareViewerCues);
+      const oldest = visibleCues[0];
+      return {
+        cues: visibleCues,
+        hasMore,
+        nextCursor: hasMore && oldest ? encodeViewerCursor(oldest) : null
+      };
+    },
     async updateMeetingSegment(input) {
       const entity = new MeetingSegment(input);
       const userId = owner();
@@ -98,6 +132,10 @@ export function createSupabaseMeetingRepository(options = {}) {
   const exposed = Object.fromEntries(MEETING_REPOSITORY_METHODS.map((method) => [method, repository[method].bind(repository)]));
   Object.defineProperty(exposed, 'createMeetingWithInitialSegment', {
     value: repository.createMeetingWithInitialSegment.bind(repository),
+    enumerable: false
+  });
+  Object.defineProperty(exposed, 'getMeetingViewerPage', {
+    value: repository.getMeetingViewerPage.bind(repository),
     enumerable: false
   });
   return Object.freeze(exposed);

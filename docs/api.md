@@ -51,6 +51,19 @@ artifact. An artifact created before terminal transition may still complete or
 fail before `purge_at`; completion and failure at or after that deadline return
 `409 meeting_terminal`.
 
+## Meeting Viewer snapshot pagination
+
+`GET /api/shared-meetings/:token` and
+`GET /api/shared-meetings/code/:shortCode` return the newest 100 finalized Cues
+by default. The response includes `pagination.hasMore` and an opaque
+`pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
+previous page. `limit` may be set from 1 through 100.
+
+Viewer reads use one bounded joined Cue query in cloud mode. They do not load
+all Segments or expose Meeting glossary, private settings, audio metadata, or
+live session identifiers. Cursor pages are merged by `cueId` and ordered by
+Segment sequence plus Cue sequence, so Realtime delivery remains idempotent.
+
 ## Meeting export lifecycle (P7)
 
 Assigned members can read the meeting data explicitly covered by RLS and can

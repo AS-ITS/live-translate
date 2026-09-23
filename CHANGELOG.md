@@ -101,6 +101,7 @@
   files under `data/` remain test/migration fixtures only.
 
 ## Unreleased
+- Issue #37 Phase 2 Viewer reads now return a bounded latest-100 Cue snapshot with opaque backward pagination, use a joined Supabase query instead of Segment-by-Segment hydration, and let public Viewers load older Cues without duplicates.
 - 修正 Supabase Session 寫入 PostgreSQL timestamp 時，將 JavaScript 毫秒 timestamp 正規化為 ISO 8601，並在 `session_create` log 補上底層 Supabase HTTP status。
 
 - Issue #33 follow-up: added member recording authorization, super-admin account management with atomic asset transfer, server-only audit log filtering, and Meeting Settings/account management UI. Viewer share IDs remain stable during transfer and Gemini credentials are excluded.

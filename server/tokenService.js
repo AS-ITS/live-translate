@@ -128,7 +128,7 @@ export function buildTokenConfig({
 }
 
 export async function createLiveToken(body, options = {}) {
-  const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
+  const apiKey = options.apiKey;
   if (!apiKey && !options.client) {
     const error = new Error('GEMINI_API_KEY is not configured');
     error.status = 500;

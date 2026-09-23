@@ -1533,3 +1533,8 @@ names) without prompt text, transcript content, API keys, or tokens.
 ## Application login audit event
 
 `POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server reads the authenticated profile status and writes `auth_login` with `result: success` for active profiles or `result: failure` for pending and disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.
+## GSK-04 Live credential boundary
+
+Current implementation supersedes any earlier Live-token credential wording in this document: `POST /api/live-token` requires the authenticated recorder request to provide `geminiApiKey`. It does not resolve `/api/profile/gemini-credential`, `gemini_credentials`, or `GEMINI_API_KEY` from the environment. The request key is not persisted or returned, and successful and error responses use `Cache-Control: no-store`.
+
+The profile credential API, `geminiCredentialApiClient`, `gemini_credentials`, and historical credential data remain a controlled compatibility layer for later migration/removal. They cannot be reused by Live or the new request-key path, and this documentation does not claim historical data was deleted. Non-Live backend Gemini workflows may use an isolated environment key through their own provider composition; it is not shared with the recorder request key. Logs, metrics, telemetry, and audit records must not contain API keys, ephemeral tokens, stored credentials, request keys, or secret-bearing payloads.

@@ -2040,3 +2040,6 @@ These items are intentionally deferred:
 
 - Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.
 - Added P7 asynchronous cloud Meeting export lifecycle: canonical server-side TXT/SRT/VTT generation from persisted Final Cues, idempotent `export_artifacts`, private `meeting-exports` Storage, signed download URLs, `export_jobs` worker retries/dead-letter handling, deletion cleanup, and cloud polling UI. Local browser-only export remains compatible.
+## 2026-09-23
+
+- Documented the GSK-04 Gemini credential boundary: Live token issuance uses only the recorder request key, with no dependency on the legacy profile credential API, stored credentials, or `GEMINI_API_KEY` fallback. Legacy APIs, `geminiCredentialApiClient`, `gemini_credentials`, and historical credential data remain a controlled compatibility layer and are not claimed deleted or reusable by Live. Non-Live backend Gemini workflows may keep an isolated environment key; secret-bearing values remain excluded from `no-store` responses, logs, metrics, and telemetry.

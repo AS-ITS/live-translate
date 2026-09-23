@@ -14,6 +14,7 @@ import { authenticatedFetch } from './accessToken.js';
 import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency } from './latencyHistogram.js';
+import { clearLiveCredential, getLiveCredential } from './liveCredentialHolder.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
 const LIVE_CONNECT_TIMEOUT_MS = 15000;
@@ -274,6 +275,7 @@ export class LiveTranslateSession {
   async getTokenResponse({ forceRefresh = false } = {}) {
     const expiresAt = this.tokenState?.expiresAt ? Date.parse(this.tokenState.expiresAt) : 0;
     if (!forceRefresh && this.tokenState && expiresAt - Date.now() > TOKEN_REFRESH_SAFETY_MS) return this.tokenState;
+    const geminiApiKey = getLiveCredential();
     let tokenResponse;
     try {
       this.markStartupMilestone('live_token_request_start');
@@ -284,30 +286,44 @@ export class LiveTranslateSession {
         mode: this.mode,
         ...(this.sessionId ? { sessionId: this.sessionId } : {}),
         ...(this.meetingId ? { meetingId: this.meetingId } : {}),
+        geminiApiKey,
         targetLanguageCode: this.targetLanguageCode,
         sourceLanguageCode: this.sourceLanguageCode,
         echoTargetLanguage: this.echoTargetLanguage
       })
       }, TOKEN_TIMEOUT_MS);
     } catch (error) {
+      if (forceRefresh) this.clearLiveCredentialState();
       this.startupStage = 'live_token';
       this.markStartupMilestone('live_token_request_end', { failed: true });
       error.userMessage ||= '無法取得即時權杖。';
-      this.logLiveEvent('liveToken:failure', { message: error?.message || String(error) });
+      this.logLiveEvent('liveToken:failure', { reason: 'request_failed' });
       throw error;
     }
     if (!tokenResponse.ok) {
       const error = await tokenResponse.json().catch(() => ({ error: { code: 'token_request_failed' } }));
       const errorCode = error.error?.code || 'token_request_failed';
       const startupMessage = userMessageForErrorCode(errorCode) || '無法準備即時翻譯請求。';
-    const startupError = new Error(startupMessage);
-    startupError.code = errorCode;
-    startupError.status = tokenResponse.status;
-    this.markStartupMilestone('live_token_request_end', { failed: true });
+      const startupError = new Error(startupMessage);
+      startupError.code = errorCode;
+      startupError.status = tokenResponse.status;
+      this.markStartupMilestone('live_token_request_end', { failed: true });
       startupError.userMessage = withHttpStatus(startupMessage, tokenResponse.status);
+      if (forceRefresh || errorCode === 'auth_required' || errorCode === 'auth_invalid') this.clearLiveCredentialState();
       throw startupError;
     }
-    const response = await tokenResponse.json();
+    let response;
+    try {
+      response = await tokenResponse.json();
+    } catch {
+      if (forceRefresh) this.clearLiveCredentialState();
+      this.markStartupMilestone('live_token_request_end', { failed: true });
+      this.logLiveEvent('liveToken:failure', { reason: 'invalid_response' });
+      const error = new Error('無法準備即時翻譯請求。');
+      error.code = 'token_response_invalid';
+      error.userMessage = error.message;
+      throw error;
+    }
     this.logLiveEvent('liveToken:success', { expiresAt: response.expiresAt || null });
     this.markStartupMilestone('live_token_request_end');
     this.tokenState = { ...response, fetchedAt: Date.now() };
@@ -1796,6 +1812,7 @@ export class LiveTranslateSession {
       this.source = null;
       this.mediaStream = null;
       this.session = null;
+      this.tokenState = null;
       this.audioContext = null;
       this.chunker = null;
       this.firstPcmResolver = null;
@@ -1816,6 +1833,15 @@ export class LiveTranslateSession {
     } finally {
       this.cleaningUp = false;
     }
+  }
+
+  clearLiveCredentialState() {
+    this.tokenState = null;
+    clearLiveCredential();
+  }
+
+  clearEphemeralToken() {
+    this.tokenState = null;
   }
 
   clearPlaybackQueue() {

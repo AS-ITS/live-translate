@@ -14,7 +14,7 @@ import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiCli
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
-import { createGeminiCredentialApiClient } from '../lib/geminiCredentialApiClient.js';
+import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 import { stopSessionSafely } from '../lib/stopSessionSafely.js';
 import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
@@ -48,6 +48,7 @@ import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
 import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx';
+import { GeminiCredentialNotice } from '../components/GeminiCredentialNotice.jsx';
 import { AccountManagementPage } from '../pages/settings/AccountManagementPage.jsx';
 import { AuditLogPage } from '../pages/settings/AuditLogPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
@@ -192,7 +193,6 @@ export function App() {
   const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
-  const geminiCredentialApiClientRef = useRef(createGeminiCredentialApiClient());
 const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
 const meetingRecordsRequestRef = useRef(null);
 const activeMeetingCheckpointRef = useRef(null);
@@ -415,6 +415,21 @@ const activeMeetingCheckpointRef = useRef(null);
       copyLiveTranslation
     }
   });
+
+  useEffect(() => subscribeToLiveCredentialClear(() => {
+    sessionStopRequestedRef.current = true;
+    startLiveRecordingInFlightRef.current = false;
+    liveController.recovery.reconnectController().cancel();
+    liveController.segmentSwitch.cancel();
+    invalidateLiveSessionCallbacks();
+    const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
+    sessionRef.current = null;
+    reconnectSessionRef.current = null;
+    for (const session of sessions) {
+      session?.clearEphemeralToken?.();
+      void stopSessionSafely(session);
+    }
+  }), [liveController]);
 
   // Finalized Cues are translated asynchronously after they are persisted.
   useEffect(() => {
@@ -2056,6 +2071,11 @@ const activeMeetingCheckpointRef = useRef(null);
     )
   );
   const startLiveRecording = async () => {
+    if (!hasLiveCredential()) {
+      setLiveErrorCode('gemini_api_key_required');
+      setError('請貼上 Gemini API Key，再開始錄製。');
+      return;
+    }
     if (!hasConfirmedMeetingAudioPreference(liveAudioPreference)) {
       setError('請先回到會議設定確認音訊裝置，再開始錄製。');
       window.location.hash = `#meeting-settings?mode=edit&meetingId=${encodeURIComponent(routeMeetingId)}`;
@@ -2068,17 +2088,6 @@ const activeMeetingCheckpointRef = useRef(null);
     try {
       setError('');
       setLiveErrorCode('');
-      try {
-        const credential = await geminiCredentialApiClientRef.current.get();
-        if (credential?.configured === false) {
-          setLiveErrorCode('gemini_credential_not_configured');
-          setError('請先設定 Gemini API Key，再開始錄製。');
-          return;
-        }
-      } catch {
-        // The backend live-token check remains the source of truth if this preflight fails.
-      }
-
       await (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
         ? liveController.actions.resumeMeetingSession()
         : liveController.actions.startSession());
@@ -2227,13 +2236,11 @@ const activeMeetingCheckpointRef = useRef(null);
             void loadMeetingDetail(routeMeetingId);
             return;
           }
-          setError('');
-          void (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession
-            ? liveController.actions.resumeMeetingSession()
-            : liveController.actions.startSession());
+          void startLiveRecording();
         }}
       >
         <div className="live-workspace-stack">
+        <GeminiCredentialNotice />
         <div className="live-session-toolbar meeting-settings-card" data-testid="live-session-toolbar">
           <div className="control-status-row">
             <div className="live-meeting-summary-column">

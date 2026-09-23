@@ -34,16 +34,36 @@ test('credential API is owner-bound and never returns the full key', async () =>
   assert.equal(read.status, 200);
   assert.equal(read.json.credential.configured, true);
   assert.doesNotMatch(JSON.stringify(read.json), /secret-api-key/);
+
+  const removed = await request(handler, { method: 'DELETE', url: '/api/profile/gemini-credential' });
+  assert.equal(removed.status, 204);
+  assert.equal(store.has('user-a'), false);
 });
 
-test('live-token resolves only the authenticated user credential', async () => {
+test('live-token uses only the request key and never resolves a profile credential', async () => {
   let receivedKey = null;
+  let resolveKeyCalls = 0;
   const handler = createRequestHandler({
-    accessControl: { validateRequest: async () => ({ id: 'user-a', email: 'a@example.com' }) },
+    accessControl: { validateRequest: async () => ({ id: 'user-a', email: 'a@example.com', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canRecord(meetingId, userId) { return meetingId === 'meeting-1' && userId === 'user-a'; },
+      async getMeetingOwner() { return 'user-a'; }
+    },
+    sessionReadController: {
+      async getSession(sessionId) {
+        return sessionId === 'session-1'
+          ? { sessionRecord: { id: sessionId, meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } }
+          : null;
+      }
+    },
     credentialRepository: {
       async get() { return { configured: true, lastFour: '1234' }; },
       async upsert() { return { configured: true, lastFour: '1234' }; },
-      async resolveKey(userId) { return userId === 'user-a' ? 'user-a-secret-key' : null; },
+      async resolveKey() {
+        resolveKeyCalls += 1;
+        throw new Error('live-token must not resolve profile credentials');
+      },
       async remove() {}
     },
     liveTokenCreator: async (_body, options) => {
@@ -52,8 +72,18 @@ test('live-token resolves only the authenticated user credential', async () => {
     }
   });
 
-  const result = await request(handler, { method: 'POST', url: '/api/live-token', body: JSON.stringify({ targetLanguageCode: 'en' }) });
+  const result = await request(handler, {
+    method: 'POST',
+    url: '/api/live-token',
+    body: JSON.stringify({
+      meetingId: 'meeting-1',
+      sessionId: 'session-1',
+      targetLanguageCode: 'en',
+      geminiApiKey: 'request-only-secret'
+    })
+  });
   assert.equal(result.status, 200);
   assert.equal(result.json.token, 'ephemeral-token');
-  assert.equal(receivedKey, 'user-a-secret-key');
+  assert.equal(receivedKey, 'request-only-secret');
+  assert.equal(resolveKeyCalls, 0);
 });

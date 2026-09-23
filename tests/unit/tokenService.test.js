@@ -150,3 +150,17 @@ test('createLiveToken maps provider failures to 502', async () => {
     status: 502
   });
 });
+
+test('createLiveToken never falls back to process.env.GEMINI_API_KEY', async () => {
+  const previous = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'environment-only-key';
+  try {
+    await assert.rejects(() => createLiveToken({ targetLanguageCode: 'en' }), {
+      message: 'GEMINI_API_KEY is not configured',
+      status: 500
+    });
+  } finally {
+    if (previous === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previous;
+  }
+});

@@ -159,7 +159,7 @@ function safeTranslationProvidersFor(env = process.env) {
   ];
 }
 
-function sendJson(res, status, payload, requestId) {
+function sendJson(res, status, payload, requestId, extraHeaders = {}) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -171,6 +171,7 @@ function sendJson(res, status, payload, requestId) {
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
     'X-Frame-Options': 'DENY',
+    ...extraHeaders,
     ...(requestId ? { 'X-Request-Id': requestId } : {})
   });
   res.end(body);
@@ -2861,36 +2862,53 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     return;
   }
 
+  let requestBody = null;
+  let requestApiKey = null;
   try {
     enforceRateLimit(clientIp);
 
     const body = await readJson(req);
+    requestBody = body;
+    if (!authenticatedUser?.id) throw createHttpError('auth_required');
+    if (typeof body?.meetingId !== 'string' || !body.meetingId.trim() || typeof body?.sessionId !== 'string' || !body.sessionId.trim()) {
+      throw createHttpError('recorder_forbidden');
+    }
+    const detail = await sessionReadController?.getSession?.(body.sessionId);
+    const session = detail?.sessionRecord || detail?.session;
+    if (!session || session.meetingId !== body.meetingId) throw createHttpError('recorder_forbidden');
+    if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) {
+      throw createHttpError('recorder_forbidden');
+    }
+    const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
+    if (!ownerUserId) throw createHttpError('recorder_forbidden');
+    setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
+    updateRequestScope(ownerUserId);
+    requestApiKey = body?.geminiApiKey;
+    delete body.geminiApiKey;
+    if (typeof requestApiKey !== 'string' || requestApiKey.trim() === '') throw createHttpError('server_misconfigured');
     let tokenRequest = body;
     if (hasRecorderHeaders(req)) {
       const sessionId = body?.sessionId;
       const auth = await authorizeRecorderWrite({ req, sessionId, sessionShareService, recorderGrantService, recorderLeaseService });
-      const detail = await sessionReadController.getSession(sessionId);
-      const session = detail?.sessionRecord || detail?.session;
-      if (!session) throw createHttpError('session_not_found');
       if (body.targetLanguageCode && body.targetLanguageCode !== session.targetLanguageCode) throw createHttpError('recorder_session_mismatch');
       if (body.sourceLanguageCode && body.sourceLanguageCode !== session.sourceLanguageCode) throw createHttpError('recorder_session_mismatch');
       tokenRequest = { ...body, targetLanguageCode: session.targetLanguageCode, sourceLanguageCode: session.sourceLanguageCode };
       void auth;
     }
-    targetLanguageCode = body.targetLanguageCode || 'en';
-    const apiKey = authenticatedUser?.id && credentialRepository
-      ? await credentialRepository.resolveKey(authenticatedUser.id)
-      : null;
-    if (authenticatedUser?.id && credentialRepository && !apiKey) {
-      throw createHttpError('gemini_credential_not_configured');
-    }
-    const token = await liveTokenCreator(tokenRequest, apiKey ? { apiKey } : {});
+    targetLanguageCode = tokenRequest.targetLanguageCode || 'en';
+    const token = await liveTokenCreator(tokenRequest, { apiKey: requestApiKey });
     try {
       observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass: '200' });
       observabilityMetrics?.recordLatency(OBSERVABILITY_METRIC_NAMES.GEMINI_LATENCY, Math.max(0, performance.now() - startedAt), { provider: 'gemini', operation: 'token', statusClass: '200' });
     } catch { /* Metrics are best effort. */ }
     statusCode = 200;
-    sendJson(res, statusCode, token, requestId);
+    sendJson(res, statusCode, {
+      token: token?.token,
+      expiresAt: token?.expiresAt,
+      ...(token?.liveConnectModel ? { liveConnectModel: token.liveConnectModel } : {}),
+      ...(token?.liveConnectConfig ? { liveConnectConfig: token.liveConnectConfig } : {}),
+      ...(Array.isArray(token?.liveGlossaryEntries) ? { liveGlossaryEntries: token.liveGlossaryEntries } : {})
+    }, requestId, { 'Cache-Control': 'no-store' });
     logEvent({
       level: 'info',
       event: 'token_issued',
@@ -2911,8 +2929,10 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     if (code === 'provider_unavailable') {
       logProviderError(requestId, error);
     }
-    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    sendJson(res, statusCode, errorPayload(code, requestId), requestId, { 'Cache-Control': 'no-store' });
   } finally {
+    requestApiKey = null;
+    if (requestBody && typeof requestBody === 'object') delete requestBody.geminiApiKey;
     logEvent({
       level: statusCode >= 500 ? 'error' : 'info',
       event: 'request',
@@ -3112,7 +3132,6 @@ async function resolveMeetingLifecyclePrincipal({
 
 function isRecorderAuthorizedPath(method, path, req) {
   if (!hasRecorderHeaders(req)) return false;
-  if (method === 'POST' && path === '/api/live-token') return true;
   if (method === 'PUT' && /^\/api\/sessions\/[^/]+$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)$/.test(path)) return true;
   if (method === 'POST' && /^\/api\/sessions\/[^/]+\/audio\/(input|translation)\/segments\/\d+$/.test(path)) return true;

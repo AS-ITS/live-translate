@@ -52,13 +52,28 @@ async function postJson(body) {
   return request({ body: JSON.stringify(body) });
 }
 
+function tokenBody(overrides = {}) {
+  return { meetingId: 'meeting-1', sessionId: 'session-1', geminiApiKey: 'request-api-key', targetLanguageCode: 'en', ...overrides };
+}
+
 test.beforeEach(() => {
   resetMock();
   metrics = createTranslationExecutionMetrics({ clock: () => '2026-08-10T00:00:00.000Z' });
   requestHandler = createRequestHandler({
     translationExecutionMetrics: metrics,
-    async liveTokenCreator(body) {
-      if (!process.env.GEMINI_API_KEY) {
+    accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canRecord(meetingId, userId) { return meetingId === 'meeting-1' && userId === 'recorder-1'; },
+      async getMeetingOwner(meetingId) { return meetingId === 'meeting-1' ? 'owner-1' : null; }
+    },
+    sessionReadController: {
+      async getSession(sessionId) {
+        return sessionId === 'session-1' ? { sessionRecord: { id: sessionId, meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } } : null;
+      }
+    },
+    async liveTokenCreator(body, options) {
+      if (!options?.apiKey) {
         throw new Error('GEMINI_API_KEY is not configured');
       }
       if (process.env.MOCK_GOOGLE_GENAI_AUTH_ERROR) {
@@ -91,19 +106,19 @@ test.afterEach(() => {
 });
 
 test('POST /api/live-token returns an ephemeral token without calling real Gemini', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
   process.env.MOCK_GOOGLE_GENAI_TOKEN_NAME = 'mock-token-name';
 
-  const response = await postJson({
+  const response = await postJson(tokenBody({
     targetLanguageCode: 'ja',
     echoTargetLanguage: false
-  });
+  }));
   const body = response.json();
 
   assert.equal(response.status, 200);
   assert.equal(response.headers['X-Content-Type-Options'], 'nosniff');
   assert.equal(response.headers['Referrer-Policy'], 'no-referrer');
   assert.equal(response.headers['X-Frame-Options'], 'DENY');
+  assert.equal(response.headers['Cache-Control'], 'no-store');
   assert.ok(response.headers['Content-Security-Policy']);
   assert.ok(response.headers['X-Request-Id']);
   assert.equal(body.token, 'mock-token-name');
@@ -115,6 +130,10 @@ test('POST /api/live-token returns an ephemeral token without calling real Gemin
 
 test('POST /api/live-token can return the server-constrained live connect config', async () => {
   requestHandler = createRequestHandler({
+    accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
+    profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
+    meetingMembershipService: { async canRecord() { return true; }, async getMeetingOwner() { return 'owner-1'; } },
+    sessionReadController: { async getSession() { return { sessionRecord: { meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } }; } },
     async liveTokenCreator(body) {
       const config = buildTokenConfig({
         ...normalizeTokenRequest(body),
@@ -130,10 +149,10 @@ test('POST /api/live-token can return the server-constrained live connect config
     }
   });
 
-  const response = await postJson({
+  const response = await postJson(tokenBody({
     targetLanguageCode: 'ja',
     echoTargetLanguage: false
-  });
+  }));
   const body = response.json();
 
   assert.equal(response.status, 200);
@@ -144,9 +163,7 @@ test('POST /api/live-token can return the server-constrained live connect config
 });
 
 test('POST /api/live-token rejects invalid language', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
-
-  const response = await postJson({ targetLanguageCode: 'xx' });
+  const response = await postJson(tokenBody({ targetLanguageCode: 'xx' }));
   const body = response.json();
 
   assert.equal(response.status, 400);
@@ -157,9 +174,7 @@ test('POST /api/live-token rejects invalid language', async () => {
 });
 
 test('POST /api/live-token rejects invalid source language', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
-
-  const response = await postJson({ targetLanguageCode: 'ja', sourceLanguageCode: 'xx' });
+  const response = await postJson(tokenBody({ targetLanguageCode: 'ja', sourceLanguageCode: 'xx' }));
   const body = response.json();
 
   assert.equal(response.status, 400);
@@ -168,9 +183,7 @@ test('POST /api/live-token rejects invalid source language', async () => {
 });
 
 test('POST /api/live-token rejects requests when api key is missing', async () => {
-  delete process.env.GEMINI_API_KEY;
-
-  const response = await postJson({ targetLanguageCode: 'en' });
+  const response = await postJson(tokenBody({ geminiApiKey: undefined }));
   const body = response.json();
 
   assert.equal(response.status, 500);
@@ -178,10 +191,9 @@ test('POST /api/live-token rejects requests when api key is missing', async () =
 });
 
 test('POST /api/live-token maps expired-token provider failures to error response', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
   process.env.MOCK_GOOGLE_GENAI_AUTH_ERROR = 'expired token';
 
-  const response = await postJson({ targetLanguageCode: 'en' });
+  const response = await postJson(tokenBody());
   const body = response.json();
 
   assert.equal(response.status, 502);
@@ -189,8 +201,6 @@ test('POST /api/live-token maps expired-token provider failures to error respons
 });
 
 test('POST /api/live-token returns structured error response for invalid JSON', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
-
   const response = await request({ body: '{not-json' });
   const body = response.json();
 
@@ -199,9 +209,8 @@ test('POST /api/live-token returns structured error response for invalid JSON', 
 });
 
 test('POST /api/live-token rejects disallowed origin', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
   const response = await request({
-    body: JSON.stringify({ targetLanguageCode: 'en' }),
+    body: JSON.stringify(tokenBody()),
     headers: { origin: 'https://evil.example.com' }
   });
 
@@ -210,13 +219,12 @@ test('POST /api/live-token rejects disallowed origin', async () => {
 });
 
 test('POST /api/live-token applies IP-based rate limit', async () => {
-  process.env.GEMINI_API_KEY = 'test-api-key';
   process.env.RATE_LIMIT_MAX = '1';
   process.env.RATE_LIMIT_WINDOW_MS = '60000';
 
   const headers = { 'x-forwarded-for': '203.0.113.10' };
-  const firstResponse = await request({ body: JSON.stringify({ targetLanguageCode: 'en' }), headers });
-  const secondResponse = await request({ body: JSON.stringify({ targetLanguageCode: 'en' }), headers });
+  const firstResponse = await request({ body: JSON.stringify(tokenBody()), headers });
+  const secondResponse = await request({ body: JSON.stringify(tokenBody()), headers });
 
   assert.equal(firstResponse.status, 200);
   assert.equal(secondResponse.status, 429);

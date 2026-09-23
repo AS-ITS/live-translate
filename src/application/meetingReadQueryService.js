@@ -5,6 +5,7 @@ import {
   finalCuesFromSegments
 } from '../readModels/meetingReadModels.js';
 import { audioArtifactDownloadByteLength } from '../infrastructure/sessionAudioArtifacts.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../lib/meetingRetention.js';
 import {
   compareViewerCues,
   decodeViewerCursor,
@@ -34,6 +35,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       if (!meeting) {
         return null;
       }
+      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
 
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
       const cloudAudioArtifacts = meetingAudioService
@@ -54,6 +56,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       const before = decodeViewerCursor(options.before);
       const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
       if (!meeting) return null;
+      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
 
       if (typeof meetingRepository.getMeetingViewerPage === 'function') {
         const page = await meetingRepository.getMeetingViewerPage(normalizedMeetingId, { before, limit });

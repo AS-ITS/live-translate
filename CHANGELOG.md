@@ -17,6 +17,10 @@
   claims due v2 Meetings, deletes private audio/export Storage objects before
   the Meeting database cascade, and marks partial failures retryable. The
   worker reports bounded purge counts without exposing Storage paths or secrets.
+- Implemented Issue #37 Phase 4 retention closeout: owner read models now expose
+  the purge deadline, expired content returns stable `410` responses, purge
+  metrics are recorded with retention labels, and lifecycle v2 writes stop
+  populating legacy transcript/segment linkage columns while preserving v1 reads.
 
 ## 2026-09-22
 

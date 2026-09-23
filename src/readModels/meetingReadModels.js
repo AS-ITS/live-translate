@@ -46,6 +46,7 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
   return {
     meeting: {
       ...summary,
+      purgeAt: meeting?.purgeAt ?? meeting?.purge_at ?? null,
       glossaryEntries: Array.isArray(meeting?.glossaryEntries)
         ? meeting.glossaryEntries.map((entry) => ({
           ...entry,

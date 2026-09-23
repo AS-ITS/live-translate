@@ -146,7 +146,23 @@ function meetingRow(entity, ownerUserId) {
 }
 
 function segmentRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, meeting_id: entity.meetingId, session_id: entity.sessionId, lifecycle_contract_version: entity.lifecycleContractVersion ?? 2, sequence: entity.sequence, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), live_session_id: entity.liveSessionId, settings_snapshot: entity.settingsSnapshot, checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined }, error_info: entity.errorInfo, created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt) };
+  return {
+    id: entity.id,
+    owner_user_id: ownerUserId,
+    meeting_id: entity.meetingId,
+    session_id: entity.sessionId,
+    lifecycle_contract_version: entity.lifecycleContractVersion ?? 2,
+    sequence: entity.sequence,
+    status: entity.status,
+    started_at: toSupabaseTimestamp(entity.startedAt),
+    ended_at: toSupabaseTimestamp(entity.endedAt),
+    live_session_id: Number(entity.lifecycleContractVersion) === 2 ? null : entity.liveSessionId,
+    settings_snapshot: entity.settingsSnapshot,
+    checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined },
+    error_info: entity.errorInfo,
+    created_at: toSupabaseTimestamp(entity.createdAt),
+    updated_at: toSupabaseTimestamp(entity.updatedAt)
+  };
 }
 
 async function hydrateSegment(client, row, ownerUserId) {

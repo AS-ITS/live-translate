@@ -120,6 +120,7 @@ const ERROR_RESPONSES = {
   checkpoint_conflict: { status: 409, message: 'Meeting checkpoint conflicts with previously persisted content.' },
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
   meeting_terminal: { status: 409, message: 'Meeting has already ended.' },
+  meeting_content_expired: { status: 410, message: 'Meeting content retention period has expired.' },
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },

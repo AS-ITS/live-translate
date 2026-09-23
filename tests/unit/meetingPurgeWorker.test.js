@@ -49,3 +49,29 @@ test('purge worker marks a failed claim and continues with the bounded batch', a
   assert.equal(failed[0].claim.meetingId, 'meeting-1');
   assert.equal(failed[0].error.code, 'storage_unavailable');
 });
+
+test('purge worker emits best-effort retention metrics', async () => {
+  const metrics = [];
+  const repository = {
+    async claimDue() { return [{ meetingId: 'meeting-1', ownerUserId: 'owner-1' }]; },
+    async listArtifacts() { return { audioPaths: [], exportPaths: [] }; },
+    async deleteMeeting() {},
+    async markFailed() {}
+  };
+  const worker = createMeetingPurgeWorker({
+    repository,
+    storage: { async remove() {} },
+    workerId: 'worker-1',
+    clock: (() => { let now = 100; return () => (now += 5); })(),
+    observabilityMetrics: {
+      recordCounter(...input) { metrics.push(['counter', ...input]); },
+      recordLatency(...input) { metrics.push(['latency', ...input]); }
+    }
+  });
+
+  await worker.runOnce();
+
+  assert.equal(metrics[0][1], 'meeting_purge_claimed_total');
+  assert.equal(metrics.some((item) => item[1] === 'meeting_purge_completed_total'), true);
+  assert.equal(metrics.some((item) => item[1] === 'meeting_purge_latency_ms'), true);
+});

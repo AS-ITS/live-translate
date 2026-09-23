@@ -680,6 +680,7 @@ export function MeetingRecordDetail({ detail, detailError = '', activeSection, o
   if (!detail) {
     return <MeetingDetailState title="無法取得會議詳細資料"><p className="error-message" role="alert">{detailError || '此會議紀錄無法使用。'} <button className="inline-retry" type="button" onClick={onRetry}>重試</button></p></MeetingDetailState>;
   }
+  const retentionNotice = meetingRetentionNotice(detail.meeting);
 
   return (
     <section className="meeting-record-section" aria-label="會議紀錄">
@@ -688,6 +689,7 @@ export function MeetingRecordDetail({ detail, detailError = '', activeSection, o
           <p className="eyebrow">MEETING RECORD</p>
           <h2>{meetingTitle(detail.meeting)}</h2>
           <p>會議基本資訊與完成狀態。</p>
+          {retentionNotice ? <p className="export-note" data-testid="meeting-retention-notice" role="status">{retentionNotice}</p> : null}
         </div>
       </div>
       <dl className="session-detail-metadata meeting-detail-metadata">
@@ -2042,6 +2044,15 @@ function formatRecordTime(value) {
   }
 
   return date.toLocaleString('zh-Hant');
+}
+
+function meetingRetentionNotice(meeting) {
+  if (Number(meeting?.lifecycleContractVersion) !== 2 || !['completed', 'failed', 'interrupted'].includes(meeting?.status)) return '';
+  const purgeAt = Date.parse(meeting?.purgeAt || '');
+  if (!Number.isFinite(purgeAt)) return '';
+  return purgeAt <= Date.now()
+    ? '這場會議的暫存內容已到期，匯出與下載可能即將失效。'
+    : `字幕與音檔暫存至 ${formatRecordTime(meeting.purgeAt)}；請在期限前完成匯出或下載。`;
 }
 
 function formatMeetingListTime(value) {

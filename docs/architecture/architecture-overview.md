@@ -25,6 +25,13 @@ Function invocation.
   worker deletes private audio/export Storage objects before deleting the
   Meeting row; database cascades remove dependent transcript, Session,
   Segment, share, and artifact metadata. Failed claims remain retryable.
+- The read model exposes `purge_at` as `purgeAt` for owner UI deadline
+  guidance. Expired v2 content uses stable `410 meeting_content_expired` before
+  physical deletion. Purge counters and latency use low-cardinality
+  `retention` observability labels; metric failures never affect cleanup.
+- v2 repository writes leave legacy `sessions.segment_id`,
+  `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or
+  null while retaining read compatibility for v1 rows.
 - Finalized v2 Meeting transcript data is written only to `subtitle_cues`.
   The compatibility Session snapshot retains lifecycle metadata but does not
   receive `transcript_items` appends.

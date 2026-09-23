@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../lib/meetingRetention.js';
 
 export const MEETING_AUDIO_BUCKET = 'meeting-audio';
 export const MEETING_AUDIO_KIND = 'source_webm';
@@ -217,14 +218,7 @@ async function requireArtifactMutationBeforePurge(client, { ownerUserId, meeting
   const rows = await client.request('meetings', {
     query: `?select=lifecycle_contract_version,status,purge_at&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}`
   });
-  if (isExpiredV2TerminalMeeting(rows[0], clock())) throw audioError('meeting_terminal', 409);
-}
-
-function isExpiredV2TerminalMeeting(meeting, now) {
-  if (Number(meeting?.lifecycle_contract_version) !== 2) return false;
-  if (!['completed', 'failed', 'interrupted'].includes(meeting.status)) return false;
-  const purgeAt = Date.parse(meeting.purge_at || '');
-  return Number.isFinite(purgeAt) && purgeAt <= now;
+  if (isMeetingContentExpired(rows[0], clock())) throw meetingContentExpiredError();
 }
 
 function artifactDTO(row) {

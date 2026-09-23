@@ -313,3 +313,9 @@ row. Storage deletion precedes the database cascade; failed claims are marked
 retryable and reclaimed by a later invocation. The response reports
 `purges.claimed`, `purges.purged`, and `purges.failed` without exposing paths
 or credentials.
+
+Phase 4 also exposes `purgeAt` in owner Meeting detail responses, returns
+`410 meeting_content_expired` after the deadline but before physical deletion,
+and records purge counts/latency under the `retention` metrics operation.
+Lifecycle v2 repository writes leave legacy linkage/transcript columns empty or
+null; v1 rows remain readable.

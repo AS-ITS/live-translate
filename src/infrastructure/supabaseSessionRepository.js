@@ -14,6 +14,7 @@ export function createSupabaseSessionRepository(options = {}) {
     requiresRequestIdentity: true,
     async createSessionRecord(input = {}) {
       const record = createSessionRecordModel({ ...input, ownerUserId: owner() }, { ...input, idFactory });
+      if (Number(input.lifecycleContractVersion ?? input.lifecycle_contract_version) === 2) record.lifecycleContractVersion = 2;
       await client.request('sessions', { method: 'POST', body: [sessionRow(record, owner())] });
       return clone(record);
     },
@@ -74,7 +75,22 @@ function isLifecycleV2Session(record) {
 }
 
 function sessionRow(record, ownerUserId, transcriptItems = []) {
-  return { id: record.id, owner_user_id: ownerUserId, meeting_id: record.meetingId, segment_id: record.segmentId, status: record.status, source_language_code: record.sourceLanguageCode, target_language_code: record.targetLanguageCode, started_at: toSupabaseTimestamp(record.startedAt), ended_at: toSupabaseTimestamp(record.endedAt), created_at: toSupabaseTimestamp(record.createdAt), payload: record, transcript_items: transcriptItems };
+  return {
+    id: record.id,
+    owner_user_id: ownerUserId,
+    meeting_id: record.meetingId,
+    ...(isLifecycleV2Session(record)
+      ? { lifecycle_contract_version: 2, segment_id: null }
+      : { segment_id: record.segmentId }),
+    status: record.status,
+    source_language_code: record.sourceLanguageCode,
+    target_language_code: record.targetLanguageCode,
+    started_at: toSupabaseTimestamp(record.startedAt),
+    ended_at: toSupabaseTimestamp(record.endedAt),
+    created_at: toSupabaseTimestamp(record.createdAt),
+    payload: record,
+    transcript_items: isLifecycleV2Session(record) ? [] : transcriptItems
+  };
 }
 function toSupabaseTimestamp(value) {
   if (value === null || value === undefined) return null;

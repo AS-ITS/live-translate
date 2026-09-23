@@ -99,7 +99,7 @@ test('v2 terminal meeting audio artifact writes reject after the purge deadline'
   for (const action of ['completeUpload', 'failUpload']) {
     await assert.rejects(
       () => service[action]({ meetingId: 'meeting-1', artifactId: 'artifact-1' }),
-      (error) => error.code === 'meeting_terminal' && error.status === 409
+      (error) => error.code === 'meeting_content_expired' && error.status === 410
     );
   }
 

@@ -652,3 +652,20 @@ owner-only Storage policies, `export_artifacts` constraints, and `export_jobs`:
 ```bash
 npm run db:lint
 ```
+
+Issue #37 Phase 4 retention, compatibility, and observability checks:
+
+```bash
+node --test \
+  tests/unit/meetingRetention.test.js \
+  tests/unit/meetingContentExpiry.test.js \
+  tests/unit/supabaseLegacyWriteCompatibility.test.js \
+  tests/unit/meetingPurgeWorker.test.js \
+  tests/unit/supabaseMeetingAudioService.test.js \
+  tests/unit/meetingReadQueryService.test.js \
+  tests/unit/observability.test.js
+```
+
+These tests verify the 30-minute deadline read model, stable `410` expiry
+contract, v1 read compatibility with v2 legacy-column write suppression, and
+best-effort purge metrics. They do not call Gemini or remote Supabase.

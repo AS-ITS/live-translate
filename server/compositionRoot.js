@@ -686,7 +686,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ? createSupabaseExportComposition({ env, clock: translationQueueClock.now.bind(translationQueueClock) })
     : null;
   const meetingPurgeComposition = cloudDataMode
-    ? createSupabaseMeetingPurgeComposition({ env })
+    ? createSupabaseMeetingPurgeComposition({ env, observabilityMetrics })
     : null;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,

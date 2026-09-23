@@ -2,6 +2,7 @@ import { eq } from './supabaseRestClient.js';
 import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
 import { mapMeetingToDetailDTO } from '../readModels/meetingReadModels.js';
 import { meetingExportSource } from '../lib/meetingExportSource.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../lib/meetingRetention.js';
 
 export function createSupabaseMeetingExportSource({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
   const clientForContext = createSupabaseContextClient({ env, fetchImpl });
@@ -12,12 +13,13 @@ export function createSupabaseMeetingExportSource({ env = process.env, fetchImpl
       const meetings = await client.request('meetings', {
         query: `?select=*&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}&limit=1`
       });
-      if (!meetings[0]) {
+    if (!meetings[0]) {
         const error = new Error('Meeting not found.');
         error.code = 'meeting_not_found';
         error.status = 404;
-        throw error;
-      }
+      throw error;
+    }
+    if (isMeetingContentExpired(meetings[0])) throw meetingContentExpiredError();
 
       const segmentRows = await client.request('meeting_segments', {
         query: `?select=*&${eq('meeting_id', meetingId)}&${eq('owner_user_id', ownerUserId)}&order=sequence.asc`

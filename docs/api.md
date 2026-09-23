@@ -41,6 +41,11 @@ deleting the Meeting row, allowing its database cascade to remove dependent
 transcript, Session, Segment, share, and artifact metadata. Partial failures
 mark the claim retryable as `failed`.
 
+After `purge_at`, owner-scoped Meeting detail, export source, and audio
+completion/download operations return `410 meeting_content_expired`. After the
+worker deletes the Meeting row, these resources return the normal not-found
+response. Legacy v1 rows remain readable during the transition.
+
 Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
 new recording lifecycle commands and reject new Session, Segment, Viewer-share,
 or finalized Cue writes. For v2 Meetings, finalized transcript data is stored

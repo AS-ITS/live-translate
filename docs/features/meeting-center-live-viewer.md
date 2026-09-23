@@ -282,6 +282,17 @@ full benchmark report.
 Each phase must preserve existing recording, sharing, checkpoint, export, and
 historical data behavior before the next phase begins.
 
+## Short-lived retention behavior
+
+Completed lifecycle v2 Meetings expose `purgeAt` to the owner detail view so
+the 30-minute export/audio window is explicit. Before physical deletion,
+expired owner content returns `410 meeting_content_expired`; after deletion it
+returns the normal not-found response. The retention worker records bounded
+claim, completion, failure, and latency metrics without content or Storage
+paths. Legacy v1 rows remain readable while v2 writes stop populating legacy
+`sessions.segment_id`, `meeting_segments.live_session_id`, and
+`sessions.transcript_items` fields.
+
 ## Security and Compatibility Constraints
 
 - Never expose `GEMINI_API_KEY` or ephemeral tokens to Viewers.

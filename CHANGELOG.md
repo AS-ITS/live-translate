@@ -13,6 +13,10 @@
   `subtitle_cues`; fenced audio uploads may complete or fail only before the
   purge deadline. This adds a future purge-worker claim contract, not physical
   data deletion.
+- Implemented Issue #37 Phase 3 retention cleanup: the bounded CRON worker now
+  claims due v2 Meetings, deletes private audio/export Storage objects before
+  the Meeting database cascade, and marks partial failures retryable. The
+  worker reports bounded purge counts without exposing Storage paths or secrets.
 
 ## 2026-09-22
 

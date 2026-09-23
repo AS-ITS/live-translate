@@ -35,8 +35,11 @@ The authenticated CRON worker invokes the service-role-only
 persisted heartbeat for 15 minutes is stopped with `recorder_lost`, its active
 Segment is marked `interrupted`, its Viewer shares and recorder lease are
 revoked, and `purge_at` is set 30 minutes later. `claim_due_meeting_purges`
-provides an atomic, locked claim contract for a later purge worker; it does not
-perform physical deletion in Phase 1.
+provides an atomic, locked claim contract for the bounded purge worker. The
+worker deletes `meeting-audio` and `meeting-exports` Storage objects before
+deleting the Meeting row, allowing its database cascade to remove dependent
+transcript, Session, Segment, share, and artifact metadata. Partial failures
+mark the claim retryable as `failed`.
 
 Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
 new recording lifecycle commands and reject new Session, Segment, Viewer-share,

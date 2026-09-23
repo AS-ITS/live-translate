@@ -21,8 +21,10 @@ Function invocation.
   recorder lease are revoked, and retention is scheduled for 30 minutes later.
 - Terminal v2 Meetings reject new lifecycle, Segment, share, and Cue writes.
   `retention_policy_version` and the purge claim fields provide a
-  `FOR UPDATE SKIP LOCKED` handoff for a later purge worker; this Phase 1
-  contract does not delete Meeting data or audio objects.
+  `FOR UPDATE SKIP LOCKED` handoff to the bounded CRON purge worker. The
+  worker deletes private audio/export Storage objects before deleting the
+  Meeting row; database cascades remove dependent transcript, Session,
+  Segment, share, and artifact metadata. Failed claims remain retryable.
 - Finalized v2 Meeting transcript data is written only to `subtitle_cues`.
   The compatibility Session snapshot retains lifecycle metadata but does not
   receive `transcript_items` appends.

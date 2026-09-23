@@ -304,3 +304,12 @@ asynchronous export panel and signed download URLs. Local file-backed mode
 keeps meeting and transcript reads available but shows an export-unavailable
 message; it does not generate browser transcript files and does not migrate
 local JSON or audio data.
+
+Issue #37 Phase 3 retention cleanup runs in the same bounded
+`/api/internal/worker` Cron invocation. It claims due v2 Meetings with
+`claim_due_meeting_purges`, deletes `meeting-audio` and `meeting-exports`
+objects through the service-role Storage boundary, then deletes the Meeting
+row. Storage deletion precedes the database cascade; failed claims are marked
+retryable and reclaimed by a later invocation. The response reports
+`purges.claimed`, `purges.purged`, and `purges.failed` without exposing paths
+or credentials.

@@ -81,6 +81,7 @@ import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/s
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createSupabaseReadinessCheck } from '../src/infrastructure/supabaseReadiness.js';
 import { createSupabaseExportComposition } from '../src/infrastructure/supabaseExportComposition.js';
+import { createSupabaseMeetingPurgeComposition } from '../src/infrastructure/supabaseMeetingPurgeComposition.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -684,6 +685,9 @@ export function createProductionApplicationDependencies(options = {}) {
   const exportComposition = cloudDataMode
     ? createSupabaseExportComposition({ env, clock: translationQueueClock.now.bind(translationQueueClock) })
     : null;
+  const meetingPurgeComposition = cloudDataMode
+    ? createSupabaseMeetingPurgeComposition({ env })
+    : null;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
     ...(exportComposition ? { exportArtifactService: exportComposition.exportArtifactService } : {}),
@@ -758,6 +762,7 @@ export function createProductionApplicationDependencies(options = {}) {
       exportArtifactService: exportComposition.exportArtifactService,
       exportWorker: exportComposition.exportWorker
     } : {}),
+    ...(meetingPurgeComposition ? meetingPurgeComposition : {}),
     ...(translationExecutionWorkerRuntime !== undefined ? { translationExecutionWorkerRuntime } : {}),
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }

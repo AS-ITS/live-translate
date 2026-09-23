@@ -715,6 +715,7 @@ export function createRequestHandler(options = {}) {
     savedTranscriptRetranslationController,
     sessionRetranslationCommandController,
     translationExecutionWorkerRuntime,
+    meetingPurgeWorker,
     exportArtifactService,
     liveTokenCreator = createLiveToken,
     sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES,
@@ -782,6 +783,7 @@ export function createRequestHandler(options = {}) {
       savedTranscriptRetranslationController,
       sessionRetranslationCommandController,
     translationExecutionWorkerRuntime,
+    meetingPurgeWorker,
     exportArtifactService,
       liveTokenCreator,
       sessionShareService,
@@ -821,6 +823,7 @@ async function handleRequestWithSessionReadController(
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
+  const meetingPurgeWorker = arguments[2]?.meetingPurgeWorker;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();

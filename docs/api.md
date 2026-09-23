@@ -30,6 +30,27 @@ owner or super-admin force takeover with explicit confirmation. Provider
 reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
 recovery do.
 
+The authenticated CRON worker invokes the service-role-only
+`expire_stale_meetings` RPC in bounded batches. A lifecycle v2 Meeting with no
+persisted heartbeat for 15 minutes is stopped with `recorder_lost`, its active
+Segment is marked `interrupted`, its Viewer shares and recorder lease are
+revoked, and `purge_at` is set 30 minutes later. `claim_due_meeting_purges`
+provides an atomic, locked claim contract for a later purge worker; it does not
+perform physical deletion in Phase 1.
+
+Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
+new recording lifecycle commands and reject new Session, Segment, Viewer-share,
+or finalized Cue writes. For v2 Meetings, finalized transcript data is stored
+only in `subtitle_cues`; compatibility Session snapshots do not append
+`transcript_items`.
+
+`POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` requires the
+current `X-Meeting-Session-Id`, `X-Meeting-Segment-Id`,
+`X-Meeting-Lease-Id`, and `X-Meeting-Fence-Token` headers before it creates an
+artifact. An artifact created before terminal transition may still complete or
+fail before `purge_at`; completion and failure at or after that deadline return
+`409 meeting_terminal`.
+
 ## Meeting export lifecycle (P7)
 
 Assigned members can read the meeting data explicitly covered by RLS and can

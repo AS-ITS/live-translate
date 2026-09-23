@@ -25,6 +25,9 @@ export function createSupabaseSessionRepository(options = {}) {
     },
     async appendTranscriptItem(sessionId, item = {}) {
       const detail = await this.getSessionRecord(sessionId); if (!detail) throw notFound(sessionId);
+      if (isLifecycleV2Session(detail.sessionRecord)) {
+        return clone(createTranscriptItemForSession(sessionId, item));
+      }
       const next = [...detail.transcriptItems, createTranscriptItemForSession(sessionId, item)];
       const record = updateSessionRecordModel(detail.sessionRecord, { transcriptSummary: summarizeTranscriptItems(next) });
       await client.request('sessions', { method: 'PATCH', query: `?${eq('id', sessionId)}&${eq('owner_user_id', owner())}`, body: sessionRow(record, owner(), next) });
@@ -48,7 +51,7 @@ export function createSupabaseSessionRepository(options = {}) {
     async getSessionRecord(id) {
       const rows = await client.request('sessions', { query: `?select=*&${eq('id', id)}&${eq('owner_user_id', owner())}` });
       if (!rows[0]) return null;
-      return { sessionRecord: clone(rows[0].payload || rows[0]), transcriptItems: clone(rows[0].transcript_items || []) };
+      return { sessionRecord: sessionRecordFromRow(rows[0]), transcriptItems: clone(rows[0].transcript_items || []) };
     },
     async deleteSessionRecord(id) {
       const existing = await this.getSessionRecord(id); if (!existing) return false;
@@ -57,6 +60,17 @@ export function createSupabaseSessionRepository(options = {}) {
     }
   };
   return Object.freeze(repository);
+}
+
+function sessionRecordFromRow(row) {
+  const record = clone(row.payload || row);
+  return Number(row.lifecycle_contract_version) === 2
+    ? { ...record, lifecycleContractVersion: 2 }
+    : record;
+}
+
+function isLifecycleV2Session(record) {
+  return Number(record?.lifecycleContractVersion) === 2;
 }
 
 function sessionRow(record, ownerUserId, transcriptItems = []) {

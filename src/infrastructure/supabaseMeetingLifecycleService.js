@@ -3,6 +3,7 @@ import { createSupabaseServiceRoleClient } from './supabaseRestClient.js';
 const EXPECTED_CODES = new Set([
   'invalid_request',
   'meeting_not_found',
+  'meeting_terminal',
   'meeting_lifecycle_conflict',
   'recorder_already_active',
   'recorder_lease_invalid',
@@ -36,6 +37,12 @@ export function createSupabaseMeetingLifecycleService({ env = process.env, fetch
 
     touchLiveness(input = {}) {
       return invoke('touch_meeting_liveness', leasePayload(input));
+    },
+
+    expireStaleMeetings({ limit = 3 } = {}) {
+      return invoke('expire_stale_meetings', {
+        p_limit: boundedPositiveInteger(limit, 'limit', 10)
+      });
     },
 
     validateWrite(input = {}) {
@@ -96,4 +103,11 @@ function nonNegativeInteger(value, name) {
 
 function optionalNonNegativeInteger(value, name) {
   return value === null || value === undefined ? null : nonNegativeInteger(value, name);
+}
+
+function boundedPositiveInteger(value, name, maximum) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new TypeError(`${name} must be an integer from 1 to ${maximum}.`);
+  }
+  return value;
 }

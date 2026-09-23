@@ -66,9 +66,18 @@ client payloads, domain mapping, and migration invariants:
 node --test tests/unit/meetingLifecycleHttpApi.test.js \
   tests/unit/meetingLifecycleMigration.test.js \
   tests/unit/meetingLifecycleWriteFence.test.js \
+  tests/unit/meetingLifecycleV2TranscriptBoundary.test.js \
+  tests/unit/meetingAudioStorage.test.js \
+  tests/unit/supabaseMeetingAudioService.test.js \
+  tests/unit/workerEndpoint.test.js \
   tests/unit/meetingCheckpointApiClient.test.js \
   tests/unit/meetingDomain.test.js
 ```
+
+This focused suite covers the 15-minute CRON expiration RPC, 30-minute
+retention-claim contract, terminal-write rejection, v2 transcript boundary,
+upload-start fencing, and pre-purge audio completion/failure. It does not run a
+purge deletion job, call Gemini, or contact a remote Supabase project.
 
 With local Supabase running and its environment loaded, the focused integration
 test verifies concurrent start idempotency and competing rollover/stop behavior:

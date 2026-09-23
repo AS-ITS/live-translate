@@ -15,6 +15,20 @@ Function invocation.
   optimistic `lifecycle_version` for competing commands.
 - Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
   at most once per 30 seconds and retains the 15-minute lost-recorder policy.
+- The CRON worker calls `expire_stale_meetings` in bounded batches. A v2
+  Meeting with no persisted heartbeat for 15 minutes ends atomically: its active
+  Segment becomes `interrupted`, its open Session stops, Viewer shares and the
+  recorder lease are revoked, and retention is scheduled for 30 minutes later.
+- Terminal v2 Meetings reject new lifecycle, Segment, share, and Cue writes.
+  `retention_policy_version` and the purge claim fields provide a
+  `FOR UPDATE SKIP LOCKED` handoff for a later purge worker; this Phase 1
+  contract does not delete Meeting data or audio objects.
+- Finalized v2 Meeting transcript data is written only to `subtitle_cues`.
+  The compatibility Session snapshot retains lifecycle metadata but does not
+  receive `transcript_items` appends.
+- An audio upload may begin only with the active recorder fence. An artifact
+  that already began may complete or fail after the Meeting stops, but not at or
+  after its `purge_at` deadline.
 - Provider reconnect stays inside the current Segment. User pause/resume,
   rollover, and browser-crash recovery create Segment boundaries.
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
+import { createSupabaseMeetingLifecycleService } from '../../src/infrastructure/supabaseMeetingLifecycleService.js';
 
 test('recording start forwards authenticated principal to lifecycle service', async () => {
   const calls = [];
@@ -58,6 +59,43 @@ test('recording lifecycle conflict returns stable HTTP 409 code', async () => {
   assert.equal(response.json().error.code, 'meeting_lifecycle_conflict');
 });
 
+test('terminal Meeting lifecycle write returns stable HTTP 409 code', async () => {
+  const handler = createHandler({
+    async execute() {
+      const error = new Error('terminal');
+      error.code = 'meeting_terminal';
+      error.status = 409;
+      throw error;
+    }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/recording/start',
+    body: { operationId: 'operation-terminal', expectedLifecycleVersion: 3 }
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.json().error.code, 'meeting_terminal');
+});
+
+test('stale Meeting expiration invokes the bounded lifecycle RPC', async () => {
+  const requests = [];
+  const service = createSupabaseMeetingLifecycleService({
+    env: { SUPABASE_URL: 'https://supabase.example', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return { ok: true, status: 200, async json() { return [{ expired: 2 }]; } };
+    }
+  });
+
+  const result = await service.expireStaleMeetings({ limit: 3 });
+
+  assert.deepEqual(result, { expired: 2 });
+  assert.match(requests[0].url, /\/rpc\/expire_stale_meetings$/u);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { p_limit: 3 });
+  assert.throws(() => service.expireStaleMeetings({ limit: 11 }), /limit must be an integer from 1 to 10/u);
+});
+
 test('recording lease heartbeat does not execute a lifecycle transition', async () => {
   const calls = [];
   const handler = createHandler({
@@ -108,9 +146,75 @@ test('lifecycle v2 recording writes reject a stale fence before persistence', as
   assert.equal(calls[0].fenceToken, 1);
 });
 
-function createHandler(meetingLifecycleService) {
+test('audio upload-start validates the lifecycle fence before creating an artifact', async () => {
+  const validations = [];
+  const uploads = [];
+  const handler = createHandler({
+    async validateWrite(input) {
+      validations.push(input);
+    }
+  }, {
+    meetingAudioService: {
+      async beginUpload(input) {
+        uploads.push(input);
+        return { id: 'artifact-1', status: 'uploading' };
+      }
+    }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/segments/segment-1/audio-uploads',
+    headers: {
+      'x-meeting-session-id': 'session-1',
+      'x-meeting-segment-id': 'segment-1',
+      'x-meeting-lease-id': 'lease-1',
+      'x-meeting-fence-token': '2'
+    },
+    body: { mimeType: 'audio/webm', byteSize: 64 }
+  });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(validations, [{
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    leaseId: 'lease-1',
+    fenceToken: 2
+  }]);
+  assert.deepEqual(uploads, [{
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    mimeType: 'audio/webm',
+    byteSize: 64
+  }]);
+});
+
+test('audio artifact completion bypasses an expired recorder lease', async () => {
+  const handler = createHandler({
+    async validateWrite() {
+      throw new Error('must not validate terminal artifact completion');
+    }
+  }, {
+    meetingAudioService: {
+      async completeUpload({ meetingId, artifactId }) {
+        return { id: artifactId, meetingId, status: 'ready' };
+      }
+    }
+  });
+
+  const response = await request(handler, {
+    url: '/api/meetings/meeting-1/audio-artifacts/artifact-1/complete',
+    body: {}
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.json().status, 'ready');
+});
+
+function createHandler(meetingLifecycleService, { meetingAudioService } = {}) {
   return createRequestHandler({
     meetingLifecycleService,
+    ...(meetingAudioService ? { meetingAudioService } : {}),
     accessControl: {
       async validateRequest() { return { id: 'member-1', role: 'member', status: 'active' }; }
     },

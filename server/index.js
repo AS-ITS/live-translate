@@ -119,6 +119,7 @@ const ERROR_RESPONSES = {
   execution_invalid_state: { status: 409, message: 'Translation execution is not in a valid state for this operation.' },
   checkpoint_conflict: { status: 409, message: 'Meeting checkpoint conflicts with previously persisted content.' },
   meeting_checkpoint_unavailable: { status: 503, message: 'Meeting checkpoint persistence is not configured.' },
+  meeting_terminal: { status: 409, message: 'Meeting has already ended.' },
   meeting_share_invalid: { status: 404, message: 'Meeting share is invalid or expired.' },
   meeting_not_found: { status: 404, message: 'Meeting not found.' },
   meeting_delete_not_allowed: { status: 409, message: 'Only meetings that have not started can be deleted.' },
@@ -3318,20 +3319,18 @@ function parseMeetingLifecyclePath(path) {
 function isMeetingLifecycleFencedWrite(method, path) {
   return (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/u.test(path)) ||
     (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/u.test(path)) ||
-    (method === 'POST' && /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(?:complete|fail)$/u.test(path));
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/u.test(path));
 }
 
 function parseMeetingLifecycleFencedWritePath(path) {
-  const segmentMatch = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/(?:cues|checkpoint)$/u);
+  const segmentMatch = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/(?:cues|checkpoint|audio-uploads)$/u);
   if (segmentMatch) {
     return {
       meetingId: safeDecodePathComponent(segmentMatch[1]),
       segmentId: safeDecodePathComponent(segmentMatch[2])
     };
   }
-  const artifactMatch = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/[^/]+\/(?:complete|fail)$/u);
-  if (!artifactMatch) throw createHttpError('invalid_request');
-  return { meetingId: safeDecodePathComponent(artifactMatch[1]), segmentId: null };
+  throw createHttpError('invalid_request');
 }
 
 function isMeetingShareCollectionPath(path) {

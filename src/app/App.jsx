@@ -26,7 +26,6 @@ import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '.
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import {
-  appendNewFinalTranscriptItems,
   buildFinalizePatch,
   finalizeActiveSessionRecord
 } from '../lib/sessionRecordLifecycle.js';
@@ -61,7 +60,7 @@ import { MeetingDetailPage, MeetingManagementPage } from '../features/meetings/i
 import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
-import { useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
+import { finalizedTranscriptItemsForRecording, useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
 import { createRecordingDiagnostics } from '../lib/recordingDiagnostics.js';
@@ -1228,8 +1227,17 @@ const activeMeetingCheckpointRef = useRef(null);
 
     transcriptRef.current = next;
     const activeSessionRecordId = activeSessionRecordIdRef.current;
-    const appended = appendNewFinalTranscriptItems(sessionRepositoryRef.current, activeSessionRecordId, current, next);
-    liveController.checkpoint.markPendingSessionSnapshotItems(activeSessionRecordId, appended);
+    const lifecycleContractVersion = liveController.checkpoint.isLifecycleV2Session(activeSessionRecordId) ? 2 : 1;
+    const appended = finalizedTranscriptItemsForRecording({
+      lifecycleContractVersion,
+      repository: sessionRepositoryRef.current,
+      sessionId: activeSessionRecordId,
+      previousTranscriptState: current,
+      nextTranscriptState: next
+    });
+    if (lifecycleContractVersion !== 2) {
+      liveController.checkpoint.markPendingSessionSnapshotItems(activeSessionRecordId, appended);
+    }
     setTranscript((previous) => (
       previous === current ? next : applyTranscriptEvent(previous, update)
     ));
@@ -1237,7 +1245,7 @@ const activeMeetingCheckpointRef = useRef(null);
     if (appended.length > 0) {
       const activeSessionRecord = sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
       if (activeSessionRecord) {
-        liveController.checkpoint.scheduleSessionSnapshotSync(activeSessionRecordId);
+        if (lifecycleContractVersion !== 2) liveController.checkpoint.scheduleSessionSnapshotSync(activeSessionRecordId);
         liveController.checkpoint.scheduleMeetingCheckpointSync(appended);
       }
     }

@@ -6,6 +6,13 @@
   commands, Meeting-scoped recorder lease/fence tokens, idempotent operations,
   stable Session identity, Segment ownership constraints, crash takeover, and
   v1 compatibility.
+- Hardened Issue #37 Phase 1 lifecycle v2: the CRON worker now expires a
+  Meeting after 15 minutes without a persisted heartbeat, revokes its Recorder
+  and Viewer access, and schedules a 30-minute retention claim. Terminal
+  Meetings reject new writes; v2 finalized transcript data stays in
+  `subtitle_cues`; fenced audio uploads may complete or fail only before the
+  purge deadline. This adds a future purge-worker claim contract, not physical
+  data deletion.
 
 ## 2026-09-22
 

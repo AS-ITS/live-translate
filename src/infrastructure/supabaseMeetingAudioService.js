@@ -73,6 +73,7 @@ export function createSupabaseMeetingAudioService({
     async completeUpload({ meetingId, artifactId }) {
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
+      await requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock });
       const object = await storageRequest(fetchImpl, {
         baseUrl,
         secretKey,
@@ -100,6 +101,7 @@ export function createSupabaseMeetingAudioService({
     async failUpload({ meetingId, artifactId }) {
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
+      await requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock });
       if (artifact.status === 'ready') return artifactDTO(artifact);
       const rows = await client.request('audio_artifacts', {
         method: 'PATCH',
@@ -209,6 +211,20 @@ async function requireArtifact(client, { ownerUserId, meetingId, artifactId }) {
   });
   if (!rows[0]) throw audioError('audio_artifact_not_found', 404);
   return rows[0];
+}
+
+async function requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock }) {
+  const rows = await client.request('meetings', {
+    query: `?select=lifecycle_contract_version,status,purge_at&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}`
+  });
+  if (isExpiredV2TerminalMeeting(rows[0], clock())) throw audioError('meeting_terminal', 409);
+}
+
+function isExpiredV2TerminalMeeting(meeting, now) {
+  if (Number(meeting?.lifecycle_contract_version) !== 2) return false;
+  if (!['completed', 'failed', 'interrupted'].includes(meeting.status)) return false;
+  const purgeAt = Date.parse(meeting.purge_at || '');
+  return Number.isFinite(purgeAt) && purgeAt <= now;
 }
 
 function artifactDTO(row) {

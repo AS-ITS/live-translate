@@ -64,6 +64,63 @@ function isPersistableFinalCue(cue) {
   );
 }
 
+export function finalizedTranscriptItemsForRecording({
+  lifecycleContractVersion = 1,
+  repository,
+  sessionId,
+  previousTranscriptState,
+  nextTranscriptState
+} = {}) {
+  const finalItems = newlyFinalizedTranscriptItems(previousTranscriptState, nextTranscriptState);
+  if (lifecycleContractVersion === 2) return finalItems;
+  return appendNewFinalTranscriptItems(repository, sessionId, previousTranscriptState, nextTranscriptState);
+}
+
+export function sessionSnapshotPayloadForRecording({ session, transcriptItems = [], lifecycleContractVersion = 1 } = {}) {
+  return {
+    session,
+    transcriptItems: lifecycleContractVersion === 2 ? [] : transcriptItems
+  };
+}
+
+export async function stopLifecycleV2AfterFailure({
+  lifecycle,
+  failureReason,
+  failureCategory,
+  flushCheckpoint,
+  executeRecordingCommand,
+  stopHeartbeats,
+  clearWriteFence,
+  preventFurtherWrites
+} = {}) {
+  if (!lifecycle?.meetingId || !lifecycle?.segmentId) return false;
+  await flushCheckpoint();
+  await executeRecordingCommand('stop', {
+    failureReason: failureReason || 'unknown_error',
+    failureCategory: failureCategory || 'unknown',
+    checkpoint: {
+      idempotencyKey: `checkpoint:${lifecycle.segmentId}:failed:${failureReason || 'unknown_error'}`,
+      durableChunks: [],
+      pendingPartial: null
+    }
+  });
+  stopHeartbeats();
+  clearWriteFence(lifecycle.meetingId);
+  preventFurtherWrites();
+  return true;
+}
+
+function newlyFinalizedTranscriptItems(previousTranscriptState, nextTranscriptState) {
+  const previousIds = new Set(finalTranscriptItems(previousTranscriptState).map((item) => item.id));
+  return finalTranscriptItems(nextTranscriptState).filter((item) => !previousIds.has(item.id));
+}
+
+function finalTranscriptItems(transcriptState) {
+  return ['source', 'translation']
+    .flatMap((stream) => transcriptItemsForStream(transcriptState, stream))
+    .filter((item) => item.status === 'final');
+}
+
 export function useLiveRecordingController({
   routeMeetingId = null,
   targetLanguageCode = 'en',
@@ -361,7 +418,12 @@ export function useLiveRecordingController({
       if (!detail) return null;
       const pendingIds = checkpoint.pendingSnapshotIdsRef.current.get(sessionId) || new Set();
       const transcriptItems = detail.transcriptItems.filter((item) => pendingIds.has(item.id));
-      const result = await checkpoint.sessionSnapshotApiClientRef.current.sync({ session: detail.sessionRecord, transcriptItems });
+      const lifecycleContractVersion = meetingLifecycleRef.current?.sessionId === sessionId ? 2 : 1;
+      const result = await checkpoint.sessionSnapshotApiClientRef.current.sync(sessionSnapshotPayloadForRecording({
+        session: detail.sessionRecord,
+        transcriptItems,
+        lifecycleContractVersion
+      }));
       for (const item of transcriptItems) pendingIds.delete(item.id);
       if (pendingIds.size === 0) checkpoint.pendingSnapshotIdsRef.current.delete(sessionId);
       return result;
@@ -371,6 +433,9 @@ export function useLiveRecordingController({
       const pendingIds = checkpoint.pendingSnapshotIdsRef.current.get(sessionId) || new Set();
       for (const item of items) if (item?.id) pendingIds.add(item.id);
       checkpoint.pendingSnapshotIdsRef.current.set(sessionId, pendingIds);
+    },
+    isLifecycleV2Session(sessionId) {
+      return meetingLifecycleRef.current?.sessionId === sessionId;
     },
     sessionSnapshotSyncCoordinator() {
       if (!sessionSnapshotControllerRef.current) {
@@ -437,12 +502,14 @@ export function useLiveRecordingController({
       if (nextTranscript === currentTranscript) return;
 
       const activeSessionRecordId = transcript.activeSessionRecordIdRef.current;
-      const appended = appendNewFinalTranscriptItems(
-        transcript.sessionRepositoryRef.current,
-        activeSessionRecordId,
-        currentTranscript,
-        nextTranscript
-      );
+      const lifecycleContractVersion = meetingLifecycleRef.current ? 2 : 1;
+      const appended = finalizedTranscriptItemsForRecording({
+        lifecycleContractVersion,
+        repository: transcript.sessionRepositoryRef.current,
+        sessionId: activeSessionRecordId,
+        previousTranscriptState: currentTranscript,
+        nextTranscriptState: nextTranscript
+      });
       transcript.stateRef.current = nextTranscript;
       transcript.setState((previous) => {
         if (previous === currentTranscript) return nextTranscript;
@@ -453,7 +520,7 @@ export function useLiveRecordingController({
       if (appended.length === 0) return;
       const activeSessionRecord = transcript.sessionRepositoryRef.current.getSessionRecord(activeSessionRecordId)?.sessionRecord;
       if (activeSessionRecord) {
-        checkpointController.scheduleSessionSnapshotSync(activeSessionRecordId);
+        if (lifecycleContractVersion !== 2) checkpointController.scheduleSessionSnapshotSync(activeSessionRecordId);
         checkpointController.scheduleMeetingCheckpointSync(appended);
       }
     },
@@ -579,9 +646,14 @@ export function useLiveRecordingController({
       recovery.activeSessionRecordIdRef.current = record.id;
       audioController.prepareInputAudioDownload(record);
       audioController.prepareTranslatedAudioDownload(record);
-      const initialItems = controller.appendInitialTranscriptItems(record.id, initialTranscript);
-      checkpointController.markPendingSessionSnapshotItems(record.id, initialItems);
-      void checkpointController.flushSessionSnapshot(record.id).catch(() => {});
+      const lifecycleContractVersion = meetingLifecycleRef.current?.sessionId === record.id ? 2 : 1;
+      const initialItems = lifecycleContractVersion === 2
+        ? []
+        : controller.appendInitialTranscriptItems(record.id, initialTranscript);
+      if (lifecycleContractVersion !== 2) {
+        checkpointController.markPendingSessionSnapshotItems(record.id, initialItems);
+        void checkpointController.flushSessionSnapshot(record.id).catch(() => {});
+      }
       return record;
     },
     appendInitialTranscriptItems(sessionId, initialTranscript) {
@@ -738,7 +810,26 @@ export function useLiveRecordingController({
           return;
         }
         await recoverySingleFlight.run(`${recoveryKey}:finalize`, async () => {
-          await this.interruptActiveMeeting({ failureReason, failureCategory });
+          if (meetingLifecycleRef.current) {
+            const lifecycle = meetingLifecycleRef.current;
+            await stopLifecycleV2AfterFailure({
+              lifecycle,
+              failureReason,
+              failureCategory,
+              flushCheckpoint: () => checkpointController.flushMeetingCheckpointSync(),
+              executeRecordingCommand: executeMeetingLifecycleCommand,
+              stopHeartbeats: stopMeetingLifecycleHeartbeats,
+              clearWriteFence: clearMeetingLifecycleWriteFence,
+              preventFurtherWrites: () => {
+                recovery.invalidateLiveSessionCallbacks();
+                recovery.setLiveCueUpdatesAllowed(false);
+                audioController.cancelAudioUploadRetries();
+              }
+            });
+            meetingLifecycleRef.current = null;
+          } else {
+            await this.interruptActiveMeeting({ failureReason, failureCategory });
+          }
           await this.finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
         });
       },

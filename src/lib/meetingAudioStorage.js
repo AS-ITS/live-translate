@@ -17,7 +17,10 @@ export async function uploadMeetingSegmentAudio({ meetingId, segmentId, blob, fe
   diagnostics?.beginUpload?.({ byteSize: blob.size });
   const startResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/audio-uploads`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...meetingLifecycleWriteHeaders(meetingId, segmentId)
+    },
     body: JSON.stringify({ mimeType, byteSize: blob.size })
   });
   if (!startResponse.ok) {

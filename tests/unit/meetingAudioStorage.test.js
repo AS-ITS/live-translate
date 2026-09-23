@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createRecordingDiagnostics } from '../../src/lib/recordingDiagnostics.js';
 import { uploadMeetingSegmentAudio } from '../../src/lib/meetingAudioStorage.js';
+import { clearMeetingLifecycleWriteFence, setMeetingLifecycleWriteFence } from '../../src/lib/meetingLifecycleWriteFence.js';
 
 test('meeting audio upload records TUS progress without changing the direct upload path', async () => {
   const calls = [];
@@ -64,6 +65,40 @@ test('meeting audio upload records TUS progress without changing the direct uplo
     retryCount: 0,
     errorCode: null
   });
+});
+
+test('meeting audio upload-start includes the active lifecycle fence', async () => {
+  setMeetingLifecycleWriteFence({
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    leaseId: 'lease-1',
+    fenceToken: 7
+  });
+  try {
+    const calls = [];
+    const artifact = await uploadMeetingSegmentAudio({
+      meetingId: 'meeting-1',
+      segmentId: 'segment-1',
+      blob: new Blob(['audio'], { type: 'audio/webm' }),
+      fetchImpl: async (url, options = {}) => {
+        calls.push({ url, options });
+        return response({ id: 'artifact-1', status: 'ready' }, 201);
+      },
+      supabaseClient: { auth: { async getSession() { return { data: { session: null } }; } } }
+    });
+
+    assert.equal(artifact.status, 'ready');
+    assert.deepEqual(calls[0].options.headers, {
+      'Content-Type': 'application/json',
+      'x-meeting-session-id': 'session-1',
+      'x-meeting-segment-id': 'segment-1',
+      'x-meeting-lease-id': 'lease-1',
+      'x-meeting-fence-token': '7'
+    });
+  } finally {
+    clearMeetingLifecycleWriteFence('meeting-1');
+  }
 });
 
 test('delayed TUS completion yields while realtime work can continue', async () => {

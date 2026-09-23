@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-09-23
+
+- Added Issue #37 Phase 1 Meeting lifecycle v2: Supabase-transactional lifecycle
+  commands, Meeting-scoped recorder lease/fence tokens, idempotent operations,
+  stable Session identity, Segment ownership constraints, crash takeover, and
+  v1 compatibility.
+
 ## 2026-09-22
 
 - 修正長會議 rollover 與 provider reconnect 同時操作同一 Segment 時的 recovery race；同一段落現在只允許一個 transition，避免重複 `/recover` 回傳 409 並誤顯示即時翻譯失敗。

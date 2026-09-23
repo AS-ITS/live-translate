@@ -127,6 +127,9 @@ export function pcm16ChunksToWavBlob(chunks = [], {
 
 export function createPcm16WavBytes(pcmBytes, { sampleRate = OUTPUT_SAMPLE_RATE } = {}) {
   const normalizedPcmBytes = pcmBytes instanceof Uint8Array ? pcmBytes : new Uint8Array(pcmBytes || []);
+  if (normalizedPcmBytes.byteLength % 2 !== 0) {
+    throw new TypeError('PCM16 data must contain complete 16-bit samples.');
+  }
   const wavBytes = new Uint8Array(WAV_HEADER_BYTES + normalizedPcmBytes.byteLength);
   const view = new DataView(wavBytes.buffer);
 

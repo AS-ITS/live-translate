@@ -104,11 +104,11 @@ export function createSupabaseMeetingRepository(options = {}) {
 }
 
 function meetingRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt), failure_info: entity.failureInfo, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
+  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt), failure_info: entity.failureInfo, lifecycle_contract_version: entity.lifecycleContractVersion ?? 2, lifecycle_version: entity.lifecycleVersion ?? 0, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
 }
 
 function segmentRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, meeting_id: entity.meetingId, sequence: entity.sequence, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), live_session_id: entity.liveSessionId, settings_snapshot: entity.settingsSnapshot, checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined }, error_info: entity.errorInfo, created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt) };
+  return { id: entity.id, owner_user_id: ownerUserId, meeting_id: entity.meetingId, session_id: entity.sessionId, lifecycle_contract_version: entity.lifecycleContractVersion ?? 2, sequence: entity.sequence, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), live_session_id: entity.liveSessionId, settings_snapshot: entity.settingsSnapshot, checkpoint: { ...(entity.checkpoint || {}), finalCues: undefined }, error_info: entity.errorInfo, created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt) };
 }
 
 async function hydrateSegment(client, row, ownerUserId) {
@@ -121,12 +121,12 @@ async function hydrateSegment(client, row, ownerUserId) {
   const checkpoint = finalCues.length > 0
     ? { ...(storedCheckpoint || { durableChunks: [], pendingPartial: null }), finalCues }
     : storedCheckpoint;
-  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
+  return new MeetingSegment({ ...row, checkpoint, meetingId: row.meeting_id, sessionId: row.session_id, lifecycleContractVersion: row.lifecycle_contract_version, startedAt: row.started_at, endedAt: row.ended_at, liveSessionId: row.live_session_id, settingsSnapshot, errorInfo: row.error_info, createdAt: row.created_at, updatedAt: row.updated_at });
 }
 
 function meetingFromRow(row) {
   const settings = row.settings || {};
-  return new Meeting({ ...row, ownerUserId: row.owner_user_id, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
+  return new Meeting({ ...row, ownerUserId: row.owner_user_id, lifecycleContractVersion: row.lifecycle_contract_version, lifecycleVersion: row.lifecycle_version, sourceLanguageCode: row.source_language_code, targetLanguageCode: row.target_language_code, startedAt: row.started_at, endedAt: row.ended_at, createdAt: row.created_at, updatedAt: row.updated_at, failureInfo: row.failure_info, ...settings });
 }
 
 async function persistCues(client, entity, ownerUserId) {

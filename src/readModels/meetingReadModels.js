@@ -23,6 +23,8 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
     targetLanguageCode: meeting?.targetLanguageCode ?? null,
     echoTargetLanguage: meeting?.echoTargetLanguage !== false,
     shouldRecordInputAudio: meeting?.shouldRecordInputAudio === true,
+    lifecycleContractVersion: meeting?.lifecycleContractVersion ?? 1,
+    lifecycleVersion: meeting?.lifecycleVersion ?? 0,
     createdAt: meeting?.createdAt ?? null,
     updatedAt: meeting?.updatedAt ?? null,
     startedAt,
@@ -142,6 +144,8 @@ function mapSegmentToDTO(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    sessionId: segment.sessionId ?? null,
+    lifecycleContractVersion: segment.lifecycleContractVersion ?? 1,
     settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo),
     checkpointUpdatedAt: segment.checkpoint?.updatedAt ?? null,
@@ -163,6 +167,8 @@ function mapSegmentToTimelineItem(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    sessionId: segment.sessionId ?? null,
+    lifecycleContractVersion: segment.lifecycleContractVersion ?? 1,
     settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo)
   };

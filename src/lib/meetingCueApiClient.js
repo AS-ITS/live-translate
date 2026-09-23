@@ -1,3 +1,5 @@
+import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
+
 export function createMeetingCueApiClient({ fetchImpl = globalThis.fetch, baseUrl = '' } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting cue API client requires fetchImpl to be a function.');
 
@@ -6,7 +8,11 @@ export function createMeetingCueApiClient({ fetchImpl = globalThis.fetch, baseUr
       if (!meetingId || !segmentId || !sessionId || !cue) throw new TypeError('meetingId, segmentId, sessionId, and cue are required.');
       const response = await fetchImpl(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/cues`), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
+        headers: {
+          'Content-Type': 'application/json',
+          ...headers,
+          ...meetingLifecycleWriteHeaders(meetingId, segmentId)
+        },
         body: JSON.stringify({ sessionId, cue, producedAt })
       });
       if (!response?.ok) {

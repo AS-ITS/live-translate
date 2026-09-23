@@ -8,8 +8,9 @@ export function createSupabaseReadinessCheck({ env = process.env, fetchImpl = gl
       tables: [
         'profiles',
         'meetings',
-        'meeting_segments',
-        'sessions',
+      'meeting_segments',
+      'meeting_lifecycle_operations',
+      'sessions',
         'subtitle_cues',
         'export_artifacts',
         'meeting_members',

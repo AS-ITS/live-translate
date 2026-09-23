@@ -1,5 +1,27 @@
 # Architecture Overview
 
+## Meeting lifecycle v2
+
+Supabase is the lifecycle source of truth for new Meetings. A single database
+transaction owns each start, pause, resume, rollover, recover, takeover, and
+stop transition. Partial transitions cannot be observed by another Vercel
+Function invocation.
+
+- A Meeting has at most one open Session and one active Segment.
+- The Session ID is stable from start through stop; Segments belong to it.
+- A Meeting-scoped recorder lease expires after 10 seconds and uses a monotonic
+  fence token so a replaced recorder cannot mutate lifecycle state.
+- Lifecycle commands are idempotent by `(meeting_id, operation_id)` and use an
+  optimistic `lifecycle_version` for competing commands.
+- Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
+  at most once per 30 seconds and retains the 15-minute lost-recorder policy.
+- Provider reconnect stays inside the current Segment. User pause/resume,
+  rollover, and browser-crash recovery create Segment boundaries.
+
+Meetings already active on lifecycle v1 remain on the legacy flow until they
+stop. Legacy relationship columns remain readable during that compatibility
+window; terminal Meetings are not destructively backfilled.
+
 ## 1. Purpose
 
 This document is the high-level architecture entry point for Live Translate.

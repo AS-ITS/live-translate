@@ -37,6 +37,8 @@ export class Meeting {
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
     this.updatedAt = assertTimestamp(input.updatedAt ?? input.createdAt, 'updatedAt');
     this.failureInfo = deepClone(input.failureInfo ?? null);
+    this.lifecycleContractVersion = normalizeLifecycleContractVersion(input.lifecycleContractVersion ?? input.lifecycle_contract_version ?? 1);
+    this.lifecycleVersion = assertNonNegativeInteger(input.lifecycleVersion ?? input.lifecycle_version ?? 0, 'lifecycleVersion');
     this.name = normalizeOptionalString(input.name);
     this.sourceLanguageCode = normalizeOptionalString(input.sourceLanguageCode);
     this.targetLanguageCode = normalizeOptionalString(input.targetLanguageCode);
@@ -94,6 +96,8 @@ export class Meeting {
       createdAt: this.createdAt,
       updatedAt: patch.updatedAt ?? patch.endedAt ?? patch.startedAt ?? this.updatedAt,
       failureInfo: Object.hasOwn(patch, 'failureInfo') ? patch.failureInfo : this.failureInfo,
+      lifecycleContractVersion: this.lifecycleContractVersion,
+      lifecycleVersion: Object.hasOwn(patch, 'lifecycleVersion') ? patch.lifecycleVersion : this.lifecycleVersion,
       name: Object.hasOwn(patch, 'name') ? normalizeOptionalString(patch.name) : this.name,
       sourceLanguageCode: Object.hasOwn(patch, 'sourceLanguageCode') ? normalizeOptionalString(patch.sourceLanguageCode) : this.sourceLanguageCode,
       targetLanguageCode: Object.hasOwn(patch, 'targetLanguageCode') ? normalizeOptionalString(patch.targetLanguageCode) : this.targetLanguageCode,
@@ -132,6 +136,8 @@ export class MeetingSegment {
     this.startedAt = input.startedAt ?? null;
     this.endedAt = input.endedAt ?? null;
     this.liveSessionId = assertOptionalString(input.liveSessionId, 'liveSessionId') ?? null;
+    this.sessionId = assertOptionalString(input.sessionId ?? input.session_id, 'sessionId') ?? null;
+    this.lifecycleContractVersion = normalizeLifecycleContractVersion(input.lifecycleContractVersion ?? input.lifecycle_contract_version ?? 1);
     this.settingsSnapshot = input.settingsSnapshot ? deepClone(input.settingsSnapshot) : null;
     this.checkpoint = deepClone(input.checkpoint ?? null);
     this.errorInfo = deepClone(input.errorInfo ?? null);
@@ -217,6 +223,8 @@ export class MeetingSegment {
       startedAt: Object.hasOwn(patch, 'startedAt') ? patch.startedAt : this.startedAt,
       endedAt: Object.hasOwn(patch, 'endedAt') ? patch.endedAt : this.endedAt,
       liveSessionId: Object.hasOwn(patch, 'liveSessionId') ? patch.liveSessionId : this.liveSessionId,
+      sessionId: this.sessionId,
+      lifecycleContractVersion: this.lifecycleContractVersion,
       settingsSnapshot: Object.hasOwn(patch, 'settingsSnapshot') ? patch.settingsSnapshot : this.settingsSnapshot,
       checkpoint: Object.hasOwn(patch, 'checkpoint') ? patch.checkpoint : this.checkpoint,
       errorInfo: Object.hasOwn(patch, 'errorInfo') ? patch.errorInfo : this.errorInfo,
@@ -429,6 +437,11 @@ function assertNonNegativeInteger(value, field) {
     throw new RangeError(`${field} must be non-negative`);
   }
 
+  return value;
+}
+
+function normalizeLifecycleContractVersion(value) {
+  if (value !== 1 && value !== 2) throw new RangeError('lifecycleContractVersion must be 1 or 2');
   return value;
 }
 

@@ -113,6 +113,12 @@ export function createSupabaseServiceRoleClient({
       throw error;
     }
     if (!response.ok) {
+      let responseBody = null;
+      try {
+        responseBody = await response.json();
+      } catch {
+        // Keep the stable transport error when Supabase does not return JSON.
+      }
       const error = new Error(`Supabase RPC ${functionName} failed.`);
       error.status = response.status;
       error.supabaseStatus = response.status;
@@ -121,6 +127,8 @@ export function createSupabaseServiceRoleClient({
         : (response.status === 401 || response.status === 403
           ? 'supabase_credentials_invalid'
           : 'supabase_request_failed');
+      error.supabaseMessage = typeof responseBody?.message === 'string' ? responseBody.message : null;
+      error.supabaseDetails = typeof responseBody?.details === 'string' ? responseBody.details : null;
       throw error;
     }
     return response.status === 204 ? [] : response.json();

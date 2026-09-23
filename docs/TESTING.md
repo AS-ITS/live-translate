@@ -57,6 +57,29 @@ Cloud checks are split by deployment risk:
 - Staging cloud smoke is not enabled in GitHub Actions; use the local staging-equivalent validation above. The retained `tests/cloud/stagingSmoke.spec.js` is an optional asset for a future cloud check.
 - Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
 
+## Issue #37 Phase 1 lifecycle v2
+
+The deterministic unit checks cover HTTP forwarding/conflict mapping, API
+client payloads, domain mapping, and migration invariants:
+
+```bash
+node --test tests/unit/meetingLifecycleHttpApi.test.js \
+  tests/unit/meetingLifecycleMigration.test.js \
+  tests/unit/meetingLifecycleWriteFence.test.js \
+  tests/unit/meetingCheckpointApiClient.test.js \
+  tests/unit/meetingDomain.test.js
+```
+
+With local Supabase running and its environment loaded, the focused integration
+test verifies concurrent start idempotency and competing rollover/stop behavior:
+
+```bash
+RUN_SUPABASE_LIFECYCLE_TESTS=true \
+node --test tests/integration/meetingLifecycleV2.integration.test.js
+```
+
+Neither command calls Gemini or a remote Supabase project.
+
 ## Issue #37 Phase 0 recording diagnostics
 
 Staging performance runs may opt in to the redacted browser diagnostics API by

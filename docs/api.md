@@ -1,5 +1,35 @@
 # Live Translate API and Events
 
+## Meeting recording lifecycle v2 (Issue #37 Phase 1)
+
+New Meetings use a Supabase-owned lifecycle. Vercel Functions only validate the
+request and invoke a transactional RPC; they do not retain recorder state.
+
+```http
+POST /api/meetings/:meetingId/recording/start
+POST /api/meetings/:meetingId/recording/pause
+POST /api/meetings/:meetingId/recording/resume
+POST /api/meetings/:meetingId/recording/rollover
+POST /api/meetings/:meetingId/recording/recover
+POST /api/meetings/:meetingId/recording/stop
+POST /api/meetings/:meetingId/recording/takeover
+POST /api/meetings/:meetingId/recording/lease/heartbeat
+POST /api/meetings/:meetingId/heartbeat
+```
+
+Lifecycle mutations carry `operationId`, `expectedLifecycleVersion`, and—after
+`start`—`leaseId` plus `fenceToken`. Repeating the same operation returns its
+stored result. A stale lifecycle version or competing transition returns
+`409 meeting_lifecycle_conflict`. Other stable conflict codes are
+`recorder_already_active`, `recorder_lease_invalid`, and
+`recorder_takeover_confirmation_required`.
+
+The recorder renews its 10-second Meeting lease every 3 seconds. The same
+principal may take over an expired lease; a different principal requires an
+owner or super-admin force takeover with explicit confirmation. Provider
+reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
+recovery do.
+
 ## Meeting export lifecycle (P7)
 
 Assigned members can read the meeting data explicitly covered by RLS and can

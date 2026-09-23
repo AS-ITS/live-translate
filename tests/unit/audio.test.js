@@ -6,6 +6,7 @@ import {
   buildTranslatedAudioFileName,
   bytesToBase64,
   createPcmChunker,
+  createPcm16WavBytes,
   floatToPcm16,
   normalizePcm16Peak,
   pcm16ChunksToWavBlob,
@@ -110,6 +111,16 @@ test('pcm16ChunksToWavBlob wraps PCM chunks as mono 24kHz WAV', async () => {
   assert.equal(ascii(bytes, 36, 4), 'data');
   assert.equal(view.getUint32(40, true), 6);
   assert.deepEqual(Array.from(bytes.slice(44)), [1, 2, 3, 4, 5, 6]);
+});
+
+test('createPcm16WavBytes rejects incomplete PCM16 samples', () => {
+  assert.throws(
+    () => createPcm16WavBytes(new Uint8Array([1, 2, 3])),
+    {
+      name: 'TypeError',
+      message: 'PCM16 data must contain complete 16-bit samples.'
+    }
+  );
 });
 
 test('pcm16ChunksToWavBlob can normalize quiet PCM before wrapping', async () => {

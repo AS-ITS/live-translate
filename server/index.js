@@ -102,6 +102,8 @@ const ERROR_RESPONSES = {
   meeting_delete_active_not_allowed: { status: 409, message: 'Active meetings cannot be deleted.' },
   recorder_already_active: { status: 409, message: 'This Session is already being recorded by another device.' },
   recorder_lease_invalid: { status: 409, message: 'Recorder lease is invalid or expired.' },
+  recorder_takeover_confirmation_required: { status: 409, message: 'Recorder takeover requires explicit owner confirmation.' },
+  meeting_lifecycle_conflict: { status: 409, message: 'Meeting lifecycle changed before this operation completed.' },
   recorder_forbidden: { status: 403, message: 'Recorder capability is required.' },
   recorder_grant_invalid: { status: 409, message: 'Recorder grant is invalid or expired.' },
   recorder_session_mismatch: { status: 403, message: 'Recorder capability does not belong to this Session.' },
@@ -782,9 +784,10 @@ export function createRequestHandler(options = {}) {
     exportArtifactService,
       liveTokenCreator,
       sessionShareService,
-      translationOutputMaxBytes,
-      recorderLeaseService,
-      recorderGrantService,
+    translationOutputMaxBytes,
+    recorderLeaseService,
+    meetingLifecycleService: options.meetingLifecycleService,
+    recorderGrantService,
       sessionEventBroadcaster,
       meetingEventBroadcaster,
       sessionSnapshotMaxBytes,
@@ -816,6 +819,7 @@ async function handleRequestWithSessionReadController(
   const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
+  const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
@@ -1760,6 +1764,82 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       });
     }
     return;
+  }
+
+  if (req.method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) {
+    try {
+      if (!meetingLifecycleService) throw createHttpError('cloud_capability_unavailable');
+      const route = parseMeetingLifecyclePath(path);
+      const body = await readJson(req, { maxBytes: meetingCheckpointMaxBytes });
+      const principal = await resolveMeetingLifecyclePrincipal({
+        req,
+        meetingId: route.meetingId,
+        authenticatedUser,
+        meetingMembershipService,
+        sessionShareService
+      });
+
+      if (route.action === 'lease-heartbeat') {
+        statusCode = 200;
+        sendJson(res, statusCode, await meetingLifecycleService.renewLease({
+          ...principal,
+          meetingId: route.meetingId,
+          leaseId: body?.leaseId,
+          fenceToken: body?.fenceToken
+        }), requestId);
+        return;
+      }
+
+      if (route.action === 'liveness') {
+        statusCode = 200;
+        sendJson(res, statusCode, await meetingLifecycleService.touchLiveness({
+          ...principal,
+          meetingId: route.meetingId,
+          leaseId: body?.leaseId,
+          fenceToken: body?.fenceToken
+        }), requestId);
+        return;
+      }
+
+      const payload = { ...(body || {}) };
+      for (const field of ['operationId', 'expectedLifecycleVersion', 'leaseId', 'fenceToken']) delete payload[field];
+      const result = await meetingLifecycleService.execute({
+        ...principal,
+        meetingId: route.meetingId,
+        command: route.action,
+        operationId: body?.operationId,
+        expectedLifecycleVersion: body?.expectedLifecycleVersion,
+        leaseId: body?.leaseId,
+        fenceToken: body?.fenceToken,
+        payload
+      });
+      statusCode = ['start', 'resume', 'rollover', 'recover', 'takeover'].includes(route.action) ? 201 : 200;
+      sendJson(res, statusCode, result, requestId);
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+    }
+    return;
+  }
+
+  if (meetingLifecycleService && isMeetingLifecycleFencedWrite(req.method, path)) {
+    try {
+      const target = parseMeetingLifecycleFencedWritePath(path);
+      const fenceValue = req.headers?.['x-meeting-fence-token'];
+      await meetingLifecycleService.validateWrite({
+        meetingId: target.meetingId,
+        sessionId: req.headers?.['x-meeting-session-id'],
+        segmentId: target.segmentId || req.headers?.['x-meeting-segment-id'],
+        leaseId: req.headers?.['x-meeting-lease-id'],
+        fenceToken: fenceValue === undefined ? null : Number(fenceValue)
+      });
+    } catch (error) {
+      const code = errorCodeFor(error);
+      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
+      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
+      return;
+    }
   }
 
   if (req.method === 'POST' && isMeetingCompletePath(path)) {
@@ -2985,6 +3065,44 @@ async function meetingPermissionsFor(meetingId, user, meetingMembershipService) 
   };
 }
 
+async function resolveMeetingLifecyclePrincipal({
+  req,
+  meetingId,
+  authenticatedUser,
+  meetingMembershipService,
+  sessionShareService
+} = {}) {
+  if (hasRecorderHeaders(req)) {
+    const code = req.headers?.['x-recorder-code'];
+    const token = req.headers?.['x-recorder-token'];
+    const share = code
+      ? await sessionShareService?.resolveCode?.(code)
+      : await sessionShareService?.resolveShare?.(token);
+    if (!share || share.resourceType !== 'meeting' || share.meetingId !== meetingId || share.role !== 'recorder') {
+      throw createHttpError('recorder_forbidden');
+    }
+    if (!share._ownerUserId) throw createHttpError('meeting_share_invalid');
+    return {
+      ownerUserId: share._ownerUserId,
+      principalType: 'share',
+      principalId: share.id,
+      forceAllowed: false
+    };
+  }
+
+  if (!authenticatedUser?.id) throw createHttpError('auth_required');
+  const ownerUserId = currentRequestOwnerId();
+  if (!ownerUserId) throw createHttpError('auth_forbidden');
+  const canForce = authenticatedUser.role === 'super_admin'
+    || await meetingMembershipService?.canManage?.(meetingId, authenticatedUser);
+  return {
+    ownerUserId,
+    principalType: 'user',
+    principalId: authenticatedUser.id,
+    forceAllowed: Boolean(canForce)
+  };
+}
+
 function isRecorderAuthorizedPath(method, path, req) {
   if (!hasRecorderHeaders(req)) return false;
   if (method === 'POST' && path === '/api/live-token') return true;
@@ -2994,11 +3112,13 @@ function isRecorderAuthorizedPath(method, path, req) {
   if (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) return true;
   if (method === 'POST' && isMeetingCuePublishPath(path)) return true;
   if (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) return true;
+  if (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) return true;
   return false;
 }
 
 function isMemberMeetingRecordingPath(method, path) {
-  return (method === 'POST' && isMeetingCuePublishPath(path)) ||
+  return (method === 'POST' && (isMeetingRecordingCommandPath(path) || isMeetingLifecycleHeartbeatPath(path))) ||
+    (method === 'POST' && isMeetingCuePublishPath(path)) ||
     (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/.test(path)) ||
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/(rollover|recover)$/.test(path)) ||
     (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/audio-uploads$/.test(path)) ||
@@ -3172,6 +3292,46 @@ function isMeetingDetailPath(path) {
 
 function isMeetingCompletePath(path) {
   return path.startsWith('/api/meetings/') && path.endsWith('/complete') && path.split('/').length === 5;
+}
+
+function isMeetingRecordingCommandPath(path) {
+  return /^\/api\/meetings\/[^/]+\/recording\/(?:start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u.test(path);
+}
+
+function isMeetingLifecycleHeartbeatPath(path) {
+  return /^\/api\/meetings\/[^/]+\/heartbeat$/u.test(path);
+}
+
+function parseMeetingLifecyclePath(path) {
+  const commandMatch = path.match(/^\/api\/meetings\/([^/]+)\/recording\/(start|pause|resume|rollover|recover|stop|takeover|lease\/heartbeat)$/u);
+  if (commandMatch) {
+    return {
+      meetingId: safeDecodePathComponent(commandMatch[1]),
+      action: commandMatch[2] === 'lease/heartbeat' ? 'lease-heartbeat' : commandMatch[2]
+    };
+  }
+  const heartbeatMatch = path.match(/^\/api\/meetings\/([^/]+)\/heartbeat$/u);
+  if (!heartbeatMatch) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(heartbeatMatch[1]), action: 'liveness' };
+}
+
+function isMeetingLifecycleFencedWrite(method, path) {
+  return (method === 'POST' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/cues$/u.test(path)) ||
+    (method === 'PUT' && /^\/api\/meetings\/[^/]+\/segments\/[^/]+\/checkpoint$/u.test(path)) ||
+    (method === 'POST' && /^\/api\/meetings\/[^/]+\/audio-artifacts\/[^/]+\/(?:complete|fail)$/u.test(path));
+}
+
+function parseMeetingLifecycleFencedWritePath(path) {
+  const segmentMatch = path.match(/^\/api\/meetings\/([^/]+)\/segments\/([^/]+)\/(?:cues|checkpoint)$/u);
+  if (segmentMatch) {
+    return {
+      meetingId: safeDecodePathComponent(segmentMatch[1]),
+      segmentId: safeDecodePathComponent(segmentMatch[2])
+    };
+  }
+  const artifactMatch = path.match(/^\/api\/meetings\/([^/]+)\/audio-artifacts\/[^/]+\/(?:complete|fail)$/u);
+  if (!artifactMatch) throw createHttpError('invalid_request');
+  return { meetingId: safeDecodePathComponent(artifactMatch[1]), segmentId: null };
 }
 
 function isMeetingShareCollectionPath(path) {

@@ -1,6 +1,7 @@
 import { Upload } from 'tus-js-client';
 import { authenticatedFetch } from './accessToken.js';
 import { supabase } from './supabaseAuth.js';
+import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 
 const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
 const TUS_RETRY_DELAYS = Object.freeze([0, 1000, 3000, 5000]);
@@ -41,13 +42,17 @@ export async function uploadMeetingSegmentAudio({ meetingId, segmentId, blob, fe
     await runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl, diagnostics });
   } catch (error) {
     diagnostics?.failUpload?.({ errorCode: error?.code || null });
-    await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/fail`, {
-      method: 'POST'
-    }).catch(() => {});
+      await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/fail`, {
+        method: 'POST',
+        headers: meetingLifecycleWriteHeaders(meetingId, segmentId)
+      }).catch(() => {});
     throw error;
   }
 
-  const completeResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/complete`, { method: 'POST' });
+  const completeResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/complete`, {
+    method: 'POST',
+    headers: meetingLifecycleWriteHeaders(meetingId, segmentId)
+  });
   if (!completeResponse.ok) {
     const error = await responseError(completeResponse);
     diagnostics?.failUpload?.({ errorCode: error.code || null });

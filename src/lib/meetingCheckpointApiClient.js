@@ -1,8 +1,22 @@
 import { authenticatedFetch } from './accessToken.js';
+import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 
 export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch, baseUrl = '', authorizationHeaders = {} } = {}) {
   if (typeof fetchImpl !== 'function') throw new TypeError('meeting checkpoint API client requires fetchImpl to be a function.');
   fetchImpl = authenticatedFetch(fetchImpl);
+
+  async function postRecordingHeartbeat({ meetingId, path, leaseId, fenceToken }) {
+    assertNonEmptyString(meetingId, 'meetingId');
+    assertNonEmptyString(leaseId, 'leaseId');
+    if (!Number.isSafeInteger(fenceToken) || fenceToken < 0) throw new TypeError('fenceToken must be a non-negative integer.');
+    const response = await fetchImpl(buildUrl(baseUrl, `/api/meetings/${encodeURIComponent(meetingId)}/${path}`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+      body: JSON.stringify({ leaseId, fenceToken })
+    });
+    await assertOkResponse(response, { operation: path });
+    return parseJsonResponse(response);
+  }
 
   return Object.freeze({
     async createMeeting(input = {}) {
@@ -87,6 +101,30 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
       return parseStartMeetingResponse(response);
     },
 
+    async executeRecordingCommand({ meetingId, command, ...body } = {}) {
+      assertNonEmptyString(meetingId, 'meetingId');
+      assertNonEmptyString(command, 'command');
+      if (!['start', 'pause', 'resume', 'rollover', 'recover', 'stop', 'takeover'].includes(command)) {
+        throw new TypeError('command is not supported.');
+      }
+      const path = `/api/meetings/${encodeURIComponent(meetingId)}/recording/${command}`;
+      const response = await fetchImpl(buildUrl(baseUrl, path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        body: JSON.stringify(body)
+      });
+      await assertOkResponse(response, { operation: `recording-${command}` });
+      return parseLifecycleResponse(response);
+    },
+
+    async renewRecordingLease({ meetingId, leaseId, fenceToken } = {}) {
+      return postRecordingHeartbeat({ meetingId, path: 'recording/lease/heartbeat', leaseId, fenceToken });
+    },
+
+    async heartbeatMeeting({ meetingId, leaseId, fenceToken } = {}) {
+      return postRecordingHeartbeat({ meetingId, path: 'heartbeat', leaseId, fenceToken });
+    },
+
     async getCheckpoint({ meetingId, segmentId } = {}) {
       assertNonEmptyString(meetingId, 'meetingId');
       assertNonEmptyString(segmentId, 'segmentId');
@@ -140,7 +178,11 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/checkpoint`
       ), {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authorizationHeadersFor(authorizationHeaders),
+          ...meetingLifecycleWriteHeaders(meetingId, segmentId)
+        },
         body: JSON.stringify({
           ...body
         })
@@ -309,6 +351,14 @@ async function parseRolloverResponse(response) {
   const body = await parseJsonResponse(response);
   if (!body || typeof body !== 'object' || !body.completedSegment || !body.segment || typeof body.segment.id !== 'string') {
     throw new Error('Rollover response must contain completedSegment and segment.id.');
+  }
+  return body;
+}
+
+async function parseLifecycleResponse(response) {
+  const body = await parseJsonResponse(response);
+  if (!body || typeof body !== 'object' || !body.meeting?.id || !body.session?.id || !body.lease?.leaseId) {
+    throw new Error('Meeting lifecycle response is incomplete.');
   }
   return body;
 }

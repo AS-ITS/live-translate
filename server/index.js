@@ -2864,23 +2864,31 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
 
   let requestBody = null;
   let requestApiKey = null;
+  let liveTokenFailureStage = 'request_start';
+  let liveTokenErrorCode = null;
   try {
     enforceRateLimit(clientIp);
 
     const body = await readJson(req);
     requestBody = body;
+    liveTokenFailureStage = 'authentication';
     if (!authenticatedUser?.id) throw createHttpError('auth_required');
+    liveTokenFailureStage = 'request_validation';
     if (typeof body?.meetingId !== 'string' || !body.meetingId.trim() || typeof body?.sessionId !== 'string' || !body.sessionId.trim()) {
       throw createHttpError('recorder_forbidden');
     }
+    liveTokenFailureStage = 'session_lookup';
     const detail = await sessionReadController?.getSession?.(body.sessionId);
     const session = detail?.sessionRecord || detail?.session;
     if (!session || session.meetingId !== body.meetingId) throw createHttpError('recorder_forbidden');
+    liveTokenFailureStage = 'recording_permission';
     if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) {
       throw createHttpError('recorder_forbidden');
     }
+    liveTokenFailureStage = 'meeting_owner_lookup';
     const ownerUserId = await meetingMembershipService?.getMeetingOwner?.(body.meetingId);
     if (!ownerUserId) throw createHttpError('recorder_forbidden');
+    liveTokenFailureStage = 'credential_validation';
     setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
     updateRequestScope(ownerUserId);
     requestApiKey = body?.geminiApiKey;
@@ -2919,6 +2927,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     });
   } catch (error) {
     const code = errorCodeFor(error);
+    liveTokenErrorCode = code;
     try {
       const statusClass = providerStatusClass(error?.status || statusCode);
       observabilityMetrics?.recordCounter(OBSERVABILITY_METRIC_NAMES.GEMINI_REQUEST, 1, { provider: 'gemini', operation: 'token', statusClass });
@@ -2943,7 +2952,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       durationMs: Math.round(performance.now() - startedAt),
       clientIp,
       origin,
-      targetLanguageCode
+      targetLanguageCode,
+      errorCode: liveTokenErrorCode,
+      failureStage: liveTokenErrorCode ? liveTokenFailureStage : null,
+      meetingId: requestBody?.meetingId || null,
+      sessionId: requestBody?.sessionId || null
     });
   }
 }

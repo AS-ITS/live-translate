@@ -1,7 +1,8 @@
 import { ArrowRight, ChevronDown, ClipboardList, KeyRound, LogOut, RefreshCw, UserRound, UsersRound } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../components/AuthGate.jsx';
 import { GEMINI_SETTINGS_HASH } from '../app/routes.js';
+import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 
 export function AppLayout({
   children,
@@ -17,6 +18,9 @@ export function AppLayout({
   const { profile, signOut, switchAccount } = useAuth();
   const accountMenuRef = useRef(null);
   const accountTriggerRef = useRef(null);
+  const [hasGeminiCredential, setHasGeminiCredential] = useState(hasLiveCredential);
+
+  useEffect(() => subscribeToLiveCredentialClear(() => setHasGeminiCredential(false)), []);
 
   useEffect(() => {
     function closeOnOutsidePointer(event) {
@@ -45,7 +49,7 @@ export function AppLayout({
             {subtitle ? <p>{subtitle}</p> : null}
           </div>
           <div className="app-header-actions">
-            {profile && showGeminiKeyAction ? <a className="button secondary header-key-action" href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+            {profile && showGeminiKeyAction ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
             {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin"><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
             {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#audit"><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
             {profile ? (

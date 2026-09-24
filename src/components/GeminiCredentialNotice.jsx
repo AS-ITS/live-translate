@@ -3,7 +3,7 @@ import { KeyRound } from 'lucide-react';
 import { clearLiveCredential, hasLiveCredential, setLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 import { GEMINI_SETTINGS_HASH } from '../app/routes.js';
 
-export function GeminiCredentialNotice({ showSettingsLink = true }) {
+export function GeminiCredentialNotice({ showInput = false, showSettingsLink = true }) {
   const inputRef = useRef(null);
   const [isConfigured, setIsConfigured] = useState(hasLiveCredential);
 
@@ -24,8 +24,8 @@ export function GeminiCredentialNotice({ showSettingsLink = true }) {
         </div>
       </div>
       {!isConfigured && showSettingsLink ? <a className="button secondary" href={GEMINI_SETTINGS_HASH}>設定 Gemini Key</a> : null}
-      <label className="field"><span className="sr-only">Gemini API Key</span><input ref={inputRef} type="password" autoComplete="new-password" placeholder="AIza…" onChange={(event) => setIsConfigured(setLiveCredential(event.target.value))} /></label>
-      {isConfigured ? <button className="button secondary" type="button" onClick={clearLiveCredential}>清除 Key</button> : null}
+      {showInput ? <label className="field"><span className="sr-only">Gemini API Key</span><input ref={inputRef} type="password" autoComplete="new-password" placeholder="AIza…" onChange={(event) => setIsConfigured(setLiveCredential(event.target.value))} /></label> : null}
+      {showInput && isConfigured ? <button className="button secondary" type="button" onClick={clearLiveCredential}>清除 Key</button> : null}
     </aside>
   );
 }

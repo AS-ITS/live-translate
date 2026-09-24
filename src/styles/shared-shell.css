@@ -9,6 +9,8 @@
 .app-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
 .app-header-actions > .button { white-space: nowrap; }
 .header-key-action { display: inline-flex; align-items: center; gap: var(--space-2); }
+.header-key-action.is-missing { border-color: var(--color-warning); background: var(--color-warning-soft); color: var(--color-warning); }
+.header-key-action.is-missing:hover:not(:disabled) { background: var(--color-warning-soft); }
 .account-menu { position: relative; }
 .account-menu summary { list-style: none; }
 .account-menu summary::-webkit-details-marker { display: none; }

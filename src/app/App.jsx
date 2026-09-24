@@ -986,7 +986,13 @@ const activeMeetingCheckpointRef = useRef(null);
     setStatus('error');
   }
 
-  async function createSession({ preserveTranscript, liveSessionId = generateLiveSessionId(), startupStartedAt = null }) {
+  async function createSession({
+    preserveTranscript,
+    liveSessionId = generateLiveSessionId(),
+    startupStartedAt = null,
+    meetingId = activeMeetingCheckpointRef.current?.meetingId || routeMeetingId,
+    segmentId = activeMeetingCheckpointRef.current?.segmentId || liveSessionId
+  }) {
     if (!preserveTranscript) {
       setError('');
       setDeviceMessage('');
@@ -1012,7 +1018,7 @@ const activeMeetingCheckpointRef = useRef(null);
       setStatus('requesting-permission');
     }
 
-    const audioPreference = getMeetingAudioPreference(activeMeetingCheckpointRef.current?.meetingId || routeMeetingId);
+    const audioPreference = getMeetingAudioPreference(meetingId);
     const inputDeviceIdForSession = hasConfirmedMeetingAudioPreference(audioPreference) ? audioPreference.inputDeviceId || '' : '';
 
     const callbackGeneration = {
@@ -1026,8 +1032,8 @@ const activeMeetingCheckpointRef = useRef(null);
       liveSessionId,
       connectionEpoch: callbackGeneration.generation,
       sessionId: activeSessionRecordIdRef.current,
-      meetingId: activeMeetingCheckpointRef.current?.meetingId || null,
-      segmentId: activeMeetingCheckpointRef.current?.segmentId || liveSessionId,
+      meetingId: meetingId || null,
+      segmentId: segmentId || liveSessionId,
       startupStartedAt,
       sessionClock: () => sessionTimeForSubtitleCues(),
       sourceLanguageCode,

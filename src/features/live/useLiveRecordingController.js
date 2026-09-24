@@ -918,7 +918,13 @@ export function useLiveRecordingController({
           recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
         }
-        session = await recovery.createSession({ preserveTranscript: true, liveSessionId: recovery.generateLiveSessionId() });
+        const checkpoint = recovery.activeMeetingCheckpointRef.current;
+        session = await recovery.createSession({
+          preserveTranscript: true,
+          liveSessionId: recovery.generateLiveSessionId(),
+          meetingId: checkpoint?.meetingId,
+          segmentId: checkpoint?.segmentId
+        });
         recovery.sessionRef.current = session;
         await session.start();
         recovery.setTranscriptTimeOriginValue();
@@ -1053,7 +1059,13 @@ export function useLiveRecordingController({
       record = await controller.createCurrentSessionRecord(meetingCheckpoint, null, lifecycleSessionId);
         if (!recovery.sessionControlLeaseRef.current?.tryAcquire(record.id)) throw new Error('目前已有工作階段由其他頁籤控制。');
         recovery.setHasSessionControl(true);
-        session = await recovery.createSession({ preserveTranscript: false, liveSessionId, startupStartedAt });
+        session = await recovery.createSession({
+          preserveTranscript: false,
+          liveSessionId,
+          startupStartedAt,
+          meetingId: meetingCheckpoint?.meetingId,
+          segmentId: meetingCheckpoint?.segmentId
+        });
         recovery.sessionRef.current = session;
         const started = await session.start();
         if (!started) throw new Error('首個音訊資料未成功送出。');
@@ -1137,7 +1149,12 @@ export function useLiveRecordingController({
       let reconnectStage = 'create_session';
       let session = null;
       try {
-        session = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
+        session = await recovery.createSession({
+          preserveTranscript: true,
+          liveSessionId: nextLiveSessionId,
+          meetingId: meetingCheckpoint?.meetingId,
+          segmentId: meetingCheckpoint?.segmentId
+        });
         recovery.reconnectSessionRef.current = session;
 
         try {
@@ -1310,7 +1327,12 @@ export function useLiveRecordingController({
         const resumedRecord = await controller.createCurrentSessionRecord(nextMeetingCheckpoint, draft.transcriptState, draft.sessionId);
         resumedSessionRecordId = resumedRecord.id;
         recovery.resetActiveTranscriptForNextSegment(draft.transcriptState.nextSequence);
-        session = await recovery.createSession({ preserveTranscript: true, liveSessionId: nextLiveSessionId });
+        session = await recovery.createSession({
+          preserveTranscript: true,
+          liveSessionId: nextLiveSessionId,
+          meetingId: nextMeetingCheckpoint.meetingId,
+          segmentId: nextMeetingCheckpoint.segmentId
+        });
         recovery.sessionRef.current = session;
         await session.start();
         recovery.setTranscriptTimeOriginValue();

@@ -571,7 +571,9 @@ meeting_delete_not_allowed`.
 ## `POST /api/meetings/:meetingId/complete`
 
 Completes a Meeting that has no active Live recording. Existing checkpoints,
-transcripts, and audio artifacts are preserved. Any not-yet-started trailing
+transcripts, and audio artifacts are preserved for the 30-minute retention
+window; `purge_at` is set to 30 minutes after completion for the bounded purge
+worker. Any not-yet-started trailing
 Segment is finalized as an empty completed Segment. Active recordings return
 `409 meeting_complete_not_allowed`.
 

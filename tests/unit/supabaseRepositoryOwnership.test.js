@@ -15,11 +15,12 @@ test('Supabase meeting repository scopes reads and writes to request owner', asy
   });
 
   setRequestUser({ id: 'user-a' });
-  const meeting = await repository.createMeeting({ id: 'meeting-a', createdAt: '2026-01-01T00:00:00.000Z' });
+  const meeting = await repository.createMeeting({ id: 'meeting-a', createdAt: '2026-01-01T00:00:00.000Z', purgeAt: '2026-01-01T00:30:00.000Z' });
   assert.equal(meeting.id, 'meeting-a');
   assert.equal(meeting.ownerUserId, 'user-a');
   assert.equal(Object.keys(meeting).includes('ownerUserId'), false);
   assert.match(calls[0].init.body, /user-a/);
+  assert.equal(JSON.parse(calls[0].init.body)[0].purge_at, '2026-01-01T00:30:00.000Z');
 
   await repository.getMeeting('meeting-a');
   assert.match(calls[1].url, /owner_user_id=eq\.user-a/);

@@ -48,7 +48,6 @@ import { AppRouter } from './AppRouter.jsx';
 import { MeetingSettingsLayout } from '../layouts/AppLayout.jsx';
 import { MeetingSettingsPage } from '../pages/meetings/MeetingSettingsPage.jsx';
 import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx';
-import { GeminiCredentialNotice } from '../components/GeminiCredentialNotice.jsx';
 import { AccountManagementPage } from '../pages/settings/AccountManagementPage.jsx';
 import { AuditLogPage } from '../pages/settings/AuditLogPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
@@ -2240,7 +2239,6 @@ const activeMeetingCheckpointRef = useRef(null);
         }}
       >
         <div className="live-workspace-stack">
-        <GeminiCredentialNotice />
         <div className="live-session-toolbar meeting-settings-card" data-testid="live-session-toolbar">
           <div className="control-status-row">
             <div className="live-meeting-summary-column">

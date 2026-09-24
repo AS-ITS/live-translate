@@ -371,6 +371,7 @@ test('completes an active meeting and its current segment', async () => {
   assert.equal(segments[0].status, 'completed');
   assert.equal(segments[0].endedAt, 1000);
   assert.equal(segments[0].liveSessionId, 'live-session-1');
+  assert.equal(result.meeting.purgeAt, '1970-01-01T00:30:01.000Z');
 });
 
 test('failed recovery terminalizes current segment without creating next segment', async () => {

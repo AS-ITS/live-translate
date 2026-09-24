@@ -142,7 +142,7 @@ export function createSupabaseMeetingRepository(options = {}) {
 }
 
 function meetingRow(entity, ownerUserId) {
-  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt), failure_info: entity.failureInfo, lifecycle_contract_version: entity.lifecycleContractVersion ?? 2, lifecycle_version: entity.lifecycleVersion ?? 0, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
+  return { id: entity.id, owner_user_id: ownerUserId, name: entity.name, source_language_code: entity.sourceLanguageCode, target_language_code: entity.targetLanguageCode, status: entity.status, started_at: toSupabaseTimestamp(entity.startedAt), ended_at: toSupabaseTimestamp(entity.endedAt), purge_at: toSupabaseTimestamp(entity.purgeAt), created_at: toSupabaseTimestamp(entity.createdAt), updated_at: toSupabaseTimestamp(entity.updatedAt), failure_info: entity.failureInfo, lifecycle_contract_version: entity.lifecycleContractVersion ?? 2, lifecycle_version: entity.lifecycleVersion ?? 0, settings: { echoTargetLanguage: entity.echoTargetLanguage, shouldRecordInputAudio: entity.shouldRecordInputAudio, glossaryEntries: entity.glossaryEntries, privateGlossaryEntries: entity.privateGlossaryEntries } };
 }
 
 function segmentRow(entity, ownerUserId) {

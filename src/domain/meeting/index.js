@@ -60,10 +60,11 @@ export class Meeting {
     });
   }
 
-  complete(endedAt) {
+  complete(endedAt, purgeAt = this.purgeAt) {
     return this.transitionTo('completed', {
       startedAt: this.startedAt ?? this.createdAt,
       endedAt: assertTimestamp(endedAt, 'endedAt'),
+      purgeAt,
       failureInfo: null
     });
   }

@@ -3,6 +3,7 @@ import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../doma
 import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
+const MEETING_RETENTION_MS = 30 * 60 * 1000;
 
 export function createMeetingCheckpointService({
   meetingRepository,
@@ -135,7 +136,8 @@ export function createMeetingCheckpointService({
         }));
       }
 
-      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now));
+      const purgeAt = meeting.purgeAt ?? new Date(new Date(now).getTime() + MEETING_RETENTION_MS).toISOString();
+      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now, purgeAt));
       return { meeting: completedMeeting };
     },
 

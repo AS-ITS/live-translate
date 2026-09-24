@@ -292,6 +292,7 @@ test('POST /api/meetings/:meetingId/complete completes an active segment', async
 
   assert.equal(response.status, 200);
   assert.equal(body.meeting.status, 'completed');
+  assert.equal(Date.parse(body.meeting.purgeAt) - new Date(body.meeting.endedAt).getTime(), 30 * 60 * 1000);
   assert.equal(segments.segments[0].status, 'completed');
 });
 

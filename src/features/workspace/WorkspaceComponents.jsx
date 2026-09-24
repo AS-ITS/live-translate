@@ -417,7 +417,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
 
   return (
     <section className="feature-page meeting-center-page meeting-management-page meetings-page" aria-labelledby="meeting-management-title">
-      <GeminiCredentialNotice />
+      <GeminiCredentialNotice showSettingsLink={false} />
       {viewMode === 'form' ? (
         <div className="meeting-management-back-row">
           <button className="button secondary" type="button" onClick={returnToMeetingList}>返回會議清單</button>

@@ -9,14 +9,14 @@ test('guides users from the meeting flow to the Gemini Key settings page', async
   await page.route('**/api/meetings', async (route) => route.fulfill({ json: [] }));
   await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
 
-  await page.goto('/#meeting-settings?mode=create');
+  await page.goto('/#meetings');
 
   const notice = page.locator('.gemini-credential-notice');
   await expect(notice).toContainText('錄音者必須輸入 Gemini API Key');
   await expect(notice).toContainText('不會儲存到瀏覽器或帳號設定');
-  await expect(notice.getByPlaceholder('AIza…')).toHaveCount(0);
+  await expect(notice.getByRole('link', { name: '設定 Gemini Key' })).toHaveCount(0);
   await expect(page.locator('.header-key-action')).toHaveClass(/is-missing/);
-  await notice.getByRole('link', { name: '設定 Gemini Key' }).click();
+  await page.locator('.header-key-action').click();
   await expect(page).toHaveURL(/#settings$/);
   const settingsNotice = page.locator('.gemini-credential-notice');
   await expect(settingsNotice).toHaveCount(0);

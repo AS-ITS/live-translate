@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Fixed cloud Meeting creation failing with HTTP 503 after retention columns were added to the Supabase schema.
+
 ## 2026-09-23
 
 - Added Issue #37 Phase 1 Meeting lifecycle v2: Supabase-transactional lifecycle

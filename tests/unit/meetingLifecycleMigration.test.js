@@ -5,6 +5,7 @@ import test from 'node:test';
 const migrationPath = new URL('../../supabase/migrations/20260924000000_issue37_meeting_lifecycle_v2.sql', import.meta.url);
 const fenceMigrationPath = new URL('../../supabase/migrations/20260924010000_issue37_validate_recorder_fence.sql', import.meta.url);
 const hardeningMigrationPath = new URL('../../supabase/migrations/20260924020000_issue37_phase1_hardening.sql', import.meta.url);
+const createMeetingCompatibilityMigrationPath = new URL('../../supabase/migrations/20260924030000_fix_meeting_creation_retention_defaults.sql', import.meta.url);
 
 test('Issue #37 migration defines v2 invariants and transactional RPCs', async () => {
   const sql = await readFile(migrationPath, 'utf8');
@@ -20,6 +21,16 @@ test('Issue #37 migration defines v2 invariants and transactional RPCs', async (
     "interval '10 seconds'",
     "interval '30 seconds'"
   ]) assert.ok(sql.includes(expected), `migration missing ${expected}`);
+});
+
+test('Meeting creation RPC fills defaults for retention columns added after the original RPC', async () => {
+  const sql = await readFile(createMeetingCompatibilityMigrationPath, 'utf8');
+
+  assert.match(sql, /create or replace function public\.create_meeting_with_initial_segment/u);
+  assert.match(sql, /jsonb_populate_record\(null::public\.meetings, normalized_meeting\)/u);
+  assert.match(sql, /retention_policy_version.*coalesce/u);
+  assert.match(sql, /purge_status[\s\S]*not_scheduled/u);
+  assert.match(sql, /purge_attempt_count.*coalesce/u);
 });
 
 test('Issue #37 write fence rejects stale cue, checkpoint, and audio writers', async () => {

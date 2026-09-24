@@ -54,6 +54,8 @@ test('account management shows users and reloads after disable', async ({ page }
 
   await page.goto('/#audit');
   await expect(page.locator('#audit-log-page-title')).toBeVisible();
+  await expect(page.getByRole('link', { name: '返回會議管理' })).toHaveAttribute('href', '#meetings');
+  await expect(page.locator('.audit-log-page .account-management-panel-header')).toHaveCount(0);
   await expect(page.locator('.account-audit-data-grid')).toBeVisible();
   await expect(page.locator('.account-audit-data-grid .ag-header-cell')).toHaveCount(7);
   await expect(page.getByRole('gridcell', { name: '停用帳號' })).toBeVisible();

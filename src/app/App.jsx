@@ -2137,7 +2137,7 @@ const activeMeetingCheckpointRef = useRef(null);
         title="稽核紀錄"
         titleId="audit-log-page-title"
         subtitle="查看工作區管理操作的安全紀錄。"
-        headerAction={<a className="button secondary meeting-header-action" href="#admin">返回帳號管理</a>}
+        headerAction={<a className="button secondary meeting-header-action" href="#meetings">返回會議管理</a>}
       >
         <AuditLogPage />
       </WorkspacePage>

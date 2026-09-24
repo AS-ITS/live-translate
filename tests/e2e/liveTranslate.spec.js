@@ -25,6 +25,9 @@ test.beforeEach(async ({ page }) => {
       configurable: true,
       value: {
         getUserMedia: async () => {
+          if (window.__mockMissingMicrophone) {
+            throw new DOMException('No microphone device found', 'NotFoundError');
+          }
           const track = {
             kind: 'audio',
             enabled: true,
@@ -1602,22 +1605,62 @@ test('direct URL navigation force-stops active recording before leaving', async 
   });
 });
 
-test('missing microphone keeps a retryable error visible', async ({ page }) => {
+test('recording stays disabled until checkpoint recovery finishes', async ({ page }) => {
   let resolveSegmentList;
   const segmentListLoaded = new Promise((resolve) => {
     resolveSegmentList = resolve;
   });
   await mockMeetingCheckpointApi(page, { waitForSegmentList: () => segmentListLoaded });
-  await page.addInitScript(() => {
-    navigator.mediaDevices.getUserMedia = async () => {
-      throw new DOMException('No microphone device found', 'NotFoundError');
-    };
-  });
 
   await page.goto('/#live?meetingId=meeting-1');
-  await page.getByRole('button', { name: '開始' }).click();
+  const preparingButton = page.getByRole('button', { name: '正在準備會議…' });
+  await expect(preparingButton).toBeDisabled();
 
   resolveSegmentList();
+
+  await expect(page.getByRole('button', { name: '開始錄製' })).toBeEnabled();
+});
+
+test('missing microphone keeps a retryable error visible', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        session: {
+          id: 'session-1',
+          name: '測試會議',
+          meetingId: 'meeting-1',
+          segmentId: 'segment-1',
+          status: 'created',
+          targetLanguageCode: 'en',
+          sourceLanguageCode: 'zh-Hant'
+        }
+      })
+    });
+  });
+  await page.goto('/#settings');
+  await page.getByRole('textbox', { name: 'Gemini API Key' }).fill('test-api-key');
+  await page.getByRole('button', { name: '設定金鑰' }).click();
+  await page.evaluate(() => {
+    window.__mockMissingMicrophone = true;
+    sessionStorage.setItem('live-translate:meeting-audio:meeting-1', JSON.stringify({
+      inputDeviceId: '',
+      outputDeviceId: '',
+      inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器',
+      permissionStatus: 'confirmed',
+      confirmedAt: new Date().toISOString()
+    }));
+    window.location.hash = '#live?meetingId=meeting-1';
+  });
+  await expect(page).toHaveURL(/#live\?meetingId=meeting-1$/);
+  await page.getByRole('button', { name: '開始錄製' }).click();
 
   await expect(page.getByRole('alert')).toHaveText('找不到可用的麥克風。請連接或允許麥克風後再試一次。');
   await expect(page.locator('.status-pill').getByText('需要處理', { exact: true })).toBeVisible();

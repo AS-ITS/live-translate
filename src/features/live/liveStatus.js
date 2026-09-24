@@ -33,6 +33,13 @@ export function meetingCheckpointStatusLabel(status) {
   return MEETING_CHECKPOINT_STATUS_LABELS[status] || MEETING_CHECKPOINT_STATUS_LABELS.idle;
 }
 
+export function isLiveMeetingStartReady({ meetingId, resumeDraft } = {}) {
+  return Boolean(
+    meetingId
+    && resumeDraft?.meetingId === meetingId
+  );
+}
+
 export function meetingCheckpointErrorMessageFor(error) {
   const messages = {
     subtitle_cue_invalid: '字幕資料格式無效，請重新開始錄製。',

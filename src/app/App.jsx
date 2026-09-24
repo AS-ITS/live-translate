@@ -61,7 +61,7 @@ import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { finalizedTranscriptItemsForRecording, useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
-import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
 import { createRecordingDiagnostics } from '../lib/recordingDiagnostics.js';
 import { getMeetingAudioPreference, hasConfirmedMeetingAudioPreference } from '../lib/meetingAudioPreferences.js';
@@ -2075,7 +2075,15 @@ const activeMeetingCheckpointRef = useRef(null);
       resumeDraft?.meetingId === routeMeetingId
     )
   );
+  const liveMeetingStartReady = isLiveMeetingStartReady({
+    meetingId: routeMeetingId,
+    resumeDraft: liveController.resumeDraft
+  });
   const startLiveRecording = async () => {
+    if (!liveMeetingStartReady) {
+      setError('會議資料仍在準備中，請稍候。');
+      return;
+    }
     if (!hasLiveCredential()) {
       setLiveErrorCode('gemini_api_key_required');
       setError('請貼上 Gemini API Key，再開始錄製。');
@@ -2319,12 +2327,14 @@ const activeMeetingCheckpointRef = useRef(null);
                     className="button primary meeting-live-action-button"
                     type="button"
                     onClick={startLiveRecording}
-                    disabled={isActive || isStartingLiveRecording || Boolean(controlLeaseSnapshot && !hasSessionControl)}
+                    disabled={!liveMeetingStartReady || isActive || isStartingLiveRecording || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
-                    {isStartingLiveRecording
-                      ? '正在檢查設定…'
-                      : liveController.isActive
+                    {!liveMeetingStartReady
+                      ? '正在準備會議…'
+                      : isStartingLiveRecording
+                        ? '正在檢查設定…'
+                        : liveController.isActive
                         ? '正在開始'
                         : (liveController.resumeDraft?.hasTranscript || liveController.resumeDraft?.hasBoundLiveSession) ? '繼續錄製' : '開始錄製'}
                   </button>

@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
+
+test('enables live meeting start only after the matching checkpoint draft is loaded', () => {
+  assert.equal(isLiveMeetingStartReady({
+    meetingId: 'meeting-1',
+    resumeDraft: null
+  }), false);
+  assert.equal(isLiveMeetingStartReady({
+    meetingId: 'meeting-1',
+    resumeDraft: { meetingId: 'meeting-2' }
+  }), false);
+  assert.equal(isLiveMeetingStartReady({
+    meetingId: 'meeting-1',
+    resumeDraft: { meetingId: 'meeting-1' }
+  }), true);
+});
 
 test('composes checkpoint and active audio status messages', () => {
   assert.deepEqual(composeCheckpointStatusMessage({

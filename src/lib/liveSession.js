@@ -221,7 +221,9 @@ export class LiveTranslateSession {
       this.logLiveEvent('getUserMedia:failure', { message: error?.message || String(error), name: error?.name || null });
       error.userMessage = error?.name === 'NotAllowedError'
         ? '麥克風權限被拒絕。'
-        : '無法取得麥克風 stream。';
+        : error?.name === 'NotFoundError'
+          ? '找不到可用的麥克風。請連接或允許麥克風後再試一次。'
+          : '無法取得麥克風 stream。';
       throw error;
     }
     const tracks = this.mediaStream?.getAudioTracks?.() || this.mediaStream?.getTracks?.() || [];

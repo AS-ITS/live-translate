@@ -33,7 +33,7 @@ export function GeminiCredentialPage() {
             </div>
           </div>
 
-          <div className="gemini-credential-card"><GeminiCredentialNotice /></div>
+          <div className="gemini-credential-card"><GeminiCredentialNotice showSettingsLink={false} /></div>
         </div>
       </section>
     </AppLayout>

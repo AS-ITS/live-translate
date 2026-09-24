@@ -2866,6 +2866,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   let requestApiKey = null;
   let liveTokenFailureStage = 'request_start';
   let liveTokenErrorCode = null;
+  let liveTokenSessionFound = null;
   try {
     enforceRateLimit(clientIp);
 
@@ -2880,7 +2881,15 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     liveTokenFailureStage = 'session_lookup';
     const detail = await sessionReadController?.getSession?.(body.sessionId);
     const session = detail?.sessionRecord || detail?.session;
-    if (!session || session.meetingId !== body.meetingId) throw createHttpError('recorder_forbidden');
+    liveTokenSessionFound = Boolean(session);
+    if (!session) {
+      liveTokenFailureStage = 'session_not_found';
+      throw createHttpError('recorder_forbidden');
+    }
+    if (session.meetingId !== body.meetingId) {
+      liveTokenFailureStage = 'session_meeting_mismatch';
+      throw createHttpError('recorder_forbidden');
+    }
     liveTokenFailureStage = 'recording_permission';
     if (!await meetingMembershipService?.canRecord?.(body.meetingId, authenticatedUser.id)) {
       throw createHttpError('recorder_forbidden');
@@ -2955,6 +2964,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       targetLanguageCode,
       errorCode: liveTokenErrorCode,
       failureStage: liveTokenErrorCode ? liveTokenFailureStage : null,
+      sessionFound: liveTokenSessionFound,
       meetingId: requestBody?.meetingId || null,
       sessionId: requestBody?.sessionId || null
     });

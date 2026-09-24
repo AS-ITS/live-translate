@@ -2883,7 +2883,9 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       throw createHttpError('recorder_forbidden');
     }
     liveTokenFailureStage = 'session_lookup';
-    const detail = await sessionReadController?.getSession?.(body.sessionId);
+    const detail = typeof sessionRepository?.getSessionRecord === 'function'
+      ? await sessionRepository.getSessionRecord(body.sessionId)
+      : await sessionReadController?.getSession?.(body.sessionId);
     const session = detail?.sessionRecord || detail?.session;
     liveTokenSessionFound = Boolean(session);
     liveTokenSessionMeetingId = session?.meetingId || null;

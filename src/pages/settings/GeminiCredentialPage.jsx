@@ -48,7 +48,7 @@ export function GeminiCredentialPage() {
               <li><span>1</span><div><strong>登入 Google AI Studio</strong><p>開啟 Google AI Studio，使用你的 Google 帳號登入。</p></div></li>
               <li><span>2</span><div><strong>建立或選取專案</strong><p>進入 API Keys 頁面，選取現有專案，或依畫面提示建立新專案。</p></div></li>
               <li><span>3</span><div><strong>建立並複製 API Key</strong><p>按下建立 API Key，完成後複製整組 Key。請不要把它貼到公開網站或提交到 Git。</p></div></li>
-              <li><span>4</span><div><strong>回到這裡套用</strong><p>將 Key 貼到右側欄位，按下「套用 Key」即可開始會議。</p></div></li>
+              <li><span>4</span><div><strong>回到這裡設定</strong><p>將 Key 貼到右側欄位，按下「設定金鑰」即可開始會議。</p></div></li>
             </ol>
             <a className="button secondary gemini-studio-link" href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer">
               <ExternalLink size={16} aria-hidden="true" />
@@ -72,8 +72,8 @@ export function GeminiCredentialPage() {
               </div> : null}
               <label className="field"><span>Gemini API Key</span><input type="password" value={draftKey} onChange={(event) => setDraftKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" /></label>
               <div className="gemini-credential-actions">
-                <button className="button primary" type="submit" disabled={!draftKey.trim()}>套用 Key</button>
-                <button className="button secondary" type="button" onClick={cancelKey} disabled={!draftKey.trim() && !isConfigured}>取消</button>
+                <button className="button primary" type="submit" disabled={!draftKey.trim()}>設定金鑰</button>
+                <button className="button secondary" type="button" onClick={cancelKey} disabled={!draftKey.trim() && !isConfigured}>撤消金鑰</button>
               </div>
             </form>
           </div>

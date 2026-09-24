@@ -64,7 +64,14 @@ export function createSupabaseSessionRepository(options = {}) {
 }
 
 function sessionRecordFromRow(row) {
-  const record = clone(row.payload || row);
+  const payload = clone(row.payload || row);
+  const record = {
+    ...payload,
+    id: row.id || payload.id,
+    meetingId: row.meeting_id || payload.meetingId,
+    ownerUserId: row.owner_user_id || payload.ownerUserId
+  };
+
   return Number(row.lifecycle_contract_version) === 2
     ? { ...record, lifecycleContractVersion: 2 }
     : record;

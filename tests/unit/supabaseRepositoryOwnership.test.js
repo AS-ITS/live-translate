@@ -131,6 +131,42 @@ test('Supabase session repository serializes timestamps and preserves owner-scop
   }
 });
 
+test('session reads restore authoritative meeting binding from outer columns', async () => {
+  const repository = createSupabaseSessionRepository({
+    env: {
+      SUPABASE_URL: 'https://example.supabase.co',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return [{
+          id: 'session-a',
+          meeting_id: 'meeting-a',
+          owner_user_id: 'user-a',
+          payload: {
+            id: 'session-a',
+            status: 'created'
+          },
+          transcript_items: []
+        }];
+      }
+    })
+  });
+
+  setRequestUser({ id: 'user-a' });
+  setRequestScope({ actorUserId: 'user-a', resourceOwnerUserId: 'user-a', accessToken: 'user-jwt' });
+  try {
+    const detail = await repository.getSessionRecord('session-a');
+    assert.equal(detail.sessionRecord.meetingId, 'meeting-a');
+    assert.equal(detail.sessionRecord.ownerUserId, 'user-a');
+  } finally {
+    setRequestScope(null);
+    setRequestUser(null);
+  }
+});
+
 test('Supabase meeting repository hydrates Cue offsets and language settings', async () => {
   const repository = createSupabaseMeetingRepository({
     env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },

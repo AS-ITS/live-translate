@@ -350,6 +350,32 @@ test('live session uses Safari webkitAudioContext fallback', async () => {
   }
 });
 
+test('disabled translated audio playback does not enqueue output audio', () => {
+  let createBufferCalls = 0;
+  const outputChunks = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: false,
+    onOutputAudioChunk: (chunk) => outputChunks.push(chunk)
+  });
+  session.audioContext = {
+    createBuffer() {
+      createBufferCalls += 1;
+    }
+  };
+
+  session.handleMessage({
+    serverContent: {
+      modelTurn: {
+        parts: [{ inlineData: { data: 'AAAA' } }]
+      }
+    }
+  });
+
+  assert.equal(createBufferCalls, 0);
+  assert.deepEqual(outputChunks, []);
+});
+
 test('offline signal emits a recoverable failure after cleanup', async () => {
   const failures = [];
   const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });

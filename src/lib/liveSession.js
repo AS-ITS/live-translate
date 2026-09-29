@@ -1327,7 +1327,9 @@ export class LiveTranslateSession {
       const parts = content?.modelTurn?.parts || [];
       for (const part of parts) {
         if (part.inlineData?.data) {
-          this.playPcmAudio(part.inlineData.data, { suppressOutput: isRetranslationResponse });
+          this.playPcmAudio(part.inlineData.data, {
+            suppressOutput: isRetranslationResponse || !this.echoTargetLanguage
+          });
         }
       }
     }

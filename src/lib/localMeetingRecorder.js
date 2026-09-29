@@ -1,6 +1,5 @@
 import {
-  reconcileLocalMeetingChunks,
-  sealLocalChunk
+  reconcileLocalMeetingChunks
 } from './localMeetingStorage.js';
 
 export const LOCAL_RECORDER_STATES = Object.freeze([
@@ -16,7 +15,12 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
   if (!manifestStore || typeof manifestStore.reserve !== 'function' || typeof manifestStore.seal !== 'function' || typeof manifestStore.mark !== 'function' || typeof manifestStore.list !== 'function') {
     throw new TypeError('manifestStore must implement reserve, seal, mark, and list.');
   }
-  if (!chunkStore || typeof chunkStore.write !== 'function') throw new TypeError('chunkStore must implement write.');
+  if (typeof manifestStore.getRecording !== 'function' || typeof manifestStore.saveRecording !== 'function' || typeof manifestStore.getOperation !== 'function' || typeof manifestStore.commitRecordingOperation !== 'function') {
+    throw new TypeError('manifestStore must implement durable recording and operation persistence.');
+  }
+  if (!chunkStore || typeof chunkStore.write !== 'function' || typeof chunkStore.read !== 'function') {
+    throw new TypeError('chunkStore must implement write and read.');
+  }
 
   let state = 'idle';
   let meetingId = null;
@@ -30,18 +34,35 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
   let providerEpoch = 0;
   const operations = new Map();
   let stopBarrier = null;
-  let resolveStopBarrier = null;
-  let rejectStopBarrier = null;
 
   return Object.freeze({
-    start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId } = {}) {
-      if (operationId && operations.has(operationId)) return operations.get(operationId);
-      if (state === 'capturing' && meetingId === nextMeetingId) return snapshot();
-      if (state === 'stopped_local') throw conflict('local_recorder_finalized');
-      if (state !== 'idle' && meetingId !== nextMeetingId) throw conflict('local_recorder_active');
+    async restore(nextMeetingId) {
       if (!nextMeetingId) throw invalid('meetingId is required.');
-      const durable = manifestStore.getRecording?.(nextMeetingId);
-      if (durable?.finalized || durable?.terminal) throw conflict('local_recorder_finalized');
+      if (meetingId && meetingId !== nextMeetingId && state !== 'idle') throw conflict('local_recorder_active');
+      const durable = await manifestStore.getRecording(nextMeetingId);
+      meetingId = nextMeetingId;
+      if (!durable) return snapshot();
+      recordingId = durable.recordingId;
+      segmentId = durable.segmentId;
+      segmentNumber = durable.segmentNumber;
+      captureEpoch = durable.captureEpoch;
+      providerEpoch = durable.providerEpoch;
+      finalSequence = durable.finalSequence;
+      state = durable.state;
+      stopError = null;
+      return snapshot();
+    },
+
+    async start(nextMeetingId, { operationId, recordingId: requestedRecordingId, segmentId: requestedSegmentId } = {}) {
+      if (!nextMeetingId) throw invalid('meetingId is required.');
+      if (meetingId !== nextMeetingId) await this.restore(nextMeetingId);
+      const replayed = await replay(operationId, 'start');
+      if (replayed) return replayed;
+      if (state === 'stopped_local') throw conflict('local_recorder_finalized');
+      if (state !== 'idle') {
+        if (meetingId !== nextMeetingId) throw conflict('local_recorder_active');
+        return persist(operationId, 'start');
+      }
       meetingId = nextMeetingId;
       recordingId = requestedRecordingId || `recording:${meetingId}`;
       segmentId = requestedSegmentId || `segment:${recordingId}:1`;
@@ -51,29 +72,39 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
       finalSequence = null;
       stopError = null;
       state = 'capturing';
-      return remember(operationId);
+      return persist(operationId, 'start');
     },
 
-    pause({ operationId } = {}) {
-      if (operationId && operations.has(operationId)) return operations.get(operationId);
-      if (state === 'capturing') { state = 'paused'; captureEpoch += 1; }
-      return remember(operationId);
+    async pause({ operationId } = {}) {
+      const replayed = await replay(operationId, 'pause');
+      if (replayed) return replayed;
+      if (state === 'capturing') {
+        state = 'paused';
+        captureEpoch += 1;
+      }
+      return persist(operationId, 'pause');
     },
 
-    resume({ operationId } = {}) {
-      if (operationId && operations.has(operationId)) return operations.get(operationId);
-      if (state === 'paused') { segmentNumber += 1; segmentId = `segment:${recordingId}:${segmentNumber}`; captureEpoch += 1; state = 'capturing'; }
-      return remember(operationId);
+    async resume({ operationId } = {}) {
+      const replayed = await replay(operationId, 'resume');
+      if (replayed) return replayed;
+      continueRecording();
+      return persist(operationId, 'resume');
     },
 
-    recover({ operationId } = {}) {
-      return this.resume({ operationId });
+    async recover({ operationId } = {}) {
+      const replayed = await replay(operationId, 'recover');
+      if (replayed) return replayed;
+      continueRecording();
+      return persist(operationId, 'recover');
     },
 
-    providerReconnect({ operationId } = {}) {
-      if (operationId && operations.has(operationId)) return operations.get(operationId);
-      if (state === 'capturing' || state === 'paused') providerEpoch += 1;
-      return remember(operationId);
+    async providerReconnect({ operationId } = {}) {
+      return advanceProviderEpoch(operationId, 'provider_reconnect');
+    },
+
+    async providerRollover({ operationId } = {}) {
+      return advanceProviderEpoch(operationId, 'provider_rollover');
     },
 
     appendChunk(input, bytes) {
@@ -102,15 +133,27 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     },
 
     async stop({ finalSequence: requestedFinalSequence, operationId } = {}) {
-      if (operationId && operations.has(operationId)) return operations.get(operationId);
-      if (state === 'stopped_local') return snapshot();
+      const replayed = await replay(operationId, 'finalize');
+      if (replayed) return replayed;
+      if (state === 'stopped_local') return persist(operationId, 'finalize');
       if (stopBarrier) return stopBarrier;
-      stopBarrier = new Promise((resolve, reject) => { resolveStopBarrier = resolve; rejectStopBarrier = reject; });
+
+      let resolveBarrier;
+      let rejectBarrier;
+      stopBarrier = new Promise((resolve, reject) => {
+        resolveBarrier = resolve;
+        rejectBarrier = reject;
+      });
       stopBarrier.catch(() => {});
-      await appendQueue;
-      if (state !== 'capturing' && state !== 'stop_incomplete') return snapshot();
-      state = 'stopping';
+
       try {
+        await appendQueue;
+        if (state !== 'capturing' && state !== 'stop_incomplete') {
+          const result = snapshot();
+          resolveBarrier(result);
+          return result;
+        }
+        state = 'stopping';
         const chunks = await manifestStore.list(meetingId);
         const sealed = chunks.filter((chunk) => chunk.state === 'sealed');
         const highest = sealed.reduce((value, chunk) => Math.max(value, chunk.sequence), 0);
@@ -118,8 +161,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
         if (!Number.isSafeInteger(requested) || requested < 0) throw invalid('finalSequence must be a non-negative integer.');
         const missing = [];
         for (let sequence = 1; sequence <= requested; sequence += 1) {
-          const chunk = sealed.find((value) => value.sequence === sequence);
-          if (!chunk) missing.push(sequence);
+          if (!sealed.some((chunk) => chunk.sequence === sequence)) missing.push(sequence);
         }
         if (missing.length > 0) {
           const error = conflict('local_recorder_final_sequence_incomplete');
@@ -128,20 +170,25 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
         }
         finalSequence = requested;
         state = 'stopped_local';
-        const result = remember(operationId);
-        manifestStore.saveRecording?.({ ...result, terminal: true, finalized: true });
-        resolveStopBarrier(result);
+        stopError = null;
+        const result = await persist(operationId, 'finalize');
+        resolveBarrier(result);
         return result;
       } catch (error) {
         stopError = error;
         state = 'stop_incomplete';
-        rejectStopBarrier(error);
-        stopBarrier = null;
+        await manifestStore.saveRecording(recordingSnapshot());
+        rejectBarrier(error);
         throw error;
+      } finally {
+        stopBarrier = null;
       }
     },
 
-    finalize(options) { return this.stop(options); },
+    finalize(options) {
+      return this.stop(options);
+    },
+
     snapshot
   });
 
@@ -149,13 +196,45 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     if (state !== 'capturing') throw conflict('local_recorder_not_capturing');
   }
 
+  function continueRecording() {
+    if (state !== 'paused' && state !== 'stop_incomplete') return;
+    segmentNumber += 1;
+    segmentId = `segment:${recordingId}:${segmentNumber}`;
+    captureEpoch += 1;
+    state = 'capturing';
+    stopError = null;
+  }
+
+  async function advanceProviderEpoch(operationId, type) {
+    const replayed = await replay(operationId, type);
+    if (replayed) return replayed;
+    if (state === 'capturing' || state === 'paused') providerEpoch += 1;
+    return persist(operationId, type);
+  }
+
   async function appendChunkLocked(input, bytes) {
     assertCapturing();
-    const record = await manifestStore.reserve({ ...input, meetingId: input?.meetingId || meetingId, recordingId: input?.recordingId || recordingId, segmentId: input?.segmentId || segmentId });
-    if (record.state === 'sealed') return record;
+    const record = await manifestStore.reserve({
+      ...input,
+      meetingId: input?.meetingId || meetingId,
+      recordingId: input?.recordingId || recordingId,
+      segmentId: input?.segmentId || segmentId
+    });
+    if (record.state === 'sealed') {
+      await assertStoredChunkMatches(record, bytes);
+      return record;
+    }
     try {
       await chunkStore.write(record.path, bytes);
     } catch (error) {
+      if (error?.code === 'local_chunk_file_exists') {
+        await assertStoredChunkMatches(record, bytes);
+        return manifestStore.seal(record.chunkId, {
+          byteSize: record.byteSize,
+          checksum: record.checksum,
+          endedAt: record.endedAt || now()
+        });
+      }
       stopError = error;
       throw error;
     }
@@ -166,15 +245,95 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
     });
   }
 
-  function snapshot() {
-    return Object.freeze({ state, meetingId, recordingId, segmentId, captureEpoch, providerEpoch, finalSequence, stopError });
+  async function assertStoredChunkMatches(record, bytes) {
+    let stored;
+    try {
+      stored = await chunkStore.read(record.path);
+    } catch (error) {
+      const mismatch = conflict('local_chunk_content_conflict');
+      mismatch.cause = error;
+      throw mismatch;
+    }
+    const [actualBytes, expectedBytes] = await Promise.all([
+      toUint8Array(stored),
+      toUint8Array(bytes)
+    ]);
+    if (record.byteSize !== null && record.byteSize !== expectedBytes.byteLength) {
+      throw conflict('local_chunk_content_conflict');
+    }
+    if (actualBytes.byteLength !== expectedBytes.byteLength) {
+      throw conflict('local_chunk_content_conflict');
+    }
+    for (let index = 0; index < actualBytes.byteLength; index += 1) {
+      if (actualBytes[index] !== expectedBytes[index]) throw conflict('local_chunk_content_conflict');
+    }
   }
 
-  function remember(operationId) {
+  function snapshot() {
+    return Object.freeze({
+      state,
+      meetingId,
+      recordingId,
+      segmentId,
+      captureEpoch,
+      providerEpoch,
+      finalSequence,
+      stopError
+    });
+  }
+
+  function recordingSnapshot() {
+    return {
+      ...snapshot(),
+      segmentNumber,
+      terminal: state === 'stopped_local',
+      finalized: state === 'stopped_local'
+    };
+  }
+
+  async function replay(operationId, type) {
+    if (!operationId) return null;
+    const cached = operations.get(operationId);
+    if (cached) {
+      assertOperationType(cached, type);
+      return cached.result;
+    }
+    if (!meetingId) return null;
+    const durable = await manifestStore.getOperation(meetingId, operationId);
+    if (!durable) return null;
+    assertOperationType(durable, type);
+    operations.set(operationId, durable);
+    return durable.result;
+  }
+
+  async function persist(operationId, type) {
     const result = snapshot();
-    if (operationId) operations.set(operationId, result);
+    const recording = recordingSnapshot();
+    if (!operationId) {
+      await manifestStore.saveRecording(recording);
+      return result;
+    }
+    const operation = { meetingId, operationId, type, result };
+    await manifestStore.commitRecordingOperation({ recording, operation });
+    operations.set(operationId, operation);
     return result;
   }
+}
+
+async function toUint8Array(value) {
+  if (value instanceof Uint8Array) return value;
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (value && typeof value.arrayBuffer === 'function') {
+    return new Uint8Array(await value.arrayBuffer());
+  }
+  throw conflict('local_chunk_content_conflict');
+}
+
+function assertOperationType(operation, type) {
+  if (operation.type !== type) throw conflict('local_recorder_operation_conflict');
 }
 
 function invalid(message) {

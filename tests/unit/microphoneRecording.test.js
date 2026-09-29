@@ -182,6 +182,31 @@ test('stale MediaRecorder callbacks from a replaced capture epoch are ignored', 
   assert.equal(await finalized.blob.text(), 'current');
 });
 
+test('rapid duplicate Start creates one MediaRecorder owner and stale callbacks cannot cross capture epochs', async () => {
+  const recorderInstances = [];
+  const writes = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async (chunk) => writes.push(await chunk.data.text())
+  });
+  const firstStream = fakeStream();
+
+  await Promise.all([
+    controller.start({ stream: firstStream, sessionId: 'session-rapid' }),
+    controller.start({ stream: firstStream, sessionId: 'session-rapid' })
+  ]);
+  assert.equal(recorderInstances.length, 1);
+
+  await controller.pause();
+  await controller.resume({ stream: fakeStream() });
+  recorderInstances[0].emitChunk(new Blob(['stale'], { type: 'audio/webm' }));
+  recorderInstances[1].emitChunk(new Blob(['current'], { type: 'audio/webm' }));
+  await controller.finalize();
+
+  assert.deepEqual(writes, ['current']);
+});
+
 test('recorder error becomes independent error state', async () => {
   const recorderInstances = [];
   const controller = createMicrophoneRecordingController({

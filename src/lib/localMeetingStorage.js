@@ -1,4 +1,4 @@
-export const LOCAL_MEETING_SCHEMA_VERSION = 2;
+export const LOCAL_MEETING_SCHEMA_VERSION = 3;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -120,6 +120,7 @@ export function reconcileLocalMeetingChunks({ manifest = [], files = [] } = {}) 
 export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const records = new Map();
   const recordings = new Map();
+  const operations = new Map();
   for (const rawRecord of initial) {
     const record = projectLocalChunk(rawRecord);
     assertChunkRecord(record);
@@ -135,6 +136,21 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       const record = projectLocalRecording(input);
       recordings.set(record.meetingId, record);
       return Object.freeze({ ...record });
+    },
+    getOperation(meetingId, operationId) {
+      const value = operations.get(operationKey(meetingId, operationId));
+      return value ? projectLocalOperation(value) : null;
+    },
+    commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
+      const recording = projectLocalRecording(recordingInput);
+      const operation = projectLocalOperation(operationInput);
+      if (recording.meetingId !== operation.meetingId) throw conflict('local_recorder_operation_conflict');
+      const key = operationKey(operation.meetingId, operation.operationId);
+      const existing = operations.get(key);
+      if (existing && !sameProjection(existing, operation)) throw conflict('local_recorder_operation_conflict');
+      recordings.set(recording.meetingId, recording);
+      operations.set(key, operation);
+      return operation.result;
     },
     async reserve(input) {
       const record = reserveLocalChunk(input);
@@ -183,6 +199,52 @@ export function createIndexedDbLocalMeetingManifestStore({
   let databasePromise;
 
   return Object.freeze({
+    async getRecording(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'recordings', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('recordings');
+        const raw = await request(store.get(meetingId));
+        if (!raw) return null;
+        const projected = projectLocalRecording(raw);
+        if (!sameProjection(raw, projected)) await request(store.put(projected));
+        return projected;
+      });
+    },
+    async saveRecording(input) {
+      const recording = projectLocalRecording(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'recordings', 'readwrite', async (transaction) => {
+        await request(transaction.objectStore('recordings').put(recording));
+        return recording;
+      });
+    },
+    async getOperation(meetingId, operationId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'operations', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('operations');
+        const raw = await request(store.get(operationKey(meetingId, operationId)));
+        if (!raw) return null;
+        const projected = projectLocalOperation(raw);
+        if (!sameProjection(raw, projected)) await request(store.put(projected));
+        return projected;
+      });
+    },
+    async commitRecordingOperation({ recording: recordingInput, operation: operationInput }) {
+      const recording = projectLocalRecording(recordingInput);
+      const operation = projectLocalOperation(operationInput);
+      if (recording.meetingId !== operation.meetingId) throw conflict('local_recorder_operation_conflict');
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['recordings', 'operations'], 'readwrite', async (transaction) => {
+        const operationStore = transaction.objectStore('operations');
+        const existing = await request(operationStore.get(operation.key));
+        if (existing && !sameProjection(projectLocalOperation(existing), operation)) {
+          throw conflict('local_recorder_operation_conflict');
+        }
+        await request(transaction.objectStore('recordings').put(recording));
+        if (!existing) await request(operationStore.add(operation));
+        return operation.result;
+      });
+    },
     async reserve(input) {
       const record = reserveLocalChunk(input);
       const database = await openDatabase();
@@ -257,6 +319,12 @@ export function createIndexedDbLocalMeetingManifestStore({
             const store = database.createObjectStore('chunks', { keyPath: 'chunkId' });
             store.createIndex('meeting-sequence', ['meetingId', 'sequence'], { unique: true });
           }
+          if (!database.objectStoreNames.contains('recordings')) {
+            database.createObjectStore('recordings', { keyPath: 'meetingId' });
+          }
+          if (!database.objectStoreNames.contains('operations')) {
+            database.createObjectStore('operations', { keyPath: 'key' });
+          }
         };
         requestHandle.onsuccess = () => resolve(requestHandle.result);
         requestHandle.onerror = () => reject(requestHandle.error || new Error('IndexedDB open failed.'));
@@ -270,7 +338,15 @@ export function createIndexedDbLocalMeetingManifestStore({
 export function createOpfsChunkStore({ rootDirectory = null } = {}) {
   return Object.freeze({
     async write(path, bytes) {
-      const file = await fileHandle(rootDirectory, path, true);
+      const { directory, name } = await parentDirectory(rootDirectory, path, true);
+      try {
+        await directory.getFileHandle(name, { create: false });
+        throw conflict('local_chunk_file_exists');
+      } catch (error) {
+        if (error?.code === 'local_chunk_file_exists') throw error;
+        if (error?.name !== 'NotFoundError') throw error;
+      }
+      const file = await directory.getFileHandle(name, { create: true });
       const writable = await file.createWritable();
       try {
         await writable.write(bytes);
@@ -316,9 +392,11 @@ function projectLocalChunk(value) {
 
 function projectLocalRecording(value = {}) {
   return Object.freeze({
+    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
     meetingId: value.meetingId,
     recordingId: value.recordingId,
     segmentId: value.segmentId,
+    segmentNumber: normalizeSegmentNumber(value.segmentNumber, value.segmentId),
     captureEpoch: value.captureEpoch,
     providerEpoch: value.providerEpoch,
     state: value.state,
@@ -328,18 +406,58 @@ function projectLocalRecording(value = {}) {
   });
 }
 
+function projectLocalOperation(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const operationId = normalizeRequiredString(value.operationId, 'operationId');
+  return Object.freeze({
+    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
+    key: operationKey(meetingId, operationId),
+    meetingId,
+    operationId,
+    type: normalizeRequiredString(value.type, 'type'),
+    result: projectLocalOperationResult(value.result)
+  });
+}
+
+function projectLocalOperationResult(value = {}) {
+  return Object.freeze({
+    state: value.state,
+    meetingId: value.meetingId,
+    recordingId: value.recordingId,
+    segmentId: value.segmentId,
+    captureEpoch: value.captureEpoch,
+    providerEpoch: value.providerEpoch,
+    finalSequence: value.finalSequence ?? null,
+    stopError: null
+  });
+}
+
+function operationKey(meetingId, operationId) {
+  return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(operationId, 'operationId')}`;
+}
+
+function normalizeSegmentNumber(value, segmentId) {
+  if (Number.isSafeInteger(Number(value)) && Number(value) > 0) return Number(value);
+  const match = String(segmentId || '').match(/:(\d+)$/u);
+  return match ? Number(match[1]) : 1;
+}
+
 function sameProjection(raw, projected) {
-  const rawKeys = Object.keys(raw).sort();
-  const projectedKeys = Object.keys(projected).sort();
-  return rawKeys.length === projectedKeys.length && rawKeys.every((key, index) => key === projectedKeys[index] && raw[key] === projected[key]);
+  return JSON.stringify(raw) === JSON.stringify(projected);
 }
 
 function sameChunkIdentity(left, right) {
   return left.meetingId === right.meetingId &&
     (left.recordingId || left.meetingId) === (right.recordingId || right.meetingId) &&
     left.segmentId === right.segmentId &&
+    left.chunkId === right.chunkId &&
     left.sequence === right.sequence &&
-    left.checksum === right.checksum;
+    left.startedAt === right.startedAt &&
+    left.endedAt === right.endedAt &&
+    left.byteSize === right.byteSize &&
+    left.checksum === right.checksum &&
+    left.mimeType === right.mimeType &&
+    left.path === right.path;
 }
 
 function matchesExpectedFile(record, file) {
@@ -439,6 +557,24 @@ function request(requestHandle) {
     requestHandle.onsuccess = () => resolve(requestHandle.result);
     requestHandle.onerror = () => reject(requestHandle.error || new Error('IndexedDB request failed.'));
   });
+}
+
+async function runNamedTransaction(database, storeNames, mode, operation) {
+  const transaction = database.transaction(storeNames, mode);
+  const completion = new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error || new Error('IndexedDB transaction failed.'));
+    transaction.onabort = () => reject(transaction.error || new Error('IndexedDB transaction aborted.'));
+  });
+  try {
+    const result = await operation(transaction);
+    await completion;
+    return result;
+  } catch (error) {
+    try { transaction.abort(); } catch { /* already completed */ }
+    await completion.catch(() => {});
+    throw error;
+  }
 }
 
 async function runTransaction(database, mode, operation) {

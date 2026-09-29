@@ -1349,6 +1349,7 @@ export class LiveTranslateSession {
     const bytes = base64ToBytes(base64Audio);
     if (suppressOutput) return;
     this.onOutputAudioChunk?.(new Uint8Array(bytes));
+    if (this.echoTargetLanguage === false) return;
     const samples = pcm16ToFloat(bytes);
     let buffer;
     try {

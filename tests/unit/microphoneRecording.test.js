@@ -112,6 +112,42 @@ test('controller can track recording state without retaining MediaRecorder chunk
   assert.equal(state.blob, null);
 });
 
+test('controller serializes local chunk writes and waits for them before finalize', async () => {
+  const recorderInstances = [];
+  const writes = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async (chunk) => {
+      await Promise.resolve();
+      writes.push({ sequence: chunk.sequence, text: await chunk.data.text() });
+    }
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-spool' });
+  recorderInstances[0].emitChunk(new Blob(['one'], { type: 'audio/webm' }));
+  recorderInstances[0].emitChunk(new Blob(['two'], { type: 'audio/webm' }));
+  await controller.finalize();
+
+  assert.deepEqual(writes, [{ sequence: 1, text: 'one' }, { sequence: 2, text: 'two' }]);
+});
+
+test('local chunk write failure makes finalize independently recoverable', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async () => { throw new Error('OPFS quota exceeded'); }
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-spool-error' });
+  recorderInstances[0].emitChunk(new Blob(['one'], { type: 'audio/webm' }));
+  const state = await controller.finalize();
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.errorMessage, 'OPFS quota exceeded');
+});
+
 test('controller methods are idempotent around empty pause, finalize, and cleanup', async () => {
   const controller = createMicrophoneRecordingController({
     MediaRecorderImpl: mockMediaRecorderClass(),

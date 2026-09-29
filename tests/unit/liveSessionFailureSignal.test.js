@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { GoogleGenAI } from '@google/genai';
 import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
 import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
@@ -1543,3 +1544,37 @@ function createFakeTimer() {
     }
   };
 }
+test('reconnect passes the latest session resumption handle to live.connect config', async () => {
+  const originalFetch = globalThis.fetch;
+  const probe = new GoogleGenAI({ apiKey: 'test-token' });
+  const livePrototype = Object.getPrototypeOf(probe.live);
+  const originalConnect = livePrototype.connect;
+  let connectOptions;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        token: 'ephemeral-token',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        liveConnectModel: 'gemini-3.5-live-translate-preview',
+        liveConnectConfig: { responseModalities: ['AUDIO'] }
+      };
+    }
+  });
+  livePrototype.connect = async (options) => {
+    connectOptions = options;
+    return { close() {} };
+  };
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+    session.resumptionHandle = 'latest-resume-handle';
+    session.waitForSetupComplete = async () => true;
+    session.attachAudioCaptureAfterSetup = async () => true;
+    await session.connectProvider();
+    assert.equal(connectOptions.config.sessionResumption.handle, 'latest-resume-handle');
+  } finally {
+    livePrototype.connect = originalConnect;
+    globalThis.fetch = originalFetch;
+  }
+});

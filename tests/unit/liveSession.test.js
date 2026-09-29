@@ -34,7 +34,7 @@ test('sends the lifecycle memory key with each live-token request and clears it 
     await assert.rejects(session.getTokenResponse({ forceRefresh: true }));
 
     assert.deepEqual(requests.map((request) => request.geminiApiKey), ['test-api-key', 'test-api-key']);
-    assert.equal(hasLiveCredential(), false);
+    assert.equal(hasLiveCredential(), true);
     assert.equal(session.tokenState, null);
   } finally {
     globalThis.fetch = originalFetch;
@@ -64,9 +64,28 @@ test('clears lifecycle memory and diagnostics on an initial live-token auth fail
     await assert.rejects(session.getTokenResponse(), { code: 'auth_invalid' });
 
     const diagnostics = JSON.stringify(session.getDebugSnapshot({ includeText: true }));
-    assert.equal(hasLiveCredential(), false);
+    assert.equal(hasLiveCredential(), true);
     assert.equal(session.tokenState, null);
     assert.doesNotMatch(diagnostics, /test-api-key|response-body-key|response-ephemeral-token|previous-ephemeral-token/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+test('preserves the lifecycle key after a transient provider token failure', async () => {
+  const originalFetch = globalThis.fetch;
+  setLiveCredential('transient-test-key');
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 403,
+    async json() {
+      return { error: { code: 'provider_permission_denied' } };
+    }
+  });
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+    await assert.rejects(session.getTokenResponse({ forceRefresh: true }), { code: 'provider_permission_denied' });
+    assert.equal(hasLiveCredential(), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

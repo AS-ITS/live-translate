@@ -1230,13 +1230,15 @@ snapshot, allowing reconnect clients to render the latest known state.
 Creates a short-lived Gemini ephemeral token for one browser Live Translate
 session.
 
-The backend uses `GEMINI_API_KEY` server-side to create the token. The response
-must not expose `GEMINI_API_KEY`.
+The authenticated browser sends its lifecycle-memory-only Gemini API Key in this
+request. The backend uses it only for this request to create the token and never
+persists or logs it. The response must not expose `GEMINI_API_KEY`.
 
 ## Request Body
 
 ```json
 {
+  "geminiApiKey": "<user-supplied-key>",
   "targetLanguageCode": "en",
   "sourceLanguageCode": "zh-Hant",
   "echoTargetLanguage": true,
@@ -1246,6 +1248,9 @@ must not expose `GEMINI_API_KEY`.
 
 Fields:
 
+- `geminiApiKey`: Required request-scoped user credential. It must not be stored
+  in localStorage, sessionStorage, cookies, Supabase, Vercel KV, server globals,
+  logs, or any other persistent store.
 - `targetLanguageCode`: Optional string. Defaults to `en`.
 - `sourceLanguageCode`: Optional string. Defaults to `zh-Hant`. This is a soft
   primary input-language hint for model context; it does not prevent mixed

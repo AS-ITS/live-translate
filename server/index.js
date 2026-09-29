@@ -6,7 +6,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SUPPORTED_LANGUAGES, isSupportedLanguage } from './languages.js';
-import { createLiveToken } from './tokenService.js';
+import { createLiveToken, DEFAULT_LIVE_TRANSLATE_MODEL, safeGeminiProviderDiagnostic } from './tokenService.js';
 import { createAccessControl, getBearerToken } from './accessControl.js';
 import { createApplicationDependencies, createProductionApplicationDependencies, ensureDataDirectory } from './compositionRoot.js';
 import { createSessionSnapshotSyncService } from '../src/application/sessionSnapshotSyncService.js';
@@ -51,13 +51,7 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = IS_PRODUCTION
-  ? (process.env.APP_ORIGIN
-    || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '')
-    || 'http://127.0.0.1:8000')
-  : (process.env.dev_frontend_origin
-    || process.env.APP_ORIGIN
-    || 'http://127.0.0.1:5173');
+const RESOLVED_ORIGIN = resolveAllowedOrigin(process.env);
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -284,6 +278,13 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || 'unknown';
 }
 
+export function resolveAllowedOrigin(env = process.env) {
+  const production = env.NODE_ENV === 'production';
+  return production
+    ? (env.APP_ORIGIN || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : '') || 'http://127.0.0.1:8000')
+    : (env.dev_frontend_origin || env.APP_ORIGIN || 'http://127.0.0.1:5173');
+}
+
 function isAllowedOrigin(req) {
   const origin = req.headers?.origin;
   return !origin || origin === RESOLVED_ORIGIN;
@@ -373,15 +374,24 @@ function logEvent(event) {
   structuredLogger.log(event);
 }
 
-function logProviderError(requestId, error) {
+function logProviderError(requestId, error, { hasSupabaseAccessToken = false, hasGeminiApiKey = false, geminiApiKeyLength = 0, model = DEFAULT_LIVE_TRANSLATE_MODEL, apiVersion = 'v1beta', logger = logEvent } = {}) {
   const cause = error.cause || error;
-  logEvent({
+  const diagnostic = error.providerDiagnostic || safeGeminiProviderDiagnostic(cause);
+  logger({
     level: 'error',
-    event: 'provider_error',
+    event: 'gemini_token_provider_failure',
     requestId,
-    provider: 'gemini',
-    errorName: cause?.name || 'Error',
-    safeSummary: 'Gemini token creation failed'
+    stage: 'google_auth_token_request',
+    deployment: process.env.VERCEL_ENV || process.env.NODE_ENV || 'development',
+    hasSupabaseAccessToken,
+    hasGeminiApiKey,
+    geminiApiKeyLength,
+    model: diagnostic.model || model,
+    apiVersion: diagnostic.apiVersion || apiVersion,
+    status: diagnostic.status ?? null,
+    code: diagnostic.code ?? null,
+    category: diagnostic.category || 'unknown_provider_error',
+    tokenCreated: false
   });
 }
 
@@ -2908,7 +2918,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     liveTokenFailureStage = 'credential_validation';
     setRequestUser({ ...authenticatedUser, ownerUserId, actorUserId: authenticatedUser.id });
     updateRequestScope(ownerUserId);
-    requestApiKey = body?.geminiApiKey;
+    requestApiKey = typeof body?.geminiApiKey === 'string' ? body.geminiApiKey.trim() : body?.geminiApiKey;
     delete body.geminiApiKey;
     if (typeof requestApiKey !== 'string' || requestApiKey.trim() === '') throw createHttpError('server_misconfigured');
     let tokenRequest = body;
@@ -2953,7 +2963,13 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     } catch { /* Metrics are best effort. */ }
     statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
     if (code === 'provider_unavailable') {
-      logProviderError(requestId, error);
+      logProviderError(requestId, error, {
+        hasSupabaseAccessToken: /^Bearer\s+\S+$/i.test(String(req.headers?.authorization || '')),
+        hasGeminiApiKey: typeof requestApiKey === 'string' && requestApiKey.length > 0,
+        geminiApiKeyLength: typeof requestApiKey === 'string' ? requestApiKey.length : 0,
+        model: process.env.LIVE_TRANSLATE_MODEL || DEFAULT_LIVE_TRANSLATE_MODEL,
+        logger: requestLogger
+      });
     }
     sendJson(res, statusCode, errorPayload(code, requestId), requestId, { 'Cache-Control': 'no-store' });
   } finally {

@@ -295,7 +295,7 @@ export class LiveTranslateSession {
       })
       }, TOKEN_TIMEOUT_MS);
     } catch (error) {
-      if (forceRefresh) this.clearLiveCredentialState();
+      this.tokenState = null;
       this.startupStage = 'live_token';
       this.markStartupMilestone('live_token_request_end', { failed: true });
       error.userMessage ||= '無法取得即時權杖。';
@@ -309,16 +309,16 @@ export class LiveTranslateSession {
       const startupError = new Error(startupMessage);
       startupError.code = errorCode;
       startupError.status = tokenResponse.status;
+      this.tokenState = null;
       this.markStartupMilestone('live_token_request_end', { failed: true });
       startupError.userMessage = withHttpStatus(startupMessage, tokenResponse.status);
-      if (forceRefresh || errorCode === 'auth_required' || errorCode === 'auth_invalid') this.clearLiveCredentialState();
       throw startupError;
     }
     let response;
     try {
       response = await tokenResponse.json();
     } catch {
-      if (forceRefresh) this.clearLiveCredentialState();
+      this.tokenState = null;
       this.markStartupMilestone('live_token_request_end', { failed: true });
       this.logLiveEvent('liveToken:failure', { reason: 'invalid_response' });
       const error = new Error('無法準備即時翻譯請求。');

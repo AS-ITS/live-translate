@@ -128,7 +128,7 @@ export function buildTokenConfig({
 }
 
 export async function createLiveToken(body, options = {}) {
-  const apiKey = options.apiKey;
+  const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : options.apiKey;
   if (!apiKey && !options.client) {
     const error = new Error('GEMINI_API_KEY is not configured');
     error.status = 500;
@@ -185,7 +185,11 @@ export async function createLiveToken(body, options = {}) {
     const error = new Error('Failed to create Gemini ephemeral token');
     error.status = 502;
     error.cause = cause;
-    error.providerDiagnostic = safeGeminiProviderDiagnostic(cause);
+    error.providerDiagnostic = {
+      ...safeGeminiProviderDiagnostic(cause),
+      model: liveModel,
+      apiVersion: configWithGlossary.httpOptions.apiVersion
+    };
     throw error;
   }
 }

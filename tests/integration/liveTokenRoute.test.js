@@ -30,9 +30,12 @@ async function request({ method = 'POST', url = '/api/live-token', body = '', he
     statusCode: null,
     headers: null,
     body: '',
+    setHeader(name, value) {
+      this.headers = { ...(this.headers || {}), [name]: value };
+    },
     writeHead(statusCode, headers) {
       this.statusCode = statusCode;
-      this.headers = headers;
+      this.headers = { ...(this.headers || {}), ...headers };
     },
     end(nextBody = '') {
       this.body = nextBody;
@@ -103,6 +106,47 @@ test.afterEach(() => {
   delete process.env.RATE_LIMIT_MAX;
   delete process.env.RATE_LIMIT_WINDOW_MS;
   delete process.env.dev_frontend_origin;
+});
+
+test('POST /api/live-token sets no-store for unauthenticated responses', async () => {
+  requestHandler = createRequestHandler({
+    accessControl: {
+      async validateRequest() {
+        const error = new Error('Authentication required.');
+        error.code = 'auth_required';
+        error.status = 401;
+        throw error;
+      }
+    }
+  });
+
+  const response = await request({ body: JSON.stringify(tokenBody()) });
+
+  assert.equal(response.status, 401);
+  assert.equal(response.json().error.code, 'auth_required');
+  assert.equal(response.headers['Cache-Control'], 'no-store');
+});
+
+test('POST /api/live-token sets no-store for expired JWT responses', async () => {
+  requestHandler = createRequestHandler({
+    accessControl: {
+      async validateRequest() {
+        const error = new Error('Authentication token is invalid.');
+        error.code = 'auth_invalid';
+        error.status = 401;
+        throw error;
+      }
+    }
+  });
+
+  const response = await request({
+    body: JSON.stringify(tokenBody()),
+    headers: { authorization: 'Bearer expired-jwt' }
+  });
+
+  assert.equal(response.status, 401);
+  assert.equal(response.json().error.code, 'auth_invalid');
+  assert.equal(response.headers['Cache-Control'], 'no-store');
 });
 
 test('POST /api/live-token returns an ephemeral token without calling real Gemini', async () => {

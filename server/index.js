@@ -840,6 +840,7 @@ async function handleRequestWithSessionReadController(
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
+  if (path === '/api/live-token') res.setHeader?.('Cache-Control', 'no-store');
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
   let authenticatedUser = null;

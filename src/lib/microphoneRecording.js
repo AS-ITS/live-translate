@@ -36,6 +36,7 @@ export function createMicrophoneRecordingController(options = {}) {
   let chunkSequence = 0;
   let chunkWriteQueue = Promise.resolve();
   let chunkWriteError = null;
+  let captureEpoch = 0;
   let state = { ...IDLE_STATE };
 
   function setState(patch) {
@@ -49,6 +50,7 @@ export function createMicrophoneRecordingController(options = {}) {
   }
 
   async function start(input = {}) {
+    if (state.status === 'recording' || state.status === 'finalizing') return getState();
     resetRecordingMetadata(input);
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
@@ -181,9 +183,11 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     const recorderMimeType = recorder.mimeType || selectedMimeType;
+    const recorderEpoch = ++captureEpoch;
     if (beginDiagnostics) diagnostics?.reset?.({ mimeType: recorderMimeType });
     selectedMimeType = recorderMimeType;
     recorder.ondataavailable = (event) => {
+      if (recorderEpoch !== captureEpoch) return;
       if (event?.data && dataHasContent(event.data)) {
         diagnostics?.recordRecorderChunk?.(event.data);
         if (collectChunks) chunks.push(event.data);
@@ -194,7 +198,7 @@ export function createMicrophoneRecordingController(options = {}) {
             mimeType: recorderMimeType,
             receivedAt: now()
           };
-          chunkWriteQueue = chunkWriteQueue.then(() => onChunk(payload)).catch((error) => {
+        chunkWriteQueue = chunkWriteQueue.then(() => recorderEpoch === captureEpoch ? onChunk(payload) : undefined).catch((error) => {
             chunkWriteError = error;
             fail(error?.message || '本機音訊分塊寫入失敗。');
           });
@@ -202,6 +206,7 @@ export function createMicrophoneRecordingController(options = {}) {
       }
     };
     recorder.onerror = (event) => {
+      if (recorderEpoch !== captureEpoch) return;
       fail(event?.error?.message || event?.message || '本機錄音發生錯誤。');
     };
 

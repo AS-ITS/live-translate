@@ -91,10 +91,6 @@ test('keeps startup authorization errors specific to their source code', () => {
     userMessageForErrorCode('invalid_origin'),
     '此網站不允許請求即時翻譯，請檢查前端網址設定。'
   );
-  assert.equal(
-    userMessageForErrorCode('gemini_credential_not_configured'),
-    '請先在伺服器設定 Gemini API Key，再開始即時翻譯。'
-  );
   assert.equal(userMessageForErrorCode('unknown_code'), null);
 });
 

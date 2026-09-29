@@ -5,7 +5,7 @@ import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
 import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
 
-test('live token setup preserves missing Gemini credential error details', async () => {
+test('live token setup does not map retired Gemini credential errors to Live UX copy', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: false,
@@ -22,8 +22,8 @@ test('live token setup preserves missing Gemini credential error details', async
       (error) => {
         assert.equal(error.code, 'gemini_credential_not_configured');
         assert.equal(error.status, 409);
-        assert.equal(error.message, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。');
-        assert.equal(error.userMessage, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
+        assert.equal(error.message, '無法準備即時翻譯請求。');
+        assert.equal(error.userMessage, '無法準備即時翻譯請求。（HTTP 409）');
         return true;
       }
     );

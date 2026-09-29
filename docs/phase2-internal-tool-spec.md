@@ -8,8 +8,8 @@ recoverability, and operational visibility. The product direction is a
 Session-oriented Real-time Multilingual Translation Platform.
 
 The Phase 2 direction keeps the core browser-to-Gemini Live API audio path from
-Phase 1. The backend continues to own `GEMINI_API_KEY` and issue short-lived
-ephemeral tokens. New Phase 2 capabilities should be added around the session
+Phase 1. Live token requests use the recorder's request-scoped key. An isolated
+`GEMINI_API_KEY` may remain for non-Live backend workers. New Phase 2 capabilities should be added around the session
 experience, local or server-side records, basic access restrictions, and usage
 visibility without turning the app into a public production service.
 
@@ -123,7 +123,7 @@ keeping authentication simpler than Phase 3 production auth.
 - Preserve the existing `/api/live-token` auth gate.
 - Add or formalize a basic internal access mechanism if Phase 2 requires login.
 - Prevent unauthorized token issuance.
-- Avoid exposing `GEMINI_API_KEY`, ephemeral tokens, or internal access secrets in
+- Avoid exposing request keys, `GEMINI_API_KEY`, ephemeral tokens, or internal access secrets in
   logs or frontend source.
 - Keep error responses stable and avoid stack traces.
 
@@ -450,8 +450,8 @@ See [Session Lifecycle Management](features/session-lifecycle.md).
 #### Backend Impact
 
 - No backend change.
-- The backend-owned `GEMINI_API_KEY` and ephemeral token issuance flow remain
-  unchanged.
+- The request-scoped Live token issuance flow remains unchanged; do not use a
+  non-Live environment key as its fallback.
 
 #### Testing Requirement
 
@@ -506,7 +506,8 @@ See [Connection Resilience](features/connection-resilience.md).
 
 #### API / Data Requirement
 
-- Existing `POST /api/live-token` may be reused for refresh.
+- Existing `POST /api/live-token` may be reused for refresh with a new
+  recorder request-scoped key.
 - Session metadata may record reconnect attempts and failure reason if a later
   persistence capability selects storage.
 - No long-lived Gemini credential may be exposed to the browser.
@@ -605,7 +606,7 @@ audio or secrets.
 
 #### Functional Requirements
 
-- Log session metadata without logging `GEMINI_API_KEY`, ephemeral tokens, raw
+- Log session metadata without logging request keys, `GEMINI_API_KEY`, ephemeral tokens, raw
   audio, or transcript content unless explicitly approved.
 - Track session start, stop, duration, target language, status, and error class.
 - Support retention limits once storage is selected.

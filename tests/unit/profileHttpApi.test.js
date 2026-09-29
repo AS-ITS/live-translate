@@ -40,7 +40,7 @@ test('disabled profiles cannot access private APIs', async () => {
   assert.equal(response.json.error.code, 'auth_forbidden');
 });
 
-test('pending profiles can read their status but cannot access private APIs', async () => {
+test('pending profiles can read their status and removed credential API is not found', async () => {
   const handler = createRequestHandler({
     accessControl: { validateRequest: () => ({ id: 'pending', email: 'pending@example.com' }) },
     profileService: { getProfile: async () => ({ id: 'pending', email: 'pending@example.com', role: 'member', status: 'pending' }) }
@@ -48,7 +48,12 @@ test('pending profiles can read their status but cannot access private APIs', as
   const profile = await request(handler, { authorization: 'Bearer signed-token' });
   assert.equal(profile.statusCode, 200);
   assert.equal(profile.json.profile.status, 'pending');
-  const privateResponse = await request(handler, { authorization: 'Bearer signed-token' }, '/api/profile/gemini-credential');
-  assert.equal(privateResponse.statusCode, 403);
-  assert.equal(privateResponse.json.error.code, 'auth_pending');
+
+  const removedCredentialHandler = createRequestHandler({
+    accessControl: { validateRequest: () => ({ id: 'active', email: 'active@example.com' }) },
+    profileService: { getProfile: async () => ({ id: 'active', email: 'active@example.com', role: 'member', status: 'active' }) }
+  });
+  const removedCredentialResponse = await request(removedCredentialHandler, { authorization: 'Bearer signed-token' }, '/api/profile/gemini-credential');
+  assert.equal(removedCredentialResponse.statusCode, 404);
+  assert.equal(removedCredentialResponse.json.error.code, 'not_found');
 });

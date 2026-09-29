@@ -30,7 +30,6 @@ import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.
 import { createProfileService } from './profileService.js';
 import { cloudEnvironmentError } from './cloudEnvironment.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
-import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
 import { currentRequestActorId, currentRequestOwnerId, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
@@ -82,9 +81,7 @@ const ERROR_RESPONSES = {
   glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
-  gemini_credential_unavailable: { status: 503, message: 'Gemini credential storage is not configured.' },
   gemini_credential_not_configured: { status: 409, message: 'Set a Gemini API Key before starting a meeting.' },
-  gemini_credential_invalid: { status: 400, message: 'Gemini API Key is invalid.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
@@ -744,7 +741,6 @@ export function createRequestHandler(options = {}) {
     , accessControl: requestAccessControl = globalAccessControl
  , profileService = createProfileService()
  , meetingMembershipService: injectedMeetingMembershipService
- , credentialRepository = createGeminiCredentialRepository()
  , authEventAuditLogService = createAuditLogService()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
@@ -814,7 +810,6 @@ export function createRequestHandler(options = {}) {
       , readinessCheck
       , accessControl: requestAccessControl
       , profileService
-      , credentialRepository
       , authEventAuditLogService
  , strictCheckpointPathIds
  , requestLogger
@@ -829,7 +824,7 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
- { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), strictCheckpointPathIds = true } = {}
 ) {
   const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
@@ -972,7 +967,7 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential', '/api/auth-events'].includes(path)) {
+  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/auth-events'].includes(path)) {
     statusCode = 503;
     logEvent({
       level: 'error',
@@ -1265,33 +1260,6 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
  }
  return;
  }
-
- if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
-    try {
-      if (!authenticatedUser?.id) throw createHttpError('auth_required');
-      if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
-      if (req.method === 'GET') {
-        const credential = await credentialRepository.get(authenticatedUser.id);
-        statusCode = 200;
-        sendJson(res, statusCode, { credential: credential || { configured: false, lastFour: null, keyVersion: null, verifiedAt: null } }, requestId);
-      } else if (req.method === 'PUT') {
-        const body = await readJson(req, { maxBytes: 16 * 1024 });
-        const credential = await credentialRepository.upsert(authenticatedUser.id, body?.apiKey);
-        statusCode = 200;
-        sendJson(res, statusCode, { credential }, requestId);
-      } else {
-        await credentialRepository.remove(authenticatedUser.id);
-        statusCode = 204;
-        res.writeHead(statusCode, { 'X-Request-Id': requestId });
-        res.end();
-      }
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-    }
-    return;
-  }
 
   if ((req.method === 'GET' || req.method === 'POST') && /^\/api\/meetings\/[^/]+\/members$/u.test(path)) {
     try {

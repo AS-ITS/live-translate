@@ -2243,7 +2243,6 @@ const activeMeetingCheckpointRef = useRef(null);
         error={liveController.error || meetingDetailError}
         errorCode={liveErrorCode}
         status={meetingDetailError ? 'error' : liveController.status}
-        onOpenGeminiSettings={() => { window.location.hash = '#settings'; }}
         onRetry={() => {
           if (meetingDetailError) {
             void loadMeetingDetail(routeMeetingId);

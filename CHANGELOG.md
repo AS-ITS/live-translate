@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Clarified GSK-04: Live token issuance uses only recorder request-scoped keys;
+  legacy profile credential storage is removed from the current flow, with
+  isolated `GEMINI_API_KEY` use retained only for non-Live workers.
 
 - Fixed cloud Meeting creation failing with HTTP 503 after retention columns were added to the Supabase schema.
 

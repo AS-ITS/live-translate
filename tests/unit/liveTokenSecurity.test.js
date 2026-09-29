@@ -6,7 +6,7 @@ import { createRequestHandler, resolveAllowedOrigin } from '../../server/index.j
 import { createAccessControl } from '../../server/accessControl.js';
 import { createLiveToken } from '../../server/tokenService.js';
 
-function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, resolveKey, headers } = {}) {
+function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, headers } = {}) {
   const req = Readable.from([JSON.stringify(body)]);
   req.method = 'POST';
   req.url = '/api/live-token';
@@ -16,11 +16,10 @@ function makeRequest(handler, body, { user = { id: 'recorder-1', role: 'member',
   return handler(req, response).then(() => ({ status: response.statusCode, headers: response.headers, body: JSON.parse(response.body || '{}') }));
 }
 
-function handlerFor({ user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, resolveKey, logs = [] } = {}) {
+function handlerFor({ user = { id: 'recorder-1', role: 'member', status: 'active' }, canRecord = true, logs = [] } = {}) {
   return createRequestHandler({
     accessControl: { validateRequest: async () => user },
     profileService: { async getProfile() { return { role: user?.role || 'member', status: user?.status || 'active' }; } },
-    credentialRepository: { async resolveKey() { resolveKey?.(); return 'stored-key'; } },
     meetingMembershipService: { async canRecord() { return canRecord; }, async getMeetingOwner() { return canRecord ? 'owner-1' : null; } },
     sessionReadController: { async getSession() { return { sessionRecord: { meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } }; } },
     requestLogger: (event) => logs.push(event),
@@ -41,17 +40,15 @@ test('live-token fails closed for unauthenticated and viewer requests', async ()
 
 test('live-token uses only request key and redacts secrets from response and logs', async () => {
   const logs = [];
-  let resolveCalls = 0;
-  const handler = handlerFor({ logs, resolveKey: () => { resolveCalls += 1; } });
+  const handler = handlerFor({ logs });
   const result = await makeRequest(handler, validBody);
 
   assert.equal(result.status, 200);
   assert.equal(result.headers['Cache-Control'], 'no-store');
   assert.equal(result.body.token, 'ephemeral-token');
   assert.equal(result.body.receivedKey, undefined);
-  assert.equal(resolveCalls, 0);
-  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|stored-key/);
-  assert.doesNotMatch(JSON.stringify(logs), /request-only-secret|ephemeral-token/);
+  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|signed-token/);
+  assert.doesNotMatch(JSON.stringify(logs), /request-only-secret|ephemeral-token|signed-token/);
 });
 
 test('live-token trims the request key before invoking the provider', async () => {
@@ -87,6 +84,8 @@ test('live-token records safe provider diagnostics for Google 403 and returns 50
 
   const result = await makeRequest(failingHandler, validBody);
   assert.equal(result.status, 502);
+  assert.equal(result.headers['Cache-Control'], 'no-store');
+  assert.doesNotMatch(JSON.stringify(result.body), /request-only-secret|signed-token|AIzaSyDoNotLogThis/);
   const diagnostic = logs.find((event) => event.event === 'gemini_token_provider_failure');
   assert.equal(diagnostic.stage, 'google_auth_token_request');
   assert.equal(diagnostic.hasSupabaseAccessToken, true);

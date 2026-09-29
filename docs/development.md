@@ -18,7 +18,9 @@ Supabase endpoint, missing migrations, and invalid credentials.
 
 Backend environment variables:
 
-- `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
+- `GEMINI_API_KEY`: Server-only key for isolated non-Live Gemini workers (for
+  example saved transcript translation). Live token issuance uses the
+  recorder's request-scoped `geminiApiKey` instead.
 - `SUPABASE_URL`, `SUPABASE_SECRET_KEY`: server-only Supabase values.
 - `SUPABASE_JWKS_URL`: Supabase public JWKS endpoint used to verify access tokens.
 - `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
@@ -26,7 +28,9 @@ Backend environment variables:
 - `P1_PROFILE_ONLY=true`: optional compatibility switch that keeps non-Profile
   cloud capabilities fail-closed. Leave unset for the current owner-scoped
   cloud runtime.
-- Supabase P2 mode stores each user's Gemini API Key in Vault; apply the Vault migration before enabling personal-key token issuance.
+- Supabase P2 does not persist a user's Gemini API Key. The removed profile
+  credential API and `gemini_credentials` store are not part of the current
+  Live flow.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `dev_frontend_origin`: Development frontend origin. Defaults to
@@ -197,7 +201,9 @@ key.
 
 Steps:
 
-1. Start the backend with `GEMINI_API_KEY` configured.
+1. Start the backend; supply the recorder's request-scoped Gemini key through
+   the UI. Configure `GEMINI_API_KEY` only when exercising an isolated
+   non-Live worker.
 2. Start the frontend development server.
 3. Open the app in the browser.
 4. Select `zh-Hant`.

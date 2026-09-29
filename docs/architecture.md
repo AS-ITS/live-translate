@@ -91,7 +91,9 @@ Responsibilities:
 - Read and validate the optional primary input language hint, defaulting to
   Traditional Chinese (`zh-Hant`) when omitted.
 - Default `echoTargetLanguage` to `true` when omitted.
-- Create a Gemini ephemeral token using `GEMINI_API_KEY`.
+- Create a Gemini ephemeral token using the authenticated recorder's
+  request-scoped `geminiApiKey`; isolated non-Live workers may use
+  `GEMINI_API_KEY` through their own provider composition.
 - Return only the ephemeral token name and expiration time to the browser.
 - Map validation and provider failures to stable HTTP error responses.
 
@@ -123,7 +125,8 @@ The backend must not return the real Gemini API key or any long-lived credential
 - Validate `targetLanguageCode` against the allowlist.
 - Validate optional `sourceLanguageCode` against the allowlist.
 - Validate or default token configuration options.
-- Use `GEMINI_API_KEY` only on the server.
+- Use only the request-scoped recorder key for Live token issuance. Keep
+  `GEMINI_API_KEY` isolated to non-Live backend workers that require it.
 - Create Gemini ephemeral tokens.
 - Return consistent JSON responses.
 - Support local frontend CORS configuration.

@@ -1,4 +1,4 @@
-export const LOCAL_MEETING_SCHEMA_VERSION = 1;
+export const LOCAL_MEETING_SCHEMA_VERSION = 2;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -20,10 +20,11 @@ export function buildLocalChunkPath({ meetingId, segmentId, sequence, chunkId, e
   return `meetings/${meeting}/segments/${segment}/chunks/${String(normalizedSequence).padStart(8, '0')}-${id}.${suffix}`;
 }
 
-export function reserveLocalChunk({ meetingId, segmentId, chunkId, sequence, startedAt, endedAt = null, byteSize = null, checksum = null, mimeType = 'audio/webm' } = {}) {
+export function reserveLocalChunk({ meetingId, recordingId = meetingId, segmentId, chunkId, sequence, startedAt, endedAt = null, byteSize = null, checksum = null, mimeType = 'audio/webm' } = {}) {
   const record = {
     schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
     meetingId: safePathPart(meetingId, 'meetingId'),
+    recordingId: safePathPart(recordingId, 'recordingId'),
     segmentId: safePathPart(segmentId, 'segmentId'),
     chunkId: safePathPart(chunkId, 'chunkId'),
     sequence: normalizePositiveInteger(sequence, 'sequence'),
@@ -118,17 +119,28 @@ export function reconcileLocalMeetingChunks({ manifest = [], files = [] } = {}) 
 
 export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const records = new Map();
-  for (const record of initial) {
+  const recordings = new Map();
+  for (const rawRecord of initial) {
+    const record = projectLocalChunk(rawRecord);
     assertChunkRecord(record);
-    records.set(record.chunkId, { ...record });
+    records.set(record.chunkId, record);
   }
 
   return Object.freeze({
+    getRecording(meetingId) {
+      const value = recordings.get(meetingId);
+      return value ? Object.freeze({ ...value }) : null;
+    },
+    saveRecording(input) {
+      const record = projectLocalRecording(input);
+      recordings.set(record.meetingId, record);
+      return Object.freeze({ ...record });
+    },
     async reserve(input) {
       const record = reserveLocalChunk(input);
       const existing = records.get(record.chunkId);
       if (existing) {
-        if (existing.sequence !== record.sequence || existing.meetingId !== record.meetingId) {
+        if (!sameChunkIdentity(existing, record)) {
           throw conflict('local_chunk_identity_conflict');
         }
         return Object.freeze({ ...existing });
@@ -152,13 +164,13 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
     },
     async get(chunkId) {
       const value = records.get(chunkId);
-      return value ? Object.freeze({ ...value }) : null;
+      return value ? projectLocalChunk(value) : null;
     },
     async list(meetingId) {
       return Object.freeze([...records.values()]
         .filter((record) => meetingId === undefined || record.meetingId === meetingId)
         .sort((left, right) => left.sequence - right.sequence)
-        .map((record) => Object.freeze({ ...record })));
+        .map(projectLocalChunk));
     }
   });
 }
@@ -177,8 +189,10 @@ export function createIndexedDbLocalMeetingManifestStore({
       return runTransaction(database, 'readwrite', async (store) => {
         const existing = await request(store.get(record.chunkId));
         if (existing) {
-          if (existing.sequence !== record.sequence || existing.meetingId !== record.meetingId) throw conflict('local_chunk_identity_conflict');
-          return existing;
+          const projected = projectLocalChunk(existing);
+          if (!sameChunkIdentity(projected, record)) throw conflict('local_chunk_identity_conflict');
+          if (!sameProjection(existing, projected)) await request(store.put(projected));
+          return projected;
         }
         const records = await request(store.getAll());
         if (records.some((value) => value.meetingId === record.meetingId && value.sequence === record.sequence)) {
@@ -193,7 +207,7 @@ export function createIndexedDbLocalMeetingManifestStore({
       return runTransaction(database, 'readwrite', async (store) => {
         const current = await request(store.get(chunkId));
         if (!current) throw invalid(`Unknown local chunk: ${chunkId}.`);
-        const next = sealLocalChunk(current, input);
+        const next = sealLocalChunk(projectLocalChunk(current), input);
         await request(store.put(next));
         return next;
       });
@@ -203,21 +217,33 @@ export function createIndexedDbLocalMeetingManifestStore({
       return runTransaction(database, 'readwrite', async (store) => {
         const current = await request(store.get(chunkId));
         if (!current) throw invalid(`Unknown local chunk: ${chunkId}.`);
-        const next = markLocalChunk(current, state);
+        const next = markLocalChunk(projectLocalChunk(current), state);
         await request(store.put(next));
         return next;
       });
     },
     async get(chunkId) {
       const database = await openDatabase();
-      return runTransaction(database, 'readonly', (store) => request(store.get(chunkId)));
+      return runTransaction(database, 'readwrite', async (store) => {
+        const record = await request(store.get(chunkId));
+        if (!record) return null;
+        const projected = projectLocalChunk(record);
+        if (!sameProjection(record, projected)) await request(store.put(projected));
+        return projected;
+      });
     },
     async list(meetingId) {
       const database = await openDatabase();
-      const records = await runTransaction(database, 'readonly', (store) => request(store.getAll()));
-      return records
-        .filter((record) => meetingId === undefined || record.meetingId === meetingId)
-        .sort((left, right) => left.sequence - right.sequence);
+      return runTransaction(database, 'readwrite', async (store) => {
+        const records = await request(store.getAll());
+        const projected = records.map(projectLocalChunk);
+        for (let index = 0; index < records.length; index += 1) {
+          if (!sameProjection(records[index], projected[index])) await request(store.put(projected[index]));
+        }
+        return projected
+          .filter((record) => meetingId === undefined || record.meetingId === meetingId)
+          .sort((left, right) => left.sequence - right.sequence);
+      });
     }
   });
 
@@ -264,6 +290,56 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
       await directory.removeEntry(name);
     }
   });
+}
+
+function projectLocalChunk(value) {
+  const record = value || {};
+  return Object.freeze({
+    schemaVersion: record.schemaVersion,
+    meetingId: record.meetingId,
+    recordingId: record.recordingId || record.meetingId,
+    segmentId: record.segmentId,
+    chunkId: record.chunkId,
+    sequence: record.sequence,
+    startedAt: record.startedAt,
+    endedAt: record.endedAt ?? null,
+    byteSize: record.byteSize ?? null,
+    checksum: record.checksum ?? null,
+    mimeType: record.mimeType,
+    path: record.path,
+    state: record.state,
+    createdAt: record.createdAt,
+    sealedAt: record.sealedAt ?? null,
+    deleteRequestedAt: record.deleteRequestedAt ?? null
+  });
+}
+
+function projectLocalRecording(value = {}) {
+  return Object.freeze({
+    meetingId: value.meetingId,
+    recordingId: value.recordingId,
+    segmentId: value.segmentId,
+    captureEpoch: value.captureEpoch,
+    providerEpoch: value.providerEpoch,
+    state: value.state,
+    finalSequence: value.finalSequence ?? null,
+    terminal: value.terminal === true,
+    finalized: value.finalized === true
+  });
+}
+
+function sameProjection(raw, projected) {
+  const rawKeys = Object.keys(raw).sort();
+  const projectedKeys = Object.keys(projected).sort();
+  return rawKeys.length === projectedKeys.length && rawKeys.every((key, index) => key === projectedKeys[index] && raw[key] === projected[key]);
+}
+
+function sameChunkIdentity(left, right) {
+  return left.meetingId === right.meetingId &&
+    (left.recordingId || left.meetingId) === (right.recordingId || right.meetingId) &&
+    left.segmentId === right.segmentId &&
+    left.sequence === right.sequence &&
+    left.checksum === right.checksum;
 }
 
 function matchesExpectedFile(record, file) {

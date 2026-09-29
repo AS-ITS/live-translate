@@ -1678,33 +1678,16 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
 });
 
 test('missing Gemini API Key is shown before live recording starts', async ({ page }) => {
-  let credentialRequests = 0;
-  await page.unroute('**/api/profile/gemini-credential');
-  await page.route('**/api/profile/gemini-credential', async (route) => {
-    credentialRequests += 1;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ credential: { configured: false } })
-    });
-  });
   await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page);
 
   const startButton = page.locator('button.meeting-live-action-button').first();
-  const buttonBox = await startButton.boundingBox();
-  if (!buttonBox) throw new Error('Start recording button is not visible.');
-  await Promise.all([
-    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
-    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2),
-    page.mouse.click(buttonBox.x + buttonBox.width / 2, buttonBox.y + buttonBox.height / 2)
-  ]);
-
-  await expect(startButton).toBeDisabled();
-  await expect(page.getByRole('alert')).toHaveText('請先設定 Gemini API Key，再開始錄製。');
-  await expect(page.getByRole('button', { name: '設定 Gemini Key' })).toBeVisible();
-  expect(credentialRequests).toBe(1);
+  await expect(page.getByRole('status')).toContainText('錄音者必須輸入 Gemini API Key');
+  await expect(page.getByLabel('Gemini API Key')).toBeVisible();
+  await page.getByLabel('Gemini API Key').fill('test-api-key');
+  await page.getByRole('button', { name: '設定金鑰' }).click();
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(startButton).toBeEnabled();
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.length)).toBe(0);
 });

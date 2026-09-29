@@ -406,6 +406,18 @@ node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integratio
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
+Run the focused Gemini credential boundary tests:
+
+```bash
+node --test tests/integration/liveTokenRoute.test.js tests/unit/liveTokenSecurity.test.js tests/unit/geminiCredentialHttpApi.test.js
+```
+
+These tests verify request-scoped key handling, Viewer rejection, expired JWT
+rejection, logout cleanup, `no-store` responses, and that keys do not enter
+persistent storage or logs. The legacy profile credential test is retained
+only while its removal is being completed and must not be used as Live flow
+evidence.
+
 Run the Gemini Live normalized Cue flow integration test:
 
 ```bash
@@ -440,7 +452,7 @@ Current integration coverage:
 
 - Successful `POST /api/live-token`
 - Invalid language
-- Missing `GEMINI_API_KEY`
+- Missing request-scoped `geminiApiKey`
 - Provider expired-token style failure
 - Structured error response for invalid JSON
 - Demo access-token gate

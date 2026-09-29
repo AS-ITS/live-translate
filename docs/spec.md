@@ -91,7 +91,9 @@ Current scope:
 - Start and stop a Session from the browser.
 - Show source-language transcripts in near real time.
 - Preserve the source transcript as the canonical input for future translations.
-- Keep `GEMINI_API_KEY` only on the backend.
+- Keep recorder Gemini keys request-scoped for Live token issuance. An
+  environment `GEMINI_API_KEY`, when configured, is isolated to non-Live
+  backend workers.
 - Avoid proxying audio streams through the backend.
 
 ## Non-Goals
@@ -176,7 +178,9 @@ The MVP includes:
 3. The user selects a target language or keeps the default `en`.
 4. The user clicks start.
 5. The browser requests microphone permission.
-6. The frontend requests an ephemeral token from `POST /api/live-token`.
+6. If the user has recording permission, the frontend requires an in-memory
+   Gemini key before requesting `POST /api/live-token`; Viewer flows do not
+   request a key or token.
 7. The frontend connects directly to Gemini Live API with the ephemeral token.
 8. The browser sends microphone audio chunks to Gemini.
 9. Gemini returns translated audio and transcript events.

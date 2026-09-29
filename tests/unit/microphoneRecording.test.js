@@ -165,6 +165,23 @@ test('controller methods are idempotent around empty pause, finalize, and cleanu
   assert.equal(controller.getState().blob, null);
 });
 
+test('stale MediaRecorder callbacks from a replaced capture epoch are ignored', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-epoch' });
+  await controller.pause();
+  await controller.resume({ stream: fakeStream() });
+  recorderInstances[0].emitChunk(new Blob(['stale'], { type: 'audio/webm' }));
+  recorderInstances[1].emitChunk(new Blob(['current'], { type: 'audio/webm' }));
+
+  const finalized = await controller.finalize();
+  assert.equal(await finalized.blob.text(), 'current');
+});
+
 test('recorder error becomes independent error state', async () => {
   const recorderInstances = [];
   const controller = createMicrophoneRecordingController({

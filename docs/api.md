@@ -104,11 +104,19 @@ seconds. The API never returns Storage paths, signed URLs in logs, transcript
 text, JWTs, or Storage credentials. Local file-backed mode continues to use
 the existing browser export path.
 
-## Personal Gemini Credential
+## Gemini credential boundary
 
-Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.
+The old profile credential API (`/api/profile/gemini-credential`) and its
+`gemini_credentials` store have been removed. Live token issuance accepts only
+the authenticated recorder's request-scoped `geminiApiKey`; it does not read a
+stored key or the server `GEMINI_API_KEY` environment variable. The request key
+is used only to create the short-lived token, then discarded. It is never
+persisted, returned, logged, or included in telemetry. Viewer requests do not
+request or receive a Gemini key or token.
 
-`POST /api/live-token` resolves the Gemini key for the authenticated user in cloud mode. A user without a configured key receives `gemini_credential_not_configured`; the response and request logs never contain the key.
+Non-Live backend workers may use an isolated `GEMINI_API_KEY` when their own
+provider configuration requires it; that key is not part of the Live token
+flow.
 
 ## Realtime subtitle pipeline contract
 
@@ -1317,7 +1325,7 @@ Fields:
 - `echoTargetLanguage` defaults to `true` when omitted.
 - Invalid JSON returns `400`.
 - Oversized request bodies return `413`.
-- Missing `GEMINI_API_KEY` returns `500`.
+- Missing request `geminiApiKey` returns `500` with `server_misconfigured`.
 - Gemini token creation failures return `502`.
 
 Supported language codes:
@@ -1341,11 +1349,11 @@ Invalid language:
 }
 ```
 
-Missing API key:
+Missing request key:
 
 ```json
 {
-  "error": "GEMINI_API_KEY is not configured"
+  "error": "server_misconfigured"
 }
 ```
 
@@ -1483,7 +1491,7 @@ Private APIs refresh the server-side profile on every request. Disabled profiles
 
 `GET/POST /api/meetings/:meetingId/members` and `DELETE /api/meetings/:meetingId/members/:userId` are restricted to the meeting owner or an active `super_admin`. Admin user listing and enable/disable endpoints require an active `super_admin`; disable requests require `{ "transferToUserId": "<active-user-id>" }`.
 
-Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. `gemini_credentials` are intentionally excluded.
+Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. The removed credential store is not part of account transfer.
 
 ## Account approval access gate
 
@@ -1544,4 +1552,12 @@ names) without prompt text, transcript content, API keys, or tokens.
 
 Current implementation supersedes any earlier Live-token credential wording in this document: `POST /api/live-token` requires the authenticated recorder request to provide `geminiApiKey`. It does not resolve `/api/profile/gemini-credential`, `gemini_credentials`, or `GEMINI_API_KEY` from the environment. The request key is not persisted or returned, and successful and error responses use `Cache-Control: no-store`.
 
-The profile credential API, `geminiCredentialApiClient`, `gemini_credentials`, and historical credential data remain a controlled compatibility layer for later migration/removal. They cannot be reused by Live or the new request-key path, and this documentation does not claim historical data was deleted. Non-Live backend Gemini workflows may use an isolated environment key through their own provider composition; it is not shared with the recorder request key. Logs, metrics, telemetry, and audit records must not contain API keys, ephemeral tokens, stored credentials, request keys, or secret-bearing payloads.
+The former profile credential API, `geminiCredentialApiClient`, and
+`gemini_credentials` store are removed from the current implementation.
+Existing user keys are not migrated to another persistent location. Rollback is
+possible by reverting the application deployment before cleanup; after removal,
+recovery requires a new request-scoped key. Non-Live backend Gemini workflows
+may use an isolated environment key through their own provider composition; it
+is not shared with recorder requests. Logs, metrics, telemetry, and audit
+records must not contain API keys, ephemeral tokens, stored credentials,
+request keys, or secret-bearing payloads.

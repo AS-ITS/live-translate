@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import { chromium } from '@playwright/test';
 import {
   buildLocalChunkPath,
+  createIndexedDbLocalMeetingManifestStore,
   createInMemoryLocalMeetingManifestStore,
   markLocalChunk,
   reconcileLocalMeetingChunks,
@@ -70,6 +73,43 @@ test('in-memory manifest store is idempotent and rejects sequence conflicts', as
   const deleting = await store.mark('chunk-1', 'deleting');
   assert.equal(deleting.state, 'deleting');
   assert.equal((await store.list('meeting-1')).length, 1);
+});
+
+test('manifest duplicate chunk ids reject every immutable identity mismatch', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const input = { meetingId: 'meeting-1', segmentId: 'segment-1', chunkId: 'chunk-1', sequence: 1, startedAt: 0 };
+  await store.reserve(input);
+
+  await assert.rejects(
+    store.reserve({ ...input, segmentId: 'segment-2' }),
+    (error) => error.code === 'local_chunk_identity_conflict'
+  );
+});
+
+test('browser IndexedDB hydration projects and cleans credential-shaped pollution', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-recording.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-recording.test/');
+  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const result = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    const reserved = await store.reserve({ meetingId: 'meeting-browser', segmentId: 'segment-1', chunkId: 'chunk-1', sequence: 1, startedAt: 0 });
+    const database = await new Promise((resolve, reject) => { const request = indexedDB.open(dbName); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const { recordingId, ...legacy } = reserved;
+    await new Promise((resolve, reject) => { const transaction = database.transaction('chunks', 'readwrite'); transaction.objectStore('chunks').put({ ...legacy, geminiApiKey: 'secret' }); transaction.oncomplete = resolve; transaction.onerror = () => reject(transaction.error); });
+    const hydrated = await store.get('chunk-1');
+    const raw = await new Promise((resolve, reject) => { const transaction = database.transaction('chunks', 'readonly'); const request = transaction.objectStore('chunks').get('chunk-1'); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    return { hydrated, raw };
+  }, { moduleUrl, dbName: `local-meeting-${Date.now()}` });
+
+  assert.equal(result.hydrated.geminiApiKey, undefined);
+  assert.equal(result.hydrated.ephemeralToken, undefined);
+  assert.equal(result.raw.geminiApiKey, undefined);
+  assert.equal(result.raw.ephemeralToken, undefined);
 });
 
 test('invalid state transitions do not silently rewrite sealed chunks', () => {

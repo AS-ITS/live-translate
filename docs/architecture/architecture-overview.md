@@ -105,7 +105,7 @@ flowchart LR
 
   User -->|uses| Frontend
   Frontend -->|POST /api/live-token| Backend
-  Backend -->|uses GEMINI_API_KEY| Gemini
+Backend -->|uses recorder request key| Gemini
   Frontend -->|ephemeral token + direct Live connection| Gemini
 ```
 
@@ -666,7 +666,8 @@ identifiers.
 
 ## 5. Authentication and Token Flow
 
-- `GEMINI_API_KEY` exists only on the backend.
+- Live token issuance uses only the authenticated recorder's request-scoped
+  key. `GEMINI_API_KEY`, when configured, is isolated to non-Live workers.
 - The browser receives only a short-lived ephemeral token.
 - `POST /api/live-token` keeps its access gate, origin validation, rate limit,
   and structured error handling.

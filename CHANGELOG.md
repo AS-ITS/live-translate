@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- 修正 Viewer 在 Realtime replay 時把 SSE `: keep-alive` 心跳當成 JSON 解析、錄製一段時間後顯示錯誤的問題；replay 現在明確要求 JSON，且保留 EventSource 的 SSE fallback。
 - 會議設定的觀看連結現在會以新分頁開啟，公開 Viewer 路由也不再要求 Workspace 登入。
 - 修正即時錄製開始後頂部會議狀態仍顯示「已暫停」的問題，並在暫停完成前等待翻譯字幕儲存，重新進入後仍保留原文與翻譯。
 - Viewer header 現在只保留即時字幕標題與會議名稱，不再顯示 Gemini Key、管理入口或帳號選單。

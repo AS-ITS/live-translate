@@ -58,7 +58,9 @@ export function createMeetingViewerRealtimeController({
           try {
             await onSubscribed?.({
               async replay(afterEventId = 0) {
-                const response = await fetchImpl(`${replayPath}?after=${encodeURIComponent(afterEventId)}`);
+                const response = await fetchImpl(`${replayPath}?after=${encodeURIComponent(afterEventId)}`, {
+                  headers: { Accept: 'application/json' }
+                });
                 if (!response.ok) throw new Error('無法補抓遺失的即時字幕。');
                 const result = await response.json();
                 onTelemetry?.('replay_success');

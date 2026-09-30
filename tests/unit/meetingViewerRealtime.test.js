@@ -90,3 +90,48 @@ test('viewer realtime isolates its short-lived token from the signed-in Supabase
   await subscriptionCallback('SUBSCRIBED');
   await controller.stop();
 });
+
+test('viewer realtime requests JSON when replaying missed events', async () => {
+  let subscriptionCallback;
+  const fetchCalls = [];
+  const channel = {
+    on() { return this; },
+    subscribe(callback) { subscriptionCallback = callback; return this; }
+  };
+  const client = {
+    realtime: { async setAuth() {} },
+    channel() { return channel; },
+    async removeChannel() {}
+  };
+  let replayed;
+  const controller = createMeetingViewerRealtimeController({
+    basePath: '/api/shared-meetings/share-token',
+    fetchImpl: async (url, options) => {
+      fetchCalls.push({ url, options });
+      return {
+        ok: true,
+        async json() {
+          if (url.endsWith('/realtime-token')) {
+            return { accessToken: 'viewer-jwt', channel: 'meeting:meeting-1', expiresAt: Date.now() + 60_000 };
+          }
+          return { events: [{ eventId: 8 }], cursor: { eventId: 8 } };
+        }
+      };
+    },
+    client,
+    onSubscribed: async ({ replay }) => { replayed = await replay(7); },
+    setTimer: () => 1,
+    clearTimer: () => {}
+  });
+
+  controller.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  await subscriptionCallback('SUBSCRIBED');
+
+  assert.deepEqual(fetchCalls[1], {
+    url: '/api/shared-meetings/share-token/events?after=7',
+    options: { headers: { Accept: 'application/json' } }
+  });
+  assert.deepEqual(replayed, { events: [{ eventId: 8 }], cursor: { eventId: 8 } });
+  await controller.stop();
+});

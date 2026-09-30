@@ -2118,10 +2118,18 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
-    if (viewerRealtimeTokenService && meetingEventRepository) {
+    const wantsJsonReplay = req.headers?.accept?.includes('application/json');
+    if (meetingEventRepository && (viewerRealtimeTokenService || wantsJsonReplay)) {
       const replay = await meetingEventRepository.listSince(share.meetingId, parseAfterEventId(req), { ownerUserId: share._ownerUserId });
       const cursor = await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId });
       sendJson(res, 200, { events: replay.map(publicMeetingCueEvent), cursor }, requestId);
+    } else if (wantsJsonReplay && meetingEventBroadcaster) {
+      const replay = meetingEventBroadcaster.eventsSince(share.meetingId, parseAfterEventId(req));
+      sendJson(res, 200, {
+        events: replay.events.map(publicMeetingCueEvent),
+        cursor: replay.cursor,
+        gap: replay.gap
+      }, requestId);
     } else if (meetingEventBroadcaster) {
       openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
     } else {

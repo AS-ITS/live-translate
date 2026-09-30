@@ -289,9 +289,12 @@ event cursor.
 
 Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
 variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
-Events are process-local and replayable only within the bounded in-memory
-history. When the cursor is too old, the stream emits `meeting.gap` and the
-Viewer refetches the REST snapshot.
+Requests with `Accept: application/json` return a bounded replay payload
+`{ events, cursor, gap? }` instead of opening an SSE stream; the cloud Realtime
+Viewer uses this form after subscribing. Events are process-local and replayable
+only within the bounded in-memory history when the durable event repository is
+unavailable. When an SSE cursor is too old, the stream emits `meeting.gap` and
+the Viewer refetches the REST snapshot.
 
 ## Session sharing
 

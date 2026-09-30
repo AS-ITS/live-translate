@@ -270,6 +270,19 @@ test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persis
   assert.equal(events.status, 200);
   assert.match(events.body, /event: cue\.append/);
   assert.match(events.body, /"translatedText":"hello"/);
+
+  const replay = await request(handler, {
+    method: 'GET',
+    url: `/api/shared-meetings/${share.token}/events?after=1`,
+    headers: { accept: 'application/json' }
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.headers['Content-Type'], 'application/json');
+  assert.deepEqual(replay.json(), {
+    events: [],
+    cursor: { eventId: 1, cueSequence: 1 },
+    gap: false
+  });
 });
 
 test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {

@@ -95,7 +95,7 @@ export function createSupabaseMeetingRepository(options = {}) {
       });
       if (!meetingRows[0]) return null;
 
-      const select = '*,meeting_segments!inner(sequence,settings_snapshot)';
+      const select = '*,meeting_segments:meeting_segments!subtitle_cues_session_segment_relationship_fkey!inner(sequence,settings_snapshot)';
       const base = `?select=${select}&${eq('owner_user_id', userId)}&${eq('meeting_segments.meeting_id', meetingId)}`;
       const queries = before
         ? [

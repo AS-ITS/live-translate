@@ -15,16 +15,6 @@ export function LiveMeetingPicker({ meetings = [], selectedMeetingId = '', disab
   );
 }
 
-export function liveMeetingStatusLabel(meeting) {
-  return meeting?.status === 'active'
-    ? '進行中'
-    : meeting?.status === 'interrupted'
-      ? '已暫停'
-      : meeting
-        ? '準備就緒'
-        : '尚未選擇會議';
-}
-
 /**
  * The live recording route owns the live-reading surface. Session orchestration
  * is supplied by the application shell until it is extracted behind a page

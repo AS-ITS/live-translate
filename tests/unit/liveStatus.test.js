@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
+import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, liveMeetingStatusLabel, meetingCheckpointErrorMessageFor } from '../../src/features/live/liveStatus.js';
+
+test('live meeting status follows the current recording state before persisted meeting state', () => {
+  assert.equal(liveMeetingStatusLabel({ status: 'interrupted' }, 'listening'), '進行中');
+  assert.equal(liveMeetingStatusLabel({ status: 'active' }, 'paused'), '已暫停');
+  assert.equal(liveMeetingStatusLabel({ status: 'interrupted' }, 'idle'), '已暫停');
+});
 
 test('enables live meeting start only after the matching checkpoint draft is loaded', () => {
   assert.equal(isLiveMeetingStartReady({

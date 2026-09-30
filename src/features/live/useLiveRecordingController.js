@@ -959,6 +959,7 @@ export function useLiveRecordingController({
       recovery.setLiveCueUpdatesAllowed(false);
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('pause');
+      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
       await checkpointController.flushMeetingCheckpointSync();
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('pause');

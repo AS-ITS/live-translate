@@ -1978,11 +1978,19 @@ test('pause preserves a pending subtitle received immediately before pause', asy
   await page.goto('/');
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.locator('.live-meeting-status')).toHaveText('進行中');
   await emitPartialTranscript(page, 'pause pending source', 'pause pending translation');
 
   await page.getByRole('button', { name: '暫停' }).click();
 
   await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(1);
+  await expectCueRow(finalCueRows(page).first(), {
+    sourceText: 'pause pending source',
+    translatedText: 'pause pending translation'
+  });
+
+  await page.reload();
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: 'pause pending source',

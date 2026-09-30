@@ -1217,19 +1217,31 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   await expect(page.getByText('無法更新分類順序。')).toHaveCount(0);
   await glossary.getByRole('button', { name: '新增詞條' }).click();
   const dialog = page.getByRole('dialog', { name: '新增詞條' });
+  await expect(dialog.getByText('管理原文字詞，並為同一詞條維護多種目標語言翻譯。')).toBeVisible();
+  await dialog.getByRole('button', { name: '新增詞條' }).click();
+  await expect(dialog.getByText('請輸入原文字詞。')).toBeVisible();
+  await expect(dialog.getByText('請輸入英文翻譯。')).toBeVisible();
   await dialog.getByLabel('原文字詞').fill('microphone');
   await dialog.getByLabel('翻譯語言').selectOption('ja');
   await dialog.getByLabel('翻譯內容：ja').fill('Alan speak');
+  await dialog.getByRole('button', { name: '新增翻譯語言' }).click();
+  await expect(dialog.getByLabel('翻譯語言')).toHaveCount(2);
+  await expect(dialog.getByLabel('翻譯語言').nth(1)).toHaveValue('en');
+  await expect(dialog.getByText('2 種語言')).toBeVisible();
+  await expect(dialog.getByRole('button', { name: '移除日文翻譯' })).toBeVisible();
+  await dialog.getByLabel('翻譯內容：en').fill('Microphone');
   await dialog.getByLabel('分類').selectOption('project');
   await dialog.getByLabel('標籤（以逗號分隔）').fill('audio, product');
   await expect(dialog.getByText('套用範圍')).toHaveCount(0);
-  await expect(dialog.locator('select')).toHaveCount(3);
-  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['56px', '56px', '56px']);
+  await expect(dialog.locator('select')).toHaveCount(4);
+  await expect.poll(() => dialog.locator('select').evaluateAll((selects) => selects.map((select) => getComputedStyle(select).height))).toEqual(['44px', '44px', '44px', '44px']);
+  await expect.poll(() => dialog.locator('.field input:not([type="checkbox"])').evaluateAll((inputs) => inputs.map((input) => getComputedStyle(input).height))).toEqual(['44px', '44px', '44px', '44px']);
   await expect(dialog.getByRole('button', { name: '取消' })).toBeVisible();
-  await expect(dialog.getByRole('button', { name: '新增全域詞條' })).toBeVisible();
-  await dialog.getByRole('button', { name: '新增全域詞條' }).click();
+  await expect(dialog.getByRole('button', { name: '新增詞條' })).toBeVisible();
+  await dialog.getByRole('button', { name: '新增詞條' }).click();
   await expect(glossary.locator('.glossary-card').first()).toContainText('microphone');
   await expect(glossary.locator('.glossary-card').first()).toContainText('Alan speak');
+  await expect(glossary.locator('.glossary-card').first()).toContainText('Microphone');
 
   const selectAllButton = glossary.getByRole('button', { name: '全選目前結果' });
   await expect(selectAllButton).toHaveAttribute('aria-pressed', 'false');
@@ -1275,6 +1287,7 @@ test('global glossary page creates, edits, and deletes entries', async ({ page }
   expect(requests[3].body.category).toBe('project');
   expect(requests[3].body.source).toBe('microphone');
   expect(requests[3].body.tags).toEqual(['audio', 'product']);
+  expect(requests[3].body.translations).toEqual({ ja: 'Alan speak', en: 'Microphone' });
   expect(requests[4].body.scope).toBe('live');
 });
 

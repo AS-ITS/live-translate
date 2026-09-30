@@ -201,3 +201,43 @@
   .global-glossary-primary-actions { grid-template-columns: 1fr; }
   .global-glossary-dialog-actions .button { flex-basis: 100%; }
 }
+
+/* Entry editor: keep the header and actions visible while the grouped form scrolls. */
+.glossary-editor-dialog { width: min(calc(100% - 2 * var(--space-6)), 54rem); padding: 0; }
+.glossary-editor-dialog .global-glossary-dialog-header { padding: var(--space-5); background: var(--color-surface); }
+.glossary-editor-dialog .dialog-close-button { flex: 0 0 2.75rem; width: 2.75rem; height: 2.75rem; }
+.glossary-editor-dialog .field input:not([type="checkbox"]), .glossary-editor-dialog .field select { height: 2.75rem; min-height: 2.75rem; }
+.global-glossary-editor-summary { max-width: 42rem; margin: var(--space-2) 0 0; color: var(--color-text-muted); line-height: 1.5; }
+.glossary-editor-dialog .global-glossary-form { grid-template-rows: minmax(0, 1fr) auto; gap: 0; padding: 0; overflow: hidden; }
+.global-glossary-form-body { display: grid; gap: var(--space-4); min-height: 0; padding: var(--space-5); overflow-y: auto; overscroll-behavior: contain; }
+.glossary-editor-dialog .glossary-form-section { gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.glossary-editor-dialog .glossary-translation-section { border-color: color-mix(in srgb, var(--color-primary) 26%, var(--color-border)); background: color-mix(in srgb, var(--color-primary-soft) 48%, var(--color-surface)); }
+.glossary-editor-dialog .glossary-form-section-heading { align-items: flex-start; }
+.glossary-editor-dialog .glossary-form-section-heading > div { display: grid; gap: var(--space-1); }
+.glossary-editor-dialog .glossary-form-section-heading small { color: var(--color-text-muted); line-height: 1.5; }
+.glossary-translation-count { display: inline-flex; margin-left: var(--space-2); padding: .2rem .55rem; border-radius: var(--radius-pill); background: var(--color-primary-soft); color: var(--color-primary); font-size: var(--text-xs); white-space: nowrap; }
+.glossary-add-translation { min-height: 2.75rem; white-space: nowrap; }
+.translation-list { display: grid; gap: var(--space-2); }
+.glossary-editor-dialog .translation-row { display: grid; grid-template-columns: 2rem 9rem minmax(0, 1fr) 2.75rem; gap: var(--space-2); align-items: start; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.translation-row-number { display: grid; width: 1.75rem; height: 1.75rem; margin-top: 1.7rem; place-items: center; border-radius: var(--radius-pill); background: var(--color-primary-soft); color: var(--color-primary); font-size: var(--text-xs); font-weight: 700; }
+.glossary-editor-dialog .translation-row .field > span { color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 700; }
+.translation-remove-button { align-self: end; width: 2.75rem; min-width: 2.75rem; height: 2.75rem; color: var(--color-danger); }
+.translation-remove-button:hover:not(:disabled) { background: color-mix(in srgb, var(--color-danger) 10%, transparent); }
+.glossary-field-error { display: block; margin-top: var(--space-1); color: var(--color-danger); font-size: var(--text-xs); font-weight: 700; }
+.glossary-editor-dialog [aria-invalid="true"] { border-color: var(--color-danger); box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 16%, transparent); }
+.glossary-editor-dialog .glossary-enabled-toggle { padding: var(--space-3) var(--space-4); }
+.glossary-editor-dialog .global-glossary-dialog-actions { padding: var(--space-4) var(--space-5); background: var(--color-surface); }
+.glossary-delete-action { margin-right: auto; }
+
+@media (max-width: 760px) {
+  .glossary-editor-dialog { width: calc(100% - 2 * var(--space-3)); max-height: calc(100dvh - 2 * var(--space-3)); }
+  .glossary-editor-dialog .global-glossary-dialog-header, .global-glossary-form-body, .glossary-editor-dialog .global-glossary-dialog-actions { padding: var(--space-4); }
+  .glossary-editor-dialog .glossary-form-section { padding: var(--space-3); }
+  .glossary-editor-dialog .glossary-form-section-heading { align-items: stretch; flex-direction: column; }
+  .glossary-add-translation { width: 100%; }
+  .glossary-editor-dialog .translation-row { grid-template-columns: 2rem minmax(0, 1fr) 2.75rem; }
+  .translation-row-number { grid-column: 1; grid-row: 1; }
+  .translation-language-field { grid-column: 2 / 4; grid-row: 1; }
+  .translation-value-field { grid-column: 2; grid-row: 2; }
+  .translation-remove-button { grid-column: 3; grid-row: 2; }
+}

@@ -12,7 +12,10 @@ export function createViewerRealtimeTokenService({ env = process.env, clock = ()
     return null;
   }
   if (!jwk?.kty || !jwk?.alg || !jwk?.kid) return null;
-  const signingKey = importJWK(jwk, jwk.alg);
+  const signingJwk = Array.isArray(jwk.key_ops) && jwk.key_ops.includes('sign')
+    ? { ...jwk, key_ops: ['sign'] }
+    : jwk;
+  const signingKey = importJWK(signingJwk, jwk.alg);
   const issuer = `${String(env.SUPABASE_URL || '').replace(/\/$/u, '')}/auth/v1`;
 
   return Object.freeze({

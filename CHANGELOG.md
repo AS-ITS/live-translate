@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- 強化全域字典批次操作的按鈕辨識度，並新增具確認提示的批次刪除功能。
 - 移除會議管理與即時錄製提示卡內的 Gemini API Key 輸入框，統一由頁首的 Gemini Key 設定頁輸入。
 
 - Clarified GSK-04: Live token issuance uses only recorder request-scoped keys;

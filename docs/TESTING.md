@@ -222,7 +222,7 @@ Live, History Detail, and Viewer routes, plus global/private glossary
 boundaries.
 
 Global glossary UI coverage includes card-grid filtering, category counts,
-multi-language editing, enabled-state batch actions, and the side drawer. The
+multi-language editing, enabled-state and delete batch actions, and the side drawer. The
 global page manages only entries shared by all Meetings; private entries remain
 covered by the Meeting glossary drawer tests.
 

@@ -142,6 +142,7 @@ The Meeting settings shape gains a private collection:
 Rules:
 
 - Private entries never appear in the global glossary list.
+- Global glossary list supports multi-select batch enable, disable, and confirmed delete actions; batch mutations reuse the existing entry APIs sequentially.
 - Editing a private entry never updates the global glossary repository.
 - A private entry is visible only in its owning Meeting and its snapshots.
 - Live translation applies selected global entries and Meeting-private entries.

@@ -43,6 +43,10 @@
 .glossary-bulk-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-primary-soft); }
 .glossary-page .glossary-bulk-bar { background: var(--color-category-active-bg); }
 .glossary-bulk-bar strong { margin-right: auto; color: var(--color-primary); }
+.glossary-bulk-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
+.glossary-bulk-action { min-width: 8.25rem; min-height: 2.75rem; font-weight: 700; box-shadow: 0 2px 5px rgb(23 32 42 / 8%); }
+.glossary-bulk-disable { border-color: var(--color-primary); color: var(--color-primary); }
+.glossary-bulk-delete { margin-left: var(--space-1); border-color: color-mix(in srgb, var(--color-danger) 42%, white); }
 .global-glossary-layout { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: clamp(var(--space-5), 3vw, var(--space-8)); align-items: start; }
 .glossary-category-sidebar { position: sticky; top: 6.5rem; display: grid; gap: var(--space-1); padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-muted); }
 .glossary-sidebar-heading { display: flex; justify-content: space-between; padding: var(--space-2) var(--space-3) var(--space-3); border-bottom: 1px solid var(--color-border); }

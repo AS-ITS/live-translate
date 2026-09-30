@@ -12,6 +12,7 @@ export function AppLayout({
   subtitle,
   headerAction = null,
   showHeader = true,
+  showHeaderActions = true,
   showGeminiKeyAction = true,
   headerClassName = ''
 }) {
@@ -48,7 +49,7 @@ export function AppLayout({
             <h1 id={titleId}>{title}</h1>
             {subtitle ? <p>{subtitle}</p> : null}
           </div>
-          <div className="app-header-actions">
+          {showHeaderActions ? <div className="app-header-actions">
             {profile && showGeminiKeyAction ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
             {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin"><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
             {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#audit"><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
@@ -73,7 +74,7 @@ export function AppLayout({
               </details>
             ) : null}
             {headerAction}
-          </div>
+          </div> : null}
         </header>
       ) : null}
       {children}
@@ -127,6 +128,7 @@ export function PublicSessionLayout({ children, className = '', title, subtitle,
       title={title}
       subtitle={subtitle}
       headerAction={status ? <span className="status-pill">{status}</span> : null}
+      showHeaderActions={false}
     >
       {children}
     </AppLayout>

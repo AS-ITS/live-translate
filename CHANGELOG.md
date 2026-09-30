@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Viewer header 現在只保留即時字幕標題與會議名稱，不再顯示 Gemini Key、管理入口或帳號選單。
+- 修正已登入使用者開啟 Viewer 時，共用 Supabase client 會覆寫短效 Viewer Realtime token，導致即時字幕頻道無法訂閱的問題；Viewer 現在使用獨立的 Realtime client。
 - 修正全域字典新增詞條時只保存第一個目標語言翻譯的問題；多語言翻譯現在會完整保存，新增語言也會自動選擇尚未使用的語言。新增與編輯彈窗同步改為分區表單、獨立翻譯管理卡片、行內驗證與固定操作列。
 - 修正公開 Viewer share 解析錯誤要求登入者 Supabase client，導致 Viewer detail 與 telemetry 回傳 503 的問題。
 - 強化全域字典批次操作的按鈕辨識度，並新增具確認提示的批次刪除功能。

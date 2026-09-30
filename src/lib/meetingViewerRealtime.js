@@ -1,11 +1,11 @@
-import { supabase } from './supabaseAuth.js';
+import { createSupabaseViewerRealtimeClient, isSupabaseConfigured } from './supabaseAuth.js';
 
 const TOKEN_REFRESH_SKEW_MS = 30_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 
 export function meetingViewerRealtimeEnabled() {
   return import.meta.env?.VITE_MEETING_VIEWER_REALTIME_ENABLED !== 'false'
-    && Boolean(supabase && import.meta.env?.VITE_SUPABASE_URL);
+    && isSupabaseConfigured();
 }
 
 export function createMeetingViewerRealtimeController({
@@ -17,12 +17,17 @@ export function createMeetingViewerRealtimeController({
   onTelemetry,
   onError,
   fetchImpl = globalThis.fetch,
-  client = supabase,
+  client = null,
+  clientFactory = createSupabaseViewerRealtimeClient,
   setTimer = globalThis.setTimeout,
   clearTimer = globalThis.clearTimeout
 } = {}) {
-  if (!client || !basePath) throw new TypeError('Meeting Viewer Realtime requires a Supabase client and base path.');
+  if ((!client && typeof clientFactory !== 'function') || !basePath) {
+    throw new TypeError('Meeting Viewer Realtime requires a Supabase client and base path.');
+  }
   let stopped = false;
+  let realtimeClient = client;
+  let accessToken = null;
   let channel = null;
   let reconnectTimer = null;
   let reconnectAttempts = 0;
@@ -37,9 +42,13 @@ export function createMeetingViewerRealtimeController({
       if (!response.ok) throw new Error(response.status === 404 ? '分享連結無效或已過期。' : '無法取得即時字幕權限。');
       const authorization = await response.json();
       if (stopped || currentGeneration !== generation) return;
-      await client.realtime.setAuth(authorization.accessToken);
-      if (channel) await client.removeChannel(channel);
-      channel = client
+      accessToken = authorization.accessToken;
+      if (!realtimeClient) realtimeClient = clientFactory(async () => accessToken);
+      if (!realtimeClient) throw new Error('無法建立即時字幕連線。');
+      if (client) await realtimeClient.realtime.setAuth(accessToken);
+      else await realtimeClient.realtime.setAuth();
+      if (channel) await realtimeClient.removeChannel(channel);
+      channel = realtimeClient
         .channel(authorization.channel, { config: { private: true } })
         .on('broadcast', { event: 'cue.append' }, (message) => onEvent?.(message?.payload || message));
       channel.subscribe(async (status) => {
@@ -82,7 +91,7 @@ export function createMeetingViewerRealtimeController({
     clearScheduledReconnect();
     const previous = channel;
     channel = null;
-    if (previous) await client.removeChannel(previous).catch(() => {});
+    if (previous) await realtimeClient?.removeChannel(previous).catch(() => {});
     await connect();
   }
 
@@ -111,7 +120,7 @@ export function createMeetingViewerRealtimeController({
       clearScheduledReconnect();
       const previous = channel;
       channel = null;
-      if (previous) await client.removeChannel(previous).catch(() => {});
+      if (previous) await realtimeClient?.removeChannel(previous).catch(() => {});
     }
   });
 }

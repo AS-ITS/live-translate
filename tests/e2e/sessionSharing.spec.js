@@ -14,6 +14,9 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
     page.goto('/#viewer?token=meeting-viewer-token')
   ]);
   await expect((await snapshotResponse).status()).toBe(200);
+  const viewerHeader = page.locator('.app-header');
+  await expect(viewerHeader.getByRole('heading', { name: '即時字幕' })).toBeVisible();
+  await expect(viewerHeader.locator('.app-header-actions')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '產品會議' })).toBeVisible();
   await expect(page.getByText('原文 40', { exact: true })).toBeVisible();
   await expect(page.getByText('Translation 40', { exact: true })).toBeVisible();

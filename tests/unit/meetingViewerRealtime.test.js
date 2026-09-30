@@ -50,3 +50,43 @@ test('viewer realtime subscribes privately before delivering persisted cue broad
   assert.equal(timers.length, 1);
   await controller.stop();
 });
+
+test('viewer realtime isolates its short-lived token from the signed-in Supabase client', async () => {
+  let subscriptionCallback;
+  let tokenProvider;
+  const authCalls = [];
+  const channel = {
+    on() { return this; },
+    subscribe(callback) { subscriptionCallback = callback; return this; }
+  };
+  const dedicatedClient = {
+    realtime: {
+      async setAuth(...args) { authCalls.push(args); }
+    },
+    channel() { return channel; },
+    async removeChannel() {}
+  };
+  const controller = createMeetingViewerRealtimeController({
+    basePath: '/api/shared-meetings/share-token',
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return { accessToken: 'viewer-jwt', channel: 'meeting:meeting-1', expiresAt: Date.now() + 60_000 };
+      }
+    }),
+    clientFactory(provider) {
+      tokenProvider = provider;
+      return dedicatedClient;
+    },
+    setTimer: () => 1,
+    clearTimer: () => {}
+  });
+
+  controller.start();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(await tokenProvider(), 'viewer-jwt');
+  assert.deepEqual(authCalls, [[]]);
+  await subscriptionCallback('SUBSCRIBED');
+  await controller.stop();
+});

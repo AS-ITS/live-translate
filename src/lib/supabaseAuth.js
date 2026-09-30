@@ -14,6 +14,11 @@ export const supabase = supabaseUrl && supabasePublishableKey
     })
   : null;
 
+export function createSupabaseViewerRealtimeClient(accessToken) {
+  if (!supabaseUrl || !supabasePublishableKey || typeof accessToken !== 'function') return null;
+  return createClient(supabaseUrl, supabasePublishableKey, { accessToken });
+}
+
 export function isSupabaseConfigured() {
   return Boolean(supabase);
 }

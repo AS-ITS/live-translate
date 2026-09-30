@@ -831,6 +831,8 @@ async function handleRequestWithSessionReadController(
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
   const meetingPurgeWorker = arguments[2]?.meetingPurgeWorker;
+  const observabilityMetricRepository = arguments[2]?.observabilityMetricRepository;
+  const observabilityMetrics = arguments[2]?.observabilityMetrics;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();

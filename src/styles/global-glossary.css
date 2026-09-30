@@ -65,6 +65,8 @@
 .glossary-card.is-disabled { opacity: .72; }
 .glossary-card-topline { display: flex; align-items: center; gap: var(--space-2); }
 .glossary-card-topline > input { width: 1.15rem; height: 1.15rem; margin-right: auto; accent-color: var(--color-primary); }
+.glossary-card-topline .icon-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 2.5rem; min-width: 2.5rem; height: 2.5rem; min-height: 2.5rem; padding: 0; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--color-text-muted); cursor: pointer; transition: background-color 180ms ease, color 180ms ease; }
+.glossary-card-topline .icon-button:hover { background: var(--color-surface-muted); color: var(--color-primary); }
 .glossary-status { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--color-success); font-size: var(--text-sm); font-weight: 700; }
 .glossary-page .glossary-status:not(.is-disabled) { color: var(--color-primary); }
 .glossary-status span { width: .45rem; height: .45rem; border-radius: 50%; background: currentColor; }

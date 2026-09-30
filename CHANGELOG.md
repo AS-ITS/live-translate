@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- 會議設定的觀看連結現在會以新分頁開啟，公開 Viewer 路由也不再要求 Workspace 登入。
 - 修正即時錄製開始後頂部會議狀態仍顯示「已暫停」的問題，並在暫停完成前等待翻譯字幕儲存，重新進入後仍保留原文與翻譯。
 - Viewer header 現在只保留即時字幕標題與會議名稱，不再顯示 Gemini Key、管理入口或帳號選單。
 - 修正已登入使用者開啟 Viewer 時，共用 Supabase client 會覆寫短效 Viewer Realtime token，導致即時字幕頻道無法訂閱的問題；Viewer 現在使用獨立的 Realtime client。

@@ -311,6 +311,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   expect(desktopShareLayout.previewRight).toBeLessThanOrEqual(desktopShareLayout.detailsLeft);
   expect(desktopShareLayout.columns).toBe(2);
   await expect(page.locator('.share-result-details .share-url')).toBeVisible();
+  const shareLink = page.locator('.share-result-details .share-url a');
+  await expect(shareLink).toHaveAttribute('target', '_blank');
+  await expect(shareLink).toHaveAttribute('rel', 'noopener noreferrer');
   await expect(page.locator('.share-result-details .detail-button')).toBeVisible();
   await expect.poll(() => page.evaluate(() => {
     const submitButton = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('儲存變更'));
@@ -338,6 +341,13 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await page.setViewportSize({ width: 600, height: 800 });
   await expect.poll(() => page.locator('.share-result').evaluate((card) => getComputedStyle(card).gridTemplateColumns.split(' ').length)).toBe(1);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  const expectedShareUrl = await shareLink.getAttribute('href');
+  const popupPromise = page.waitForEvent('popup');
+  await shareLink.click();
+  const viewerPage = await popupPromise;
+  await expect(viewerPage).toHaveURL(expectedShareUrl);
+  await viewerPage.close();
 });
 
 test('automatically creates shares when an existing meeting has no links', async ({ page }) => {

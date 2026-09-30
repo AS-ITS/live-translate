@@ -110,8 +110,9 @@ Canonical SPA routes are:
 
 The application uses independent Setting, Live, History Detail, and public
 Viewer pages. Viewer share creation and QR code management remain in the
-Meeting Settings page; the public Viewer is the page opened by participants
-through `#viewer?code=<shortCode>`.
+Meeting Settings page; its viewing URL opens in a new browser tab, and the
+public Viewer is available without a Workspace login through
+`#viewer?code=<shortCode>`.
 
 Removed legacy hashes such as `#history`, `#retranslate`, `#live-recording`,
 `#translation-history`, `#watch`, `#record`, and `#dead-letter-queue` safely

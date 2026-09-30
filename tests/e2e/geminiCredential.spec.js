@@ -10,6 +10,7 @@ test('sets and revokes the lifecycle-memory Gemini API Key', async ({ page }) =>
 
   const input = page.getByRole('textbox', { name: 'Gemini API Key' });
   await expect(input).toBeVisible();
+  await expect(input).toBeFocused();
   await input.fill('  test-ABcd  ');
   await page.getByRole('button', { name: '設定金鑰' }).click();
 

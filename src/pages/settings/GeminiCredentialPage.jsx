@@ -70,7 +70,7 @@ export function GeminiCredentialPage() {
                 <strong className="gemini-credential-key-value">{lastFour}</strong>
                 <span className="gemini-credential-key-label">Gemini API Key</span>
               </div> : null}
-              <label className="field"><span>Gemini API Key</span><input type="password" value={draftKey} onChange={(event) => setDraftKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" /></label>
+              <label className="field"><span>Gemini API Key</span><input type="password" value={draftKey} onChange={(event) => setDraftKey(event.target.value)} autoComplete="new-password" placeholder="AIza…" autoFocus /></label>
               <div className="gemini-credential-actions">
                 <button className="button primary" type="submit" disabled={!draftKey.trim()}>設定金鑰</button>
                 <button className="button secondary" type="button" onClick={cancelKey} disabled={!draftKey.trim() && !isConfigured}>撤消金鑰</button>

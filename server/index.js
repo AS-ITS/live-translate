@@ -3671,7 +3671,11 @@ function validateGlossaryEntryBody(body) {
 }
 
 function validateGlossaryCategory(value) {
-  if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value)) throw createHttpError('invalid_request');
+  const legacyCategoryPattern = /^[a-z][a-z0-9_-]*$/;
+  const cloudCategoryPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+  if (typeof value !== 'string' || (!legacyCategoryPattern.test(value) && !cloudCategoryPattern.test(value))) {
+    throw createHttpError('invalid_request');
+  }
   return value;
 }
 

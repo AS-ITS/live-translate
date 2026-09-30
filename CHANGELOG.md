@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- 移除會議管理與即時錄製提示卡內的 Gemini API Key 輸入框，統一由頁首的 Gemini Key 設定頁輸入。
+
 - Clarified GSK-04: Live token issuance uses only recorder request-scoped keys;
   legacy profile credential storage is removed from the current flow, with
   isolated `GEMINI_API_KEY` use retained only for non-Live workers.

@@ -14,6 +14,7 @@ test('guides users from the meeting flow to the Gemini Key settings page', async
   const notice = page.locator('.gemini-credential-notice');
   await expect(notice).toContainText('錄音者必須輸入 Gemini API Key');
   await expect(notice).toContainText('不會儲存到瀏覽器或帳號設定');
+  await expect(notice.getByLabel('Gemini API Key')).toHaveCount(0);
   await expect(notice.getByRole('link', { name: '設定 Gemini Key' })).toHaveCount(0);
   await expect(page.locator('.header-key-action')).toHaveClass(/is-missing/);
   await page.locator('.header-key-action').click();

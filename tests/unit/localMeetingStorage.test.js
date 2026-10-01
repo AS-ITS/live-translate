@@ -50,6 +50,62 @@ test('recording and operation persistence project secrets from writes and reads'
   assert.equal(persistedOperation.result.segmentId, 'segment-2');
 });
 
+test('local cues and checkpoints survive updates without persisting credentials', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  await store.saveCue({
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cue: {
+      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '哈囉',
+      refinement: { status: 'pending', accessToken: 'must-not-persist' },
+      apiKey: 'must-not-persist'
+    },
+    producedAt: 100
+  });
+  await store.saveCue({
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cue: {
+      cueId: 'cue-1', sequence: 1, sourceText: 'hello', translatedText: '您好',
+      refinement: { status: 'completed', jwt: 'must-not-persist' }
+    },
+    producedAt: 200
+  });
+  await store.saveCheckpoint({
+    meetingId: 'meeting-1',
+    segmentId: 'segment-1',
+    checkpoint: {
+      durableChunks: [{ idempotencyKey: 'chunk-1', text: 'hello' }],
+      cueCheckpoint: { nextSequence: 2, ephemeralToken: 'must-not-persist' },
+      authorization: 'must-not-persist'
+    }
+  });
+
+  const [cue] = await store.listCues('meeting-1', { segmentId: 'segment-1' });
+  const checkpoint = await store.getCheckpoint('meeting-1', 'segment-1');
+  assert.equal(cue.cue.translatedText, '您好');
+  assert.equal(cue.cue.apiKey, undefined);
+  assert.equal(cue.cue.refinement.jwt, undefined);
+  assert.equal(checkpoint.checkpoint.authorization, undefined);
+  assert.equal(checkpoint.checkpoint.cueCheckpoint.ephemeralToken, undefined);
+  assert.equal(checkpoint.checkpoint.durableChunks[0].text, 'hello');
+});
+
+test('local cue identity cannot move between sessions or sequences', async () => {
+  const store = createInMemoryLocalMeetingManifestStore();
+  const input = {
+    meetingId: 'meeting-1', sessionId: 'session-1', segmentId: 'segment-1',
+    cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello' }
+  };
+  await store.saveCue(input);
+  await assert.rejects(
+    store.saveCue({ ...input, sessionId: 'session-2' }),
+    (error) => error.code === 'local_cue_identity_conflict'
+  );
+});
+
 test('chunk paths are deterministic and keep meeting identity in the path', () => {
   assert.equal(
     buildLocalChunkPath({ meetingId: 'meeting-1', segmentId: 'segment-2', sequence: 7, chunkId: 'chunk-a' }),
@@ -148,6 +204,45 @@ test('browser IndexedDB hydration projects and cleans credential-shaped pollutio
   assert.equal(result.hydrated.ephemeralToken, undefined);
   assert.equal(result.raw.geminiApiKey, undefined);
   assert.equal(result.raw.ephemeralToken, undefined);
+});
+
+test('browser IndexedDB restores local cues and checkpoints after reload', async (t) => {
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.route('https://local-state-reload.test/', (route) => route.fulfill({ body: '<!doctype html>' }));
+  await page.goto('https://local-state-reload.test/');
+  const source = await readFile(new URL('../../src/lib/localMeetingStorage.js', import.meta.url), 'utf8');
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
+  const dbName = `local-state-${Date.now()}`;
+
+  await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    await store.saveCue({
+      meetingId: 'meeting-browser', sessionId: 'session-1', segmentId: 'segment-1',
+      cue: { cueId: 'cue-1', sequence: 1, sourceText: 'hello', secret: 'drop-me' }
+    });
+    await store.saveCheckpoint({
+      meetingId: 'meeting-browser', segmentId: 'segment-1',
+      checkpoint: { cueCheckpoint: { nextSequence: 2 }, accessToken: 'drop-me' }
+    });
+  }, { moduleUrl, dbName });
+
+  await page.reload();
+  const restored = await page.evaluate(async ({ moduleUrl, dbName }) => {
+    const { createIndexedDbLocalMeetingManifestStore } = await import(moduleUrl);
+    const store = createIndexedDbLocalMeetingManifestStore({ indexedDBImpl: indexedDB, dbName });
+    return {
+      cues: await store.listCues('meeting-browser', { segmentId: 'segment-1' }),
+      checkpoint: await store.getCheckpoint('meeting-browser', 'segment-1')
+    };
+  }, { moduleUrl, dbName });
+
+  assert.equal(restored.cues[0].cue.sourceText, 'hello');
+  assert.equal(restored.cues[0].cue.secret, undefined);
+  assert.equal(restored.checkpoint.checkpoint.cueCheckpoint.nextSequence, 2);
+  assert.equal(restored.checkpoint.checkpoint.accessToken, undefined);
 });
 
 test('browser IndexedDB reload replays lifecycle operations and OPFS refuses overwrite', async (t) => {

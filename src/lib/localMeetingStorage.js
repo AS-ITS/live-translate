@@ -1,4 +1,4 @@
-export const LOCAL_MEETING_SCHEMA_VERSION = 3;
+export const LOCAL_MEETING_SCHEMA_VERSION = 4;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -121,6 +121,8 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
   const records = new Map();
   const recordings = new Map();
   const operations = new Map();
+  const cues = new Map();
+  const checkpoints = new Map();
   for (const rawRecord of initial) {
     const record = projectLocalChunk(rawRecord);
     assertChunkRecord(record);
@@ -151,6 +153,28 @@ export function createInMemoryLocalMeetingManifestStore(initial = []) {
       recordings.set(recording.meetingId, recording);
       operations.set(key, operation);
       return operation.result;
+    },
+    async saveCue(input) {
+      const cue = projectLocalCue(input);
+      const existing = cues.get(cue.key);
+      if (existing && !sameCueIdentity(existing, cue)) throw conflict('local_cue_identity_conflict');
+      cues.set(cue.key, cue);
+      return cue;
+    },
+    async listCues(meetingId, { segmentId } = {}) {
+      return Object.freeze([...cues.values()]
+        .filter((record) => record.meetingId === meetingId && (!segmentId || record.segmentId === segmentId))
+        .sort(compareLocalCues)
+        .map((record) => projectLocalCue(record)));
+    },
+    async saveCheckpoint(input) {
+      const checkpoint = projectLocalCheckpoint(input);
+      checkpoints.set(checkpoint.key, checkpoint);
+      return checkpoint;
+    },
+    async getCheckpoint(meetingId, segmentId) {
+      const value = checkpoints.get(localCheckpointKey(meetingId, segmentId));
+      return value ? projectLocalCheckpoint(value) : null;
     },
     async reserve(input) {
       const record = reserveLocalChunk(input);
@@ -245,6 +269,52 @@ export function createIndexedDbLocalMeetingManifestStore({
         return operation.result;
       });
     },
+    async saveCue(input) {
+      const cue = projectLocalCue(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'cues', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('cues');
+        const existing = await request(store.get(cue.key));
+        if (existing && !sameCueIdentity(projectLocalCue(existing), cue)) throw conflict('local_cue_identity_conflict');
+        await request(store.put(cue));
+        return cue;
+      });
+    },
+    async listCues(meetingId, { segmentId } = {}) {
+      normalizeRequiredString(meetingId, 'meetingId');
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'cues', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('cues');
+        const records = await request(store.getAll());
+        const projected = records.map(projectLocalCue);
+        for (let index = 0; index < records.length; index += 1) {
+          if (!sameProjection(records[index], projected[index])) await request(store.put(projected[index]));
+        }
+        return projected
+          .filter((record) => record.meetingId === meetingId && (!segmentId || record.segmentId === segmentId))
+          .sort(compareLocalCues);
+      });
+    },
+    async saveCheckpoint(input) {
+      const checkpoint = projectLocalCheckpoint(input);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'checkpoints', 'readwrite', async (transaction) => {
+        await request(transaction.objectStore('checkpoints').put(checkpoint));
+        return checkpoint;
+      });
+    },
+    async getCheckpoint(meetingId, segmentId) {
+      const key = localCheckpointKey(meetingId, segmentId);
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'checkpoints', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('checkpoints');
+        const raw = await request(store.get(key));
+        if (!raw) return null;
+        const projected = projectLocalCheckpoint(raw);
+        if (!sameProjection(raw, projected)) await request(store.put(projected));
+        return projected;
+      });
+    },
     async reserve(input) {
       const record = reserveLocalChunk(input);
       const database = await openDatabase();
@@ -324,6 +394,13 @@ export function createIndexedDbLocalMeetingManifestStore({
           }
           if (!database.objectStoreNames.contains('operations')) {
             database.createObjectStore('operations', { keyPath: 'key' });
+          }
+          if (!database.objectStoreNames.contains('cues')) {
+            const store = database.createObjectStore('cues', { keyPath: 'key' });
+            store.createIndex('meeting-segment-sequence', ['meetingId', 'segmentId', 'sequence'], { unique: true });
+          }
+          if (!database.objectStoreNames.contains('checkpoints')) {
+            database.createObjectStore('checkpoints', { keyPath: 'key' });
           }
         };
         requestHandle.onsuccess = () => resolve(requestHandle.result);
@@ -432,6 +509,80 @@ function projectLocalOperationResult(value = {}) {
   });
 }
 
+function projectLocalCue(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const segmentId = normalizeRequiredString(value.segmentId, 'segmentId');
+  const sessionId = normalizeRequiredString(value.sessionId, 'sessionId');
+  const rawCue = value.cue && typeof value.cue === 'object' ? value.cue : value;
+  const cueId = normalizeRequiredString(value.cueId || rawCue.cueId, 'cueId');
+  const sequence = normalizePositiveInteger(value.sequence ?? rawCue.sequence, 'sequence');
+  return Object.freeze({
+    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
+    key: localCueKey(meetingId, segmentId, cueId),
+    meetingId,
+    sessionId,
+    segmentId,
+    cueId,
+    sequence,
+    cue: sanitizeLocalValue(rawCue),
+    producedAt: normalizeOptionalTimestamp(value.producedAt ?? rawCue.finalizedAt, 'producedAt'),
+    updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
+  });
+}
+
+function projectLocalCheckpoint(value = {}) {
+  const meetingId = normalizeRequiredString(value.meetingId, 'meetingId');
+  const segmentId = normalizeRequiredString(value.segmentId, 'segmentId');
+  const rawCheckpoint = value.checkpoint && typeof value.checkpoint === 'object'
+    ? value.checkpoint
+    : Object.fromEntries(Object.entries(value).filter(([key]) => !['key', 'schemaVersion', 'meetingId', 'segmentId', 'updatedAt'].includes(key)));
+  return Object.freeze({
+    schemaVersion: LOCAL_MEETING_SCHEMA_VERSION,
+    key: localCheckpointKey(meetingId, segmentId),
+    meetingId,
+    segmentId,
+    checkpoint: sanitizeLocalValue(rawCheckpoint),
+    updatedAt: normalizeOptionalTimestamp(value.updatedAt, 'updatedAt') ?? Date.now()
+  });
+}
+
+function sanitizeLocalValue(value, seen = new WeakSet()) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (Array.isArray(value)) return value.map((item) => sanitizeLocalValue(item, seen));
+  if (!value || typeof value !== 'object') return null;
+  if (seen.has(value)) throw invalid('Local persistence value must not be cyclic.');
+  seen.add(value);
+  const result = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (isCredentialField(key)) continue;
+    result[key] = sanitizeLocalValue(item, seen);
+  }
+  seen.delete(value);
+  return Object.freeze(result);
+}
+
+function isCredentialField(key) {
+  return /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|ephemeral[_-]?token|authorization|credential|jwt|secret)/iu.test(key);
+}
+
+function localCueKey(meetingId, segmentId, cueId) {
+  return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(segmentId, 'segmentId')}\u0000${normalizeRequiredString(cueId, 'cueId')}`;
+}
+
+function localCheckpointKey(meetingId, segmentId) {
+  return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(segmentId, 'segmentId')}`;
+}
+
+function sameCueIdentity(left, right) {
+  return left.meetingId === right.meetingId && left.sessionId === right.sessionId &&
+    left.segmentId === right.segmentId && left.cueId === right.cueId && left.sequence === right.sequence;
+}
+
+function compareLocalCues(left, right) {
+  return left.sequence - right.sequence || left.cueId.localeCompare(right.cueId);
+}
+
 function operationKey(meetingId, operationId) {
   return `${normalizeRequiredString(meetingId, 'meetingId')}\u0000${normalizeRequiredString(operationId, 'operationId')}`;
 }
@@ -489,6 +640,10 @@ function normalizeTimestamp(value, field) {
   const timestamp = Number(value);
   if (!Number.isFinite(timestamp) || timestamp < 0) throw invalid(`${field} must be a non-negative timestamp.`);
   return timestamp;
+}
+
+function normalizeOptionalTimestamp(value, field) {
+  return value === null || value === undefined ? null : normalizeTimestamp(value, field);
 }
 
 function normalizePositiveInteger(value, field) {

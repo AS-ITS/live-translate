@@ -56,6 +56,14 @@ export function MeetingViewerPage({ token, code }) {
     let webRtcStarted = false;
     setShareConnection({ value: 'connecting' });
 
+    function handleSnapshotError(value) {
+      if (cancelled) return;
+      if (value?.code === 'meeting_stopped') setShareConnection({ value: 'stopped' });
+      else if (value?.code === 'share_unauthorized') setShareConnection({ value: 'invalid' });
+      else setShareConnection({ value: 'failed' });
+      setError(value?.message || '無法連線。');
+    }
+
     function applyWebRtcEnvelope(envelope) {
       if (envelope.type === 'meeting.stopped') {
         setShareConnection({ value: 'stopped' });
@@ -110,7 +118,10 @@ export function MeetingViewerPage({ token, code }) {
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         const code = body?.error?.code || body?.code;
-        throw new Error(code === 'meeting_stopped' || response.status === 410 ? '會議已停止。' : '分享連結無效或已過期。');
+        const stopped = code === 'meeting_stopped' || response.status === 410;
+        const error = new Error(stopped ? '會議已停止。' : '分享已失效。');
+        error.code = stopped ? 'meeting_stopped' : (response.status === 403 || response.status === 404 ? 'share_unauthorized' : 'viewer_unavailable');
+        throw error;
       }
       const value = await response.json();
       if (cancelled) return value;
@@ -199,10 +210,12 @@ export function MeetingViewerPage({ token, code }) {
         },
         onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
       });
-      realtimeController.start();
+      void fetchSnapshot()
+        .then(() => realtimeController.start())
+        .catch(handleSnapshotError);
     } else {
       void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-        if (!cancelled) setError(value.message);
+        handleSnapshotError(value);
       });
     }
     return () => {

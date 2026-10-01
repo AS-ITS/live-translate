@@ -118,6 +118,14 @@
   color: var(--color-text);
 }
 .meeting-member-invite input::placeholder { color: var(--color-text-subtle); }
+.meeting-member-list { display: grid; gap: var(--space-2); margin-top: var(--space-3); }
+.meeting-member-helper { margin: 0 0 var(--space-1); color: var(--color-text-muted); font-size: var(--text-sm); }
+.meeting-member-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-muted); }
+.meeting-member-identity { min-width: 0; overflow-wrap: anywhere; font-weight: 700; }
+.meeting-member-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); }
+.meeting-recording-permission { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2.75rem; padding-inline: var(--space-2); cursor: pointer; }
+.meeting-recording-permission input { width: 1rem; height: 1rem; margin: 0; }
+.meeting-recording-permission:has(input:disabled) { cursor: default; opacity: .6; }
 .meeting-share-results { grid-column: 1 / -1; display: grid; gap: var(--space-5); align-content: start; }
 .meeting-share-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 34rem), 1fr)); gap: var(--space-4); }
 .share-result { display: grid; grid-template-columns: 180px minmax(0, 1fr); align-items: center; gap: var(--space-4); min-width: 0; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-muted); }
@@ -143,6 +151,8 @@
   .meeting-settings-step > span { width: 1.9rem; height: 1.9rem; flex-basis: 1.9rem; }
   .meeting-settings-step strong { font-size: var(--text-xs); white-space: nowrap; }
   .meeting-settings-card { padding: var(--space-4); }
+  .meeting-member-row { grid-template-columns: minmax(0, 1fr); }
+  .meeting-member-actions { justify-content: flex-start; }
   .meeting-language-fields, .meeting-private-entry-fields { grid-template-columns: 1fr; }
   .meeting-language-direction { width: 100%; height: var(--select-height); }
   .meeting-language-direction svg { transform: rotate(90deg); }

@@ -69,7 +69,6 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const [audioTestStatus, setAudioTestStatus] = useState('idle');
   const settingsSectionRefs = useRef([]);
   const shareSectionRef = useRef(null);
-  const recordingPermissionsSectionRef = useRef(null);
   const submitRowRef = useRef(null);
   const nameInputRef = useRef(null);
   const audioConfirmButtonRef = useRef(null);
@@ -147,7 +146,6 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
       ...settingsSectionRefs.current.slice(0, SHARE_SETTINGS_STEP_INDEX).map((section, index) => ({ section, stepIndex: index })),
       { section: shareSectionRef.current, stepIndex: SHARE_SETTINGS_STEP_INDEX },
       { section: settingsSectionRefs.current[MEMBER_SETTINGS_STEP_INDEX], stepIndex: MEMBER_SETTINGS_STEP_INDEX },
-      { section: recordingPermissionsSectionRef.current, stepIndex: MEMBER_SETTINGS_STEP_INDEX }
     ].filter(({ section }) => section);
     if (!sections.length) return undefined;
     const headerOffset = 112;
@@ -565,17 +563,17 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
         </nav>
         <section className="meeting-settings-form control-panel" aria-label="會議設定表單">
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[0] = node; }} aria-labelledby="meeting-basic-settings-title">
-            <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 1</p><h3 id="meeting-basic-settings-title">基本資訊</h3></div><span className="meeting-settings-card-number">1</span></div>
+            <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 1</p><h3 id="meeting-basic-settings-title">基本資訊</h3></div><span className="meeting-settings-card-number">1</span></div>
             <label className={`field meeting-name-field${nameError ? ' has-error' : ''}`}><span>會議名稱 <em aria-hidden="true">*</em><span className="sr-only">（必填）</span></span><input ref={nameInputRef} value={name} onChange={(event) => { setName(event.target.value); if (nameError && event.target.value.trim()) setNameError(''); }} placeholder="例如：產品會議" maxLength={120} disabled={meeting?.status === 'completed'} required aria-invalid={nameError ? 'true' : 'false'} aria-describedby={nameError ? 'meeting-name-error' : undefined} />{nameError ? <small id="meeting-name-error" className="field-error" role="alert">{nameError}</small> : <small>建立後可分享會議連結給參與者。</small>}</label>
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[1] = node; }} aria-labelledby="meeting-language-settings-title">
-            <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 2</p><h3 id="meeting-language-settings-title">語言設定</h3></div><span className="meeting-settings-card-number">2</span></div>
+            <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 2</p><h3 id="meeting-language-settings-title">語言設定</h3></div><span className="meeting-settings-card-number">2</span></div>
             <div className="meeting-language-fields"><label className="field"><span>主要輸入語言</span><select value={sourceLanguageCode} onChange={(event) => setSourceLanguageCode(event.target.value)} disabled={meeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label><span className="meeting-language-direction" aria-label="翻譯方向"><ArrowRight size={20} aria-hidden="true" /></span><label className="field"><span>目標語言</span><select value={targetLanguageCode} onChange={(event) => setTargetLanguageCode(event.target.value)} disabled={meeting?.status === 'completed'}>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label></div>
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[2] = node; }} aria-labelledby="meeting-audio-settings-title">
-            <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 3</p><h3 id="meeting-audio-settings-title">音訊設定</h3></div><span className="meeting-settings-card-number">3</span></div>
+            <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 3</p><h3 id="meeting-audio-settings-title">音訊設定</h3></div><span className="meeting-settings-card-number">3</span></div>
             <div className="meeting-audio-options"><label className="meeting-audio-option"><span className="meeting-settings-icon"><Volume2 size={19} aria-hidden="true" /></span><span><strong>播放翻譯聲音</strong><small>讓參與者聽見即時翻譯結果。</small></span><span className="meeting-toggle"><input type="checkbox" checked={echoTargetLanguage} onChange={(event) => setEchoTargetLanguage(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label><label className="meeting-audio-option"><span className="meeting-settings-icon"><Mic size={19} aria-hidden="true" /></span><span><strong>保存原始聲音</strong><small>保存會議中的原始麥克風音訊。</small></span><span className="meeting-toggle"><input type="checkbox" checked={shouldRecordInputAudio} onChange={(event) => setShouldRecordInputAudio(event.target.checked)} disabled={meeting?.status === 'completed'} /><span aria-hidden="true" /></span></label></div>
             <div className={`meeting-audio-controls${audioSettingsError ? ' has-error' : ''}`}>
               <div className={`meeting-audio-device-grid${hasAudioOutputSelection ? ' has-speaker' : ' microphone-only'}`}>
@@ -589,7 +587,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           </section>
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[3] = node; }} aria-labelledby="meeting-dictionary-settings-title">
-            <div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 4</p><h3 id="meeting-dictionary-settings-title">詞彙設定</h3><p className="meeting-settings-card-description">設定本場會議中需要固定翻譯的專有名詞。</p></div><span className="meeting-settings-card-number">4</span></div>
+            <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 4</p><h3 id="meeting-dictionary-settings-title">詞彙設定</h3><p className="meeting-settings-card-description">設定本場會議中需要固定翻譯的專有名詞。</p></div><span className="meeting-settings-card-number">4</span></div>
             <div className="meeting-dictionary-groups">
               <section className="meeting-dictionary-group meeting-global-glossary" aria-labelledby="meeting-global-glossary-title">
                 <button className="meeting-global-glossary-summary" type="button" aria-expanded={isGlobalGlossaryExpanded} onClick={() => setIsGlobalGlossaryExpanded((current) => !current)}><span className="meeting-settings-icon"><BookOpen size={18} aria-hidden="true" /></span><span><strong id="meeting-global-glossary-title">共用詞彙</strong><small>{availableGlossaryEntries.length === 0 ? '目前沒有可套用的共用詞彙。' : `已選 ${selectedGlossaryCount} 項，共 ${availableGlossaryEntries.length} 項可用`}</small></span><ChevronDown size={18} aria-hidden="true" /></button>
@@ -603,9 +601,23 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
           </section>
 
           {meeting ? <ShareResults sectionRef={shareSectionRef} shares={createdShares} existingShares={shares} state={shareState} onRetry={retryShares} onRevokeShare={revokeShare} onCopy={copy} locked={meeting.status === 'completed' || !canRevokeShares} onLayoutReady={handleShareLayoutReady} /> : null}
-          {meeting ? <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[MEMBER_SETTINGS_STEP_INDEX] = node; }} aria-labelledby="meeting-members-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">STEP 6 · ACCESS</p><h3 id="meeting-members-title">成員與錄製權限</h3><p className="meeting-settings-card-description">邀請 active member 錄製本場會議；meeting owner 仍可管理會議設定、分享與匯出。</p></div><span className="meeting-settings-card-number">6</span></div>{memberError ? <p className="error-message" role="alert">{memberError}</p> : null}{memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}<div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="member@example.com" aria-label="成員 email" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>{members.length === 0 ? <p className="export-note">目前尚未加入其他成員。你仍可錄製自己建立的 meeting；若要讓其他 member 錄製，請先輸入 email 邀請。</p> : members.map((member) => <div className="meeting-member-row" key={member.userId}><span>{member.email || member.userId}</span><button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button></div>)}</section> : null}
+        {meeting ? <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[MEMBER_SETTINGS_STEP_INDEX] = node; }} aria-labelledby="meeting-members-title">
+          <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 6</p><h3 id="meeting-members-title">成員與錄製權限</h3><p className="meeting-settings-card-description">邀請成員並設定錄製權限；會議擁有者仍可管理會議設定、分享與匯出。</p></div><span className="meeting-settings-card-number">6</span></div>
+          {memberError ? <p className="error-message" role="alert">{memberError}</p> : null}
+          {memberNotice ? <p className="success-message" role="status">{memberNotice}</p> : null}
+          <div className="meeting-member-invite"><input type="email" value={memberEmail} onChange={(event) => setMemberEmail(event.target.value)} placeholder="請輸入成員電子郵件" aria-label="成員電子郵件" /><button className="button secondary" type="button" onClick={() => void inviteMember()} disabled={!memberEmail.trim() || Boolean(memberBusy)}>邀請成員</button></div>
+          {members.length === 0 ? <p className="export-note">目前尚未加入其他成員。你仍可錄製自己建立的會議；若要讓其他成員錄製，請先輸入電子郵件地址並送出邀請。</p> : <div className="meeting-member-list" aria-label="會議成員">
+            <p className="meeting-member-helper">關閉錄製權限後仍會保留成員關係。</p>
+            {members.map((member) => <div className="meeting-member-row" key={member.userId}>
+              <span className="meeting-member-identity">{member.email || member.userId}</span>
+              <div className="meeting-member-actions">
+                <label className="meeting-recording-permission"><input type="checkbox" aria-label={`允許 ${member.email || member.userId} 錄製`} checked={member.canRecord !== false} onChange={() => void updateMemberRecording(member)} disabled={Boolean(memberBusy) || meeting.status === 'completed'} /><span>允許錄製</span></label>
+                <button className="button detail-button danger-button" type="button" onClick={() => void removeMember(member.userId)} disabled={Boolean(memberBusy)}>移除</button>
+              </div>
+            </div>)}
+          </div>}
+        </section> : null}
 
-          {meeting ? <section className="meeting-settings-card" ref={recordingPermissionsSectionRef} aria-labelledby="meeting-recording-permissions-title"><div className="meeting-settings-card-header"><div><p className="eyebrow">RECORDING ACCESS</p><h3 id="meeting-recording-permissions-title">錄製權限</h3><p className="meeting-settings-card-description">關閉後會保留成員關係，但該成員無法錄製本場會議。</p></div></div><div className="meeting-recording-permission-list">{members.map((member) => <label className="meeting-member-row" key={`recording-${member.userId}`}><span>{member.email || member.userId}</span><span><input type="checkbox" aria-label={`允許 ${member.email || member.userId} 錄製`} checked={member.canRecord !== false} onChange={() => void updateMemberRecording(member)} disabled={Boolean(memberBusy) || meeting.status === 'completed'} />允許錄製</span></label>)}</div></section> : null}
 
           <div ref={submitRowRef} className="meeting-settings-actions meeting-settings-submit-row"><p className="meeting-settings-summary">{settingsSummary}</p><div className="meeting-settings-action-buttons"><button className="button primary" type="button" onClick={saveMeeting} disabled={isSaving || meeting?.status === 'completed'}>{isSaving ? '儲存中…' : meeting ? '儲存變更' : '建立會議'}</button>{meeting ? <button className="button secondary" type="button" onClick={() => void openLive()}>前往即時字幕</button> : null}</div></div>
         </section>
@@ -674,7 +686,7 @@ function ShareResults({ sectionRef, shares, existingShares, state, onRetry, onRe
     <section ref={sectionRef} className="control-panel meeting-settings-card meeting-share-results" aria-labelledby="meeting-share-results-title">
       <div className="meeting-settings-card-header">
         <div>
-          <p className="eyebrow">STEP 5</p>
+        <p className="eyebrow">步驟 5</p>
           <h3 id="meeting-share-results-title">分享會議</h3>
           <p className="meeting-settings-card-description">觀看連結提供會議字幕的唯讀檢視。</p>
         </div>

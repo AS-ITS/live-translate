@@ -252,6 +252,9 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
       }
     });
   });
+  await page.route('**/api/meetings/meeting-1/members', async (route) => route.fulfill({
+    json: { members: [{ userId: 'member-1', email: 'member@example.com', canRecord: true }] }
+  }));
 
   await page.goto('/#meeting-settings?mode=create');
 
@@ -280,13 +283,12 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
     'meeting-audio-settings-title',
     'meeting-dictionary-settings-title',
     'meeting-share-results-title',
-    'meeting-members-title',
-    'meeting-recording-permissions-title'
+    'meeting-members-title'
   ]);
-  await expect(page.locator('.meeting-share-results .eyebrow')).toHaveText('STEP 5');
+  await expect(page.locator('.meeting-share-results .eyebrow')).toHaveText('步驟 5');
   await expect(page.locator('.meeting-share-results .meeting-settings-card-number')).toHaveText('5');
   const memberCard = page.locator('.meeting-settings-card').filter({ has: page.locator('#meeting-members-title') });
-  await expect(memberCard.locator('.eyebrow')).toHaveText('STEP 6 · ACCESS');
+  await expect(memberCard.locator('.eyebrow')).toHaveText('步驟 6');
   await expect(memberCard.locator('.meeting-settings-card-number')).toHaveText('6');
   const memberInvite = memberCard.locator('.meeting-member-invite');
   await expect(memberInvite.locator('input')).toHaveCSS('height', '56px');
@@ -332,8 +334,13 @@ test('shows the share meeting step after creating a meeting', async ({ page }) =
   await expect(page.locator('.meeting-share-results')).toBeInViewport();
   await page.getByRole('button', { name: '成員與錄製權限' }).click();
   await expect(page.locator('#meeting-members-title')).toBeInViewport();
-  await page.locator('#meeting-recording-permissions-title').scrollIntoViewIfNeeded();
-  await expect(page.locator('#meeting-recording-permissions-title')).toBeInViewport();
+  await memberInvite.locator('input').fill('member@example.com');
+  await memberInvite.getByRole('button', { name: '邀請成員' }).click();
+  await expect(memberCard.locator('.meeting-member-row')).toHaveCount(1);
+  await expect(memberCard.getByText('member@example.com', { exact: true })).toHaveCount(1);
+  await expect(memberCard.getByLabel('允許 member@example.com 錄製')).toBeChecked();
+  await expect(memberCard.getByRole('button', { name: '移除' })).toBeVisible();
+  await expect(page.locator('#meeting-recording-permissions-title')).toHaveCount(0);
   await expect(page.getByRole('button', { name: '成員與錄製權限' })).toHaveAttribute('aria-current', 'step');
   await page.evaluate(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' }));
   await expect.poll(() => page.evaluate(() => Math.ceil(window.scrollY + window.innerHeight) >= document.documentElement.scrollHeight)).toBe(true);

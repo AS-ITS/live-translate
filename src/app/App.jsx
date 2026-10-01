@@ -27,6 +27,7 @@ import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '.
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
+import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 import {
   buildFinalizePatch,
   finalizeActiveSessionRecord
@@ -893,6 +894,21 @@ const activeMeetingCheckpointRef = useRef(null);
         }
         if (nextState !== subtitleCueStateRef.current) {
           const previous = subtitleCueStateRef.current;
+          if (result.action === 'finalized') {
+            const finalizedCue = nextState.finalCues.find((item) => item.cueId === cue.cueId) || nextState.finalCues.at(-1);
+            recordLivePipelineTrace({
+              stage: 'CUE_STATE',
+              recordingId: finalizedCue?.sessionId || activeSessionRecordIdRef.current,
+              segmentId: finalizedCue?.segmentId || activeMeetingCheckpointRef.current?.segmentId || null,
+              audioTurnId: finalizedCue?.audioTurnId || cue.audioTurnId || null,
+              eventType: finalizedCue?.finalizedReason || 'idle',
+              isFinal: true,
+              sourceText: finalizedCue?.sourceText || '',
+              translationText: finalizedCue?.translatedText || '',
+              cueId: finalizedCue?.cueId || cue.cueId,
+              cueAction: nextState.finalCues.length > previous.finalCues.length ? 'finalize' : 'merge'
+            });
+          }
           subtitleCueStateRef.current = nextState;
           setSubtitleCueState(nextState);
           enqueueCuePersistence(previous, nextState);

@@ -338,3 +338,30 @@ Implementation guidance:
 - No API changes.
 - No database or persistence changes.
 - No real Gemini API calls are required for validation.
+
+## 11. Spoken Turn Identity and Development Trace
+
+`turnComplete` and `generationComplete` describe the same provider boundary
+when they arrive consecutively without intervening transcript text. The first
+accepted boundary rotates the local `audioTurnId`; the second must not rotate it
+again. Transcript text arriving after that boundary belongs to the new spoken
+turn unless it is an actual late/cumulative continuation of one side of the
+previous turn. Source and translation may therefore retain different active
+turn identities while a late counterpart is completed.
+
+Provider event IDs are deduplicated within a provider epoch. Reconnect and
+rollover epochs must not collide with an earlier provider event carrying the
+same ID.
+
+Development builds expose the bounded trace through:
+
+```js
+window.__liveTranslateDebug.getPipelineTrace(filter)
+window.__liveTranslateDebug.getTurnTrace(audioTurnId)
+window.__liveTranslateDebug.clearPipelineTrace()
+```
+
+The trace covers microphone input, PCM capture/send, provider events,
+normalized transcript events, Cue append/update/finalize/merge/drop, and React
+render. Every drop includes `dropReason`. Production builds neither retain nor
+log these trace entries.

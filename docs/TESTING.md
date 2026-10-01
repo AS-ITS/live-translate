@@ -746,3 +746,31 @@ node --test \
 These tests verify the 30-minute deadline read model, stable `410` expiry
 contract, v1 read compatibility with v2 legacy-column write suppression, and
 best-effort purge metrics. They do not call Gemini or remote Supabase.
+
+## Spoken turn trace and real-microphone acceptance
+
+Automated coverage must use the mock Gemini adapter. For a development build,
+inspect a turn with:
+
+```js
+const trace = window.__liveTranslateDebug.getPipelineTrace()
+window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
+```
+
+For each spoken turn, verify the trace reaches `PCM_CAPTURED`, `PCM_SENT`,
+`PROVIDER_EVENT`, `NORMALIZED`, `CUE_STATE`, and `REACT_RENDER`. A `drop` entry
+must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
+Cue rows and the browser console for runtime errors.
+
+Real browser and real microphone acceptance remains manual and must cover:
+
+1. One sentence and two consecutive sentences (two separate Cues).
+2. Five rapid sentences and sentences separated by 2–3 seconds.
+3. One continuous 20–30 second sentence with partial updates and one final Cue.
+4. Pause/resume followed immediately by speech.
+5. Provider reconnect/rollover followed immediately by speech.
+
+Mocks, unit tests, Playwright, and DOM inspection cannot mark these real-device
+cases as passing. Each case passes only after the spoken text is confirmed
+through PCM, provider, normalized transcript, Cue state, React render, and the
+visible subtitle.

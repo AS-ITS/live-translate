@@ -1294,6 +1294,25 @@ test('normalizer creates stable stream-specific IDs and control events', () => {
   assert.equal(events[0].sessionTimeMs, 123);
 });
 
+test('normalizer deduplicates provider event IDs only within the same provider epoch', () => {
+  const message = {
+    eventId: 'provider-reused-id',
+    serverContent: { inputTranscription: { text: 'source' } }
+  };
+  const first = normalizeGeminiLiveCueEvents(message, {
+    liveSessionId: 'live-1', providerEpoch: 1, eventSequence: 1, sessionTimeMs: 100
+  });
+  const replay = normalizeGeminiLiveCueEvents(message, {
+    liveSessionId: 'live-1', providerEpoch: 1, eventSequence: 2, sessionTimeMs: 200
+  });
+  const reconnected = normalizeGeminiLiveCueEvents(message, {
+    liveSessionId: 'live-1', providerEpoch: 2, eventSequence: 3, sessionTimeMs: 300
+  });
+
+  assert.equal(first[0].eventId, replay[0].eventId);
+  assert.notEqual(first[0].eventId, reconnected[0].eventId);
+});
+
 test('normalizer marks late input and output transcript events as final', () => {
   const events = normalizeGeminiLiveCueEvents({
     eventId: 'late-provider-42',

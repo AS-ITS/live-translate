@@ -10,6 +10,7 @@ import {
 } from '../../lib/subtitleCues.js';
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
+import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
@@ -304,8 +305,12 @@ export function useLiveRecordingController({
 
   const cueController = useMemo(() => ({
     applyLiveSubtitleCueEvent(event) {
-      if (event?.connectionEpoch !== undefined && event.connectionEpoch !== cue.callbackGenerationRef.current.generation) return;
+      if (event?.connectionEpoch !== undefined && event.connectionEpoch !== cue.callbackGenerationRef.current.generation) {
+        recordCueTrace({ cue, event, cueAction: 'drop', dropReason: 'stale_callback_generation' });
+        return;
+      }
       const current = cue.stateRef.current;
+      const wasProcessed = Boolean(event?.eventId && current.processedEventIds?.includes(event.eventId));
       let next = applySubtitleCueEvent(current, event, {
         targetLanguageCode,
         sourceLanguageCode,
@@ -356,6 +361,8 @@ export function useLiveRecordingController({
           finalCueSequences: (next.finalCues || []).map((item) => item.sequence)
         }));
       }
+      const transition = describeCueTransition(current, next, event, { wasProcessed });
+      recordCueTrace({ cue, event, next, ...transition });
       if (next === current) return;
       cue.stateRef.current = next;
       cue.setState?.(next);
@@ -363,7 +370,10 @@ export function useLiveRecordingController({
       this.requestNumericCorrection(next);
     },
     queueLiveSubtitleCueEvent(event) {
-      if (event?.connectionEpoch !== undefined && event.connectionEpoch !== cue.callbackGenerationRef.current.generation) return;
+      if (event?.connectionEpoch !== undefined && event.connectionEpoch !== cue.callbackGenerationRef.current.generation) {
+        recordCueTrace({ cue, event, cueAction: 'drop', dropReason: 'stale_callback_generation' });
+        return;
+      }
       const shouldFlushImmediately = Boolean(event?.localFinalize || event?.isFinal || event?.turnComplete || event?.generationComplete || event?.eventType === 'boundary');
       if (shouldFlushImmediately) {
         cue.eventsRef.current.push(event);
@@ -395,7 +405,11 @@ export function useLiveRecordingController({
         cue.flushTimerRef.current = null;
       }
       const generation = cue.callbackGenerationRef.current.generation;
-      const events = cue.eventsRef.current.splice(0).filter((event) => event?.connectionEpoch === undefined || event.connectionEpoch === generation);
+      const queuedEvents = cue.eventsRef.current.splice(0);
+      const events = queuedEvents.filter((event) => event?.connectionEpoch === undefined || event.connectionEpoch === generation);
+      for (const event of queuedEvents) {
+        if (!events.includes(event)) recordCueTrace({ cue, event, cueAction: 'drop', dropReason: 'stale_callback_generation' });
+      }
       for (const event of events) this.applyLiveSubtitleCueEvent(event);
     },
     requestNumericCorrection(currentState) {
@@ -413,6 +427,12 @@ export function useLiveRecordingController({
       const current = cue.stateRef.current;
       const next = finalizePendingSubtitleCue(current, { sessionTimeMs: cue.getSessionTime?.() ?? 0, reason });
       if (next === current) return;
+      recordCueTrace({
+        cue,
+        event: { eventType: reason, isFinal: true },
+        next,
+        cueAction: next.finalCues.length > current.finalCues.length ? 'finalize' : 'merge'
+      });
       cue.stateRef.current = next;
       cue.setState?.(next);
       cue.persist?.(current, next);
@@ -1570,4 +1590,53 @@ export function useLiveRecordingController({
     state,
     targetLanguageCode
   ]);
+}
+
+function describeCueTransition(current, next, event, { wasProcessed = false } = {}) {
+  if (next === current) return {
+    cueAction: 'drop',
+    dropReason: wasProcessed ? 'duplicate_event' : 'no_state_change'
+  };
+  if ((next.finalCues?.length || 0) > (current.finalCues?.length || 0)) return { cueAction: 'finalize' };
+  const previousFinal = current.finalCues?.at(-1);
+  const nextFinal = next.finalCues?.at(-1);
+  if (previousFinal && nextFinal && previousFinal.cueId === nextFinal.cueId
+    && nextFinal.finalizedReason === 'merged'
+    && (previousFinal.sourceText !== nextFinal.sourceText || previousFinal.translatedText !== nextFinal.translatedText)) {
+    return { cueAction: 'merge' };
+  }
+  const previousCueIds = new Set([
+    current.currentCue?.cueId,
+    ...(current.pendingCues || []).map((item) => item.cueId),
+    ...(current.finalCues || []).map((item) => item.cueId)
+  ].filter(Boolean));
+  const nextCue = [next.currentCue, ...(next.pendingCues || []), ...(next.finalCues || [])]
+    .find((item) => item?.cueId && !previousCueIds.has(item.cueId));
+  return { cueAction: nextCue ? 'append' : 'update' };
+}
+
+function recordCueTrace({ cue, event = {}, next, cueAction, dropReason = null }) {
+  const candidates = [
+    next?.currentCue,
+    ...(next?.pendingCues || []),
+    ...(next?.finalCues || [])
+  ].filter(Boolean);
+  const matchedCue = candidates.find((item) => event.audioTurnId && item.audioTurnId === event.audioTurnId)
+    || candidates.at(-1)
+    || null;
+  recordLivePipelineTrace({
+    stage: 'CUE_STATE',
+    recordingId: matchedCue?.sessionId || cue.getSessionId?.() || null,
+    segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,
+    connectionEpoch: event.connectionEpoch ?? null,
+    audioTurnId: event.audioTurnId || matchedCue?.audioTurnId || null,
+    eventId: event.eventId || null,
+    eventType: event.eventType || null,
+    isFinal: Boolean(event.isFinal),
+    sourceText: matchedCue?.sourceText || (event.stream === 'source' ? event.text || '' : ''),
+    translationText: matchedCue?.translatedText || (event.stream === 'translation' ? event.text || '' : ''),
+    cueId: matchedCue?.cueId || null,
+    cueAction,
+    dropReason
+  });
 }

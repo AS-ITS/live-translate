@@ -455,6 +455,7 @@ test('provider reconnect rotates live session id across meeting segments', async
     targetLanguageCode: 'en'
   });
   let connectOptions = null;
+  const previousAudioTurnId = session.audioTurnId;
   session.connectProvider = async (options) => {
     connectOptions = options;
     return true;
@@ -470,7 +471,41 @@ test('provider reconnect rotates live session id across meeting segments', async
   );
   assert.equal(session.segmentId, 'segment-2');
   assert.equal(session.liveSessionId, 'live-session-2');
+  assert.notEqual(session.audioTurnId, previousAudioTurnId);
   assert.deepEqual(connectOptions, { forceRefresh: true });
+});
+
+test('transparent provider reconnect preserves the incomplete local audio turn identity', async () => {
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-session-1',
+    segmentId: 'segment-1',
+    targetLanguageCode: 'en'
+  });
+  const previousAudioTurnId = session.audioTurnId;
+  session.connectProvider = async () => true;
+
+  assert.equal(await session.reconnectProvider({ forceRefresh: true }), true);
+  assert.equal(session.audioTurnId, previousAudioTurnId);
+});
+
+test('turnComplete followed by generationComplete rotates the audio turn only once', () => {
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onCueEvent: (event) => {
+      if (event.stream === 'source') sourceEvents.push(event);
+    }
+  });
+
+  session.handleMessage({ eventId: 'text-1', serverContent: { inputTranscription: { text: 'first sentence' } } });
+  session.handleMessage({ eventId: 'turn-1', serverContent: { turnComplete: true } });
+  const nextAudioTurnId = session.audioTurnId;
+  session.handleMessage({ eventId: 'generation-1', serverContent: { generationComplete: true } });
+  assert.equal(session.audioTurnId, nextAudioTurnId);
+
+  session.handleMessage({ eventId: 'text-2', serverContent: { inputTranscription: { text: 'second sentence' } } });
+  assert.equal(sourceEvents.length, 2);
+  assert.notEqual(sourceEvents[0].audioTurnId, sourceEvents[1].audioTurnId);
 });
 
 test('turn completion finalizes preceding input and output transcript partials', () => {

@@ -816,6 +816,41 @@ async function gotoMockMeetingLive(page, { sourceLanguageCode, targetLanguageCod
   await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
 }
 
+async function configureTestGeminiCredential(page) {
+  await page.evaluate(() => { window.location.hash = '#settings'; });
+  await page.getByRole('textbox', { name: 'Gemini API Key' }).fill('test-api-key');
+  await page.getByRole('button', { name: '設定金鑰' }).click();
+  await page.evaluate(() => { window.location.hash = '#live?meetingId=meeting-1'; });
+  await expect(page.getByRole('button', { name: '開始' })).toBeVisible();
+}
+
+async function mockLiveSessionCreateApi(page, {
+  sourceLanguageCode = 'zh-Hant',
+  targetLanguageCode = 'en'
+} = {}) {
+  await page.route('**/api/sessions', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        session: {
+          id: 'session-1',
+          name: '測試會議',
+          meetingId: 'meeting-1',
+          segmentId: 'segment-1',
+          status: 'created',
+          sourceLanguageCode,
+          targetLanguageCode
+        }
+      })
+    });
+  });
+}
+
 test('live recording can start while the meeting list is still loading', async ({ page }) => {
   await mockMeetingCheckpointApi(page, { delayMeetingListMs: 500 });
   await page.goto('/#live?meetingId=meeting-1');
@@ -1897,7 +1932,9 @@ test('renders two separate Cues for two consecutive sentences', async ({ page })
     if (message.type() === 'debug' && /Cue decision|Cue state transition/u.test(message.text())) cueLogs.push(message.text());
   });
   await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
   await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
   await page.getByRole('button', { name: '開始' }).click();
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
@@ -1918,6 +1955,82 @@ test('renders two separate Cues for two consecutive sentences', async ({ page })
   expect(cueLogs.some((log) => log.includes('same-turn-final'))).toBe(false);
   expect(cueLogs.some((log) => log.includes('duplicate') || log.includes('already-finalized'))).toBe(false);
   console.log(`[two-cue-browser] ${JSON.stringify({ cueIds, cueLogs })}`);
+});
+
+test('spoken turn trace keeps separate-boundary consecutive sentences as separate cues', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await page.evaluate(() => window.__liveTranslateDebug.clearPipelineTrace());
+
+  await emitMicrophoneAudio(page);
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    liveSession.emitMessage({
+      eventId: 'trace-first-text',
+      serverContent: {
+        inputTranscription: { text: '第一句測試完成' },
+        outputTranscription: { text: 'First sentence complete' }
+      }
+    });
+    liveSession.emitMessage({ eventId: 'trace-first-boundary', serverContent: { turnComplete: true } });
+  });
+  await expect(finalCueRows(page)).toHaveCount(1);
+
+  await emitMicrophoneAudio(page);
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    liveSession.emitMessage({
+      eventId: 'trace-second-text',
+      serverContent: {
+        inputTranscription: { text: '第二句現在開始' },
+        outputTranscription: { text: 'Second sentence starts now' }
+      }
+    });
+    liveSession.emitMessage({ eventId: 'trace-second-boundary', serverContent: { turnComplete: true } });
+  });
+  await expect(finalCueRows(page)).toHaveCount(2);
+  await expectCueRow(finalCueRows(page).nth(0), {
+    sourceText: '第一句測試完成',
+    translatedText: 'First sentence complete'
+  });
+  await expectCueRow(finalCueRows(page).nth(1), {
+    sourceText: '第二句現在開始',
+    translatedText: 'Second sentence starts now'
+  });
+
+  const traceBeforeDuplicate = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  const firstNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'NORMALIZED' && entry.sourceText === '第一句測試完成');
+  const secondNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'NORMALIZED' && entry.sourceText === '第二句現在開始');
+  expect(firstNormalized.audioTurnId).not.toBe(secondNormalized.audioTurnId);
+  for (const turnId of [firstNormalized.audioTurnId, secondNormalized.audioTurnId]) {
+    const stages = new Set(traceBeforeDuplicate.filter((entry) => entry.audioTurnId === turnId).map((entry) => entry.stage));
+    expect(stages.has('PCM_CAPTURED')).toBe(true);
+    expect(stages.has('PCM_SENT')).toBe(true);
+    expect(stages.has('PROVIDER_EVENT')).toBe(true);
+    expect(stages.has('NORMALIZED')).toBe(true);
+    expect(stages.has('CUE_STATE')).toBe(true);
+    expect(stages.has('REACT_RENDER')).toBe(true);
+  }
+  expect(traceBeforeDuplicate.filter((entry) => entry.cueAction === 'drop')).toEqual([]);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
+      eventId: 'trace-second-text',
+      serverContent: {
+        inputTranscription: { text: '第二句現在開始' },
+        outputTranscription: { text: 'Second sentence starts now' }
+      }
+    });
+  });
+  await expect(finalCueRows(page)).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => window.__liveTranslateDebug
+    .getPipelineTrace({ cueAction: 'drop' })
+    .filter((entry) => entry.dropReason === 'duplicate_event').length))
+    .toBeGreaterThanOrEqual(2);
 });
 
 test('keeps numeric tail fragments in the live subtitle', async ({ page }) => {
@@ -1972,11 +2085,15 @@ test('keeps page fixed while the live subtitle list scrolls independently', asyn
 
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
-  await page.goto('/');
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
   await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThanOrEqual(1);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await page.getByRole('button', { name: '暫停' }).click();
-  await expect(page.locator('.status-pill').getByText('已暫停', { exact: true })).toBeVisible();
+  await expect(page.locator('.live-meeting-status').getByText('已暫停', { exact: true })).toBeVisible();
 
   await page.evaluate(() => { window.__mockLiveConnectDelayMs = 1000; });
   await page.getByRole('button', { name: '繼續' }).click();

@@ -40,6 +40,68 @@ test('Gemini mock event flow produces one final cue from input/output partials',
   assert.equal(cueState.currentCue, null);
 });
 
+test('separate turnComplete assigns the next sentence a new audioTurnId and Cue', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-separate-boundary',
+    sessionId: 'session-separate-boundary',
+    segmentId: 'segment-separate-boundary',
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    echoTargetLanguage: false,
+    sessionClock: () => clock,
+    onCueEvent(event) {
+      if (event.stream === 'source') sourceEvents.push(event);
+      cueState = applySubtitleCueEvent(cueState, event);
+    }
+  });
+
+  clock = 100;
+  session.handleMessage({
+    eventId: 'first-text',
+    serverContent: {
+      inputTranscription: { text: '第一句測試完成' },
+      outputTranscription: { text: 'First sentence complete' }
+    }
+  });
+  clock = 200;
+  session.handleMessage({ eventId: 'first-boundary', serverContent: { turnComplete: true } });
+  const firstCandidate = cueState.currentCue || cueState.pendingCues[0];
+  cueState = resolveIdleSubtitleCue(cueState, {
+    cueId: firstCandidate.cueId,
+    updatedTimeMs: firstCandidate.updatedTimeMs,
+    sessionTimeMs: firstCandidate.boundaryAtMs + 700
+  }).state;
+
+  clock = 1_000;
+  session.handleMessage({
+    eventId: 'second-text',
+    serverContent: {
+      inputTranscription: { text: '第二句現在開始' },
+      outputTranscription: { text: 'Second sentence starts now' }
+    }
+  });
+  clock = 1_100;
+  session.handleMessage({ eventId: 'second-boundary', serverContent: { turnComplete: true } });
+  const secondCandidate = cueState.currentCue || cueState.pendingCues[0];
+  if (secondCandidate) {
+    cueState = resolveIdleSubtitleCue(cueState, {
+      cueId: secondCandidate.cueId,
+      updatedTimeMs: secondCandidate.updatedTimeMs,
+      sessionTimeMs: secondCandidate.boundaryAtMs + 700
+    }).state;
+  }
+
+  assert.notEqual(sourceEvents[0].audioTurnId, sourceEvents[1].audioTurnId);
+  assert.deepEqual(cueState.finalCues.map((cue) => [cue.sourceText, cue.translatedText]), [
+    ['第一句測試完成', 'First sentence complete'],
+    ['第二句現在開始', 'Second sentence starts now']
+  ]);
+  assert.equal(new Set(cueState.finalCues.map((cue) => cue.cueId)).size, 2);
+});
+
 test('terminal transcript flush emits final Cue events for pending subtitles', () => {
   let cueState = createSubtitleCueState();
   let clock = 0;

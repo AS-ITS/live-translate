@@ -4,6 +4,7 @@ import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { cueListForDisplay, sourceTextForCopy, sourceTextForDisplay, translationTextForCopy } from '../../lib/cueUi.js';
 import { transcriptTextForDisplay } from './liveTranscriptRecovery.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
+import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 
 // Async translation/refinement updates the same Cue row without obscuring
 // the live transcript content.
@@ -23,7 +24,7 @@ export function LiveCuePanel({
   const cueListRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
   const [showSource, setShowSource] = useState(true);
-  const cues = useMemo(() => cueListForDisplay(cueState, { requireSourceTextForPartial: true }), [cueState]);
+  const cues = useMemo(() => cueListForDisplay(cueState), [cueState]);
   const hasContent = cues.length > 0 || fallbackTranscriptItems.length > 0;
 
   useEffect(() => {
@@ -40,6 +41,23 @@ export function LiveCuePanel({
     if (!list || !isFollowingLatest || cues.length === 0) return;
     list.scrollTo({ top: list.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
+
+  useEffect(() => {
+    for (const cue of cues) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: cue.sessionId || null,
+        segmentId: cue.segmentId || null,
+        audioTurnId: cue.audioTurnId || null,
+        eventType: cue.status || null,
+        isFinal: cue.status === 'final',
+        sourceText: sourceTextForDisplay(cue, 'raw'),
+        translationText: effectiveTranslationForCue(cue),
+        cueId: cue.cueId || null,
+        cueAction: 'render'
+      });
+    }
+  }, [cues]);
 
   return (
     <section className="cue-panel meeting-settings-card" aria-label="即時字幕" data-testid="live-cue-panel" ref={panelRef}>

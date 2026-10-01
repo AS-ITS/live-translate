@@ -61,19 +61,32 @@ function transcriptIsFinal({ content, context, stream, eventType }) {
 }
 
 function createEvent({ payload = {}, stream, eventType, text, providerEventId, eventSequence, turnIndex, sessionTimeMs, context, isFinal, turnComplete = false, generationComplete = false }) {
-  const identityBase = [
-    providerEventId || context.liveSessionId || context.sessionId || 'session-unknown',
-    eventSequence ?? 'sequence-unknown'
-  ].join('|');
+  const audioTurnId = stream === 'source'
+    ? (context.sourceAudioTurnId || context.audioTurnId)
+    : stream === 'translation'
+      ? (context.translationAudioTurnId || context.audioTurnId)
+      : (context.boundaryAudioTurnId || context.audioTurnId);
+  const turnKey = stream === 'source'
+    ? (context.sourceTurnKey || context.turnKey)
+    : stream === 'translation'
+      ? (context.translationTurnKey || context.turnKey)
+      : (context.boundaryTurnKey || context.turnKey);
+  const identityBase = providerEventId
+    ? `${context.providerEpoch ?? context.connectionEpoch ?? 'epoch-unknown'}|${providerEventId}`
+    : [
+      context.liveSessionId || context.sessionId || 'session-unknown',
+      eventSequence ?? 'sequence-unknown'
+    ].join('|');
   return {
     eventId: `${identityBase}:${stream || 'control'}:${eventType}:${normalizeText(text)}`,
     liveSessionId: context.liveSessionId || null,
     sessionId: context.sessionId || null,
     segmentId: context.segmentId || null,
     connectionEpoch: context.connectionEpoch ?? null,
-    audioTurnId: context.audioTurnId || null,
-    turnKey: context.turnKey || context.audioTurnId || null,
-    turnIdentitySource: context.turnIdentitySource || (context.audioTurnId ? 'local' : null),
+    providerEpoch: context.providerEpoch ?? null,
+    audioTurnId: audioTurnId || null,
+    turnKey: turnKey || audioTurnId || null,
+    turnIdentitySource: context.turnIdentitySource || (audioTurnId ? 'local' : null),
     stream,
     eventType,
     text: normalizeText(text),

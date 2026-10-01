@@ -218,6 +218,10 @@ export function createWebRtcSubtitleTransport({
 
   return Object.freeze({
     participantId,
+    async getStats() {
+      if (!pc || typeof pc.getStats !== 'function') return [];
+      return candidatePairEvidence(await pc.getStats());
+    },
     start() {
       stopped = false;
       retryAttempt = 0;
@@ -249,6 +253,22 @@ export function createWebRtcSubtitleTransport({
       status('idle');
     },
   });
+}
+
+export function candidatePairEvidence(stats) {
+  if (!stats || typeof stats.values !== 'function' || typeof stats.get !== 'function') return [];
+  return [...stats.values()]
+    .filter((item) => item?.type === 'candidate-pair' && (item.selected || item.nominated))
+    .map((pair) => ({
+      pairId: pair.id,
+      state: pair.state,
+      selected: Boolean(pair.selected),
+      nominated: Boolean(pair.nominated),
+      localCandidateType: stats.get(pair.localCandidateId)?.candidateType || 'unknown',
+      remoteCandidateType: stats.get(pair.remoteCandidateId)?.candidateType || 'unknown',
+      currentRoundTripTime: Number.isFinite(pair.currentRoundTripTime) ? pair.currentRoundTripTime : null,
+      timestamp: pair.timestamp,
+    }));
 }
 
 function createParticipantId(role) {

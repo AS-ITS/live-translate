@@ -26,9 +26,12 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       onError: () => {},
     });
     transportRef.current = transport;
+    const getStats = () => transport.getStats();
+    globalThis.__liveTranslateWebRtcGetStats = getStats;
     transport.start();
     return () => {
       disposed = true;
+      if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;
       if (transportRef.current === transport) transportRef.current = null;
       void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
     };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWebRtcSignalingClient } from '../../src/webrtc/signalingClient.js';
-import { createWebRtcSubtitleTransport } from '../../src/webrtc/subtitleTransport.js';
+import { candidatePairEvidence, createWebRtcSubtitleTransport } from '../../src/webrtc/subtitleTransport.js';
 
 class FakeDataChannel {
   constructor() {
@@ -134,4 +134,16 @@ test('Viewer signaling sends only the selected share credential and exposes safe
     && error.message === '分享已失效。'
     && !error.message.includes('secret-token-never-log')
   ));
+});
+
+test('candidate evidence exposes selected pair metadata without signaling credentials', () => {
+  const stats = new Map([
+    ['local-1', { id: 'local-1', type: 'local-candidate', candidateType: 'srflx' }],
+    ['remote-1', { id: 'remote-1', type: 'remote-candidate', candidateType: 'host' }],
+    ['pair-1', { id: 'pair-1', type: 'candidate-pair', state: 'succeeded', nominated: true, localCandidateId: 'local-1', remoteCandidateId: 'remote-1', currentRoundTripTime: 0.04, timestamp: 123 }],
+  ]);
+  assert.deepEqual(candidatePairEvidence(stats), [{
+    pairId: 'pair-1', state: 'succeeded', selected: false, nominated: true,
+    localCandidateType: 'srflx', remoteCandidateType: 'host', currentRoundTripTime: 0.04, timestamp: 123,
+  }]);
 });

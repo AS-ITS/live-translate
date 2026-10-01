@@ -105,6 +105,7 @@ export function MeetingViewerPage({ token, code }) {
           },
           onError: () => {},
         });
+        window.__liveTranslateWebRtcGetStats = () => webRtcTransport.getStats();
         webRtcTransport.start();
       } catch {
         setShareConnection({ value: 'failed' });
@@ -224,6 +225,7 @@ export function MeetingViewerPage({ token, code }) {
       loadingOlderRef.current = false;
       void realtimeController?.stop();
       void webRtcTransport?.stop();
+      delete window.__liveTranslateWebRtcGetStats;
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };

@@ -67,22 +67,10 @@ WEBRTC_RELAY_REDIS_URL=rediss://:<password>@<redis-host>:<port>
 
 ## `getStats()` 證據
 
-在 Device 與 Viewer 的 DevTools，對正式 transport 的 `RTCPeerConnection` 執行等價程式並保存 JSON。若頁面未暴露 debug handle，使用工程 POC 收集 candidate pair，並明確標示 POC 證據：
+在 Device 與 Viewer 各自的 DevTools Console 執行以下命令並保存 JSON。函式只回傳 candidate-pair 欄位，不包含 JWT 或分享憑證：
 
 ```js
-const stats = await pc.getStats();
-const rows = [...stats.values()]
-  .filter((item) => item.type === 'candidate-pair' && (item.selected || item.nominated))
-  .map((pair) => ({
-    pairId: pair.id,
-    state: pair.state,
-    selected: pair.selected,
-    nominated: pair.nominated,
-    localCandidateType: stats.get(pair.localCandidateId)?.candidateType,
-    remoteCandidateType: stats.get(pair.remoteCandidateId)?.candidateType,
-    currentRoundTripTime: pair.currentRoundTripTime,
-    timestamp: pair.timestamp,
-  }));
+const rows = await window.__liveTranslateWebRtcGetStats();
 console.log(JSON.stringify(rows, null, 2));
 ```
 

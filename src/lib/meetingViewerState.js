@@ -12,7 +12,7 @@ function mergeCursor(current, incoming, cues) {
 }
 
 export function applyMeetingCueEvent(current, event) {
-  if (!event || event.type !== 'cue.append' || !event.cue?.cueId) return current;
+  if (!event || !['cue.append', 'cue.update'].includes(event.type) || !event.cue?.cueId) return current;
   const next = mergeMeetingViewerSnapshot(current, {
     cues: [event.cue],
     cursor: { eventId: event.eventId || current?.cursor?.eventId || 0, cueSequence: event.cue.sequence || current?.cursor?.cueSequence || 0 }

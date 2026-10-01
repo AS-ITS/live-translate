@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- 正式錄音與 Viewer 流程已接入 WebRTC DataChannel：Device 使用登入 JWT 與既有 canRecord 規則，Viewer 沿用 code/token 分享連結，自動處理 snapshot、cue append/update、replay、去重、重連與安全狀態；Realtime/SSE 仍是依賴雲端 cue 寫入的 fallback。
 - Phase 0 contract documentation now fixes the browser/local-service boundary:
   immutable OPFS chunks are explicitly sent by the browser and the service
   cannot read page OPFS. Cue, checkpoint, operation, and audio delivery each

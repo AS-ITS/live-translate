@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebRTC Device / Viewer PoC</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+    body { margin: 0 auto; max-width: 920px; padding: 24px; }
+    fieldset { margin: 16px 0; display: grid; gap: 10px; }
+    label { display: grid; gap: 4px; }
+    input, select, button { font: inherit; padding: 7px; }
+    button { margin: 4px 4px 4px 0; cursor: pointer; }
+    code, pre { overflow-wrap: anywhere; }
+    #status { font-weight: 700; }
+    #cues { min-height: 100px; border: 1px solid #888; padding: 10px; }
+    .metric { display: inline-block; margin: 4px 18px 4px 0; }
+    .muted { opacity: .75; }
+  </style>
+</head>
+<body>
+  <h1>WebRTC Device / Viewer PoC</h1>
+  <p class="muted">Same-origin static proof of concept. ICE servers default to empty, so direct connection failure is shown explicitly.</p>
+  <fieldset>
+    <legend>Connection</legend>
+    <label>Role <select id="role"><option value="device">Device</option><option value="viewer">Viewer</option></select></label>
+    <label>Meeting ID <input id="meetingId" value="webrtc-poc"></label>
+    <label>Viewer share code or token <input id="share" placeholder="8-character code or opaque token" autocomplete="off"></label>
+    <label>Participant ID <input id="participantId" value="participant-browser"></label>
+    <label>Signaling URL <input id="signalingUrl" aria-label="Signaling URL"></label>
+  </fieldset>
+  <div>
+    <button id="start">Start</button><button id="send" disabled>Send synthetic cue</button><button id="update" disabled>Send cue.update</button>
+    <button id="replay" disabled>Replay</button><button id="stop" disabled>Stop</button>
+  </div>
+  <p>Status: <span id="status">idle</span></p>
+  <div>
+    <span class="metric">Candidate pair: <strong id="candidatePair">unknown</strong></span>
+    <span class="metric">Peer count: <strong id="peerCount">0</strong></span>
+    <span class="metric">Synthetic process time: <strong id="processTime">not measured</strong></span>
+    <span class="metric">Real end-to-end cue latency: <strong id="cueLatency">not measured</strong></span>
+    <span class="metric">Recording gap: <strong>placeholder / not measured</strong></span>
+  </div>
+  <h2>Cues</h2><div id="cues" aria-live="polite"></div>
+  <pre id="log" aria-live="polite"></pre>
+  <script src="/webrtc-poc.js" defer></script>
+</body>
+</html>

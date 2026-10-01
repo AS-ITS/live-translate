@@ -62,6 +62,7 @@ import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
 import { finalizedTranscriptItemsForRecording, useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
+import { useWebRtcDeviceSidecar, webRtcConnectionLabel } from '../webrtc/useWebRtcDeviceSidecar.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, liveMeetingStatusLabel, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
 import { createRecordingDiagnostics } from '../lib/recordingDiagnostics.js';
@@ -414,6 +415,12 @@ const activeMeetingCheckpointRef = useRef(null);
       copyLiveSource,
       copyLiveTranslation
     }
+  });
+  const webRtcDevice = useWebRtcDeviceSidecar({
+    meetingId: routeMeetingId,
+    enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment'].includes(liveController.status)),
+    lifecycleStatus: liveController.status,
+    cues: liveController.subtitleCueState?.finalCues || [],
   });
 
   useEffect(() => subscribeToLiveCredentialClear(() => {
@@ -2362,6 +2369,12 @@ const activeMeetingCheckpointRef = useRef(null);
                 <span>麥克風：{liveAudioPreference?.inputDeviceLabel || '尚未確認'}</span>
                 <span>揚聲器：{liveAudioPreference?.outputDeviceLabel || '瀏覽器預設揚聲器'}</span>
               </div>
+              <p className="device-note">
+                字幕分享：{webRtcConnectionLabel(webRtcDevice.value, { device: true })}
+                {webRtcDevice.value === 'failed' ? (
+                  <button className="button detail-button" type="button" onClick={webRtcDevice.retry}>重試</button>
+                ) : null}
+              </p>
               {liveController.status === 'reconnecting' ? <p className="device-note">正在重新連線即時字幕…</p> : null}
               {liveController.status === 'switching-segment' ? <p className="device-note">正在切換下一段即時字幕…</p> : null}
               {liveController.status === 'paused' ? (

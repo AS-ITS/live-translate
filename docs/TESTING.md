@@ -1,5 +1,49 @@
 # Testing
 
+## WebRTC 正式流程
+
+最小自動化驗證：
+
+```bash
+node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/meetingViewerState.test.js tests/unit/webrtcPocPage.test.js
+npm run build
+```
+
+這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、sidecar 清理、snapshot/update/replay 與去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
+
+## Vercel Relay PoC verification boundary
+
+The Relay PoC is documentation and operator validation only in this round; it
+does not modify production code or enable a paid Vercel/Upstash plan. Keep the
+following evidence classes separate:
+
+- **Automated local proof:** run the existing local-device unit/E2E commands
+  and `git diff --check`. This proves browser-to-local-device packet
+  persistence, ACK/idempotency, reconnect backfill, and stop behavior only.
+- **Preview/account proof:** requires a real Vercel Preview deployment, an
+  Upstash Redis account/database, configured Preview environment variables,
+  and an approved HTTPS/network path. It must exercise the two-hour relay
+  matrix in [local-device-poc.md](verification/local-device-poc.md): Function
+  expiry, redeploy, Viewer reconnect, and independent relay versus recording
+  lifecycle heartbeats.
+- **Not proven by this round:** production deployment, paid-plan activation,
+  cross-network device reachability, exactly-once Pub/Sub delivery, durable
+  subtitle history in Redis, or cloud audio storage/download. Audio download
+  remains a future host-authorized range endpoint against the local permanent
+  source.
+
+The relay test report must state that Redis Pub/Sub is routing only (not
+Streams), the registry has metadata only and no socket references, Redis has
+no subtitle history, and a publisher ACK means `PUBLISH` completed—not Viewer
+render or durable receipt. Include `requestId`, timeout/retry outcome,
+deployment ID, account/region, Viewer count, and the exact source snapshot
+used for recovery. Do not put REST tokens, ephemeral tokens, raw audio, or
+transcript payloads in the report.
+
+For cost/quotas and the formula for a two-hour meeting at different Viewer
+counts, use the operator section in [local-device-poc.md](verification/local-device-poc.md)
+and verify live limits at the linked official Vercel and Upstash pricing pages.
+
 ## Phase 0 contract evidence
 
 Test the browser as the only OPFS reader, immutable chunk checksums, four

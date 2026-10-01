@@ -3,6 +3,8 @@ import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetect
 import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
+import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
+import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 
 export function MeetingViewerPage({ token, code }) {
@@ -22,6 +24,8 @@ export function MeetingViewerPage({ token, code }) {
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const [hasOlderCues, setHasOlderCues] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
+  const [retryVersion, setRetryVersion] = useState(0);
   const estimatedRowHeight = 64;
 
   useEffect(() => {
@@ -48,11 +52,66 @@ export function MeetingViewerPage({ token, code }) {
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
+    let webRtcTransport = null;
+    let webRtcStarted = false;
+    setShareConnection({ value: 'connecting' });
+
+    function applyWebRtcEnvelope(envelope) {
+      if (envelope.type === 'meeting.stopped') {
+        setShareConnection({ value: 'stopped' });
+        setError('會議已停止。');
+        return;
+      }
+      if (envelope.type === 'snapshot') {
+        const merged = mergeMeetingViewerSnapshot(detailRef.current, {
+          cues: envelope.cues || [],
+          cursor: { cueSequence: envelope.sequence || 0 },
+        });
+        detailRef.current = merged;
+        setDetail(merged);
+        return;
+      }
+      if (envelope.type === 'replay.response') {
+        (envelope.events || []).forEach(applyWebRtcEnvelope);
+        return;
+      }
+      if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
+        applyCuePayload(envelope);
+      }
+    }
+
+    function startWebRtc(meetingId) {
+      if (webRtcStarted || !meetingId || typeof RTCPeerConnection !== 'function') return;
+      webRtcStarted = true;
+      try {
+        webRtcTransport = createWebRtcSubtitleTransport({
+          meetingId,
+          role: 'viewer',
+          credential: code ? { shareCode: code } : { shareToken: token },
+          onEnvelope: applyWebRtcEnvelope,
+          onStatus: (next) => {
+            if (cancelled) return;
+            setShareConnection(next);
+            if (next.value === 'invalid') setError('分享已失效。');
+            if (next.value === 'stopped') setError('會議已停止。');
+          },
+          onError: () => {},
+        });
+        webRtcTransport.start();
+      } catch {
+        setShareConnection({ value: 'failed' });
+      }
+    }
+
     async function fetchSnapshot(before = null) {
       const snapshotUrl = new URL(basePath, window.location.origin);
       if (before) snapshotUrl.searchParams.set('before', before);
       const response = await fetch(`${snapshotUrl.pathname}${snapshotUrl.search}`);
-      if (!response.ok) throw new Error('分享連結無效或已過期。');
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const code = body?.error?.code || body?.code;
+        throw new Error(code === 'meeting_stopped' || response.status === 410 ? '會議已停止。' : '分享連結無效或已過期。');
+      }
       const value = await response.json();
       if (cancelled) return value;
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
@@ -60,6 +119,7 @@ export function MeetingViewerPage({ token, code }) {
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
+      startWebRtc(value.meeting?.id || value.meetingId);
       return merged;
     }
     function applyCuePayload(payload) {
@@ -150,10 +210,11 @@ export function MeetingViewerPage({ token, code }) {
       nextViewerCursorRef.current = null;
       loadingOlderRef.current = false;
       void realtimeController?.stop();
+      void webRtcTransport?.stop();
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };
-  }, [token, code]);
+  }, [token, code, retryVersion]);
 
   async function loadOlderCues() {
     const cursor = nextViewerCursorRef.current;
@@ -255,6 +316,12 @@ export function MeetingViewerPage({ token, code }) {
 
   return (
     <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
+      <div className="viewer-connection-status" role="status" aria-live="polite">
+        <span>{webRtcConnectionLabel(shareConnection.value)}</span>
+        {shareConnection.value === 'failed' ? (
+          <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+        ) : null}
+      </div>
       {error ? <p className="error-message" role="alert">{error}</p> : null}
       {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
       {detail ? (

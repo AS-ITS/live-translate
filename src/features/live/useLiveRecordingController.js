@@ -474,10 +474,8 @@ export function useLiveRecordingController({
     meetingCheckpointSyncCoordinator() {
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
-          updateCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence?.().updateCheckpoint(payload)
-            || checkpoint.meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
-          getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence?.().getCheckpoint(payload)
-            || checkpoint.meetingCheckpointApiClientRef.current.getCheckpoint(payload),
+          updateCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload),
+          getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().getCheckpoint(payload),
           delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
           onStatusChange: (status) => {
             checkpoint.setMeetingCheckpointStatus?.(status);

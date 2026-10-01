@@ -148,7 +148,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
 
       try {
         await appendQueue;
-        if (state !== 'capturing' && state !== 'stop_incomplete') {
+        if (state !== 'capturing' && state !== 'paused' && state !== 'stop_incomplete') {
           const result = snapshot();
           resolveBarrier(result);
           return result;

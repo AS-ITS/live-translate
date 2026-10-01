@@ -64,6 +64,17 @@ test('Stop refuses to publish a final sequence with a missing chunk', async () =
   assert.equal(recorder.snapshot().state, 'stop_incomplete');
 });
 
+test('paused local recording can be finalized without resuming capture', async () => {
+  const recorder = createLocalMeetingRecorder({ manifestStore: createInMemoryLocalMeetingManifestStore(), chunkStore: fakeChunkStore() });
+  await recorder.start('meeting-1');
+  await recorder.appendChunk(chunkInput(1), new Uint8Array([1]));
+  await recorder.pause();
+
+  const finalized = await recorder.finalize({ finalSequence: 1 });
+  assert.equal(finalized.state, 'stopped_local');
+  assert.equal(finalized.finalSequence, 1);
+});
+
 test('crash reconciliation seals a file written before manifest seal', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const chunkStore = fakeChunkStore();

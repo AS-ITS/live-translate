@@ -343,7 +343,7 @@ export function MeetingViewerPage({ token, code }) {
             ) : null}
             {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
             {shareConnection.value === 'failed' ? (
-              <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+              <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
             ) : null}
           </div>
         </div>

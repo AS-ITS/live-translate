@@ -1,19 +1,12 @@
 -- Issue #37 GSK-04: remove the retired persisted Gemini credential store.
 -- This is intentionally a forward-only cleanup. It deletes only Vault secrets
 -- referenced by credential rows and never moves credential values elsewhere.
-do $$
-declare
-  credential_secret_id uuid;
-begin
-  for credential_secret_id in
-    select distinct vault_secret_id
-    from public.gemini_credentials
-    where vault_secret_id is not null
-  loop
-    perform vault.delete_secret(credential_secret_id);
-  end loop;
-end;
-$$;
+delete from vault.secrets
+where id in (
+  select distinct vault_secret_id
+  from public.gemini_credentials
+  where vault_secret_id is not null
+);
 
 revoke all on function public.get_my_gemini_credential(uuid) from public, anon, authenticated, service_role;
 revoke all on function public.upsert_my_gemini_credential(uuid, text) from public, anon, authenticated, service_role;

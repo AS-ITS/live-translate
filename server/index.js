@@ -4270,8 +4270,12 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
     endTimeMs: value.endTimeMs,
     sourceLanguageCode: value.sourceLanguageCode || null,
     targetLanguageCode: value.targetLanguageCode || null,
-    sourceText: value.sourceText,
-    translatedText: value.translatedText,
+    sourceText: value.sourceText ?? '',
+    translatedText: value.translatedText ?? '',
+    sourceStatus: value.sourceStatus || (value.sourceText ? 'finalized' : 'pending'),
+    translationStatus: value.translationStatus || (value.translatedText ? 'finalized' : 'pending'),
+    sourceVersion: Number.isInteger(value.sourceVersion) ? value.sourceVersion : (value.sourceText ? 1 : 0),
+    translationVersion: Number.isInteger(value.translationVersion) ? value.translationVersion : (value.translatedText ? 1 : 0),
     ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
     ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
     ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
@@ -4283,7 +4287,12 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
       !Number.isInteger(cue.sequence) || cue.sequence < 1 ||
       !Number.isFinite(cue.startTimeMs) || cue.startTimeMs < 0 ||
       (cue.endTimeMs !== null && cue.endTimeMs !== undefined && (!Number.isFinite(cue.endTimeMs) || cue.endTimeMs < cue.startTimeMs)) ||
-      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string') {
+      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string' ||
+      (!cue.sourceText.trim() && !cue.translatedText.trim()) ||
+      !['pending', 'finalized', 'unavailable'].includes(cue.sourceStatus) ||
+      !['pending', 'finalized', 'unavailable'].includes(cue.translationStatus) ||
+      !Number.isInteger(cue.sourceVersion) || cue.sourceVersion < 0 ||
+      !Number.isInteger(cue.translationVersion) || cue.translationVersion < 0) {
     throw createHttpError('subtitle_cue_invalid');
   }
   return { ...cue, meetingId };

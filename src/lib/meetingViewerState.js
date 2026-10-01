@@ -29,6 +29,7 @@ export function meetingEventDuplicateDetected(detail, event) {
   const cueId = event?.cue?.cueId || event?.cueId;
   if (!cueId) return false;
   return Array.isArray(detail?.cues) && detail.cues.some((cue) => cue?.cueId === cueId &&
+    (Number(cue?.sourceVersion) || 0) >= (Number(event?.cue?.sourceVersion) || 0) &&
     (Number(cue?.translationVersion) || 0) >= (Number(event?.cue?.translationVersion) || 0));
 }
 
@@ -51,6 +52,12 @@ function mergeCues(existing, incoming) {
 }
 
 function isNewerCue(incoming, existing) {
+  const incomingSourceVersion = Number(incoming?.sourceVersion) || 0;
+  const existingSourceVersion = Number(existing?.sourceVersion) || 0;
+  const incomingTranslationVersion = Number(incoming?.translationVersion) || 0;
+  const existingTranslationVersion = Number(existing?.translationVersion) || 0;
+  if (incomingSourceVersion < existingSourceVersion || incomingTranslationVersion < existingTranslationVersion) return false;
+  if (incomingSourceVersion > existingSourceVersion || incomingTranslationVersion > existingTranslationVersion) return true;
   const incomingVersion = Number(incoming?.refinement?.version) || 0;
   const existingVersion = Number(existing?.refinement?.version) || 0;
   return incomingVersion > existingVersion || (incomingVersion === existingVersion && JSON.stringify(incoming) !== JSON.stringify(existing));

@@ -195,7 +195,10 @@ test('Supabase meeting repository hydrates Cue offsets and language settings', a
 
   assert.deepEqual(segment.checkpoint.finalCues[0], {
     cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
-    sourceText: '你好', translatedText: 'hello', status: 'final', startTimeMs: 1200,
+    sourceText: '你好', translatedText: 'hello',
+    sourceStatus: 'finalized', translationStatus: 'finalized',
+    sourceVersion: 1, translationVersion: 1,
+    status: 'final', startTimeMs: 1200,
     endTimeMs: 2500, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
     rawSource: '你好', rawTranslation: 'hello', finalizedReason: 'final'
   });

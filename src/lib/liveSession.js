@@ -14,6 +14,7 @@ import { authenticatedFetch } from './accessToken.js';
 import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency } from './latencyHistogram.js';
+import { liveCueLatencyTracker } from './liveCueLatency.js';
 import { clearLiveCredential, getLiveCredential } from './liveCredentialHolder.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -857,6 +858,7 @@ export class LiveTranslateSession {
       timestamp: monotonicTimestamp(),
       bytes
     };
+    liveCueLatencyTracker.recordAudioTurnStarted({ audioTurnId: record.audioTurnId });
     this.trace('pcm.generated', { bytes: bytes.byteLength, sequence: record.sequence });
     this.onInputAudioChunk?.(new Uint8Array(bytes), {
       connectionEpoch: epoch,
@@ -1199,6 +1201,11 @@ export class LiveTranslateSession {
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
     for (const event of normalizedEvents) {
+      liveCueLatencyTracker.linkAudioTurn({
+        fromAudioTurnId: this.audioTurnId,
+        toAudioTurnId: event.audioTurnId
+      });
+      liveCueLatencyTracker.recordCueEvent(event);
       this.logLiveEvent('cue.normalized', {
         stream: event.stream,
         text: event.text,

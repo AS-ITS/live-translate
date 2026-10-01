@@ -285,6 +285,59 @@ test('Meeting Cue publish API emits a Viewer SSE event without checkpoint persis
   });
 });
 
+test('Meeting Cue replay keeps source-only Cue and delayed translation update on one Cue ID', async () => {
+  let meetingId = null;
+  const sessionRepository = {
+    async getSessionRecord() {
+      return { sessionRecord: { id: 'session-live', meetingId, segmentId: 'segment-1' } };
+    }
+  };
+  const meetingEventBroadcaster = (await import('../../src/infrastructure/meetingEventBroadcaster.js')).createMeetingEventBroadcaster();
+  const shareService = createSessionShareService();
+  const handler = createHandler({ sessionShareService: shareService, sessionRepository, meetingEventBroadcaster });
+  meetingId = (await request(handler, { method: 'POST', url: '/api/meetings', body: JSON.stringify({ draft: true }) })).json().meeting.id;
+  const share = (await request(handler, {
+    method: 'POST',
+    url: `/api/meetings/${meetingId}/shares`,
+    body: JSON.stringify({ role: 'viewer' })
+  })).json().share;
+  const url = `/api/meetings/${meetingId}/segments/segment-1/cues`;
+  const sourceOnly = finalCue({
+    sessionId: 'session-live',
+    segmentId: 'segment-1',
+    translatedText: '',
+    sourceStatus: 'finalized',
+    translationStatus: 'pending',
+    sourceVersion: 1,
+    translationVersion: 0
+  });
+
+  assert.equal((await request(handler, {
+    method: 'POST', url, body: JSON.stringify({ sessionId: 'session-live', producedAt: 10, cue: sourceOnly })
+  })).status, 202);
+  assert.equal((await request(handler, {
+    method: 'POST', url, body: JSON.stringify({
+      sessionId: 'session-live',
+      producedAt: 20,
+      cue: { ...sourceOnly, translatedText: 'hello', translationStatus: 'finalized', translationVersion: 1 }
+    })
+  })).status, 202);
+
+  const replay = await request(handler, {
+    method: 'GET',
+    url: `/api/shared-meetings/${share.token}/events?after=0`,
+    headers: { accept: 'application/json' }
+  });
+  const body = replay.json();
+  assert.equal(replay.status, 200);
+  assert.equal(body.events.length, 2);
+  assert.deepEqual(body.events.map((event) => event.cue.cueId), [sourceOnly.cueId, sourceOnly.cueId]);
+  assert.deepEqual(body.events.map((event) => event.cue.translationVersion), [0, 1]);
+  assert.equal(body.events[0].cue.sourceText, '你好');
+  assert.equal(body.events[0].cue.translatedText, '');
+  assert.equal(body.events[1].cue.translatedText, 'hello');
+});
+
 test('POST /api/meetings/:meetingId/complete completes an active segment', async () => {
   const handler = createHandler();
   const created = (await request(handler, {

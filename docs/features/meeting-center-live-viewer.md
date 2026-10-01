@@ -195,7 +195,7 @@ Live Session, claims a Recorder lease, or writes a Session/checkpoint.
 In cloud mode, persistence is the broadcast boundary:
 
 ```text
-final bilingual Cue
+stable Cue with source or translation finalized
   -> validate Meeting/Segment/Session relationship
   -> upsert subtitle_cues
   -> database trigger broadcasts cue.append on a private Realtime channel
@@ -215,7 +215,11 @@ The database trigger publishes an event shaped like:
     sequence: 39,
     status: "final",
     sourceText: "確認的原文。",
-    translatedText: "confirmed source text.",
+    sourceStatus: "finalized",
+    sourceVersion: 1,
+    translatedText: "",
+    translationStatus: "pending",
+    translationVersion: 0,
     startTimeMs: 1000,
     endTimeMs: 2800
   }
@@ -255,9 +259,10 @@ that all historical Cues remain available without rendering every row at once.
 
 ## Latency SLA
 
-The measured interval begins when a finalized bilingual Cue is ready for
-broadcast and ends when the Viewer has rendered that Cue. Time waiting for
-Gemini to produce a translation is excluded.
+DEV instrumentation records `audioTurnStartedAt`, `firstSourcePartialAt`,
+`firstTranslationPartialAt`, `sourceFinalAt`, `translationFinalAt`,
+`viewerFirstPublishedAt`, and `viewerTranslationUpdatedAt`. It reports Audio to
+first source/translation and each finalized side to Viewer publication/update.
 
 Acceptance targets under normal connectivity:
 

@@ -177,7 +177,8 @@ compatibility mapping.
 
 The Meeting Live recorder uses the direct translation path backed by
 `LiveTranslateSession` and `gemini-3.5-live-translate-preview`. Gemini returns
-paired source and translated transcript events for the same live Cue, while
+source and translation events for the same live Cue. Either side may finalize
+and publish independently; a delayed counterpart updates the same `cueId`, while
 the existing Session/Meeting checkpoint, rollover, interrupted recovery, and
 Viewer ordering remain shared with the recording path. The source-only
 `LiveTranscriptionSession` remains available for a future asynchronous

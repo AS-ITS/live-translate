@@ -59,8 +59,10 @@ function isPersistableFinalCue(cue) {
     && typeof cue.segmentId === 'string' && cue.segmentId.trim() !== ''
     && Number.isInteger(cue.sequence) && cue.sequence > 0
     && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
-    && typeof (cue.sourceText || cue.rawSource) === 'string'
-    && (cue.sourceText || cue.rawSource).trim() !== ''
+    && (
+      (typeof (cue.sourceText || cue.rawSource) === 'string' && (cue.sourceText || cue.rawSource).trim() !== '')
+      || (typeof (cue.translatedText || cue.rawTranslation) === 'string' && (cue.translatedText || cue.rawTranslation).trim() !== '')
+    )
   );
 }
 

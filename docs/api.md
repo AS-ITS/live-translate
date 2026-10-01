@@ -126,7 +126,8 @@ authoritative recovery path after disconnects. The Vercel Cron worker processes
 durable translation jobs in bounded batches and does not rely on process-local
 polling.
 
-The API treats a finalized source Cue as the stable unit of downstream work.
+The API treats a Cue with at least one finalized side as a stable publishable
+unit. Source and translation completion are independent.
 
 ### Cue read model
 
@@ -141,18 +142,22 @@ The API treats a finalized source Cue as the stable unit of downstream work.
   "sourceLanguageCode": "zh-Hant",
   "targetLanguageCode": "en",
   "sourceText": "正式原文。",
+  "sourceStatus": "finalized",
+  "sourceVersion": 1,
   "initialTranslation": "Initial translation.",
   "refinedTranslation": null,
-  "translationStatus": "completed",
+  "translationStatus": "finalized",
+  "translationVersion": 1,
   "refinementStatus": "queued",
   "version": 1,
   "status": "final"
 }
 ```
 
-`cueId`, `sessionId`, `segmentId`, `sequence`, time range, language identity,
-and `sourceText` are immutable. Initial translation and refinement update this
-same read-model row; they never create a second Cue or alter its ordering.
+`cueId`, `sessionId`, `segmentId`, `sequence`, time range, and language identity
+define immutable Cue identity. Source or translation may initially be empty;
+later versions update the same read-model row and never create a second Cue or
+alter its ordering.
 Consumers compute the effective translation as
 `refinedTranslation → initialTranslation → legacy translatedText`.
 

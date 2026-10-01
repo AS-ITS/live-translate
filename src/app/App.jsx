@@ -25,6 +25,7 @@ import { createTranscriptPolishingLifecycle } from '../lib/transcriptPolishingLi
 import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '../lib/transcriptPolishing.js';
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
+import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
 import {
   buildFinalizePatch,
   finalizeActiveSessionRecord
@@ -676,7 +677,7 @@ const activeMeetingCheckpointRef = useRef(null);
         initialTranslation: output.translatedText,
         rawTranslation: output.translatedText,
         translatedText: output.translatedText,
-        translationStatus: 'completed',
+        translationStatus: 'finalized',
         refinement: { ...(cue.refinement || {}), status: 'pending' }
       };
     });
@@ -1388,7 +1389,7 @@ const activeMeetingCheckpointRef = useRef(null);
       segmentId: cue.segmentId || activeMeetingCheckpointRef.current?.segmentId,
       sourceLanguageCode: cue.sourceLanguageCode || sourceLanguageCode,
       targetLanguageCode: cue.targetLanguageCode === undefined ? targetLanguageCode : cue.targetLanguageCode,
-      sourceText: cue.sourceText || cue.rawSource,
+      sourceText: cue.sourceText ?? cue.rawSource ?? '',
       translatedText: cue.translatedText ?? cue.rawTranslation ?? '',
       status: cue.status || 'final',
       finalizedReason: cue.finalizedReason || 'final'
@@ -1398,7 +1399,8 @@ const activeMeetingCheckpointRef = useRef(null);
       && typeof cue.segmentId === 'string' && cue.segmentId.trim() !== ''
       && Number.isInteger(cue.sequence) && cue.sequence > 0
       && Number.isFinite(cue.startTimeMs) && Number.isFinite(cue.endTimeMs)
-      && typeof cue.sourceText === 'string' && cue.sourceText.trim() !== ''
+      && typeof cue.sourceText === 'string' && typeof cue.translatedText === 'string'
+      && (cue.sourceText.trim() !== '' || cue.translatedText.trim() !== '')
     ));
     const activeMeetingCheckpoint = activeMeetingCheckpointRef.current;
     const activeSessionId = activeSessionRecordIdRef.current;
@@ -1453,6 +1455,7 @@ const activeMeetingCheckpointRef = useRef(null);
             cue,
             producedAt: cue.finalizedAt || Date.now()
           });
+          liveCueLatencyTracker.recordViewerPublished({ cue });
           return;
         } catch (error) {
           const retryableBindingFailure = error?.status === 403 || error?.status === 404 || error?.status === 409;

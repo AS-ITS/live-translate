@@ -7,9 +7,8 @@ Live Translate uses a browser-first real-time path with a narrow backend service
 - Frontend: React + JavaScript, Web Audio API, and Gemini Live API client logic.
 - Backend: Node.js HTTP server for authentication, token issuance, and
   configuration validation.
-- Gemini: Gemini Live API using `gemini-3.5-transcribe-live` for the current
-  source transcription path; the speech-to-speech preview model is optional
-  future capability.
+- Gemini: Gemini Live API using `gemini-3.5-live-translate-preview` for current
+  Meeting recording and immediate source/translation partials.
 
 The browser connects directly to Gemini Live API using an ephemeral token issued
 by the backend.
@@ -33,8 +32,8 @@ Transcribe Live (`gemini-3.5-transcribe-live`)
   → history / export / summary
 ```
 
-`gemini-3.5-live-translate-preview` remains an optional future speech-to-speech
-capability. It is not the authoritative meeting text source.
+`gemini-3.5-transcribe-live` and asynchronous Flash translation remain future
+options and are not part of the active Meeting recording path.
 
 Responsibilities and ownership:
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyMeetingCueEvent, meetingEventGapDetected, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
+import { applyMeetingCueEvent, meetingEventDuplicateDetected, meetingEventGapDetected, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
 
 const cue = (cueId, segmentSequence, sequence, translatedText = cueId, refinement = 1) => ({
   cueId, segmentSequence, sequence, status: 'final', sourceText: cueId, translatedText,
@@ -21,4 +21,51 @@ test('Viewer detects event gaps from its cursor', () => {
   assert.equal(meetingEventGapDetected({ eventId: 4 }, 6), true);
   assert.equal(meetingEventGapDetected({ eventId: 4 }, 5), false);
   assert.equal(meetingEventGapDetected({ eventId: 0 }, 6), false);
+});
+
+test('Viewer updates delayed translation in the original source-only Cue', () => {
+  const sourceOnly = {
+    ...cue('cue-1', 1, 1, ''),
+    sourceStatus: 'finalized',
+    translationStatus: 'pending',
+    sourceVersion: 1,
+    translationVersion: 0
+  };
+  const withTranslation = {
+    ...sourceOnly,
+    translatedText: 'Hello',
+    translationStatus: 'finalized',
+    translationVersion: 1
+  };
+  let state = mergeMeetingViewerSnapshot(null, { cursor: { eventId: 1, cueSequence: 1 }, cues: [sourceOnly] });
+  assert.equal(meetingEventDuplicateDetected(state, { cue: withTranslation }), false);
+  state = applyMeetingCueEvent(state, { type: 'cue.append', eventId: 2, cue: withTranslation });
+
+  assert.equal(state.cues.length, 1);
+  assert.equal(state.cues[0].cueId, 'cue-1');
+  assert.equal(state.cues[0].translatedText, 'Hello');
+  assert.equal(state.cues[0].translationVersion, 1);
+});
+
+test('Viewer preserves translation-first Cue identity when source arrives later', () => {
+  const translationOnly = {
+    ...cue('cue-1', 1, 1, 'Hello'),
+    sourceText: '',
+    sourceStatus: 'pending',
+    translationStatus: 'finalized',
+    sourceVersion: 0,
+    translationVersion: 1
+  };
+  const completed = {
+    ...translationOnly,
+    sourceText: '你好',
+    sourceStatus: 'finalized',
+    sourceVersion: 1
+  };
+  let state = mergeMeetingViewerSnapshot(null, { cursor: { eventId: 1, cueSequence: 1 }, cues: [translationOnly] });
+  state = applyMeetingCueEvent(state, { type: 'cue.append', eventId: 2, cue: completed });
+
+  assert.equal(state.cues.length, 1);
+  assert.equal(state.cues[0].sourceText, '你好');
+  assert.equal(meetingEventDuplicateDetected(state, { cue: translationOnly }), true);
 });

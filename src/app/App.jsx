@@ -12,6 +12,7 @@ import { createSessionSnapshotApiClient } from '../lib/sessionSnapshotApiClient.
 import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js';
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
+import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
@@ -194,7 +195,9 @@ export function App() {
   const sessionCommandApiClientRef = useRef(createSessionCommandApiClient());
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
-const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
+  const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
+  const localMeetingPersistenceRef = useRef(null);
+  const localMeetingCuePersistenceQueueRef = useRef(Promise.resolve());
 const meetingRecordsRequestRef = useRef(null);
 const activeMeetingCheckpointRef = useRef(null);
   const runtimeMeetingIdsRef = useRef(new Set());
@@ -269,6 +272,7 @@ const activeMeetingCheckpointRef = useRef(null);
       translationMetadataRef: translatedAudioMetadataRef,
       segmentsRef: audioUploadSegmentsRef,
       recordingDiagnostics: recordingDiagnosticsRef.current,
+      getLocalMeetingPersistence,
       setRecordingState,
       setTranslatedAudioState,
       upload: {
@@ -300,6 +304,7 @@ const activeMeetingCheckpointRef = useRef(null);
       pendingSnapshotIdsRef: pendingSessionSnapshotItemIdsRef,
       activeMeetingCheckpointRef,
       meetingCheckpointApiClientRef,
+      getLocalMeetingPersistence,
       setMeetingCheckpointStatus,
       clearCheckpointError: clearMeetingCheckpointError,
       reportSnapshotError: reportSessionSnapshotSyncError,
@@ -1383,6 +1388,13 @@ const activeMeetingCheckpointRef = useRef(null);
     }
   }
 
+  function getLocalMeetingPersistence() {
+    if (!localMeetingPersistenceRef.current) {
+      localMeetingPersistenceRef.current = createLocalMeetingPersistence();
+    }
+    return localMeetingPersistenceRef.current;
+  }
+
   function enqueueCuePersistence(previous, next) {
     const previousCues = new Map((previous?.finalCues || []).map((cue) => [cue.cueId, cue]));
     const changedCues = (next?.finalCues || []).filter((cue) => {
@@ -1411,19 +1423,33 @@ const activeMeetingCheckpointRef = useRef(null);
     ));
     const activeMeetingCheckpoint = activeMeetingCheckpointRef.current;
     const activeSessionId = activeSessionRecordIdRef.current;
-    const publishableCues = changedCues.filter((cue) => (
-      (!cue.sessionId || cue.sessionId === activeSessionId)
-      && (!cue.segmentId || cue.segmentId === activeMeetingCheckpoint?.segmentId)
+    const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() => (
+      Promise.all(checkpointCues.map((cue) => getLocalMeetingPersistence().saveCue({
+        meetingId: activeMeetingCheckpoint?.meetingId,
+        segmentId: activeMeetingCheckpoint?.segmentId,
+        sessionId: activeSessionId,
+        cue,
+        producedAt: cue.finalizedAt || Date.now()
+      })))
     ));
-    void publishMeetingCues(publishableCues, activeMeetingCheckpoint, activeSessionId);
+    localMeetingCuePersistenceQueueRef.current = localSave;
+    void localSave.then(() => {
+      if (webRtcDevice.value !== 'connected') {
+        return publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
+      }
+      return null;
+    }).catch(() => {
+      setMeetingCheckpointStatus('error');
+      setMeetingCheckpointErrorMessage('本機字幕保存失敗，請先不要關閉頁面。');
+    });
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
 
-  async function publishMeetingCues(cues, meetingCheckpoint, sessionId) {
+  async function publishMeetingCues(cues, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
     if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId || !sessionId || !Array.isArray(cues) || cues.length === 0) return;
-    if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+    if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
       || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
-      || activeSessionRecordIdRef.current !== sessionId) {
+      || activeSessionRecordIdRef.current !== sessionId)) {
       return;
     }
 
@@ -1432,26 +1458,46 @@ const activeMeetingCheckpointRef = useRef(null);
       && (!cue.sessionId || cue.sessionId === sessionId)
       && (!cue.segmentId || cue.segmentId === meetingCheckpoint.segmentId)
     ));
-    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId)));
+    await Promise.all(finalCues.map((cue) => enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive })));
   }
 
-  async function flushMeetingCuePublishes(sessionId) {
+  async function flushMeetingCuePublishes(sessionId, { forceCloud = false } = {}) {
     if (!sessionId) return;
+    await localMeetingCuePersistenceQueueRef.current;
+    if (forceCloud) {
+      const meetingCheckpoint = activeMeetingCheckpointRef.current;
+      if (meetingCheckpoint?.meetingId) {
+        const localCues = await getLocalMeetingPersistence().listCues(meetingCheckpoint.meetingId);
+        const groups = new Map();
+        for (const record of localCues) {
+          const key = `${record.sessionId}:${record.segmentId}`;
+          const group = groups.get(key) || { sessionId: record.sessionId, segmentId: record.segmentId, cues: [] };
+          group.cues.push(record.cue);
+          groups.set(key, group);
+        }
+        await Promise.all([...groups.values()].map((group) => publishMeetingCues(
+          group.cues,
+          { meetingId: meetingCheckpoint.meetingId, segmentId: group.segmentId },
+          group.sessionId,
+          { allowInactive: true }
+        )));
+      }
+    }
     const queued = [...meetingCuePublishQueuesRef.current.entries()]
       .filter(([key]) => key.startsWith(`${sessionId}:`))
       .map(([, promise]) => promise);
     await Promise.allSettled(queued);
   }
 
-  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId) {
+  function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
     const key = `${sessionId}:${cue.cueId}`;
     const previous = meetingCuePublishQueuesRef.current.get(key) || Promise.resolve();
     const next = previous.catch(() => {}).then(async () => {
-      if (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+      if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
         || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
-        || activeSessionRecordIdRef.current !== sessionId) return;
+        || activeSessionRecordIdRef.current !== sessionId)) return;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
+        if (!allowInactive && attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
           || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
           || activeSessionRecordIdRef.current !== sessionId)) return;
         try {
@@ -1720,8 +1766,13 @@ const activeMeetingCheckpointRef = useRef(null);
         }
         return null;
       }
-      try {
-        return await meetingCheckpointApiClientRef.current.getCheckpoint({ meetingId, segmentId: segment.id });
+        try {
+          const localCheckpoint = await getLocalMeetingPersistence().getCheckpoint({
+            meetingId,
+            segmentId: segment.id
+          });
+          if (localCheckpoint) return localCheckpoint;
+          return await meetingCheckpointApiClientRef.current.getCheckpoint({ meetingId, segmentId: segment.id });
       } catch (error) {
         checkpointReadErrors.push({ segmentId: segment.id, error });
         if (import.meta.env?.DEV) {
@@ -1752,9 +1803,13 @@ const activeMeetingCheckpointRef = useRef(null);
       const chunks = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.durableChunks || []
       ));
-      const persistedCues = checkpoints.flatMap((checkpointResult) => (
+      const checkpointCues = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.finalCues || []
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.sequence - right.sequence);
+      const localCues = (await getLocalMeetingPersistence().listCues(meetingId))
+        .map((record) => record.cue)
+        .filter((cue) => cue?.status === 'final');
+      const persistedCues = mergeDisplayedCues(checkpointCues, localCues);
       const refinedSubtitleCues = checkpoints.flatMap((checkpointResult) => (
         checkpointResult?.checkpoint?.refinedSubtitleCues || []
       )).filter((cue) => cue?.status === 'final').sort((left, right) => left.startTimeMs - right.startTimeMs);

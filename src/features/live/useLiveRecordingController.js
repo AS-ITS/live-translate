@@ -166,11 +166,10 @@ export function useLiveRecordingController({
         recordingControllerRef.current = createMicrophoneRecordingController({
           onStateChange: audio.setRecordingState,
           diagnostics: audio.recordingDiagnostics,
-          collectChunks: cloudMeetingAudioEnabled(),
-          ...(cloudMeetingAudioEnabled() ? {
-            preferredMimeTypes: ['audio/webm;codecs=opus', 'audio/webm'],
-            requireSupportedMimeType: true
-          } : {})
+          collectChunks: false,
+          preferredMimeTypes: ['audio/webm;codecs=opus', 'audio/webm'],
+          requireSupportedMimeType: true,
+          onChunk: (chunk) => audio.getLocalMeetingPersistence?.().appendAudioChunk(chunk)
         });
       }
       return recordingControllerRef.current;
@@ -182,6 +181,15 @@ export function useLiveRecordingController({
         return;
       }
       this.prepareInputAudioDownload(record);
+      const meetingCheckpoint = checkpoint.activeMeetingCheckpointRef.current;
+      if (!meetingCheckpoint?.meetingId || !meetingCheckpoint?.segmentId) {
+        throw new Error('Missing meeting checkpoint for local audio recording.');
+      }
+      await audio.getLocalMeetingPersistence?.().start({
+        meetingId: meetingCheckpoint.meetingId,
+        recordingId: record?.id,
+        segmentId: meetingCheckpoint.segmentId
+      });
       const nextState = await this.recordingController().start({
         stream: audio.pendingMicrophoneStreamRef?.current,
         sessionId: record?.id,
@@ -214,6 +222,7 @@ export function useLiveRecordingController({
         status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
         errorMessage: error?.message || '原始語音錄音無法暫停。'
       }));
+      if (nextState.status !== 'error') await audio.getLocalMeetingPersistence?.().pause();
       audio.setRecordingState?.(nextState);
       return nextState;
     },
@@ -222,6 +231,7 @@ export function useLiveRecordingController({
         audio.setRecordingState?.(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
         return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
       }
+      await audio.getLocalMeetingPersistence?.().resume();
       const nextState = await this.recordingController().resume({ stream: audio.pendingMicrophoneStreamRef?.current }).catch((error) => ({
         status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
         errorMessage: error?.message || '原始語音錄音無法繼續。'
@@ -229,28 +239,27 @@ export function useLiveRecordingController({
       audio.setRecordingState?.(nextState);
       return nextState;
     },
-  async finalizeRawAudioRecording() {
+    async finalizeRawAudioRecording() {
     if (!shouldRecordInputAudio) {
       audio.setRecordingState?.(INPUT_AUDIO_RECORDING_SKIPPED_STATE);
       return INPUT_AUDIO_RECORDING_SKIPPED_STATE;
     }
-    if (cloudMeetingAudioEnabled()) {
-      const cloudState = await this.recordingController().finalize().catch((error) => ({
+      const nextState = await this.recordingController().finalize().then(() => (
+        audio.getLocalMeetingPersistence?.().finalizeAudio({
+          fileName: `${audio.inputMetadataRef.current?.sessionId || 'meeting'}-input.webm`
+        })
+      )).catch((error) => ({
         status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
         errorMessage: error?.message || '原始語音音檔無法建立。'
       }));
-      audio.setRecordingState?.(cloudState);
-      return cloudState;
-    }
-    const segment = audio.segmentsRef.current.input;
-      const hasAudio = audio.inputChunksRef.current.length > 0 || segment.nextIndex > 0;
-      const nextState = await this.recordingController().cleanup({ discard: true }).catch((error) => ({
-        status: 'error', blob: null, mimeType: '', extension: '', fileName: '',
-        errorMessage: error?.message || '原始語音音檔無法建立。'
-      }));
-      const savedState = { ...nextState, status: hasAudio ? 'saved' : 'idle', blob: null, mimeType: 'audio/wav', extension: 'wav', fileName: '', errorMessage: '' };
-      audio.setRecordingState?.(savedState);
-      return savedState;
+      audio.setRecordingState?.(nextState);
+      return nextState;
+    },
+    noteProviderReconnect() {
+      return audio.getLocalMeetingPersistence?.().providerReconnect();
+    },
+    noteProviderRollover() {
+      return audio.getLocalMeetingPersistence?.().providerRollover();
     },
     prepareTranslatedAudioDownload(record) {
       audio.translationMetadataRef.current = { sessionId: record?.id || '', startedAt: record?.startedAt ?? Date.now() };
@@ -465,8 +474,10 @@ export function useLiveRecordingController({
     meetingCheckpointSyncCoordinator() {
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
-          updateCheckpoint: (payload) => checkpoint.meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
-          getCheckpoint: (payload) => checkpoint.meetingCheckpointApiClientRef.current.getCheckpoint(payload),
+          updateCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence?.().updateCheckpoint(payload)
+            || checkpoint.meetingCheckpointApiClientRef.current.updateCheckpoint(payload),
+          getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence?.().getCheckpoint(payload)
+            || checkpoint.meetingCheckpointApiClientRef.current.getCheckpoint(payload),
           delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
           onStatusChange: (status) => {
             checkpoint.setMeetingCheckpointStatus?.(status);
@@ -876,6 +887,7 @@ export function useLiveRecordingController({
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('stop');
       await checkpointController.flushMeetingCheckpointSync();
+      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current, { forceCloud: true });
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('stop');
         stopMeetingLifecycleHeartbeats();
@@ -1210,6 +1222,7 @@ export function useLiveRecordingController({
         }
         recovery.activateLiveSessionCallbacks(session.callbackGeneration);
         reconnectStage = 'resume_audio';
+        await audioController.noteProviderReconnect();
         await audioController.resumeRawAudioRecording();
       } catch (error) {
         if (!recovery.isCurrentGeneration?.(generationId) || recovery.sessionStopRequestedRef.current) {
@@ -1411,10 +1424,6 @@ export function useLiveRecordingController({
     const flushed = await checkpointController.flushMeetingCheckpointSync();
     if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
-    if (cloudMeetingAudioEnabled()) {
-      const completedAudio = await audioController.finalizeRawAudioRecording();
-      void controller.uploadFinalizedMeetingAudio(completedAudio, meetingCheckpoint);
-    }
     recovery.archiveActiveTranscriptSegment();
 
       const rollover = meetingLifecycleRef.current
@@ -1446,6 +1455,7 @@ export function useLiveRecordingController({
         forceRefresh: true
       });
       if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
+      await audioController.noteProviderRollover();
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
         return;
@@ -1456,12 +1466,6 @@ export function useLiveRecordingController({
       const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id };
     recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
     checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-    if (cloudMeetingAudioEnabled()) {
-      await audioController.startRecordingForSession({
-        id: nextLiveSessionId,
-        startedAt: Date.now()
-      });
-    }
         recovery.setStatusLabelOverride('下一段已開始');
         recovery.setStatus('listening');
       } finally {

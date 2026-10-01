@@ -36,6 +36,7 @@ import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/applicat
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 import { createExportController } from './exportController.js';
+import { createPublicRuntimeConfig } from './publicRuntimeConfig.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -759,6 +760,7 @@ export function createRequestHandler(options = {}) {
   , readinessCheck
  , strictCheckpointPathIds = true
  , requestLogger = logEvent
+ , publicRuntimeConfig = createPublicRuntimeConfig(process.env)
  } = options;
 
  const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
@@ -825,6 +827,7 @@ export function createRequestHandler(options = {}) {
       , authEventAuditLogService
  , strictCheckpointPathIds
  , requestLogger
+ , publicRuntimeConfig
     });
   };
 }
@@ -846,6 +849,7 @@ async function handleRequestWithSessionReadController(
   const observabilityMetricRepository = arguments[2]?.observabilityMetricRepository;
   const observabilityMetrics = arguments[2]?.observabilityMetrics;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
+  const publicRuntimeConfig = arguments[2]?.publicRuntimeConfig || createPublicRuntimeConfig();
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
@@ -879,6 +883,12 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && (path === '/health' || path === '/healthz')) {
     statusCode = 200;
     sendJson(res, statusCode, { ok: true, requestId }, requestId);
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/runtime-config') {
+    statusCode = 200;
+    sendJson(res, statusCode, publicRuntimeConfig, requestId, { 'Cache-Control': 'no-store' });
     return;
   }
 

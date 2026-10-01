@@ -1,5 +1,20 @@
 # Live Translate API and Events
 
+## `GET /api/runtime-config`
+
+Public, browser-safe startup configuration. The response is not cached and
+contains exactly one allowlisted boolean:
+
+```json
+{
+  "livePipelineTraceEnabled": false
+}
+```
+
+The server derives it from strict `LIVE_PIPELINE_TRACE_ENABLED=true` opt-in. No
+other environment variables, credentials, tokens, or authorization data are
+exposed.
+
 ## Phase 0 delivery and permission contract, 2026-10-01
 
 The browser is the sole reader of page OPFS. It explicitly sends immutable

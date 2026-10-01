@@ -7,10 +7,11 @@ export function createLivePipelineTrace({
   now = () => new Date().toISOString(),
   logger = (...args) => console.debug(...args)
 } = {}) {
-  const entries = [];
+  let isEnabled = enabled === true;
+  let entries = isEnabled ? [] : null;
 
   function record(input = {}) {
-    if (!enabled) return null;
+    if (!isEnabled || !entries) return null;
     const cueAction = input.cueAction || null;
     const entry = Object.freeze({
       timestamp: input.timestamp || now(),
@@ -24,6 +25,13 @@ export function createLivePipelineTrace({
       eventId: input.eventId || null,
       eventType: input.eventType || null,
       isFinal: Boolean(input.isFinal),
+      isLateTranscript: Boolean(input.isLateTranscript),
+      turnComplete: Boolean(input.turnComplete),
+      generationComplete: Boolean(input.generationComplete),
+      providerTurnIndex: input.providerTurnIndex ?? null,
+      providerTurnId: input.providerTurnId || null,
+      turnKey: input.turnKey || null,
+      turnIdentitySource: input.turnIdentitySource || null,
       sourceText: input.sourceText || '',
       translationText: input.translationText || '',
       cueId: input.cueId || null,
@@ -40,7 +48,7 @@ export function createLivePipelineTrace({
   }
 
   function get(filter = {}) {
-    if (!enabled) return [];
+    if (!isEnabled || !entries) return [];
     return entries.filter((entry) => Object.entries(filter).every(([key, value]) => (
       value === undefined || value === null || entry[key] === value
     ))).map((entry) => ({ ...entry }));
@@ -51,15 +59,25 @@ export function createLivePipelineTrace({
   }
 
   function clear() {
-    entries.length = 0;
+    if (entries) entries.length = 0;
   }
 
-  return Object.freeze({ record, get, getTurn, clear });
+  function setEnabled(nextEnabled) {
+    const shouldEnable = nextEnabled === true;
+    if (shouldEnable === isEnabled) return isEnabled;
+    isEnabled = shouldEnable;
+    entries = isEnabled ? [] : null;
+    return isEnabled;
+  }
+
+  return Object.freeze({ record, get, getTurn, clear, setEnabled, isEnabled: () => isEnabled });
 }
 
-export const livePipelineTrace = createLivePipelineTrace({
-  enabled: Boolean(import.meta.env?.DEV)
-});
+export const livePipelineTrace = createLivePipelineTrace();
+
+export function configureLivePipelineTrace(enabled) {
+  return livePipelineTrace.setEnabled(enabled === true);
+}
 
 export function recordLivePipelineTrace(entry) {
   return livePipelineTrace.record(entry);

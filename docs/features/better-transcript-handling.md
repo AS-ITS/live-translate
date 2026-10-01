@@ -353,7 +353,8 @@ Provider event IDs are deduplicated within a provider epoch. Reconnect and
 rollover epochs must not collide with an earlier provider event carrying the
 same ID.
 
-Development builds expose the bounded trace through:
+An explicit server runtime flag, `LIVE_PIPELINE_TRACE_ENABLED=true`, exposes the
+bounded browser-memory trace through:
 
 ```js
 window.__liveTranslateDebug.getPipelineTrace(filter)
@@ -361,7 +362,10 @@ window.__liveTranslateDebug.getTurnTrace(audioTurnId)
 window.__liveTranslateDebug.clearPipelineTrace()
 ```
 
-The trace covers microphone input, PCM capture/send, provider events,
-normalized transcript events, Cue append/update/finalize/merge/drop, and React
-render. Every drop includes `dropReason`. Production builds neither retain nor
-log these trace entries.
+The browser reads only `{ livePipelineTraceEnabled }` from
+`/api/runtime-config`; it never reads the server environment directly. The trace
+covers microphone input, PCM capture/send, provider events, normalized
+transcript events, Cue append/update/finalize/merge/drop, and React render.
+Every drop includes `dropReason`. With the flag disabled, the tracer retains and
+logs nothing and the full trace API is not exposed. Production must keep the
+flag disabled.

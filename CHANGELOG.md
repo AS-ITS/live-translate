@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；開發模式新增 PCM → provider → normalized transcript → Cue → React render 的 bounded spoken-turn trace，production 不記錄。
+- 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；新增由 server-only `LIVE_PIPELINE_TRACE_ENABLED=true` 明確啟用的 PCM → provider → normalized transcript → Cue → React render bounded spoken-turn trace，供 Vercel Preview 診斷；Production 預設停用且不保留 trace。
 
 - 修正 lifecycle v1 錄音在 lifecycle v2 Cue 外鍵上回傳 503 的相容性問題；checkpoint／cue 的伺服器日誌現在只記錄安全的 Supabase 上游狀態、錯誤分類與 constraint，不記錄 JWT、憑證或資料內容。
 - 正式錄音流程改以 OPFS 保存 MediaRecorder chunks、IndexedDB 保存 cue／checkpoint 與恢復狀態；錄製期間 WebRTC 正常時不再週期性寫入雲端 checkpoint／cue，Viewer 連線失敗時才橋接既有雲端 cue fallback，停止時補齊雲端 cue 供歷史與匯出使用。

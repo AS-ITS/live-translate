@@ -749,15 +749,18 @@ best-effort purge metrics. They do not call Gemini or remote Supabase.
 
 ## Spoken turn trace and real-microphone acceptance
 
-Automated coverage must use the mock Gemini adapter. For a development build,
-inspect a turn with:
+Automated coverage must use the mock Gemini adapter. For a local or Vercel
+Preview runtime, set server-only `LIVE_PIPELINE_TRACE_ENABLED=true`, redeploy or
+restart, then inspect a turn with:
 
 ```js
 const trace = window.__liveTranslateDebug.getPipelineTrace()
 window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
 ```
 
-For each spoken turn, verify the trace reaches `PCM_CAPTURED`, `PCM_SENT`,
+The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
+in browser memory and resets on reload. For each spoken turn, verify the trace
+reaches `PCM_CAPTURED`, `PCM_SENT`,
 `PROVIDER_EVENT`, `NORMALIZED`, `CUE_STATE`, and `REACT_RENDER`. A `drop` entry
 must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
 Cue rows and the browser console for runtime errors.

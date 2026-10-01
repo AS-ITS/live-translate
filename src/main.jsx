@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { App } from './app/App.jsx';
 import { pageFromLocation } from './app/routes.js';
 import { AuthGate } from './components/AuthGate.jsx';
+import { exposeLiveTranslateDebug } from './lib/liveSession.js';
+import { configureLivePipelineTrace } from './lib/livePipelineTrace.js';
+import { loadRuntimeConfig } from './lib/runtimeConfig.js';
 import './styles/app.css';
 
 function ApplicationRoot() {
@@ -17,6 +20,11 @@ function ApplicationRoot() {
   return page === 'viewer' ? <App /> : <AuthGate><App /></AuthGate>;
 }
 
-createRoot(document.getElementById('root')).render(
-  <ApplicationRoot />
-);
+async function bootstrap() {
+  const runtimeConfig = await loadRuntimeConfig();
+  configureLivePipelineTrace(runtimeConfig.livePipelineTraceEnabled);
+  exposeLiveTranslateDebug();
+  createRoot(document.getElementById('root')).render(<ApplicationRoot />);
+}
+
+void bootstrap();

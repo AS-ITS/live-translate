@@ -28,6 +28,9 @@ Backend environment variables:
 - `P1_PROFILE_ONLY=true`: optional compatibility switch that keeps non-Profile
   cloud capabilities fail-closed. Leave unset for the current owner-scoped
   cloud runtime.
+- `LIVE_PIPELINE_TRACE_ENABLED=true`: explicitly enables the browser-memory
+  spoken-turn trace through `/api/runtime-config`. Set only on the Vercel
+  Preview environment used for diagnosis; default and Production are `false`.
 - Supabase P2 does not persist a user's Gemini API Key. The removed profile
   credential API and `gemini_credentials` store are not part of the current
   Live flow.

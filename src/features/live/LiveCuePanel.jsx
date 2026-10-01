@@ -49,6 +49,8 @@ export function LiveCuePanel({
         recordingId: cue.sessionId || null,
         segmentId: cue.segmentId || null,
         audioTurnId: cue.audioTurnId || null,
+        turnKey: cue.turnKey || null,
+        turnIdentitySource: cue.turnIdentitySource || null,
         eventType: cue.status || null,
         isFinal: cue.status === 'final',
         sourceText: sourceTextForDisplay(cue, 'raw'),

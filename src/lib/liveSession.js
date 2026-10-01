@@ -1122,6 +1122,7 @@ export class LiveTranslateSession {
       this.tracePipeline('PROVIDER_EVENT', {
         eventId: providerMessageId(message),
         eventType: providerEventType(message),
+        ...providerBoundaryMetadata(message),
         cueAction: 'drop',
         dropReason: this.closed ? 'session_closed' : 'stale_provider_epoch'
       });
@@ -1132,6 +1133,7 @@ export class LiveTranslateSession {
       eventId: providerMessageId(message),
       eventType: providerEventType(message),
       isFinal: Boolean(message?.serverContent?.turnComplete || message?.serverContent?.generationComplete),
+      ...providerBoundaryMetadata(message),
       sourceText: message?.serverContent?.inputTranscription?.text || message?.serverContent?.interimInputTranscription?.text || '',
       translationText: message?.serverContent?.outputTranscription?.text || ''
     });
@@ -1299,6 +1301,15 @@ export class LiveTranslateSession {
         eventId: event.eventId,
         eventType: event.eventType,
         isFinal: event.isFinal,
+        isLateTranscript: event.isLateTranscript,
+        turnComplete: event.turnComplete,
+        generationComplete: event.generationComplete,
+        providerTurnIndex: event.turnIndex,
+        providerTurnId: event.turnIndex === null || event.turnIndex === undefined
+          ? null
+          : `provider-turn-${event.connectionEpoch}-${event.providerEpoch}-${event.turnIndex}`,
+        turnKey: event.turnKey,
+        turnIdentitySource: event.turnIdentitySource,
         sourceText: event.stream === 'source' ? event.text : '',
         translationText: event.stream === 'translation' ? event.text : ''
       });
@@ -2252,12 +2263,51 @@ function providerEventType(message) {
   return types.join('+') || 'serverContent';
 }
 
-function exposeLiveTranslateDebug() {
-  if (typeof window === 'undefined' || !LIVE_DIAGNOSTICS_ENABLED) return;
+function providerBoundaryMetadata(message) {
+  const content = message?.serverContent;
+  const providerTurnIndex = firstDefined(
+    content?.turnIndex,
+    content?.turn?.index,
+    content?.turn?.turnIndex,
+    message?.turnIndex
+  );
+  const rawProviderTurnId = firstDefined(
+    content?.turnId,
+    content?.turn?.id,
+    message?.turnId,
+    message?.turn_id
+  );
+  return {
+    turnComplete: Boolean(content?.turnComplete),
+    generationComplete: Boolean(content?.generationComplete),
+    providerTurnIndex: providerTurnIndex ?? null,
+    providerTurnId: typeof rawProviderTurnId === 'string' || typeof rawProviderTurnId === 'number'
+      ? String(rawProviderTurnId).slice(0, 160)
+      : null
+  };
+}
+
+export function exposeLiveTranslateDebug() {
+  if (typeof window === 'undefined') return;
+  const pipelineTraceEnabled = livePipelineTrace.isEnabled();
+  if (!LIVE_DIAGNOSTICS_ENABLED && !pipelineTraceEnabled) {
+    if (window.__liveTranslateDebug) {
+      delete window.__liveTranslateDebug.getPipelineTrace;
+      delete window.__liveTranslateDebug.getTurnTrace;
+      delete window.__liveTranslateDebug.clearPipelineTrace;
+    }
+    return;
+  }
   window.__liveTranslateDebug = window.__liveTranslateDebug || {};
-  window.__liveTranslateDebug.getPipelineTrace = (filter = {}) => livePipelineTrace.get(filter);
-  window.__liveTranslateDebug.getTurnTrace = (audioTurnId) => livePipelineTrace.getTurn(audioTurnId);
-  window.__liveTranslateDebug.clearPipelineTrace = () => livePipelineTrace.clear();
+  if (pipelineTraceEnabled) {
+    window.__liveTranslateDebug.getPipelineTrace = (filter = {}) => livePipelineTrace.get(filter);
+    window.__liveTranslateDebug.getTurnTrace = (audioTurnId) => livePipelineTrace.getTurn(audioTurnId);
+    window.__liveTranslateDebug.clearPipelineTrace = () => livePipelineTrace.clear();
+  } else {
+    delete window.__liveTranslateDebug.getPipelineTrace;
+    delete window.__liveTranslateDebug.getTurnTrace;
+    delete window.__liveTranslateDebug.clearPipelineTrace;
+  }
   window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.({ includeText: LIVE_EVENT_LOG_ENABLED }) || {
     activeConnectionEpoch: null,
     activeSessionId: null,

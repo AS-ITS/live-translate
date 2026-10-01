@@ -25,7 +25,7 @@ export function LiveRecordingPage({ children, drawers = null, error = '', errorC
     <>
       <section className="feature-page live-page live-recording-page" aria-label="即時錄製">
         <div className={`live-recording-page-content${error ? ' has-live-error' : ''}`}>
-          <GeminiCredentialNotice showSettingsLink={false} />
+          <GeminiCredentialNotice />
           {error ? (
             <div className="error-message live-error-message">
               <AlertCircle className="live-error-icon" size={18} aria-hidden="true" />

@@ -12,10 +12,10 @@ test('guides users from the meeting flow to the Gemini Key settings page', async
   await page.goto('/#meetings');
 
   const notice = page.locator('.gemini-credential-notice');
-  await expect(notice).toContainText('錄音者必須輸入 Gemini API Key');
-  await expect(notice).toContainText('不會儲存到瀏覽器或帳號設定');
+  await expect(notice).toContainText('開始錄音前，請先設定 Gemini API 金鑰');
+  await expect(notice).toContainText('不會儲存到瀏覽器或帳號');
   await expect(notice.getByLabel('Gemini API Key')).toHaveCount(0);
-  await expect(notice.getByRole('link', { name: '設定 Gemini Key' })).toHaveCount(0);
+  await expect(notice.getByRole('link', { name: '設定 Gemini 金鑰' })).toHaveCount(0);
   await expect(page.locator('.header-key-action')).toHaveClass(/is-missing/);
   await page.locator('.header-key-action').click();
   await expect(page).toHaveURL(/#settings$/);

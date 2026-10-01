@@ -1691,16 +1691,34 @@ test('missing microphone keeps a retryable error visible', async ({ page }) => {
 });
 
 test('missing Gemini API Key is shown before live recording starts', async ({ page }) => {
+  await page.setViewportSize({ width: 640, height: 900 });
   await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page);
 
-  const startButton = page.locator('button.meeting-live-action-button').first();
-  await expect(page.getByRole('status')).toContainText('錄音者必須輸入 Gemini API Key');
-  await expect(page.getByLabel('Gemini API Key')).toBeVisible();
-  await page.getByLabel('Gemini API Key').fill('test-api-key');
+  const notice = page.locator('.gemini-credential-notice');
+  const toolbar = page.getByTestId('live-session-toolbar');
+  await expect(notice).toContainText('開始錄音前，請先設定 Gemini API 金鑰');
+  await expect(notice.getByRole('link', { name: '設定 Gemini 金鑰' })).toBeVisible();
+  await expect.poll(async () => {
+    const noticeBox = await notice.boundingBox();
+    const toolbarBox = await toolbar.boundingBox();
+    return Boolean(noticeBox && toolbarBox && noticeBox.y + noticeBox.height <= toolbarBox.y);
+  }).toBe(true);
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await expect(page.locator('.header-key-action')).toBeVisible();
+  await expect(notice).toBeVisible();
+  await expect(notice.getByRole('link', { name: '設定 Gemini 金鑰' })).toBeHidden();
+  await page.setViewportSize({ width: 640, height: 900 });
+  await expect(notice).toBeVisible();
+  await expect(notice.getByRole('link', { name: '設定 Gemini 金鑰' })).toBeVisible();
+
+  await notice.getByRole('link', { name: '設定 Gemini 金鑰' }).click();
+  await expect(page).toHaveURL(/#settings$/);
+  await page.getByLabel('Gemini API Key').last().fill('test-api-key');
   await page.getByRole('button', { name: '設定金鑰' }).click();
-  await expect(page.getByRole('status')).toHaveCount(0);
-  await expect(startButton).toBeEnabled();
+  await page.evaluate(() => { window.location.hash = '#live?meetingId=meeting-1'; });
+  await expect(page.locator('.gemini-credential-notice')).toHaveCount(0);
+  await expect(page.locator('button.meeting-live-action-button').first()).toBeEnabled();
   await expect.poll(() => page.liveTokenRequests.length).toBe(0);
   await expect.poll(() => page.evaluate(() => window.__mockMicTracks.length)).toBe(0);
 });
@@ -2686,13 +2704,24 @@ test('live subtitles prioritize translation and can collapse the source column',
   await expect(panel.getByTestId('cue-paired-list').getByText('source sentence')).toBeVisible();
 });
 
-test('live recording reuses the meeting design system at desktop widths', async ({ page }) => {
+test('live recording adapts the meeting design system across desktop and mobile widths', async ({ page }) => {
+  await mockMeetingCheckpointApi(page, {
+    meetingDetailCues: [{
+      cueId: 'cue:visual:segment-1:1',
+      sessionId: 'visual',
+      segmentId: 'segment-1',
+      sequence: 1,
+      startTimeMs: 1000,
+      endTimeMs: 2500,
+      status: 'final',
+      sourceText: 'visual source',
+      translatedText: 'visual translation',
+      sourceLanguageCode: 'zh-Hant',
+      targetLanguageCode: 'en'
+    }]
+  });
   await gotoMockMeetingLive(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
-  await emitMicrophoneAudio(page);
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'visual source', 'visual translation');
+  await expect(page.getByText('visual translation')).toBeVisible();
 
   for (const viewport of [
     { width: 1366, height: 768 },
@@ -2744,18 +2773,54 @@ test('live recording reuses the meeting design system at desktop widths', async 
   }
 
   await page.setViewportSize({ width: 640, height: 800 });
+  await page.screenshot({ path: test.info().outputPath('live-recording-640.png') });
   const mobileLayout = await page.evaluate(() => {
     const row = document.querySelector('[data-testid="cue-paired-list"] .cue-row');
     const styles = row ? getComputedStyle(row) : null;
+    const source = row?.querySelector('.cue-source');
+    const translation = row?.querySelector('.cue-translation');
+    const focusButton = document.querySelector('.live-focus-mode-button');
+    const sessionButton = document.querySelector('.session-actions .button');
+    const livePage = document.querySelector('.live-recording-page');
+    const cuePanel = document.querySelector('[data-testid="live-cue-panel"]');
+    const focusBox = focusButton?.getBoundingClientRect();
+    const sessionBox = sessionButton?.getBoundingClientRect();
+    const livePageBox = livePage?.getBoundingClientRect();
+    const cuePanelBox = cuePanel?.getBoundingClientRect();
     return {
       rowColumns: styles?.gridTemplateColumns.split(' ').length || 0,
       controlDisplay: getComputedStyle(document.querySelector('.live-session-toolbar .control-status-row')).display,
-      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      focusButtonHeight: focusBox?.height || 0,
+      primaryActionAlongsideFocus: Boolean(sessionBox && focusBox && Math.abs(sessionBox.top - focusBox.top) <= 2),
+      cuePanelHeightRatio: livePageBox && cuePanelBox ? cuePanelBox.height / livePageBox.height : 0,
+      cueBackground: styles?.backgroundColor || '',
+      sourceLabel: source ? getComputedStyle(source, '::before').content : '',
+      translationLabel: translation ? getComputedStyle(translation, '::before').content : ''
     };
   });
   expect(mobileLayout.rowColumns).toBe(1);
-  expect(mobileLayout.controlDisplay).toBe('flex');
+  expect(mobileLayout.controlDisplay).toBe('grid');
   expect(mobileLayout.hasHorizontalOverflow).toBe(false);
+  expect(mobileLayout.focusButtonHeight).toBe(44);
+  expect(mobileLayout.primaryActionAlongsideFocus).toBe(true);
+  expect(mobileLayout.cuePanelHeightRatio).toBeGreaterThan(0.5);
+  expect(mobileLayout.cueBackground).not.toBe('rgba(0, 0, 0, 0)');
+  expect(mobileLayout.sourceLabel).toBe('"原文"');
+  expect(mobileLayout.translationLabel).toBe('"翻譯"');
+
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.screenshot({ path: test.info().outputPath('live-recording-375.png') });
+  const smallPhoneLayout = await page.evaluate(() => {
+    const livePageBox = document.querySelector('.live-recording-page')?.getBoundingClientRect();
+    const cuePanelBox = document.querySelector('[data-testid="live-cue-panel"]')?.getBoundingClientRect();
+    return {
+      hasHorizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+      cuePanelHeightRatio: livePageBox && cuePanelBox ? cuePanelBox.height / livePageBox.height : 0
+    };
+  });
+  expect(smallPhoneLayout.hasHorizontalOverflow).toBe(false);
+  expect(smallPhoneLayout.cuePanelHeightRatio).toBeGreaterThan(0.5);
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByTestId('live-session-toolbar').getByRole('button', { name: '詳細狀態' }).click();

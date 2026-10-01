@@ -19,11 +19,11 @@ export function GeminiCredentialNotice({ showSettingsLink = true }) {
       <div className="gemini-credential-notice-content">
         <span className="gemini-credential-notice-icon"><KeyRound size={18} aria-hidden="true" /></span>
         <div>
-          <strong>錄音者必須輸入 Gemini API Key</strong>
-          <p>只有要開始錄音的人需要輸入 Key。Key 只保留到這個頁面生命週期結束，不會儲存到瀏覽器或帳號設定。</p>
+          <strong>開始錄音前，請先設定 Gemini API 金鑰</strong>
+          <p>只有錄音者需要設定。金鑰僅保留於目前頁面，不會儲存到瀏覽器或帳號。</p>
         </div>
       </div>
-      {showSettingsLink ? <a className="button secondary" href={GEMINI_SETTINGS_HASH}>設定 Gemini Key</a> : null}
+      {showSettingsLink ? <a className="button secondary" href={GEMINI_SETTINGS_HASH}>設定 Gemini 金鑰</a> : null}
     </aside>
   );
 }

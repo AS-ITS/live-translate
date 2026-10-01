@@ -1,6 +1,15 @@
 # Changelog
 
 ## Unreleased
+- Phase 0 contract documentation now fixes the browser/local-service boundary:
+  immutable OPFS chunks are explicitly sent by the browser and the service
+  cannot read page OPFS. Cue, checkpoint, operation, and audio delivery each
+  use a browser durable pending queue with explicit ACK, resend, conflict, and
+  recovery ordering. Viewer sharing is separate from host export permission;
+  Viewer/Recorder shares stop immediately while host export/audio download
+  remains available for 30 minutes. Deployed Origin/CORS is Preview/Production
+  allowlist-only, and failed or environment-blocked tests cannot be reported
+  as a passing baseline. Phase 1 real-device acceptance remains pending.
 - Cue 的原文與翻譯現在分別追蹤完成狀態；任一側穩定後即可發布至 Viewer，延遲抵達的另一側會更新同一 `cueId`。source-only／translation-only Cue 可保存與 replay，DEV 模式並加入 Live-to-Viewer latency timestamps。
 - 修正 Viewer 在 Realtime replay 時把 SSE `: keep-alive` 心跳當成 JSON 解析、錄製一段時間後顯示錯誤的問題；replay 現在明確要求 JSON，且保留 EventSource 的 SSE fallback。
 - 會議設定的觀看連結現在會以新分頁開啟，公開 Viewer 路由也不再要求 Workspace 登入。

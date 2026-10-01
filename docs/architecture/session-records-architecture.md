@@ -25,6 +25,25 @@ translation session into a read-only history record without changing the Gemini
 Live session flow, transcript engine, reconnect behavior, token refresh
 behavior, or storage infrastructure.
 
+## Phase 0 ownership boundary
+
+Local Supabase on the recording device owns Meeting, Session, Segment, lease,
+fence, operation idempotency, and terminal recording lifecycle state. Cloud
+Supabase stores only accounts, permissions, meeting settings, dictionaries,
+and device/meeting entry data; it is not the recording-data owner. The browser
+owns only capture-local durability:
+immutable OPFS audio chunks plus durable pending queues for Cue, checkpoint,
+operation, and audio delivery. The local service receives chunks explicitly
+from the browser and cannot read page OPFS directly. ACK, resend, duplicate
+idempotency, and stale-version conflict handling are delivery concerns, not a
+second lifecycle owner.
+
+Recovery replays lifecycle operations first, dependent checkpoints/Cues in
+sequence/version order second, and audio chunks third. Viewer sharing is
+read-only and separate from host export permission. Stop invalidates
+Viewer/Recorder shares immediately; the host alone retains completed audio
+download and TXT/SRT/VTT export for 30 minutes.
+
 Phase 2B target architecture no longer treats `SessionRecord` as the canonical
 future aggregate. `SessionRecord` is the current simplified single-output memory
 repository shape and a transitional compatibility shape.

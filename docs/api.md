@@ -1,5 +1,42 @@
 # Live Translate API and Events
 
+## Phase 0 delivery and permission contract, 2026-10-01
+
+The browser is the sole reader of page OPFS. It explicitly sends immutable
+audio chunks to the local service; the service cannot directly read page OPFS,
+IndexedDB, or other page storage. This path is distinct from the direct
+browser-to-Gemini connection.
+
+The browser has durable pending queues for `cue`, `checkpoint`, `operation`,
+and `audio`. Audio queue entries reference immutable OPFS chunks and retain
+sequence, byte range, checksum, and retry metadata. A successful ACK requires
+durable commit of the matching idempotency key and version. Missing ACKs are
+resent with the same key, duplicate delivery returns the original result, and
+stale fence/version/hash requests return a structured conflict without
+overwriting newer state.
+
+Recovery order is queue validation/checksum, lifecycle operations in sequence,
+dependent checkpoints and Cues in version order, then audio chunks in chunk
+order. Queues ACK independently. Local Supabase on the recording device is the
+only recording lifecycle owner. Cloud Supabase stores only accounts,
+permissions, meeting settings, dictionaries, and device/meeting entry data;
+it is not the recording-data owner. Browser queues never create their own
+Meeting/Session/Segment state.
+
+Viewer shares grant sanitized read-only access only. Host export permission is
+authenticated and checked separately, never inferred from a share token. Stop
+immediately revokes Viewer and Recorder shares; the host can export TXT/SRT/VTT
+and download completed audio for 30 minutes, after which content returns
+`410 meeting_content_expired`.
+
+Origin/CORS is allowlist-only for approved Preview and Production origins.
+There is no wildcard or arbitrary localhost approval in the deployed contract.
+
+Failed, skipped, or environment-blocked checks must be reported as such and
+cannot be labelled `baseline passed`. Phase 1 physical acceptance remains
+pending for Mac/Windows microphones, reload/crash recovery, OPFS quota/offline
+resend, audio loss/recovery, and Preview/Production Origin/CORS.
+
 ## Meeting recording lifecycle v2 (Issue #37 Phase 1)
 
 New Meetings use a Supabase-owned lifecycle. Vercel Functions only validate the

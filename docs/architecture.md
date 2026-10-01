@@ -18,6 +18,27 @@ configuration validation.
 
 Audio streams are not proxied through the backend.
 
+For the recording spool path, the browser writes immutable audio chunks to
+page OPFS and explicitly sends them to the local service. The service cannot
+directly read page OPFS or any page storage. The browser also owns durable
+pending queues for Cue, checkpoint, lifecycle operation, and audio delivery;
+IndexedDB stores queue metadata while OPFS stores audio bytes. ACK requires
+durable commit of the matching idempotency key/version. Lost ACKs resend with
+the same key, duplicates return the original result, and stale
+fence/version/hash requests return a structured conflict.
+
+Recovery replays operations first, dependent checkpoints/Cues second, and
+audio chunks third. Each queue ACKs independently. Local Supabase on the
+recording device is the only recording lifecycle owner. Cloud Supabase stores
+only accounts, permissions, meeting settings, dictionaries, and
+device/meeting entry data; it is not the recording-data owner. Browser queues
+cannot create or decide lifecycle state. Viewer share permission is read-only
+and separate from authenticated host export permission. Stop revokes
+Viewer/Recorder shares immediately, but
+the host retains completed audio download and TXT/SRT/VTT export for 30
+minutes. Deployed Origin/CORS is restricted to approved Preview and Production
+origins only.
+
 ## Realtime subtitle pipeline (target architecture)
 
 The Live recorder uses `LiveTranscriptionSession` and persists source Cues;
@@ -128,7 +149,7 @@ The backend must not return the real Gemini API key or any long-lived credential
   `GEMINI_API_KEY` isolated to non-Live backend workers that require it.
 - Create Gemini ephemeral tokens.
 - Return consistent JSON responses.
-- Support local frontend CORS configuration.
+- Enforce the approved Preview/Production Origin and CORS allowlist.
 
 The backend must not proxy audio, store transcripts, or maintain session state in
 the MVP.

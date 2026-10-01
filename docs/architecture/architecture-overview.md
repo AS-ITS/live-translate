@@ -1,5 +1,40 @@
 # Architecture Overview
 
+## Phase 0 contract delta, 2026-10-01
+
+The browser is the only owner of page storage. It writes immutable audio
+chunks to page OPFS, then explicitly sends each chunk to the local service;
+the local service must never read page OPFS directly or use browser storage
+APIs. The direct browser-to-Gemini path remains separate.
+
+The browser maintains four durable pending queues in IndexedDB: Cue,
+checkpoint, operation, and audio. Audio bytes remain in OPFS; its queue stores
+the object reference, immutable sequence, range, checksum, and retry state.
+Every queue record has an idempotency key, dependency, payload hash, and
+version. ACK is valid only after durable commit of the matching key/version.
+Lost ACKs are resent with the same key; duplicates return the original result.
+Stale fence, version, or hash is a structured conflict, never a silent
+overwrite.
+
+Recovery order is fixed: validate queues and checksums, replay lifecycle
+operations, replay dependent checkpoints and Cues in sequence/version order,
+then replay audio chunks in immutable chunk order. Queues ACK independently,
+so audio does not block Cue/checkpoint delivery and those failures do not
+discard captured audio. Local Supabase on the recording device is the only
+recording lifecycle owner. Cloud Supabase stores only accounts, permissions,
+meeting settings, dictionaries, and device/meeting entry data; it is not the
+recording-data owner. Browser queues provide delivery and recovery only.
+
+Viewer sharing is read-only and separate from host export permission. Stopping
+a Meeting immediately revokes Viewer and Recorder shares; the host retains
+completed audio download and TXT/SRT/VTT export for 30 minutes only. Origin
+and CORS approval is allowlist-only for approved Preview and Production
+origins, with no wildcard or arbitrary localhost approval.
+
+Phase 1 real-device acceptance remains pending: Mac and Windows microphones,
+reload/crash queue recovery, OPFS quota/offline resend, audio loss/recovery,
+and approved Preview/Production Origin/CORS checks.
+
 ## Meeting lifecycle v2
 
 Supabase is the lifecycle source of truth for new Meetings. A single database

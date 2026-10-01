@@ -157,6 +157,20 @@ later Segments, reconnects, exports, and historical reads.
 
 ## Meeting Viewer Sharing
 
+### Permission separation and stop window
+
+A Viewer share is read-only. Its token or short code grants only the
+sanitized Viewer snapshot and live updates; it cannot record, submit
+Cue/checkpoint/operation/audio queue items, download audio, or create an
+export. Host export is an independent authenticated capability and is never
+inferred from a Viewer share or ordinary Viewer membership.
+
+When the host stops a Meeting, or stale-recorder policy stops it, Viewer and
+Recorder share access is revoked immediately and existing Viewers stop
+receiving new Cues. The host retains a separate 30-minute window to export
+TXT/SRT/VTT and download completed audio; after expiry content returns
+`410 meeting_content_expired`.
+
 Viewer shares are Meeting-scoped while retaining the existing opaque token,
 short-code, expiry, revocation, and anonymous Viewer model.
 

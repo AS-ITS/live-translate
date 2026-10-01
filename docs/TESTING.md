@@ -1,5 +1,26 @@
 # Testing
 
+## Phase 0 contract evidence
+
+Test the browser as the only OPFS reader, immutable chunk checksums, four
+durable pending queues (`cue`, `checkpoint`, `operation`, `audio`), ACK loss
+and resend, duplicate idempotency, stale fence/version/hash conflicts, and
+the recovery order: operations, dependent checkpoints/Cues, then audio.
+Queues must ACK independently so audio failure does not block Cue/checkpoint
+delivery and vice versa.
+
+Evidence must separately prove that stopping a Meeting immediately invalidates
+Viewer/Recorder shares, while the authenticated host alone can export
+TXT/SRT/VTT and download completed audio for 30 minutes. Origin/CORS tests
+cover only approved Preview and Production origins.
+
+Existing failures, skipped checks, and environment blockers are non-passing
+baseline evidence. Reports must retain the command, result, and blocker; they
+must never label a failed or blocked run as `baseline passed`. Phase 1 physical
+acceptance is still pending for Mac/Windows microphones, reload/crash queue
+recovery, OPFS quota/offline resend, audio loss/recovery, and deployed
+Origin/CORS checks.
+
 ## Google Workspace accounts
 
 Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.

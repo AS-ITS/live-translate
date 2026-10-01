@@ -331,36 +331,51 @@ export function MeetingViewerPage({ token, code }) {
 
   return (
     <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
-      <div className="viewer-connection-status" role="status" aria-live="polite">
-        <span>{webRtcConnectionLabel(shareConnection.value)}</span>
-        {shareConnection.value === 'failed' ? (
-          <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+      <div className="viewer-main">
+        <div className="viewer-toolbar">
+          <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">
+            <span className="viewer-status-dot" aria-hidden="true" />
+            <span>{webRtcConnectionLabel(shareConnection.value)}</span>
+          </div>
+          <div className="viewer-toolbar-actions">
+            {cues.length > 0 ? (
+              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+            ) : null}
+            {shareConnection.value === 'failed' ? (
+              <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+            ) : null}
+          </div>
+        </div>
+        {error ? <p className="error-message viewer-error" role="alert">{error}</p> : null}
+        {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
+        {detail ? (
+          <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
+            <div className="viewer-cue-header">
+              <div>
+                <p className="viewer-cue-eyebrow">LIVE TRANSCRIPT</p>
+                <h2>即時翻譯</h2>
+                <p className="viewer-cue-description">字幕會自動更新，暫停後繼續錄製也會保留先前內容。</p>
+              </div>
+              {!isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
+            </div>
+            {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
+              {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
+              <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
+                <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
+                  {visibleCues.map((cue, index) => {
+                    const cueIndex = startIndex + index;
+                    return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-testid="meeting-viewer-cue-row">
+                      <span className="viewer-cue-index" aria-hidden="true">{String(cueIndex + 1).padStart(2, '0')}</span>
+                      {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
+                      {cue.translatedText ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText}</p></div> : null}
+                    </article>;
+                  })}
+                </div>
+              </div>
+            </>}
+          </section>
         ) : null}
       </div>
-      {error ? <p className="error-message" role="alert">{error}</p> : null}
-      {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
-      {detail ? (
-        <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
-          <div className="viewer-cue-header">
-            <div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div>
-            {cues.length > 0 ? <div className="viewer-cue-actions">
-              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
-              {!isFollowingLatest ? <button className="button detail-button" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
-            </div> : null}
-          </div>
-          {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
-            {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
-            <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
-              <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
-                {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: rowLayout.offsets[startIndex + index], left: 0, right: 0 }} data-cue-index={startIndex + index} data-testid="meeting-viewer-cue-row">
-                  {showSource ? <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div> : null}
-                  {cue.translatedText ? <div className="viewer-cue-translation"><p>{cue.translatedText}</p></div> : null}
-                </article>)}
-              </div>
-            </div>
-          </>}
-        </section>
-      ) : null}
     </PublicSessionLayout>
   );
 }

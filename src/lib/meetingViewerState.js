@@ -1,6 +1,6 @@
 export function mergeMeetingViewerSnapshot(current, snapshot) {
   const next = { ...(current || {}), ...(snapshot || {}) };
-  const cues = mergeCues(current?.cues || [], snapshot?.cues || []);
+  const cues = mergeMeetingCues(current?.cues || [], snapshot?.cues || []);
   return { ...next, cues, cursor: mergeCursor(current?.cursor, snapshot?.cursor, cues) };
 }
 
@@ -41,7 +41,7 @@ export function sortMeetingCues(cues = []) {
   ));
 }
 
-function mergeCues(existing, incoming) {
+export function mergeMeetingCues(existing = [], incoming = []) {
   const byId = new Map(existing.filter((cue) => cue?.cueId).map((cue) => [cue.cueId, cue]));
   for (const cue of incoming) {
     if (!cue?.cueId) continue;

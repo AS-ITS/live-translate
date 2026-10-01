@@ -1,17 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../lib/accessToken.js';
+import { mergeMeetingCues } from '../lib/meetingViewerState.js';
 import { createWebRtcSubtitleTransport } from './subtitleTransport.js';
 
 export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = 'idle', cues = [] } = {}) {
   const [connection, setConnection] = useState({ value: 'idle' });
   const [retryVersion, setRetryVersion] = useState(0);
   const transportRef = useRef(null);
+  const cueHistoryRef = useRef({ meetingId: null, cues: [] });
   const cuesRef = useRef(cues);
   const lifecycleStatusRef = useRef(lifecycleStatus);
   cuesRef.current = cues;
   lifecycleStatusRef.current = lifecycleStatus;
 
   useEffect(() => {
+    if (cueHistoryRef.current.meetingId !== meetingId) {
+      cueHistoryRef.current = { meetingId, cues: [] };
+    }
+    cueHistoryRef.current.cues = mergeMeetingCues(cueHistoryRef.current.cues, cuesRef.current);
     if (!enabled || !meetingId || typeof RTCPeerConnection !== 'function') {
       setConnection({ value: 'idle' });
       return undefined;
@@ -21,7 +27,7 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
       meetingId,
       role: 'device',
       fetchImpl: authenticatedFetch(),
-      initialCues: cuesRef.current,
+      initialCues: cueHistoryRef.current.cues,
       onStatus: (next) => { if (!disposed) setConnection(next); },
       onError: () => {},
     });
@@ -38,10 +44,14 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
   }, [enabled, meetingId, retryVersion]);
 
   useEffect(() => {
+    if (cueHistoryRef.current.meetingId !== meetingId) {
+      cueHistoryRef.current = { meetingId, cues: [] };
+    }
+    cueHistoryRef.current.cues = mergeMeetingCues(cueHistoryRef.current.cues, cues);
     const transport = transportRef.current;
     if (!transport) return;
-    cues.forEach((cue) => transport.publishCue(cue));
-  }, [cues]);
+    cueHistoryRef.current.cues.forEach((cue) => transport.publishCue(cue));
+  }, [cues, meetingId]);
 
   return Object.freeze({
     ...connection,

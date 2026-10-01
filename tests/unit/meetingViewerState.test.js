@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyMeetingCueEvent, meetingEventDuplicateDetected, meetingEventGapDetected, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
+import { applyMeetingCueEvent, meetingEventDuplicateDetected, meetingEventGapDetected, mergeMeetingCues, mergeMeetingViewerSnapshot } from '../../src/lib/meetingViewerState.js';
 
 const cue = (cueId, segmentSequence, sequence, translatedText = cueId, refinement = 1) => ({
   cueId, segmentSequence, sequence, status: 'final', sourceText: cueId, translatedText,
@@ -15,6 +15,15 @@ test('Viewer snapshot and events merge by Cue ID and preserve order', () => {
   assert.deepEqual(state.cues.map((item) => item.cueId), ['cue-1', 'cue-2', 'cue-3']);
   assert.equal(state.cues[1].translatedText, 'new');
   assert.deepEqual(state.cursor, { eventId: 6, cueSequence: 2 });
+});
+
+test('Device cue history keeps earlier segments when recording resumes with a new segment', () => {
+  const beforePause = [cue('cue-before-pause', 1, 1)];
+  const afterResume = [cue('cue-after-resume', 2, 2)];
+
+  const history = mergeMeetingCues(beforePause, afterResume);
+
+  assert.deepEqual(history.map((item) => item.cueId), ['cue-before-pause', 'cue-after-resume']);
 });
 
 test('Viewer detects event gaps from its cursor', () => {

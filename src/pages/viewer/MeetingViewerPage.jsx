@@ -341,6 +341,7 @@ export function MeetingViewerPage({ token, code }) {
             {detail ? (
               <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
             ) : null}
+            {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
             ) : null}
@@ -350,14 +351,6 @@ export function MeetingViewerPage({ token, code }) {
         {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
         {detail ? (
           <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
-            <div className="viewer-cue-header">
-              <div>
-                <p className="viewer-cue-eyebrow">LIVE TRANSCRIPT</p>
-                <h2>即時翻譯</h2>
-                <p className="viewer-cue-description">字幕會自動更新，暫停後繼續錄製也會保留先前內容。</p>
-              </div>
-              {!isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
-            </div>
             {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
               {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
               <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">

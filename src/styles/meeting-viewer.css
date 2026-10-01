@@ -79,7 +79,7 @@
 }
 
 .meeting-viewer-page .viewer-toolbar .button,
-.meeting-viewer-page .viewer-cue-header .button {
+.meeting-viewer-page .viewer-follow-latest {
   min-height: 2.75rem;
   white-space: nowrap;
 }
@@ -96,9 +96,9 @@
 }
 
 .meeting-viewer-page .viewer-cue-panel {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  grid-template-rows: auto auto minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -108,50 +108,13 @@
   box-shadow: 0 18px 50px rgb(23 32 42 / 8%);
 }
 
-.meeting-viewer-page .viewer-cue-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-5);
-  padding: var(--space-5) var(--space-6);
-  border-bottom: 1px solid var(--color-border);
-  background: linear-gradient(135deg, rgb(239 248 247 / 88%), rgb(255 255 255 / 96%) 62%);
-}
-
-.meeting-viewer-page .viewer-cue-header > div {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.meeting-viewer-page .viewer-cue-header h2 {
-  margin: 0;
-  color: var(--color-text);
-  font-size: clamp(1.25rem, 2vw, 1.5rem);
-  line-height: 1.25;
-}
-
-.meeting-viewer-page .viewer-cue-eyebrow {
-  margin: 0;
-  color: var(--color-primary);
-  font-size: var(--text-xs);
-  font-weight: 800;
-  letter-spacing: .12em;
-}
-
-.meeting-viewer-page .viewer-cue-description {
-  margin: var(--space-1) 0 0;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  line-height: 1.5;
-}
-
 .meeting-viewer-page .viewer-load-older {
   justify-self: start;
   margin: var(--space-3) var(--space-6) 0;
 }
 
 .meeting-viewer-page .viewer-cue-viewport {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -234,6 +197,7 @@
 
 .meeting-viewer-page .viewer-empty-state {
   display: grid;
+  flex: 1;
   place-content: center;
   justify-items: center;
   gap: var(--space-2);
@@ -266,8 +230,6 @@
   .meeting-viewer-page .viewer-main { padding-inline: var(--space-3); }
   .meeting-viewer-page .viewer-toolbar { align-items: stretch; }
   .meeting-viewer-page .viewer-toolbar-actions { margin-left: auto; }
-  .meeting-viewer-page .viewer-cue-header { padding: var(--space-4); }
-  .meeting-viewer-page .viewer-cue-description { display: none; }
   .meeting-viewer-page .viewer-cue-row {
     grid-template-columns: 2rem minmax(0, 1fr);
     gap: var(--space-2) var(--space-3);

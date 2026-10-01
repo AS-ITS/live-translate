@@ -358,8 +358,7 @@ export function MeetingViewerPage({ token, code }) {
                   {visibleCues.map((cue, index) => {
                     const cueIndex = startIndex + index;
                     return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-testid="meeting-viewer-cue-row">
-                      <span className="viewer-cue-index" aria-hidden="true">{String(cueIndex + 1).padStart(2, '0')}</span>
-                      {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
+                    {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
                       {cue.translatedText ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText}</p></div> : null}
                     </article>;
                   })}

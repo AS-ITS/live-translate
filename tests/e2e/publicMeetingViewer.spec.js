@@ -33,6 +33,19 @@ test('Meeting Viewer opens without a Workspace login', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '公開觀看會議' })).toBeVisible();
   await expect(page.getByText('Public translation', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '使用 Google 登入' })).toHaveCount(0);
+  await expect(page.locator('.viewer-cue-index')).toHaveCount(0);
+  const desktopDividers = await page.locator('.viewer-cue-row').evaluate((row) => ({
+    rowBottom: getComputedStyle(row).borderBottomWidth,
+    translationLeft: getComputedStyle(row.querySelector('.viewer-cue-translation')).borderLeftWidth
+  }));
+  expect(desktopDividers).toEqual({ rowBottom: '0px', translationLeft: '1px' });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileDividers = await page.locator('.viewer-cue-row').evaluate((row) => ({
+    rowBottom: getComputedStyle(row).borderBottomWidth,
+    translationTop: getComputedStyle(row.querySelector('.viewer-cue-translation')).borderTopWidth
+  }));
+  expect(mobileDividers).toEqual({ rowBottom: '0px', translationTop: '1px' });
 });
 
 test('Meeting Viewer renders source-only Cue and updates delayed translation in place after reload', async ({ page }) => {

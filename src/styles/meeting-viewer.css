@@ -155,31 +155,16 @@
 
 .meeting-viewer-page .viewer-cue-row {
   display: grid;
-  grid-template-columns: 2.25rem minmax(0, .42fr) minmax(0, .58fr);
+  grid-template-columns: minmax(0, .42fr) minmax(0, .58fr);
   gap: var(--space-4);
   align-items: start;
   min-height: 5.25rem;
   padding: var(--space-4) var(--space-6);
-  border-bottom: 1px solid rgb(216 224 232 / 78%);
   background: var(--color-surface);
 }
 
 .meeting-viewer-page .viewer-cue-row.is-latest {
   background: linear-gradient(90deg, rgb(239 248 247 / 72%), var(--color-surface) 55%);
-}
-
-.meeting-viewer-page .viewer-cue-index {
-  display: inline-grid;
-  place-items: center;
-  width: 2rem;
-  height: 2rem;
-  margin-top: .125rem;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-muted);
-  color: var(--color-text-subtle);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 750;
 }
 
 .meeting-viewer-page .viewer-cue-source,
@@ -263,20 +248,19 @@
   .meeting-viewer-page .viewer-toolbar { align-items: stretch; }
   .meeting-viewer-page .viewer-toolbar-actions { margin-left: auto; }
   .meeting-viewer-page .viewer-cue-row {
-    grid-template-columns: 2rem minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: var(--space-2) var(--space-3);
     min-height: 0;
     padding: var(--space-4);
   }
-  .meeting-viewer-page .viewer-cue-index { grid-row: 1 / span 2; }
   .meeting-viewer-page .viewer-cue-source,
-  .meeting-viewer-page .viewer-cue-translation { grid-column: 2; }
+  .meeting-viewer-page .viewer-cue-translation { grid-column: 1; }
   .meeting-viewer-page .viewer-cue-translation {
     border-left: 0;
     border-top: 1px solid var(--color-border);
     padding: var(--space-3) 0 0;
   }
-  .meeting-viewer-page .viewer-source-hidden .viewer-cue-row { grid-template-columns: 2rem minmax(0, 1fr); }
+  .meeting-viewer-page .viewer-source-hidden .viewer-cue-row { grid-template-columns: minmax(0, 1fr); }
   .meeting-viewer-page .viewer-source-hidden .viewer-cue-translation { border-top: 0; padding-top: 0; }
 }
 

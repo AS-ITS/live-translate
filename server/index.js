@@ -422,6 +422,18 @@ function supabaseProjectRef(env = process.env) {
   }
 }
 
+function safeSupabaseFailureDiagnostics(error) {
+  return {
+    supabaseStatus: Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null,
+    supabaseCode: typeof error?.supabaseCode === 'string' ? error.supabaseCode : null,
+    supabaseErrorClass: typeof error?.supabaseErrorClass === 'string' ? error.supabaseErrorClass : null,
+    supabaseConstraint: typeof error?.supabaseConstraint === 'string' ? error.supabaseConstraint : null,
+    supabaseResource: typeof error?.supabaseResource === 'string' ? error.supabaseResource : null,
+    supabaseOperation: typeof error?.supabaseOperation === 'string' ? error.supabaseOperation : null,
+    supabaseProjectRef: supabaseProjectRef()
+  };
+}
+
 function meetingRequestDiagnostics({ operation = 'meeting.request', meetingId, authenticatedUser, statusCode, errorCode, supabaseStatus = null, resourceOwnerId, resourceOwnerKnown = false }) {
   return {
     operation,
@@ -2087,6 +2099,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         path,
         statusCode,
         errorCode: code,
+        ...safeSupabaseFailureDiagnostics(error),
         ...cueRequestContext,
         durationMs: Math.round(performance.now() - startedAt)
       });
@@ -2204,7 +2217,19 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: meetingCheckpointError?.code || null,
+        ...safeSupabaseFailureDiagnostics(meetingCheckpointError),
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }

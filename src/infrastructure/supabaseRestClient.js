@@ -36,6 +36,7 @@ export function createSupabaseServiceRoleClient({
         : (response.status === 401 || response.status === 403
           ? 'supabase_credentials_invalid'
           : 'supabase_request_failed');
+      await addSafeSupabaseFailureDiagnostics(error, response, { resource: table, operation: method });
       throw error;
     }
     return response.status === 204 ? [] : response.json();
@@ -183,6 +184,7 @@ export function createSupabaseUserClient({
         : (response.status === 401
           ? 'auth_invalid'
           : (response.status === 403 ? 'auth_forbidden' : 'supabase_request_failed'));
+      await addSafeSupabaseFailureDiagnostics(error, response, { resource: table, operation: method });
       throw error;
     }
     return response.status === 204 ? [] : response.json();
@@ -225,6 +227,38 @@ export function createSupabaseUserClient({
 
 export function eq(name, value) {
   return `${encodeURIComponent(name)}=eq.${encodeURIComponent(value)}`;
+}
+
+async function addSafeSupabaseFailureDiagnostics(error, response, { resource, operation }) {
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    // A non-JSON response still retains its upstream HTTP status.
+  }
+
+  const supabaseCode = safeIdentifier(body?.code);
+  error.supabaseCode = supabaseCode;
+  error.supabaseErrorClass = supabaseErrorClass(supabaseCode);
+  error.supabaseConstraint = constraintFromMessage(body?.message);
+  error.supabaseResource = safeIdentifier(resource);
+  error.supabaseOperation = safeIdentifier(String(operation || '').toUpperCase());
+}
+
+function safeIdentifier(value) {
+  return typeof value === 'string' && /^[a-z0-9_:-]{1,128}$/iu.test(value) ? value : null;
+}
+
+function constraintFromMessage(message) {
+  if (typeof message !== 'string') return null;
+  return message.match(/constraint "([a-z0-9_]+)"/iu)?.[1] || null;
+}
+
+function supabaseErrorClass(code) {
+  if (code === '23503') return 'foreign_key_violation';
+  if (code === '23505') return 'unique_violation';
+  if (code === '42501') return 'permission_denied';
+  return code ? 'database_request_rejected' : null;
 }
 
 async function fetchWithGetRetry(fetchImpl, url, options, { maxAttempts, delayMs } = {}) {

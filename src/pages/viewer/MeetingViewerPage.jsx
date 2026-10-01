@@ -330,7 +330,7 @@ export function MeetingViewerPage({ token, code }) {
   }
 
   return (
-    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
+    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕">
       <div className="viewer-main">
         <div className="viewer-toolbar">
           <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">
@@ -338,8 +338,8 @@ export function MeetingViewerPage({ token, code }) {
             <span>{webRtcConnectionLabel(shareConnection.value)}</span>
           </div>
           <div className="viewer-toolbar-actions">
-            {cues.length > 0 ? (
-              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+            {detail ? (
+              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
             ) : null}
             {shareConnection.value === 'failed' ? (
               <button className="button detail-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>

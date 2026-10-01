@@ -15,9 +15,10 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   ]);
   await expect((await snapshotResponse).status()).toBe(200);
   const viewerHeader = page.locator('.app-header');
-  await expect(viewerHeader.getByRole('heading', { name: '即時字幕' })).toBeVisible();
+  await expect(viewerHeader.getByRole('heading', { name: '產品會議' })).toBeVisible();
+  await expect(viewerHeader.getByText('即時字幕', { exact: true })).toBeVisible();
   await expect(viewerHeader.locator('.app-header-actions')).toHaveCount(0);
-  await expect(page.getByRole('heading', { name: '產品會議' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '即時翻譯' })).toBeVisible();
   await expect(page.getByText('原文 40', { exact: true })).toBeVisible();
   await expect(page.getByText('Translation 40', { exact: true })).toBeVisible();
   await expect(page.getByTestId('meeting-viewer-cue-row').first()).toBeVisible();
@@ -25,6 +26,22 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await expect(page.locator('.viewer-cue-source')).toHaveCount(0);
   await expect(page.locator('.viewer-cue-translation').first()).toBeVisible();
 });
+
+test('Meeting Viewer keeps the source toggle visible while waiting for the first Cue', async ({ page }) => {
+  await page.route(/\/api\/shared-meetings\/meeting-viewer-token(?:\?.*)?$/, async (route) => route.fulfill({ json: {
+    meeting: { id: 'meeting-1', name: '產品會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+    cues: [],
+    cursor: { eventId: 0, cueSequence: 0 }
+  } }));
+  await page.route(/\/api\/shared-meetings\/meeting-viewer-token\/events(?:\?.*)?$/, async (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
+
+  await page.goto('/#viewer?token=meeting-viewer-token');
+
+  await expect(page.getByText('等待錄音端送出第一句字幕')).toBeVisible();
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveText('顯示原文');
+  await expect(page.getByTestId('viewer-source-toggle')).toBeVisible();
+});
+
 test('Meeting Viewer loads older Cues with the opaque pagination cursor', async ({ page }) => {
   const latestCues = Array.from({ length: 100 }, (_, index) => ({
     cueId: `cue-${index + 6}`,

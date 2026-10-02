@@ -4455,7 +4455,7 @@ test('Meeting home searches by name and filters by status', async ({ page }) => 
   const interruptedCard = page.locator('.meeting-card').filter({ hasText: '客戶訪談' });
   await expect(page.locator('.meeting-card-grid .meeting-card')).toHaveCount(1);
   await expect(interruptedCard).toContainText('可續錄');
-  await expect(interruptedCard.getByRole('button', { name: '繼續即時字幕' })).toBeVisible();
+  await expect(interruptedCard.getByRole('button', { name: '確認設定並繼續字幕' })).toBeVisible();
 });
 
 test('Meeting home card layout captures desktop viewport references', async ({ page }) => {

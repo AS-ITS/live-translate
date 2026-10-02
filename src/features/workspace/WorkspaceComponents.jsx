@@ -386,14 +386,13 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
 
   function openMeetingCard(meeting) {
     if (!meeting?.id) return;
-    if (meeting.status === 'created') onOpenSettings?.(meeting.id);
-    else if (meeting.status === 'completed') onOpenHistory(meeting.id);
-    else onOpenLive(meeting.id);
+    if (meeting.status === 'completed') onOpenHistory(meeting.id);
+    else onOpenSettings?.(meeting.id);
   }
 
   function meetingCardActionLabel(status) {
-    if (status === 'active') return '開啟即時字幕';
-    if (status === 'interrupted') return '繼續即時字幕';
+    if (status === 'active') return '確認設定並開啟字幕';
+    if (status === 'interrupted') return '確認設定並繼續字幕';
     if (status === 'completed') return '查看翻譯紀錄';
     return '編輯並開始會議';
   }

@@ -70,12 +70,14 @@ Each Meeting card provides:
 - Source and target languages, plus the last updated time.
 - A concise status explanation backed only by the Meeting read model.
 - Name search and status filtering.
-- A status-appropriate single primary action: open live subtitles, continue
-  live subtitles, view translation history, or edit/start a draft Meeting.
+- A status-appropriate single primary action: unfinished Meetings first open
+  their settings for confirmation before live subtitles, while completed
+  Meetings open translation history.
 
-Cards are arranged in two columns on desktop and one column below 1024px. The
-entire card opens the appropriate independent page or edit flow; its primary
-button stops event propagation so it does not trigger the card navigation twice.
+Cards are arranged in two columns on desktop and one column below 1024px. Created,
+active, and interrupted Meeting cards open settings first; the settings page owns
+the explicit transition to live subtitles. Completed cards open history. Each
+primary button stops event propagation so it does not trigger card navigation twice.
 Draft deletion remains in the Meeting settings danger zone rather than on the
 card. The home route keeps only the product brand and the single `＋ 建立會議`
 Header action; the existing search, status filter, and global glossary controls

@@ -51,7 +51,6 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = resolveAllowedOrigin(process.env);
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
@@ -156,7 +155,7 @@ function sendJson(res, status, payload, requestId, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -175,7 +174,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Type': contentType,
     'Content-Length': buffer.byteLength,
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -192,7 +191,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Type': contentType,
     ...(Number.isFinite(contentLength) ? { 'Content-Length': contentLength } : {}),
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -276,16 +275,59 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || 'unknown';
 }
 
+function normalizeOrigin(value) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().toLowerCase() === 'null') return '';
+  try {
+    const parsed = new URL(value.trim());
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) return '';
+    if (/\s/u.test(parsed.hostname)) return '';
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeVercelHostname(value) {
+  if (typeof value !== 'string' || !value.trim() || /[/:?#\s]/u.test(value.trim())) return '';
+  return normalizeOrigin(`https://${value.trim()}`);
+}
+
+export function resolveAllowedOrigins(env = process.env) {
+  const origins = new Set();
+  const appOrigin = normalizeOrigin(env.APP_ORIGIN);
+  const vercelEnvironment = String(env.VERCEL_ENV || '').toLowerCase();
+
+  if (vercelEnvironment === 'preview') {
+    if (appOrigin) origins.add(appOrigin);
+    for (const value of [env.VERCEL_URL, env.VERCEL_BRANCH_URL]) {
+      const origin = normalizeVercelHostname(value);
+      if (origin) origins.add(origin);
+    }
+    return origins;
+  }
+
+  if (vercelEnvironment === 'production' || env.NODE_ENV === 'production') {
+    if (appOrigin) origins.add(appOrigin);
+    if (!vercelEnvironment && !appOrigin) {
+      const legacyVercelOrigin = normalizeVercelHostname(env.VERCEL_URL);
+      if (legacyVercelOrigin) origins.add(legacyVercelOrigin);
+    }
+    return origins;
+  }
+
+  const localOrigin = normalizeOrigin(env.dev_frontend_origin) || appOrigin || 'http://127.0.0.1:5173';
+  origins.add(localOrigin);
+  return origins;
+}
+
 export function resolveAllowedOrigin(env = process.env) {
-  const production = env.NODE_ENV === 'production';
-  return production
-    ? (env.APP_ORIGIN || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : '') || 'http://127.0.0.1:8000')
-    : (env.dev_frontend_origin || env.APP_ORIGIN || 'http://127.0.0.1:5173');
+  return [...resolveAllowedOrigins(env)][0] || 'http://127.0.0.1:8000';
 }
 
 function isAllowedOrigin(req) {
-  const origin = req.headers?.origin;
-  return !origin || origin === RESOLVED_ORIGIN;
+  const rawOrigin = req.headers?.origin;
+  if (!rawOrigin) return true;
+  return resolveAllowedOrigins(process.env).has(rawOrigin);
 }
 
 function isProfileOnlyMode() {
@@ -856,6 +898,7 @@ async function handleRequestWithSessionReadController(
   if (path === '/api/live-token') res.setHeader?.('Cache-Control', 'no-store');
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
+  res.__validatedOrigin = origin && isAllowedOrigin(req) ? origin : '';
   let authenticatedUser = null;
   let requestScope = null;
   const updateRequestScope = (resourceOwnerUserId = null) => {
@@ -4241,7 +4284,7 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -4262,7 +4305,7 @@ function openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meeti
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();

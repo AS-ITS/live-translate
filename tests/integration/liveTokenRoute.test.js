@@ -260,6 +260,57 @@ test('POST /api/live-token rejects disallowed origin', async () => {
 
   assert.equal(response.status, 403);
   assert.equal(response.json().error.code, 'invalid_origin');
+  assert.equal(response.headers['Access-Control-Allow-Origin'], undefined);
+
+  const malformed = await request({
+    body: JSON.stringify(tokenBody()),
+    headers: { origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app/path?x=1' }
+  });
+  assert.equal(malformed.status, 403);
+  assert.equal(malformed.json().error.code, 'invalid_origin');
+  assert.equal(malformed.headers['Access-Control-Allow-Origin'], undefined);
+});
+
+test('POST /api/live-token accepts the Preview immutable origin and echoes only that origin', async () => {
+  const previous = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    APP_ORIGIN: process.env.APP_ORIGIN,
+    VERCEL_URL: process.env.VERCEL_URL,
+    VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL
+  };
+  Object.assign(process.env, {
+    VERCEL_ENV: 'preview',
+    APP_ORIGIN: 'https://live-translate-git-feature-opfs-issue-38.example/',
+    VERCEL_URL: 'live-translate-cefq4qhgz-pochun1021s-projects.vercel.app',
+    VERCEL_BRANCH_URL: 'live-translate-git-feature-opfs-issue-38-pochun1021s-projects.vercel.app'
+  });
+  try {
+    const response = await request({
+      body: JSON.stringify(tokenBody()),
+      headers: {
+        origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app'
+      }
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['Access-Control-Allow-Origin'], 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app');
+
+    const malformed = await request({
+      body: JSON.stringify(tokenBody()),
+      headers: { origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app/path?x=1' }
+    });
+    assert.equal(malformed.status, 403);
+    assert.equal(malformed.json().error.code, 'invalid_origin');
+    assert.equal(malformed.headers['Access-Control-Allow-Origin'], undefined);
+
+    const noOrigin = await request({ body: JSON.stringify(tokenBody()) });
+    assert.equal(noOrigin.status, 200);
+    assert.equal(noOrigin.headers['Access-Control-Allow-Origin'], undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('POST /api/live-token applies IP-based rate limit', async () => {

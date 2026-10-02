@@ -901,6 +901,44 @@ test('POST recovery conflict returns HTTP 409', async () => {
   assert.equal(response.json().error.code, 'checkpoint_conflict');
 });
 
+test('checkpoint routes enforce the Preview immutable Origin before auth/capability checks', async () => {
+  const previous = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    APP_ORIGIN: process.env.APP_ORIGIN,
+    VERCEL_URL: process.env.VERCEL_URL,
+    VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL
+  };
+  Object.assign(process.env, {
+    VERCEL_ENV: 'preview',
+    APP_ORIGIN: 'https://app.example/',
+    VERCEL_URL: 'immutable.vercel.app',
+    VERCEL_BRANCH_URL: 'branch.vercel.app'
+  });
+  try {
+    const handler = createHandler();
+    const allowed = await request(handler, {
+      method: 'GET',
+      url: '/api/meetings/meeting-1/segments/segment-1/checkpoint',
+      headers: { origin: 'https://immutable.vercel.app' }
+    });
+    assert.notEqual(allowed.status, 403);
+    assert.notEqual(allowed.json().error?.code, 'invalid_origin');
+
+    const rejected = await request(handler, {
+      method: 'GET',
+      url: '/api/meetings/meeting-1/segments/segment-1/checkpoint',
+      headers: { origin: 'https://unrelated.vercel.app' }
+    });
+    assert.equal(rejected.status, 403);
+    assert.equal(rejected.json().error.code, 'invalid_origin');
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('missing meeting or segment returns HTTP 404', async () => {
   const handler = createHandler();
   const { meeting } = (await request(handler, { method: 'POST', url: '/api/meetings' })).json();

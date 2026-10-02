@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { createRequestHandler, resolveAllowedOrigin } from '../../server/index.js';
+import { createRequestHandler, resolveAllowedOrigin, resolveAllowedOrigins } from '../../server/index.js';
 import { createAccessControl } from '../../server/accessControl.js';
 import { createLiveToken } from '../../server/tokenService.js';
 
@@ -179,6 +179,54 @@ test('origin resolver preserves explicit APP_ORIGIN for Preview and Production',
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'production', APP_ORIGIN: 'https://preview.example', VERCEL_URL: 'preview.vercel.app' }), 'https://preview.example');
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'production', VERCEL_URL: 'prod.vercel.app' }), 'https://prod.vercel.app');
   assert.equal(resolveAllowedOrigin({ NODE_ENV: 'development', APP_ORIGIN: 'http://localhost:5173', dev_frontend_origin: '' }), 'http://localhost:5173');
+});
+
+test('origin resolver uses exact production and preview allowlists', () => {
+  assert.deepEqual(
+    [...resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'preview',
+      APP_ORIGIN: 'https://branch.example/app/?source=preview',
+      VERCEL_URL: 'immutable.vercel.app',
+      VERCEL_BRANCH_URL: 'branch.vercel.app'
+    })],
+    ['https://branch.example', 'https://immutable.vercel.app', 'https://branch.vercel.app']
+  );
+  assert.deepEqual(
+    [...resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'production',
+      APP_ORIGIN: 'https://app.example/',
+      VERCEL_URL: 'immutable.vercel.app',
+      VERCEL_BRANCH_URL: 'branch.vercel.app'
+    })],
+    ['https://app.example']
+  );
+});
+
+test('malformed production APP_ORIGIN fails closed without Vercel or Host fallback', () => {
+  for (const appOrigin of [
+    'not-a-valid-origin',
+    'ftp://live.example.com',
+    'https://user:password@live.example.com',
+    'https://'
+  ]) {
+    const allowedOrigins = resolveAllowedOrigins({
+      NODE_ENV: 'production',
+      VERCEL_ENV: 'production',
+      APP_ORIGIN: appOrigin,
+      VERCEL_URL: 'deployment-project.vercel.app',
+      VERCEL_BRANCH_URL: 'project-git-feature-user.vercel.app',
+      HOST: 'attacker-controlled.example'
+    });
+
+    assert.deepEqual([...allowedOrigins], []);
+    assert.equal(allowedOrigins.has('https://evil.example.com'), false);
+    assert.equal(allowedOrigins.has('https://unrelated-project.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://deployment-project.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://project-git-feature-user.vercel.app'), false);
+    assert.equal(allowedOrigins.has('https://attacker-controlled.example'), false);
+  }
 });
 
 test('transcription provider 403 diagnostic contains the actual model and API version', async () => {

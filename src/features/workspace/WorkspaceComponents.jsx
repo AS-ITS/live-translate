@@ -9,6 +9,7 @@ import { createMemorySessionRepository } from '../../lib/sessionRepository.js';
 import { createSessionReadApiClient } from '../../lib/sessionReadApiClient.js';
 import { createSessionControlLease } from '../../lib/sessionControlLease.js';
 import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
+import { useBodyScrollLock } from '../../lib/useBodyScrollLock.js';
 import { meetingManagementErrorMessage } from '../../lib/meetingManagementApiClient.js';
 import { meetingApiErrorMessage } from '../../lib/meetingApiError.js';
 import { createSessionSnapshotApiClient } from '../../lib/sessionSnapshotApiClient.js';
@@ -1039,6 +1040,8 @@ export function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChan
   const entriesRef = useRef([]);
   const editorFormRef = useRef(null);
   const apiRef = useRef(createGlossaryApiClient());
+
+  useBodyScrollLock(isImportDialogOpen);
 
   useEffect(() => { entriesRef.current = sharedEntries; setEntries(sharedEntries); }, [sharedEntries]);
   useEffect(() => { setCategories(sharedCategories); }, [sharedCategories]);

@@ -8,6 +8,7 @@ import { createMeetingReadApiClient } from '../../lib/meetingReadApiClient.js';
 import { meetingApiErrorMessage } from '../../lib/meetingApiError.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
 import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
+import { useBodyScrollLock } from '../../lib/useBodyScrollLock.js';
 
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SHARE_SETTINGS_STEP_INDEX = 4;
@@ -74,6 +75,8 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
   const audioConfirmButtonRef = useRef(null);
   const shareEnsurePromiseRef = useRef(null);
   const autoScrolledMeetingIdRef = useRef(null);
+
+  useBodyScrollLock(isPrivateImportOpen);
 
   const refreshAudioDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) { setAudioPermissionStatus('unsupported'); return; }

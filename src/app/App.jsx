@@ -13,6 +13,7 @@ import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
+import { mergeMeetingDetailWithLocalCues, persistFinalMeetingCues } from '../lib/meetingLocalTranscript.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { applyGlossaryCorrectionToCue } from '../lib/glossaryReplacement.js';
@@ -337,6 +338,8 @@ const activeMeetingCheckpointRef = useRef(null);
       findActiveMeetingSessionId: async (meetingId) => (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
         .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,
       setError,
+      setMeetingCheckpointStatus,
+      setMeetingCheckpointErrorMessage,
       setStatusLabelOverride,
       setStatus,
       invalidateLiveSessionCallbacks,
@@ -1427,14 +1430,18 @@ const activeMeetingCheckpointRef = useRef(null);
       })))
     ));
     localMeetingCuePersistenceQueueRef.current = localSave;
-    void localSave.then(() => {
+    void localSave.then(async () => {
       if (webRtcDevice.value !== 'connected') {
-        return publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
+        try {
+          await publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
+        } catch {
+          setMeetingCheckpointStatus('error');
+          setMeetingCheckpointErrorMessage('字幕已保存在本機，但雲端同步失敗。結束時會再重試。');
+        }
       }
-      return null;
     }).catch(() => {
       setMeetingCheckpointStatus('error');
-      setMeetingCheckpointErrorMessage('本機字幕保存失敗，請先不要關閉頁面。');
+      setMeetingCheckpointErrorMessage('本機字幕保存失敗，資料仍保留在當前頁面。請勿關閉頁面，並再次結束以重試。');
     });
     liveController.checkpoint.meetingCheckpointSyncCoordinator().enqueueCues(checkpointCues, checkpoint);
   }
@@ -1456,10 +1463,26 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   async function flushMeetingCuePublishes(sessionId, { forceCloud = false } = {}) {
-    if (!sessionId) return;
-    await localMeetingCuePersistenceQueueRef.current;
+    if (!sessionId) return { localSaved: true, cloudSynced: true };
+    const meetingCheckpoint = activeMeetingCheckpointRef.current;
+    const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() => persistFinalMeetingCues({
+      persistence: getLocalMeetingPersistence(),
+      meetingId: meetingCheckpoint?.meetingId,
+      sessionId,
+      segmentId: meetingCheckpoint?.segmentId,
+      cues: subtitleCueStateRef.current?.finalCues || []
+    }));
+    localMeetingCuePersistenceQueueRef.current = localSave;
+    try {
+      await localSave;
+    } catch (error) {
+      setMeetingCheckpointStatus('error');
+      setMeetingCheckpointErrorMessage('本機字幕保存失敗，資料仍保留在當前頁面。請勿關閉頁面，並再次結束以重試。');
+      throw error;
+    }
+
+    const cloudResults = [];
     if (forceCloud) {
-      const meetingCheckpoint = activeMeetingCheckpointRef.current;
       if (meetingCheckpoint?.meetingId) {
         const localCues = await getLocalMeetingPersistence().listCues(meetingCheckpoint.meetingId);
         const groups = new Map();
@@ -1469,18 +1492,22 @@ const activeMeetingCheckpointRef = useRef(null);
           group.cues.push(record.cue);
           groups.set(key, group);
         }
-        await Promise.all([...groups.values()].map((group) => publishMeetingCues(
+        cloudResults.push(...await Promise.allSettled([...groups.values()].map((group) => publishMeetingCues(
           group.cues,
           { meetingId: meetingCheckpoint.meetingId, segmentId: group.segmentId },
           group.sessionId,
           { allowInactive: true }
-        )));
+        ))));
       }
     }
     const queued = [...meetingCuePublishQueuesRef.current.entries()]
       .filter(([key]) => key.startsWith(`${sessionId}:`))
       .map(([, promise]) => promise);
-    await Promise.allSettled(queued);
+    cloudResults.push(...await Promise.allSettled(queued));
+    return {
+      localSaved: true,
+      cloudSynced: cloudResults.every((result) => result.status === 'fulfilled')
+    };
   }
 
   function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
@@ -1525,7 +1552,7 @@ const activeMeetingCheckpointRef = useRef(null);
               requestId: typeof error?.requestId === 'string' ? error.requestId : null
             });
           }
-          return;
+          throw error;
         }
       }
     });
@@ -1909,12 +1936,8 @@ const activeMeetingCheckpointRef = useRef(null);
     const cachedDetail = meetingDetailCacheRef.current.get(id);
     setSelectedMeetingDetail(cachedDetail || undefined);
 
-    if (cachedDetail) {
-      return;
-    }
-
     try {
-      const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+      const detail = await loadMeetingDetailWithLocalTranscript(id);
 
       if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
         return;
@@ -1926,13 +1949,15 @@ const activeMeetingCheckpointRef = useRef(null);
         meetingDetailCacheRef.current.delete(id);
       }
       setSelectedMeetingDetail(detail);
-    } catch {
+    } catch (loadError) {
       if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
         return;
       }
 
       setSelectedMeetingDetail(null);
-      setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料載入失敗。請重試。'));
+      setMeetingDetailError(loadError?.code === 'local_transcript_read_failed'
+        ? '本機字幕資料載入失敗，未以空白會議取代。請在這台設備重試。'
+        : meetingApiErrorMessage(loadError, '會議詳細資料載入失敗。請重試。'));
     }
   }
 
@@ -1953,7 +1978,7 @@ const activeMeetingCheckpointRef = useRef(null);
     meetingDetailRequestIdRef.current = requestId;
 
     try {
-      const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+      const detail = await loadMeetingDetailWithLocalTranscript(id);
 
       if (meetingDetailRequestIdRef.current !== requestId || selectedMeetingIdRef.current !== id) {
         return false;
@@ -1968,10 +1993,26 @@ const activeMeetingCheckpointRef = useRef(null);
       return true;
     } catch (loadError) {
       if (meetingDetailRequestIdRef.current === requestId && selectedMeetingIdRef.current === id) {
-        setMeetingDetailError(meetingApiErrorMessage(loadError, '會議詳細資料無法更新。'));
+        setMeetingDetailError(loadError?.code === 'local_transcript_read_failed'
+          ? '本機字幕資料載入失敗，請保留這個瀏覽器的本機資料後重試。'
+          : meetingApiErrorMessage(loadError, '會議詳細資料無法更新。'));
       }
 
       return false;
+    }
+  }
+
+  async function loadMeetingDetailWithLocalTranscript(id) {
+    const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
+    if (!detail) return detail;
+
+    try {
+      const localCues = await getLocalMeetingPersistence().listCues(id);
+      return mergeMeetingDetailWithLocalCues(detail, localCues);
+    } catch (error) {
+      const wrapped = new Error('Local meeting transcript could not be read.', { cause: error });
+      wrapped.code = 'local_transcript_read_failed';
+      throw wrapped;
     }
   }
 

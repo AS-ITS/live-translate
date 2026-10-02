@@ -87,6 +87,7 @@ import {
 import { canonicalHashForLocation, FEATURE_PAGES, pageFromLocation, pageInfoFromLocation } from '../../app/routes.js';
 import { AudioArtifactDownloads } from '../history/AudioArtifactDownloads.jsx';
 import { CloudMeetingExportPanel } from '../meetings/CloudMeetingExportPanel.jsx';
+import { LocalMeetingExportPanel } from '../meetings/LocalMeetingExportPanel.jsx';
 import { isSupabaseConfigured } from '../../lib/supabaseAuth.js';
 import { GeminiCredentialNotice } from '../../components/GeminiCredentialNotice.jsx';
 
@@ -719,6 +720,7 @@ export function MeetingTranslationSection({ detail, detailError = '', onRetry })
   return (
     <section className="meeting-record-section" aria-label="翻譯內容">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">TRANSLATION</p><h2>翻譯內容</h2><p>查看這場會議完成的翻譯結果。</p></div></div>
+      {detail.localTranscriptStatus === 'recovered' ? <LocalTranscriptRecoveryNotice /> : null}
       <div className="reading-tabs" role="tablist" aria-label="原文與翻譯內容切換">
         <button className={`reading-tab${translationTab === 'source' ? ' active' : ''}`} type="button" role="tab" aria-selected={translationTab === 'source'} onClick={() => setTranslationTab('source')}>原文</button>
         <button className={`reading-tab${translationTab === 'translation' ? ' active' : ''}`} type="button" role="tab" aria-selected={translationTab === 'translation'} onClick={() => setTranslationTab('translation')}>翻譯</button>
@@ -740,8 +742,31 @@ export function MeetingExportSection({ detail, detailError = '', onRetry }) {
     <section className="meeting-record-section meeting-export-section" aria-label="匯出" data-history-section="export">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
       <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
-      {isSupabaseConfigured() ? <CloudMeetingExportPanel meetingId={detail.meeting?.id} /> : <CloudExportUnavailableNotice />}
+      <MeetingTranscriptExportPanel detail={detail} />
     </section>
+  );
+}
+
+export function MeetingTranscriptExportPanel({ detail }) {
+  const cues = Array.isArray(detail?.cues) ? detail.cues : [];
+  if (cues.length > 0) {
+    return (
+      <>
+        {detail.localTranscriptStatus === 'recovered' ? <LocalTranscriptRecoveryNotice /> : null}
+        <LocalMeetingExportPanel meetingId={detail.meeting?.id} cues={cues} />
+      </>
+    );
+  }
+  return isSupabaseConfigured()
+    ? <CloudMeetingExportPanel meetingId={detail?.meeting?.id} />
+    : <CloudExportUnavailableNotice meetingId={detail?.meeting?.id} />;
+}
+
+function LocalTranscriptRecoveryNotice() {
+  return (
+    <p className="export-note" data-testid="local-transcript-recovery" role="status">
+      已從這個瀏覽器的本機保存資料恢復字幕。查看與匯出可正常使用；若 Viewer 尚無內容，代表雲端同步仍未完成。
+    </p>
   );
 }
 
@@ -836,9 +861,7 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
         historySection="source"
       />
 
-      {isSupabaseConfigured()
-        ? <CloudMeetingExportPanel meetingId={meetingId} />
-        : <CloudExportUnavailableNotice meetingId={meetingId} />}
+      <MeetingTranscriptExportPanel detail={detail} />
     </section>
   );
 }

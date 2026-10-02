@@ -3506,6 +3506,44 @@ test('Stop finalizes visible partial transcripts without active export controls'
   await expect(page.getByRole('button', { name: '匯出', exact: true })).toHaveCount(0);
 });
 
+test('stopped meeting restores local cues after reload and downloads non-empty TXT', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, '第一句原文', 'First translation');
+  await emitPartialTranscript(page, '結束前最後一句', 'Last translation');
+
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page).toHaveURL(/#meetings$/);
+
+  await page.goto('/#meeting-detail?meetingId=meeting-1&from=meetings');
+  await page.getByRole('button', { name: '翻譯內容', exact: true }).click();
+  await expect(page.getByTestId('local-transcript-recovery')).toBeVisible();
+  await expect(page.getByText('第一句原文', { exact: true })).toBeVisible();
+  await expect(page.getByText('結束前最後一句', { exact: true })).toBeVisible();
+  await page.getByRole('tab', { name: '翻譯', exact: true }).click();
+  await expect(page.getByText('First translation', { exact: true })).toBeVisible();
+  await expect(page.getByText('Last translation', { exact: true })).toBeVisible();
+
+  await page.reload();
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
+  const exportPanel = page.getByRole('region', { name: '本機字幕匯出' });
+  await exportPanel.getByLabel('匯出內容').selectOption('both');
+  const downloadPromise = page.waitForEvent('download');
+  await exportPanel.getByRole('button', { name: '開始匯出' }).click();
+  const download = await downloadPromise;
+  const content = await readFile(await download.path(), 'utf8');
+  expect(content).toContain('第一句原文');
+  expect(content).toContain('結束前最後一句');
+  expect(content).toContain('First translation');
+  expect(content).toContain('Last translation');
+});
+
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });

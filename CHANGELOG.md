@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正結束會議後詳情與 TXT 匯出誤讀雲端空資料的問題：Stop 會先等待完整 Final Cue 寫入 IndexedDB，詳情與瀏覽器匯出共用同一份本機 Cue，並保留 source-only、translation-only、延遲補齊與最後一句。本機保存失敗時不會清空頁面資料，重複 Stop 可安全重試。
 - 修正正式錄製流程未可靠套用會議詞彙：同名原詞現在由會議詞彙覆蓋共用詞彙，Gemini Live prompt、provider reconnect、resume 與 rollover 使用 Segment 字典快照；字幕校正改為只在同一 Cue 原文命中時套用，並保留模型原始翻譯供比對，Recorder 與 Viewer 顯示同一有效翻譯。錄製中修改詞彙從下一個 Segment 生效，既有字幕與 Gemini 原生音訊不回溯修改。
 
 - Google Workspace accounts matching `AUTH_ALLOWED_EMAIL_DOMAINS` now auto-activate through a service-role-only conditional `pending -> active` RPC after backend JWT/domain validation. Manual approval UI/API was removed; disabled accounts, super-admin roles, Meeting permissions, Viewer access, audit history, and Gemini key boundaries remain unchanged.

@@ -151,6 +151,7 @@ export function useLiveRecordingController({
 } = {}) {
   const recordingControllerRef = useRef(null);
   const startOperationRef = useRef(null);
+  const endOperationRef = useRef(null);
   const audioUploadControllerRef = useRef(null);
   const recoverySingleFlightRef = useRef(null);
   const segmentTransitionLockRef = useRef(null);
@@ -886,7 +887,16 @@ export function useLiveRecordingController({
         recovery.setError('無法結束會議，請稍後再試。');
       }
     },
-    async endCurrentSession({ redirectHash = '#meetings' } = {}) {
+    endCurrentSession(options = {}) {
+      if (endOperationRef.current) return endOperationRef.current;
+      const operation = controller.endCurrentSessionLifecycle(options);
+      endOperationRef.current = operation;
+      void operation.finally(() => {
+        if (endOperationRef.current === operation) endOperationRef.current = null;
+      }).catch(() => {});
+      return operation;
+    },
+    async endCurrentSessionLifecycle({ redirectHash = '#meetings' } = {}) {
       const endedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || recovery.resumeDraft?.meetingId || '';
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
@@ -908,7 +918,10 @@ export function useLiveRecordingController({
       await recovery.finalizePendingTranscriptItemsForStop();
       cueController.flushSubtitleCues('stop');
       await checkpointController.flushMeetingCheckpointSync();
-      await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current, { forceCloud: true });
+      const cueSyncResult = await recovery.flushMeetingCuePublishes?.(
+        recovery.activeSessionRecordIdRef.current,
+        { forceCloud: true }
+      );
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('stop');
         stopMeetingLifecycleHeartbeats();
@@ -924,6 +937,10 @@ export function useLiveRecordingController({
       meetingLifecycleRef.current = null;
       clearMeetingLifecycleWriteFence(endedMeetingId);
       recovery.setStatus('stopped');
+      if (cueSyncResult?.cloudSynced === false) {
+        recovery.setMeetingCheckpointStatus?.('error');
+        recovery.setMeetingCheckpointErrorMessage?.('字幕已完整保存在本機，但雲端同步失敗。可在這台設備的會議詳情查看與匯出，並稍後重試。');
+      }
       clearMeetingAudioPreference(endedMeetingId);
       if (redirectHash) window.location.hash = redirectHash;
     },

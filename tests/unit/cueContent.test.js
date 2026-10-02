@@ -15,6 +15,12 @@ test('effective Cue content prefers refined values and supports raw inspection',
   assert.equal(effectiveTranslationForCue(cue, 'raw'), 'raw translation');
 });
 
+test('effective Cue translation uses corrected initial value while raw inspection preserves provider output', () => {
+  const cue = { rawTranslation: 'Hi.', initialTranslation: 'speak Hi.' };
+  assert.equal(effectiveTranslationForCue(cue), 'speak Hi.');
+  assert.equal(effectiveTranslationForCue(cue, 'raw'), 'Hi.');
+});
+
 test('Cue refinement metadata resets when raw input hash changes', () => {
   const cue = { cueId: 'cue-1', sequence: 1, rawSource: 'source', rawTranslation: 'translation', refinement: { status: 'completed', version: 4, inputHash: 'old' } };
   const normalized = normalizeCueRefinement(cue);

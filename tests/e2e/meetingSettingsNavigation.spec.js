@@ -64,6 +64,7 @@ test('meeting settings steps navigate to each settings card', async ({ page }) =
 
   await stepButtons.nth(3).click();
   await expect(page.locator('#meeting-dictionary-settings-title')).toBeInViewport();
+  await expect(page.getByText('錄製開始後儲存的變更會從下一個段落生效')).toBeVisible();
   await expect(stepButtons.nth(3)).toHaveAttribute('aria-current', 'step');
 });
 

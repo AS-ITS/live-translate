@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { meetingGlossaryAliasesForTarget, selectedMeetingGlossaryEntries } from '../../src/lib/meetingGlossary.js';
+import { meetingGlossaryAliasesForTarget, mergeMeetingGlossaryEntries, selectedMeetingGlossaryEntries } from '../../src/lib/meetingGlossary.js';
 
 test('meeting glossary aliases normalize arrays and target-language maps', () => {
   assert.deepEqual(meetingGlossaryAliasesForTarget([' mic ', '', 42], 'en'), [' mic ']);
@@ -37,4 +37,12 @@ test('selected meeting glossary entries ignore non-array and invalid aliases', (
       { source: 'string', translations: {}, replacementAliases: {} }
     ]
   );
+});
+
+test('meeting glossary overrides same-source shared entry and retains correction aliases', () => {
+  assert.deepEqual(mergeMeetingGlossaryEntries(
+    [{ source: '你好', target: 'Hi', replacementAliases: ['Hello'] }],
+    [{ source: '你好', translations: { en: 'speak Hi' }, replacementAliases: { en: [] } }],
+    'en'
+  ), [{ source: '你好', target: 'speak Hi', replacementAliases: ['Hi', 'Hello'] }]);
 });

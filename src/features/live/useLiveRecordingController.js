@@ -10,6 +10,7 @@ import {
 } from '../../lib/subtitleCues.js';
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
+import { applyGlossaryCorrectionsToCueState } from '../../lib/glossaryReplacement.js';
 import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
@@ -326,6 +327,7 @@ export function useLiveRecordingController({
           sourceLanguageCode
         });
       }
+      next = applyGlossaryCorrectionsToCueState(next, cue.getLiveGlossaryEntries?.() || []);
       if (import.meta.env?.DEV) {
         const previousFinalIds = new Set((current.finalCues || []).map((item) => item.cueId));
         const nextFinalIds = new Set((next.finalCues || []).map((item) => item.cueId));

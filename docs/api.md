@@ -624,10 +624,12 @@ Returns `201 Created`:
 
 Updates Meeting name, source/target languages, translated-audio playback,
 original-audio recording, shared glossary entries, and
-private glossary entries. A live
-Recorder applies changed language or glossary settings at the next Segment
-boundary; the current Segment keeps its settings snapshot. Completed Meetings
-are read-only and return `409 meeting_settings_locked`.
+private glossary entries. A live Recorder applies changed language or glossary
+settings at the next Segment boundary; provider reconnect within the current
+Segment keeps its settings snapshot. Same-source private Meeting entries
+override selected shared entries. Existing subtitles and already-played
+provider audio are not rewritten. Completed Meetings are read-only and return
+`409 meeting_settings_locked`.
 
 ## `DELETE /api/meetings/:meetingId`
 

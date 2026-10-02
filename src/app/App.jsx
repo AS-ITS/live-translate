@@ -15,9 +15,10 @@ import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
+import { applyGlossaryCorrectionToCue } from '../lib/glossaryReplacement.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 import { stopSessionSafely } from '../lib/stopSessionSafely.js';
-import { liveGlossaryEntriesForTarget, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
+import { mergeMeetingGlossaryEntries, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
 import { userMessageForErrorCode, withHttpStatus } from '../lib/connectionFailures.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
@@ -295,6 +296,7 @@ const activeMeetingCheckpointRef = useRef(null);
       getSessionId: () => activeSessionRecordIdRef.current,
       getSegmentId: () => activeMeetingCheckpointRef.current?.segmentId,
       getSessionTime: () => sessionTimeForSubtitleCues(),
+      getLiveGlossaryEntries: () => sessionRef.current?.liveGlossaryEntries || reconnectSessionRef.current?.liveGlossaryEntries || [],
       persist: enqueueCuePersistence,
       retranslate: (sourceText, cueId) => sessionRef.current?.retranslateSourceText(sourceText, cueId),
       schedulePolishing: null
@@ -684,7 +686,7 @@ const activeMeetingCheckpointRef = useRef(null);
       const output = byId.get(cue.cueId);
       if (!output || cue.initialTranslation === output.translatedText || cue.refinedTranslation) return cue;
       changed = true;
-      return {
+      return applyGlossaryCorrectionToCue({
         ...cue,
         targetLanguageCode,
         initialTranslation: output.translatedText,
@@ -692,7 +694,7 @@ const activeMeetingCheckpointRef = useRef(null);
         translatedText: output.translatedText,
         translationStatus: 'finalized',
         refinement: { ...(cue.refinement || {}), status: 'pending' }
-      };
+      }, sessionRef.current?.liveGlossaryEntries || []);
     });
     if (!changed) return;
     const next = { ...current, finalCues: nextCues };
@@ -726,7 +728,9 @@ const activeMeetingCheckpointRef = useRef(null);
       logger: (event) => { if (import.meta.env?.DEV) console.debug('[Cue refinement]', event); }
     });
     if (!refinement.changed) return;
-    const nextCues = refinement.cues;
+    const nextCues = refinement.cues.map((cue) => (
+      applyGlossaryCorrectionToCue(cue, sessionRef.current?.liveGlossaryEntries || [])
+    ));
     const next = { ...previous, finalCues: nextCues };
     subtitleCueStateRef.current = next;
     setSubtitleCueState(next);
@@ -862,10 +866,6 @@ const activeMeetingCheckpointRef = useRef(null);
     }
     void Promise.resolve(liveController.audio.cleanup()).catch(() => {});
   }, []);
-
-  useEffect(() => {
-    updateActiveSessionGlossaryEntries(glossaryEntries);
-  }, [glossaryEntries, targetLanguageCode]);
 
   useEffect(() => {
     cancelLiveCueIdleTimers();
@@ -1215,15 +1215,6 @@ const activeMeetingCheckpointRef = useRef(null);
     return liveSessionCallbackGenerationRef.current === callbackGeneration;
   }
 
-  function updateActiveSessionGlossaryEntries(entries) {
-    const liveGlossaryEntries = liveGlossaryEntriesForTarget(entries, targetLanguageCode);
-    const sessions = new Set([sessionRef.current, reconnectSessionRef.current]);
-
-    for (const session of sessions) {
-      if (session) session.liveGlossaryEntries = liveGlossaryEntries;
-    }
-  }
-
   function configuredSegmentSwitchIntervalMs() {
     const testIntervalMs = import.meta.env?.DEV ? window.__liveTranslateSegmentSwitchIntervalMs : undefined;
     return Number.isFinite(testIntervalMs) && testIntervalMs > 0 ? testIntervalMs : SEGMENT_SWITCH_INTERVAL_MS;
@@ -1249,14 +1240,7 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function currentMeetingGlossaryEntries() {
     const shared = selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
-    const privateEntries = (Array.isArray(privateMeetingGlossaryEntries) ? privateMeetingGlossaryEntries : [])
-      .map((entry) => ({
-        source: entry.source,
-        target: entry.translations?.[targetLanguageCode],
-        replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
-      }))
-      .filter((entry) => entry.target);
-    return [...shared, ...privateEntries];
+    return mergeMeetingGlossaryEntries(shared, privateMeetingGlossaryEntries, targetLanguageCode);
   }
 
   function applyTranscriptUpdate(update) {

@@ -1223,13 +1223,13 @@ test('live session applies glossary replacements only to output transcript event
 
   session.handleMessage({
     serverContent: {
-      inputTranscription: { text: '麥克風' },
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone and mic' },
       turnComplete: true
     }
   });
 
-  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: '麥克風', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: 'microphone', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
   assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak and Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
@@ -1246,6 +1246,7 @@ test('live session emits final output transcript events after glossary replaceme
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' },
       turnComplete: true
     }
@@ -1267,6 +1268,7 @@ test('turn completion flush keeps replacement text when finalizing output partia
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' }
     }
   });

@@ -2596,24 +2596,24 @@ test('clears the meeting actions when live translation has no selected meeting',
   await expect(page.getByRole('button', { name: '開始' })).toBeHidden();
 });
 
-test('live glossary replacement is applied to final translation article text only', async ({ page }) => {
+test('live meeting glossary corrects punctuated source Cue while preserving Cue identity', async ({ page }) => {
   page.liveGlossaryEntries = [
-    { source: 'microphone', target: 'Alan speak', replacementAliases: [] }
+    { source: '你好', target: 'speak Hi', replacementAliases: ['Hi'] }
   ];
   await page.goto('/');
 
   await page.getByRole('button', { name: '開始' }).click();
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'microphone', 'microphone');
+  await emitFinalTranscript(page, '你好。', 'Hi.');
 
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
-    sourceText: 'microphone',
-    translatedText: 'Alan speak'
+    sourceText: '你好。',
+    translatedText: 'speak Hi.'
   });
 });
 
-test('glossary edits during an active session update later live translation article text', async ({ page }) => {
+test('glossary edits do not rewrite the current active Segment', async ({ page }) => {
   let entries = [];
 
   await page.route('**/api/glossary**', async (route) => {
@@ -2648,11 +2648,6 @@ test('glossary edits during an active session update later live translation arti
   await glossaryPanel(page).getByLabel('套用範圍').selectOption('live');
   await glossaryPanel(page).getByRole('button', { name: '新增詞條' }).click();
   await expect(glossaryPanel(page).getByText('字典詞條已新增。')).toBeVisible();
-  await page.evaluate(() => {
-    const session = window.__mockGoogleGenAI.liveSessions.at(-1);
-    if (session) session.liveGlossaryEntries = [{ source: 'microphone', target: 'Alan speak', replacementAliases: [] }];
-  });
-
   await openLivePage(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
   await emitFinalTranscript(page, 'microphone', 'microphone');
@@ -2660,7 +2655,7 @@ test('glossary edits during an active session update later live translation arti
   await expect(finalCueRows(page)).toHaveCount(1);
   await expectCueRow(finalCueRows(page).first(), {
     sourceText: 'microphone',
-    translatedText: 'Alan speak'
+    translatedText: 'microphone'
   });
 });
 

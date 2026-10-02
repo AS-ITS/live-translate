@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
 import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
@@ -270,7 +271,9 @@ export function MeetingViewerPage({ token, code }) {
   }
 
   const cues = useMemo(() => {
-    if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
+    if (Array.isArray(detail?.cues) && detail.cues.length > 0) {
+      return detail.cues.map((cue) => ({ ...cue, translatedText: effectiveTranslationForCue(cue) }));
+    }
     return (detail?.transcriptItems || [])
       .filter((item) => item.stream === 'source')
       .map((item, index) => ({

@@ -6,7 +6,7 @@ import {
   OUTPUT_SAMPLE_RATE,
   pcm16ToFloat
 } from './audio.js';
-import { applyGlossaryReplacements } from './glossaryReplacement.js';
+import { correctTranslationForSource } from './glossaryReplacement.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
@@ -1509,7 +1509,10 @@ export class LiveTranslateSession {
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
       const transcript = withTranscriptEventId({
-        text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
+        text: correctTranslationForSource({
+          sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
+          translatedText: content.outputTranscription.text
+        }, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,

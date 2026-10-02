@@ -591,6 +591,7 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
           <section className="meeting-settings-card" ref={(node) => { settingsSectionRefs.current[3] = node; }} aria-labelledby="meeting-dictionary-settings-title">
             <div className="meeting-settings-card-header"><div><p className="eyebrow">步驟 4</p><h3 id="meeting-dictionary-settings-title">詞彙設定</h3><p className="meeting-settings-card-description">設定本場會議中需要固定翻譯的專有名詞。</p></div><span className="meeting-settings-card-number">4</span></div>
+            <p className="meeting-settings-card-description" role="note">同一原詞以會議詞彙優先。錄製開始後儲存的變更會從下一個段落生效；目前段落重新連線時仍沿用原字典，既有字幕與已播放語音不會回溯更新。</p>
             <div className="meeting-dictionary-groups">
               <section className="meeting-dictionary-group meeting-global-glossary" aria-labelledby="meeting-global-glossary-title">
                 <button className="meeting-global-glossary-summary" type="button" aria-expanded={isGlobalGlossaryExpanded} onClick={() => setIsGlobalGlossaryExpanded((current) => !current)}><span className="meeting-settings-icon"><BookOpen size={18} aria-hidden="true" /></span><span><strong id="meeting-global-glossary-title">共用詞彙</strong><small>{availableGlossaryEntries.length === 0 ? '目前沒有可套用的共用詞彙。' : `已選 ${selectedGlossaryCount} 項，共 ${availableGlossaryEntries.length} 項可用`}</small></span><ChevronDown size={18} aria-hidden="true" /></button>

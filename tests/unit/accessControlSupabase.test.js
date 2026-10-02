@@ -13,14 +13,14 @@ async function createFixture() {
   const { privateKey, publicKey } = await generateKeyPair('ES256');
   const jwk = await exportJWK(publicKey);
   jwk.kid = 'current-key';
-  const token = (email = 'a@example.com') => new SignJWT({
+  const token = (email = 'a@example.com', expiration = '1h') => new SignJWT({
     role: 'authenticated',
     email,
   }).setProtectedHeader({ alg: 'ES256', typ: 'JWT', kid: jwk.kid })
     .setSubject('00000000-0000-0000-0000-000000000001')
     .setIssuer(`${env.SUPABASE_URL}/auth/v1`)
     .setAudience('authenticated')
-    .setExpirationTime('1h')
+    .setExpirationTime(expiration)
     .sign(privateKey);
   return { jwk, token };
 }
@@ -39,6 +39,18 @@ test('Supabase JWKS auth validates claims and Workspace domain', async () => {
     const forbidden = await token('a@other.com');
     await assert.rejects(
       access.validateRequest({ headers: { authorization: `Bearer ${forbidden}` } }),
+      { code: 'auth_forbidden', status: 403 },
+    );
+
+    const expired = await token('a@example.com', '-1s');
+    await assert.rejects(
+      access.validateRequest({ headers: { authorization: `Bearer ${expired}` } }),
+      { code: 'auth_invalid', status: 401 },
+    );
+
+    const noAllowlist = createAccessControl({ env: { ...env, AUTH_ALLOWED_EMAIL_DOMAINS: '' } });
+    await assert.rejects(
+      noAllowlist.validateRequest({ headers: { authorization: `Bearer ${valid}` } }),
       { code: 'auth_forbidden', status: 403 },
     );
   } finally {

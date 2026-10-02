@@ -69,11 +69,11 @@ Origin/CORS checks.
 
 ## Google Workspace accounts
 
-Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover exact email-domain matching, pending profile auto-activation, missing/update failure rejection, disabled-account rejection, and super-admin role preservation using signed JWT fixtures and mocked Supabase responses.
 
-## Issue #33 account approval coverage
+## Domain auto-activation coverage
 
-Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
+Deterministic tests cover transient pending provisioning, trusted `pending -> active`, concurrent disable behavior, `/api/profile` fail-closed responses, removed approval UI/API, Meeting authorization, anonymous Viewer access, and existing active/disabled management. Tests do not call Google OAuth, Gemini, or production APIs.
 
 ## CI and cloud validation
 

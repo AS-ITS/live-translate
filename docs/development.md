@@ -139,9 +139,9 @@ verification is a rollout task, not an unimplemented P1 capability.
 
 The cloud rollout preflight must apply all migrations through the current migration head, run `npm run db:lint`, and verify `/healthz` plus `/readyz`. Readiness probes the core persistence tables, metric/queue RPCs, and private `meeting-audio` Storage bucket. In production, an invalid server-side cloud contract rejects `/api/*` with `503 cloud_capability_unavailable` so file-backed fallback cannot receive production traffic.
 
-## Account approval behavior
+## Domain auto-activation behavior
 
-`AUTH_ALLOWED_EMAIL_DOMAINS` is the first gate only. A matching Google Workspace user is provisioned as a pending `member`; an active `super_admin` must approve the profile before private application APIs are available. Pending users may only read `/api/profile`, wait, sign out, or switch accounts.
+`AUTH_ALLOWED_EMAIL_DOMAINS` is enforced by the backend after Supabase JWT verification. A matching Google Workspace user is provisioned as a transient pending `member`, then the service-role-only activation RPC changes only `pending -> active` before private API dispatch. Existing pending users follow the same path on their next valid request. Disabled users remain disabled, and missing or failed profile activation returns `503` without an active fallback.
 
 ## Local Development Setup
 
@@ -297,7 +297,7 @@ available to the smoke runner. Do not place that key in browser-exposed
 `VITE_` variables or commit it.
 ### OAuth Workspace access
 
-Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
+Google OAuth can complete successfully while `GET /api/profile` rejects a personal-domain or disabled account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
 ## Supabase request boundaries
 
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.

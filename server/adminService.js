@@ -74,7 +74,7 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const pageSize = Number(options.pageSize ?? 12);
       const status = options.status ?? 'all';
       const query = String(options.query ?? '').trim();
-      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'pending', 'disabled'].includes(status) || query.length > 100) throw accountError('invalid_request', 400);
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw accountError('invalid_request', 400);
       const filters = [];
       if (status !== 'all') filters.push(`status=eq.${status}`);
       if (query) {
@@ -85,33 +85,20 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
       const listResponse = await requestResponse(`/rest/v1/profiles?select=${encodeURIComponent(PUBLIC_PROFILE_FIELDS)}&order=created_at.asc${filters.length ? `&${filters.join('&')}` : ''}`, { headers: { Prefer: 'count=exact,return=representation', Range: `${from}-${from + pageSize - 1}` } });
       const users = await listResponse.json();
       const total = Number((listResponse.headers.get('content-range') || '').split('/').at(-1));
-      const [all, active, pending, disabled, transferTargets] = await Promise.all([
+      const [all, active, disabled, transferTargets] = await Promise.all([
         requestCount('/rest/v1/profiles?select=id'),
         requestCount('/rest/v1/profiles?select=id&status=eq.active'),
-        requestCount('/rest/v1/profiles?select=id&status=eq.pending'),
         requestCount('/rest/v1/profiles?select=id&status=eq.disabled'),
         request('/rest/v1/profiles?select=id,email&status=eq.active&order=email.asc')
       ]);
       const safeTotal = Number.isFinite(total) ? total : 0;
-      return { users, transferTargets, counts: { all, active, pending, disabled }, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
-    },
-    async approveUser(actor, targetUserId, requestId) {
-      assertAdmin(actor);
-      try {
-        const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(targetUserId)}&status=eq.pending`, { method: 'PATCH', body: { status: 'active', disabled_at: null, updated_at: new Date().toISOString() } });
-        if (!rows[0]) throw accountError('account_not_pending', 409);
-        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_approved', request_id: requestId, result: 'success' });
-        return rows[0];
-      } catch (error) {
-        await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_approved', request_id: requestId, result: 'failure' });
-        throw error;
-      }
+      return { users, transferTargets, counts: { all, active, disabled }, pagination: { page, pageSize, total: safeTotal, totalPages: Math.ceil(safeTotal / pageSize) } };
     },
     async enableUser(actor, targetUserId, requestId) {
       assertAdmin(actor);
       try {
-        const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(targetUserId)}`, { method: 'PATCH', body: { status: 'active', disabled_at: null, updated_at: new Date().toISOString() } });
-        if (!rows[0]) throw accountError('account_not_found', 404);
+        const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(targetUserId)}&status=eq.disabled`, { method: 'PATCH', body: { status: 'active', disabled_at: null, updated_at: new Date().toISOString() } });
+        if (!rows[0]) throw accountError('account_not_disabled', 409);
         await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_enabled', request_id: requestId, result: 'success' });
         return rows[0];
       } catch (error) { await audit({ actor_user_id: actor.id, target_user_id: targetUserId, action: 'user_enabled', request_id: requestId, result: 'failure' }); throw error; }

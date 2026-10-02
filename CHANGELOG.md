@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Google Workspace accounts matching `AUTH_ALLOWED_EMAIL_DOMAINS` now auto-activate through a service-role-only conditional `pending -> active` RPC after backend JWT/domain validation. Manual approval UI/API was removed; disabled accounts, super-admin roles, Meeting permissions, Viewer access, audit history, and Gemini key boundaries remain unchanged.
+
 - 修正 provider boundary 後單側字幕延遲抵達時，誤沿用該側更早 `audioTurnId` 的問題；晚到原文或翻譯現在綁定觸發等待狀態時保存的 turn identity。另修正本機靜音 finalize 後重播待處理尾字會建立額外 Cue，以及第一筆遲到事件過早清除等待 turn 的問題；新語音開始時會輪替本機 turn，而同一側多筆遲到更新仍會回到原 Cue。整合回歸涵蓋自動斷句後連續句、真正重複句、中途停頓、延遲雙側與 Recorder／Viewer 一致性。Preview pipeline trace 另加入有界序號、Cue 更新前後文字、terminal replay provenance 與 JSON 匯出。
 
 - 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；新增由 server-only `LIVE_PIPELINE_TRACE_ENABLED=true` 明確啟用的 PCM → provider → normalized transcript → Cue → React render bounded spoken-turn trace，供 Vercel Preview 診斷；Production 預設停用且不保留 trace。

@@ -1545,7 +1545,7 @@ metadata.
 
 ## Account management and meeting membership
 
-Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. Pending profiles may only read `GET /api/profile`; other private APIs return `403 auth_pending`. Disabled profiles receive `403 auth_forbidden`.
+Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. A domain-approved pending profile is activated by the trusted backend before private dispatch. Disabled profiles receive `403 auth_forbidden`.
 
 Private APIs refresh the server-side profile on every request. Disabled profiles receive `403 auth_forbidden`. Members must provide `meetingId` when creating a session and must have an active membership for that meeting; missing meetings and memberships return `403 recorder_forbidden`.
 
@@ -1553,9 +1553,9 @@ Private APIs refresh the server-side profile on every request. Disabled profiles
 
 Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. The removed credential store is not part of account transfer.
 
-## Account approval access gate
+## Domain auto-activation access gate
 
-Google Workspace domain matching is the first gate, not immediate application access. New profiles are `member` plus `pending` until an active `super_admin` approves them with `POST /api/admin/users/:id/approve`, which performs `pending -> active`. `GET /api/profile` returns a pending profile; all other private APIs return `403 auth_pending`. Status management preserves `active -> disabled` and `disabled -> active`, and pending profiles cannot be invited to Meetings.
+After the backend verifies the Supabase JWT and exact `AUTH_ALLOWED_EMAIL_DOMAINS` match, it invokes the service-role-only `activate_pending_profile` RPC. The RPC performs only `pending -> active`, preserves role, and returns the current profile when a concurrent operation already changed it. New and existing pending profiles therefore enter the application without administrator approval. Missing profiles or failed activation return `503`; disabled profiles remain `403 auth_forbidden`. `POST /api/admin/users/:id/approve` is removed. Administrator `active -> disabled` and `disabled -> active` controls remain available.
 
 ## Session End Event
 
@@ -1607,7 +1607,7 @@ diagnostics (`status`, provider code/status/message, model, and config field
 names) without prompt text, transcript content, API keys, or tokens.
 ## Application login audit event
 
-`POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server reads the authenticated profile status and writes `auth_login` with `result: success` for active profiles or `result: failure` for pending and disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.
+`POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server performs the same trusted pending-profile activation, then writes `auth_login` with `result: success` for active profiles or `result: failure` for disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.
 ## GSK-04 Live credential boundary
 
 Current implementation supersedes any earlier Live-token credential wording in this document: `POST /api/live-token` requires the authenticated recorder request to provide `geminiApiKey`. It does not resolve `/api/profile/gemini-credential`, `gemini_credentials`, or `GEMINI_API_KEY` from the environment. The request key is not persisted or returned, and successful and error responses use `Cache-Control: no-store`.

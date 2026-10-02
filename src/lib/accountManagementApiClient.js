@@ -13,7 +13,6 @@ export function createAccountManagementApiClient({ fetchImpl = globalThis.fetch,
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, status });
       return call(`/api/admin/users?${params.toString()}`);
     },
-    approve: async (userId) => (await call(`/api/admin/users/${encodeURIComponent(userId)}/approve`, { method: 'POST' })).user,
     listAuditLogs: async ({ page = 1, pageSize = 25, query = '', action = 'all', result = 'all' } = {}) => {
       const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), query, action, result });
       return call(`/api/admin/audit-logs?${params.toString()}`);

@@ -10,13 +10,12 @@ function accountRoleLabel(role) {
 }
 
 function accountStatusLabel(status) {
-  return status === 'active' ? '啟用中' : status === 'pending' ? '待確認' : '已停用';
+  return status === 'active' ? '啟用中' : status === 'pending' ? '待首次登入' : '已停用';
 }
 
 const ACCOUNT_STATUS_FILTERS = [
   { value: 'all', label: '全部狀態' },
   { value: 'active', label: '啟用中' },
-  { value: 'pending', label: '待確認' },
   { value: 'disabled', label: '已停用' }
 ];
 
@@ -48,7 +47,7 @@ function AccountTransferCell({ data, context }) {
 }
 
 function AccountActionsCell({ data, context }) {
-  if (data.status === 'pending') return <button className="button detail-button account-table-action" type="button" onClick={() => context.onApprove(data)} disabled={data.isBusy}>{data.isBusy ? '處理中…' : '核准帳號'}</button>;
+  if (data.status === 'pending') return <span className="account-table-muted">登入後自動啟用</span>;
   const isActive = data.status === 'active';
   const label = isActive ? '停用帳號' : '重新啟用帳號';
   return <button
@@ -76,7 +75,7 @@ export function AccountManagementPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(12);
   const [pagination, setPagination] = useState({ page: 1, pageSize: 12, total: 0, totalPages: 0 });
-  const [counts, setCounts] = useState({ all: 0, active: 0, pending: 0, disabled: 0 });
+  const [counts, setCounts] = useState({ all: 0, active: 0, disabled: 0 });
   const [transferTargets, setTransferTargets] = useState([]);
   const transferRef = useRef(transfer);
   transferRef.current = transfer;
@@ -94,18 +93,13 @@ export function AccountManagementPage() {
       setUsers(result.users || []);
       setTransferTargets(result.transferTargets || []);
       setPagination(result.pagination || { page, pageSize, total: 0, totalPages: 0 });
-      setCounts(result.counts || { all: 0, active: 0, pending: 0, disabled: 0 });
+      setCounts(result.counts || { all: 0, active: 0, disabled: 0 });
     } finally {
       setIsLoading(false);
     }
   }
 
   useEffect(() => { void reload().catch(setError); }, [client, page, pageSize, debouncedQuery, statusFilter]);
-
-  async function approveUser(user) {
-    setBusy(user.id); setNotice(''); setError(null);
-    try { await client.approve(user.id); await reload(); setNotice('帳號已核准，可登入使用系統。'); } catch (cause) { setError(cause); } finally { setBusy(''); }
-  }
 
   async function changeStatus(user) {
     const transferTargetId = transferRef.current[user.id] || user.transferTargetId;
@@ -146,7 +140,6 @@ export function AccountManagementPage() {
   ], []);
   const gridContext = useMemo(() => ({
     transferTargets,
-    onApprove: (user) => void approveUser(user),
     onTransferChange: (userId, targetId) => setTransfer((current) => ({ ...current, [userId]: targetId })),
     onChangeStatus: (user) => void changeStatus(user)
   }), [transferTargets, transfer, busy]);
@@ -161,13 +154,12 @@ export function AccountManagementPage() {
         <div>
           <p className="eyebrow">ACCOUNT ACCESS</p>
           <h2 id="account-list-title">帳號列表</h2>
-          <p>Google Workspace 使用者首次以 Google 登入後會自動出現在列表。這裡管理工作區成員的存取狀態；停用帳號前必須將 owner 資產移轉給另一個 active 帳號。</p>
+          <p>符合授權網域的 Google Workspace 使用者首次登入後會自動啟用。這裡管理工作區成員的存取狀態；停用帳號前必須將 owner 資產移轉給另一個 active 帳號。</p>
         </div>
       </div>
       <div className="account-summary-grid" aria-label="帳號摘要">
         <div className="account-summary-card"><span>全部帳號</span><strong>{counts.all}</strong></div>
         <div className="account-summary-card account-summary-active"><span>啟用中</span><strong>{counts.active}</strong></div>
-        <div className="account-summary-card account-summary-pending"><span>待確認</span><strong>{counts.pending}</strong></div>
         <div className="account-summary-card account-summary-disabled"><span>已停用</span><strong>{counts.disabled}</strong></div>
       </div>
       <div className="account-table-toolbar">

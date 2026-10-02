@@ -12,7 +12,6 @@ test('admin lists safe profile fields and disables through transfer RPC', async 
     calls.push({ url, options });
     if (url.includes('status=eq.active&order=email.asc')) return json([{ id: 'user-2', email: 'user@example.com' }]);
     if (url.includes('status=eq.active')) return json([{ id: 'user-2' }], 200, '0-0/1');
-    if (url.includes('status=eq.pending')) return json([{ id: 'user-4' }], 200, '0-0/1');
     if (url.includes('status=eq.disabled')) return json([{ id: 'user-3' }], 200, '0-0/1');
     if (url.includes('profiles?select=')) return json([{ id: 'user-2', email: 'user@example.com', role: 'member', status: 'active' }], 200, '0-0/1');
     if (url.includes('profiles?select=id')) return json([{ id: 'user-2' }], 200, '0-0/1');
@@ -22,7 +21,7 @@ test('admin lists safe profile fields and disables through transfer RPC', async 
   const listed = await service.listUsers(admin, { page: 1, pageSize: 12, query: 'user', status: 'active' });
   assert.equal(listed.users[0].id, 'user-2');
   assert.deepEqual(listed.pagination, { page: 1, pageSize: 12, total: 1, totalPages: 1 });
-  assert.deepEqual(listed.counts, { all: 1, active: 1, pending: 1, disabled: 1 });
+  assert.deepEqual(listed.counts, { all: 1, active: 1, disabled: 1 });
   assert.deepEqual(listed.transferTargets, [{ id: 'user-2', email: 'user@example.com' }]);
   assert.match(calls[0].url, /status=eq.active/);
   assert.equal(calls[0].options.headers.Range, '0-11');
@@ -37,34 +36,25 @@ test('admin rejects missing actor role and cannot disable itself', async () => {
   await assert.rejects(service.disableUser({ ...admin, id: 'same' }, 'same', 'other', 'request-1'), { code: 'cannot_disable_self', status: 400 });
 });
 
+test('admin re-enables only disabled users', async () => {
+  const service = createAdminService({ env, fetchImpl: async (url, options) => {
+    assert.match(url, /status=eq\.disabled/u);
+    assert.equal(options.method, 'PATCH');
+    return json([{ id: 'user-2', status: 'active' }]);
+  } });
+  assert.equal((await service.enableUser(admin, 'user-2', 'request-enable-1')).status, 'active');
+
+  const notDisabled = createAdminService({ env, fetchImpl: async () => json([]) });
+  await assert.rejects(notDisabled.enableUser(admin, 'pending-1', 'request-enable-2'), { code: 'account_not_disabled', status: 409 });
+});
+
 test('admin list validates pagination and filter options', async () => {
   const service = createAdminService({ env, fetchImpl: async () => json([], 200, '*/0') });
   await assert.rejects(service.listUsers(admin, { page: 0 }), { code: 'invalid_request', status: 400 });
   await assert.rejects(service.listUsers(admin, { pageSize: 16 }), { code: 'invalid_request', status: 400 });
+  await assert.rejects(service.listUsers(admin, { status: 'pending' }), { code: 'invalid_request', status: 400 });
   await assert.rejects(service.listUsers(admin, { status: 'unknown' }), { code: 'invalid_request', status: 400 });
   await assert.rejects(service.listUsers(admin, { query: 'x'.repeat(101) }), { code: 'invalid_request', status: 400 });
-});
-
-test('admin approves only pending users and audits the transition', async () => {
-  const audit = [];
-  const service = createAdminService({ env, fetchImpl: async (url, options = {}) => {
-    assert.match(url, /status=eq\.pending/);
-    assert.equal(options.method, 'PATCH');
-    return json([{ id: 'pending-1', status: 'active' }]);
-  }, auditLogService: { record: async (entry) => audit.push(entry) } });
-  const user = await service.approveUser(admin, 'pending-1', 'request-approve-1');
-  assert.equal(user.status, 'active');
-  assert.equal(audit[0].action, 'user_approved');
-});
-
-test('admin approval rejects non-active admins and already active users', async () => {
-  const service = createAdminService({
-    env,
-    fetchImpl: async () => json([]),
-    auditLogService: { record: async () => {} }
-  });
-  await assert.rejects(service.approveUser({ ...admin, status: 'disabled' }, 'pending-1', 'request-approve-2'), { code: 'auth_forbidden', status: 403 });
-  await assert.rejects(service.approveUser(admin, 'active-1', 'request-approve-3'), { code: 'account_not_pending', status: 409 });
 });
 
 test('audit write failure emits only safe observability fields', async () => {

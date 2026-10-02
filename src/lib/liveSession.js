@@ -172,6 +172,8 @@ export class LiveTranslateSession {
     this.lastOutputTranscriptText = '';
     this.awaitingInputTranscriptAfterTurnComplete = false;
     this.awaitingOutputTranscriptAfterTurnComplete = false;
+    this.awaitingInputTranscriptAudioTurnId = null;
+    this.awaitingOutputTranscriptAudioTurnId = null;
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
@@ -473,6 +475,8 @@ export class LiveTranslateSession {
       this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
       this.awaitingInputTranscriptAfterTurnComplete = false;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptAudioTurnId = null;
       this.lastInputTranscriptText = '';
       this.lastOutputTranscriptText = '';
       this.turnBoundaryOpen = false;
@@ -720,6 +724,8 @@ export class LiveTranslateSession {
     // boundary that could interfere with the next continuous recording turn.
     this.awaitingInputTranscriptAfterTurnComplete = hadPendingInput;
     this.awaitingOutputTranscriptAfterTurnComplete = hadPendingOutput;
+    this.awaitingInputTranscriptAudioTurnId = hadPendingInput ? this.audioTurnId : null;
+    this.awaitingOutputTranscriptAudioTurnId = hadPendingOutput ? this.audioTurnId : null;
     this.logLiveEvent('transcripts.finalized locally', {
       connectionEpoch: this.connectionEpoch,
       sessionId: this.liveSessionId,
@@ -1192,6 +1198,8 @@ export class LiveTranslateSession {
     ));
     const inputTranscriptArrivedAfterBoundary = this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptArrivedAfterBoundary = this.awaitingOutputTranscriptAfterTurnComplete;
+    const awaitedInputAudioTurnId = this.awaitingInputTranscriptAudioTurnId;
+    const awaitedOutputAudioTurnId = this.awaitingOutputTranscriptAudioTurnId;
     const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
     const hasSourceTranscript = Boolean(content?.inputTranscription?.text || content?.interimInputTranscription?.text);
@@ -1240,10 +1248,14 @@ export class LiveTranslateSession {
       ? null
       : `provider-turn-${this.connectionEpoch}-${this.providerEpoch}-${providerTurnIndex}`;
     const sourceAudioTurnId = providerTurnId || (sourceContinuesPreviousTurn
-      ? (this.activeInputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
+      ? (inputTranscriptArrivedAfterBoundary
+          ? (awaitedInputAudioTurnId || this.previousAudioTurnId || this.activeInputTranscriptAudioTurnId || this.audioTurnId)
+          : (this.activeInputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId))
       : this.audioTurnId);
     const translationAudioTurnId = providerTurnId || (translationContinuesPreviousTurn
-      ? (this.activeOutputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
+      ? (outputTranscriptArrivedAfterBoundary
+          ? (awaitedOutputAudioTurnId || this.previousAudioTurnId || this.activeOutputTranscriptAudioTurnId || this.audioTurnId)
+          : (this.activeOutputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId))
       : this.audioTurnId);
     const boundaryAudioTurnId = providerTurnId || (this.turnBoundaryOpen && !startsNewTurn
       ? (this.previousAudioTurnId || this.audioTurnId)
@@ -1326,6 +1338,7 @@ export class LiveTranslateSession {
       this.tracePipeline('TRANSCRIPT_NORMALIZED', {
         audioTurnId: event.audioTurnId,
         eventId: event.eventId,
+        eventSequence: event.eventSequence,
         providerEventId: event.providerEventId,
         normalizedEventId: event.eventId,
         eventType: event.eventType,
@@ -1348,6 +1361,7 @@ export class LiveTranslateSession {
       });
       this.tracePipeline('TURN_ASSIGNED', {
         audioTurnId: event.audioTurnId,
+        eventSequence: event.eventSequence,
         normalizedEventId: event.eventId,
         providerEventId: providerMessageId(message),
         providerTurnId: event.turnIndex === null || event.turnIndex === undefined
@@ -1423,6 +1437,7 @@ export class LiveTranslateSession {
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
       this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
     } else if (content?.interimInputTranscription?.text) {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
@@ -1451,9 +1466,11 @@ export class LiveTranslateSession {
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
       this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
     } else if (acceptsBoundary) {
       this.logLiveEvent('inputTranscription.awaitingLateText');
       this.awaitingInputTranscriptAfterTurnComplete = true;
+      this.awaitingInputTranscriptAudioTurnId = boundaryAudioTurnId;
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
@@ -1475,15 +1492,18 @@ export class LiveTranslateSession {
       this.lastOutputTranscriptText = transcript.text;
       this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAudioTurnId = null;
     } else if (this.mode !== 'transcription' && acceptsBoundary && this.pendingOutputTranscript) {
       const transcript = withTranscriptEventId({ ...this.pendingOutputTranscript, isFinal: true }, this.pendingOutputTranscript.eventId);
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = null;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAudioTurnId = null;
     } else if (this.mode !== 'transcription' && acceptsBoundary) {
       this.logLiveEvent('outputTranscription.awaitingLateText');
       this.awaitingOutputTranscriptAfterTurnComplete = true;
+      this.awaitingOutputTranscriptAudioTurnId = boundaryAudioTurnId;
     }
 
     if (content?.interrupted) {
@@ -2043,10 +2063,12 @@ export class LiveTranslateSession {
       this.localTurnFinalizeTriggered = false;
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
-      this.pendingOutputTranscript = null;
-      this.awaitingInputTranscriptAfterTurnComplete = false;
-      this.awaitingOutputTranscriptAfterTurnComplete = false;
-      this.nextPlaybackTime = 0;
+    this.pendingOutputTranscript = null;
+    this.awaitingInputTranscriptAfterTurnComplete = false;
+    this.awaitingOutputTranscriptAfterTurnComplete = false;
+    this.awaitingInputTranscriptAudioTurnId = null;
+    this.awaitingOutputTranscriptAudioTurnId = null;
+    this.nextPlaybackTime = 0;
       if (activeDebugSession === this) activeDebugSession = this;
     } finally {
       this.cleaningUp = false;
@@ -2354,6 +2376,7 @@ export function exposeLiveTranslateDebug() {
       delete window.__liveTranslateDebug.getPipelineTrace;
       delete window.__liveTranslateDebug.getTurnTrace;
       delete window.__liveTranslateDebug.clearPipelineTrace;
+      delete window.__liveTranslateDebug.exportPipelineTrace;
     }
     return;
   }
@@ -2362,10 +2385,12 @@ export function exposeLiveTranslateDebug() {
     window.__liveTranslateDebug.getPipelineTrace = (filter = {}) => livePipelineTrace.get(filter);
     window.__liveTranslateDebug.getTurnTrace = (audioTurnId) => livePipelineTrace.getTurn(audioTurnId);
     window.__liveTranslateDebug.clearPipelineTrace = () => livePipelineTrace.clear();
+    window.__liveTranslateDebug.exportPipelineTrace = () => livePipelineTrace.exportJson();
   } else {
     delete window.__liveTranslateDebug.getPipelineTrace;
     delete window.__liveTranslateDebug.getTurnTrace;
     delete window.__liveTranslateDebug.clearPipelineTrace;
+    delete window.__liveTranslateDebug.exportPipelineTrace;
   }
   window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.({ includeText: LIVE_EVENT_LOG_ENABLED }) || {
     activeConnectionEpoch: null,

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正 provider boundary 後單側字幕延遲抵達時，誤沿用該側更早 `audioTurnId` 的問題；晚到原文或翻譯現在綁定觸發等待狀態時保存的 turn identity，並補上自動斷句後連續句、重複句、中途停頓、延遲雙側與 Recorder／Viewer 一致性的整合回歸。Preview pipeline trace 另加入有界序號、Cue 更新前後文字與 JSON 匯出。
+
 - 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；新增由 server-only `LIVE_PIPELINE_TRACE_ENABLED=true` 明確啟用的 PCM → provider → normalized transcript → Cue → React render bounded spoken-turn trace，供 Vercel Preview 診斷；Production 預設停用且不保留 trace。
 
 - 修正 lifecycle v1 錄音在 lifecycle v2 Cue 外鍵上回傳 503 的相容性問題；checkpoint／cue 的伺服器日誌現在只記錄安全的 Supabase 上游狀態、錯誤分類與 constraint，不記錄 JWT、憑證或資料內容。

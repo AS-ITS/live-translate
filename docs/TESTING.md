@@ -758,10 +758,16 @@ restart, then inspect a turn with:
 ```js
 const trace = window.__liveTranslateDebug.getPipelineTrace()
 window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
+const exportedTrace = window.__liveTranslateDebug.exportPipelineTrace()
+copy(exportedTrace)
 ```
 
 The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
-in browser memory and resets on reload. For each spoken turn, verify the trace
+in browser memory and resets on reload. Every entry has a bounded
+`traceSequence`; normalized and Cue transitions keep their provider
+`eventSequence`; Cue updates include bounded before/after source and translation
+text. `exportPipelineTrace()` returns the same bounded, secret-free entries as
+formatted JSON for saving from Preview DevTools. For each spoken turn, verify the trace
 reaches `PCM_CAPTURED`, `PCM_SENT`,
 `PROVIDER_EVENT`, `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, one of `CUE_CREATED`
 or `CUE_UPDATED`, and `REACT_RENDER`. Speech activity emits

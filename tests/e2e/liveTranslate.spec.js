@@ -2003,6 +2003,11 @@ test('spoken turn trace keeps separate-boundary consecutive sentences as separat
   });
 
   const traceBeforeDuplicate = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  const exportedTrace = await page.evaluate(() => JSON.parse(window.__liveTranslateDebug.exportPipelineTrace()));
+  expect(traceBeforeDuplicate.length).toBeGreaterThan(0);
+  expect(exportedTrace.entryCount).toBe(traceBeforeDuplicate.length);
+  expect(exportedTrace.entries).toEqual(traceBeforeDuplicate);
+  expect(traceBeforeDuplicate.every((entry, index) => index === 0 || entry.traceSequence > traceBeforeDuplicate[index - 1].traceSequence)).toBe(true);
   const firstNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'TRANSCRIPT_NORMALIZED' && entry.sourceText === '第一句測試完成');
   const secondNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'TRANSCRIPT_NORMALIZED' && entry.sourceText === '第二句現在開始');
   expect(firstNormalized.audioTurnId).not.toBe(secondNormalized.audioTurnId);

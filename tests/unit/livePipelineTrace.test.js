@@ -106,6 +106,7 @@ test('full debug trace API is exposed only while runtime trace is enabled', () =
     assert.equal(typeof window.__liveTranslateDebug.getPipelineTrace, 'function');
     assert.equal(typeof window.__liveTranslateDebug.getTurnTrace, 'function');
     assert.equal(typeof window.__liveTranslateDebug.clearPipelineTrace, 'function');
+    assert.equal(typeof window.__liveTranslateDebug.exportPipelineTrace, 'function');
     assert.equal(typeof window.__liveTranslateDebug.getSnapshot, 'function');
 
     livePipelineTrace.record({ stage: 'PCM_CAPTURED', audioTurnId: 'turn-debug' });
@@ -116,6 +117,7 @@ test('full debug trace API is exposed only while runtime trace is enabled', () =
     assert.equal(window.__liveTranslateDebug.getPipelineTrace, undefined);
     assert.equal(window.__liveTranslateDebug.getTurnTrace, undefined);
     assert.equal(window.__liveTranslateDebug.clearPipelineTrace, undefined);
+    assert.equal(window.__liveTranslateDebug.exportPipelineTrace, undefined);
   } finally {
     configureLivePipelineTrace(false);
     if (previousWindow === undefined) delete globalThis.window;
@@ -128,4 +130,30 @@ test('trace does not infer logical-turn identity from Cue identity', () => {
   const entry = trace.record({ stage: 'CUE_CREATED', cueId: 'cue-only' });
   assert.equal(entry.turnKey, null);
   assert.equal(entry.audioTurnId, null);
+});
+
+test('trace export preserves bounded sequence and before/after transcript evidence', () => {
+  const trace = createLivePipelineTrace({ enabled: true, limit: 2, logger: () => {} });
+  trace.record({ stage: 'TRANSCRIPT_NORMALIZED', eventSequence: 7, sourceText: '這一句' });
+  trace.record({
+    stage: 'CUE_UPDATED',
+    cueId: 'cue-1',
+    beforeSourceText: '這一句',
+    afterSourceText: '這一句不能消失。',
+    beforeTranslationText: 'this sentence',
+    afterTranslationText: 'this sentence cannot disappear'
+  });
+  trace.record({ stage: 'EVENT_DROPPED', dropReason: 'duplicate_event' });
+
+  const entries = trace.get();
+  assert.deepEqual(entries.map((entry) => entry.traceSequence), [2, 3]);
+  assert.equal(entries[0].beforeSourceText, '這一句');
+  assert.equal(entries[0].afterSourceText, '這一句不能消失。');
+  assert.equal(entries[0].beforeTranslationText, 'this sentence');
+  assert.equal(entries[0].afterTranslationText, 'this sentence cannot disappear');
+
+  const exported = JSON.parse(trace.exportJson());
+  assert.equal(exported.entryCount, 2);
+  assert.deepEqual(exported.entries, entries);
+  assert.equal(JSON.stringify(exported).includes('undefined'), false);
 });

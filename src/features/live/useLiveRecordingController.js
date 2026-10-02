@@ -1631,12 +1631,14 @@ export function recordCueTransitionTrace({ cue, event = {}, previous, next, cueA
       ? [...nextCues.entries()].filter(([, item]) => item.audioTurnId === event.audioTurnId).map(([cueId]) => cueId)
       : [];
   const matchedCue = matchedIds.length === 1 ? nextCues.get(matchedIds[0]) : null;
+  const previousMatchedCue = matchedCue?.cueId ? previousCues.get(matchedCue.cueId) : null;
   const traceFields = {
     recordingId: matchedCue?.sessionId || cue.getSessionId?.() || null,
     segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,
     connectionEpoch: event.connectionEpoch ?? null,
     audioTurnId: event.audioTurnId || matchedCue?.audioTurnId || null,
     eventId: event.eventId || null,
+    eventSequence: event.eventSequence ?? null,
     providerEventId: event.providerEventId || null,
     normalizedEventId: event.eventId || null,
     eventType: event.eventType || null,
@@ -1649,6 +1651,10 @@ export function recordCueTransitionTrace({ cue, event = {}, previous, next, cueA
     turnIdentitySource: event.turnIdentitySource || null,
     sourceText: matchedCue?.sourceText || (event.stream === 'source' ? event.text || '' : ''),
     translationText: matchedCue?.translatedText || (event.stream === 'translation' ? event.text || '' : ''),
+    beforeSourceText: previousMatchedCue?.sourceText || '',
+    afterSourceText: matchedCue?.sourceText || '',
+    beforeTranslationText: previousMatchedCue?.translatedText || '',
+    afterTranslationText: matchedCue?.translatedText || '',
     cueId: matchedCue?.cueId || null,
     cueAction,
     dropReason,

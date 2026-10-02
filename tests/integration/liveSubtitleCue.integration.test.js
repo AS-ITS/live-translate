@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { LiveTranscriptionSession } from '../../src/lib/liveTranscriptionSession.js';
+import { recordCueTransitionTrace } from '../../src/features/live/useLiveRecordingController.js';
 import {
   applySubtitleCueEvent,
   createSubtitleCueState,
@@ -408,4 +409,93 @@ test('Live session keeps numeric tail fragments in the same live Cue', () => {
   cueState = finalizePendingSubtitleCue(cueState, { sessionTimeMs: 1000, reason: 'turnComplete' });
   assert.equal(cueState.finalCues.length, 1);
   assert.equal(cueState.finalCues[0].sourceText, '測試測試123');
+});
+test('production normalization, turn assignment, and Cue path emits canonical trace', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  let cueState = createSubtitleCueState();
+  const traceCue = { getSessionId: () => 'live-trace-integration', getSegmentId: () => 'segment-trace-integration' };
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-trace-integration', segmentId: 'segment-trace-integration',
+    targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant',
+    onCueEvent: (event) => {
+      const previous = cueState;
+      cueState = applySubtitleCueEvent(cueState, event);
+      recordCueTransitionTrace({ cue: traceCue, event, previous, next: cueState, cueAction: 'transition' });
+    }
+  });
+  session.handleMessage({ eventId: 'trace-source', serverContent: { inputTranscription: { text: '整合測試' } } });
+  session.handleMessage({ eventId: 'trace-output', serverContent: { outputTranscription: { text: 'integration test' } } });
+  session.handleMessage({ eventId: 'trace-boundary', serverContent: { turnComplete: true } });
+  const stages = livePipelineTrace.get().map((entry) => entry.stage);
+  assert.ok(stages.includes('TRANSCRIPT_NORMALIZED'));
+  assert.ok(stages.includes('TURN_ASSIGNED'));
+  const created = livePipelineTrace.get({ stage: 'CUE_CREATED' });
+  assert.equal(created.length, 1);
+  assert.ok(created[0].cueId);
+  assert.equal(cueState.currentCue?.sourceText || cueState.pendingCues[0]?.sourceText, '整合測試');
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
+});
+test('local silence trace retains authoritative turn correlation', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  const cueEvents = [];
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-local-trace', targetLanguageCode: 'en', silenceFinalizeMs: 1,
+    onCueEvent: (event) => cueEvents.push(event)
+  });
+  session.trackSpeechActivity(new Float32Array(32).fill(0.2));
+  session.handleMessage({ eventId: 'local-trace-source', serverContent: { inputTranscription: { text: 'local source' } } });
+  session.handleMessage({ eventId: 'local-trace-output', serverContent: { outputTranscription: { text: 'local output' } } });
+  session.localFinalizePendingTranscripts();
+  const trace = livePipelineTrace.get({ stage: 'LOCAL_SILENCE_DETECTED' }).at(-1);
+  const event = cueEvents.find((item) => item.localFinalize);
+  assert.equal(trace.audioTurnId, session.audioTurnId);
+  assert.ok(event?.audioTurnId);
+  assert.equal(trace.audioTurnId, event.audioTurnId);
+  assert.equal(trace.turnKey, null);
+  assert.equal(trace.cueId, null);
+  assert.equal(trace.providerTurnId, null);
+  const assigned = livePipelineTrace.get({ stage: 'TURN_ASSIGNED' })
+    .find((entry) => entry.audioTurnId === trace.audioTurnId);
+  assert.ok(assigned?.turnKey);
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
+  await session.cleanup({ closeSession: false });
+});
+
+test('production local silence correlation stays fail-closed across assignment and Cue transition', async () => {
+  const { configureLivePipelineTrace, livePipelineTrace } = await import('../../src/lib/livePipelineTrace.js');
+  configureLivePipelineTrace(true);
+  let cueState = createSubtitleCueState();
+  const traceCue = { getSessionId: () => 'live-silence-correlation', getSegmentId: () => 'segment-silence-correlation' };
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-silence-correlation', segmentId: 'segment-silence-correlation',
+    targetLanguageCode: 'en', silenceFinalizeMs: 1,
+    onCueEvent: (event) => {
+      const previous = cueState;
+      cueState = applySubtitleCueEvent(cueState, event);
+      recordCueTransitionTrace({ cue: traceCue, event, previous, next: cueState, cueAction: 'transition' });
+    }
+  });
+  session.trackSpeechActivity(new Float32Array(32).fill(0.2));
+  session.handleMessage({ eventId: 'silence-correlation-source', serverContent: { inputTranscription: { text: 'correlated source' } } });
+  session.handleMessage({ eventId: 'silence-correlation-output', serverContent: { outputTranscription: { text: 'correlated output' } } });
+  session.localFinalizePendingTranscripts();
+  const silence = livePipelineTrace.get({ stage: 'LOCAL_SILENCE_DETECTED' });
+  assert.equal(silence.length, 1);
+  assert.ok(silence[0].audioTurnId);
+  assert.equal(silence[0].turnKey, null);
+  assert.equal(silence[0].cueId, null);
+  const audioTurnId = silence[0].audioTurnId;
+  const assigned = livePipelineTrace.get({ stage: 'TURN_ASSIGNED' }).filter((entry) => entry.audioTurnId === audioTurnId);
+  const cueTransitions = livePipelineTrace.get().filter((entry) => ['CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED'].includes(entry.stage) && entry.cueId);
+  assert.ok(assigned.length > 0);
+  assert.ok(assigned.every((entry) => entry.turnKey));
+  assert.ok(cueTransitions.length > 0);
+  assert.ok(cueTransitions.every((entry) => entry.audioTurnId === audioTurnId));
+  await session.cleanup({ closeSession: false });
+  livePipelineTrace.clear();
+  configureLivePipelineTrace(false);
 });

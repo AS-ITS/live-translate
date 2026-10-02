@@ -63,7 +63,7 @@ import { MeetingDetailPage, MeetingManagementPage } from '../features/meetings/i
 import { GlobalGlossaryPanel } from '../features/glossary/index.js';
 import { activeSegmentTranscriptCount, archivedTranscriptFromSegments, completedPolishingOutputs, emptyTranscriptStateWithNextSequence, latestPolishingExecution, latestPolishingOutput, logTranscriptSegmentDecision, rawCuesFromDetail, reconnectErrorMessage, safeReconnectDiagnostic, transcriptHasFinalItems, transcriptSegmentsFromCheckpoints, transcriptStateFromCheckpointChunks, unrepresentedTranscriptItems } from '../features/live/liveTranscriptRecovery.js';
 import { createAudioUploadSegmentState } from '../features/live/liveAudioBindings.js';
-import { finalizedTranscriptItemsForRecording, useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
+import { finalizedTranscriptItemsForRecording, recordCueTransitionTrace, useLiveRecordingController } from '../features/live/useLiveRecordingController.js';
 import { useWebRtcDeviceSidecar, webRtcConnectionLabel } from '../webrtc/useWebRtcDeviceSidecar.js';
 import { classifyFailureSignal, composeCheckpointStatusMessage, hasAudioStatusError, isLiveMeetingStartReady, liveMeetingStatusLabel, meetingCheckpointErrorMessageFor, meetingCheckpointStatusLabel } from '../features/live/liveStatus.js';
 import { LiveTranslateSession } from '../lib/liveSession.js';
@@ -895,18 +895,12 @@ const activeMeetingCheckpointRef = useRef(null);
         if (nextState !== subtitleCueStateRef.current) {
           const previous = subtitleCueStateRef.current;
           if (result.action === 'finalized') {
-            const finalizedCue = nextState.finalCues.find((item) => item.cueId === cue.cueId) || nextState.finalCues.at(-1);
-            recordLivePipelineTrace({
-              stage: 'CUE_STATE',
-              recordingId: finalizedCue?.sessionId || activeSessionRecordIdRef.current,
-              segmentId: finalizedCue?.segmentId || activeMeetingCheckpointRef.current?.segmentId || null,
-              audioTurnId: finalizedCue?.audioTurnId || cue.audioTurnId || null,
-              eventType: finalizedCue?.finalizedReason || 'idle',
-              isFinal: true,
-              sourceText: finalizedCue?.sourceText || '',
-              translationText: finalizedCue?.translatedText || '',
-              cueId: finalizedCue?.cueId || cue.cueId,
-              cueAction: nextState.finalCues.length > previous.finalCues.length ? 'finalize' : 'merge'
+            recordCueTransitionTrace({
+              cue: liveController.cue,
+              event: { eventType: result.action || 'idle', isFinal: true, audioTurnId: cue.audioTurnId || null },
+              previous,
+              next: nextState,
+              cueAction: 'transition'
             });
           }
           subtitleCueStateRef.current = nextState;
@@ -1523,6 +1517,17 @@ const activeMeetingCheckpointRef = useRef(null);
             sessionId,
             cue,
             producedAt: cue.finalizedAt || Date.now()
+          });
+          recordLivePipelineTrace({
+            stage: 'CUE_PUBLISHED',
+            recordingId: sessionId,
+            segmentId: meetingCheckpoint.segmentId,
+            cueId: cue.cueId,
+            sourceText: cue.sourceText || '',
+            translationText: cue.translatedText || '',
+            turnKey: cue.turnKey || null,
+            audioTurnId: cue.audioTurnId || null,
+            reason: 'meeting_cue_publish_succeeded'
           });
           liveCueLatencyTracker.recordViewerPublished({ cue });
           return;

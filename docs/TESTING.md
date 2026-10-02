@@ -1,5 +1,7 @@
 # Testing
 
+Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `CUE_CREATED`, `CUE_UPDATED`, `CUE_FINALIZED`, `CUE_PUBLISHED`, `SPEECH_ACTIVITY_STARTED`, `SPEECH_ACTIVITY_CONTINUED`, `LOCAL_SILENCE_DETECTED`, and lifecycle reconnect/rollover stages. Legacy `NORMALIZED`, `CUE_STATE`, and `LOCAL_SILENCE_FINALIZE` names are not canonical. `audioTurnId` is authoritative at the audio boundary; `turnKey` belongs to normalized logical turns; `cueId` belongs to Cue state. Diagnostics never use one identity as another's fallback.
+
 ## WebRTC 正式流程
 
 最小自動化驗證：
@@ -761,8 +763,12 @@ window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
 The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
 in browser memory and resets on reload. For each spoken turn, verify the trace
 reaches `PCM_CAPTURED`, `PCM_SENT`,
-`PROVIDER_EVENT`, `NORMALIZED`, `CUE_STATE`, and `REACT_RENDER`. A `drop` entry
-must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
+`PROVIDER_EVENT`, `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, one of `CUE_CREATED`
+or `CUE_UPDATED`, and `REACT_RENDER`. Speech activity emits
+`SPEECH_ACTIVITY_STARTED` and `SPEECH_ACTIVITY_CONTINUED`; local silence emits
+`LOCAL_SILENCE_DETECTED` with non-empty `audioTurnId`; correlate later
+`TURN_ASSIGNED` and Cue stages by that same `audioTurnId`; reconnect and segment replacement emit lifecycle stages.
+A `drop` entry must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
 Cue rows and the browser console for runtime errors.
 
 Real browser and real microphone acceptance remains manual and must cover:

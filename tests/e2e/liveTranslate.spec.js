@@ -2003,19 +2003,31 @@ test('spoken turn trace keeps separate-boundary consecutive sentences as separat
   });
 
   const traceBeforeDuplicate = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
-  const firstNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'NORMALIZED' && entry.sourceText === '第一句測試完成');
-  const secondNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'NORMALIZED' && entry.sourceText === '第二句現在開始');
+  const firstNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'TRANSCRIPT_NORMALIZED' && entry.sourceText === '第一句測試完成');
+  const secondNormalized = traceBeforeDuplicate.find((entry) => entry.stage === 'TRANSCRIPT_NORMALIZED' && entry.sourceText === '第二句現在開始');
   expect(firstNormalized.audioTurnId).not.toBe(secondNormalized.audioTurnId);
   for (const turnId of [firstNormalized.audioTurnId, secondNormalized.audioTurnId]) {
     const stages = new Set(traceBeforeDuplicate.filter((entry) => entry.audioTurnId === turnId).map((entry) => entry.stage));
     expect(stages.has('PCM_CAPTURED')).toBe(true);
     expect(stages.has('PCM_SENT')).toBe(true);
     expect(stages.has('PROVIDER_EVENT')).toBe(true);
-    expect(stages.has('NORMALIZED')).toBe(true);
-    expect(stages.has('CUE_STATE')).toBe(true);
+    expect(stages.has('TRANSCRIPT_NORMALIZED')).toBe(true);
+    const createdForTurn = traceBeforeDuplicate.filter((entry) => entry.audioTurnId === turnId && entry.stage === 'CUE_CREATED');
+    expect(createdForTurn.length).toBeGreaterThan(0);
+    expect(createdForTurn.every((entry) => entry.cueId)).toBe(true);
     expect(stages.has('REACT_RENDER')).toBe(true);
   }
   expect(traceBeforeDuplicate.filter((entry) => entry.cueAction === 'drop')).toEqual([]);
+  const createdByCueId = new Map();
+  for (const entry of traceBeforeDuplicate.filter((item) => item.stage === 'CUE_CREATED' && item.cueId)) {
+    createdByCueId.set(entry.cueId, (createdByCueId.get(entry.cueId) || 0) + 1);
+  }
+  expect([...createdByCueId.values()].every((count) => count === 1)).toBe(true);
+  for (const cueId of createdByCueId.keys()) {
+    const cueEntries = traceBeforeDuplicate.filter((entry) => entry.cueId === cueId);
+    expect(cueEntries.some((entry) => entry.stage === 'CUE_UPDATED')).toBe(true);
+    expect(cueEntries.some((entry) => entry.stage === 'CUE_FINALIZED')).toBe(true);
+  }
 
   await page.evaluate(() => {
     window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({
@@ -2031,6 +2043,50 @@ test('spoken turn trace keeps separate-boundary consecutive sentences as separat
     .getPipelineTrace({ cueAction: 'drop' })
     .filter((entry) => entry.dropReason === 'duplicate_event').length))
     .toBeGreaterThanOrEqual(2);
+});
+
+test('flushes a pending Cue on stop without duplicate creation', async ({ page }) => {
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitPartialTranscript(page, 'pending flush source', 'pending flush translation');
+  await expect(partialCueRows(page)).toHaveCount(1);
+  await page.getByRole('button', { name: '結束本次工作階段' }).click();
+  await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
+  await expect(finalCueRows(page)).toHaveCount(1);
+  const trace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  const cueId = trace.find((entry) => entry.stage === 'CUE_CREATED')?.cueId;
+  expect(cueId).toBeTruthy();
+  expect(trace.filter((entry) => entry.stage === 'CUE_CREATED' && entry.cueId === cueId)).toHaveLength(1);
+  expect(trace.filter((entry) => entry.stage === 'CUE_FINALIZED' && entry.cueId === cueId)).toHaveLength(1);
+  expect(trace.some((entry) => entry.stage === 'CUE_UPDATED' && entry.cueId === cueId)).toBe(true);
+});
+
+test('viewer diagnostics use only received and rendered Cue identities', async ({ page }) => {
+  const cues = [{ cueId: 'viewer-cue-1', sequence: 1, startTimeMs: 0, sourceText: 'Viewer source', translatedText: 'Viewer translation', status: 'final' }];
+  await page.route(/\/api\/shared-meetings\/viewer-diagnostics-token(?:\?.*)?$/, async (route) => route.fulfill({
+    json: { capability: { role: 'viewer', meetingId: 'meeting-1' }, meeting: { id: 'meeting-1', name: 'Viewer diagnostics', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }, cues, cursor: { eventId: 0, cueSequence: 1 } }
+  }));
+  await page.route(/\/api\/shared-meetings\/viewer-diagnostics-token\/events(?:\?.*)?$/, async (route) => route.fulfill({
+    status: 200,
+    contentType: 'text/event-stream',
+    body: `event: cue.append\ndata: ${JSON.stringify({ eventId: 1, cue: cues[0], type: 'cue.append' })}\n\n`
+  }));
+  await page.goto('/#viewer?token=viewer-diagnostics-token');
+  await expect(page.getByTestId('meeting-viewer-cue-row')).toHaveCount(1);
+  const renderedCueIds = await page.getByTestId('meeting-viewer-cue-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-cue-id')).filter(Boolean));
+  const trace = await page.evaluate(() => window.__liveTranslateDebug.getPipelineTrace());
+  const received = trace.filter((entry) => entry.stage === 'VIEWER_RECEIVED');
+  const rendered = trace.filter((entry) => entry.stage === 'REACT_RENDER');
+  expect(received.length).toBeGreaterThan(0);
+  expect(received.every((entry) => entry.cueId === 'viewer-cue-1')).toBe(true);
+  expect(rendered.some((entry) => renderedCueIds.includes(entry.cueId))).toBe(true);
+  expect(rendered.filter((entry) => entry.cueId).every((entry) => renderedCueIds.includes(entry.cueId))).toBe(true);
 });
 
 test('keeps numeric tail fragments in the live subtitle', async ({ page }) => {

@@ -79,13 +79,14 @@ function createEvent({ payload = {}, stream, eventType, text, providerEventId, e
     ].join('|');
   return {
     eventId: `${identityBase}:${stream || 'control'}:${eventType}:${normalizeText(text)}`,
+    providerEventId: providerEventId || null,
     liveSessionId: context.liveSessionId || null,
     sessionId: context.sessionId || null,
     segmentId: context.segmentId || null,
     connectionEpoch: context.connectionEpoch ?? null,
     providerEpoch: context.providerEpoch ?? null,
     audioTurnId: audioTurnId || null,
-    turnKey: turnKey || audioTurnId || null,
+    turnKey: turnKey || null,
     turnIdentitySource: context.turnIdentitySource || (audioTurnId ? 'local' : null),
     stream,
     eventType,

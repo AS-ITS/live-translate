@@ -18,7 +18,7 @@ test('development pipeline trace records bounded structured turn entries', () =>
 
   trace.record({ stage: 'PCM_CAPTURED', recordingId: 'recording-1', audioTurnId: 'turn-1', pcmSequence: 1, pcmBytes: 320 });
   trace.record({
-    stage: 'CUE_STATE',
+    stage: 'CUE_UPDATED',
     recordingId: 'recording-1',
     audioTurnId: 'turn-1',
     cueId: 'cue-1',
@@ -31,7 +31,7 @@ test('development pipeline trace records bounded structured turn entries', () =>
     turnKey: 'local:turn-1',
     turnIdentitySource: 'local'
   });
-  trace.record({ stage: 'CUE_STATE', recordingId: 'recording-1', audioTurnId: 'turn-2', cueAction: 'drop' });
+  trace.record({ stage: 'EVENT_DROPPED', recordingId: 'recording-1', audioTurnId: 'turn-2', cueAction: 'drop' });
 
   const entries = trace.get();
   assert.equal(entries.length, 2);
@@ -45,6 +45,15 @@ test('development pipeline trace records bounded structured turn entries', () =>
   assert.equal(logs.length, 2);
   trace.clear();
   assert.deepEqual(trace.get(), []);
+});
+
+test('trace bounds text fields and isolates logger failures', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => { throw new Error('sink down'); } });
+  const entry = trace.record({ stage: 'TRANSCRIPT_NORMALIZED', sourceText: 'x'.repeat(2000), translationText: 'y'.repeat(2000), reason: 'z'.repeat(2000) });
+  assert.match(entry.sourceText, /\.\.\.\[truncated\]$/u);
+  assert.match(entry.translationText, /\.\.\.\[truncated\]$/u);
+  assert.match(entry.reason, /\.\.\.\[truncated\]$/u);
+  assert.doesNotThrow(() => trace.record({ stage: 'CUE_UPDATED', cueId: 'cue-1' }));
 });
 
 test('production-disabled pipeline trace retains and logs nothing', () => {
@@ -112,4 +121,11 @@ test('full debug trace API is exposed only while runtime trace is enabled', () =
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
   }
+});
+
+test('trace does not infer logical-turn identity from Cue identity', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  const entry = trace.record({ stage: 'CUE_CREATED', cueId: 'cue-only' });
+  assert.equal(entry.turnKey, null);
+  assert.equal(entry.audioTurnId, null);
 });

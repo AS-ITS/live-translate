@@ -362,7 +362,7 @@ export function useLiveRecordingController({
         }));
       }
       const transition = describeCueTransition(current, next, event, { wasProcessed });
-      recordCueTrace({ cue, event, next, ...transition });
+      recordCueTrace({ cue, event, previous: current, next, ...transition });
       if (next === current) return;
       cue.stateRef.current = next;
       cue.setState?.(next);
@@ -427,11 +427,12 @@ export function useLiveRecordingController({
       const current = cue.stateRef.current;
       const next = finalizePendingSubtitleCue(current, { sessionTimeMs: cue.getSessionTime?.() ?? 0, reason });
       if (next === current) return;
-      recordCueTrace({
+      recordCueTransitionTrace({
         cue,
         event: { eventType: reason, isFinal: true },
+        previous: current,
         next,
-        cueAction: next.finalCues.length > current.finalCues.length ? 'finalize' : 'merge'
+        cueAction: 'transition'
       });
       cue.stateRef.current = next;
       cue.setState?.(next);
@@ -1592,57 +1593,103 @@ export function useLiveRecordingController({
   ]);
 }
 
+function cueMapInState(state = {}) {
+  return new Map([
+    state.currentCue,
+    ...(state.pendingCues || []),
+    ...(state.finalCues || [])
+  ].filter((item) => item?.cueId).map((item) => [item.cueId, item]));
+}
+
+const OBSERVABLE_CUE_FIELDS = [
+  'sourceText', 'translatedText', 'sourceStatus', 'translationStatus', 'status',
+  'version', 'sourceVersion', 'translationVersion', 'finalizedReason', 'finalizedAt',
+  'revision', 'refinedSubtitleRevision'
+];
+
+function cueChanged(previous, next) {
+  return OBSERVABLE_CUE_FIELDS.some((field) => previous?.[field] !== next?.[field]);
+}
+
 function describeCueTransition(current, next, event, { wasProcessed = false } = {}) {
   if (next === current) return {
     cueAction: 'drop',
     dropReason: wasProcessed ? 'duplicate_event' : 'no_state_change'
   };
-  if ((next.finalCues?.length || 0) > (current.finalCues?.length || 0)) return { cueAction: 'finalize' };
-  const previousFinal = current.finalCues?.at(-1);
-  const nextFinal = next.finalCues?.at(-1);
-  if (previousFinal && nextFinal && previousFinal.cueId === nextFinal.cueId
-    && nextFinal.finalizedReason === 'merged'
-    && (previousFinal.sourceText !== nextFinal.sourceText || previousFinal.translatedText !== nextFinal.translatedText)) {
-    return { cueAction: 'merge' };
-  }
-  const previousCueIds = new Set([
-    current.currentCue?.cueId,
-    ...(current.pendingCues || []).map((item) => item.cueId),
-    ...(current.finalCues || []).map((item) => item.cueId)
-  ].filter(Boolean));
-  const nextCue = [next.currentCue, ...(next.pendingCues || []), ...(next.finalCues || [])]
-    .find((item) => item?.cueId && !previousCueIds.has(item.cueId));
-  return { cueAction: nextCue ? 'append' : 'update' };
+  return { cueAction: 'transition' };
 }
 
-function recordCueTrace({ cue, event = {}, next, cueAction, dropReason = null }) {
-  const candidates = [
-    next?.currentCue,
-    ...(next?.pendingCues || []),
-    ...(next?.finalCues || [])
-  ].filter(Boolean);
-  const matchedCue = candidates.find((item) => event.audioTurnId && item.audioTurnId === event.audioTurnId)
-    || candidates.at(-1)
-    || null;
-  recordLivePipelineTrace({
-    stage: 'CUE_STATE',
+export function recordCueTransitionTrace({ cue, event = {}, previous, next, cueAction = null, dropReason = null }) {
+  const previousCues = cueMapInState(previous);
+  const nextCues = cueMapInState(next);
+  const previousFinalIds = new Set((previous?.finalCues || []).map((item) => item?.cueId).filter(Boolean));
+  const nextFinalIds = new Set((next?.finalCues || []).map((item) => item?.cueId).filter(Boolean));
+  const transitionCueId = event.cueId || null;
+  const matchedIds = transitionCueId && nextCues.has(transitionCueId)
+    ? [transitionCueId]
+    : event.audioTurnId
+      ? [...nextCues.entries()].filter(([, item]) => item.audioTurnId === event.audioTurnId).map(([cueId]) => cueId)
+      : [];
+  const matchedCue = matchedIds.length === 1 ? nextCues.get(matchedIds[0]) : null;
+  const traceFields = {
     recordingId: matchedCue?.sessionId || cue.getSessionId?.() || null,
     segmentId: matchedCue?.segmentId || event.segmentId || cue.getSegmentId?.() || null,
     connectionEpoch: event.connectionEpoch ?? null,
     audioTurnId: event.audioTurnId || matchedCue?.audioTurnId || null,
     eventId: event.eventId || null,
+    providerEventId: event.providerEventId || null,
+    normalizedEventId: event.eventId || null,
     eventType: event.eventType || null,
     isFinal: Boolean(event.isFinal),
     isLateTranscript: Boolean(event.isLateTranscript),
     turnComplete: Boolean(event.turnComplete),
     generationComplete: Boolean(event.generationComplete),
     providerTurnIndex: event.turnIndex ?? null,
-    turnKey: event.turnKey || null,
+    turnKey: event.turnKey || matchedCue?.turnKey || null,
     turnIdentitySource: event.turnIdentitySource || null,
     sourceText: matchedCue?.sourceText || (event.stream === 'source' ? event.text || '' : ''),
     translationText: matchedCue?.translatedText || (event.stream === 'translation' ? event.text || '' : ''),
     cueId: matchedCue?.cueId || null,
     cueAction,
-    dropReason
-  });
+    dropReason,
+    sourceStatus: matchedCue?.sourceText ? 'present' : null,
+    translationStatus: matchedCue?.translatedText ? 'present' : null,
+    turnState: event.turnComplete || event.generationComplete ? 'complete' : 'active',
+    speechObservedSinceBoundary: event.speechObservedSinceBoundary ?? null
+  };
+  if (cueAction === 'drop') {
+    recordLivePipelineTrace({
+      ...traceFields,
+      stage: dropReason === 'duplicate_event' || dropReason === 'no_state_change' ? 'EVENT_DEDUPED' : 'EVENT_DROPPED',
+      reason: dropReason || 'unspecified_drop',
+      dropReason: dropReason || 'unspecified_drop',
+      decision: 'drop'
+    });
+    return;
+  }
+  for (const [cueId, nextCue] of nextCues) {
+    const previousCue = previousCues.get(cueId);
+    const fields = {
+      ...traceFields,
+      cueId,
+      audioTurnId: event.audioTurnId || nextCue.audioTurnId || null,
+      turnKey: event.turnKey || nextCue.turnKey || null,
+      sourceText: nextCue.sourceText || '',
+      translationText: nextCue.translatedText || '',
+      sourceStatus: nextCue.sourceStatus || null,
+      translationStatus: nextCue.translationStatus || null
+    };
+    if (!previousCue) {
+      recordLivePipelineTrace({ ...fields, stage: 'CUE_CREATED', cueAction: 'create' });
+    } else if (cueChanged(previousCue, nextCue)) {
+      recordLivePipelineTrace({ ...fields, stage: 'CUE_UPDATED', cueAction: 'update' });
+    }
+    if (!previousFinalIds.has(cueId) && nextFinalIds.has(cueId)) {
+      recordLivePipelineTrace({ ...fields, stage: 'CUE_FINALIZED', cueAction: 'finalize' });
+    }
+  }
+}
+
+function recordCueTrace({ cue, event = {}, next, previous, cueAction, dropReason = null }) {
+  recordCueTransitionTrace({ cue, event, previous, next, cueAction, dropReason });
 }

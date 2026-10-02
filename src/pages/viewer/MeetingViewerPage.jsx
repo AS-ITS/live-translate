@@ -6,6 +6,7 @@ import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } f
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
+import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -136,6 +137,18 @@ export function MeetingViewerPage({ token, code }) {
     }
     function applyCuePayload(payload) {
       const receivedAt = Date.now();
+      const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_RECEIVED',
+        recordingId: receivedCue?.sessionId || null,
+        segmentId: receivedCue?.segmentId || null,
+        audioTurnId: receivedCue?.audioTurnId || null,
+        turnKey: receivedCue?.turnKey || null,
+        cueId: receivedCue?.cueId || null,
+        sourceText: receivedCue?.sourceText || '',
+        translationText: receivedCue?.translatedText || '',
+        reason: payload.type || 'viewer_cue_received'
+      });
       const next = applyMeetingCueEvent(detailRef.current, payload);
       detailRef.current = next;
       setDetail(next);
@@ -296,6 +309,34 @@ export function MeetingViewerPage({ token, code }) {
   const visibleCues = cues.slice(startIndex, endIndex);
 
   useEffect(() => {
+    const renderedCues = visibleCues.filter((cue) => cue?.cueId);
+    if (renderedCues.length === 0) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        sourceStatus: 'empty',
+        translationStatus: 'empty',
+        reason: 'viewer_render'
+      });
+      return;
+    }
+    for (const cue of renderedCues) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        segmentId: cue.segmentId || null,
+        audioTurnId: cue.audioTurnId || null,
+        turnKey: cue.turnKey || null,
+        cueId: cue.cueId,
+        sourceStatus: cue.sourceText ? 'present' : 'empty',
+        translationStatus: cue.translatedText ? 'present' : 'empty',
+        turnState: cue.status || null,
+        reason: 'viewer_render'
+      });
+    }
+  }, [detail?.meeting?.liveSessionId, visibleCues]);
+
+  useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver((entries) => {
@@ -357,7 +398,7 @@ export function MeetingViewerPage({ token, code }) {
                 <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
                   {visibleCues.map((cue, index) => {
                     const cueIndex = startIndex + index;
-                    return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-testid="meeting-viewer-cue-row">
+                    return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-cue-id={cue.cueId || undefined} data-testid="meeting-viewer-cue-row">
                     {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
                       {cue.translatedText ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText}</p></div> : null}
                     </article>;

@@ -180,6 +180,7 @@ export class LiveTranslateSession {
     this.inputTransportFailureSignaled = false;
     this.lastAudioCallbackAt = null;
     this.lastSpeechActivityAt = null;
+    this.speechObservedSinceBoundary = false;
     this.silenceFinalizeTimer = null;
     this.localTurnFinalizeTriggered = false;
     this.audioContextStateHandler = null;
@@ -451,6 +452,17 @@ export class LiveTranslateSession {
     if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
     const startsNewSegment = segmentId !== this.segmentId
       || Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
+    const startsNewProviderRollover = Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
+    this.tracePipeline('PROVIDER_RECONNECT', {
+      segmentId,
+      reason: forceRefresh ? 'token_refresh' : 'provider_reconnect'
+    });
+    if (startsNewProviderRollover) {
+      this.tracePipeline('PROVIDER_ROLLOVER', { segmentId, reason: 'live_session_replaced' });
+    }
+    if (segmentId !== this.segmentId) {
+      this.tracePipeline('SEGMENT_ROLLOVER', { segmentId, reason: 'segment_replaced' });
+    }
     this.segmentId = segmentId;
     this.liveSessionId = liveSessionId || this.liveSessionId;
     if (startsNewSegment) {
@@ -471,6 +483,7 @@ export class LiveTranslateSession {
       try { this.session?.close?.(); } catch { /* best effort */ }
       this.session = null;
       this.providerEpoch += 1;
+      this.tracePipeline('PROVIDER_RECONNECT', { reason: 'provider_epoch_advanced' });
       const result = await this.connectProvider({ forceRefresh });
       if (result) this.providerReconnectAttempts = 0;
       else this.providerReconnectAttempts += 1;
@@ -652,6 +665,14 @@ export class LiveTranslateSession {
     const rms = Math.sqrt(sumSquares / samples.length);
     if (rms < this.speechActivityRmsThreshold) return false;
 
+    const speechStage = this.speechObservedSinceBoundary
+      ? 'SPEECH_ACTIVITY_CONTINUED'
+      : 'SPEECH_ACTIVITY_STARTED';
+    this.speechObservedSinceBoundary = true;
+    this.tracePipeline(speechStage, {
+      speechObservedSinceBoundary: true,
+      reason: speechStage === 'SPEECH_ACTIVITY_STARTED' ? 'rms_above_threshold' : 'rms_continued'
+    });
     this.lastSpeechActivityAt = Date.now();
     this.localTurnFinalizeTriggered = false;
     this.scheduleSilenceFinalize();
@@ -688,6 +709,11 @@ export class LiveTranslateSession {
     const hadPendingInput = Boolean(this.pendingInputTranscript);
     const hadPendingOutput = Boolean(this.pendingOutputTranscript);
     this.localTurnFinalizeTriggered = true;
+    this.tracePipeline('LOCAL_SILENCE_DETECTED', {
+      audioTurnId: this.audioTurnId,
+      speechObservedSinceBoundary: this.speechObservedSinceBoundary,
+      reason: 'local_silence'
+    });
     this.clearSilenceFinalizeTimer();
     this.flushPendingTranscripts({ localFinalize: true });
     // Keep the late-transcript repair path open without sending a provider
@@ -699,6 +725,7 @@ export class LiveTranslateSession {
       sessionId: this.liveSessionId,
       silenceMs: this.silenceFinalizeMs
     });
+    this.speechObservedSinceBoundary = false;
     return true;
   }
 
@@ -1296,9 +1323,11 @@ export class LiveTranslateSession {
         toAudioTurnId: event.audioTurnId
       });
       liveCueLatencyTracker.recordCueEvent(event);
-      this.tracePipeline('NORMALIZED', {
+      this.tracePipeline('TRANSCRIPT_NORMALIZED', {
         audioTurnId: event.audioTurnId,
         eventId: event.eventId,
+        providerEventId: event.providerEventId,
+        normalizedEventId: event.eventId,
         eventType: event.eventType,
         isFinal: event.isFinal,
         isLateTranscript: event.isLateTranscript,
@@ -1311,7 +1340,24 @@ export class LiveTranslateSession {
         turnKey: event.turnKey,
         turnIdentitySource: event.turnIdentitySource,
         sourceText: event.stream === 'source' ? event.text : '',
-        translationText: event.stream === 'translation' ? event.text : ''
+        translationText: event.stream === 'translation' ? event.text : '',
+        sourceStatus: event.stream === 'source' ? (event.isFinal ? 'final' : 'partial') : null,
+        translationStatus: event.stream === 'translation' ? (event.isFinal ? 'final' : 'partial') : null,
+        speechObservedSinceBoundary: null,
+        turnState: event.isFinal ? 'final' : 'active'
+      });
+      this.tracePipeline('TURN_ASSIGNED', {
+        audioTurnId: event.audioTurnId,
+        normalizedEventId: event.eventId,
+        providerEventId: providerMessageId(message),
+        providerTurnId: event.turnIndex === null || event.turnIndex === undefined
+          ? null
+          : `provider-turn-${event.connectionEpoch}-${event.providerEpoch}-${event.turnIndex}`,
+        turnKey: event.turnKey,
+        turnState: event.isFinal ? 'final' : 'partial',
+        sourceStatus: event.stream === 'source' ? (event.isFinal ? 'final' : 'partial') : null,
+        translationStatus: event.stream === 'translation' ? (event.isFinal ? 'final' : 'partial') : null,
+        reason: event.turnIdentitySource || 'normalized_event'
       });
       this.logLiveEvent('cue.normalized', {
         stream: event.stream,
@@ -1340,6 +1386,18 @@ export class LiveTranslateSession {
     if (isFinal) {
       this.logLiveEvent('turnComplete.received', { connectionEpoch: epoch, sessionId: this.liveSessionId });
       if (content?.generationComplete) this.trace('generationComplete.received');
+      this.tracePipeline('TURN_COMPLETED', {
+        audioTurnId: boundaryAudioTurnId,
+        providerEventId: providerMessageId(message),
+        providerTurnId: providerTurnId || null,
+        turnComplete: Boolean(content?.turnComplete),
+        generationComplete: Boolean(content?.generationComplete),
+        sourceStatus: hasSourceTranscript ? 'present' : null,
+        translationStatus: hasOutputTranscript ? 'present' : null,
+        turnState: 'complete',
+        reason: content?.generationComplete ? 'generation_complete' : 'turn_complete'
+      });
+      this.speechObservedSinceBoundary = false;
     }
 
     if (content?.inputTranscription?.text && !isRetranslationResponse) {
@@ -1773,6 +1831,7 @@ export class LiveTranslateSession {
         terminalReason: localFinalize ? 'local-silence' : 'provider-final-unconfirmed',
         providerEndMethod: this.lastInputEnd?.method || null,
         providerEndResult: this.lastInputEnd?.result || null,
+        speechObservedSinceBoundary: this.speechObservedSinceBoundary,
         audioTurnId: this.audioTurnId,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,
@@ -2094,7 +2153,7 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
       connectionEpoch: context.connectionEpoch ?? null,
       providerEpoch: context.providerEpoch ?? null,
       audioTurnId: context.audioTurnId || null,
-      turnKey: context.turnKey || context.audioTurnId || null,
+      turnKey: context.turnKey || null,
       turnIdentitySource: context.turnIdentitySource || (context.audioTurnId ? 'local' : null),
       stream: 'source',
       eventType,
@@ -2119,7 +2178,7 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
       connectionEpoch: context.connectionEpoch ?? null,
       providerEpoch: context.providerEpoch ?? null,
       audioTurnId: context.boundaryAudioTurnId || context.audioTurnId || null,
-      turnKey: context.boundaryTurnKey || context.turnKey || context.boundaryAudioTurnId || context.audioTurnId || null,
+      turnKey: context.boundaryTurnKey || context.turnKey || null,
       turnIdentitySource: context.turnIdentitySource || (context.boundaryAudioTurnId || context.audioTurnId ? 'local' : null),
       stream: null,
       eventType: 'boundary',

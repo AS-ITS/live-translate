@@ -174,6 +174,8 @@ export class LiveTranslateSession {
     this.awaitingOutputTranscriptAfterTurnComplete = false;
     this.awaitingInputTranscriptAudioTurnId = null;
     this.awaitingOutputTranscriptAudioTurnId = null;
+    this.awaitingInputTranscriptReason = null;
+    this.awaitingOutputTranscriptReason = null;
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
@@ -477,6 +479,8 @@ export class LiveTranslateSession {
       this.awaitingOutputTranscriptAfterTurnComplete = false;
       this.awaitingInputTranscriptAudioTurnId = null;
       this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
+      this.awaitingOutputTranscriptReason = null;
       this.lastInputTranscriptText = '';
       this.lastOutputTranscriptText = '';
       this.turnBoundaryOpen = false;
@@ -672,6 +676,25 @@ export class LiveTranslateSession {
     const speechStage = this.speechObservedSinceBoundary
       ? 'SPEECH_ACTIVITY_CONTINUED'
       : 'SPEECH_ACTIVITY_STARTED';
+    if (speechStage === 'SPEECH_ACTIVITY_STARTED' && this.localTurnFinalizeTriggered) {
+      this.previousAudioTurnId = this.audioTurnId;
+      this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
+      this.activeTranscriptAudioTurnId = this.audioTurnId;
+      this.activeInputTranscriptAudioTurnId = this.audioTurnId;
+      this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
+      this.lastInputTranscriptText = '';
+      this.lastOutputTranscriptText = '';
+      if (this.awaitingInputTranscriptReason === 'local-silence') {
+        this.awaitingInputTranscriptAfterTurnComplete = false;
+        this.awaitingInputTranscriptAudioTurnId = null;
+        this.awaitingInputTranscriptReason = null;
+      }
+      if (this.awaitingOutputTranscriptReason === 'local-silence') {
+        this.awaitingOutputTranscriptAfterTurnComplete = false;
+        this.awaitingOutputTranscriptAudioTurnId = null;
+        this.awaitingOutputTranscriptReason = null;
+      }
+    }
     this.speechObservedSinceBoundary = true;
     this.tracePipeline(speechStage, {
       speechObservedSinceBoundary: true,
@@ -726,6 +749,8 @@ export class LiveTranslateSession {
     this.awaitingOutputTranscriptAfterTurnComplete = hadPendingOutput;
     this.awaitingInputTranscriptAudioTurnId = hadPendingInput ? this.audioTurnId : null;
     this.awaitingOutputTranscriptAudioTurnId = hadPendingOutput ? this.audioTurnId : null;
+    this.awaitingInputTranscriptReason = hadPendingInput ? 'local-silence' : null;
+    this.awaitingOutputTranscriptReason = hadPendingOutput ? 'local-silence' : null;
     this.logLiveEvent('transcripts.finalized locally', {
       connectionEpoch: this.connectionEpoch,
       sessionId: this.liveSessionId,
@@ -1154,6 +1179,7 @@ export class LiveTranslateSession {
     if (epoch !== this.providerEpoch || this.closed) {
       this.tracePipeline('PROVIDER_EVENT', {
         eventId: providerMessageId(message),
+        providerEventId: providerMessageId(message),
         eventType: providerEventType(message),
         ...providerBoundaryMetadata(message),
         cueAction: 'drop',
@@ -1164,6 +1190,7 @@ export class LiveTranslateSession {
     }
     this.tracePipeline('PROVIDER_EVENT', {
       eventId: providerMessageId(message),
+      providerEventId: providerMessageId(message),
       eventType: providerEventType(message),
       isFinal: Boolean(message?.serverContent?.turnComplete || message?.serverContent?.generationComplete),
       ...providerBoundaryMetadata(message),
@@ -1200,6 +1227,8 @@ export class LiveTranslateSession {
     const outputTranscriptArrivedAfterBoundary = this.awaitingOutputTranscriptAfterTurnComplete;
     const awaitedInputAudioTurnId = this.awaitingInputTranscriptAudioTurnId;
     const awaitedOutputAudioTurnId = this.awaitingOutputTranscriptAudioTurnId;
+    const awaitedInputReason = this.awaitingInputTranscriptReason;
+    const awaitedOutputReason = this.awaitingOutputTranscriptReason;
     const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
     const hasSourceTranscript = Boolean(content?.inputTranscription?.text || content?.interimInputTranscription?.text);
@@ -1436,8 +1465,11 @@ export class LiveTranslateSession {
       this.lastInputTranscriptText = transcript.text;
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
-      this.awaitingInputTranscriptAfterTurnComplete = false;
-      this.awaitingInputTranscriptAudioTurnId = null;
+      if (awaitedInputReason !== 'local-silence') {
+        this.awaitingInputTranscriptAfterTurnComplete = false;
+        this.awaitingInputTranscriptAudioTurnId = null;
+        this.awaitingInputTranscriptReason = null;
+      }
     } else if (content?.interimInputTranscription?.text) {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
@@ -1467,10 +1499,12 @@ export class LiveTranslateSession {
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
       this.awaitingInputTranscriptAfterTurnComplete = false;
       this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
     } else if (acceptsBoundary) {
       this.logLiveEvent('inputTranscription.awaitingLateText');
       this.awaitingInputTranscriptAfterTurnComplete = true;
       this.awaitingInputTranscriptAudioTurnId = boundaryAudioTurnId;
+      this.awaitingInputTranscriptReason = 'provider-boundary';
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
@@ -1491,8 +1525,11 @@ export class LiveTranslateSession {
       this.onOutputTranscript?.(transcript);
       this.lastOutputTranscriptText = transcript.text;
       this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
-      this.awaitingOutputTranscriptAfterTurnComplete = false;
-      this.awaitingOutputTranscriptAudioTurnId = null;
+      if (awaitedOutputReason !== 'local-silence') {
+        this.awaitingOutputTranscriptAfterTurnComplete = false;
+        this.awaitingOutputTranscriptAudioTurnId = null;
+        this.awaitingOutputTranscriptReason = null;
+      }
     } else if (this.mode !== 'transcription' && acceptsBoundary && this.pendingOutputTranscript) {
       const transcript = withTranscriptEventId({ ...this.pendingOutputTranscript, isFinal: true }, this.pendingOutputTranscript.eventId);
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
@@ -1500,10 +1537,12 @@ export class LiveTranslateSession {
       this.pendingOutputTranscript = null;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
       this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptReason = null;
     } else if (this.mode !== 'transcription' && acceptsBoundary) {
       this.logLiveEvent('outputTranscription.awaitingLateText');
       this.awaitingOutputTranscriptAfterTurnComplete = true;
       this.awaitingOutputTranscriptAudioTurnId = boundaryAudioTurnId;
+      this.awaitingOutputTranscriptReason = 'provider-boundary';
     }
 
     if (content?.interrupted) {
@@ -1863,8 +1902,13 @@ export class LiveTranslateSession {
       this.onCueEvent?.({
         ...transcript,
         eventId: `${transcript.eventId || `${this.liveSessionId || this.sessionId || 'live'}:pending`}:terminal-final`,
+        originEventId: transcript.eventId || null,
+        providerEventId: transcript.eventId || null,
         stream: isInput ? 'source' : 'translation',
         eventType: isInput ? 'input' : 'output',
+        turnKey: transcript.turnKey || `local:${transcript.audioTurnId || this.audioTurnId}`,
+        turnIdentitySource: transcript.turnIdentitySource || 'local',
+        isTerminalReplay: localFinalize,
         localFinalize: emitLocalFinalize,
         finalizedReason: emitLocalFinalize ? 'localSilence' : undefined,
         turnComplete: false,
@@ -2064,11 +2108,13 @@ export class LiveTranslateSession {
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
     this.pendingOutputTranscript = null;
-    this.awaitingInputTranscriptAfterTurnComplete = false;
-    this.awaitingOutputTranscriptAfterTurnComplete = false;
-    this.awaitingInputTranscriptAudioTurnId = null;
-    this.awaitingOutputTranscriptAudioTurnId = null;
-    this.nextPlaybackTime = 0;
+      this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
+      this.awaitingOutputTranscriptReason = null;
+      this.nextPlaybackTime = 0;
       if (activeDebugSession === this) activeDebugSession = this;
     } finally {
       this.cleaningUp = false;

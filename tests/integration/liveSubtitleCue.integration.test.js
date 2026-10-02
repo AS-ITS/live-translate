@@ -573,3 +573,110 @@ test('auto boundaries preserve three following sentences, pauses, delayed sides,
     recorderCues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText }))
   );
 });
+
+test('local silence terminal replay does not duplicate a finalized tail fragment', () => {
+  let cueState = createSubtitleCueState();
+  let clock = 0;
+  const outputEvents = [];
+  const sessionId = 'session-terminal-replay';
+  const segmentId = 'segment-terminal-replay';
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-terminal-replay',
+    sessionId,
+    segmentId,
+    targetLanguageCode: 'en',
+    sourceLanguageCode: 'zh-Hant',
+    sessionClock: () => (clock += 50),
+    onOutputTranscript(transcript) {
+      outputEvents.push(transcript);
+    },
+    onCueEvent(event) {
+      cueState = applySubtitleCueEvent(cueState, event);
+      if (event.localFinalize) {
+        cueState = finalizePendingSubtitleCue(cueState, {
+          sessionTimeMs: clock + 700,
+          reason: event.finalizedReason || 'localSilence'
+        });
+      }
+    }
+  });
+  const provider = (eventId, serverContent) => session.handleMessage({ eventId, serverContent });
+  const settle = (reason) => {
+    cueState = finalizePendingSubtitleCue(cueState, {
+      sessionTimeMs: clock + 700,
+      reason
+    });
+  };
+
+  provider('sentence-source-prefix', { inputTranscription: { text: '這句不能' } });
+  provider('sentence-translation-prefix', { outputTranscription: { text: 'This sentence' } });
+  provider('sentence-source-tail', { inputTranscription: { text: '消失。' } });
+  provider('sentence-translation-tail', { outputTranscription: { text: ' cannot disappear.' } });
+  settle('stable-pair');
+
+  assert.deepEqual(
+    cueState.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [['這句不能消失。', 'This sentence cannot disappear.']]
+  );
+
+  // The silence flush replays the last provider fragments as terminal events.
+  // They must revise the existing Cue instead of creating tail-only Cue.
+  session.localFinalizePendingTranscripts();
+  assert.deepEqual(
+    cueState.finalCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [['這句不能消失。', 'This sentence cannot disappear.']]
+  );
+
+  provider('same-side-late-output-1', { outputTranscription: { text: 'This sentence cannot disappear.' } });
+  provider('same-side-late-output-2', { outputTranscription: { text: 'This sentence cannot disappear.' } });
+  assert.deepEqual(
+    outputEvents.slice(-2).map(({ isLateTranscript }) => Boolean(isLateTranscript)),
+    [true, true]
+  );
+
+  session.trackSpeechActivity(new Float32Array(160).fill(0.2));
+
+  provider('repeat-source', { inputTranscription: { text: '消失。' } });
+  provider('repeat-translation', { outputTranscription: { text: 'Disappear.' } });
+  settle('repeat-spoken');
+
+  provider('next-source', { inputTranscription: { text: '下一句完整保留。' } });
+  provider('next-translation', { outputTranscription: { text: 'Keep the next sentence complete.' } });
+  provider('next-boundary', { turnComplete: true });
+  settle('next-sentence');
+
+  provider('late-translation', { outputTranscription: { text: 'Late source still belongs here.' } });
+  provider('late-boundary', { turnComplete: true });
+  settle('late-side-boundary');
+  provider('late-source', { inputTranscription: { text: '遲到原文仍屬於這句。' } });
+
+  const recorderCues = cueListForDisplay(cueState, { includePartial: false });
+  assert.deepEqual(
+    recorderCues.map(({ sourceText, translatedText }) => [sourceText, translatedText]),
+    [
+      ['這句不能消失。', 'This sentence cannot disappear.'],
+      ['消失。', 'Disappear.'],
+      ['下一句完整保留。', 'Keep the next sentence complete.'],
+      ['遲到原文仍屬於這句。', 'Late source still belongs here.']
+    ]
+  );
+  assert.equal(new Set(recorderCues.map((cue) => cue.cueId)).size, 4);
+
+  let viewer = mergeMeetingViewerSnapshot(null, {
+    sessionId,
+    segmentId,
+    cursor: { eventId: 0, cueSequence: 0 },
+    cues: []
+  });
+  recorderCues.forEach((cue, index) => {
+    viewer = applyMeetingCueEvent(viewer, {
+      type: 'cue.append',
+      eventId: index + 1,
+      cue
+    });
+  });
+  assert.deepEqual(
+    viewer.cues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText })),
+    recorderCues.map(({ cueId, sourceText, translatedText }) => ({ cueId, sourceText, translatedText }))
+  );
+});

@@ -762,6 +762,12 @@ const exportedTrace = window.__liveTranslateDebug.exportPipelineTrace()
 copy(exportedTrace)
 ```
 
+Local terminal replay entries include bounded `originEventId`,
+`terminalStatus`, `terminalReason`, `localFinalize`, and
+`isTerminalReplay` fields. Use these fields to distinguish a local-silence
+flush from a new provider transcript; they never contain API keys, tokens, or
+audio.
+
 The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
 in browser memory and resets on reload. Every entry has a bounded
 `traceSequence`; normalized and Cue transitions keep their provider

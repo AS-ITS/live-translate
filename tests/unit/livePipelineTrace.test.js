@@ -157,3 +157,26 @@ test('trace export preserves bounded sequence and before/after transcript eviden
   assert.deepEqual(exported.entries, entries);
   assert.equal(JSON.stringify(exported).includes('undefined'), false);
 });
+
+test('trace preserves bounded local terminal replay provenance', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'CUE_UPDATED',
+    eventId: 'tail:terminal-final',
+    originEventId: 'tail',
+    providerEventId: 'tail',
+    normalizedEventId: 'tail:terminal-final',
+    terminalStatus: 'local-final',
+    terminalReason: 'local-silence',
+    localFinalize: true,
+    isTerminalReplay: true,
+    sourceText: '消失。'
+  });
+
+  const entry = trace.get()[0];
+  assert.equal(entry.originEventId, 'tail');
+  assert.equal(entry.terminalStatus, 'local-final');
+  assert.equal(entry.terminalReason, 'local-silence');
+  assert.equal(entry.localFinalize, true);
+  assert.equal(entry.isTerminalReplay, true);
+});

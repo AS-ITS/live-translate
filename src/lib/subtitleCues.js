@@ -403,10 +403,25 @@ function findSameAudioTurnFinalCue(state, event) {
     const finalizesSameText = event.isFinal
       && cue[statusFieldForStream(event.stream)] !== 'finalized'
       && normalizeText(cue[field]) === normalizeText(event.text);
-    if (normalizeText(cue[field]) && !isCumulativeTextUpdate(cue[field], event) && !finalizesSameText) continue;
+    const repeatsLateSameText = event.isLateTranscript
+      && normalizeText(cue[field]) === normalizeText(event.text);
+    const localTerminalReplay = isLocalTerminalReplay(cue[field], event);
+    if (normalizeText(cue[field])
+      && !isCumulativeTextUpdate(cue[field], event)
+      && !finalizesSameText
+      && !repeatsLateSameText
+      && !localTerminalReplay) continue;
     return { index, cue, snapshot: Boolean(normalizeText(cue[field])) };
   }
   return null;
+}
+
+function isLocalTerminalReplay(currentText, event) {
+  if (event.terminalStatus !== 'local-final' || event.terminalReason !== 'local-silence') return false;
+  const current = normalizeText(currentText);
+  const incoming = normalizeText(event.text);
+  return Boolean(current && incoming)
+    && (current === incoming || isRedundantTextUpdate(current, incoming));
 }
 
 function findNumericCorrectionCue(state, event) {

@@ -89,6 +89,7 @@ test('recordAudio false never creates a local recording, while true discovers th
   });
   await disabled.start({ meetingId: 'meeting-disabled', recordingId: 'session-disabled', segmentId: 'segment-1' });
   assert.equal(await disabled.appendAudioChunk({ data: new Blob(['ignored']) }), null);
+  assert.equal(await disabled.getLocalAudioStatus('meeting-disabled'), 'idle');
   assert.deepEqual(await disabled.listFinalizedAudioArtifacts('meeting-disabled'), []);
 
   const enabledManifest = createInMemoryLocalMeetingManifestStore();
@@ -106,4 +107,21 @@ test('recordAudio false never creates a local recording, while true discovers th
   assert.equal(artifacts.length, 1);
   assert.equal(artifacts[0].recordingId, 'session-enabled');
   assert.equal(await artifacts[0].blob.text(), 'saved');
+});
+
+test('stale construction follows hydrated recording enablement without replacing persistence', async () => {
+  const manifestStore = createInMemoryLocalMeetingManifestStore();
+  const persistence = createLocalMeetingPersistence({ recordAudio: false, manifestStore, chunkStore: fakeChunkStore(), cryptoImpl: fakeCrypto(), createOperationId: operationIds() });
+  const disabled = await persistence.start({ meetingId: 'meeting-stale', recordingId: 'session-stale', segmentId: 'segment-1' });
+  assert.equal(disabled.state, 'disabled');
+  persistence.setRecordingEnabled(true);
+  const started = await persistence.start({ meetingId: 'meeting-stale', recordingId: 'session-stale', segmentId: 'segment-1' });
+  assert.equal(started.state, 'capturing');
+  await persistence.appendAudioChunk({ data: new Blob(['saved']), receivedAt: 10 });
+  assert.equal(await persistence.getLocalAudioStatus('meeting-stale'), 'processing');
+  const finalized = await persistence.finalizeAudio();
+  assert.equal(finalized.status, 'ready');
+  assert.equal(await persistence.getLocalAudioStatus('meeting-stale'), 'ready');
+  persistence.setRecordingEnabled(false);
+  assert.equal((await persistence.listFinalizedAudioArtifacts('meeting-stale')).length, 1);
 });

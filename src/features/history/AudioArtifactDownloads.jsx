@@ -29,6 +29,8 @@ export function AudioArtifactDownloads({
   const inputDownloadUrl = audioArtifactDownloadUrl(inputArtifact, localDownloadUrls.input);
   const translationDownloadUrl = audioArtifactDownloadUrl(translationArtifact, localDownloadUrls.translation);
   const hasInputAudio = Boolean(inputDownloadUrl);
+  const inputAudioProcessing = inputArtifact?.status === 'processing';
+  const inputAudioDisabled = inputArtifact?.status === 'disabled';
   const hasTranslationAudio = Boolean(translationDownloadUrl);
   const readyCloudArtifacts = cloudAudioArtifacts.filter((artifact) => artifact?.status === 'ready');
   const pendingMp3Artifacts = cloudAudioArtifacts.filter((artifact) => ['queued', 'processing'].includes(artifact?.status));
@@ -86,7 +88,7 @@ export function AudioArtifactDownloads({
         )}
       </div>
       {cloudDownloadError ? <p className="error-message" role="alert">{cloudDownloadError}</p> : null}
-      {hideUnavailableLinks && readyCloudArtifacts.length === 0 && !hasInputAudio && !hasTranslationAudio ? <p className="export-note">目前沒有可下載的語音紀錄。</p> : !hideUnavailableLinks && readyCloudArtifacts.length === 0 && (!hasInputAudio || !hasTranslationAudio) ? <p className="export-note">只有已成功儲存的語音紀錄可下載。</p> : null}
+      {inputAudioProcessing ? <p className="export-note" role="status">錄音正在整理中，請稍候。</p> : inputAudioDisabled ? <p className="export-note" role="status">原始語音未啟用保存。</p> : hideUnavailableLinks && readyCloudArtifacts.length === 0 && !hasInputAudio && !hasTranslationAudio ? <p className="export-note">目前沒有可下載的語音紀錄。</p> : !hideUnavailableLinks && readyCloudArtifacts.length === 0 && (!hasInputAudio || !hasTranslationAudio) ? <p className="export-note">只有已成功儲存的語音紀錄可下載。</p> : null}
     </section>
   );
 }

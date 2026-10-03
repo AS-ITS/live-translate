@@ -101,19 +101,20 @@ function meetingDetailReturnPage(info = pageInfoFromLocation()) {
 
 const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請重新選擇已建立的會議。';
 
-function mergeMeetingDetailWithLocalAudio(detail, localArtifacts = []) {
-  if (!detail || !Array.isArray(localArtifacts) || localArtifacts.length === 0) return detail;
+function mergeMeetingDetailWithLocalAudio(detail, localArtifacts = [], localAudioStatus = 'idle') {
+  if (!detail) return detail;
   const input = localArtifacts.find((artifact) => artifact?.kind === 'input');
-  if (!input) return detail;
+  const displayStatus = !input && localAudioStatus === 'idle' && detail.meeting?.shouldRecordInputAudio === false
+    ? 'disabled'
+    : localAudioStatus;
+  if (!input && !['processing', 'disabled'].includes(displayStatus)) return detail;
   return {
     ...detail,
     audioArtifacts: {
       ...(detail.audioArtifacts || {}),
-      input: {
-        ...(detail.audioArtifacts?.input || {}),
-        ...input,
-        status: 'ready'
-      }
+      input: input
+        ? { ...(detail.audioArtifacts?.input || {}), ...input, status: 'ready' }
+        : { ...(detail.audioArtifacts?.input || {}), kind: 'input', status: displayStatus }
     }
   };
 }
@@ -1410,8 +1411,9 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function getLocalMeetingPersistence() {
     if (!localMeetingPersistenceRef.current) {
-      localMeetingPersistenceRef.current = createLocalMeetingPersistence({ recordAudio: shouldRecordInputAudio });
+      localMeetingPersistenceRef.current = createLocalMeetingPersistence();
     }
+    localMeetingPersistenceRef.current.setRecordingEnabled?.(shouldRecordInputAudio);
     return localMeetingPersistenceRef.current;
   }
 
@@ -2066,8 +2068,11 @@ const activeMeetingCheckpointRef = useRef(null);
       const persistence = getLocalMeetingPersistence();
       const localCues = await persistence.listCues(id);
       const merged = mergeMeetingDetailWithLocalCues(detail, localCues);
-      const localAudio = await persistence.listFinalizedAudioArtifacts?.(id);
-      return mergeMeetingDetailWithLocalAudio(merged, localAudio);
+      const [localAudio, localAudioStatus] = await Promise.all([
+        persistence.listFinalizedAudioArtifacts?.(id),
+        persistence.getLocalAudioStatus?.(id)
+      ]);
+      return mergeMeetingDetailWithLocalAudio(merged, localAudio, localAudioStatus);
     } catch (error) {
       const wrapped = new Error('Local meeting transcript could not be read.', { cause: error });
       wrapped.code = 'local_transcript_read_failed';

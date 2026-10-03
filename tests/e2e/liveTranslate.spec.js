@@ -3814,7 +3814,7 @@ test('recordAudio=false keeps Cue after end without audio artifact or download',
   await expect(page.getByText('No audio translation', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '匯出', exact: true }).click();
   const audioDownloadSection = page.getByRole('region', { name: '語音下載' });
-  await expect(audioDownloadSection).toContainText('目前沒有可下載的語音紀錄。');
+  await expect(audioDownloadSection).toContainText('原始語音未啟用保存。');
   await expect(audioDownloadSection.getByRole('link', { name: /下載.*語音/ })).toHaveCount(0);
 });
 

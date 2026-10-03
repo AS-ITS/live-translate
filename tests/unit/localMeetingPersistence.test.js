@@ -77,3 +77,33 @@ test('reload recovery resumes audio sequence without overwriting prior chunks', 
   assert.equal(await audio.blob.text(), 'onetwo');
   assert.deepEqual((await manifestStore.list('meeting-1')).map((chunk) => chunk.sequence), [1, 2]);
 });
+
+test('recordAudio false never creates a local recording, while true discovers the finalized manifest artifact', async () => {
+  const disabledManifest = createInMemoryLocalMeetingManifestStore();
+  const disabled = createLocalMeetingPersistence({
+    recordAudio: false,
+    manifestStore: disabledManifest,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds()
+  });
+  await disabled.start({ meetingId: 'meeting-disabled', recordingId: 'session-disabled', segmentId: 'segment-1' });
+  assert.equal(await disabled.appendAudioChunk({ data: new Blob(['ignored']) }), null);
+  assert.deepEqual(await disabled.listFinalizedAudioArtifacts('meeting-disabled'), []);
+
+  const enabledManifest = createInMemoryLocalMeetingManifestStore();
+  const enabled = createLocalMeetingPersistence({
+    recordAudio: true,
+    manifestStore: enabledManifest,
+    chunkStore: fakeChunkStore(),
+    cryptoImpl: fakeCrypto(),
+    createOperationId: operationIds()
+  });
+  await enabled.start({ meetingId: 'meeting-enabled', recordingId: 'session-enabled', segmentId: 'segment-1' });
+  await enabled.appendAudioChunk({ data: new Blob(['saved']), receivedAt: 10 });
+  await enabled.finalizeAudio({ fileName: 'meeting-enabled-input.webm' });
+  const artifacts = await enabled.listFinalizedAudioArtifacts('meeting-enabled');
+  assert.equal(artifacts.length, 1);
+  assert.equal(artifacts[0].recordingId, 'session-enabled');
+  assert.equal(await artifacts[0].blob.text(), 'saved');
+});

@@ -1,6 +1,10 @@
 import { Download } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createMeetingAudioDownload } from '../../lib/meetingAudioStorage.js';
+
+export function audioArtifactDownloadUrl(artifact, localUrl = '') {
+  return artifact?.downloadUrl || localUrl || '';
+}
 
 export function AudioArtifactDownloads({
   title,
@@ -12,10 +16,20 @@ export function AudioArtifactDownloads({
 }) {
   const [cloudDownloadId, setCloudDownloadId] = useState('');
   const [cloudDownloadError, setCloudDownloadError] = useState('');
+  const [localDownloadUrls, setLocalDownloadUrls] = useState({});
   const inputArtifact = audioArtifacts?.input;
   const translationArtifact = audioArtifacts?.translation;
-  const hasInputAudio = Boolean(inputArtifact?.downloadUrl);
-  const hasTranslationAudio = Boolean(translationArtifact?.downloadUrl);
+  useEffect(() => {
+    const urls = {};
+    if (inputArtifact?.blob && typeof URL?.createObjectURL === 'function') urls.input = URL.createObjectURL(inputArtifact.blob);
+    if (translationArtifact?.blob && typeof URL?.createObjectURL === 'function') urls.translation = URL.createObjectURL(translationArtifact.blob);
+    setLocalDownloadUrls(urls);
+    return () => Object.values(urls).forEach((url) => URL.revokeObjectURL(url));
+  }, [inputArtifact, translationArtifact]);
+  const inputDownloadUrl = audioArtifactDownloadUrl(inputArtifact, localDownloadUrls.input);
+  const translationDownloadUrl = audioArtifactDownloadUrl(translationArtifact, localDownloadUrls.translation);
+  const hasInputAudio = Boolean(inputDownloadUrl);
+  const hasTranslationAudio = Boolean(translationDownloadUrl);
   const readyCloudArtifacts = cloudAudioArtifacts.filter((artifact) => artifact?.status === 'ready');
   const pendingMp3Artifacts = cloudAudioArtifacts.filter((artifact) => ['queued', 'processing'].includes(artifact?.status));
   const failedMp3Artifacts = cloudAudioArtifacts.filter((artifact) => artifact?.kind === 'mp3' && artifact?.status === 'failed');
@@ -61,14 +75,14 @@ export function AudioArtifactDownloads({
         {pendingMp3Artifacts.map((artifact) => <span className="button detail-button disabled-link" aria-disabled="true" key={`${artifact.id}-pending`}>MP3 產生中…</span>)}
         {failedMp3Artifacts.map((artifact) => <button className="button detail-button" type="button" key={`${artifact.id}-retry`} onClick={() => retryMp3(artifact)}>MP3 產生失敗，重試</button>)}
         {hideUnavailableLinks ? (
-          hasInputAudio ? <a className="button detail-button" href={inputArtifact.downloadUrl} download={inputArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{inputLabel}</a> : null
+          hasInputAudio ? <a className="button detail-button" href={inputDownloadUrl} download={inputArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{inputLabel}</a> : null
         ) : (
-          <a className={`button detail-button${hasInputAudio ? '' : ' disabled-link'}`} href={inputArtifact?.downloadUrl || '#'} download={inputArtifact?.fileName || undefined} aria-disabled={!hasInputAudio} onClick={(event) => { if (!hasInputAudio) event.preventDefault(); }}><Download size={16} aria-hidden="true" />{inputLabel}</a>
+          <a className={`button detail-button${hasInputAudio ? '' : ' disabled-link'}`} href={inputDownloadUrl || '#'} download={inputArtifact?.fileName || undefined} aria-disabled={!hasInputAudio} onClick={(event) => { if (!hasInputAudio) event.preventDefault(); }}><Download size={16} aria-hidden="true" />{inputLabel}</a>
         )}
         {hideUnavailableLinks ? (
-          hasTranslationAudio ? <a className="button detail-button" href={translationArtifact.downloadUrl} download={translationArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{translationLabel}</a> : null
+          hasTranslationAudio ? <a className="button detail-button" href={translationDownloadUrl} download={translationArtifact.fileName || undefined}><Download size={16} aria-hidden="true" />{translationLabel}</a> : null
         ) : (
-          <a className={`button detail-button${hasTranslationAudio ? '' : ' disabled-link'}`} href={translationArtifact?.downloadUrl || '#'} download={translationArtifact?.fileName || undefined} aria-disabled={!hasTranslationAudio} onClick={(event) => { if (!hasTranslationAudio) event.preventDefault(); }}><Download size={16} aria-hidden="true" />{translationLabel}</a>
+          <a className={`button detail-button${hasTranslationAudio ? '' : ' disabled-link'}`} href={translationDownloadUrl || '#'} download={translationArtifact?.fileName || undefined} aria-disabled={!hasTranslationAudio} onClick={(event) => { if (!hasTranslationAudio) event.preventDefault(); }}><Download size={16} aria-hidden="true" />{translationLabel}</a>
         )}
       </div>
       {cloudDownloadError ? <p className="error-message" role="alert">{cloudDownloadError}</p> : null}

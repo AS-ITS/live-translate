@@ -186,7 +186,7 @@ export function ArticlePanel({
   );
 }
 
-export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSettings, initialStatusFilter = 'all', initialPanel = '', initialCreate = false }) {
+export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSettings, onEndMeeting, initialStatusFilter = 'all', initialPanel = '', initialCreate = false }) {
   const managementClientRef = useRef(createMeetingManagementApiClient());
   const readClientRef = useRef(createMeetingReadApiClient());
   const glossaryClientRef = useRef(createGlossaryApiClient());
@@ -477,7 +477,10 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
             {selectedMeeting ? (
               selectedMeeting.status === 'completed'
                 ? <button className="button secondary" type="button" onClick={() => onOpenHistory(selectedMeeting.id)}>前往翻譯紀錄</button>
-                : <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時字幕</button>
+                : <>
+                  <button className="button secondary" type="button" onClick={() => onOpenLive(selectedMeeting.id)}>前往即時字幕</button>
+                  {['active', 'interrupted'].includes(selectedMeeting.status) && onEndMeeting ? <button className="button detail-button danger-button" type="button" onClick={() => onEndMeeting(selectedMeeting.id)}>結束會議</button> : null}
+                </>
               ) : null}
           </div>
           {selectedMeeting?.status === 'created' ? (

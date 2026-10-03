@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 新增 lifecycle regression protection：Live 會議現在使用完整 Global Dictionary 加 Meeting Dictionary，後者同原文會覆蓋前者；`recordAudio=false` 不建立本機錄音，已完成的 OPFS/IndexedDB manifest 可在會議結果直接發現與下載；停止錄音會留在 Live 的 active Meeting，Continue Recording 與 End Meeting 共用可重試且等待 finalize 的 lifecycle。
+
 - 未完成會議現在會先開啟會議設定供使用者確認，再由設定頁進入即時字幕；已完成會議仍直接開啟翻譯紀錄。
 
 - 修正結束會議後詳情與 TXT 匯出誤讀雲端空資料的問題：Stop 會先等待完整 Final Cue 寫入 IndexedDB，詳情與瀏覽器匯出共用同一份本機 Cue，並保留 source-only、translation-only、延遲補齊與最後一句。本機保存失敗時不會清空頁面資料，重複 Stop 可安全重試。

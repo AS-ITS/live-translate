@@ -19,7 +19,8 @@ import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
 import { applyGlossaryCorrectionToCue } from '../lib/glossaryReplacement.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 import { stopSessionSafely } from '../lib/stopSessionSafely.js';
-import { mergeMeetingGlossaryEntries, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
+import { effectiveMeetingGlossaryEntries, selectedMeetingGlossaryEntries } from '../lib/meetingGlossary.js';
+import { completeMeetingAfterRecordingFinalize } from '../features/live/useLiveRecordingController.js';
 import { authenticatedFetch } from '../lib/accessToken.js';
 import { userMessageForErrorCode, withHttpStatus } from '../lib/connectionFailures.js';
 import { createTranslationCommandLifecycle } from '../lib/translationCommandLifecycle.js';
@@ -100,6 +101,23 @@ function meetingDetailReturnPage(info = pageInfoFromLocation()) {
 
 const INVALID_MEETING_ROUTE_MESSAGE = '會議連結不存在或已失效，請重新選擇已建立的會議。';
 
+function mergeMeetingDetailWithLocalAudio(detail, localArtifacts = []) {
+  if (!detail || !Array.isArray(localArtifacts) || localArtifacts.length === 0) return detail;
+  const input = localArtifacts.find((artifact) => artifact?.kind === 'input');
+  if (!input) return detail;
+  return {
+    ...detail,
+    audioArtifacts: {
+      ...(detail.audioArtifacts || {}),
+      input: {
+        ...(detail.audioArtifacts?.input || {}),
+        ...input,
+        status: 'ready'
+      }
+    }
+  };
+}
+
 export function App() {
   const [page, setPage] = useState(pageFromLocation);
   const [locationVersion, setLocationVersion] = useState(0);
@@ -157,6 +175,7 @@ export function App() {
   const [polishedArticle, setPolishedArticle] = useState({ text: '', items: [], version: null, updatedAt: null });
   const [resumeDraft, setResumeDraft] = useState(null);
   const [isStartingLiveRecording, setIsStartingLiveRecording] = useState(false);
+  const endMeetingOperationRef = useRef(null);
   const sessionRef = useRef(null);
   const startLiveRecordingInFlightRef = useRef(false);
   const sessionSnapshotCloudErrorSessionsRef = useRef(new Set());
@@ -1242,8 +1261,12 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   function currentMeetingGlossaryEntries() {
-    const shared = selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
-    return mergeMeetingGlossaryEntries(shared, privateMeetingGlossaryEntries, targetLanguageCode);
+    const selectedEntries = selectedMeetingGlossaryEntries(glossaryEntries, selectedMeetingGlossaryIds, targetLanguageCode);
+    return effectiveMeetingGlossaryEntries(
+      glossaryEntries,
+      [...selectedEntries, ...privateMeetingGlossaryEntries],
+      targetLanguageCode
+    );
   }
 
   function applyTranscriptUpdate(update) {
@@ -1387,9 +1410,39 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function getLocalMeetingPersistence() {
     if (!localMeetingPersistenceRef.current) {
-      localMeetingPersistenceRef.current = createLocalMeetingPersistence();
+      localMeetingPersistenceRef.current = createLocalMeetingPersistence({ recordAudio: shouldRecordInputAudio });
     }
     return localMeetingPersistenceRef.current;
+  }
+
+  function endMeetingFromManagement(meetingId) {
+    if (endMeetingOperationRef.current) return endMeetingOperationRef.current;
+    const operation = (async () => {
+      if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return false;
+      try {
+        await completeMeetingAfterRecordingFinalize({
+          flushAudio: () => liveController.audio.finalizeRawAudioRecording?.(),
+          flushCues: () => liveController.cue.flushSubtitleCues?.('complete'),
+          flushCheckpoint: async () => {
+            const flushed = await liveController.checkpoint.flushMeetingCheckpointSync?.();
+            if (flushed === false) throw new Error('Unable to flush meeting checkpoint before completion.');
+          },
+          flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current, { forceCloud: true }),
+          completeMeeting: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
+        });
+        setNavigationNotice('會議已結束。');
+        window.location.hash = '#meetings';
+        return true;
+      } catch {
+        setError('無法結束會議，請稍後再試。');
+        return false;
+      }
+    })();
+    endMeetingOperationRef.current = operation;
+    void operation.finally(() => {
+      if (endMeetingOperationRef.current === operation) endMeetingOperationRef.current = null;
+    }).catch(() => {});
+    return operation;
   }
 
   function enqueueCuePersistence(previous, next) {
@@ -2007,8 +2060,11 @@ const activeMeetingCheckpointRef = useRef(null);
     if (!detail) return detail;
 
     try {
-      const localCues = await getLocalMeetingPersistence().listCues(id);
-      return mergeMeetingDetailWithLocalCues(detail, localCues);
+      const persistence = getLocalMeetingPersistence();
+      const localCues = await persistence.listCues(id);
+      const merged = mergeMeetingDetailWithLocalCues(detail, localCues);
+      const localAudio = await persistence.listFinalizedAudioArtifacts?.(id);
+      return mergeMeetingDetailWithLocalAudio(merged, localAudio);
     } catch (error) {
       const wrapped = new Error('Local meeting transcript could not be read.', { cause: error });
       wrapped.code = 'local_transcript_read_failed';
@@ -2338,6 +2394,7 @@ const activeMeetingCheckpointRef = useRef(null);
       {isMeetingManagementPage ? <MeetingManagementPage
         onOpenLive={openMeetingLiveWorkspace}
         onOpenHistory={(meetingId) => openMeetingDetail(meetingId, 'meetings')}
+        onEndMeeting={endMeetingFromManagement}
         initialStatusFilter={workspaceInfo.statusFilter}
         initialPanel={workspaceInfo.panel}
         initialCreate={false}
@@ -2409,17 +2466,17 @@ const activeMeetingCheckpointRef = useRef(null);
                   <>
                     <button className="button secondary" type="button" onClick={liveController.actions.pauseSession}>
                       <Pause size={18} aria-hidden="true" />
-                      暫停
+                      停止錄音
                     </button>
-                    <button className="button secondary" type="button" onClick={liveController.actions.endCurrentSession}>
+                    <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })}>
                       <Square size={18} aria-hidden="true" />
-                      結束本次工作階段
+                      結束會議
                     </button>
                   </>
                 ) : liveController.status === 'reconnecting' || liveController.status === 'switching-segment' ? (
-                  <button className="button secondary" type="button" onClick={liveController.actions.endCurrentSession}>
+                  <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })}>
                     <Square size={18} aria-hidden="true" />
-                    結束本次工作階段
+                    結束會議
                   </button>
                 ) : liveController.status === 'paused' ? (
                   <>
@@ -2427,9 +2484,9 @@ const activeMeetingCheckpointRef = useRef(null);
                       <Play size={18} aria-hidden="true" />
                       繼續
                     </button>
-                    <button className="button secondary" type="button" onClick={liveController.actions.endCurrentSession}>
+                    <button className="button secondary" type="button" onClick={liveController.actions.completeResumableMeeting}>
                       <Square size={18} aria-hidden="true" />
-                      結束本次工作階段
+                      結束會議
                     </button>
                   </>
               ) : canRecordLiveMeeting ? (

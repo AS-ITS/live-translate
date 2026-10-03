@@ -52,6 +52,14 @@ export function liveGlossaryEntriesForTarget(entries = [], targetLanguageCode) {
     ));
 }
 
+export function effectiveMeetingGlossaryEntries(globalEntries = [], meetingEntries = [], targetLanguageCode) {
+  return mergeMeetingGlossaryEntries(
+    liveGlossaryEntriesForTarget(globalEntries, targetLanguageCode),
+    meetingEntries,
+    targetLanguageCode
+  );
+}
+
 export function mergeMeetingGlossaryEntries(sharedEntries = [], privateEntries = [], targetLanguageCode) {
   const merged = new Map();
 
@@ -74,7 +82,11 @@ export function mergeMeetingGlossaryEntries(sharedEntries = [], privateEntries =
       ...(meetingOwned && previous?.target && previous.target !== normalized.target ? [previous.target] : []),
       ...(meetingOwned ? previous?.replacementAliases || [] : [])
     ]).filter((alias) => alias !== normalized.target);
-    merged.set(key, { ...normalized, replacementAliases });
+    merged.set(key, {
+      ...(normalized.id ? { id: normalized.id } : previous?.id ? { id: previous.id } : {}),
+      ...normalized,
+      replacementAliases
+    });
   }
 }
 

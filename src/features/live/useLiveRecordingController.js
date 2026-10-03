@@ -87,6 +87,23 @@ export function sessionSnapshotPayloadForRecording({ session, transcriptItems = 
   };
 }
 
+export async function completeMeetingAfterRecordingFinalize({
+  flushAudio,
+  flushCues,
+  flushCheckpoint,
+  flushCuePublishes,
+  completeMeeting,
+  alreadyCompleted = false
+} = {}) {
+  if (alreadyCompleted) return true;
+  await flushAudio?.();
+  await flushCues?.();
+  await flushCheckpoint?.();
+  await flushCuePublishes?.();
+  await completeMeeting?.();
+  return true;
+}
+
 export async function stopLifecycleV2AfterFailure({
   lifecycle,
   failureReason,
@@ -867,18 +884,31 @@ export function useLiveRecordingController({
           }
           await this.finalizeCurrentSessionRecord({ status, failureReason, failureCategory });
         });
-      },
+    },
     async completeResumableMeeting() {
       const currentMeetingId = recovery.getRouteMeetingId?.();
-      if (!recovery.resumeDraft || !currentMeetingId || recovery.resumeDraft.meetingId !== currentMeetingId || state.isActive || state.status !== 'idle') return;
+      const resumeDraft = recovery.resumeDraft;
+      if (!resumeDraft || !currentMeetingId || resumeDraft.meetingId !== currentMeetingId || state.isActive || !['idle', 'paused'].includes(state.status)) return;
       if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return;
       recovery.setError('');
       try {
-        cueController.flushSubtitleCues('complete');
-        const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
-        if (!checkpointFlushed) throw new Error('Unable to flush meeting checkpoint before completion.');
-        await recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: recovery.resumeDraft.meetingId });
+        await completeMeetingAfterRecordingFinalize({
+          flushAudio: () => audioController.finalizeRawAudioRecording(),
+          flushCues: () => cueController.flushSubtitleCues('complete'),
+          flushCheckpoint: async () => {
+            const checkpointFlushed = await checkpointController.flushMeetingCheckpointSync();
+            if (!checkpointFlushed) throw new Error('Unable to flush meeting checkpoint before completion.');
+          },
+          flushCuePublishes: () => recovery.flushMeetingCuePublishes?.(
+            resumeDraft.sessionId || recovery.activeSessionRecordIdRef.current,
+            { forceCloud: true }
+          ),
+          completeMeeting: () => recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: resumeDraft.meetingId })
+        });
         recovery.setResumeDraft(null);
+        stopMeetingLifecycleHeartbeats();
+        clearMeetingLifecycleWriteFence(currentMeetingId);
+        meetingLifecycleRef.current = null;
         recovery.activeMeetingCheckpointRef.current = null;
         recovery.setMeetingCheckpointStatus('synced');
         await recovery.refreshMeetingRecords();
@@ -896,7 +926,7 @@ export function useLiveRecordingController({
       }).catch(() => {});
       return operation;
     },
-    async endCurrentSessionLifecycle({ redirectHash = '#meetings' } = {}) {
+    async endCurrentSessionLifecycle({ redirectHash = '#meetings', completeMeeting = false } = {}) {
       const endedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || recovery.resumeDraft?.meetingId || '';
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
@@ -934,6 +964,9 @@ export function useLiveRecordingController({
         failureCategory: 'user_intent',
         audioStates: { input: inputAudioState }
       });
+      if (completeMeeting && endedMeetingId) {
+        await recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: endedMeetingId });
+      }
       meetingLifecycleRef.current = null;
       clearMeetingLifecycleWriteFence(endedMeetingId);
       recovery.setStatus('stopped');
@@ -1017,6 +1050,17 @@ export function useLiveRecordingController({
         await executeMeetingLifecycleCommand('pause');
       }
       await recovery.updateCurrentSessionStatus('paused');
+      const pausedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || routeMeetingId;
+      if (pausedMeetingId) {
+        recovery.setResumeDraft?.({
+          meetingId: pausedMeetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          hasTranscript: true,
+          hasBoundLiveSession: true,
+          transcriptState: recovery.getTranscriptState?.(),
+          segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId || null
+        });
+      }
       recovery.pendingMicrophoneStreamRef.current = null;
       recovery.setStatus('paused');
     },
@@ -1035,7 +1079,7 @@ export function useLiveRecordingController({
         recovery.setError('目前已有工作階段正在進行或暫停中，請先暫停或結束目前工作階段。');
         return;
       }
-      if (recovery.sessionControlLeaseRef.current?.current()) {
+      if (recovery.sessionControlLeaseRef.current?.isHeldByAnotherTab()) {
         recovery.setError('目前已有工作階段由其他頁籤控制。請先在原頁籤結束後再開始。');
         return;
       }

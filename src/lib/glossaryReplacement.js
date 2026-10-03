@@ -59,9 +59,15 @@ export function applyGlossaryCorrectionToCue(cue, glossaryEntries = []) {
     { sourceText, translatedText: providerTranslation },
     glossaryEntries
   );
-  const refinedTranslation = typeof cue.refinedTranslation === 'string'
+  const correctedRefinedTranslation = typeof cue.refinedTranslation === 'string'
     ? correctTranslationForSource({ sourceText, translatedText: cue.refinedTranslation }, glossaryEntries)
     : cue.refinedTranslation;
+  const refinedTranslation = shouldKeepInitialGlossaryTranslation({
+    sourceText,
+    initialTranslation,
+    refinedTranslation: correctedRefinedTranslation,
+    glossaryEntries
+  }) ? initialTranslation : correctedRefinedTranslation;
   const initialChanged = initialTranslation !== providerTranslation;
   const refinedChanged = refinedTranslation !== cue.refinedTranslation;
   if (!initialChanged && !refinedChanged) return cue;
@@ -95,6 +101,18 @@ function sourceContainsTerm(sourceText, sourceTerm) {
 
 function sourceEqualsTerm(sourceText, sourceTerm) {
   return stripTerminalPunctuation(comparableText(sourceText)) === stripTerminalPunctuation(comparableText(sourceTerm));
+}
+
+function shouldKeepInitialGlossaryTranslation({ sourceText, initialTranslation, refinedTranslation, glossaryEntries }) {
+  if (typeof initialTranslation !== 'string' || typeof refinedTranslation !== 'string') return false;
+  const requiredEntries = glossaryEntries.filter((entry) => (
+    sourceContainsTerm(sourceText, entry?.source)
+    && typeof entry?.target === 'string'
+    && entry.target.trim() !== ''
+  ));
+  return requiredEntries.length > 0
+    && requiredEntries.every((entry) => containsLiteral(initialTranslation, entry.target))
+    && requiredEntries.some((entry) => !containsLiteral(refinedTranslation, entry.target));
 }
 
 function comparableText(value) {

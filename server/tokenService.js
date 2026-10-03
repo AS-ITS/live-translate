@@ -142,6 +142,11 @@ export async function createLiveToken(body, options = {}) {
   const liveModel = request.mode === 'transcription'
     ? (options.liveTranscriptionModel ?? resolveLiveTranscriptionModel(process.env))
     : liveTranslateModel;
+  const globalGlossaryEntries = request.meetingId
+    ? (options.glossary === undefined
+      ? []
+      : (await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' })) || [])
+    : undefined;
   const meeting = request.meetingId && options.meetingRepository
     ? await options.meetingRepository.getMeeting(request.meetingId)
     : null;
@@ -156,7 +161,7 @@ export async function createLiveToken(body, options = {}) {
     : null;
   const glossaryEntries = meetingSettings
     ? mergeMeetingGlossaryEntries(
-      meetingSettings.glossaryEntries,
+      [...globalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
       meetingSettings.privateGlossaryEntries,
       request.targetLanguageCode
     )
@@ -265,7 +270,7 @@ export function resolveLiveTranslateModel(env = process.env) {
 
 function glossaryInstruction(entries) {
   return [
-    'Glossary instructions: when a source term occurs, use its specified target translation in both translated speech audio and output transcription.',
+    'Glossary instructions: when a source term occurs while translating to the current target language, use its specified target translation in both translated speech audio and output transcription.',
     'Do not say or write the source term in the translated output when a required translation is provided.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');

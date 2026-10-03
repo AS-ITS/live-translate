@@ -67,3 +67,20 @@ test('Cue correction preserves provider translation and exposes corrected initia
   assert.equal(cue.translatedText, 'Hi.');
   assert.equal(cue.initialTranslation, 'speak Hi.');
 });
+
+test('Cue correction retains glossary-corrected initial translation when refinement replaces it with a generic term', () => {
+  const cue = applyGlossaryCorrectionToCue({
+    cueId: 'cue-1',
+    status: 'final',
+    sourceText: 'Acme 已核准。',
+    rawTranslation: 'Acme approved.',
+    initialTranslation: 'Meeting Acme approved.',
+    refinedTranslation: 'The company approved.',
+    refinement: { status: 'completed' }
+  }, [{ source: 'Acme', target: 'Meeting Acme', replacementAliases: [] }]);
+
+  assert.equal(cue.cueId, 'cue-1');
+  assert.equal(cue.rawTranslation, 'Acme approved.');
+  assert.equal(cue.initialTranslation, 'Meeting Acme approved.');
+  assert.equal(cue.refinedTranslation, 'Meeting Acme approved.');
+});

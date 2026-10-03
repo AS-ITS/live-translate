@@ -39,6 +39,58 @@ test('persists Meeting audio settings in the Meeting and Segment snapshot', asyn
   assert.equal(segment.settingsSnapshot.shouldRecordInputAudio, true);
 });
 
+test('starting a created Segment refreshes its dictionary snapshot but active reconnect keeps it', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({
+    draft: true,
+    glossaryEntries: [{ source: 'Acme', target: 'Old Acme', replacementAliases: [] }]
+  });
+  await service.updateMeeting({
+    meetingId: meeting.id,
+    settings: { glossaryEntries: [{ source: 'Acme', target: 'Edited Acme', replacementAliases: [] }] }
+  });
+
+  const started = await service.startMeeting({ meetingId: meeting.id, segmentId: segment.id, liveSessionId: 'live-session-1' });
+  assert.deepEqual(started.segment.settingsSnapshot.glossaryEntries, [{ source: 'Acme', target: 'Edited Acme', replacementAliases: [] }]);
+
+  await service.updateMeeting({
+    meetingId: meeting.id,
+    settings: { glossaryEntries: [{ source: 'Acme', target: 'Later Acme', replacementAliases: [] }] }
+  });
+  assert.deepEqual(repository.listMeetingSegments(meeting.id).find((item) => item.id === segment.id).settingsSnapshot.glossaryEntries, [{ source: 'Acme', target: 'Edited Acme', replacementAliases: [] }]);
+});
+
+test('rollover and recovery create new Segment snapshots from current Meeting dictionary', async () => {
+  const repository = createMemoryMeetingRepository();
+  const service = createService(repository);
+  const { meeting, segment } = await service.createMeeting({
+    glossaryEntries: [{ source: 'Acme', target: 'Old Acme', replacementAliases: [] }],
+    liveSessionId: 'live-session-1'
+  });
+  await service.updateMeeting({
+    meetingId: meeting.id,
+    settings: { glossaryEntries: [{ source: 'Acme', target: 'Rollover Acme', replacementAliases: [] }] }
+  });
+  const rolled = await service.rolloverSegment({
+    meetingId: meeting.id,
+    segmentId: segment.id,
+    rollover: { idempotencyKey: 'rollover-dictionary', checkpoint: checkpoint(), nextLiveSessionId: 'live-session-2' }
+  });
+  assert.deepEqual(rolled.segment.settingsSnapshot.glossaryEntries, [{ source: 'Acme', target: 'Rollover Acme', replacementAliases: [] }]);
+
+  await service.updateMeeting({
+    meetingId: meeting.id,
+    settings: { glossaryEntries: [{ source: 'Acme', target: 'Recovery Acme', replacementAliases: [] }] }
+  });
+  const recovered = await service.recoverSegment({
+    meetingId: meeting.id,
+    segmentId: rolled.segment.id,
+    recovery: recovery({ idempotencyKey: 'recover-dictionary', nextLiveSessionId: 'live-session-3' })
+  });
+  assert.deepEqual(recovered.segment.settingsSnapshot.glossaryEntries, [{ source: 'Acme', target: 'Recovery Acme', replacementAliases: [] }]);
+});
+
 test('meeting settings snapshots normalize legacy glossary aliases for recovered segments', async () => {
   const baseRepository = createMemoryMeetingRepository();
   const repository = {

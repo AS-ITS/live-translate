@@ -44,6 +44,7 @@ test.beforeEach(async ({ page }) => {
   page.on('requestfailed', recordLiveTokenRequestFailed);
   page.failLiveTokenRequestAt = null;
   page.liveGlossaryEntries = [];
+  page.liveConnectConfig = {};
   page.delayLiveTokenRequestMs = 0;
   page.useMockMeetings = true;
   page.mockMeetingLanguage = { sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' };
@@ -213,7 +214,8 @@ test.beforeEach(async ({ page }) => {
       body: JSON.stringify({
         token: `mock-token-for-${body.targetLanguageCode}`,
         expiresAt: '2026-07-07T00:30:00.000Z',
-        liveConnectModel: 'gemini-live-e2e-model',
+          liveConnectModel: 'gemini-live-e2e-model',
+          liveConnectConfig: page.liveConnectConfig,
         liveGlossaryEntries: page.liveGlossaryEntries
       })
     });
@@ -2426,6 +2428,8 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
 });
 
 test('long meeting proactively switches through three segments and preserves confirmed transcript', async ({ page }) => {
+  const instruction = 'Glossary instructions: Source term: Acme\nRequired translation: Meeting Acme';
+  page.liveConnectConfig = { systemInstruction: { parts: [{ text: instruction }] } };
   await page.addInitScript(() => {
     window.__liveTranslateSegmentSwitchIntervalMs = 700;
   });
@@ -2444,6 +2448,9 @@ test('long meeting proactively switches through three segments and preserves con
   await emitFinalTranscript(page, 'segment two source', 'segment two translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(3);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.map((request) => (
+    request.config.systemInstruction.parts[0].text
+  )))).toEqual([instruction, instruction, instruction]);
   await expect(page.getByText('保存狀態：長會議已保存 2 段 · 目前段落 0 筆')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation', { waitMs: 100 });
@@ -2477,6 +2484,32 @@ test('long meeting proactively switches through three segments and preserves con
   await expect(page.getByText('segment one source')).toBeVisible();
   await expect(page.getByText('segment two source')).toBeVisible();
   await expect(page.getByText('segment three source')).toBeVisible();
+});
+
+test('passes glossary provider config to initial and reconnected Live sessions', async ({ page }) => {
+  const instruction = 'Glossary instructions: Source term: Acme\nRequired translation: Meeting Acme';
+  page.liveGlossaryEntries = [{ source: 'Acme', target: 'Meeting Acme', replacementAliases: [] }];
+  page.liveConnectConfig = { systemInstruction: { parts: [{ text: instruction }] } };
+  await mockMeetingCheckpointApi(page);
+
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
+  await mockLiveSessionCreateApi(page);
+  await configureTestGeminiCredential(page);
+  await expectLiveStartPreconditions(page);
+  await page.getByRole('button', { name: /^(開始錄製|繼續錄製)$/u }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI?.liveConnects.length || 0)).toBe(1);
+
+  await page.evaluate(() => {
+    window.__mockGoogleGenAI.liveSessions[0].emitClose({ reason: 'unexpected provider close', code: 1011 });
+  });
+  await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI?.liveConnects.length || 0)).toBe(2);
+
+  const instructions = await page.evaluate(() => window.__mockGoogleGenAI.liveConnects.map((request) => (
+    request.config.systemInstruction.parts[0].text
+  )));
+  expect(instructions).toEqual([instruction, instruction]);
 });
 
 test('long meeting accelerated 130 minute schedule creates 13 segments without waiting', async ({ page }) => {

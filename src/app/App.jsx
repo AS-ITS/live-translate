@@ -271,7 +271,7 @@ const activeMeetingCheckpointRef = useRef(null);
     status === 'listening' ||
     status === 'reconnecting' ||
     status === 'switching-segment';
-  const controlsLocked = isActive || status === 'paused' || Boolean(controlLeaseSnapshot && !hasSessionControl);
+  const controlsLocked = isActive || status === 'paused' || meetingCheckpointStatus === 'ending' || Boolean(controlLeaseSnapshot && !hasSessionControl);
   const isNavigationLocked = isActive;
   const liveController = useLiveRecordingController({
     routeMeetingId,
@@ -1419,6 +1419,7 @@ const activeMeetingCheckpointRef = useRef(null);
     if (endMeetingOperationRef.current) return endMeetingOperationRef.current;
     const operation = (async () => {
       if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return false;
+      setMeetingCheckpointStatus('ending');
       try {
         await completeMeetingAfterRecordingFinalize({
           flushAudio: () => liveController.audio.finalizeRawAudioRecording?.(),
@@ -1430,10 +1431,12 @@ const activeMeetingCheckpointRef = useRef(null);
           flushCuePublishes: () => flushMeetingCuePublishes(activeSessionRecordIdRef.current, { forceCloud: true }),
           completeMeeting: () => meetingCheckpointApiClientRef.current.completeMeeting({ meetingId })
         });
+        setMeetingCheckpointStatus('synced');
         setNavigationNotice('會議已結束。');
         window.location.hash = '#meetings';
         return true;
       } catch {
+        setMeetingCheckpointStatus('error');
         setError('無法結束會議，請稍後再試。');
         return false;
       }
@@ -2464,27 +2467,27 @@ const activeMeetingCheckpointRef = useRef(null);
               <div className="session-actions">
               {liveController.status === 'listening' ? (
                   <>
-                    <button className="button secondary" type="button" onClick={liveController.actions.pauseSession}>
+                    <button className="button secondary" type="button" onClick={liveController.actions.pauseSession} disabled={meetingCheckpointStatus === 'ending'}>
                       <Pause size={18} aria-hidden="true" />
                       停止錄音
                     </button>
-                    <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })}>
+                    <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })} disabled={meetingCheckpointStatus === 'ending'}>
                       <Square size={18} aria-hidden="true" />
                       結束會議
                     </button>
                   </>
                 ) : liveController.status === 'reconnecting' || liveController.status === 'switching-segment' ? (
-                  <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })}>
+                  <button className="button secondary" type="button" onClick={() => liveController.actions.endCurrentSession({ completeMeeting: true })} disabled={meetingCheckpointStatus === 'ending'}>
                     <Square size={18} aria-hidden="true" />
                     結束會議
                   </button>
                 ) : liveController.status === 'paused' ? (
                   <>
-                    <button className="button primary" type="button" onClick={liveController.actions.continuePausedSession}>
+                    <button className="button primary" type="button" onClick={liveController.actions.continuePausedSession} disabled={meetingCheckpointStatus === 'ending'}>
                       <Play size={18} aria-hidden="true" />
                       繼續
                     </button>
-                    <button className="button secondary" type="button" onClick={liveController.actions.completeResumableMeeting}>
+                    <button className="button secondary" type="button" onClick={liveController.actions.completeResumableMeeting} disabled={meetingCheckpointStatus === 'ending'}>
                       <Square size={18} aria-hidden="true" />
                       結束會議
                     </button>
@@ -2494,7 +2497,7 @@ const activeMeetingCheckpointRef = useRef(null);
                     className="button primary meeting-live-action-button"
                     type="button"
                     onClick={startLiveRecording}
-                    disabled={!liveMeetingStartReady || isActive || isStartingLiveRecording || Boolean(controlLeaseSnapshot && !hasSessionControl)}
+                    disabled={!liveMeetingStartReady || isActive || isStartingLiveRecording || meetingCheckpointStatus === 'ending' || Boolean(controlLeaseSnapshot && !hasSessionControl)}
                   >
                     {liveController.isActive ? <MicOff size={18} aria-hidden="true" /> : <Mic size={18} aria-hidden="true" />}
                     {!liveMeetingStartReady
@@ -2507,7 +2510,7 @@ const activeMeetingCheckpointRef = useRef(null);
                   </button>
                 ) : null}
                 {routeMeetingId && liveController.resumeDraft?.meetingId === routeMeetingId && !liveController.isActive && liveController.status === 'idle' ? (
-                  <button className="button secondary meeting-live-action-button" type="button" onClick={liveController.actions.completeResumableMeeting}>
+                  <button className="button secondary meeting-live-action-button" type="button" onClick={liveController.actions.completeResumableMeeting} disabled={meetingCheckpointStatus === 'ending'}>
                     結束會議
                   </button>
                 ) : null}

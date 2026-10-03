@@ -891,6 +891,7 @@ export function useLiveRecordingController({
       if (!resumeDraft || !currentMeetingId || resumeDraft.meetingId !== currentMeetingId || state.isActive || !['idle', 'paused'].includes(state.status)) return;
       if (!window.confirm('確定要結束這場會議嗎？既有逐字稿會保留，之後將無法繼續錄製。')) return;
       recovery.setError('');
+      recovery.setMeetingCheckpointStatus?.('ending');
       try {
         await completeMeetingAfterRecordingFinalize({
           flushAudio: () => audioController.finalizeRawAudioRecording(),
@@ -928,6 +929,7 @@ export function useLiveRecordingController({
     },
     async endCurrentSessionLifecycle({ redirectHash = '#meetings', completeMeeting = false } = {}) {
       const endedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || recovery.resumeDraft?.meetingId || '';
+      if (completeMeeting && endedMeetingId) recovery.setMeetingCheckpointStatus?.('ending');
       recovery.sessionStopRequestedRef.current = true;
       recovery.reconnectController().cancel();
       recovery.cancelSegmentSwitch?.();
@@ -966,6 +968,7 @@ export function useLiveRecordingController({
       });
       if (completeMeeting && endedMeetingId) {
         await recovery.meetingCheckpointApiClientRef.current.completeMeeting({ meetingId: endedMeetingId });
+        recovery.setMeetingCheckpointStatus?.('synced');
       }
       meetingLifecycleRef.current = null;
       clearMeetingLifecycleWriteFence(endedMeetingId);

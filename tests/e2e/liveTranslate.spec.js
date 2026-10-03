@@ -1959,8 +1959,13 @@ test('ending a live recording keeps the meeting resumable before completion', as
   await gotoMockMeetingLive(page, { meetingStatus: 'active' });
   await mockLiveSessionCreateApi(page);
   let completeCalls = 0;
+  let releaseCompletion;
+  const completionReleased = new Promise((resolve) => {
+    releaseCompletion = resolve;
+  });
   await page.route(`**/api/meetings/${MOCK_MEETING_ID}/complete`, async (route) => {
     completeCalls += 1;
+    await completionReleased;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -1986,6 +1991,11 @@ test('ending a live recording keeps the meeting resumable before completion', as
  await page.getByRole('button', { name: '停止錄音' }).click();
  await expect(page.getByRole('button', { name: '結束會議' })).toBeVisible();
  await page.getByRole('button', { name: '結束會議' }).click();
+  await expect(page.getByText('正在結束會議…')).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '結束會議' })).toBeDisabled();
+  await expect(page.getByText('會議模式：準備中')).toHaveCount(0);
+  releaseCompletion();
   await expect.poll(() => completeCalls).toBe(1);
   await expect(page).toHaveURL(/#meetings$/);
   await expect(page.getByRole('heading', { name: '會議管理', exact: true })).toBeVisible();

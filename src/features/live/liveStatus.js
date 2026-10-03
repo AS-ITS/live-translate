@@ -3,6 +3,7 @@ import { classifyConnectionFailure, httpStatusFromError } from '../../lib/connec
 const MEETING_CHECKPOINT_STATUS_LABELS = {
   idle: '會議模式：尚未啟用',
   ready: '會議模式：準備中',
+  ending: '正在結束會議…',
   syncing: '會議模式：保存中',
   synced: '會議模式：已保存',
   switching: '會議模式：切換段落中',

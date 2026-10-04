@@ -10,7 +10,8 @@ export const MP3_AUDIO_KIND = 'mp3';
 export const MEETING_AUDIO_MAX_BYTES = 64 * 1024 * 1024;
 export const MEETING_AUDIO_MIME_TYPES = Object.freeze([
   'audio/webm',
-  'audio/webm;codecs=opus'
+  'audio/webm;codecs=opus',
+  'audio/wav'
 ]);
 
 export function createSupabaseMeetingAudioService({
@@ -47,7 +48,7 @@ export function createSupabaseMeetingAudioService({
         session_id: null,
         storage_path: objectPath,
         kind: MEETING_AUDIO_KIND,
-        file_name: 'recording.webm',
+        file_name: mimeType === 'audio/wav' ? 'recording.wav' : 'recording.webm',
         byte_size: byteSize,
         mime_type: mimeType,
         status: 'uploading',

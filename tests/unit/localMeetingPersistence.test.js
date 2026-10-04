@@ -21,13 +21,25 @@ function operationIds() {
   return (type) => `${type}:${++value}`;
 }
 
+async function concatenateTestArtifact({ chunks, readChunk }) {
+  const parts = await Promise.all(chunks.map((chunk) => readChunk(chunk.path)));
+  return {
+    blob: new Blob(parts, { type: 'audio/webm' }),
+    mimeType: 'audio/webm',
+    extension: 'webm',
+    captureSegmentCount: new Set(chunks.map((chunk) => chunk.segmentId)).size,
+    chunkIds: chunks.map((chunk) => chunk.chunkId)
+  };
+}
+
 test('production local persistence keeps audio, cues, and checkpoints together', async () => {
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const persistence = createLocalMeetingPersistence({
     manifestStore,
     chunkStore: fakeChunkStore(),
     cryptoImpl: fakeCrypto(),
-    createOperationId: operationIds()
+    createOperationId: operationIds(),
+    composeAudioArtifact: concatenateTestArtifact
   });
   await persistence.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
   await persistence.appendAudioChunk({ data: new Blob(['one'], { type: 'audio/webm' }), mimeType: 'audio/webm', receivedAt: 10 });
@@ -60,14 +72,14 @@ test('reload recovery resumes audio sequence without overwriting prior chunks', 
   const manifestStore = createInMemoryLocalMeetingManifestStore();
   const chunkStore = fakeChunkStore();
   const first = createLocalMeetingPersistence({
-    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds()
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
   });
   await first.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
   await first.appendAudioChunk({ data: new Blob(['one']), receivedAt: 10 });
   await first.pause();
 
   const reloaded = createLocalMeetingPersistence({
-    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds()
+    manifestStore, chunkStore, cryptoImpl: fakeCrypto(), createOperationId: operationIds(), composeAudioArtifact: concatenateTestArtifact
   });
   const recovered = await reloaded.start({ meetingId: 'meeting-1', recordingId: 'session-1', segmentId: 'segment-1' });
   assert.equal(recovered.state, 'capturing');

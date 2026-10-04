@@ -743,7 +743,7 @@ export function MeetingExportSection({ detail, detailError = '', onRetry }) {
   return (
     <section className="meeting-record-section meeting-export-section" aria-label="匯出" data-history-section="export">
       <div className="meeting-record-section-heading"><div><p className="eyebrow">EXPORT</p><h2>匯出</h2><p>下載語音紀錄或匯出字幕檔案。</p></div></div>
-      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks /></section>
+      <section className="meeting-export-block" aria-label="語音下載"><h3>語音下載</h3><p className="export-note">下載這場會議保存的原始語音或翻譯語音。</p><AudioArtifactDownloads title="" audioArtifacts={detail.audioArtifacts} cloudAudioArtifacts={detail.cloudAudioArtifacts} inputLabel="下載原始語音" translationLabel="下載翻譯語音" hideUnavailableLinks onRefresh={onRetry} /></section>
       <MeetingTranscriptExportPanel detail={detail} />
     </section>
   );
@@ -852,8 +852,9 @@ export function MeetingDetail({ detail, detailError = '', activeSection = 'overv
         title="整場語音紀錄下載"
         audioArtifacts={detail.audioArtifacts}
         cloudAudioArtifacts={detail.cloudAudioArtifacts}
-        inputLabel="下載整場原始語音"
+        inputLabel="下載原始語音"
         translationLabel="下載整場翻譯語音"
+        onRefresh={onRetryDetail}
       />
 
       <ReadingContentTabs

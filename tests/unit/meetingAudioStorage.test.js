@@ -80,7 +80,7 @@ test('meeting audio upload-start includes the active lifecycle fence', async () 
     const artifact = await uploadMeetingSegmentAudio({
       meetingId: 'meeting-1',
       segmentId: 'segment-1',
-      blob: new Blob(['audio'], { type: 'audio/webm' }),
+      blob: new Blob(['RIFF-audio'], { type: 'audio/wav' }),
       fetchImpl: async (url, options = {}) => {
         calls.push({ url, options });
         return response({ id: 'artifact-1', status: 'ready' }, 201);
@@ -96,6 +96,7 @@ test('meeting audio upload-start includes the active lifecycle fence', async () 
       'x-meeting-lease-id': 'lease-1',
       'x-meeting-fence-token': '7'
     });
+    assert.deepEqual(JSON.parse(calls[0].options.body), { mimeType: 'audio/wav', byteSize: 10 });
   } finally {
     clearMeetingLifecycleWriteFence('meeting-1');
   }

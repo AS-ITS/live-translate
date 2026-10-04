@@ -1,5 +1,6 @@
 import { createLocalMeetingRecorder } from './localMeetingRecorder.js';
 import { createIndexedDbLocalMeetingManifestStore, createOpfsChunkStore } from './localMeetingStorage.js';
+import { composeLocalMeetingAudioArtifact } from './localMeetingAudioExport.js';
 
 export function createLocalMeetingPersistence({
   manifestStore = createIndexedDbLocalMeetingManifestStore(),
@@ -7,7 +8,8 @@ export function createLocalMeetingPersistence({
   cryptoImpl = globalThis.crypto,
   now = () => Date.now(),
   createOperationId = defaultOperationId,
-  recordAudio = true
+  recordAudio = true,
+  composeAudioArtifact = composeLocalMeetingAudioArtifact
 } = {}) {
   if (!cryptoImpl?.subtle || typeof cryptoImpl.subtle.digest !== 'function') throw new Error('Web Crypto is unavailable.');
   const recorder = createLocalMeetingRecorder({ manifestStore, chunkStore, now });
@@ -75,14 +77,15 @@ export function createLocalMeetingPersistence({
         finalSequence: sealed.at(-1)?.sequence || 0,
         operationId: createOperationId('finalize')
       });
-      const parts = await Promise.all(sealed.map((chunk) => chunkStore.read(chunk.path)));
-      const mimeType = sealed[0]?.mimeType || 'audio/webm';
+      const artifact = sealed.length > 0
+        ? await composeAudioArtifact({ chunks: sealed, readChunk: (path) => chunkStore.read(path) })
+        : null;
       return Object.freeze({
-        status: parts.length > 0 ? 'ready' : 'idle',
-        blob: parts.length > 0 ? new Blob(parts, { type: mimeType }) : null,
-        mimeType,
-        extension: mimeType.includes('ogg') ? 'ogg' : 'webm',
-        fileName,
+        status: artifact?.blob?.size > 0 ? 'ready' : 'idle',
+        blob: artifact?.blob?.size > 0 ? artifact.blob : null,
+        mimeType: artifact?.mimeType || '',
+        extension: artifact?.extension || '',
+        fileName: artifact ? audioFileName(fileName, activeMeetingId, artifact.extension) : '',
         errorMessage: ''
       });
     },
@@ -95,16 +98,16 @@ export function createLocalMeetingPersistence({
         .filter((chunk) => chunk.state === 'sealed')
         .sort((left, right) => left.sequence - right.sequence);
       if (chunks.length === 0) return [];
-      const parts = await Promise.all(chunks.map((chunk) => chunkStore.read(chunk.path)));
-      const mimeType = chunks[0].mimeType || 'audio/webm';
+      const artifact = await composeAudioArtifact({ chunks, readChunk: (path) => chunkStore.read(path) });
       return [{
         kind: 'input',
         recordingId: recording.recordingId,
         captureEpoch: recording.captureEpoch,
         providerEpoch: recording.providerEpoch,
-        fileName: `${recording.recordingId || meetingId}-input.webm`,
-        mimeType,
-        blob: new Blob(parts, { type: mimeType }),
+        fileName: audioFileName('', recording.recordingId || meetingId, artifact.extension),
+        mimeType: artifact.mimeType,
+        blob: artifact.blob,
+        captureSegmentCount: artifact.captureSegmentCount,
         segments: chunks.map((chunk) => ({
           chunkId: chunk.chunkId,
           sequence: chunk.sequence,
@@ -193,6 +196,12 @@ export function createLocalMeetingPersistence({
 async function sha256(bytes, cryptoImpl) {
   const digest = new Uint8Array(await cryptoImpl.subtle.digest('SHA-256', bytes));
   return `sha256:${[...digest].map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function audioFileName(requestedName, identity, extension) {
+  const safeExtension = extension || 'webm';
+  if (requestedName) return requestedName.replace(/\.(?:webm|ogg|m4a|mp4|wav)$/iu, `.${safeExtension}`);
+  return `${identity || 'meeting'}-input.${safeExtension}`;
 }
 
 function normalizeAudioMimeType(value) {

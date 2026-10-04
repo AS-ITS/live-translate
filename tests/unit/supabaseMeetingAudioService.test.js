@@ -39,6 +39,30 @@ test('meeting audio object paths reject traversal and preserve canonical layout'
   assert.throws(() => meetingAudioObjectPath({ ownerUserId: '../user', meetingId: 'meeting-1', segmentId: 'segment-1' }), /ownerUserId/);
 });
 
+test('meeting audio service accepts composed WAV metadata while preserving the canonical storage path', async () => {
+  let insertedRow;
+  const service = createSupabaseMeetingAudioService({
+    env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },
+    fetchImpl: async (url, options = {}) => {
+      if (url.includes('/rest/v1/meeting_segments')) return response([{ id: 'segment-1' }]);
+      if (url.includes('/rest/v1/audio_artifacts') && options.method === 'POST') {
+        insertedRow = JSON.parse(options.body)[0];
+        return response([{ ...insertedRow, id: 'artifact-wav' }]);
+      }
+      if (url.includes('/rest/v1/audio_artifacts')) return response([]);
+      return response([]);
+    },
+    idFactory: () => 'artifact-wav'
+  });
+  setRequestUser({ id: 'user-1' });
+
+  const artifact = await service.beginUpload({ meetingId: 'meeting-1', segmentId: 'segment-1', mimeType: 'audio/wav', byteSize: 100 });
+
+  assert.equal(insertedRow.file_name, 'recording.wav');
+  assert.equal(insertedRow.mime_type, 'audio/wav');
+  assert.equal(artifact.objectPath, 'user-1/meeting-1/segment-1/recording.webm');
+});
+
 test('private meeting audio service rejects calls without a request owner', async () => {
   const service = createSupabaseMeetingAudioService({
     env: { SUPABASE_URL: 'https://project.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },

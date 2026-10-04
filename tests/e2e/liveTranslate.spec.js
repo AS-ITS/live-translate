@@ -3851,6 +3851,50 @@ test('recordAudio=false keeps Cue after end without audio artifact or download',
   await expect(audioDownloadSection.getByRole('link', { name: /下載.*語音/ })).toHaveCount(0);
 });
 
+test('meeting export exposes one complete original-audio download instead of per-segment duplicates', async ({ page }) => {
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: {
+          id: MOCK_MEETING_ID,
+          name: '多段錄音會議',
+          status: 'completed',
+          sourceLanguageCode: 'zh-Hant',
+          targetLanguageCode: 'en',
+          shouldRecordInputAudio: true
+        },
+        cues: [],
+        audioArtifacts: {
+          input: {
+            kind: 'input',
+            status: 'ready',
+            fileName: 'complete-input.wav',
+            downloadUrl: `/api/meetings/${MOCK_MEETING_ID}/audio/input`
+          }
+        },
+        cloudAudioArtifacts: [
+          { id: 'artifact-1', meetingId: MOCK_MEETING_ID, segmentId: MOCK_SEGMENT_ID(1), segmentSequence: 0, kind: 'source_webm', status: 'ready', fileName: 'recording-1.webm' },
+          { id: 'artifact-2', meetingId: MOCK_MEETING_ID, segmentId: MOCK_SEGMENT_ID(2), segmentSequence: 1, kind: 'source_webm', status: 'ready', fileName: 'recording-2.webm' }
+        ]
+      })
+    });
+  });
+
+  await page.goto(`/#meeting-detail?meetingId=${MOCK_MEETING_ID}&from=meetings`);
+  await page.getByRole('button', { name: '匯出', exact: true }).click();
+  const audioDownloads = page.getByRole('region', { name: '語音下載' });
+  await expect(audioDownloads.getByRole('link', { name: '下載原始語音', exact: true })).toHaveCount(1);
+  await expect(audioDownloads.getByRole('button', { name: /下載第 .*段原始語音/u })).toHaveCount(0);
+  await expect(audioDownloads).not.toContainText('下載第 0 段原始語音');
+  await expect(audioDownloads).not.toContainText('下載第 1 段原始語音');
+});
+
 test('reconnects once after mocked unexpected close and preserves transcript', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page);
   await gotoMockMeetingLive(page, { targetLanguageCode: 'ja' });

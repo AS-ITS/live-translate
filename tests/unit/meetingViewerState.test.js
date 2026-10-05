@@ -78,3 +78,13 @@ test('Viewer preserves translation-first Cue identity when source arrives later'
   assert.equal(state.cues[0].sourceText, '你好');
   assert.equal(meetingEventDuplicateDetected(state, { cue: translationOnly }), true);
 });
+
+test('a stale reconnect snapshot cannot overwrite a newer live Cue', () => {
+  const newest = { ...cue('cue-1', 1, 1, 'newest', 3), sourceVersion: 2, translationVersion: 3 };
+  const stale = { ...cue('cue-1', 1, 1, 'stale', 1), sourceVersion: 1, translationVersion: 1 };
+  const current = mergeMeetingViewerSnapshot(null, { cursor: { eventId: 10, cueSequence: 1 }, cues: [newest] });
+  const merged = mergeMeetingViewerSnapshot(current, { cursor: { eventId: 5, cueSequence: 1 }, cues: [stale] });
+
+  assert.equal(merged.cues[0].translatedText, 'newest');
+  assert.deepEqual(merged.cursor, { eventId: 10, cueSequence: 1 });
+});

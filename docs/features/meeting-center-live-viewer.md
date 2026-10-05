@@ -266,6 +266,22 @@ Reconnect behavior:
 5. Apply new events through the same deduplication and ordering rules.
 6. Refetch the snapshot if a sequence gap is detected.
 
+The WebRTC fast path renews its signaling participant with an authorized `/join`
+heartbeat, stops high-frequency polling after the DataChannel opens, and keeps
+the current Cue view during recovery. A transient `disconnected` state receives
+a five-second grace period; the Device then attempts ICE restart and rebuilds
+the peer if recovery does not complete within ten seconds. Full reconnect uses
+at most six attempts with jittered exponential delays capped at ten seconds.
+Snapshot, Realtime, and SSE recovery classify stopped, revoked, and unauthorized
+shares as terminal. Transient snapshot failures retry without clearing Cues;
+retry exhaustion exposes a manual “重新連線” action.
+
+DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
+the same source to replay after its last received transport sequence. A changed
+source starts from a snapshot. Cue merge remains authoritative by `cueId` and
+source/translation/refinement versions, so a late snapshot cannot replace a
+newer Cue.
+
 The Viewer follows the latest Cue by default. Manual upward scrolling disables
 automatic scrolling and shows a “back to latest” action. A new Cue does not
 force scrolling while follow mode is disabled.

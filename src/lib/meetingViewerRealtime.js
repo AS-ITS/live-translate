@@ -1,7 +1,7 @@
 import { createSupabaseViewerRealtimeClient, isSupabaseConfigured } from './supabaseAuth.js';
 
 const TOKEN_REFRESH_SKEW_MS = 30_000;
-const MAX_RECONNECT_DELAY_MS = 30_000;
+const RECONNECT_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 8_000, 10_000, 10_000]);
 
 export function meetingViewerRealtimeEnabled() {
   return import.meta.env?.VITE_MEETING_VIEWER_REALTIME_ENABLED !== 'false'
@@ -20,7 +20,8 @@ export function createMeetingViewerRealtimeController({
   client = null,
   clientFactory = createSupabaseViewerRealtimeClient,
   setTimer = globalThis.setTimeout,
-  clearTimer = globalThis.clearTimeout
+  clearTimer = globalThis.clearTimeout,
+  random = Math.random
 } = {}) {
   if ((!client && typeof clientFactory !== 'function') || !basePath) {
     throw new TypeError('Meeting Viewer Realtime requires a Supabase client and base path.');
@@ -39,8 +40,8 @@ export function createMeetingViewerRealtimeController({
     onConnecting?.();
     try {
       const response = await fetchImpl(`${basePath}/realtime-token`, { method: 'POST' });
-      if (!response.ok) throw new Error(response.status === 404 ? '分享連結無效或已過期。' : '無法取得即時字幕權限。');
-      const authorization = await response.json();
+      const authorization = await response.json().catch(() => null);
+      if (!response.ok) throw createRealtimeError(response.status, authorization);
       if (stopped || currentGeneration !== generation) return;
       accessToken = authorization.accessToken;
       if (!realtimeClient) realtimeClient = clientFactory(async () => accessToken);
@@ -70,6 +71,11 @@ export function createMeetingViewerRealtimeController({
           } catch (error) {
             onTelemetry?.('replay_failure');
             onError?.(error);
+            if (isTerminalRealtimeError(error)) {
+              stopped = true;
+              clearScheduledReconnect();
+              return;
+            }
             scheduleReconnect();
             return;
           }
@@ -82,6 +88,11 @@ export function createMeetingViewerRealtimeController({
     } catch (error) {
       if (stopped || currentGeneration !== generation) return;
       onError?.(error);
+      if (isTerminalRealtimeError(error)) {
+        stopped = true;
+        clearScheduledReconnect();
+        return;
+      }
       scheduleReconnect();
     }
   }
@@ -99,7 +110,14 @@ export function createMeetingViewerRealtimeController({
 
   function scheduleReconnect() {
     if (stopped || reconnectTimer) return;
-    const delay = Math.min(1000 * (2 ** reconnectAttempts), MAX_RECONNECT_DELAY_MS);
+    if (reconnectAttempts >= RECONNECT_DELAYS_MS.length) {
+      const exhausted = new Error('多次重新連線後仍無法取得即時字幕。');
+      exhausted.code = 'viewer_retry_exhausted';
+      onError?.(exhausted);
+      stopped = true;
+      return;
+    }
+    const delay = jitter(RECONNECT_DELAYS_MS[reconnectAttempts], random);
     reconnectAttempts += 1;
     reconnectTimer = setTimer(() => {
       reconnectTimer = null;
@@ -125,4 +143,24 @@ export function createMeetingViewerRealtimeController({
       if (previous) await realtimeClient?.removeChannel(previous).catch(() => {});
     }
   });
+}
+
+function jitter(delay, random) {
+  const sample = Math.min(1, Math.max(0, Number(random?.()) || 0));
+  return Math.round(delay * (0.75 + sample * 0.5));
+}
+
+function isTerminalRealtimeError(error) {
+  return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized', 'viewer_retry_exhausted'].includes(error?.code);
+}
+
+function createRealtimeError(status, body) {
+  const responseCode = body?.error?.code || body?.code;
+  const stopped = responseCode === 'meeting_stopped' || responseCode === 'meeting_revoked' || status === 410;
+  const unauthorized = responseCode === 'share_unauthorized' || status === 403 || status === 404;
+  const error = new Error(stopped ? '會議已停止。' : (unauthorized ? '分享連結無效或已過期。' : '無法取得即時字幕權限。'));
+  error.code = stopped ? (responseCode === 'meeting_revoked' ? 'meeting_revoked' : 'meeting_stopped')
+    : (unauthorized ? 'share_unauthorized' : 'viewer_unavailable');
+  error.status = status;
+  return error;
 }

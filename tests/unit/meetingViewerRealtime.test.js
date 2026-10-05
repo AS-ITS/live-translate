@@ -135,3 +135,21 @@ test('viewer realtime requests JSON when replaying missed events', async () => {
   assert.deepEqual(replayed, { events: [{ eventId: 8 }], cursor: { eventId: 8 } });
   await controller.stop();
 });
+
+test('viewer realtime does not retry terminal share errors', async () => {
+  const timers = [];
+  const errors = [];
+  const controller = createMeetingViewerRealtimeController({
+    basePath: '/api/shared-meetings/revoked',
+    fetchImpl: async () => ({ ok: false, status: 410, async json() { return { error: { code: 'meeting_revoked' } }; } }),
+    client: { realtime: { async setAuth() {} }, channel() { throw new Error('must not subscribe'); }, async removeChannel() {} },
+    setTimer(callback, delay) { timers.push({ callback, delay }); return timers.length; },
+    clearTimer() {},
+    onError: (error) => errors.push(error),
+  });
+  controller.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(errors[0].code, 'meeting_revoked');
+  assert.equal(timers.length, 0);
+  await controller.stop();
+});

@@ -4,6 +4,7 @@ import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.j
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
 import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
+import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../../lib/meetingViewerSnapshot.js';
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
@@ -56,20 +57,54 @@ export function MeetingViewerPage({ token, code }) {
     let cancelled = false;
     let webRtcTransport = null;
     let webRtcStarted = false;
+    let realtimeController = null;
+    let restoredTimer = null;
+    let sseReconnectTimer = null;
+    let sseReconnectAttempts = 0;
+    let terminal = false;
+    const snapshotController = new AbortController();
     setShareConnection({ value: 'connecting' });
+
+    function stopConnections() {
+      snapshotController.abort();
+      if (restoredTimer) clearTimeout(restoredTimer);
+      restoredTimer = null;
+      if (sseReconnectTimer) clearTimeout(sseReconnectTimer);
+      sseReconnectTimer = null;
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+      void realtimeController?.stop();
+      void webRtcTransport?.stop();
+    }
+
+    function showRestoredConnection() {
+      if (cancelled || terminal) return;
+      if (restoredTimer) clearTimeout(restoredTimer);
+      setShareConnection({ value: 'restored' });
+      setError('');
+      restoredTimer = setTimeout(() => {
+        if (!cancelled && !terminal) setShareConnection({ value: 'connected' });
+      }, 3_000);
+    }
 
     function handleSnapshotError(value) {
       if (cancelled) return;
-      if (value?.code === 'meeting_stopped') setShareConnection({ value: 'stopped' });
+      if (value?.name === 'AbortError') return;
+      if (isTerminalViewerError(value)) terminal = true;
+      if (value?.code === 'meeting_stopped' || value?.code === 'meeting_revoked') setShareConnection({ value: 'stopped' });
       else if (value?.code === 'share_unauthorized') setShareConnection({ value: 'invalid' });
       else setShareConnection({ value: 'failed' });
       setError(value?.message || '無法連線。');
+      if (isTerminalViewerError(value)) stopConnections();
     }
 
     function applyWebRtcEnvelope(envelope) {
+      if (cancelled) return;
       if (envelope.type === 'meeting.stopped') {
+        terminal = true;
         setShareConnection({ value: 'stopped' });
         setError('會議已停止。');
+        stopConnections();
         return;
       }
       if (envelope.type === 'snapshot') {
@@ -100,10 +135,20 @@ export function MeetingViewerPage({ token, code }) {
           credential: code ? { shareCode: code } : { shareToken: token },
           onEnvelope: applyWebRtcEnvelope,
           onStatus: (next) => {
-            if (cancelled) return;
+            if (cancelled || terminal) return;
             setShareConnection(next);
-            if (next.value === 'invalid') setError('分享已失效。');
-            if (next.value === 'stopped') setError('會議已停止。');
+            if (restoredTimer) clearTimeout(restoredTimer);
+            restoredTimer = null;
+            if (next.value === 'restored') {
+              showRestoredConnection();
+            } else if (next.value === 'connected') {
+              setError('');
+            }
+            if (next.value === 'invalid' || next.value === 'stopped') {
+              terminal = true;
+              setError(next.value === 'invalid' ? '分享已失效。' : '會議已停止。');
+              stopConnections();
+            }
           },
           onError: () => {},
         });
@@ -116,17 +161,16 @@ export function MeetingViewerPage({ token, code }) {
 
     async function fetchSnapshot(before = null) {
       const snapshotUrl = new URL(basePath, window.location.origin);
+      let retried = false;
       if (before) snapshotUrl.searchParams.set('before', before);
-      const response = await fetch(`${snapshotUrl.pathname}${snapshotUrl.search}`);
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        const code = body?.error?.code || body?.code;
-        const stopped = code === 'meeting_stopped' || response.status === 410;
-        const error = new Error(stopped ? '會議已停止。' : '分享已失效。');
-        error.code = stopped ? 'meeting_stopped' : (response.status === 403 || response.status === 404 ? 'share_unauthorized' : 'viewer_unavailable');
-        throw error;
-      }
-      const value = await response.json();
+      const value = await fetchMeetingViewerSnapshotWithRetry({
+        url: `${snapshotUrl.pathname}${snapshotUrl.search}`,
+        signal: snapshotController.signal,
+        onRetry: ({ attempt }) => {
+          retried = true;
+          if (!cancelled) setShareConnection({ value: 'reconnecting', attempt });
+        },
+      });
       if (cancelled) return value;
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
@@ -134,9 +178,11 @@ export function MeetingViewerPage({ token, code }) {
       detailRef.current = merged;
       setDetail(merged);
       startWebRtc(value.meeting?.id || value.meetingId);
+      if (retried) showRestoredConnection();
       return merged;
     }
     function applyCuePayload(payload) {
+      if (cancelled) return;
       const receivedAt = Date.now();
       const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
       recordLivePipelineTrace({
@@ -146,8 +192,6 @@ export function MeetingViewerPage({ token, code }) {
         audioTurnId: receivedCue?.audioTurnId || null,
         turnKey: receivedCue?.turnKey || null,
         cueId: receivedCue?.cueId || null,
-        sourceText: receivedCue?.sourceText || '',
-        translationText: receivedCue?.translatedText || '',
         reason: payload.type || 'viewer_cue_received'
       });
       const next = applyMeetingCueEvent(detailRef.current, payload);
@@ -162,6 +206,23 @@ export function MeetingViewerPage({ token, code }) {
       });
     }
     let sseConnected = false;
+    function scheduleSseReconnect() {
+      if (cancelled || terminal || sseReconnectTimer) return;
+      const delays = [1_000, 2_000, 4_000, 8_000, 10_000, 10_000];
+      if (sseReconnectAttempts >= delays.length) {
+        setShareConnection({ value: 'failed' });
+        setError('多次重新連線後仍無法取得即時字幕。');
+        return;
+      }
+      const delay = delays[sseReconnectAttempts++];
+      sseReconnectTimer = setTimeout(() => {
+        sseReconnectTimer = null;
+        void fetchSnapshot()
+          .then((value) => connectEvents(value?.cursor?.eventId || 0))
+          .catch(handleSnapshotError);
+      }, delay);
+    }
+
     function connectEvents(afterEventId = detailRef.current?.cursor?.eventId || 0) {
       if (cancelled) return;
       eventSourceRef.current?.close();
@@ -169,7 +230,9 @@ export function MeetingViewerPage({ token, code }) {
       eventSourceRef.current = events;
       events.onopen = () => {
         if (sseConnected) void telemetry.report('reconnect');
+        if (sseConnected) showRestoredConnection();
         sseConnected = true;
+        sseReconnectAttempts = 0;
         setError('');
       };
       events.addEventListener('cue.append', (event) => {
@@ -177,10 +240,10 @@ export function MeetingViewerPage({ token, code }) {
           const payload = JSON.parse(event.data);
           if (meetingEventGapDetected(detailRef.current?.cursor, payload.eventId)) {
             void telemetry.report('event_gap');
-          void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
-            void telemetry.report('replay_failure');
-            if (!cancelled) setError(value.message);
-          });
+            void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
+              void telemetry.report('replay_failure');
+              handleSnapshotError(value);
+            });
             return;
           }
           if (meetingEventDuplicateDetected(detailRef.current, payload)) void telemetry.report('event_duplicate');
@@ -193,17 +256,22 @@ export function MeetingViewerPage({ token, code }) {
         void telemetry.report('event_gap');
         void fetchSnapshot().then(() => telemetry.report('replay_success')).catch((value) => {
           void telemetry.report('replay_failure');
-          if (!cancelled) setError(value.message);
+          handleSnapshotError(value);
         });
       });
       events.onerror = () => {
-        if (!cancelled) setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+        if (!cancelled) {
+          events.close();
+          setShareConnection({ value: 'reconnecting' });
+          setError('分享連線中斷，瀏覽器會自動嘗試重新連線。');
+          scheduleSseReconnect();
+        }
       };
     }
-    let realtimeController = null;
     if (meetingViewerRealtimeEnabled()) {
       let snapshotReady = false;
       let bufferedEvents = [];
+      let realtimeSubscribed = false;
       realtimeController = createMeetingViewerRealtimeController({
         basePath,
         onConnecting: () => { snapshotReady = false; },
@@ -221,9 +289,24 @@ export function MeetingViewerPage({ token, code }) {
           const pending = bufferedEvents;
           bufferedEvents = [];
           pending.forEach(applyCuePayload);
-          if (!cancelled) setError('');
+          if (!cancelled) {
+            if (realtimeSubscribed) showRestoredConnection();
+            else setError('');
+          }
+          realtimeSubscribed = true;
         },
-        onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
+        onError: (value) => {
+          if (cancelled) return;
+          if (isTerminalViewerError(value)) handleSnapshotError(value);
+          else if (value?.code === 'viewer_retry_exhausted') {
+            setShareConnection({ value: 'failed' });
+            setError(value.message);
+          }
+          else {
+            setShareConnection({ value: 'reconnecting' });
+            setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。');
+          }
+        }
       });
       void fetchSnapshot()
         .then(() => realtimeController.start())
@@ -235,13 +318,11 @@ export function MeetingViewerPage({ token, code }) {
     }
     return () => {
       cancelled = true;
+      snapshotController.abort();
       nextViewerCursorRef.current = null;
       loadingOlderRef.current = false;
-      void realtimeController?.stop();
-      void webRtcTransport?.stop();
+      stopConnections();
       delete window.__liveTranslateWebRtcGetStats;
-      eventSourceRef.current?.close();
-      eventSourceRef.current = null;
     };
   }, [token, code, retryVersion]);
 
@@ -387,7 +468,7 @@ export function MeetingViewerPage({ token, code }) {
             ) : null}
             {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
             {shareConnection.value === 'failed' ? (
-              <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+              <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重新連線</button>
             ) : null}
           </div>
         </div>

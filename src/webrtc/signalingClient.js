@@ -14,6 +14,10 @@ export function createWebRtcSignalingClient({
   credential = {},
   fetchImpl = globalThis.fetch,
   baseUrl = '',
+  requestTimeoutMs = 8_000,
+  setTimer = globalThis.setTimeout,
+  clearTimer = globalThis.clearTimeout,
+  AbortControllerImpl = globalThis.AbortController,
 } = {}) {
   if (!meetingId || !participantId || !['device', 'viewer'].includes(role) || typeof fetchImpl !== 'function') {
     throw new TypeError('meetingId, participantId, role, and fetchImpl are required.');
@@ -21,16 +25,30 @@ export function createWebRtcSignalingClient({
   const route = `${String(baseUrl || '').replace(/\/$/u, '')}/api/webrtc/${encodeURIComponent(meetingId)}`;
 
   async function request(path, init = {}) {
-    const response = await fetchImpl(`${route}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
-    });
-    const body = await response.json().catch(() => null);
-    if (!response.ok) {
-      const code = typeof body?.error?.code === 'string' ? body.error.code : 'webrtc_signaling_unavailable';
-      throw new WebRtcSignalingClientError(code, response.status, safeMessage(code));
+    const controller = typeof AbortControllerImpl === 'function' ? new AbortControllerImpl() : null;
+    const timeout = controller && Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
+      ? setTimer(() => controller.abort(), requestTimeoutMs)
+      : null;
+    try {
+      const response = await fetchImpl(`${route}${path}`, {
+        ...init,
+        ...(controller ? { signal: controller.signal } : {}),
+        headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
+      });
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        const code = typeof body?.error?.code === 'string' ? body.error.code : 'webrtc_signaling_unavailable';
+        throw new WebRtcSignalingClientError(code, response.status, safeMessage(code));
+      }
+      return body || {};
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new WebRtcSignalingClientError('webrtc_signaling_timeout', 504, safeMessage('webrtc_signaling_timeout'));
+      }
+      throw error;
+    } finally {
+      if (timeout) clearTimer(timeout);
     }
-    return body || {};
   }
 
   return Object.freeze({

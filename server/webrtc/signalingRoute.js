@@ -103,8 +103,10 @@ const JOIN_SCRIPT = `-- webrtc-route-join
 if redis.call('GET', KEYS[1]) then return {'revoked'} end
 local current = redis.call('GET', KEYS[2])
 if current then
-  redis.call('PEXPIRE', KEYS[2], ARGV[3])
-  return {'existing', current}
+  redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+  redis.call('SADD', KEYS[3], ARGV[5])
+  redis.call('PEXPIRE', KEYS[3], ARGV[3])
+  return {'existing', ARGV[2]}
 end
 for _, member in ipairs(redis.call('SMEMBERS', KEYS[3])) do
   if not redis.call('GET', ARGV[1] .. member) then redis.call('SREM', KEYS[3], member) end

@@ -11,7 +11,7 @@ import {
 } from '../../src/webrtc/subtitleDataChannel.js';
 
 test('source creates bounded snapshot and replay envelopes', () => {
-  const source = createSubtitleSource({ meetingId: 'm-1', maxHistory: 2 });
+  const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-1', maxHistory: 2 });
   source.append({ cueId: 'c-1', revision: 1, text: 'one' });
   source.append({ cueId: 'c-2', revision: 1, text: 'two' });
   source.append({ cueId: 'c-3', revision: 1, text: 'three' });
@@ -19,8 +19,28 @@ test('source creates bounded snapshot and replay envelopes', () => {
   assert.deepEqual(source.snapshot().cues.map((cue) => cue.cueId), ['c-1', 'c-2', 'c-3']);
   const replay = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'r-1', afterSequence: 1 }));
   assert.equal(replay.type, SUBTITLE_ENVELOPE_TYPES.replayResponse);
+  assert.equal(replay.sourceId, 'source-1');
   assert.deepEqual(replay.events.map((event) => event.sequence), [2, 3]);
   assert.equal(createEnvelope(SUBTITLE_ENVELOPE_TYPES.meetingStopped, { meetingId: 'm-1' }).type, 'meeting.stopped');
+});
+
+test('source replays the same stream cursor and snapshots a replacement stream', () => {
+  const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-current' });
+  source.append({ cueId: 'c-1', revision: 1, text: 'one' });
+  source.append({ cueId: 'c-2', revision: 1, text: 'two' });
+
+  const replay = source.replay(createReplayRequest({
+    meetingId: 'm-1', requestId: 'same-stream', sourceId: 'source-current', afterSequence: 1,
+  }));
+  assert.equal(replay.type, 'replay.response');
+  assert.deepEqual(replay.events.map((event) => event.sequence), [2]);
+
+  const replacement = source.replay(createReplayRequest({
+    meetingId: 'm-1', requestId: 'old-stream', sourceId: 'source-old', afterSequence: 99,
+  }));
+  assert.equal(replacement.type, 'snapshot');
+  assert.equal(replacement.sourceId, 'source-current');
+  assert.deepEqual(replacement.cues.map((cue) => cue.cueId), ['c-1', 'c-2']);
 });
 
 test('source deduplicates cue revisions and keeps monotonic sequence', () => {

@@ -101,3 +101,52 @@ test('Meeting Viewer renders source-only Cue and updates delayed translation in 
   await expect(page.getByText('Translation arrived later', { exact: true })).toBeVisible();
   await expect(page.locator('.viewer-cue-row')).toHaveCount(1);
 });
+
+test('Meeting Viewer keeps current subtitles while a gap snapshot retries a transient 503', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
+    class MockEventSource extends EventTarget {
+      static instances = [];
+      constructor() {
+        super();
+        this.readyState = 1;
+        MockEventSource.instances.push(this);
+        queueMicrotask(() => this.onopen?.(new Event('open')));
+      }
+      close() { this.readyState = 2; }
+    }
+    window.EventSource = MockEventSource;
+    window.__emitViewerGap = () => {
+      const payload = { eventId: 3, type: 'cue.append', cue: { cueId: 'cue-gap', sequence: 3 } };
+      MockEventSource.instances.at(-1)?.dispatchEvent(new MessageEvent('cue.append', { data: JSON.stringify(payload) }));
+    };
+  });
+
+  let snapshots = 0;
+  await page.route(/\/api\/shared-meetings\/code\/RETRY503(?:\?.*)?$/, async (route) => {
+    snapshots += 1;
+    if (snapshots === 2) {
+      await route.fulfill({ status: 503, json: { error: { code: 'cloud_capability_unavailable' } } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        capability: { role: 'viewer', meetingId: 'meeting-1' },
+        meeting: { id: 'meeting-1', name: '恢復測試', status: 'active' },
+        cues: snapshots === 1
+          ? [{ cueId: 'cue-1', sequence: 1, sourceText: '斷線期間保留', sourceVersion: 1 }]
+          : [{ cueId: 'cue-2', sequence: 2, sourceText: '重新連線後補齊', sourceVersion: 1 }],
+        cursor: { eventId: snapshots === 1 ? 1 : 3, cueSequence: snapshots === 1 ? 1 : 2 },
+      },
+    });
+  });
+
+  await page.goto('/#viewer?code=RETRY503');
+  await expect(page.getByText('斷線期間保留', { exact: true })).toBeVisible();
+  await page.evaluate(() => window.__emitViewerGap());
+  await expect(page.getByText('斷線期間保留', { exact: true })).toBeVisible();
+  await expect(page.getByText('重新連線後補齊', { exact: true })).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText('已恢復連線', { exact: true })).toBeVisible();
+  await expect(page.locator('.viewer-cue-row')).toHaveCount(2);
+  expect(snapshots).toBe(3);
+});

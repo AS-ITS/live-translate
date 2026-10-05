@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
-import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler } from '../../api/webrtc/[...path].js';
+import { createDefaultWebRtcDeviceAuthorizer, createDefaultWebRtcShareResolver, createVercelWebRtcSignalingHandler, parseWebRtcIceServersJson } from '../../api/webrtc/[...path].js';
 import { createRedisRestAdapter } from '../../server/webrtc/signalingRoute.js';
 
 class FakeRedis {
@@ -42,7 +42,13 @@ class FakeRedis {
     const [revokedKey, participantKey, membersKey, participantPrefix, participantRaw, ttl, cap, participantId] = args;
     if (this.read(revokedKey)) return ['revoked'];
     const existing = this.read(participantKey);
-    if (existing) { await this.pexpire(participantKey, ttl); return ['existing', existing]; }
+    if (existing) {
+      await this.set(participantKey, participantRaw, 'PX', ttl);
+      const members = this.members.get(membersKey) || new Set();
+      members.add(participantId);
+      this.members.set(membersKey, members);
+      return ['existing', participantRaw];
+    }
     const members = this.members.get(membersKey) || new Set();
     for (const member of members) if (!this.read(`${participantPrefix}${member}`)) members.delete(member);
     if (members.size >= Number(cap)) return ['cap'];
@@ -94,6 +100,52 @@ test('two Vercel handler instances share Redis-backed join, signal, and polling 
   assert.deepEqual(polled.json.messages.map((message) => message.type), ['offer']);
   assert.equal(polled.json.after, 1);
   assert.equal([...ctx.redis.values.keys()].some((key) => key.includes('subtitle')), false);
+});
+
+test('join heartbeat renews participant identity and TTL after reauthorization', async () => {
+  let now = 1_000;
+  const redis = new FakeRedis(() => now);
+  const handler = createVercelWebRtcSignalingHandler({
+    redis,
+    resolveShareToken: resolver,
+    clock: () => now,
+    participantTtlMs: 100,
+  });
+
+  const first = await request(handler, {
+    method: 'POST',
+    url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'viewer-heartbeat', role: 'viewer', shareToken: 'viewer' },
+  });
+  assert.equal(first.json.participant.expiresAt, 1_100);
+
+  now = 1_060;
+  const heartbeat = await request(handler, {
+    method: 'POST',
+    url: '/api/webrtc/meeting-1/join',
+    body: { participantId: 'viewer-heartbeat', role: 'viewer', shareToken: 'viewer' },
+  });
+  assert.equal(heartbeat.json.participant.expiresAt, 1_160);
+
+  now = 1_120;
+  const poll = await request(handler, {
+    method: 'GET',
+    url: '/api/webrtc/meeting-1/signal?participantId=viewer-heartbeat&after=0',
+  });
+  assert.equal(poll.status, 200);
+});
+
+test('server-only ICE JSON accepts STUN/TURN entries and rejects unsafe configuration', () => {
+  assert.deepEqual(parseWebRtcIceServersJson(undefined), []);
+  assert.deepEqual(parseWebRtcIceServersJson(JSON.stringify([
+    { urls: ['stun:stun.example.test:3478'] },
+    { urls: ['turns:turn.example.test:5349'], username: 'short-lived', credential: 'server-secret' },
+  ])), [
+    { urls: ['stun:stun.example.test:3478'] },
+    { urls: ['turns:turn.example.test:5349'], username: 'short-lived', credential: 'server-secret' },
+  ]);
+  assert.throws(() => parseWebRtcIceServersJson('{bad json'), /WEBRTC_ICE_SERVERS_JSON/u);
+  assert.throws(() => parseWebRtcIceServersJson(JSON.stringify([{ urls: ['https://example.test'] }])), /WEBRTC_ICE_SERVERS_JSON/u);
 });
 
 test('route fails closed for missing dependencies and rejects invalid share, cap, size, and expired messages', async () => {

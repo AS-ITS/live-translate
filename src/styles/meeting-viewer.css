@@ -40,12 +40,14 @@
 }
 
 .meeting-viewer-page .viewer-connection-status.is-connected,
+.meeting-viewer-page .viewer-connection-status.is-restored,
 .meeting-viewer-page .viewer-connection-status.is-waiting {
   border-color: rgb(22 112 74 / 24%);
   color: var(--color-success);
 }
 
 .meeting-viewer-page .viewer-connection-status.is-connected .viewer-status-dot,
+.meeting-viewer-page .viewer-connection-status.is-restored .viewer-status-dot,
 .meeting-viewer-page .viewer-connection-status.is-waiting .viewer-status-dot {
   background: var(--color-success);
   box-shadow: 0 0 0 4px rgb(22 112 74 / 12%);

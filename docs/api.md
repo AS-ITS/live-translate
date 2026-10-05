@@ -289,6 +289,13 @@ revision returns `409 glossary_revision_conflict`.
 
 ## Meeting Center and Live Viewer
 
+The deployed WebRTC signaling route requires
+`WEBRTC_SIGNALING_REDIS_URL` and `WEBRTC_SIGNALING_REDIS_TOKEN`. Optional
+server-only `WEBRTC_ICE_SERVERS_JSON` is a JSON `RTCIceServer[]`; only explicit
+STUN/TURN URL schemes are accepted, and invalid JSON or entries fail signaling
+startup without logging credentials. Cross-network reliability requires a
+reachable TURN service; configuration alone is not acceptance evidence.
+
 ## Meeting glossary import preview
 
 Meeting Settings can preview a CSV, JSON, or XLSX file for private Meeting

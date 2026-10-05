@@ -29,8 +29,9 @@ export function assertEnvelope(envelope) {
   return envelope;
 }
 
-export function createSubtitleSource({ meetingId, maxHistory = 100 } = {}) {
+export function createSubtitleSource({ meetingId, sourceId = createSourceId(), maxHistory = 100 } = {}) {
   if (!nonEmpty(meetingId)) throw new TypeError('Subtitle source requires meetingId.');
+  if (!nonEmpty(sourceId)) throw new TypeError('Subtitle source requires sourceId.');
   if (!Number.isSafeInteger(maxHistory) || maxHistory < 1) throw new TypeError('maxHistory must be a positive integer.');
   let sequence = 0;
   const history = [];
@@ -42,7 +43,7 @@ export function createSubtitleSource({ meetingId, maxHistory = 100 } = {}) {
     const current = cues.get(cue.cueId);
     const revision = cueRevision(cue);
     if (current && revision <= cueRevision(current)) return null;
-    const event = createEnvelope(type, { meetingId, sequence: ++sequence, cue: structuredClone(cue) });
+    const event = createEnvelope(type, { meetingId, sourceId, sequence: ++sequence, cue: structuredClone(cue) });
     cues.set(cue.cueId, event.cue);
     history.push(event);
     while (history.length > maxHistory) history.shift();
@@ -55,6 +56,7 @@ export function createSubtitleSource({ meetingId, maxHistory = 100 } = {}) {
     snapshot() {
       return createEnvelope(SUBTITLE_ENVELOPE_TYPES.snapshot, {
         meetingId,
+        sourceId,
         sequence,
         cues: [...cues.values()].map((cue) => structuredClone(cue))
       });
@@ -64,8 +66,10 @@ export function createSubtitleSource({ meetingId, maxHistory = 100 } = {}) {
         ? createReplayRequest({ meetingId, requestId: request, afterSequence: 0 })
         : createReplayRequest({ meetingId, ...request });
       const afterSequence = Number(requestEnvelope.afterSequence) || 0;
+      if (requestEnvelope.sourceId && requestEnvelope.sourceId !== sourceId) return this.snapshot();
       return createEnvelope(SUBTITLE_ENVELOPE_TYPES.replayResponse, {
         meetingId,
+        sourceId,
         requestId: requestEnvelope.requestId,
         fromSequence: afterSequence,
         toSequence: sequence,
@@ -77,9 +81,11 @@ export function createSubtitleSource({ meetingId, maxHistory = 100 } = {}) {
   };
 }
 
-export function createReplayRequest({ meetingId, requestId, afterSequence = 0 } = {}) {
+export function createReplayRequest({ meetingId, requestId, sourceId, afterSequence = 0 } = {}) {
   if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new TypeError('afterSequence must be a non-negative integer.');
-  return createEnvelope(SUBTITLE_ENVELOPE_TYPES.replayRequest, { meetingId, requestId, afterSequence });
+  return createEnvelope(SUBTITLE_ENVELOPE_TYPES.replayRequest, {
+    meetingId, requestId, ...(nonEmpty(sourceId) ? { sourceId } : {}), afterSequence
+  });
 }
 
 export function createSubtitleState(meetingId) {
@@ -128,6 +134,10 @@ function cueRevision(cue) {
 
 function nonEmpty(value) {
   return typeof value === 'string' && value.length > 0;
+}
+
+function createSourceId() {
+  return globalThis.crypto?.randomUUID?.() || `subtitle-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function createSubtitleDataChannelAdapter(channel, { onEnvelope, onError } = {}) {

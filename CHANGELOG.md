@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正 QR Viewer 長時間與暫時斷線恢復：signaling `/join` heartbeat 續租 participant、8 秒 request timeout、協商完成後停止高頻 poll、5 秒 disconnected grace、Device ICE restart、6 次 jitter backoff、online/前景恢復與舊 connection epoch 隔離；DataChannel 使用 source ID 做 snapshot/replay，Viewer 在 snapshot 503 與 Realtime/SSE 重連時保留 Cue，terminal share 立即停止，並提供「已恢復連線」與手動「重新連線」。新增 server-only `WEBRTC_ICE_SERVERS_JSON` 嚴格 STUN/TURN 驗證；TURN 與跨網路實機仍待 Preview 驗收。
+
 - 新增 lifecycle regression protection：Live 會議現在使用完整 Global Dictionary 加 Meeting Dictionary，後者同原文會覆蓋前者；`recordAudio=false` 不建立本機錄音，已完成的 OPFS/IndexedDB manifest 可在會議結果直接發現與下載；停止錄音會留在 Live 的 active Meeting，Continue Recording 與 End Meeting 共用可重試且等待 finalize 的 lifecycle。
 
 - 未完成會議現在會先開啟會議設定供使用者確認，再由設定頁進入即時字幕；已完成會議仍直接開啟翻譯紀錄。

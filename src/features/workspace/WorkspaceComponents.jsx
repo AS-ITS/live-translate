@@ -1294,7 +1294,7 @@ export function GlobalGlossaryPanel({ entries: sharedEntries = [], onEntriesChan
     <div className="global-glossary-toolbar">
       <div className="global-glossary-toolbar-main">
         <label className="field glossary-search"><span>搜尋詞條</span><div className="meeting-toolbar-input"><Search size={19} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜尋原文、翻譯或標籤" /></div></label>
-        <div className="global-glossary-primary-actions"><button className="button secondary" type="button" onClick={openCategoryManager}><Settings size={18} aria-hidden="true" />管理分類</button><button className="button secondary" type="button" onClick={openImportDialog}><Download size={18} aria-hidden="true" />匯入字典</button><button className="button primary" type="button" onClick={() => openEditor()}><Plus size={18} aria-hidden="true" />新增詞條</button></div>
+        <div className="global-glossary-primary-actions"><button className="button secondary" type="button" onClick={openCategoryManager}><Settings size={18} aria-hidden="true" />管理分類</button><button className="button secondary glossary-import-button" type="button" onClick={openImportDialog}><Download size={18} aria-hidden="true" />匯入字典</button><button className="button primary" type="button" onClick={() => openEditor()}><Plus size={18} aria-hidden="true" />新增詞條</button></div>
       </div>
       <div className="global-glossary-filter-row">
         <label className="field"><span>目標語言</span><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="all">所有語言</option>{SUPPORTED_LANGUAGES.map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}</select></label>

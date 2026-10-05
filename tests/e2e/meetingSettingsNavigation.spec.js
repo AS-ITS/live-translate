@@ -68,7 +68,7 @@ test('meeting settings steps navigate to each settings card', async ({ page }) =
   await expect(stepButtons.nth(3)).toHaveAttribute('aria-current', 'step');
 });
 
-test('keeps the microphone-only audio controls in a compact 20px control row', async ({ page }) => {
+test('keeps the microphone-only audio controls in a compact control row', async ({ page }) => {
   await page.addInitScript(() => {
     if (globalThis.AudioContext?.prototype) {
       Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: undefined });
@@ -88,7 +88,7 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
   const desktopGaps = await page.evaluate(() => {
     const grid = document.querySelector('.meeting-audio-device-grid');
     const select = document.querySelector('.meeting-audio-device-grid select');
-    const button = document.querySelector('.meeting-audio-controls > .button');
+    const button = document.querySelector('.meeting-audio-confirm-action > .button');
     const statusNode = document.querySelector('.meeting-audio-status');
     const selectRect = select.getBoundingClientRect();
     const buttonRect = button.getBoundingClientRect();
@@ -100,8 +100,8 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
       statusCenterOffset: Math.abs((statusRect.top + statusRect.bottom) / 2 - (selectRect.top + selectRect.bottom) / 2)
     };
   });
-  expect(desktopGaps.gridToButton).toBe(20);
-  expect(desktopGaps.buttonToStatus).toBe(20);
+  expect(desktopGaps.gridToButton).toBe(12);
+  expect(desktopGaps.buttonToStatus).toBe(12);
   expect(desktopGaps.buttonCenterOffset).toBeLessThanOrEqual(1);
   expect(desktopGaps.statusCenterOffset).toBeLessThanOrEqual(1);
 
@@ -110,10 +110,77 @@ test('keeps the microphone-only audio controls in a compact 20px control row', a
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await expect.poll(() => page.evaluate(() => {
     const controls = document.querySelector('.meeting-audio-controls').getBoundingClientRect();
-    const button = document.querySelector('.meeting-audio-controls > .button').getBoundingClientRect();
+    const button = document.querySelector('.meeting-audio-confirm-action > .button').getBoundingClientRect();
     return Math.abs(button.width - controls.width) <= 1;
   })).toBe(true);
   await expect(status).toBeVisible();
+});
+
+test('keeps mobile audio and glossary import controls compact without overflow', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (globalThis.AudioContext?.prototype) {
+      Object.defineProperty(globalThis.AudioContext.prototype, 'setSinkId', { configurable: true, value: undefined });
+    }
+  });
+  await page.route('**/api/glossary', async (route) => route.fulfill({ json: { entries: [] } }));
+  await page.goto('/#meeting-settings?mode=create');
+
+  for (const width of [1280, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const controls = document.querySelector('.meeting-audio-controls');
+      const importButton = document.querySelector('.meeting-dictionary-section-heading .glossary-import-button');
+      return {
+        flexDirection: getComputedStyle(controls).flexDirection,
+        importHeight: importButton.getBoundingClientRect().height,
+        importWhiteSpace: getComputedStyle(importButton).whiteSpace,
+        hasHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    });
+    expect(layout.flexDirection).toBe('row');
+    expect(layout.importHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.importWhiteSpace).toBe('nowrap');
+    expect(layout.hasHorizontalOverflow).toBe(false);
+  }
+
+  for (const width of [375, 390, 430]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const grid = document.querySelector('.meeting-audio-device-grid');
+      const select = grid.querySelector('select');
+      const confirmButton = document.querySelector('.meeting-audio-confirm-action > .button');
+      const status = document.querySelector('.meeting-audio-status');
+      const importButton = document.querySelector('.meeting-dictionary-section-heading .glossary-import-button');
+      const gridRect = grid.getBoundingClientRect();
+      const selectRect = select.getBoundingClientRect();
+      const buttonRect = confirmButton.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      return {
+        viewportWidth: window.innerWidth,
+        controlGap: getComputedStyle(document.querySelector('.meeting-audio-controls')).gap,
+        flexDirection: getComputedStyle(document.querySelector('.meeting-audio-controls')).flexDirection,
+        gridTrailingSpace: gridRect.bottom - selectRect.bottom,
+        gridToButtonGap: buttonRect.top - gridRect.bottom,
+        buttonToStatusGap: statusRect.top - buttonRect.bottom,
+        importHeight: importButton.getBoundingClientRect().height,
+        importWhiteSpace: getComputedStyle(importButton).whiteSpace,
+        importTextFits: importButton.scrollWidth <= importButton.clientWidth,
+        hasHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth
+      };
+    });
+    expect(layout.viewportWidth).toBe(width);
+    expect(layout.controlGap).toBe('12px');
+    expect(layout.flexDirection).toBe('column');
+    expect(layout.gridTrailingSpace).toBeLessThanOrEqual(1);
+    expect(layout.gridToButtonGap).toBeGreaterThanOrEqual(12);
+    expect(layout.gridToButtonGap).toBeLessThanOrEqual(16);
+    expect(layout.buttonToStatusGap).toBeGreaterThanOrEqual(12);
+    expect(layout.buttonToStatusGap).toBeLessThanOrEqual(16);
+    expect(layout.importHeight).toBeGreaterThanOrEqual(44);
+    expect(layout.importWhiteSpace).toBe('nowrap');
+    expect(layout.importTextFits).toBe(true);
+    expect(layout.hasHorizontalOverflow).toBe(false);
+  }
 });
 
 test('keeps both audio device selectors in a two-column layout when output selection is supported', async ({ page }) => {

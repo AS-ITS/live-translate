@@ -61,7 +61,8 @@
 .meeting-dictionary-groups { display: grid; gap: var(--space-5); }
 .meeting-dictionary-group { display: grid; gap: var(--space-3); }
 .meeting-dictionary-group + .meeting-dictionary-group { padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
-.meeting-dictionary-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.meeting-dictionary-section-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: var(--space-4); }
+.meeting-dictionary-section-heading > div { flex: 1 1 16rem; min-width: 0; }
 .meeting-dictionary-section-heading h4 { margin: 0; font-size: var(--text-md); }
 .meeting-global-glossary { gap: var(--space-3); }
 .meeting-global-glossary-summary { display: flex; align-items: center; gap: var(--space-3); width: 100%; padding: var(--space-2); border: 0; border-radius: var(--radius-md); background: transparent; color: var(--color-text); text-align: left; cursor: pointer; }
@@ -168,8 +169,8 @@
   .share-result-preview, .share-result-details { width: 100%; }
   .share-result-details { justify-items: start; }
 }
-.meeting-audio-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 20px; margin-top: var(--space-5); }
-.meeting-audio-controls > .button { transform: translateY(-6px); }
+.meeting-audio-controls { display: flex; align-items: flex-end; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-5); }
+.meeting-audio-confirm-action, .meeting-audio-status-slot { display: flex; align-items: center; min-height: var(--select-height); }
 
 .meeting-audio-device-grid {
   display: grid;
@@ -208,7 +209,6 @@
   font-size: var(--text-sm);
   font-weight: 700;
   white-space: nowrap;
-  transform: translateY(-12px);
 }
 
 .meeting-audio-status.is-confirmed {
@@ -250,7 +250,9 @@
 @media (max-width: 720px) {
   .meeting-audio-controls { align-items: stretch; flex-direction: column; }
   .meeting-audio-device-grid { grid-template-columns: 1fr; flex-basis: auto; }
-  .meeting-audio-device-grid.microphone-only, .meeting-audio-device-grid.has-speaker { width: 100%; max-width: none; }
-  .meeting-audio-controls > .button { width: 100%; transform: none; }
-  .meeting-audio-status { align-self: flex-start; min-height: 0; transform: none; }
+  .meeting-audio-device-grid.microphone-only, .meeting-audio-device-grid.has-speaker { flex: 0 0 auto; width: 100%; max-width: none; }
+  .meeting-audio-confirm-action, .meeting-audio-status-slot { display: contents; }
+  .meeting-audio-confirm-action > .button { width: 100%; }
+  .meeting-audio-status-slot { justify-content: flex-start; }
+  .meeting-audio-status { min-height: 0; }
 }

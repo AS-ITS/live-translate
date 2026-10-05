@@ -1,5 +1,6 @@
 export const MEETING_MANAGEMENT_HASH = '#meetings';
 export const GEMINI_SETTINGS_HASH = '#settings';
+const HEADER_FEATURE_PAGES = new Set(['settings', 'admin', 'audit']);
 export const FEATURE_PAGES = new Set([
   'live',
   'meetings',
@@ -13,6 +14,10 @@ export const FEATURE_PAGES = new Set([
 
 export function pageFromLocation() {
   return pageInfoFromLocation().page;
+}
+
+export function isHeaderFeaturePage(page = pageFromLocation()) {
+  return HEADER_FEATURE_PAGES.has(page);
 }
 
 export function pageInfoFromLocation() {

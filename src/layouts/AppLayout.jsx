@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 import { useAuth } from '../components/AuthGate.jsx';
-import { GEMINI_SETTINGS_HASH } from '../app/routes.js';
+import { GEMINI_SETTINGS_HASH, isHeaderFeaturePage } from '../app/routes.js';
 import { hasLiveCredential, subscribeToLiveCredentialClear } from '../lib/liveCredentialHolder.js';
 
 const MOBILE_MENU_MEDIA_QUERY = '(min-width: 901px)';
@@ -27,7 +27,6 @@ export function AppLayout({
   headerAction = null,
   showHeader = true,
   showHeaderActions = true,
-  showGeminiKeyAction = true,
   headerClassName = ''
 }) {
   const { profile, signOut, switchAccount } = useAuth();
@@ -39,6 +38,7 @@ export function AppLayout({
   const mobileMenuId = useId();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [hasGeminiCredential, setHasGeminiCredential] = useState(hasLiveCredential);
+  const showHeaderFeatureActions = !isHeaderFeaturePage();
 
   function closeMobileMenu() {
     setMobileMenuOpen(false);
@@ -126,13 +126,13 @@ export function AppLayout({
     };
   }, [mobileMenuOpen]);
 
-  const headerLinks = (
+  const headerLinks = showHeaderFeatureActions ? (
     <>
-      {profile && showGeminiKeyAction ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH} onClick={closeMobileMenu}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
+      {profile ? <a className={`button secondary header-key-action${hasGeminiCredential ? '' : ' is-missing'}`} href={GEMINI_SETTINGS_HASH} onClick={closeMobileMenu}><KeyRound size={16} aria-hidden="true" />Gemini Key</a> : null}
       {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#admin" onClick={closeMobileMenu}><UsersRound size={16} aria-hidden="true" />帳號管理</a> : null}
       {profile?.role === 'super_admin' ? <a className="button secondary header-key-action" href="#audit" onClick={closeMobileMenu}><ClipboardList size={16} aria-hidden="true" />稽核紀錄</a> : null}
     </>
-  );
+  ) : null;
 
   const mobileAccount = profile ? (
     <section className="mobile-nav-account" aria-labelledby={`${mobileMenuId}-account`}>

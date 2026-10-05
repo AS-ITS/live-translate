@@ -32,7 +32,7 @@ export function GeminiCredentialPage() {
   }
 
   return (
-    <AppLayout className="meeting-app-shell meeting-management-shell" showGeminiKeyAction={false} title="Gemini API Key" subtitle="僅供目前頁面生命週期的即時翻譯使用。" headerAction={<a className="button secondary meeting-header-action" href={MEETING_MANAGEMENT_HASH}>返回會議管理</a>} headerClassName="meeting-app-header">
+    <AppLayout className="meeting-app-shell meeting-management-shell" title="Gemini API Key" subtitle="僅供目前頁面生命週期的即時翻譯使用。" headerAction={<a className="button secondary meeting-header-action" href={MEETING_MANAGEMENT_HASH}>返回會議管理</a>} headerClassName="meeting-app-header">
       <section className="feature-page gemini-credential-page" aria-labelledby="gemini-credential-title">
         <div className="gemini-credential-layout">
           <div className="gemini-credential-guide">

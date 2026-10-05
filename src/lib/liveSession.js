@@ -346,6 +346,7 @@ export class LiveTranslateSession {
   async connectProvider({ forceRefresh = false } = {}) {
     this.startupStage = 'socket';
     const { token, liveConnectModel, liveConnectConfig } = await this.getTokenResponse({ forceRefresh });
+    if (this.closed) return false;
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
     const providerEpoch = ++this.providerEpoch;
@@ -485,18 +486,21 @@ export class LiveTranslateSession {
       this.lastOutputTranscriptText = '';
       this.turnBoundaryOpen = false;
     }
-    this.providerReconnectInProgress = (async () => {
+    this.providerReconnectInProgress = Promise.resolve().then(async () => {
+      if (this.closed) return false;
       this.providerReady = false;
       this.inputSendingEnabled = false;
-      try { this.session?.close?.(); } catch { /* best effort */ }
+      const previousSession = this.session;
       this.session = null;
       this.providerEpoch += 1;
+      try { previousSession?.close?.(); } catch { /* best effort */ }
+      if (this.closed) return false;
       this.tracePipeline('PROVIDER_RECONNECT', { reason: 'provider_epoch_advanced' });
       const result = await this.connectProvider({ forceRefresh });
       if (result) this.providerReconnectAttempts = 0;
       else this.providerReconnectAttempts += 1;
       return result;
-    })().finally(() => { this.providerReconnectInProgress = null; });
+    }).finally(() => { this.providerReconnectInProgress = null; });
     return this.providerReconnectInProgress;
   }
 

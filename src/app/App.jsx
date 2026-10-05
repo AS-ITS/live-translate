@@ -363,6 +363,7 @@ const activeMeetingCheckpointRef = useRef(null);
       setStatusLabelOverride,
       setStatus,
       invalidateLiveSessionCallbacks,
+      suspendLiveSessionCallbacks,
       finalizePendingTranscriptItemsForStop: () => liveController.transcriptWorkflow.finalizePendingTranscriptItemsForStop(),
       archiveActiveTranscriptSegment,
       generateLiveSessionId,
@@ -1222,6 +1223,10 @@ const activeMeetingCheckpointRef = useRef(null);
     };
   }
 
+  function suspendLiveSessionCallbacks() {
+    liveSessionCallbackGenerationRef.current.active = false;
+  }
+
   function activateLiveSessionCallbacks(callbackGeneration) {
     if (liveSessionCallbackGenerationRef.current !== callbackGeneration) return false;
     callbackGeneration.active = true;
@@ -1248,14 +1253,28 @@ const activeMeetingCheckpointRef = useRef(null);
 
   function reportSegmentSwitchError(error) {
     if (sessionStopRequestedRef.current) return;
-    console.error('Meeting segment switch failed.', error);
-    setStatusLabelOverride('切換失敗');
-    setError('長會議分段切換失敗。已保留目前逐字稿，請停止後重新開始。');
-    setStatus('error');
-    void liveController.recovery.finalizeFailedSession({
-      status: 'failed',
-      failureReason: 'segment_switch_failed',
-      failureCategory: 'provider'
+    console.error('Meeting segment switch failed.', {
+      stage: error?.rolloverStage || null,
+      code: error?.code || error?.cause?.code || null,
+      status: error?.status || error?.cause?.status || null,
+      requestId: error?.requestId || error?.cause?.requestId || null,
+      endpoint: error?.endpoint || error?.cause?.endpoint || null,
+      cause: error?.cause?.name || null
+    });
+    setStatusLabelOverride('切換失敗，正在暫停');
+    void liveController.actions.pauseSession().then(() => {
+      if (sessionStopRequestedRef.current) return;
+      setError('分段切換失敗，已暫停辨識並保留本機錄音。可按「繼續」重試。');
+    }).catch((pauseError) => {
+      if (sessionStopRequestedRef.current) return;
+      console.error('Meeting segment pause failed.', {
+        code: pauseError?.code || null,
+        status: pauseError?.status || null,
+        requestId: pauseError?.requestId || null
+      });
+      setStatusLabelOverride('切換失敗');
+      setError('分段切換失敗，暫停未完成。請停止錄音後從會議頁恢復。');
+      setStatus('error');
     });
   }
 

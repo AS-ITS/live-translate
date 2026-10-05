@@ -457,6 +457,7 @@ async function mockMeetingCheckpointApi(page, {
   page.mockMeetingLanguage = { sourceLanguageCode, targetLanguageCode };
   const checkpointRequests = [];
   const rolloverRequests = [];
+  const cueRequests = [];
   const recoverRequests = [];
   const checkpoints = new Map();
   let latestSegmentNumber = 1;
@@ -493,7 +494,9 @@ async function mockMeetingCheckpointApi(page, {
             name: '測試會議',
             status: page.mockMeetingStatus || 'created',
             sourceLanguageCode,
-            targetLanguageCode
+            targetLanguageCode,
+            ...(page.mockMeetingLocalAudio ? { shouldRecordInputAudio: true } : {}),
+            ...(page.mockMeetingLifecycleV2 ? { lifecycleContractVersion: 2, lifecycleVersion: 0 } : {})
           },
           cues: meetingDetailCues
         })
@@ -538,6 +541,7 @@ async function mockMeetingCheckpointApi(page, {
     const cueMatch = url.pathname.match(new RegExp(`^/api/meetings/${MOCK_MEETING_ID}/segments/([^/]+)/cues$`));
     if (method === 'POST' && cueMatch) {
       const body = JSON.parse(request.postData() || '{}');
+      cueRequests.push({ segmentId: cueMatch[1], cue: body.cue });
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
@@ -714,6 +718,7 @@ async function mockMeetingCheckpointApi(page, {
   });
 
   checkpointRequests.rolloverRequests = rolloverRequests;
+  checkpointRequests.cueRequests = cueRequests;
   checkpointRequests.recoverRequests = recoverRequests;
   return checkpointRequests;
 }
@@ -2427,23 +2432,102 @@ test('live session creates a meeting checkpoint and flushes final chunks on Stop
   await expect(partialCueRows(page)).toHaveCount(0);
 });
 
+test('lifecycle v2 rollover survives unrelated session PATCH outage and keeps provider captions', async ({ page }) => {
+  page.mockMeetingLifecycleV2 = true;
+  page.mockMeetingLocalAudio = true;
+  await page.addInitScript(() => { window.__liveTranslateSegmentSwitchIntervalMs = 1000; });
+  const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  const commands = [];
+  const segmentPatchRequests = [];
+  let activeSequence = 0;
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/recording/**`, async (route) => {
+    const command = new URL(route.request().url()).pathname.split('/').at(-1);
+    if (command === 'heartbeat') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      return;
+    }
+    commands.push(command);
+    if (command === 'rollover' && activeSequence === 6) {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_request_failed', requestId: 'failed-rollover-request' } }) });
+      return;
+    }
+    if (command === 'rollover' || command === 'resume') activeSequence += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        meeting: { id: MOCK_MEETING_ID, lifecycle_version: commands.length, status: 'active' },
+        session: { id: 'session-1', status: 'active' },
+        segment: command === 'pause' ? null : { id: MOCK_SEGMENT_ID(activeSequence + 1), sequence: activeSequence, status: 'active' },
+        lease: { leaseId: 'test-lease', fenceToken: commands.length }
+      })
+    });
+  });
+  await page.route('**/api/sessions/*', async (route) => {
+    const body = JSON.parse(route.request().postData() || '{}');
+    if (route.request().method() === 'PATCH' && body.segmentId === MOCK_SEGMENT_ID(2)) {
+      segmentPatchRequests.push(body);
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'supabase_request_failed', requestId: 'rollover-test-request' } }) });
+      return;
+    }
+    if (route.request().method() === 'PATCH') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'session-1', ...body }) });
+      return;
+    }
+    await route.fallback();
+  });
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  for (let sequence = 1; sequence <= 6; sequence += 1) {
+    await expect.poll(() => commands.filter((item) => item === 'rollover').length).toBeGreaterThanOrEqual(sequence);
+    await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBeGreaterThanOrEqual(sequence + 1);
+    await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
+    await emitMicrophoneAudio(page);
+    await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1).sentInputs.length)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => window.__mockMediaRecorders.length)).toBe(1);
+    await emitFinalTranscript(page, `after rollover ${sequence} source`, `after rollover ${sequence} translation`);
+    await expect(page.getByText(`after rollover ${sequence} source`)).toBeVisible();
+  }
+  expect(segmentPatchRequests).toHaveLength(0);
+  await expect(finalCueRows(page)).toHaveCount(6);
+  await expect.poll(() => new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId)).size).toBe(6);
+  await expect(page.getByText('after rollover 6 translation')).toBeVisible();
+  await expect.poll(() => commands.filter((item) => item === 'rollover').length).toBe(7);
+  await expect(page.getByRole('button', { name: '繼續', exact: true })).toBeVisible();
+  await expect(page.getByText('正在準備會議…')).toHaveCount(0);
+  await page.getByRole('button', { name: '繼續', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText('切換失敗')).toHaveCount(0);
+});
+
 test('long meeting proactively switches through three segments and preserves confirmed transcript', async ({ page }) => {
   const instruction = 'Glossary instructions: Source term: Acme\nRequired translation: Meeting Acme';
   page.liveConnectConfig = { systemInstruction: { parts: [{ text: instruction }] } };
   await page.addInitScript(() => {
-    window.__liveTranslateSegmentSwitchIntervalMs = 700;
+    window.__liveTranslateSegmentSwitchIntervalMs = 2000;
   });
   const checkpointRequests = await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
 
-  await page.goto('/');
+  await gotoMockMeetingLive(page);
+  await configureTestGeminiCredential(page);
   await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBeGreaterThan(0);
+  await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment one source', 'segment one translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(1);
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveSessions.length)).toBe(2);
   await expect(page.locator('.status-pill').getByText('下一段已開始', { exact: true })).toBeVisible();
-  await expect(page.getByText('保存狀態：長會議已保存 1 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('segment one source')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment two source', 'segment two translation', { waitMs: 100 });
   await expect.poll(() => checkpointRequests.rolloverRequests.length).toBe(2);
@@ -2451,16 +2535,16 @@ test('long meeting proactively switches through three segments and preserves con
   await expect.poll(() => page.evaluate(() => window.__mockGoogleGenAI.liveConnects.map((request) => (
     request.config.systemInstruction.parts[0].text
   )))).toEqual([instruction, instruction, instruction]);
-  await expect(page.getByText('保存狀態：長會議已保存 2 段 · 目前段落 0 筆')).toBeVisible();
+  await expect(page.getByText('segment two source')).toBeVisible();
 
   await emitFinalTranscript(page, 'segment three source', 'segment three translation', { waitMs: 100 });
-  await expect(page.getByText('保存狀態：長會議已保存 2 段 · 目前段落 2 筆')).toBeVisible();
+  await expect(page.getByText('segment three source')).toBeVisible();
   await page.getByRole('button', { name: '結束會議' }).click();
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
-    micTrackCount: 3,
+    micTrackCount: 1,
     activeMicTrackCount: 0,
-    audioContextCount: 3,
+    audioContextCount: 1,
     openAudioContextCount: 0,
     liveSessionCount: 3,
     openLiveSessionCount: 0
@@ -2473,14 +2557,12 @@ test('long meeting proactively switches through three segments and preserves con
     expect.stringMatching(/^live-session-/),
     expect.stringMatching(/^live-session-/)
   ]);
-  expect(checkpointRequests.flatMap((request) => request.durableChunks.map(({ segmentId, text }) => ({ segmentId, text })))).toEqual([
-      { segmentId: MOCK_SEGMENT_ID(1), text: 'segment one source' },
-      { segmentId: MOCK_SEGMENT_ID(1), text: 'segment one translation' },
-      { segmentId: MOCK_SEGMENT_ID(2), text: 'segment two source' },
-      { segmentId: MOCK_SEGMENT_ID(2), text: 'segment two translation' },
-      { segmentId: MOCK_SEGMENT_ID(3), text: 'segment three source' },
-      { segmentId: MOCK_SEGMENT_ID(3), text: 'segment three translation' }
+  expect([...new Set(checkpointRequests.cueRequests.map(({ segmentId }) => segmentId))]).toEqual([
+    MOCK_SEGMENT_ID(1), MOCK_SEGMENT_ID(2), MOCK_SEGMENT_ID(3)
   ]);
+  for (const segmentId of [MOCK_SEGMENT_ID(1), MOCK_SEGMENT_ID(2), MOCK_SEGMENT_ID(3)]) {
+    expect(new Set(checkpointRequests.cueRequests.filter((request) => request.segmentId === segmentId).map((request) => request.cue?.cueId)).size).toBe(1);
+  }
   await expect(page.getByText('segment one source')).toBeVisible();
   await expect(page.getByText('segment two source')).toBeVisible();
   await expect(page.getByText('segment three source')).toBeVisible();

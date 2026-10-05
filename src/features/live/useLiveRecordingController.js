@@ -1083,9 +1083,11 @@ export function useLiveRecordingController({
       cueController.flushSubtitleCues('pause');
       await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
       await checkpointController.flushMeetingCheckpointSync();
+      if (recovery.sessionStopRequestedRef.current) return;
       if (meetingLifecycleRef.current) {
         await executeMeetingLifecycleCommand('pause');
       }
+      if (recovery.sessionStopRequestedRef.current) return;
       await recovery.updateCurrentSessionStatus('paused');
       const pausedMeetingId = recovery.activeMeetingCheckpointRef.current?.meetingId || routeMeetingId;
       if (pausedMeetingId) {
@@ -1530,9 +1532,10 @@ export function useLiveRecordingController({
       const releaseTransition = segmentTransitionLock.tryAcquire(transitionKey);
       if (!releaseTransition) return;
 
+      let rolloverStage = 'prepare';
       try {
         recovery.reconnectController().cancel();
-        recovery.invalidateLiveSessionCallbacks();
+        recovery.suspendLiveSessionCallbacks();
         recovery.setError('');
         recovery.setStatusLabelOverride('切換下一段中');
         recovery.setStatus('switching-segment');
@@ -1543,12 +1546,14 @@ export function useLiveRecordingController({
       await recovery.flushMeetingCuePublishes?.(recovery.activeSessionRecordIdRef.current);
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
 
-    const flushed = await checkpointController.flushMeetingCheckpointSync();
+        rolloverStage = 'checkpoint';
+        const flushed = await checkpointController.flushMeetingCheckpointSync();
     if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
     recovery.archiveActiveTranscriptSegment();
 
-      const rollover = meetingLifecycleRef.current
+        rolloverStage = 'rollover-command';
+        const rollover = meetingLifecycleRef.current
         ? await executeMeetingLifecycleCommand('rollover')
         : await recovery.meetingCheckpointApiClientRef.current.rolloverSegment({
           meetingId: meetingCheckpoint.meetingId,
@@ -1563,20 +1568,26 @@ export function useLiveRecordingController({
         });
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
+      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
+      recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
+      checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
       const sessionId = recovery.activeSessionRecordIdRef.current;
-      if (sessionId) {
+      if (sessionId && !meetingLifecycleRef.current) {
+        rolloverStage = 'session-metadata';
         await recovery.sessionCommandApiClientRef.current.update(sessionId, {
           status: 'active',
           segmentId: rollover.segment.id
         });
       }
       cueController.flushSubtitleCues('segment-rollover');
+      rolloverStage = 'provider-connect';
       const providerResumed = await previousSession.reconnectProvider({
         segmentId: rollover.segment.id,
         liveSessionId: nextLiveSessionId,
         forceRefresh: true
       });
       if (!providerResumed) throw new Error('無法恢復 Gemini 即時連線。');
+      rolloverStage = 'audio-resume';
       await audioController.noteProviderRollover();
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) {
@@ -1585,11 +1596,16 @@ export function useLiveRecordingController({
 
       recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
       recovery.sessionRef.current = previousSession;
-      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
-    recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
-    checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
-        recovery.setStatusLabelOverride('下一段已開始');
-        recovery.setStatus('listening');
+      recovery.setStatusLabelOverride('下一段已開始');
+      recovery.setStatus('listening');
+      } catch (cause) {
+        const failure = new Error('Meeting segment rollover failed.', { cause });
+        failure.rolloverStage = rolloverStage;
+        failure.status = cause?.status;
+        failure.code = cause?.code;
+        failure.requestId = cause?.requestId;
+        failure.endpoint = cause?.endpoint;
+        throw failure;
       } finally {
         releaseTransition();
       }

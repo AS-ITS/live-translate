@@ -113,7 +113,12 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify(body)
       });
-      await assertOkResponse(response, { operation: `recording-${command}` });
+      try {
+        await assertOkResponse(response, { operation: `recording-${command}` });
+      } catch (error) {
+        error.endpoint = path;
+        throw error;
+      }
       return parseLifecycleResponse(response);
     },
 

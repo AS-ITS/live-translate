@@ -55,7 +55,8 @@ export function activateRecoveredMeetingSegment({
   if (!meetingId || !segmentId || !activeMeetingCheckpointRef || typeof startCheckpointSync !== 'function') {
     throw new TypeError('Recovered meeting segment activation requires meetingId, segment, ref, and sync callback.');
   }
-  const checkpoint = { meetingId, segmentId };
+  const checkpoint = { meetingId, segmentId,
+    ...(Number.isSafeInteger(recoveryResult.segment.sequence) ? { segmentSequence: recoveryResult.segment.sequence } : {}) };
   activeMeetingCheckpointRef.current = checkpoint;
   startCheckpointSync(checkpoint);
   return checkpoint;
@@ -799,7 +800,8 @@ export function useLiveRecordingController({
         const result = await recovery.meetingCheckpointApiClientRef.current.createMeeting({ liveSessionId, glossaryEntries, privateGlossaryEntries });
         const meetingCheckpoint = {
           meetingId: result.meeting.id,
-          segmentId: result.segment.id
+        segmentId: result.segment.id,
+        segmentSequence: result.segment.sequence
         };
         recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
@@ -1034,7 +1036,7 @@ export function useLiveRecordingController({
       try {
         if (meetingLifecycleRef.current) {
           const resumed = await executeMeetingLifecycleCommand('resume');
-          const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id };
+          const nextCheckpoint = { meetingId: resumed.meeting.id, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = nextCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(nextCheckpoint);
         }
@@ -1169,7 +1171,7 @@ export function useLiveRecordingController({
         };
         setMeetingLifecycleWriteFence(meetingLifecycleRef.current);
         lifecycleSessionId = lifecycle.session.id;
-        meetingCheckpoint = { meetingId: routeMeetingId, segmentId: lifecycle.segment.id };
+        meetingCheckpoint = { meetingId: routeMeetingId, segmentId: lifecycle.segment.id, segmentSequence: lifecycle.segment.sequence };
         recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
         startMeetingLifecycleHeartbeats();
@@ -1178,7 +1180,7 @@ export function useLiveRecordingController({
           const segment = [...segmentsResult.segments].reverse().find((item) => ['created', 'active'].includes(item.status) && !item.liveSessionId);
           if (!segment) throw new Error('此會議目前沒有可開始的錄音段落。');
           const started = await recovery.meetingCheckpointApiClientRef.current.startMeeting({ meetingId: routeMeetingId, segmentId: segment.id, liveSessionId });
-          meetingCheckpoint = { meetingId: started.meeting.id, segmentId: started.segment.id };
+        meetingCheckpoint = { meetingId: started.meeting.id, segmentId: started.segment.id, segmentSequence: started.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
         } else {
@@ -1216,7 +1218,7 @@ export function useLiveRecordingController({
             const latestSegments = await recovery.meetingCheckpointApiClientRef.current.listSegments({ meetingId: routeMeetingId });
             const resumableSegment = [...latestSegments.segments].reverse().find((segment) => segment.status === 'active' && segment.liveSessionId);
             if (resumableSegment) {
-              recovery.activeMeetingCheckpointRef.current = { meetingId: routeMeetingId, segmentId: resumableSegment.id };
+        recovery.activeMeetingCheckpointRef.current = { meetingId: routeMeetingId, segmentId: resumableSegment.id, segmentSequence: resumableSegment.sequence };
               recovery.setResumeDraft?.({
                 sessionId: await recovery.findActiveMeetingSessionId?.(routeMeetingId),
                 meetingId: routeMeetingId,
@@ -1452,7 +1454,7 @@ export function useLiveRecordingController({
           });
           if (!resumed) return;
         }
-        const nextMeetingCheckpoint = { meetingId: draft.meetingId, segmentId: resumed.segment.id };
+        const nextMeetingCheckpoint = { meetingId: draft.meetingId, segmentId: resumed.segment.id, segmentSequence: resumed.segment.sequence };
         recoveredMeetingCheckpoint = nextMeetingCheckpoint;
         recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
         checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
@@ -1583,7 +1585,7 @@ export function useLiveRecordingController({
 
       recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
       recovery.sessionRef.current = previousSession;
-      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id };
+      const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
     recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
     checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
         recovery.setStatusLabelOverride('下一段已開始');

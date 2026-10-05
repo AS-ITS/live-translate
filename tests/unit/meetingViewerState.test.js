@@ -88,3 +88,21 @@ test('a stale reconnect snapshot cannot overwrite a newer live Cue', () => {
   assert.equal(merged.cues[0].translatedText, 'newest');
   assert.deepEqual(merged.cursor, { eventId: 10, cueSequence: 1 });
 });
+
+test('live Cue without segmentSequence stays after earlier persisted segments', () => {
+  const previous = [cue('old-1', 1, 1), cue('old-2', 1, 2)];
+  const live = { cueId: 'new-1', segmentId: 'segment-2', sequence: 1, sourceText: 'latest', status: 'final' };
+  const merged = mergeMeetingCues(previous, [live]);
+  assert.deepEqual(merged.map((item) => item.cueId), ['old-1', 'old-2', 'new-1']);
+});
+
+test('later partial update keeps a Cue order key and independently newer text', () => {
+  const original = { ...cue('cue-1', 2, 1, ''), segmentId: 'segment-2', sourceVersion: 2, translationVersion: 0 };
+  const translation = { cueId: 'cue-1', segmentId: 'segment-2', sequence: 1, sourceVersion: 1,
+    translationVersion: 1, translatedText: 'late translation', status: 'final' };
+  const state = mergeMeetingCues([cue('old', 1, 1), original], [translation]);
+  assert.deepEqual(state.map((item) => item.cueId), ['old', 'cue-1']);
+  assert.equal(state[1].sourceText, 'cue-1');
+  assert.equal(state[1].translatedText, 'late translation');
+  assert.equal(state[1].segmentSequence, 2);
+});

@@ -51,15 +51,128 @@ function deferred() {
   return { promise, resolve };
 }
 
+test('Viewer requests a fresh negotiation when joining after an offer has expired', async () => {
+  FakePeerConnection.instances = [];
+  const requests = [];
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'late-viewer', credential: { shareToken: 'token' },
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer: () => ({ }), clearTimer: () => {},
+  });
+  transport.start();
+  await flush(); await flush();
+  assert.equal(requests.some(({ body }) => body?.type === 'viewer-ready' && body?.negotiationId), true);
+  await transport.stop();
+});
+
+test('Device creates targeted peers for Viewers joining at different times', async () => {
+  FakePeerConnection.instances = [];
+  const requests = [];
+  const timers = [];
+  const ready = [
+    { sequence: 1, participantId: 'viewer-a', type: 'viewer-ready', negotiationId: 'n-a', payload: {} },
+    { sequence: 2, participantId: 'viewer-b', type: 'viewer-ready', negotiationId: 'n-b', payload: {} },
+  ];
+  let pollCount = 0;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-multi',
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.includes('/signal?')) {
+        const message = ready[pollCount++];
+        return response(200, { messages: message ? [message] : [], after: message?.sequence || 2 });
+      }
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 3 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+  });
+  transport.start(); await flush(); await flush();
+  for (let index = 0; index < 2; index += 1) {
+    const poll = timers.find((timer) => timer.ms <= 2_000 && !timer.cleared);
+    assert.ok(poll, 'Device keeps polling for late Viewer joins');
+    timerClear(poll);
+    await poll.fn(); await flush(); await flush();
+  }
+  const offers = requests.filter(({ body }) => body?.type === 'offer').map(({ body }) => body.targetParticipantId);
+  assert.deepEqual(offers, ['viewer-a', 'viewer-b']);
+  assert.equal(FakePeerConnection.instances.length, 2);
+  await transport.stop();
+  function timerClear(timer) { timer.cleared = true; }
+});
+
+test('Viewer rebuilds its channel after a transient failure and drops late old packets', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const received = [];
+  const statuses = [];
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-recover', credential: { shareToken: 'token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    random: () => 0.5,
+    onEnvelope: (packet) => received.push(packet),
+    onStatus: (status) => statuses.push(status.value),
+  });
+  transport.start(); await flush(); await flush();
+  const oldPeer = FakePeerConnection.instances[0];
+  const oldChannel = new FakeDataChannel();
+  oldPeer.ondatachannel({ channel: oldChannel });
+  oldChannel.open();
+  oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1' }] });
+  oldChannel.error();
+  const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+  assert.ok(retry);
+  await retry.fn(); await flush(); await flush();
+  const newPeer = FakePeerConnection.instances[1];
+  const newChannel = new FakeDataChannel();
+  newPeer.ondatachannel({ channel: newChannel });
+  newChannel.open();
+  newChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
+    sourceId: 'source-2', sequence: 2, cues: [{ cueId: 'cue-2' }] });
+  oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 3, cue: { cueId: 'late-old' } });
+  assert.deepEqual(received.flatMap((packet) => packet.cues?.map((cue) => cue.cueId) || [packet.cue?.cueId]), ['cue-1', 'cue-2']);
+  assert.equal(statuses.includes('reconnecting'), true);
+  assert.equal(statuses.at(-1), 'restored');
+  await transport.stop();
+});
+
 test('Device transport starts independently, publishes snapshot/update, and clears timers on stop', async () => {
   FakePeerConnection.instances = [];
   const requests = [];
   const timers = [];
   const statuses = [];
+  let deliveredReady = false;
   const fetchImpl = async (url, init = {}) => {
     requests.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
     if (url.endsWith('/join')) return response(200, { iceServers: [], relayPolicy: 'direct-first' });
-    if (url.includes('/signal?')) return response(200, { messages: [], after: 0 });
+    if (url.includes('/signal?')) {
+      if (!deliveredReady) {
+        deliveredReady = true;
+        return response(200, { messages: [{ sequence: 1, participantId: 'viewer-1', type: 'viewer-ready', negotiationId: 'n-1', payload: {} }], after: 1 });
+      }
+      return response(200, { messages: [], after: 1 });
+    }
     if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
     if (url.endsWith('/leave')) return response(200, { left: true });
     return response(404, { error: { code: 'not_found' } });
@@ -81,6 +194,10 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   await flush();
   const join = requests.find((item) => item.url.endsWith('/join'));
   assert.deepEqual(join.body, { participantId: 'device-1', role: 'device' });
+  const discoveryPoll = timers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  discoveryPoll.cleared = true;
+  await discoveryPoll.fn();
+  await flush(); await flush();
   const peer = FakePeerConnection.instances[0];
   peer.channel.open();
   assert.equal(peer.channel.sent[0].type, 'snapshot');
@@ -95,7 +212,7 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   assert.equal(requests.some((item) => item.url.endsWith('/leave')), true);
 });
 
-test('transport renews the participant heartbeat and stops high-frequency polling after DataChannel opens', async () => {
+test('transport renews the participant heartbeat and uses low-frequency Device polling', async () => {
   FakePeerConnection.instances = [];
   const requests = [];
   const timers = [];
@@ -116,11 +233,10 @@ test('transport renews the participant heartbeat and stops high-frequency pollin
   });
   transport.start();
   await flush(); await flush();
-  const peer = FakePeerConnection.instances[0];
-  peer.channel.open();
   const heartbeat = timers.find((timer) => timer.ms === 6_000 && !timer.cleared);
   assert.ok(heartbeat);
   assert.equal(timers.some((timer) => timer.ms === 250 && !timer.cleared), false);
+  assert.ok(timers.find((timer) => timer.ms === 2_000 && !timer.cleared));
   await heartbeat.fn();
   await flush();
   assert.equal(requests.filter((url) => url.endsWith('/join')).length, 2);
@@ -155,7 +271,7 @@ test('temporary polling failure keeps the current negotiation alive and retries 
   await flush();
   assert.equal(FakePeerConnection.instances.length, 1);
   assert.equal(statuses.includes('reconnecting'), false);
-  assert.ok(timers.find((timer) => timer !== firstPoll && timer.ms === 250 && !timer.cleared));
+  assert.ok(timers.find((timer) => timer !== firstPoll && timer.ms === 1_000 && !timer.cleared));
   await transport.stop();
 });
 
@@ -163,12 +279,19 @@ test('disconnected waits for grace period and Device attempts ICE restart before
   FakePeerConnection.instances = [];
   const timers = [];
   const requests = [];
+  let deliveredReady = false;
   const transport = createWebRtcSubtitleTransport({
     meetingId: 'meeting-1', role: 'device', participantId: 'device-disconnected',
     fetchImpl: async (url, init = {}) => {
       requests.push({ url, body: init.body ? JSON.parse(init.body) : null });
       if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
-      if (url.includes('/signal?')) return response(200, { messages: [], after: 0 });
+      if (url.includes('/signal?')) {
+        if (!deliveredReady) {
+          deliveredReady = true;
+          return response(200, { messages: [{ sequence: 1, participantId: 'viewer-1', type: 'viewer-ready', negotiationId: 'n-1', payload: {} }], after: 1 });
+        }
+        return response(200, { messages: [], after: 1 });
+      }
       if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
       if (url.endsWith('/leave')) return response(200, { left: true });
       return response(200, {});
@@ -179,6 +302,8 @@ test('disconnected waits for grace period and Device attempts ICE restart before
     clearTimer(timer) { timer.cleared = true; },
   });
   transport.start(); await flush(); await flush();
+  await timers.find((timer) => timer.ms === 2_000 && !timer.cleared).fn();
+  await flush(); await flush();
   const peer = FakePeerConnection.instances[0];
   peer.connectionState = 'disconnected';
   peer.onconnectionstatechange();
@@ -192,15 +317,22 @@ test('disconnected waits for grace period and Device attempts ICE restart before
   await transport.stop();
 });
 
-test('DataChannel error triggers full transport recovery', async () => {
+test('Device DataChannel error closes only its peer while discovery keeps running', async () => {
   FakePeerConnection.instances = [];
   const timers = [];
   const statuses = [];
+  let deliveredReady = false;
   const transport = createWebRtcSubtitleTransport({
     meetingId: 'meeting-1', role: 'device', participantId: 'device-channel-error',
     fetchImpl: async (url) => {
       if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
-      if (url.includes('/signal?')) return response(200, { messages: [], after: 0 });
+      if (url.includes('/signal?')) {
+        if (!deliveredReady) {
+          deliveredReady = true;
+          return response(200, { messages: [{ sequence: 1, participantId: 'viewer-1', type: 'viewer-ready', negotiationId: 'n-1', payload: {} }], after: 1 });
+        }
+        return response(200, { messages: [], after: 1 });
+      }
       if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
       if (url.endsWith('/leave')) return response(200, { left: true });
       return response(200, {});
@@ -212,9 +344,12 @@ test('DataChannel error triggers full transport recovery', async () => {
     onStatus: (status) => statuses.push(status.value),
   });
   transport.start(); await flush(); await flush();
+  await timers.find((timer) => timer.ms === 2_000 && !timer.cleared).fn();
+  await flush(); await flush();
   FakePeerConnection.instances[0].channel.error();
   assert.equal(statuses.at(-1), 'reconnecting');
-  assert.ok(timers.find((timer) => timer.ms === 1_000 && !timer.cleared));
+  assert.equal(FakePeerConnection.instances[0].closed, true);
+  assert.ok(timers.find((timer) => timer.ms === 2_000 && !timer.cleared));
   await transport.stop();
 });
 

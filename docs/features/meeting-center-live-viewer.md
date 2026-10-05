@@ -255,7 +255,9 @@ The initial snapshot returns the latest 100 Cues and an opaque cursor for
 loading older pages. Each older page is merged by Cue ID without duplicates or
 omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by
 Segment sequence followed by Cue sequence. A newer version may replace the same Cue;
-a stale version cannot overwrite a newer one.
+a stale version cannot overwrite a newer one. Device snapshots and cloud events
+carry validated Segment sequence. A live Cue without resolved Segment order stays
+after ordered historical Cues. Source and translation versions merge independently.
 
 Reconnect behavior:
 
@@ -266,9 +268,10 @@ Reconnect behavior:
 5. Apply new events through the same deduplication and ordering rules.
 6. Refetch the snapshot if a sequence gap is detected.
 
-The WebRTC fast path renews its signaling participant with an authorized `/join`
-heartbeat, stops high-frequency polling after the DataChannel opens, and keeps
-the current Cue view during recovery. A transient `disconnected` state receives
+The WebRTC fast path renews its signaling participant with an authorized `/join`.
+Viewer join requests a fresh negotiation, Device maintains a targeted peer per
+Viewer, and low-frequency discovery polling continues while channels are open.
+The Viewer keeps current Cues during recovery. A transient `disconnected` state receives
 a five-second grace period; the Device then attempts ICE restart and rebuilds
 the peer if recovery does not complete within ten seconds. Full reconnect uses
 at most six attempts with jittered exponential delays capped at ten seconds.
@@ -278,7 +281,9 @@ retry exhaustion exposes a manual “重新連線” action.
 
 DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
 the same source to replay after its last received transport sequence. A changed
-source starts from a snapshot. Cue merge remains authoritative by `cueId` and
+source starts from a snapshot. Replay older than retained history also returns
+a snapshot. Cloud Cue publication continues while WebRTC is connected, allowing
+snapshot and Realtime replay after a later outage. Cue merge remains authoritative by `cueId` and
 source/translation/refinement versions, so a late snapshot cannot replace a
 newer Cue.
 

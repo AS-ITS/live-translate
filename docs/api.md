@@ -295,6 +295,12 @@ server-only `WEBRTC_ICE_SERVERS_JSON` is a JSON `RTCIceServer[]`; only explicit
 STUN/TURN URL schemes are accepted, and invalid JSON or entries fail signaling
 startup without logging credentials. Cross-network reliability requires a
 reachable TURN service; configuration alone is not acceptance evidence.
+`POST /api/webrtc/:meetingId/signal` accepts `viewer-ready`, `offer`, `answer`,
+and `ice-candidate`. Viewers send `viewer-ready` with a `negotiationId`; offers,
+answers, and candidates include that ID and `targetParticipantId`. Poll results
+only expose messages for the joined participant or legacy untargeted messages.
+The server verifies the target participant and role. Viewer access still uses
+the existing share code/token, while Device access uses recording permission.
 
 ## Meeting glossary import preview
 

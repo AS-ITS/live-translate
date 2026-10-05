@@ -13,7 +13,7 @@ const DEFAULTS = Object.freeze({
   iceServers: [],
 });
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice-candidate']);
+const SIGNAL_TYPES = new Set(['viewer-ready', 'offer', 'answer', 'ice-candidate']);
 const SHARE_ROLES = new Set(['host', 'recorder', 'viewer']);
 const DEVICE_ROLES = new Set(['device', 'host', 'recorder']);
 const ICE_SCHEMES = new Set(['stun:', 'stuns:', 'turn:', 'turns:']);
@@ -174,13 +174,23 @@ export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespac
       return parseRedisJson(rawParticipant);
     },
 
-    async append({ meetingId, participantId, type, payload }) {
+    async append({ meetingId, participantId, type, payload, targetParticipantId, negotiationId }) {
       const participant = await getParticipant(meetingId, participantId);
+      if (type === 'viewer-ready' && participant.role !== 'viewer') {
+        fail('signal_forbidden', 403, 'Only Viewers can request a negotiation.');
+      }
       if (participant.role === 'viewer' && type === 'offer') {
         fail('signal_forbidden', 403, 'Viewer participants cannot send offers.');
       }
       if (DEVICE_ROLES.has(participant.role) && type === 'answer') {
         fail('signal_forbidden', 403, 'Device participants cannot send answers.');
+      }
+      if (targetParticipantId) {
+        if (targetParticipantId === participantId) fail('signal_forbidden', 403, 'Participant cannot signal itself.');
+        const target = await getParticipant(meetingId, targetParticipantId);
+        if ((participant.role === 'viewer') === (target.role === 'viewer')) {
+          fail('signal_forbidden', 403, 'Signaling target role is invalid.');
+        }
       }
       const encodedPayload = serialize(payload);
       if (Buffer.byteLength(encodedPayload, 'utf8') > config.maxMessageBytes) {
@@ -198,6 +208,8 @@ export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespac
         payload,
         sentAt,
         expiresAt: sentAt + config.messageTtlMs,
+        ...(targetParticipantId ? { targetParticipantId } : {}),
+        ...(negotiationId ? { negotiationId } : {}),
         ...(type === 'ice-candidate' ? { candidateKind: classifyCandidate(payload?.candidate) } : {}),
       });
       const messageKey = keys.message(sequence);
@@ -219,7 +231,8 @@ export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespac
       const messages = stored.map(parseRedisJson).filter((message) => message && message.expiresAt > current);
       const cursor = messages.reduce((latest, message) => Math.max(latest, message.sequence), after);
       return Object.freeze({
-        messages: messages.filter((message) => message.participantId !== participantId),
+        messages: messages.filter((message) => message.participantId !== participantId
+          && (!message.targetParticipantId || message.targetParticipantId === participantId)),
         after: cursor,
       });
     },
@@ -346,12 +359,15 @@ export function createWebRtcSignalingRoute({ redis, resolveShareToken, authorize
 
     async signal({ meetingId, body }) {
       await assertConfigured();
-      const { participantId, type, payload } = normalizeBody(body);
+      const { participantId, type, payload, targetParticipantId, negotiationId } = normalizeBody(body);
       assertIdentifier(meetingId, 'invalid_meeting', 'Meeting id');
       assertIdentifier(participantId, 'invalid_participant', 'Participant id');
-      if (!SIGNAL_TYPES.has(type)) fail('invalid_signal_type', 400, 'Only offer, answer, and ice-candidate are supported.');
+      if (!SIGNAL_TYPES.has(type)) fail('invalid_signal_type', 400, 'Unsupported signaling type.');
       if (payload === undefined) fail('invalid_signal_payload', 400, 'A signaling payload is required.');
-      const message = await store.append({ meetingId, participantId, type, payload });
+      if (targetParticipantId !== undefined) assertIdentifier(targetParticipantId, 'invalid_participant', 'Target participant id');
+      if (negotiationId !== undefined) assertIdentifier(negotiationId, 'invalid_negotiation', 'Negotiation id');
+      if (type === 'viewer-ready' && !negotiationId) fail('invalid_negotiation', 400, 'Viewer negotiation id is required.');
+      const message = await store.append({ meetingId, participantId, type, payload, targetParticipantId, negotiationId });
       return Object.freeze({ accepted: true, id: message.id, sequence: message.sequence, expiresAt: message.expiresAt });
     },
 

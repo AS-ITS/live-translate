@@ -24,6 +24,15 @@ test('source creates bounded snapshot and replay envelopes', () => {
   assert.equal(createEnvelope(SUBTITLE_ENVELOPE_TYPES.meetingStopped, { meetingId: 'm-1' }).type, 'meeting.stopped');
 });
 
+test('source sends snapshot when replay cursor predates bounded history', () => {
+  const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-1', maxHistory: 2 });
+  for (let index = 1; index <= 4; index += 1) source.append({ cueId: `c-${index}`, revision: 1 });
+  const recovered = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'gap',
+    sourceId: 'source-1', afterSequence: 1 }));
+  assert.equal(recovered.type, 'snapshot');
+  assert.deepEqual(recovered.cues.map((cue) => cue.cueId), ['c-1', 'c-2', 'c-3', 'c-4']);
+});
+
 test('source replays the same stream cursor and snapshots a replacement stream', () => {
   const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-current' });
   source.append({ cueId: 'c-1', revision: 1, text: 'one' });

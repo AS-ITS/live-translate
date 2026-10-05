@@ -150,3 +150,68 @@ test('Meeting Viewer keeps current subtitles while a gap snapshot retries a tran
   await expect(page.locator('.viewer-cue-row')).toHaveCount(2);
   expect(snapshots).toBe(3);
 });
+
+test('history scrolling keeps new Cues in DOM order and return-to-latest continues following', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
+    class MockEventSource extends EventTarget {
+      static instances = [];
+      constructor() {
+        super();
+        MockEventSource.instances.push(this);
+        queueMicrotask(() => this.onopen?.(new Event('open')));
+      }
+      close() {}
+    }
+    window.EventSource = MockEventSource;
+    window.__emitViewerCue = (payload) => MockEventSource.instances.at(-1)?.dispatchEvent(
+      new MessageEvent('cue.append', { data: JSON.stringify(payload) })
+    );
+  });
+  const oldCues = Array.from({ length: 25 }, (_, index) => ({
+    cueId: `old-${index + 1}`, segmentId: 'segment-1', segmentSequence: 1, sequence: index + 1,
+    sourceText: `歷史字幕 ${index + 1}`, status: 'final', sourceVersion: 1, translationVersion: 0,
+  }));
+  await page.route(/\/api\/shared-meetings\/code\/ORDER1(?:\?.*)?$/, (route) => route.fulfill({
+    json: { meeting: { id: 'meeting-1', name: '字幕排序', status: 'active' }, cues: oldCues,
+      cursor: { eventId: 25, cueSequence: 25 } },
+  }));
+  await page.goto('/#viewer?code=ORDER1');
+  const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  await expect(viewport.locator('[data-cue-id="old-25"]')).toBeVisible();
+  await viewport.hover();
+  await page.mouse.wheel(0, -1800);
+  await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+
+  for (let index = 1; index <= 3; index += 1) {
+    await page.evaluate((payload) => window.__emitViewerCue(payload), {
+      eventId: 25 + index, type: 'cue.append',
+      cue: { cueId: `new-${index}`, segmentId: 'segment-2', sequence: index,
+        sourceText: `新字幕 ${index}`, status: 'final', sourceVersion: 1, translationVersion: 0 },
+    });
+  }
+  await page.getByTestId('viewer-follow-latest-button').click();
+  await expect(viewport.locator('[data-cue-id="new-3"]')).toBeVisible();
+  await expect.poll(() => viewport.evaluate((node) => ({
+    ids: [...node.querySelectorAll('.viewer-cue-row')].map((row) => row.dataset.cueId),
+    atBottom: node.scrollHeight - node.scrollTop - node.clientHeight < 24,
+  }))).toMatchObject({ atBottom: true, ids: expect.arrayContaining(['new-3']) });
+  const bottomId = await viewport.evaluate((node) => [...node.querySelectorAll('.viewer-cue-row')]
+    .sort((a, b) => Number(a.dataset.cueIndex) - Number(b.dataset.cueIndex)).at(-1)?.dataset.cueId);
+  expect(bottomId).toBe('new-3');
+
+  await page.evaluate((payload) => window.__emitViewerCue(payload), {
+    eventId: 29, type: 'cue.update',
+    cue: { cueId: 'new-3', segmentId: 'segment-2', sequence: 3, sourceText: '新字幕 3',
+      translatedText: 'Delayed translation with an additional wrapped line', status: 'final',
+      sourceVersion: 1, translationVersion: 1 },
+  });
+  await expect(viewport.locator('[data-cue-id="new-3"]')).toContainText('Delayed translation');
+  await page.evaluate((payload) => window.__emitViewerCue(payload), {
+    eventId: 30, type: 'cue.append',
+    cue: { cueId: 'new-4', segmentId: 'segment-2', sequence: 4,
+      sourceText: '繼續跟隨', status: 'final', sourceVersion: 1, translationVersion: 0 },
+  });
+  await expect(viewport.locator('[data-cue-id="new-4"]')).toBeVisible();
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(24);
+});

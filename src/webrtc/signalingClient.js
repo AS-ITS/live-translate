@@ -58,8 +58,10 @@ export function createWebRtcSignalingClient({
         body: JSON.stringify({ participantId, role, ...(role === 'viewer' ? credential : {}) }),
       });
     },
-    signal(type, payload) {
-      return request('/signal', { method: 'POST', body: JSON.stringify({ participantId, type, payload }) });
+    signal(type, payload, { targetParticipantId, negotiationId } = {}) {
+      return request('/signal', { method: 'POST', body: JSON.stringify({ participantId, type, payload,
+        ...(targetParticipantId ? { targetParticipantId } : {}),
+        ...(negotiationId ? { negotiationId } : {}) }) });
     },
     poll(after = 0) {
       return request(`/signal?participantId=${encodeURIComponent(participantId)}&after=${encodeURIComponent(after)}`);

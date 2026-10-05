@@ -67,6 +67,7 @@ export function createSubtitleSource({ meetingId, sourceId = createSourceId(), m
         : createReplayRequest({ meetingId, ...request });
       const afterSequence = Number(requestEnvelope.afterSequence) || 0;
       if (requestEnvelope.sourceId && requestEnvelope.sourceId !== sourceId) return this.snapshot();
+      if (history.length > 0 && afterSequence < history[0].sequence - 1) return this.snapshot();
       return createEnvelope(SUBTITLE_ENVELOPE_TYPES.replayResponse, {
         meetingId,
         sourceId,

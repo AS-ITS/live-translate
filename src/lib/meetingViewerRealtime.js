@@ -36,39 +36,50 @@ export function createMeetingViewerRealtimeController({
 
   async function connect() {
     const currentGeneration = ++generation;
+    const isCurrent = () => !stopped && currentGeneration === generation;
     clearScheduledReconnect();
     onConnecting?.();
     try {
       const response = await fetchImpl(`${basePath}/realtime-token`, { method: 'POST' });
       const authorization = await response.json().catch(() => null);
       if (!response.ok) throw createRealtimeError(response.status, authorization);
-      if (stopped || currentGeneration !== generation) return;
+      if (!isCurrent()) return;
       accessToken = authorization.accessToken;
       if (!realtimeClient) realtimeClient = clientFactory(async () => accessToken);
       if (!realtimeClient) throw new Error('無法建立即時字幕連線。');
       if (client) await realtimeClient.realtime.setAuth(accessToken);
       else await realtimeClient.realtime.setAuth();
+      if (!isCurrent()) return;
       if (channel) await realtimeClient.removeChannel(channel);
+      if (!isCurrent()) return;
       channel = realtimeClient
         .channel(authorization.channel, { config: { private: true } })
-        .on('broadcast', { event: 'cue.append' }, (message) => onEvent?.(message?.payload || message));
+        .on('broadcast', { event: 'cue.append' }, (message) => {
+          if (isCurrent()) onEvent?.(message?.payload || message);
+        });
       channel.subscribe(async (status) => {
-        if (stopped || currentGeneration !== generation) return;
+        if (!isCurrent()) return;
         if (status === 'SUBSCRIBED') {
           reconnectAttempts = 0;
           try {
             await onSubscribed?.({
+              isCurrent,
               async replay(afterEventId = 0) {
+                if (!isCurrent()) return { events: [] };
                 const response = await fetchImpl(`${replayPath}?after=${encodeURIComponent(afterEventId)}`, {
                   headers: { Accept: 'application/json' }
                 });
+                if (!isCurrent()) return { events: [] };
                 if (!response.ok) throw new Error('無法補抓遺失的即時字幕。');
                 const result = await response.json();
+                if (!isCurrent()) return { events: [] };
                 onTelemetry?.('replay_success');
                 return result;
               }
             });
+            if (!isCurrent()) return;
           } catch (error) {
+            if (!isCurrent()) return;
             onTelemetry?.('replay_failure');
             onError?.(error);
             if (isTerminalRealtimeError(error)) {
@@ -86,7 +97,7 @@ export function createMeetingViewerRealtimeController({
         }
       });
     } catch (error) {
-      if (stopped || currentGeneration !== generation) return;
+      if (!isCurrent()) return;
       onError?.(error);
       if (isTerminalRealtimeError(error)) {
         stopped = true;

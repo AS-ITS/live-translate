@@ -452,6 +452,9 @@ const activeMeetingCheckpointRef = useRef(null);
     enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment'].includes(liveController.status)),
     lifecycleStatus: liveController.status,
     cues: liveController.subtitleCueState?.finalCues || [],
+    segmentId: activeMeetingCheckpointRef.current?.segmentId,
+    segmentSequence: activeMeetingCheckpointRef.current?.segmentSequence,
+    segments: selectedMeetingDetail?.segments || [],
   });
 
   useEffect(() => subscribeToLiveCredentialClear(() => {
@@ -1489,13 +1492,11 @@ const activeMeetingCheckpointRef = useRef(null);
     ));
     localMeetingCuePersistenceQueueRef.current = localSave;
     void localSave.then(async () => {
-      if (webRtcDevice.value !== 'connected') {
-        try {
-          await publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
-        } catch {
-          setMeetingCheckpointStatus('error');
-          setMeetingCheckpointErrorMessage('字幕已保存在本機，但雲端同步失敗。結束時會再重試。');
-        }
+      try {
+        await publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
+      } catch {
+        setMeetingCheckpointStatus('error');
+        setMeetingCheckpointErrorMessage('字幕已保存在本機，但雲端同步失敗。結束時會再重試。');
       }
     }).catch(() => {
       setMeetingCheckpointStatus('error');
@@ -1938,10 +1939,11 @@ const activeMeetingCheckpointRef = useRef(null);
       resetActiveTranscriptForNextSegment(resumeTranscript.nextSequence);
       setTranscriptTimeOriginValue();
       setCopiedArticleStream('');
-      activeMeetingCheckpointRef.current = {
-        meetingId,
-        segmentId: resumableSegment.id
-      };
+    activeMeetingCheckpointRef.current = {
+      meetingId,
+      segmentId: resumableSegment.id,
+      segmentSequence: resumableSegment.sequence
+    };
       setResumeDraft({
         sessionId: (await sessionReadApiClientRef.current.listSessionHistory().catch(() => []))
           .find((record) => record.meetingId === meetingId && ['active', 'paused'].includes(record.status))?.id || null,

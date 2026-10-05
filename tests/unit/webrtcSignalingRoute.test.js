@@ -102,6 +102,23 @@ test('two Vercel handler instances share Redis-backed join, signal, and polling 
   assert.equal([...ctx.redis.values.keys()].some((key) => key.includes('subtitle')), false);
 });
 
+test('targeted signaling reaches only the joined Viewer for its negotiation', async () => {
+  const ctx = setup({ maxParticipantsPerMeeting: 4, maxMessageBytes: 256 });
+  for (const participantId of ['host-1', 'viewer-a', 'viewer-b']) {
+    await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: participantId === 'host-1'
+      ? { participantId, role: 'host', shareToken: 'host' }
+      : { participantId, role: 'viewer', shareToken: 'viewer' } });
+  }
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'host-1', type: 'offer', payload: { type: 'offer', sdp: 'private' },
+    targetParticipantId: 'viewer-a', negotiationId: 'n-a'
+  } });
+  const first = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=viewer-a&after=0' });
+  const second = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=viewer-b&after=0' });
+  assert.deepEqual(first.json.messages.map((message) => message.negotiationId), ['n-a']);
+  assert.deepEqual(second.json.messages, []);
+});
+
 test('join heartbeat renews participant identity and TTL after reauthorization', async () => {
   let now = 1_000;
   const redis = new FakeRedis(() => now);

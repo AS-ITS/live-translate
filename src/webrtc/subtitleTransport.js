@@ -5,6 +5,8 @@ import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 const RETRY_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 8_000, 10_000, 10_000]);
 const DISCONNECTED_GRACE_MS = 5_000;
 const ICE_RESTART_TIMEOUT_MS = 10_000;
+const NEGOTIATION_TIMEOUT_MS = 12_000;
+const CONNECTED_POLL_INTERVAL_MS = 2_000;
 
 export function createWebRtcSubtitleTransport({
   meetingId,
@@ -32,6 +34,12 @@ export function createWebRtcSubtitleTransport({
   const source = role === 'device' ? createSubtitleSource({ meetingId, maxHistory: 500 }) : null;
   const cueVersions = new Map();
   let active = null;
+  const devicePeers = new Map();
+  let devicePollTimer = null;
+  let devicePollAfter = 0;
+  let devicePollFailures = 0;
+  let joined = false;
+  let iceServers = [];
   let heartbeatTimer = null;
   let reconnectTimer = null;
   let connectionEpoch = 0;
@@ -59,7 +67,8 @@ export function createWebRtcSubtitleTransport({
   }
 
   function isCurrent(context) {
-    return !stopped && active === context && context.epoch === connectionEpoch;
+    return !stopped && context.epoch === connectionEpoch
+      && (role === 'device' ? devicePeers.get(context.viewerId) === context : active === context);
   }
 
   function clearContextTimer(context, key) {
@@ -73,11 +82,23 @@ export function createWebRtcSubtitleTransport({
     clearContextTimer(context, 'pollTimer');
     clearContextTimer(context, 'disconnectTimer');
     clearContextTimer(context, 'iceRestartTimer');
+    clearContextTimer(context, 'negotiationTimer');
+    if (context.viewerId && devicePeers.get(context.viewerId) === context) devicePeers.delete(context.viewerId);
     context.pendingCandidates = [];
     context.adapter?.close();
     context.adapter = null;
     context.channel = null;
     context.pc?.close?.();
+  }
+
+  function cleanupAllPeers() {
+    cleanupPeer();
+    for (const context of [...devicePeers.values()]) cleanupPeer(context);
+  }
+
+  function clearDevicePoll() {
+    if (devicePollTimer) clearTimer(devicePollTimer);
+    devicePollTimer = null;
   }
 
   function clearHeartbeat() {
@@ -104,69 +125,89 @@ export function createWebRtcSubtitleTransport({
   }
 
   async function connect({ reconnecting = false } = {}) {
-    cleanupPeer();
+    cleanupAllPeers();
+    clearDevicePoll();
     clearHeartbeat();
+    joined = false;
+    devicePollAfter = 0;
+    devicePollFailures = 0;
     const epoch = ++connectionEpoch;
     status(reconnecting ? 'reconnecting' : 'connecting', { epoch, attempt: retryAttempt });
     try {
-      const joined = await client.join();
+      const joinResult = await client.join();
       if (stopped || epoch !== connectionEpoch) return;
+      joined = true;
+      iceServers = joinResult.iceServers || [];
+      scheduleHeartbeat(joinResult.ttlMs, epoch);
+      if (role === 'device') {
+        status('waiting', { epoch });
+        scheduleDevicePoll(epoch);
+        return;
+      }
       const context = {
         epoch,
         negotiationId: createIdentifier('negotiation'),
-        pc: new RTCPeerConnectionImpl({ iceServers: joined.iceServers || [] }),
+        pc: new RTCPeerConnectionImpl({ iceServers }),
         adapter: null,
         channel: null,
         pollTimer: null,
         disconnectTimer: null,
         iceRestartTimer: null,
+        negotiationTimer: null,
         pollAfter: 0,
+        pollFailures: 0,
         connected: false,
         pendingCandidates: [],
       };
       active = context;
-      scheduleHeartbeat(joined.ttlMs, epoch);
-      context.pc.onicecandidate = ({ candidate }) => {
-        if (candidate && isCurrent(context)) {
-          void client.signal('ice-candidate', candidate).catch(handleAsyncError);
-        }
-      };
-      context.pc.onconnectionstatechange = () => {
-        if (!isCurrent(context)) return;
-        if (context.pc.connectionState === 'connected') {
-          clearContextTimer(context, 'disconnectTimer');
-          clearContextTimer(context, 'iceRestartTimer');
-          if (context.channel?.readyState === 'open') {
-            context.connected = true;
-            clearContextTimer(context, 'pollTimer');
-            retryAttempt = 0;
-            status(hadOutage ? 'restored' : 'connected', { epoch: context.epoch, recovered: hadOutage });
-            hadOutage = false;
-          }
-        } else if (context.pc.connectionState === 'disconnected') {
-          context.connected = false;
-          scheduleDisconnectedRecovery(context);
-        } else if (context.pc.connectionState === 'failed') {
-          scheduleReconnect('peer_failed');
-        }
-      };
-      context.pc.ondatachannel = ({ channel: incoming }) => wireChannel(context, incoming);
-      if (role === 'device') {
-        wireChannel(context, context.pc.createDataChannel('subtitles'));
-        const offer = await context.pc.createOffer();
-        if (!isCurrent(context)) return;
-        await context.pc.setLocalDescription(offer);
-        if (!isCurrent(context)) return;
-        await client.signal('offer', context.pc.localDescription);
-        if (!isCurrent(context)) return;
-      } else {
-        status('waiting', { epoch, negotiationId: context.negotiationId });
-      }
+      wirePeer(context);
+      await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
+      if (!isCurrent(context)) return;
+      status('waiting', { epoch, negotiationId: context.negotiationId });
+      context.negotiationTimer = setTimer(() => {
+        context.negotiationTimer = null;
+        if (isCurrent(context) && !context.connected) scheduleReconnect('negotiation_timeout');
+      }, NEGOTIATION_TIMEOUT_MS);
       schedulePoll(context);
     } catch (error) {
       if (stopped || epoch !== connectionEpoch) return;
       handleConnectError(error, 'connect_failed');
     }
+  }
+
+  function wirePeer(context) {
+    context.pc.onicecandidate = ({ candidate }) => {
+      if (!candidate || !isCurrent(context) || !context.peerId) return;
+      void client.signal('ice-candidate', candidate, {
+        targetParticipantId: context.peerId, negotiationId: context.negotiationId,
+      }).catch((error) => { if (isCurrent(context)) handleAsyncError(error); });
+    };
+    context.pc.onconnectionstatechange = () => {
+      if (!isCurrent(context)) return;
+      if (context.pc.connectionState === 'connected') {
+        clearContextTimer(context, 'disconnectTimer');
+        clearContextTimer(context, 'iceRestartTimer');
+        if (context.channel?.readyState === 'open') markConnected(context);
+      } else if (context.pc.connectionState === 'disconnected') {
+        context.connected = false;
+        scheduleDisconnectedRecovery(context);
+        if (role === 'viewer') schedulePoll(context);
+      } else if (context.pc.connectionState === 'failed') {
+        if (role === 'device') cleanupDevicePeer(context);
+        else scheduleReconnect('peer_failed');
+      }
+    };
+    context.pc.ondatachannel = ({ channel }) => wireChannel(context, channel);
+  }
+
+  function markConnected(context) {
+    context.connected = true;
+    clearContextTimer(context, 'negotiationTimer');
+    clearContextTimer(context, 'disconnectTimer');
+    clearContextTimer(context, 'iceRestartTimer');
+    retryAttempt = 0;
+    status(hadOutage ? 'restored' : 'connected', { epoch: context.epoch, recovered: hadOutage });
+    hadOutage = false;
   }
 
   function wireChannel(context, nextChannel) {
@@ -184,17 +225,11 @@ export function createWebRtcSubtitleTransport({
           onEnvelope?.(envelope);
         }
       },
-      onError: handleAsyncError,
+      onError: (error) => { if (isCurrent(context)) handleAsyncError(error); },
     });
     nextChannel.onopen = () => {
       if (!isCurrent(context)) return;
-      context.connected = true;
-      clearContextTimer(context, 'pollTimer');
-      clearContextTimer(context, 'disconnectTimer');
-      clearContextTimer(context, 'iceRestartTimer');
-      retryAttempt = 0;
-      status(hadOutage ? 'restored' : 'connected', { epoch: context.epoch, recovered: hadOutage });
-      hadOutage = false;
+      markConnected(context);
       if (role === 'device') context.adapter.send(source.snapshot());
       else context.adapter.send(createReplayRequest({
         meetingId,
@@ -204,45 +239,134 @@ export function createWebRtcSubtitleTransport({
       }));
     };
     nextChannel.onclose = () => {
-      if (isCurrent(context)) scheduleReconnect('data_channel_closed');
+      if (!isCurrent(context)) return;
+      if (role === 'device') cleanupDevicePeer(context);
+      else scheduleReconnect('data_channel_closed');
     };
     nextChannel.onerror = (error) => {
       if (!isCurrent(context)) return;
       handleAsyncError(error);
-      scheduleReconnect('data_channel_error');
+      if (role === 'device') cleanupDevicePeer(context);
+      else scheduleReconnect('data_channel_error');
     };
   }
 
-  function schedulePoll(context) {
-    if (!isCurrent(context) || context.connected || context.pollTimer) return;
+  function cleanupDevicePeer(context) {
+    cleanupPeer(context);
+    if (devicePeers.size === 0 && !stopped) {
+      hadOutage = true;
+      status('reconnecting', { epoch: connectionEpoch, reason: 'device_peer_closed' });
+    }
+  }
+
+  async function createDevicePeer(viewerId, negotiationId, epoch) {
+    if (stopped || epoch !== connectionEpoch || !viewerId || !negotiationId) return;
+    const previous = devicePeers.get(viewerId);
+    if (previous?.negotiationId === negotiationId && previous.connected) return;
+    if (previous) cleanupPeer(previous);
+    const context = {
+      epoch, viewerId, peerId: viewerId, negotiationId,
+      pc: new RTCPeerConnectionImpl({ iceServers }), adapter: null, channel: null,
+      pollTimer: null, disconnectTimer: null, iceRestartTimer: null, negotiationTimer: null,
+      connected: false, pendingCandidates: [],
+    };
+    devicePeers.set(viewerId, context);
+    wirePeer(context);
+    wireChannel(context, context.pc.createDataChannel('subtitles'));
+    try {
+      const offer = await context.pc.createOffer();
+      if (!isCurrent(context)) return;
+      await context.pc.setLocalDescription(offer);
+      if (!isCurrent(context)) return;
+      await client.signal('offer', context.pc.localDescription, {
+        targetParticipantId: viewerId, negotiationId,
+      });
+      if (!isCurrent(context)) return;
+      context.negotiationTimer = setTimer(() => {
+        context.negotiationTimer = null;
+        if (isCurrent(context) && !context.connected) cleanupDevicePeer(context);
+      }, NEGOTIATION_TIMEOUT_MS);
+    } catch (error) {
+      if (isCurrent(context)) {
+        handleAsyncError(error);
+        cleanupDevicePeer(context);
+      }
+    }
+  }
+
+  function scheduleDevicePoll(epoch, delay = CONNECTED_POLL_INTERVAL_MS) {
+    if (stopped || epoch !== connectionEpoch || devicePollTimer) return;
+    devicePollTimer = setTimer(async () => {
+      devicePollTimer = null;
+      if (stopped || epoch !== connectionEpoch) return;
+      try {
+        const result = await client.poll(devicePollAfter);
+        if (stopped || epoch !== connectionEpoch) return;
+        devicePollFailures = 0;
+        for (const message of result.messages || []) {
+          devicePollAfter = Math.max(devicePollAfter, Number(message.sequence) || 0);
+          if (message.type === 'viewer-ready') {
+            await createDevicePeer(message.participantId, message.negotiationId, epoch);
+          } else {
+            const context = devicePeers.get(message.participantId);
+            if (context?.negotiationId === message.negotiationId) await handleSignal(context, message);
+          }
+          if (stopped || epoch !== connectionEpoch) return;
+        }
+        devicePollAfter = Math.max(devicePollAfter, Number(result.after) || 0);
+      } catch (error) {
+        if (stopped || epoch !== connectionEpoch) return;
+        if (isTerminalError(error) || error?.code === 'participant_unauthorized') {
+          handleConnectError(error, 'device_poll_failed');
+          return;
+        }
+        handleAsyncError(error);
+        devicePollFailures = Math.min(devicePollFailures + 1, RETRY_DELAYS_MS.length);
+      }
+      const nextDelay = devicePollFailures
+        ? jitter(RETRY_DELAYS_MS[devicePollFailures - 1], random)
+        : CONNECTED_POLL_INTERVAL_MS;
+      scheduleDevicePoll(epoch, nextDelay);
+    }, delay);
+  }
+
+  function schedulePoll(context, delay = null) {
+    if (!isCurrent(context) || context.pollTimer) return;
     context.pollTimer = setTimer(async () => {
       context.pollTimer = null;
-      if (!isCurrent(context) || context.connected) return;
+      if (!isCurrent(context)) return;
       try {
         const result = await client.poll(context.pollAfter);
-        if (!isCurrent(context) || context.connected) return;
+        if (!isCurrent(context)) return;
+        context.pollFailures = 0;
         for (const message of result.messages || []) {
           context.pollAfter = Math.max(context.pollAfter, Number(message.sequence) || 0);
           await handleSignal(context, message);
-          if (!isCurrent(context) || context.connected) return;
+          if (!isCurrent(context)) return;
         }
         context.pollAfter = Math.max(context.pollAfter, Number(result.after) || 0);
       } catch (error) {
         if (!isCurrent(context)) return;
-        if (isTerminalError(error)) {
+        if (isTerminalError(error) || error?.code === 'participant_unauthorized') {
           handleConnectError(error, 'poll_terminal');
           return;
         }
         handleAsyncError(error);
+        context.pollFailures = Math.min(context.pollFailures + 1, RETRY_DELAYS_MS.length);
       }
-      schedulePoll(context);
-    }, pollIntervalMs);
+      const delay = context.pollFailures
+        ? jitter(RETRY_DELAYS_MS[context.pollFailures - 1], random)
+        : (context.connected ? CONNECTED_POLL_INTERVAL_MS : pollIntervalMs);
+      schedulePoll(context, delay);
+    }, delay ?? (context.connected ? CONNECTED_POLL_INTERVAL_MS : pollIntervalMs));
   }
 
   async function handleSignal(context, message) {
-    if (!isCurrent(context)) return;
+    if (!isCurrent(context) || message.negotiationId !== context.negotiationId) return;
     const peer = context.pc;
     if (message.type === 'offer' && role === 'viewer') {
+      if (message.targetParticipantId !== participantId) return;
+      context.peerId = message.participantId;
       await peer.setRemoteDescription(message.payload);
       if (!isCurrent(context)) return;
       await flushCandidates(context);
@@ -251,7 +375,9 @@ export function createWebRtcSubtitleTransport({
       if (!isCurrent(context)) return;
       await peer.setLocalDescription(answer);
       if (!isCurrent(context)) return;
-      await client.signal('answer', peer.localDescription);
+      await client.signal('answer', peer.localDescription, {
+        targetParticipantId: context.peerId, negotiationId: context.negotiationId,
+      });
       return;
     }
     if (message.type === 'answer' && role === 'device') {
@@ -261,6 +387,7 @@ export function createWebRtcSubtitleTransport({
       return;
     }
     if (message.type === 'ice-candidate') {
+      if (context.peerId && message.participantId !== context.peerId) return;
       if (peer.remoteDescription) await peer.addIceCandidate(message.payload);
       else context.pendingCandidates.push(message.payload);
     }
@@ -278,7 +405,9 @@ export function createWebRtcSubtitleTransport({
   function scheduleDisconnectedRecovery(context) {
     if (!isCurrent(context) || context.disconnectTimer) return;
     hadOutage = true;
-    status('reconnecting', { epoch: context.epoch, reason: 'peer_disconnected', graceMs: DISCONNECTED_GRACE_MS });
+    if (role === 'viewer' || ![...devicePeers.values()].some((peer) => peer !== context && peer.connected)) {
+      status('reconnecting', { epoch: context.epoch, reason: 'peer_disconnected', graceMs: DISCONNECTED_GRACE_MS });
+    }
     context.disconnectTimer = setTimer(async () => {
       context.disconnectTimer = null;
       if (!isCurrent(context) || context.pc.connectionState === 'connected') return;
@@ -293,20 +422,21 @@ export function createWebRtcSubtitleTransport({
         if (!isCurrent(context)) return;
         await context.pc.setLocalDescription(offer);
         if (!isCurrent(context)) return;
-        await client.signal('offer', context.pc.localDescription);
+        await client.signal('offer', context.pc.localDescription, {
+          targetParticipantId: context.viewerId, negotiationId: context.negotiationId,
+        });
         if (!isCurrent(context)) return;
         status('reconnecting', { epoch: context.epoch, reason: 'ice_restart', attempt: retryAttempt });
         context.iceRestartTimer = setTimer(() => {
           context.iceRestartTimer = null;
           if (isCurrent(context) && context.pc.connectionState !== 'connected') {
-            scheduleReconnect('ice_restart_timeout', { immediate: true });
+            cleanupDevicePeer(context);
           }
         }, ICE_RESTART_TIMEOUT_MS);
-        schedulePoll(context);
       } catch (error) {
         if (!isCurrent(context)) return;
         handleAsyncError(error);
-        scheduleReconnect('ice_restart_failed', { immediate: true });
+        cleanupDevicePeer(context);
       }
     }, DISCONNECTED_GRACE_MS);
   }
@@ -337,7 +467,9 @@ export function createWebRtcSubtitleTransport({
     if (stopped || reconnectTimer) return;
     hadOutage = true;
     clearHeartbeat();
-    cleanupPeer();
+    clearDevicePoll();
+    cleanupAllPeers();
+    joined = false;
     if (!isOnline()) {
       waitingForOnline = true;
       status('reconnecting', { reason: 'network_offline', attempt: retryAttempt });
@@ -361,9 +493,11 @@ export function createWebRtcSubtitleTransport({
     stopped = true;
     connectionEpoch += 1;
     clearHeartbeat();
+    clearDevicePoll();
     if (reconnectTimer) clearTimer(reconnectTimer);
     reconnectTimer = null;
-    cleanupPeer();
+    cleanupAllPeers();
+    joined = false;
     detachLifecycleListeners();
   }
 
@@ -379,7 +513,7 @@ export function createWebRtcSubtitleTransport({
 
   function resumeFromLifecycle() {
     if (stopped || !isOnline() || documentRef?.visibilityState === 'hidden') return;
-    if (!waitingForOnline && active?.connected && !hadOutage) return;
+    if (!waitingForOnline && !hadOutage && (role === 'device' ? joined : active?.connected)) return;
     waitingForOnline = false;
     if (reconnectTimer) clearTimer(reconnectTimer);
     reconnectTimer = null;
@@ -416,15 +550,18 @@ export function createWebRtcSubtitleTransport({
     const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
     const envelope = previous ? source.update(normalized) : source.append(normalized);
     cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
-    return envelope ? Boolean(active?.adapter?.send(envelope)) : false;
+    let sent = false;
+    for (const context of devicePeers.values()) sent = Boolean(context.adapter?.send(envelope)) || sent;
+    return sent;
   }
 
   return Object.freeze({
     participantId,
     async getStats() {
-      const context = active;
-      if (!context?.pc || typeof context.pc.getStats !== 'function') return [];
-      return candidatePairEvidence(await context.pc.getStats());
+      const contexts = role === 'device' ? [...devicePeers.values()] : [active];
+      const reports = await Promise.all(contexts.filter((context) => typeof context?.pc?.getStats === 'function')
+        .map((context) => context.pc.getStats()));
+      return reports.flatMap(candidatePairEvidence);
     },
     start() {
       stopped = false;
@@ -447,14 +584,17 @@ export function createWebRtcSubtitleTransport({
       stopped = true;
       connectionEpoch += 1;
       clearHeartbeat();
+      clearDevicePoll();
       if (reconnectTimer) clearTimer(reconnectTimer);
       reconnectTimer = null;
       waitingForOnline = false;
-      const context = active;
       if (revoke && role === 'device') {
-        context?.adapter?.send({ protocol: 'subtitle-webrtc/v1', type: SUBTITLE_ENVELOPE_TYPES.meetingStopped, meetingId });
+        for (const context of devicePeers.values()) {
+          context.adapter?.send({ protocol: 'subtitle-webrtc/v1', type: SUBTITLE_ENVELOPE_TYPES.meetingStopped, meetingId });
+        }
       }
-      cleanupPeer();
+      cleanupAllPeers();
+      joined = false;
       detachLifecycleListeners();
       try {
         if (revoke && role === 'device') await client.stop();

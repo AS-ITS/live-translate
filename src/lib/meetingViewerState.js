@@ -34,11 +34,14 @@ export function meetingEventDuplicateDetected(detail, event) {
 }
 
 export function sortMeetingCues(cues = []) {
-  return [...cues].sort((left, right) => (
-    (Number(left?.segmentSequence) || 0) - (Number(right?.segmentSequence) || 0) ||
-    (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0) ||
-    String(left?.cueId || '').localeCompare(String(right?.cueId || ''))
-  ));
+  return [...cues].sort((left, right) => {
+    const leftSegment = positiveSequence(left?.segmentSequence);
+    const rightSegment = positiveSequence(right?.segmentSequence);
+    if (leftSegment !== rightSegment) return (leftSegment ?? Infinity) - (rightSegment ?? Infinity);
+    if (leftSegment === null) return 0;
+    return (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0)
+      || String(left?.cueId || '').localeCompare(String(right?.cueId || ''));
+  });
 }
 
 export function mergeMeetingCues(existing = [], incoming = []) {
@@ -46,19 +49,42 @@ export function mergeMeetingCues(existing = [], incoming = []) {
   for (const cue of incoming) {
     if (!cue?.cueId) continue;
     const previous = byId.get(cue.cueId);
-    if (!previous || isNewerCue(cue, previous)) byId.set(cue.cueId, cue);
+    byId.set(cue.cueId, previous ? mergeCue(previous, cue) : cue);
   }
   return sortMeetingCues([...byId.values()]);
 }
 
-function isNewerCue(incoming, existing) {
-  const incomingSourceVersion = Number(incoming?.sourceVersion) || 0;
-  const existingSourceVersion = Number(existing?.sourceVersion) || 0;
-  const incomingTranslationVersion = Number(incoming?.translationVersion) || 0;
-  const existingTranslationVersion = Number(existing?.translationVersion) || 0;
-  if (incomingSourceVersion < existingSourceVersion || incomingTranslationVersion < existingTranslationVersion) return false;
-  if (incomingSourceVersion > existingSourceVersion || incomingTranslationVersion > existingTranslationVersion) return true;
-  const incomingVersion = Number(incoming?.refinement?.version) || 0;
-  const existingVersion = Number(existing?.refinement?.version) || 0;
-  return incomingVersion > existingVersion || (incomingVersion === existingVersion && JSON.stringify(incoming) !== JSON.stringify(existing));
+function positiveSequence(value) {
+  const sequence = Number(value);
+  return Number.isSafeInteger(sequence) && sequence > 0 ? sequence : null;
+}
+
+function mergeCue(existing, incoming) {
+  const merged = { ...existing, ...incoming };
+  const order = positiveSequence(existing.segmentSequence) ?? positiveSequence(incoming.segmentSequence);
+  if (order !== null) merged.segmentSequence = order;
+  else delete merged.segmentSequence;
+  merged.sequence = positiveSequence(existing.sequence) ?? positiveSequence(incoming.sequence) ?? merged.sequence;
+  merged.segmentId = existing.segmentId || incoming.segmentId;
+
+  for (const [version, fields] of [
+    ['sourceVersion', ['sourceText', 'sourceStatus', 'rawSource']],
+    ['translationVersion', ['translatedText', 'translationStatus', 'rawTranslation']],
+  ]) {
+    const previousVersion = Number(existing[version]) || 0;
+    const incomingVersion = Number(incoming[version]) || 0;
+    merged[version] = Math.max(previousVersion, incomingVersion);
+    if (incomingVersion < previousVersion || (incomingVersion === previousVersion && fields.every((field) => incoming[field] === undefined))) {
+      for (const field of fields) if (existing[field] !== undefined) merged[field] = existing[field];
+    } else {
+      for (const field of fields) if (incoming[field] === undefined && existing[field] !== undefined) merged[field] = existing[field];
+    }
+  }
+
+  const previousRefinement = Number(existing.refinement?.version) || 0;
+  const incomingRefinement = Number(incoming.refinement?.version) || 0;
+  if (previousRefinement > incomingRefinement || !incoming.refinement) merged.refinement = existing.refinement;
+  if (existing.status === 'final' && incoming.status !== 'final') merged.status = 'final';
+  merged.updatedTimeMs = Math.max(Number(existing.updatedTimeMs) || 0, Number(incoming.updatedTimeMs) || 0) || merged.updatedTimeMs;
+  return merged;
 }

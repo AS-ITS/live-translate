@@ -1,4 +1,5 @@
 import { isSupportedLanguage } from './languages.js';
+import { mergeMeetingGlossaryEntries } from '../src/lib/meetingGlossary.js';
 
 export const DEFAULT_LIVE_TRANSLATE_MODEL = 'gemini-3.5-live-translate-preview';
 export const LIVE_TRANSLATE_MODEL = DEFAULT_LIVE_TRANSLATE_MODEL;
@@ -128,7 +129,7 @@ export function buildTokenConfig({
 }
 
 export async function createLiveToken(body, options = {}) {
-  const apiKey = options.apiKey || process.env.GEMINI_API_KEY;
+  const apiKey = typeof options.apiKey === 'string' ? options.apiKey.trim() : options.apiKey;
   if (!apiKey && !options.client) {
     const error = new Error('GEMINI_API_KEY is not configured');
     error.status = 500;
@@ -141,6 +142,11 @@ export async function createLiveToken(body, options = {}) {
   const liveModel = request.mode === 'transcription'
     ? (options.liveTranscriptionModel ?? resolveLiveTranscriptionModel(process.env))
     : liveTranslateModel;
+  const globalGlossaryEntries = request.meetingId
+    ? (options.glossary === undefined
+      ? []
+      : (await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' })) || [])
+    : undefined;
   const meeting = request.meetingId && options.meetingRepository
     ? await options.meetingRepository.getMeeting(request.meetingId)
     : null;
@@ -150,8 +156,15 @@ export async function createLiveToken(body, options = {}) {
     error.code = 'meeting_not_found';
     throw error;
   }
-  const glossaryEntries = meeting
-    ? [...(meeting.glossaryEntries || []), ...privateGlossaryEntriesForTarget(meeting.privateGlossaryEntries, request.targetLanguageCode)]
+  const meetingSettings = meeting
+    ? await activeMeetingSettingsSnapshot(meeting, options.meetingRepository)
+    : null;
+  const glossaryEntries = meetingSettings
+    ? mergeMeetingGlossaryEntries(
+      [...globalGlossaryEntries, ...(meetingSettings.glossaryEntries || [])],
+      meetingSettings.privateGlossaryEntries,
+      request.targetLanguageCode
+    )
     : options.glossary === undefined
       ? undefined
       : await options.glossary.entriesFor(request.targetLanguageCode, { scope: 'live' });
@@ -185,7 +198,11 @@ export async function createLiveToken(body, options = {}) {
     const error = new Error('Failed to create Gemini ephemeral token');
     error.status = 502;
     error.cause = cause;
-    error.providerDiagnostic = safeGeminiProviderDiagnostic(cause);
+    error.providerDiagnostic = {
+      ...safeGeminiProviderDiagnostic(cause),
+      model: liveModel,
+      apiVersion: configWithGlossary.httpOptions.apiVersion
+    };
     throw error;
   }
 }
@@ -223,12 +240,13 @@ export function resolveLiveTranscriptionModel(env = process.env) {
   return value.trim();
 }
 
-function privateGlossaryEntriesForTarget(entries, targetLanguageCode) {
-  return (Array.isArray(entries) ? entries : []).map((entry) => ({
-    source: entry.source,
-    target: entry.translations?.[targetLanguageCode],
-    replacementAliases: entry.replacementAliases?.[targetLanguageCode] || []
-  })).filter((entry) => typeof entry.target === 'string' && entry.target.trim() !== '');
+async function activeMeetingSettingsSnapshot(meeting, meetingRepository) {
+  if (typeof meetingRepository?.listMeetingSegments !== 'function') return meeting;
+  const segments = await meetingRepository.listMeetingSegments(meeting.id);
+  const active = [...segments]
+    .sort((left, right) => (right.sequence ?? 0) - (left.sequence ?? 0))
+    .find((segment) => ['active', 'created'].includes(segment.status) && segment.settingsSnapshot);
+  return active?.settingsSnapshot || meeting;
 }
 
 export function resolveLiveTranslateModel(env = process.env) {
@@ -252,7 +270,7 @@ export function resolveLiveTranslateModel(env = process.env) {
 
 function glossaryInstruction(entries) {
   return [
-    'Glossary instructions: when a source term occurs, use its specified target translation in both translated speech audio and output transcription.',
+    'Glossary instructions: when a source term occurs while translating to the current target language, use its specified target translation in both translated speech audio and output transcription.',
     'Do not say or write the source term in the translated output when a required translation is provided.',
     ...entries.map((entry) => `Source term: ${entry.source}\nRequired translation: ${entry.target}`)
   ].join('\n');

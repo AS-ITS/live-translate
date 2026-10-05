@@ -133,6 +133,57 @@ test('missing refinement target does not append a Cue and emits diagnostic data'
   assert.deepEqual(await repository.listFinalCuesBySession('session-1'), []);
 });
 
+test('persists source-only Cue and merges delayed translation into the same Cue ID', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const sourceOnly = finalCue({
+    translatedText: '',
+    sourceStatus: 'finalized',
+    translationStatus: 'pending',
+    sourceVersion: 1,
+    translationVersion: 0
+  });
+  await repository.appendFinalCue(sourceOnly);
+  await repository.appendFinalCue({
+    ...sourceOnly,
+    translatedText: 'hello',
+    translationStatus: 'finalized',
+    translationVersion: 1
+  });
+
+  const cues = await repository.listFinalCuesBySession('session-1');
+  assert.equal(cues.length, 1);
+  assert.equal(cues[0].cueId, sourceOnly.cueId);
+  assert.equal(cues[0].translatedText, 'hello');
+  assert.equal(cues[0].translationStatus, 'finalized');
+});
+
+test('persists translation-only Cue and merges delayed source into the same Cue ID', async () => {
+  const { sessions, meetings } = await fixture();
+  const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });
+  const translationOnly = finalCue({
+    sourceText: '',
+    translatedText: 'hello',
+    sourceStatus: 'pending',
+    translationStatus: 'finalized',
+    sourceVersion: 0,
+    translationVersion: 1
+  });
+  await repository.appendFinalCue(translationOnly);
+  await repository.appendFinalCue({
+    ...translationOnly,
+    sourceText: '你好',
+    sourceStatus: 'finalized',
+    sourceVersion: 1
+  });
+
+  const cues = await repository.listFinalCuesBySession('session-1');
+  assert.equal(cues.length, 1);
+  assert.equal(cues[0].cueId, translationOnly.cueId);
+  assert.equal(cues[0].sourceText, '你好');
+  assert.equal(cues[0].sourceStatus, 'finalized');
+});
+
 test('partial, punctuation-only, and invalid timeline cues are rejected', async () => {
   const { sessions, meetings } = await fixture();
   const repository = createSubtitleCueRepository({ sessionRepository: sessions, meetingRepository: meetings });

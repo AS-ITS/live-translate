@@ -1,4 +1,80 @@
 # Changelog
+
+## Unreleased
+
+- 新增 lifecycle regression protection：Live 會議現在使用完整 Global Dictionary 加 Meeting Dictionary，後者同原文會覆蓋前者；`recordAudio=false` 不建立本機錄音，已完成的 OPFS/IndexedDB manifest 可在會議結果直接發現與下載；停止錄音會留在 Live 的 active Meeting，Continue Recording 與 End Meeting 共用可重試且等待 finalize 的 lifecycle。
+
+- 未完成會議現在會先開啟會議設定供使用者確認，再由設定頁進入即時字幕；已完成會議仍直接開啟翻譯紀錄。
+
+- 修正結束會議後詳情與 TXT 匯出誤讀雲端空資料的問題：Stop 會先等待完整 Final Cue 寫入 IndexedDB，詳情與瀏覽器匯出共用同一份本機 Cue，並保留 source-only、translation-only、延遲補齊與最後一句。本機保存失敗時不會清空頁面資料，重複 Stop 可安全重試。
+- 修正正式錄製流程未可靠套用會議詞彙：同名原詞現在由會議詞彙覆蓋共用詞彙，Gemini Live prompt、provider reconnect、resume 與 rollover 使用 Segment 字典快照；字幕校正改為只在同一 Cue 原文命中時套用，並保留模型原始翻譯供比對，Recorder 與 Viewer 顯示同一有效翻譯。錄製中修改詞彙從下一個 Segment 生效，既有字幕與 Gemini 原生音訊不回溯修改。
+
+- Google Workspace accounts matching `AUTH_ALLOWED_EMAIL_DOMAINS` now auto-activate through a service-role-only conditional `pending -> active` RPC after backend JWT/domain validation. Manual approval UI/API was removed; disabled accounts, super-admin roles, Meeting permissions, Viewer access, audit history, and Gemini key boundaries remain unchanged.
+
+- 修正 provider boundary 後單側字幕延遲抵達時，誤沿用該側更早 `audioTurnId` 的問題；晚到原文或翻譯現在綁定觸發等待狀態時保存的 turn identity。另修正本機靜音 finalize 後重播待處理尾字會建立額外 Cue，以及第一筆遲到事件過早清除等待 turn 的問題；新語音開始時會輪替本機 turn，而同一側多筆遲到更新仍會回到原 Cue。整合回歸涵蓋自動斷句後連續句、真正重複句、中途停頓、延遲雙側與 Recorder／Viewer 一致性。Preview pipeline trace 另加入有界序號、Cue 更新前後文字、terminal replay provenance 與 JSON 匯出。
+
+- 修正 Gemini transcript text 與獨立 `turnComplete` 邊界後，下一句錯誤沿用前一句 `audioTurnId` 並合併 Cue 的問題；新增由 server-only `LIVE_PIPELINE_TRACE_ENABLED=true` 明確啟用的 PCM → provider → normalized transcript → Cue → React render bounded spoken-turn trace，供 Vercel Preview 診斷；Production 預設停用且不保留 trace。
+
+- 修正 lifecycle v1 錄音在 lifecycle v2 Cue 外鍵上回傳 503 的相容性問題；checkpoint／cue 的伺服器日誌現在只記錄安全的 Supabase 上游狀態、錯誤分類與 constraint，不記錄 JWT、憑證或資料內容。
+- 正式錄音流程改以 OPFS 保存 MediaRecorder chunks、IndexedDB 保存 cue／checkpoint 與恢復狀態；錄製期間 WebRTC 正常時不再週期性寫入雲端 checkpoint／cue，Viewer 連線失敗時才橋接既有雲端 cue fallback，停止時補齊雲端 cue 供歷史與匯出使用。
+- 正式錄音與 Viewer 流程已接入 WebRTC DataChannel：Device 使用登入 JWT 與既有 canRecord 規則，Viewer 沿用 code/token 分享連結，自動處理 snapshot、cue append/update、replay、去重、重連與安全狀態；Realtime/SSE 仍是依賴雲端 cue 寫入的 fallback。
+- Phase 0 contract documentation now fixes the browser/local-service boundary:
+  immutable OPFS chunks are explicitly sent by the browser and the service
+  cannot read page OPFS. Cue, checkpoint, operation, and audio delivery each
+  use a browser durable pending queue with explicit ACK, resend, conflict, and
+  recovery ordering. Viewer sharing is separate from host export permission;
+  Viewer/Recorder shares stop immediately while host export/audio download
+  remains available for 30 minutes. Deployed Origin/CORS is Preview/Production
+  allowlist-only, and failed or environment-blocked tests cannot be reported
+  as a passing baseline. Phase 1 real-device acceptance remains pending.
+- Cue 的原文與翻譯現在分別追蹤完成狀態；任一側穩定後即可發布至 Viewer，延遲抵達的另一側會更新同一 `cueId`。source-only／translation-only Cue 可保存與 replay，DEV 模式並加入 Live-to-Viewer latency timestamps。
+- 修正 Viewer 在 Realtime replay 時把 SSE `: keep-alive` 心跳當成 JSON 解析、錄製一段時間後顯示錯誤的問題；replay 現在明確要求 JSON，且保留 EventSource 的 SSE fallback。
+- 會議設定的觀看連結現在會以新分頁開啟，公開 Viewer 路由也不再要求 Workspace 登入。
+- 修正即時錄製開始後頂部會議狀態仍顯示「已暫停」的問題，並在暫停完成前等待翻譯字幕儲存，重新進入後仍保留原文與翻譯。
+- Viewer header 現在只保留即時字幕標題與會議名稱，不再顯示 Gemini Key、管理入口或帳號選單。
+- 修正已登入使用者開啟 Viewer 時，共用 Supabase client 會覆寫短效 Viewer Realtime token，導致即時字幕頻道無法訂閱的問題；Viewer 現在使用獨立的 Realtime client。
+- 修正全域字典新增詞條時只保存第一個目標語言翻譯的問題；多語言翻譯現在會完整保存，新增語言也會自動選擇尚未使用的語言。新增與編輯彈窗同步改為分區表單、獨立翻譯管理卡片、行內驗證與固定操作列。
+- 修正公開 Viewer share 解析錯誤要求登入者 Supabase client，導致 Viewer detail 與 telemetry 回傳 503 的問題。
+- 強化全域字典批次操作的按鈕辨識度，並新增具確認提示的批次刪除功能。
+- 移除會議管理與即時錄製提示卡內的 Gemini API Key 輸入框，統一由頁首的 Gemini Key 設定頁輸入。
+
+- Clarified GSK-04: Live token issuance uses only recorder request-scoped keys;
+  legacy profile credential storage is removed from the current flow, with
+  isolated `GEMINI_API_KEY` use retained only for non-Live workers.
+
+- Fixed cloud Meeting creation failing with HTTP 503 after retention columns were added to the Supabase schema.
+
+## 2026-09-23
+
+- Added Issue #37 Phase 1 Meeting lifecycle v2: Supabase-transactional lifecycle
+  commands, Meeting-scoped recorder lease/fence tokens, idempotent operations,
+  stable Session identity, Segment ownership constraints, crash takeover, and
+  v1 compatibility.
+- Hardened Issue #37 Phase 1 lifecycle v2: the CRON worker now expires a
+  Meeting after 15 minutes without a persisted heartbeat, revokes its Recorder
+  and Viewer access, and schedules a 30-minute retention claim. Terminal
+  Meetings reject new writes; v2 finalized transcript data stays in
+  `subtitle_cues`; fenced audio uploads may complete or fail only before the
+  purge deadline. This adds a future purge-worker claim contract, not physical
+  data deletion.
+- Implemented Issue #37 Phase 3 retention cleanup: the bounded CRON worker now
+  claims due v2 Meetings, deletes private audio/export Storage objects before
+  the Meeting database cascade, and marks partial failures retryable. The
+  worker reports bounded purge counts without exposing Storage paths or secrets.
+- Implemented Issue #37 Phase 4 retention closeout: owner read models now expose
+  the purge deadline, expired content returns stable `410` responses, purge
+  metrics are recorded with retention labels, and lifecycle v2 writes stop
+  populating legacy transcript/segment linkage columns while preserving v1 reads.
+
+## 2026-09-22
+
+- 修正長會議 rollover 與 provider reconnect 同時操作同一 Segment 時的 recovery race；同一段落現在只允許一個 transition，避免重複 `/recover` 回傳 409 並誤顯示即時翻譯失敗。
+- 修正錄音期間 Session detail 與 translation history 同時遇到雲端 503 時仍每兩秒輪詢的問題；保留畫面字幕與錄音，並補上安全的 request ID 與 Supabase 診斷記錄。
+- 修正錄音啟動在 Segment API 失敗時，因未建立 session 的清理流程再次讀取 `.catch` 而遮蔽原始錯誤的問題。
+- Session snapshot 遇到雲端 503 時停止背景重試與重複 UI 錯誤，保留錄音與畫面上的逐字稿；明確 retry 仍可重新同步。
+- Recovery reset 不再無條件清除仍可能進行中的 single-flight 狀態，避免同一 Segment 重複送出 recover。
+- 修正 live recording recovery race，同一 Meeting Segment 的 recover/finalize 現在使用 single-flight，避免 provider error 與 connection failure 重複送出 `/recover`。
+- Live startup debug snapshot 新增 mic、capture、token、provider setup、first PCM、server event、source transcript 與 subtitle cue timing milestones；session record snapshot 不再阻塞首個 PCM。
 - 修正即時字幕同一語音輪次的累積片段與數字尾段被覆蓋；Session read / translation API 503 改為安全記錄狀態與錯誤碼並停止無限輪詢。
 
 - Live recording startup now reports origin, authentication, and Gemini credential failures separately; local development prefers `dev_frontend_origin`, microphone recording emits bounded timeslice chunks, and long-meeting segment rollover rotates to a unique Live session ID with a fresh ephemeral token.
@@ -77,6 +153,7 @@
   files under `data/` remain test/migration fixtures only.
 
 ## Unreleased
+- Issue #37 Phase 2 Viewer reads now return a bounded latest-100 Cue snapshot with opaque backward pagination, use a joined Supabase query instead of Segment-by-Segment hydration, and let public Viewers load older Cues without duplicates.
 - 修正 Supabase Session 寫入 PostgreSQL timestamp 時，將 JavaScript 毫秒 timestamp 正規化為 ISO 8601，並在 `session_create` log 補上底層 Supabase HTTP status。
 
 - Issue #33 follow-up: added member recording authorization, super-admin account management with atomic asset transfer, server-only audit log filtering, and Meeting Settings/account management UI. Viewer share IDs remain stable during transfer and Gemini credentials are excluded.
@@ -2007,3 +2084,6 @@ These items are intentionally deferred:
 
 - Completed Issue #33 member recording permission controls, super-admin audit log query API, and account management audit view.
 - Added P7 asynchronous cloud Meeting export lifecycle: canonical server-side TXT/SRT/VTT generation from persisted Final Cues, idempotent `export_artifacts`, private `meeting-exports` Storage, signed download URLs, `export_jobs` worker retries/dead-letter handling, deletion cleanup, and cloud polling UI. Local browser-only export remains compatible.
+## 2026-09-23
+
+- Documented the GSK-04 Gemini credential boundary: Live token issuance uses only the recorder request key, with no dependency on the legacy profile credential API, stored credentials, or `GEMINI_API_KEY` fallback. Legacy APIs, `geminiCredentialApiClient`, `gemini_credentials`, and historical credential data remain a controlled compatibility layer and are not claimed deleted or reusable by Live. Non-Live backend Gemini workflows may keep an isolated environment key; secret-bearing values remain excluded from `no-store` responses, logs, metrics, and telemetry.

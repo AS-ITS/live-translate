@@ -7,9 +7,8 @@ Live Translate uses a browser-first real-time path with a narrow backend service
 - Frontend: React + JavaScript, Web Audio API, and Gemini Live API client logic.
 - Backend: Node.js HTTP server for authentication, token issuance, and
   configuration validation.
-- Gemini: Gemini Live API using `gemini-3.5-transcribe-live` for the current
-  source transcription path; the speech-to-speech preview model is optional
-  future capability.
+- Gemini: Gemini Live API using `gemini-3.5-live-translate-preview` for current
+  Meeting recording and immediate source/translation partials.
 
 The browser connects directly to Gemini Live API using an ephemeral token issued
 by the backend.
@@ -18,6 +17,27 @@ The backend is responsible only for authentication, token issuance, and
 configuration validation.
 
 Audio streams are not proxied through the backend.
+
+For the recording spool path, the browser writes immutable audio chunks to
+page OPFS and explicitly sends them to the local service. The service cannot
+directly read page OPFS or any page storage. The browser also owns durable
+pending queues for Cue, checkpoint, lifecycle operation, and audio delivery;
+IndexedDB stores queue metadata while OPFS stores audio bytes. ACK requires
+durable commit of the matching idempotency key/version. Lost ACKs resend with
+the same key, duplicates return the original result, and stale
+fence/version/hash requests return a structured conflict.
+
+Recovery replays operations first, dependent checkpoints/Cues second, and
+audio chunks third. Each queue ACKs independently. Local Supabase on the
+recording device is the only recording lifecycle owner. Cloud Supabase stores
+only accounts, permissions, meeting settings, dictionaries, and
+device/meeting entry data; it is not the recording-data owner. Browser queues
+cannot create or decide lifecycle state. Viewer share permission is read-only
+and separate from authenticated host export permission. Stop revokes
+Viewer/Recorder shares immediately, but
+the host retains completed audio download and TXT/SRT/VTT export for 30
+minutes. Deployed Origin/CORS is restricted to approved Preview and Production
+origins only.
 
 ## Realtime subtitle pipeline (target architecture)
 
@@ -33,8 +53,8 @@ Transcribe Live (`gemini-3.5-transcribe-live`)
   → history / export / summary
 ```
 
-`gemini-3.5-live-translate-preview` remains an optional future speech-to-speech
-capability. It is not the authoritative meeting text source.
+`gemini-3.5-transcribe-live` and asynchronous Flash translation remain future
+options and are not part of the active Meeting recording path.
 
 Responsibilities and ownership:
 
@@ -91,7 +111,9 @@ Responsibilities:
 - Read and validate the optional primary input language hint, defaulting to
   Traditional Chinese (`zh-Hant`) when omitted.
 - Default `echoTargetLanguage` to `true` when omitted.
-- Create a Gemini ephemeral token using `GEMINI_API_KEY`.
+- Create a Gemini ephemeral token using the authenticated recorder's
+  request-scoped `geminiApiKey`; isolated non-Live workers may use
+  `GEMINI_API_KEY` through their own provider composition.
 - Return only the ephemeral token name and expiration time to the browser.
 - Map validation and provider failures to stable HTTP error responses.
 
@@ -123,10 +145,11 @@ The backend must not return the real Gemini API key or any long-lived credential
 - Validate `targetLanguageCode` against the allowlist.
 - Validate optional `sourceLanguageCode` against the allowlist.
 - Validate or default token configuration options.
-- Use `GEMINI_API_KEY` only on the server.
+- Use only the request-scoped recorder key for Live token issuance. Keep
+  `GEMINI_API_KEY` isolated to non-Live backend workers that require it.
 - Create Gemini ephemeral tokens.
 - Return consistent JSON responses.
-- Support local frontend CORS configuration.
+- Enforce the approved Preview/Production Origin and CORS allowlist.
 
 The backend must not proxy audio, store transcripts, or maintain session state in
 the MVP.

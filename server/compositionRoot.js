@@ -75,11 +75,13 @@ import { createSupabaseMeetingCueService } from '../src/infrastructure/supabaseM
 import { createSupabaseMeetingEventRepository } from '../src/infrastructure/supabaseMeetingEventRepository.js';
 import { createSupabaseGlossary } from '../src/infrastructure/supabaseGlossary.js';
 import { createSupabaseRecorderLeaseService } from '../src/infrastructure/supabaseRecorderLeaseService.js';
+import { createSupabaseMeetingLifecycleService } from '../src/infrastructure/supabaseMeetingLifecycleService.js';
 import { createSupabaseDurableTranslationExecutionQueueRepository } from '../src/infrastructure/supabaseDurableTranslationExecutionQueueRepository.js';
 import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/supabaseDeadLetterQueueRepository.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createSupabaseReadinessCheck } from '../src/infrastructure/supabaseReadiness.js';
 import { createSupabaseExportComposition } from '../src/infrastructure/supabaseExportComposition.js';
+import { createSupabaseMeetingPurgeComposition } from '../src/infrastructure/supabaseMeetingPurgeComposition.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -170,6 +172,7 @@ export function createApplicationDependencies(options = {}) {
     sessionAudioArtifactFileSystem = fileSystem,
     sessionShareService,
     recorderLeaseService,
+    meetingLifecycleService,
     sessionApplicationService,
     sessionApplicationServiceFactory = createSessionApplicationService,
     meetingRepository,
@@ -392,6 +395,7 @@ export function createApplicationDependencies(options = {}) {
       ...(exportArtifactService ? { exportArtifactService } : {}),
       ...(sessionShareService !== undefined ? { sessionShareService } : {}),
       recorderLeaseService,
+      ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
       ...(resolvedSessionApplicationService !== undefined
         ? { sessionApplicationService: resolvedSessionApplicationService }
         : {}),
@@ -428,6 +432,7 @@ export function createApplicationDependencies(options = {}) {
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     ...(exportArtifactService ? { exportArtifactService } : {}),
     recorderLeaseService,
+    ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
     meetingRepository: resolvedMeetingRepository,
     meetingCheckpointService,
     meetingDeletionService,
@@ -570,6 +575,11 @@ export function createProductionApplicationDependencies(options = {}) {
     : cloudDataMode
       ? createSupabaseRecorderLeaseService({ env })
       : createFileRecorderLeaseService({ filePath: recorderLeasesFilePathFor(env), fileSystem: sessionShareServiceFileSystem });
+  const meetingLifecycleService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingLifecycleService')
+    ? applicationOptions.meetingLifecycleService
+    : cloudDataMode
+      ? createSupabaseMeetingLifecycleService({ env })
+      : undefined;
   const glossaryController = glossaryControllerFactory({ glossary: translationGlossary });
   const productionEnvironment = canCreateProductionProviderComposition
     ? geminiEnvironmentFactory({ env })
@@ -675,6 +685,9 @@ export function createProductionApplicationDependencies(options = {}) {
   const exportComposition = cloudDataMode
     ? createSupabaseExportComposition({ env, clock: translationQueueClock.now.bind(translationQueueClock) })
     : null;
+  const meetingPurgeComposition = cloudDataMode
+    ? createSupabaseMeetingPurgeComposition({ env, observabilityMetrics })
+    : null;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
     ...(exportComposition ? { exportArtifactService: exportComposition.exportArtifactService } : {}),
@@ -689,6 +702,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
     recorderLeaseService,
+    ...(meetingLifecycleService ? { meetingLifecycleService } : {}),
     ...(activeTranslationExecutionQueue !== undefined
       ? { translationExecutionQueue: activeTranslationExecutionQueue }
       : {}),
@@ -748,6 +762,7 @@ export function createProductionApplicationDependencies(options = {}) {
       exportArtifactService: exportComposition.exportArtifactService,
       exportWorker: exportComposition.exportWorker
     } : {}),
+    ...(meetingPurgeComposition ? meetingPurgeComposition : {}),
     ...(translationExecutionWorkerRuntime !== undefined ? { translationExecutionWorkerRuntime } : {}),
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }

@@ -2,8 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { mergeMeetingViewerSnapshot, applyMeetingCueEvent, meetingEventGapDetected, meetingEventDuplicateDetected } from '../../lib/meetingViewerState.js';
 import { createMeetingViewerTelemetry } from '../../lib/meetingViewerTelemetry.js';
 import { viewerLatencySample } from '../../lib/meetingViewerLatency.js';
+import { effectiveTranslationForCue } from '../../lib/cueContent.js';
 import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } from '../../lib/meetingViewerRealtime.js';
+import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
+import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
+import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -13,11 +17,17 @@ export function MeetingViewerPage({ token, code }) {
   const viewportRef = useRef(null);
   const detailRef = useRef(null);
   const eventSourceRef = useRef(null);
+  const nextViewerCursorRef = useRef(null);
+  const loadingOlderRef = useRef(false);
   const latencySamplesRef = useRef([]);
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
   const [showSource, setShowSource] = useState(true);
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
+  const [hasOlderCues, setHasOlderCues] = useState(false);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
+  const [retryVersion, setRetryVersion] = useState(0);
   const estimatedRowHeight = 64;
 
   useEffect(() => {
@@ -44,18 +54,102 @@ export function MeetingViewerPage({ token, code }) {
       : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
     const telemetry = createMeetingViewerTelemetry({ basePath });
     let cancelled = false;
-    async function fetchSnapshot() {
-      const response = await fetch(basePath);
-      if (!response.ok) throw new Error('分享連結無效或已過期。');
+    let webRtcTransport = null;
+    let webRtcStarted = false;
+    setShareConnection({ value: 'connecting' });
+
+    function handleSnapshotError(value) {
+      if (cancelled) return;
+      if (value?.code === 'meeting_stopped') setShareConnection({ value: 'stopped' });
+      else if (value?.code === 'share_unauthorized') setShareConnection({ value: 'invalid' });
+      else setShareConnection({ value: 'failed' });
+      setError(value?.message || '無法連線。');
+    }
+
+    function applyWebRtcEnvelope(envelope) {
+      if (envelope.type === 'meeting.stopped') {
+        setShareConnection({ value: 'stopped' });
+        setError('會議已停止。');
+        return;
+      }
+      if (envelope.type === 'snapshot') {
+        const merged = mergeMeetingViewerSnapshot(detailRef.current, {
+          cues: envelope.cues || [],
+          cursor: { cueSequence: envelope.sequence || 0 },
+        });
+        detailRef.current = merged;
+        setDetail(merged);
+        return;
+      }
+      if (envelope.type === 'replay.response') {
+        (envelope.events || []).forEach(applyWebRtcEnvelope);
+        return;
+      }
+      if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
+        applyCuePayload(envelope);
+      }
+    }
+
+    function startWebRtc(meetingId) {
+      if (webRtcStarted || !meetingId || typeof RTCPeerConnection !== 'function') return;
+      webRtcStarted = true;
+      try {
+        webRtcTransport = createWebRtcSubtitleTransport({
+          meetingId,
+          role: 'viewer',
+          credential: code ? { shareCode: code } : { shareToken: token },
+          onEnvelope: applyWebRtcEnvelope,
+          onStatus: (next) => {
+            if (cancelled) return;
+            setShareConnection(next);
+            if (next.value === 'invalid') setError('分享已失效。');
+            if (next.value === 'stopped') setError('會議已停止。');
+          },
+          onError: () => {},
+        });
+        window.__liveTranslateWebRtcGetStats = () => webRtcTransport.getStats();
+        webRtcTransport.start();
+      } catch {
+        setShareConnection({ value: 'failed' });
+      }
+    }
+
+    async function fetchSnapshot(before = null) {
+      const snapshotUrl = new URL(basePath, window.location.origin);
+      if (before) snapshotUrl.searchParams.set('before', before);
+      const response = await fetch(`${snapshotUrl.pathname}${snapshotUrl.search}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        const code = body?.error?.code || body?.code;
+        const stopped = code === 'meeting_stopped' || response.status === 410;
+        const error = new Error(stopped ? '會議已停止。' : '分享已失效。');
+        error.code = stopped ? 'meeting_stopped' : (response.status === 403 || response.status === 404 ? 'share_unauthorized' : 'viewer_unavailable');
+        throw error;
+      }
       const value = await response.json();
       if (cancelled) return value;
+      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
+      setHasOlderCues(Boolean(value.pagination?.hasMore));
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
+      startWebRtc(value.meeting?.id || value.meetingId);
       return merged;
     }
     function applyCuePayload(payload) {
       const receivedAt = Date.now();
+      const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_RECEIVED',
+        recordingId: receivedCue?.sessionId || null,
+        segmentId: receivedCue?.segmentId || null,
+        audioTurnId: receivedCue?.audioTurnId || null,
+        turnKey: receivedCue?.turnKey || null,
+        cueId: receivedCue?.cueId || null,
+        sourceText: receivedCue?.sourceText || '',
+        translationText: receivedCue?.translatedText || '',
+        reason: payload.type || 'viewer_cue_received'
+      });
       const next = applyMeetingCueEvent(detailRef.current, payload);
       detailRef.current = next;
       setDetail(next);
@@ -131,22 +225,55 @@ export function MeetingViewerPage({ token, code }) {
         },
         onError: (value) => { if (!cancelled) setError(value.message || '分享連線中斷，瀏覽器會自動嘗試重新連線。'); }
       });
-      realtimeController.start();
+      void fetchSnapshot()
+        .then(() => realtimeController.start())
+        .catch(handleSnapshotError);
     } else {
       void fetchSnapshot().then((value) => connectEvents(value?.cursor?.eventId || 0)).catch((value) => {
-        if (!cancelled) setError(value.message);
+        handleSnapshotError(value);
       });
     }
     return () => {
       cancelled = true;
+      nextViewerCursorRef.current = null;
+      loadingOlderRef.current = false;
       void realtimeController?.stop();
+      void webRtcTransport?.stop();
+      delete window.__liveTranslateWebRtcGetStats;
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     };
-  }, [token, code]);
+  }, [token, code, retryVersion]);
+
+  async function loadOlderCues() {
+    const cursor = nextViewerCursorRef.current;
+    if (!cursor || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    setIsLoadingOlder(true);
+    const basePath = token
+      ? `/api/shared-meetings/${encodeURIComponent(token)}`
+      : `/api/shared-meetings/code/${encodeURIComponent(code)}`;
+    try {
+      const response = await fetch(`${basePath}?before=${encodeURIComponent(cursor)}`);
+      if (!response.ok) throw new Error('無法載入較舊字幕。');
+      const value = await response.json();
+      nextViewerCursorRef.current = value.pagination?.nextCursor || null;
+      setHasOlderCues(Boolean(value.pagination?.hasMore));
+      const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
+      detailRef.current = merged;
+      setDetail(merged);
+    } catch (value) {
+      setError(value.message || '無法載入較舊字幕。');
+    } finally {
+      loadingOlderRef.current = false;
+      setIsLoadingOlder(false);
+    }
+  }
 
   const cues = useMemo(() => {
-    if (Array.isArray(detail?.cues) && detail.cues.length > 0) return detail.cues;
+    if (Array.isArray(detail?.cues) && detail.cues.length > 0) {
+      return detail.cues.map((cue) => ({ ...cue, translatedText: effectiveTranslationForCue(cue) }));
+    }
     return (detail?.transcriptItems || [])
       .filter((item) => item.stream === 'source')
       .map((item, index) => ({
@@ -185,6 +312,34 @@ export function MeetingViewerPage({ token, code }) {
   const visibleCues = cues.slice(startIndex, endIndex);
 
   useEffect(() => {
+    const renderedCues = visibleCues.filter((cue) => cue?.cueId);
+    if (renderedCues.length === 0) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        sourceStatus: 'empty',
+        translationStatus: 'empty',
+        reason: 'viewer_render'
+      });
+      return;
+    }
+    for (const cue of renderedCues) {
+      recordLivePipelineTrace({
+        stage: 'REACT_RENDER',
+        recordingId: detail?.meeting?.liveSessionId || null,
+        segmentId: cue.segmentId || null,
+        audioTurnId: cue.audioTurnId || null,
+        turnKey: cue.turnKey || null,
+        cueId: cue.cueId,
+        sourceStatus: cue.sourceText ? 'present' : 'empty',
+        translationStatus: cue.translatedText ? 'present' : 'empty',
+        turnState: cue.status || null,
+        reason: 'viewer_render'
+      });
+    }
+  }, [detail?.meeting?.liveSessionId, visibleCues]);
+
+  useEffect(() => {
     const viewport = viewportRef.current;
     if (!viewport || typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver((entries) => {
@@ -219,30 +374,44 @@ export function MeetingViewerPage({ token, code }) {
   }
 
   return (
-    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title="即時字幕" subtitle={detail?.meeting?.name || '會議字幕觀看'}>
-      {error ? <p className="error-message" role="alert">{error}</p> : null}
-      {!detail && !error ? <p className="history-empty">正在載入會議字幕…</p> : null}
-      {detail ? (
-        <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
-          <div className="viewer-cue-header">
-            <div><p className="viewer-cue-eyebrow">MEETING</p><h2>{detail.meeting?.name || '未命名會議'}</h2></div>
-            {cues.length > 0 ? <div className="viewer-cue-actions">
-              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
-              {!isFollowingLatest ? <button className="button detail-button" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
-            </div> : null}
+    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕">
+      <div className="viewer-main">
+        <div className="viewer-toolbar">
+          <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">
+            <span className="viewer-status-dot" aria-hidden="true" />
+            <span>{webRtcConnectionLabel(shareConnection.value)}</span>
           </div>
-          {cues.length === 0 ? <p className="history-empty">目前尚無已完成字幕。</p> : <>
-            <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
-              <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
-                {visibleCues.map((cue, index) => <article className="viewer-cue-row" key={cue.cueId || `${cue.sequence}-${startIndex + index}`} style={{ position: 'absolute', top: rowLayout.offsets[startIndex + index], left: 0, right: 0 }} data-cue-index={startIndex + index} data-testid="meeting-viewer-cue-row">
-                  {showSource ? <div className="viewer-cue-source"><p>{cue.sourceText || '—'}</p></div> : null}
-                  {cue.translatedText ? <div className="viewer-cue-translation"><p>{cue.translatedText}</p></div> : null}
-                </article>)}
+          <div className="viewer-toolbar-actions">
+            {detail ? (
+              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
+            ) : null}
+            {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
+            {shareConnection.value === 'failed' ? (
+              <button className="button detail-button viewer-retry-button" type="button" onClick={() => setRetryVersion((version) => version + 1)}>重試</button>
+            ) : null}
+          </div>
+        </div>
+        {error ? <p className="error-message viewer-error" role="alert">{error}</p> : null}
+        {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
+        {detail ? (
+          <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
+            {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
+              {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
+              <div ref={viewportRef} className="viewer-cue-viewport" onScroll={(event) => { setScrollTop(event.currentTarget.scrollTop); setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget)); }} data-testid="meeting-viewer-cue-viewport" role="log" aria-live="polite" aria-label="即時字幕列表">
+                <div style={{ height: rowLayout.totalHeight, position: 'relative' }}>
+                  {visibleCues.map((cue, index) => {
+                    const cueIndex = startIndex + index;
+                    return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-cue-id={cue.cueId || undefined} data-testid="meeting-viewer-cue-row">
+                    {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
+                      {cue.translatedText ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText}</p></div> : null}
+                    </article>;
+                  })}
+                </div>
               </div>
-            </div>
-          </>}
-        </section>
-      ) : null}
+            </>}
+          </section>
+        ) : null}
+      </div>
     </PublicSessionLayout>
   );
 }

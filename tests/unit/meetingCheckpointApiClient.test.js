@@ -85,6 +85,34 @@ test('meeting checkpoint API client completes a meeting', async () => {
   }]);
 });
 
+test('meeting checkpoint API client executes lifecycle v2 commands and heartbeats', async () => {
+  const calls = [];
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith('/heartbeat')) return ok({ leaseId: 'lease-1', fenceToken: 2 });
+      return ok({
+        meeting: { id: 'meeting-1', lifecycle_version: 1 },
+        session: { id: 'session-1' },
+        segment: { id: 'segment-1' },
+        lease: { leaseId: 'lease-1', fenceToken: 2 }
+      });
+    }
+  });
+
+  await client.executeRecordingCommand({
+    meetingId: 'meeting-1',
+    command: 'start',
+    operationId: 'operation-1',
+    expectedLifecycleVersion: 0
+  });
+  await client.renewRecordingLease({ meetingId: 'meeting-1', leaseId: 'lease-1', fenceToken: 2 });
+
+  assert.equal(calls[0].url, '/api/meetings/meeting-1/recording/start');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { operationId: 'operation-1', expectedLifecycleVersion: 0 });
+  assert.equal(calls[1].url, '/api/meetings/meeting-1/recording/lease/heartbeat');
+});
+
 test('meeting checkpoint API client updates a segment checkpoint', async () => {
   const calls = [];
   const client = createMeetingCheckpointApiClient({

@@ -63,15 +63,8 @@ export function AuditLogPage() {
     return () => { cancelled = true; };
   }, [auditAction, auditPage, auditPageSize, auditQuery, auditResult, auditReloadKey, client]);
 
-  return <section className="feature-page account-management-page audit-log-page" aria-labelledby="audit-log-title">
+  return <section className="feature-page account-management-page audit-log-page" aria-label="稽核紀錄">
     <section className="history-panel account-management-panel" aria-label="稽核紀錄列表">
-      <div className="account-management-panel-header">
-        <div>
-          <p className="eyebrow">AUDIT TRAIL</p>
-          <h2 id="audit-log-title">稽核紀錄</h2>
-          <p>查看帳號管理與工作區資產操作留下的安全紀錄。</p>
-        </div>
-      </div>
       <div className="account-table-toolbar account-audit-toolbar">
         <label className="field account-search-field account-audit-search-field">
           <span>搜尋稽核紀錄</span>

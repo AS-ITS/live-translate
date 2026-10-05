@@ -103,7 +103,7 @@ test('meeting checkpoint sync coordinator reconciles a conflict with the latest 
   assert.deepEqual(errors, []);
 
   assert.equal(await coordinator.flush(), true);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
 });
 
 test('meeting checkpoint sync coordinator retries transient failures in the background', async () => {

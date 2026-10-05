@@ -1,12 +1,79 @@
 # Testing
 
+Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `CUE_CREATED`, `CUE_UPDATED`, `CUE_FINALIZED`, `CUE_PUBLISHED`, `SPEECH_ACTIVITY_STARTED`, `SPEECH_ACTIVITY_CONTINUED`, `LOCAL_SILENCE_DETECTED`, and lifecycle reconnect/rollover stages. Legacy `NORMALIZED`, `CUE_STATE`, and `LOCAL_SILENCE_FINALIZE` names are not canonical. `audioTurnId` is authoritative at the audio boundary; `turnKey` belongs to normalized logical turns; `cueId` belongs to Cue state. Diagnostics never use one identity as another's fallback.
+
+## WebRTC 正式流程
+
+最小自動化驗證：
+
+```bash
+node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/meetingViewerState.test.js tests/unit/webrtcPocPage.test.js
+npm run build
+```
+
+這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、sidecar 清理、snapshot/update/replay 與去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
+
+## Vercel Relay PoC verification boundary
+
+The Relay PoC is documentation and operator validation only in this round; it
+does not modify production code or enable a paid Vercel/Upstash plan. Keep the
+following evidence classes separate:
+
+- **Automated local proof:** run the existing local-device unit/E2E commands
+  and `git diff --check`. This proves browser-to-local-device packet
+  persistence, ACK/idempotency, reconnect backfill, and stop behavior only.
+- **Preview/account proof:** requires a real Vercel Preview deployment, an
+  Upstash Redis account/database, configured Preview environment variables,
+  and an approved HTTPS/network path. It must exercise the two-hour relay
+  matrix in [local-device-poc.md](verification/local-device-poc.md): Function
+  expiry, redeploy, Viewer reconnect, and independent relay versus recording
+  lifecycle heartbeats.
+- **Not proven by this round:** production deployment, paid-plan activation,
+  cross-network device reachability, exactly-once Pub/Sub delivery, durable
+  subtitle history in Redis, or cloud audio storage/download. Audio download
+  remains a future host-authorized range endpoint against the local permanent
+  source.
+
+The relay test report must state that Redis Pub/Sub is routing only (not
+Streams), the registry has metadata only and no socket references, Redis has
+no subtitle history, and a publisher ACK means `PUBLISH` completed—not Viewer
+render or durable receipt. Include `requestId`, timeout/retry outcome,
+deployment ID, account/region, Viewer count, and the exact source snapshot
+used for recovery. Do not put REST tokens, ephemeral tokens, raw audio, or
+transcript payloads in the report.
+
+For cost/quotas and the formula for a two-hour meeting at different Viewer
+counts, use the operator section in [local-device-poc.md](verification/local-device-poc.md)
+and verify live limits at the linked official Vercel and Upstash pricing pages.
+
+## Phase 0 contract evidence
+
+Test the browser as the only OPFS reader, immutable chunk checksums, four
+durable pending queues (`cue`, `checkpoint`, `operation`, `audio`), ACK loss
+and resend, duplicate idempotency, stale fence/version/hash conflicts, and
+the recovery order: operations, dependent checkpoints/Cues, then audio.
+Queues must ACK independently so audio failure does not block Cue/checkpoint
+delivery and vice versa.
+
+Evidence must separately prove that stopping a Meeting immediately invalidates
+Viewer/Recorder shares, while the authenticated host alone can export
+TXT/SRT/VTT and download completed audio for 30 minutes. Origin/CORS tests
+cover only approved Preview and Production origins.
+
+Existing failures, skipped checks, and environment blockers are non-passing
+baseline evidence. Reports must retain the command, result, and blocker; they
+must never label a failed or blocked run as `baseline passed`. Phase 1 physical
+acceptance is still pending for Mac/Windows microphones, reload/crash queue
+recovery, OPFS quota/offline resend, audio loss/recovery, and deployed
+Origin/CORS checks.
+
 ## Google Workspace accounts
 
-Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover the email-domain gate, pending profile provisioning, disabled-account rejection, and super-admin access using signed JWT fixtures.
+Google OAuth is not automated in the regular E2E suite. Deterministic identity tests cover exact email-domain matching, pending profile auto-activation, missing/update failure rejection, disabled-account rejection, and super-admin role preservation using signed JWT fixtures and mocked Supabase responses.
 
-## Issue #33 account approval coverage
+## Domain auto-activation coverage
 
-Deterministic tests cover pending profile provisioning, `/api/profile` visibility, `auth_pending` rejection, approval authorization and idempotency, pending Meeting invitation rejection, and the existing active/disabled management flow. Tests do not call Google OAuth, Gemini, or production APIs.
+Deterministic tests cover transient pending provisioning, trusted `pending -> active`, concurrent disable behavior, `/api/profile` fail-closed responses, removed approval UI/API, Meeting authorization, anonymous Viewer access, and existing active/disabled management. Tests do not call Google OAuth, Gemini, or production APIs.
 
 ## CI and cloud validation
 
@@ -56,6 +123,77 @@ Cloud checks are split by deployment risk:
 - Local E2E keeps its existing local backend and Vite web servers.
 - Staging cloud smoke is not enabled in GitHub Actions; use the local staging-equivalent validation above. The retained `tests/cloud/stagingSmoke.spec.js` is an optional asset for a future cloud check.
 - Production preflight is unauthenticated and read-only. It verifies health, readiness, private API auth, metrics auth, and worker auth. It does not create data or process the queue.
+
+## Issue #37 Phase 2 Viewer pagination
+
+The deterministic Viewer pagination checks cover cursor validation, latest-100
+windowing, older-page merging, and the bounded Supabase joined Cue query:
+
+```bash
+node --test tests/unit/meetingViewerPagination.test.js \
+  tests/unit/supabaseMeetingViewerPage.test.js
+```
+
+## Issue #37 Phase 1 lifecycle v2
+
+The deterministic unit checks cover HTTP forwarding/conflict mapping, API
+client payloads, domain mapping, and migration invariants:
+
+```bash
+node --test tests/unit/meetingLifecycleHttpApi.test.js \
+  tests/unit/meetingLifecycleMigration.test.js \
+  tests/unit/meetingLifecycleWriteFence.test.js \
+  tests/unit/meetingLifecycleV2TranscriptBoundary.test.js \
+  tests/unit/meetingAudioStorage.test.js \
+  tests/unit/supabaseMeetingAudioService.test.js \
+  tests/unit/workerEndpoint.test.js \
+  tests/unit/meetingCheckpointApiClient.test.js \
+  tests/unit/meetingDomain.test.js
+```
+
+This focused suite covers the 15-minute CRON expiration RPC, 30-minute
+retention-claim contract, terminal-write rejection, v2 transcript boundary,
+upload-start fencing, and pre-purge audio completion/failure. It does not run a
+purge deletion job, call Gemini, or contact a remote Supabase project.
+
+With local Supabase running and its environment loaded, the focused integration
+test verifies concurrent start idempotency and competing rollover/stop behavior:
+
+```bash
+RUN_SUPABASE_LIFECYCLE_TESTS=true \
+node --test tests/integration/meetingLifecycleV2.integration.test.js
+```
+
+Neither command calls Gemini or a remote Supabase project.
+
+## Issue #37 Phase 0 recording diagnostics
+
+Staging performance runs may opt in to the redacted browser diagnostics API by
+building the frontend with the private Vercel variable
+`LIVE_TRANSLATE_DIAGNOSTICS=true`. Vite injects only a boolean build constant;
+the environment variable itself is never read by browser code. This flag
+exposes numeric recorder/upload metrics and the sanitized LiveSession snapshot;
+it does not enable verbose Live event logging or expose transcript text, tokens,
+signed URLs, or audio payloads. Production must leave the flag unset.
+
+Run three paired five-minute recordings in both Chrome on macOS and Safari on
+macOS. Each pair uses the same staging Meeting, microphone, network condition,
+and short speech script: one recording-off control, followed by one
+recording-on treatment. Include one pause/resume treatment pair and wait for
+the final audio artifact to reach a terminal status before collecting the
+snapshot.
+
+At the end of each run, collect:
+
+- `window.__liveTranslateRecordingDebug.getSnapshot()`
+- `window.__liveTranslateDebug.getSnapshot()`
+- browser, OS, browser version, commit/build identifier, and run mode
+
+Compare treatment runs with their control. Treat two or more treatment runs
+with a callback-gap p95 increase above 20%, a new 500ms-or-longer gap, or any
+audio loss/recovery failure as evidence for the OPFS gate. The default
+15-minute segment rollover is not exercised by a five-minute run; rollover
+upload contention therefore remains explicitly unverified.
 
 ```bash
 SMOKE_BASE_URL=https://production.example.com npm run test:cloud:preflight
@@ -151,7 +289,7 @@ Live, History Detail, and Viewer routes, plus global/private glossary
 boundaries.
 
 Global glossary UI coverage includes card-grid filtering, category counts,
-multi-language editing, enabled-state batch actions, and the side drawer. The
+multi-language editing, enabled-state and delete batch actions, and the side drawer. The
 global page manages only entries shared by all Meetings; private entries remain
 covered by the Meeting glossary drawer tests.
 
@@ -335,6 +473,18 @@ node --loader ./tests/fixtures/mockGoogleGenAiLoader.mjs --test tests/integratio
 The loader intercepts `@google/genai`, so `POST /api/live-token` uses the real
 local route handler while Gemini token creation is mocked.
 
+Run the focused Gemini credential boundary tests:
+
+```bash
+node --test tests/integration/liveTokenRoute.test.js tests/unit/liveTokenSecurity.test.js tests/unit/geminiCredentialHttpApi.test.js
+```
+
+These tests verify request-scoped key handling, Viewer rejection, expired JWT
+rejection, logout cleanup, `no-store` responses, and that keys do not enter
+persistent storage or logs. The legacy profile credential test is retained
+only while its removal is being completed and must not be used as Live flow
+evidence.
+
 Run the Gemini Live normalized Cue flow integration test:
 
 ```bash
@@ -369,7 +519,7 @@ Current integration coverage:
 
 - Successful `POST /api/live-token`
 - Invalid language
-- Missing `GEMINI_API_KEY`
+- Missing request-scoped `geminiApiKey`
 - Provider expired-token style failure
 - Structured error response for invalid JSON
 - Demo access-token gate
@@ -581,3 +731,67 @@ owner-only Storage policies, `export_artifacts` constraints, and `export_jobs`:
 ```bash
 npm run db:lint
 ```
+
+Issue #37 Phase 4 retention, compatibility, and observability checks:
+
+```bash
+node --test \
+  tests/unit/meetingRetention.test.js \
+  tests/unit/meetingContentExpiry.test.js \
+  tests/unit/supabaseLegacyWriteCompatibility.test.js \
+  tests/unit/meetingPurgeWorker.test.js \
+  tests/unit/supabaseMeetingAudioService.test.js \
+  tests/unit/meetingReadQueryService.test.js \
+  tests/unit/observability.test.js
+```
+
+These tests verify the 30-minute deadline read model, stable `410` expiry
+contract, v1 read compatibility with v2 legacy-column write suppression, and
+best-effort purge metrics. They do not call Gemini or remote Supabase.
+
+## Spoken turn trace and real-microphone acceptance
+
+Automated coverage must use the mock Gemini adapter. For a local or Vercel
+Preview runtime, set server-only `LIVE_PIPELINE_TRACE_ENABLED=true`, redeploy or
+restart, then inspect a turn with:
+
+```js
+const trace = window.__liveTranslateDebug.getPipelineTrace()
+window.__liveTranslateDebug.getTurnTrace(trace.at(-1)?.audioTurnId)
+const exportedTrace = window.__liveTranslateDebug.exportPipelineTrace()
+copy(exportedTrace)
+```
+
+Local terminal replay entries include bounded `originEventId`,
+`terminalStatus`, `terminalReason`, `localFinalize`, and
+`isTerminalReplay` fields. Use these fields to distinguish a local-silence
+flush from a new provider transcript; they never contain API keys, tokens, or
+audio.
+
+The endpoint exposes only `{ livePipelineTraceEnabled: true }`; the trace stays
+in browser memory and resets on reload. Every entry has a bounded
+`traceSequence`; normalized and Cue transitions keep their provider
+`eventSequence`; Cue updates include bounded before/after source and translation
+text. `exportPipelineTrace()` returns the same bounded, secret-free entries as
+formatted JSON for saving from Preview DevTools. For each spoken turn, verify the trace
+reaches `PCM_CAPTURED`, `PCM_SENT`,
+`PROVIDER_EVENT`, `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, one of `CUE_CREATED`
+or `CUE_UPDATED`, and `REACT_RENDER`. Speech activity emits
+`SPEECH_ACTIVITY_STARTED` and `SPEECH_ACTIVITY_CONTINUED`; local silence emits
+`LOCAL_SILENCE_DETECTED` with non-empty `audioTurnId`; correlate later
+`TURN_ASSIGNED` and Cue stages by that same `audioTurnId`; reconnect and segment replacement emit lifecycle stages.
+A `drop` entry must include `dropReason`. Also inspect the subtitle DOM for missing or duplicate
+Cue rows and the browser console for runtime errors.
+
+Real browser and real microphone acceptance remains manual and must cover:
+
+1. One sentence and two consecutive sentences (two separate Cues).
+2. Five rapid sentences and sentences separated by 2–3 seconds.
+3. One continuous 20–30 second sentence with partial updates and one final Cue.
+4. Pause/resume followed immediately by speech.
+5. Provider reconnect/rollover followed immediately by speech.
+
+Mocks, unit tests, Playwright, and DOM inspection cannot mark these real-device
+cases as passing. Each case passes only after the spoken text is confirmed
+through PCM, provider, normalized transcript, Cue state, React render, and the
+visible subtitle.

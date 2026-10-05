@@ -105,6 +105,32 @@ test('GET /api/sessions/:sessionId returns safe 503 and logs only status and cod
   assert.equal(Object.hasOwn(requestLog, 'stack'), false);
 });
 
+test('GET /api/sessions/:sessionId/translations returns safe 503 and logs Supabase diagnostics', async () => {
+  const logs = [];
+  const error = new Error('Supabase response body must not be logged.');
+  error.status = 503;
+  error.code = 'supabase_request_failed';
+  error.supabaseStatus = 503;
+  const handler = createRequestHandler({
+    translationHistoryController: {
+      listSessionTranslations: async () => { throw error; }
+    },
+    requestLogger(event) {
+      logs.push(event);
+    }
+  });
+
+  const response = await request(handler, { method: 'GET', url: '/api/sessions/session-1/translations' });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.json().error.code, 'supabase_request_failed');
+  const requestLog = logs.at(-1);
+  assert.equal(requestLog.errorCode, 'supabase_request_failed');
+  assert.equal(requestLog.supabaseStatus, 503);
+  assert.equal(Object.hasOwn(requestLog, 'responseBody'), false);
+  assert.equal(Object.hasOwn(requestLog, 'stack'), false);
+});
+
 test('DELETE /api/sessions/:sessionId deletes finalized session records', async () => {
   const calls = [];
   const handler = createHandler({

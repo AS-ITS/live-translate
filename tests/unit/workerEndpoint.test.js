@@ -63,6 +63,74 @@ test('worker returns the processed result', async () => {
   assert.deepEqual(calls, [{ limit: 3 }]);
 });
 
+test('worker expires stale Meetings in the same bounded CRON invocation', async () => {
+  process.env.CRON_SECRET = 'expected-secret';
+  const calls = [];
+  const handler = createWorkerHandler({
+    getDependencies() {
+      return {
+        meetingLifecycleService: {
+          async expireStaleMeetings(input) {
+            calls.push(['expire', input]);
+            return { expired: 2 };
+          }
+        },
+        translationExecutionWorkerRuntime: {
+          async runOnce(input) {
+            calls.push(['translation', input]);
+            return { processed: 0, busy: false };
+          }
+        }
+      };
+    },
+    runAsUser(_user, operation) {
+      return operation();
+    }
+  });
+  const res = response();
+
+  await handler({ method: 'POST', headers: { authorization: 'Bearer expected-secret' } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(JSON.parse(res.body), { ok: true, processed: 0, busy: false, meetingExpiration: { expired: 2 } });
+  assert.deepEqual(calls, [['expire', { limit: 3 }], ['translation', { limit: 3 }]]);
+});
+
+test('worker runs due Meeting purge in the same bounded CRON invocation', async () => {
+  process.env.CRON_SECRET = 'expected-secret';
+  const calls = [];
+  const handler = createWorkerHandler({
+    getDependencies() {
+      return {
+        meetingPurgeWorker: {
+          async runOnce(input) {
+            calls.push(input);
+            return { claimed: 2, purged: 1, failed: 1 };
+          }
+        },
+        translationExecutionWorkerRuntime: {
+          async runOnce() { return { processed: 0, busy: false }; }
+        }
+      };
+    },
+    runAsUser(_user, operation) {
+      return operation();
+    }
+  });
+  const res = response();
+
+  await handler({ method: 'POST', headers: { authorization: 'Bearer expected-secret' } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(JSON.parse(res.body), {
+    ok: true,
+    processed: 0,
+    busy: false,
+    purges: { claimed: 2, purged: 1, failed: 1 }
+  });
+  assert.deepEqual(calls, [{ limit: 3 }]);
+});
+
 test('worker logs a safe diagnostic and returns 503 on execution failure', async () => {
   process.env.CRON_SECRET = 'expected-secret';
   const events = [];

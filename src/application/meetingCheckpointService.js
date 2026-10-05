@@ -3,6 +3,7 @@ import { mergeFinalCue, normalizeCueCheckpoint, validateFinalCue } from '../doma
 import { normalizeMeetingGlossaryAliases } from '../lib/meetingGlossary.js';
 
 const STREAM_ORDER = Object.freeze({ source: 0, translation: 1 });
+const MEETING_RETENTION_MS = 30 * 60 * 1000;
 
 export function createMeetingCheckpointService({
   meetingRepository,
@@ -135,7 +136,8 @@ export function createMeetingCheckpointService({
         }));
       }
 
-      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now));
+      const purgeAt = meeting.purgeAt ?? new Date(new Date(now).getTime() + MEETING_RETENTION_MS).toISOString();
+      const completedMeeting = await meetingRepository.updateMeeting(meeting.complete(now, purgeAt));
       return { meeting: completedMeeting };
     },
 
@@ -152,7 +154,12 @@ export function createMeetingCheckpointService({
         : meeting;
       const withLiveSession = segment.withLiveSession(validateRequiredString(liveSessionId, 'liveSessionId'));
       const activeSegment = segment.status === 'created'
-        ? await meetingRepository.updateMeetingSegment(withLiveSession.activate(now))
+        ? await meetingRepository.updateMeetingSegment(withLiveSession.transitionTo('active', {
+          startedAt: now,
+          endedAt: null,
+          errorInfo: null,
+          settingsSnapshot: meetingSettingsSnapshot(activeMeeting)
+        }))
         : await meetingRepository.updateMeetingSegment(withLiveSession);
       return { meeting: activeMeeting, segment: activeSegment };
     },
@@ -431,15 +438,25 @@ export function mergeCheckpoint({ existing, incoming, meetingId, segmentId, sess
   for (const chunk of incoming.durableChunks) {
     const existingByKey = chunksByKey.get(chunk.idempotencyKey);
     if (existingByKey) {
-      if (!sameChunk(existingByKey, chunk)) {
+      const merged = mergeCompatibleChunks(existingByKey, chunk);
+      if (!merged) {
         throw codedError('checkpoint_conflict', `checkpoint chunk conflict: ${chunk.idempotencyKey}`);
       }
+      chunksByKey.set(existingByKey.idempotencyKey, merged);
+      chunksBySequence.set(sequenceKey(merged), merged);
       continue;
     }
 
     const existingBySequence = chunksBySequence.get(sequenceKey(chunk));
-    if (existingBySequence && !sameChunk(existingBySequence, chunk)) {
-      throw codedError('checkpoint_conflict', `checkpoint sequence conflict: ${chunk.stream}:${chunk.sequence}`);
+    if (existingBySequence) {
+      const merged = mergeCompatibleChunks(existingBySequence, chunk);
+      if (!merged) {
+        throw codedError('checkpoint_conflict', `checkpoint sequence conflict: ${chunk.stream}:${chunk.sequence}`);
+      }
+      chunksByKey.delete(existingBySequence.idempotencyKey);
+      chunksByKey.set(merged.idempotencyKey, merged);
+      chunksBySequence.set(sequenceKey(merged), merged);
+      continue;
     }
 
     chunksByKey.set(chunk.idempotencyKey, chunk);
@@ -623,14 +640,18 @@ function sequenceKey(chunk) {
   return `${chunk.stream}:${chunk.sequence}`;
 }
 
-function sameChunk(left, right) {
-  return left.idempotencyKey === right.idempotencyKey &&
-    left.meetingId === right.meetingId &&
-    left.segmentId === right.segmentId &&
-    left.stream === right.stream &&
-    left.sequence === right.sequence &&
-    left.text === right.text &&
-    left.timestamp === right.timestamp;
+function mergeCompatibleChunks(existing, incoming) {
+  if (existing.meetingId !== incoming.meetingId || existing.segmentId !== incoming.segmentId || existing.stream !== incoming.stream || existing.sequence !== incoming.sequence) {
+    return null;
+  }
+  if (!isTextExtension(existing.text, incoming.text) && !isTextExtension(incoming.text, existing.text)) {
+    return null;
+  }
+  return incoming.text.length >= existing.text.length ? incoming : existing;
+}
+
+function isTextExtension(existingText, incomingText) {
+  return existingText === incomingText || existingText === '' || incomingText.startsWith(existingText);
 }
 
 function sameErrorInfo(left, right) {

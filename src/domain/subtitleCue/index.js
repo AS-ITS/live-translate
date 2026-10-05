@@ -16,8 +16,9 @@ export const CUE_ERROR_CODES = Object.freeze({
 
 export function validateFinalCue(input, { previousCue = null } = {}) {
   if (!isRecord(input)) return invalid('Cue must be an object.');
-  const rawSource = text(input.rawSource ?? input.sourceText, 'rawSource');
+  const rawSource = optionalText(input.rawSource ?? input.sourceText, 'rawSource');
   const rawTranslation = optionalText(input.rawTranslation ?? input.translatedText, 'rawTranslation');
+  if (!rawSource && !rawTranslation) return invalid('Cue must contain source or translation text.');
   const mode = input.mode === 'transcription' || input.targetLanguageCode === null ? 'transcription' : 'translation';
   const hasRefinementContract = Object.hasOwn(input, 'rawSource') || Object.hasOwn(input, 'rawTranslation') || Object.hasOwn(input, 'initialTranslation') || Object.hasOwn(input, 'refinement');
   const cue = {
@@ -32,13 +33,16 @@ export function validateFinalCue(input, { previousCue = null } = {}) {
     ...(mode === 'transcription' ? { mode } : {}),
     sourceText: rawSource,
     translatedText: rawTranslation,
+    sourceStatus: normalizeSideStatus(input.sourceStatus, rawSource),
+    translationStatus: normalizeSideStatus(input.translationStatus, rawTranslation),
+    sourceVersion: normalizeSideVersion(input.sourceVersion, rawSource),
+    translationVersion: normalizeSideVersion(input.translationVersion, rawTranslation),
     ...(hasRefinementContract ? {
       rawSource,
       rawTranslation,
       initialTranslation: optionalNullableText(input.initialTranslation, 'initialTranslation'),
       refinedSource: optionalNullableText(input.refinedSource, 'refinedSource'),
       refinedTranslation: optionalNullableText(input.refinedTranslation, 'refinedTranslation'),
-      ...(input.translationStatus ? { translationStatus: input.translationStatus } : {}),
       refinement: normalizeRefinement(input, { rawSource, rawTranslation })
     } : {}),
     status: input.status,
@@ -58,7 +62,9 @@ export function mergeFinalCue(existingCues = [], input, options = {}) {
   const existingById = normalizedExisting.find((cue) => cue.cueId === input?.cueId);
   if (existingById) {
     const incoming = validateFinalCue(input);
-    if (isPreferredRefinementUpdate(existingById, incoming) || isInitialTranslationUpdate(existingById, incoming)) {
+    if (isPreferredRefinementUpdate(existingById, incoming)
+      || isInitialTranslationUpdate(existingById, incoming)
+      || isSideCompletionUpdate(existingById, incoming)) {
       const cues = normalizedExisting.map((cue) => cue.cueId === incoming.cueId ? incoming : cue);
       return { cue: clone(incoming), appended: false, updated: true, cues };
     }
@@ -115,7 +121,7 @@ function previousCueFor(cues, sequence) {
 }
 
 function sameCue(left, right) {
-  return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'status', 'finalizedReason'].every((field) => left[field] === right[field]);
+  return ['cueId', 'sessionId', 'segmentId', 'sequence', 'startTimeMs', 'endTimeMs', 'sourceLanguageCode', 'targetLanguageCode', 'sourceText', 'translatedText', 'sourceStatus', 'translationStatus', 'sourceVersion', 'translationVersion', 'status'].every((field) => left[field] === right[field]);
 }
 
 function isPreferredRefinementUpdate(existing, incoming) {
@@ -153,6 +159,26 @@ function isInitialTranslationUpdate(existing, incoming) {
     && incoming.initialTranslation === incoming.translatedText;
 }
 
+function isSideCompletionUpdate(existing, incoming) {
+  if (existing.cueId !== incoming.cueId
+    || existing.sessionId !== incoming.sessionId
+    || existing.segmentId !== incoming.segmentId
+    || existing.sequence !== incoming.sequence
+    || existing.startTimeMs !== incoming.startTimeMs) return false;
+  const sourceAdvanced = incoming.sourceVersion > existing.sourceVersion
+    && isTextExtension(existing.sourceText, incoming.sourceText);
+  const translationAdvanced = incoming.translationVersion > existing.translationVersion
+    && isTextExtension(existing.translatedText, incoming.translatedText);
+  const sourcePreserved = incoming.sourceVersion === existing.sourceVersion
+    && incoming.sourceText === existing.sourceText;
+  const translationPreserved = incoming.translationVersion === existing.translationVersion
+    && incoming.translatedText === existing.translatedText;
+  return incoming.endTimeMs >= existing.endTimeMs
+    && (sourceAdvanced || sourcePreserved)
+    && (translationAdvanced || translationPreserved)
+    && (sourceAdvanced || translationAdvanced);
+}
+
 function isMonotonicMergedCue(existing, incoming) {
   return incoming.finalizedReason === 'merged' &&
     incoming.sessionId === existing.sessionId &&
@@ -180,7 +206,17 @@ function finite(value, field) { if (!Number.isFinite(value)) return invalid(`${f
 function nonNegativeFinite(value, field) { if (!Number.isFinite(value) || value < 0) return invalid(`${field} must be non-negative and finite.`); return value; }
 function languageCode(value, field) { if (!LANGUAGE_CODES.has(value)) return invalid(`${field} is not supported.`); return value; }
 function text(value, field) { if (typeof value !== 'string' || value.trim() === '' || PUNCTUATION_ONLY.test(value.trim())) return invalid(`${field} must contain non-punctuation text.`); return value.trim(); }
-function optionalText(value, field) { if (value === '') return ''; return text(value, field); }
+function optionalText(value, field) { if (value === undefined || value === null || value === '') return ''; return text(value, field); }
+function normalizeSideStatus(value, sideText) {
+  if (value === 'completed') return 'finalized';
+  if (value === 'failed') return 'unavailable';
+  if (['pending', 'finalized', 'unavailable'].includes(value)) return value;
+  return sideText ? 'finalized' : 'pending';
+}
+function normalizeSideVersion(value, sideText) {
+  if (Number.isInteger(value) && value >= 0) return value;
+  return sideText ? 1 : 0;
+}
 function optionalNullableText(value, field) { if (value === undefined || value === null || value === '') return null; return text(value, field); }
 function normalizeRefinement(input, { rawSource, rawTranslation }) {
   const expectedHash = cueRefinementInputHash({ cueId: input.cueId, sequence: input.sequence, rawSource, rawTranslation });

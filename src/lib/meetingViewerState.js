@@ -1,6 +1,6 @@
 export function mergeMeetingViewerSnapshot(current, snapshot) {
   const next = { ...(current || {}), ...(snapshot || {}) };
-  const cues = mergeCues(current?.cues || [], snapshot?.cues || []);
+  const cues = mergeMeetingCues(current?.cues || [], snapshot?.cues || []);
   return { ...next, cues, cursor: mergeCursor(current?.cursor, snapshot?.cursor, cues) };
 }
 
@@ -12,7 +12,7 @@ function mergeCursor(current, incoming, cues) {
 }
 
 export function applyMeetingCueEvent(current, event) {
-  if (!event || event.type !== 'cue.append' || !event.cue?.cueId) return current;
+  if (!event || !['cue.append', 'cue.update'].includes(event.type) || !event.cue?.cueId) return current;
   const next = mergeMeetingViewerSnapshot(current, {
     cues: [event.cue],
     cursor: { eventId: event.eventId || current?.cursor?.eventId || 0, cueSequence: event.cue.sequence || current?.cursor?.cueSequence || 0 }
@@ -29,6 +29,7 @@ export function meetingEventDuplicateDetected(detail, event) {
   const cueId = event?.cue?.cueId || event?.cueId;
   if (!cueId) return false;
   return Array.isArray(detail?.cues) && detail.cues.some((cue) => cue?.cueId === cueId &&
+    (Number(cue?.sourceVersion) || 0) >= (Number(event?.cue?.sourceVersion) || 0) &&
     (Number(cue?.translationVersion) || 0) >= (Number(event?.cue?.translationVersion) || 0));
 }
 
@@ -40,7 +41,7 @@ export function sortMeetingCues(cues = []) {
   ));
 }
 
-function mergeCues(existing, incoming) {
+export function mergeMeetingCues(existing = [], incoming = []) {
   const byId = new Map(existing.filter((cue) => cue?.cueId).map((cue) => [cue.cueId, cue]));
   for (const cue of incoming) {
     if (!cue?.cueId) continue;
@@ -51,6 +52,12 @@ function mergeCues(existing, incoming) {
 }
 
 function isNewerCue(incoming, existing) {
+  const incomingSourceVersion = Number(incoming?.sourceVersion) || 0;
+  const existingSourceVersion = Number(existing?.sourceVersion) || 0;
+  const incomingTranslationVersion = Number(incoming?.translationVersion) || 0;
+  const existingTranslationVersion = Number(existing?.translationVersion) || 0;
+  if (incomingSourceVersion < existingSourceVersion || incomingTranslationVersion < existingTranslationVersion) return false;
+  if (incomingSourceVersion > existingSourceVersion || incomingTranslationVersion > existingTranslationVersion) return true;
   const incomingVersion = Number(incoming?.refinement?.version) || 0;
   const existingVersion = Number(existing?.refinement?.version) || 0;
   return incomingVersion > existingVersion || (incomingVersion === existingVersion && JSON.stringify(incoming) !== JSON.stringify(existing));

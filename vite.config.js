@@ -3,8 +3,12 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 
 const env = loadEnv(process.env.NODE_ENV || 'development', process.cwd(), '');
+const liveDiagnosticsEnabled = process.env.LIVE_TRANSLATE_DIAGNOSTICS === 'true' || env.LIVE_TRANSLATE_DIAGNOSTICS === 'true';
 
 export default defineConfig({
+  define: {
+    __LIVE_TRANSLATE_DIAGNOSTICS__: JSON.stringify(liveDiagnosticsEnabled)
+  },
   plugins: [
     react(),
     {

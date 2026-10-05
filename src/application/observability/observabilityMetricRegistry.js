@@ -1,7 +1,7 @@
 const STATUS_CLASSES = new Set(['none', '200', '401', '403', '429', '5xx', 'other']);
 const LABEL_VALUES = Object.freeze({
   provider: new Set(['none', 'gemini']),
-  operation: new Set(['none', 'translation', 'polishing', 'token', 'viewer']),
+  operation: new Set(['none', 'translation', 'polishing', 'token', 'viewer', 'retention']),
   statusClass: STATUS_CLASSES
 });
 
@@ -17,6 +17,8 @@ export const OBSERVABILITY_METRIC_NAMES = Object.freeze({
   VIEWER_RECONNECT: 'viewer_reconnect_total', VIEWER_GAP: 'viewer_event_gap_total',
   VIEWER_DUPLICATE: 'viewer_event_duplicate_total', VIEWER_REPLAY: 'viewer_replay_total',
   VIEWER_REPLAY_SUCCESS: 'viewer_replay_success_total', VIEWER_REPLAY_FAILURE: 'viewer_replay_failure_total',
+  PURGE_CLAIMED: 'meeting_purge_claimed_total', PURGE_COMPLETED: 'meeting_purge_completed_total',
+  PURGE_FAILED: 'meeting_purge_failed_total', PURGE_LATENCY: 'meeting_purge_latency_ms',
   METRICS_WRITE_FAILURE: 'observability_metrics_write_failure_total', WORKER_RUNTIME_STARTED: 'worker_runtime_started_total',
   WORKER_RUNTIME_STOPPED: 'worker_runtime_stopped_total', WORKER_RUNTIME_POLL_ERROR: 'worker_runtime_poll_error_total'
 });

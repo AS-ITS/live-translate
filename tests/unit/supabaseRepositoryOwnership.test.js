@@ -15,11 +15,12 @@ test('Supabase meeting repository scopes reads and writes to request owner', asy
   });
 
   setRequestUser({ id: 'user-a' });
-  const meeting = await repository.createMeeting({ id: 'meeting-a', createdAt: '2026-01-01T00:00:00.000Z' });
+  const meeting = await repository.createMeeting({ id: 'meeting-a', createdAt: '2026-01-01T00:00:00.000Z', purgeAt: '2026-01-01T00:30:00.000Z' });
   assert.equal(meeting.id, 'meeting-a');
   assert.equal(meeting.ownerUserId, 'user-a');
   assert.equal(Object.keys(meeting).includes('ownerUserId'), false);
   assert.match(calls[0].init.body, /user-a/);
+  assert.equal(JSON.parse(calls[0].init.body)[0].purge_at, '2026-01-01T00:30:00.000Z');
 
   await repository.getMeeting('meeting-a');
   assert.match(calls[1].url, /owner_user_id=eq\.user-a/);
@@ -130,6 +131,42 @@ test('Supabase session repository serializes timestamps and preserves owner-scop
   }
 });
 
+test('session reads restore authoritative meeting binding from outer columns', async () => {
+  const repository = createSupabaseSessionRepository({
+    env: {
+      SUPABASE_URL: 'https://example.supabase.co',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return [{
+          id: 'session-a',
+          meeting_id: 'meeting-a',
+          owner_user_id: 'user-a',
+          payload: {
+            id: 'session-a',
+            status: 'created'
+          },
+          transcript_items: []
+        }];
+      }
+    })
+  });
+
+  setRequestUser({ id: 'user-a' });
+  setRequestScope({ actorUserId: 'user-a', resourceOwnerUserId: 'user-a', accessToken: 'user-jwt' });
+  try {
+    const detail = await repository.getSessionRecord('session-a');
+    assert.equal(detail.sessionRecord.meetingId, 'meeting-a');
+    assert.equal(detail.sessionRecord.ownerUserId, 'user-a');
+  } finally {
+    setRequestScope(null);
+    setRequestUser(null);
+  }
+});
+
 test('Supabase meeting repository hydrates Cue offsets and language settings', async () => {
   const repository = createSupabaseMeetingRepository({
     env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'service-key' },
@@ -158,7 +195,10 @@ test('Supabase meeting repository hydrates Cue offsets and language settings', a
 
   assert.deepEqual(segment.checkpoint.finalCues[0], {
     cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1,
-    sourceText: '你好', translatedText: 'hello', status: 'final', startTimeMs: 1200,
+    sourceText: '你好', translatedText: 'hello',
+    sourceStatus: 'finalized', translationStatus: 'finalized',
+    sourceVersion: 1, translationVersion: 1,
+    status: 'final', startTimeMs: 1200,
     endTimeMs: 2500, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en',
     rawSource: '你好', rawTranslation: 'hello', finalizedReason: 'final'
   });

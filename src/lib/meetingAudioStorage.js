@@ -1,6 +1,7 @@
 import { Upload } from 'tus-js-client';
 import { authenticatedFetch } from './accessToken.js';
 import { supabase } from './supabaseAuth.js';
+import { meetingLifecycleWriteHeaders } from './meetingLifecycleWriteFence.js';
 
 const TUS_CHUNK_SIZE = 6 * 1024 * 1024;
 const TUS_RETRY_DELAYS = Object.freeze([0, 1000, 3000, 5000]);
@@ -9,34 +10,60 @@ export function cloudMeetingAudioEnabled() {
   return Boolean(supabase && import.meta.env?.VITE_SUPABASE_URL);
 }
 
-export async function uploadMeetingSegmentAudio({ meetingId, segmentId, blob, fetchImpl = globalThis.fetch, UploadImpl = Upload } = {}) {
+export async function uploadMeetingSegmentAudio({ meetingId, segmentId, blob, fetchImpl = globalThis.fetch, UploadImpl = Upload, diagnostics = null, supabaseClient = supabase } = {}) {
   if (!meetingId || !segmentId || !blob || !Number.isFinite(blob.size) || blob.size < 1) return null;
-  const mimeType = normalizeWebmMimeType(blob.type);
-  const request = authenticatedFetch(fetchImpl);
+  const mimeType = normalizeMeetingAudioMimeType(blob.type);
+  const request = authenticatedFetch(fetchImpl, supabaseClient);
+  diagnostics?.beginUpload?.({ byteSize: blob.size });
   const startResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/audio-uploads`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...meetingLifecycleWriteHeaders(meetingId, segmentId)
+    },
     body: JSON.stringify({ mimeType, byteSize: blob.size })
   });
-  if (!startResponse.ok) throw await responseError(startResponse);
+  if (!startResponse.ok) {
+    const error = await responseError(startResponse);
+    diagnostics?.failUpload?.({ errorCode: error.code || null });
+    throw error;
+  }
   const upload = await startResponse.json();
-  if (upload.status === 'ready') return upload;
+  if (upload.status === 'ready') {
+    diagnostics?.completeUpload?.({ status: 'ready' });
+    return upload;
+  }
 
-  const { data } = await supabase.auth.getSession();
+  const { data } = await supabaseClient.auth.getSession();
   const accessToken = data.session?.access_token;
-  if (!accessToken) throw clientError('auth_required', 401);
+  if (!accessToken) {
+    const error = clientError('auth_required', 401);
+    diagnostics?.failUpload?.({ errorCode: error.code });
+    throw error;
+  }
   try {
-    await runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl });
+    await runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl, diagnostics });
   } catch (error) {
-    await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/fail`, {
-      method: 'POST'
-    }).catch(() => {});
+    diagnostics?.failUpload?.({ errorCode: error?.code || null });
+      await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/fail`, {
+        method: 'POST',
+        headers: meetingLifecycleWriteHeaders(meetingId, segmentId)
+      }).catch(() => {});
     throw error;
   }
 
-  const completeResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/complete`, { method: 'POST' });
-  if (!completeResponse.ok) throw await responseError(completeResponse);
-  return completeResponse.json();
+  const completeResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/audio-artifacts/${encodeURIComponent(upload.id)}/complete`, {
+    method: 'POST',
+    headers: meetingLifecycleWriteHeaders(meetingId, segmentId)
+  });
+  if (!completeResponse.ok) {
+    const error = await responseError(completeResponse);
+    diagnostics?.failUpload?.({ errorCode: error.code || null });
+    throw error;
+  }
+  const artifact = await completeResponse.json();
+  diagnostics?.completeUpload?.({ status: artifact?.status || 'ready' });
+  return artifact;
 }
 
 export async function createMeetingAudioDownload({ meetingId, artifactId, fetchImpl = globalThis.fetch }) {
@@ -45,7 +72,7 @@ export async function createMeetingAudioDownload({ meetingId, artifactId, fetchI
   return response.json();
 }
 
-function runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl }) {
+function runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl, diagnostics }) {
   return new Promise((resolve, reject) => {
     const uploader = new UploadImpl(blob, {
       endpoint: upload.uploadEndpoint,
@@ -60,6 +87,11 @@ function runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl }) {
         contentType: mimeType,
         cacheControl: '3600'
       },
+      onShouldRetry: (_error, retryAttempt) => {
+        diagnostics?.recordUploadRetry?.();
+        return retryAttempt < TUS_RETRY_DELAYS.length;
+      },
+      onProgress: (uploadedBytes) => diagnostics?.recordUploadProgress?.({ uploadedBytes }),
       onError: reject,
       onSuccess: resolve
     });
@@ -70,9 +102,9 @@ function runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl }) {
   });
 }
 
-function normalizeWebmMimeType(value) {
+function normalizeMeetingAudioMimeType(value) {
   const normalized = String(value || '').toLowerCase();
-  if (normalized === 'audio/webm' || normalized === 'audio/webm;codecs=opus') return normalized;
+  if (normalized === 'audio/webm' || normalized === 'audio/webm;codecs=opus' || normalized === 'audio/wav') return normalized;
   throw clientError('audio_mime_type_unsupported', 400);
 }
 

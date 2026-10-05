@@ -1,5 +1,129 @@
 # Live Translate API and Events
 
+## `GET /api/runtime-config`
+
+Public, browser-safe startup configuration. The response is not cached and
+contains exactly one allowlisted boolean:
+
+```json
+{
+  "livePipelineTraceEnabled": false
+}
+```
+
+The server derives it from strict `LIVE_PIPELINE_TRACE_ENABLED=true` opt-in. No
+other environment variables, credentials, tokens, or authorization data are
+exposed.
+
+## Phase 0 delivery and permission contract, 2026-10-01
+
+The browser is the sole reader of page OPFS. It explicitly sends immutable
+audio chunks to the local service; the service cannot directly read page OPFS,
+IndexedDB, or other page storage. This path is distinct from the direct
+browser-to-Gemini connection.
+
+The browser has durable pending queues for `cue`, `checkpoint`, `operation`,
+and `audio`. Audio queue entries reference immutable OPFS chunks and retain
+sequence, byte range, checksum, and retry metadata. A successful ACK requires
+durable commit of the matching idempotency key and version. Missing ACKs are
+resent with the same key, duplicate delivery returns the original result, and
+stale fence/version/hash requests return a structured conflict without
+overwriting newer state.
+
+Recovery order is queue validation/checksum, lifecycle operations in sequence,
+dependent checkpoints and Cues in version order, then audio chunks in chunk
+order. Queues ACK independently. Local Supabase on the recording device is the
+only recording lifecycle owner. Cloud Supabase stores only accounts,
+permissions, meeting settings, dictionaries, and device/meeting entry data;
+it is not the recording-data owner. Browser queues never create their own
+Meeting/Session/Segment state.
+
+Viewer shares grant sanitized read-only access only. Host export permission is
+authenticated and checked separately, never inferred from a share token. Stop
+immediately revokes Viewer and Recorder shares; the host can export TXT/SRT/VTT
+and download completed audio for 30 minutes, after which content returns
+`410 meeting_content_expired`.
+
+Origin/CORS is allowlist-only for approved Preview and Production origins.
+There is no wildcard or arbitrary localhost approval in the deployed contract.
+
+Failed, skipped, or environment-blocked checks must be reported as such and
+cannot be labelled `baseline passed`. Phase 1 physical acceptance remains
+pending for Mac/Windows microphones, reload/crash recovery, OPFS quota/offline
+resend, audio loss/recovery, and Preview/Production Origin/CORS.
+
+## Meeting recording lifecycle v2 (Issue #37 Phase 1)
+
+New Meetings use a Supabase-owned lifecycle. Vercel Functions only validate the
+request and invoke a transactional RPC; they do not retain recorder state.
+
+```http
+POST /api/meetings/:meetingId/recording/start
+POST /api/meetings/:meetingId/recording/pause
+POST /api/meetings/:meetingId/recording/resume
+POST /api/meetings/:meetingId/recording/rollover
+POST /api/meetings/:meetingId/recording/recover
+POST /api/meetings/:meetingId/recording/stop
+POST /api/meetings/:meetingId/recording/takeover
+POST /api/meetings/:meetingId/recording/lease/heartbeat
+POST /api/meetings/:meetingId/heartbeat
+```
+
+Lifecycle mutations carry `operationId`, `expectedLifecycleVersion`, and—after
+`start`—`leaseId` plus `fenceToken`. Repeating the same operation returns its
+stored result. A stale lifecycle version or competing transition returns
+`409 meeting_lifecycle_conflict`. Other stable conflict codes are
+`recorder_already_active`, `recorder_lease_invalid`, and
+`recorder_takeover_confirmation_required`.
+
+The recorder renews its 10-second Meeting lease every 3 seconds. The same
+principal may take over an expired lease; a different principal requires an
+owner or super-admin force takeover with explicit confirmation. Provider
+reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
+recovery do.
+
+The authenticated CRON worker invokes the service-role-only
+`expire_stale_meetings` RPC in bounded batches. A lifecycle v2 Meeting with no
+persisted heartbeat for 15 minutes is stopped with `recorder_lost`, its active
+Segment is marked `interrupted`, its Viewer shares and recorder lease are
+revoked, and `purge_at` is set 30 minutes later. `claim_due_meeting_purges`
+provides an atomic, locked claim contract for the bounded purge worker. The
+worker deletes `meeting-audio` and `meeting-exports` Storage objects before
+deleting the Meeting row, allowing its database cascade to remove dependent
+transcript, Session, Segment, share, and artifact metadata. Partial failures
+mark the claim retryable as `failed`.
+
+After `purge_at`, owner-scoped Meeting detail, export source, and audio
+completion/download operations return `410 meeting_content_expired`. After the
+worker deletes the Meeting row, these resources return the normal not-found
+response. Legacy v1 rows remain readable during the transition.
+
+Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
+new recording lifecycle commands and reject new Session, Segment, Viewer-share,
+or finalized Cue writes. For v2 Meetings, finalized transcript data is stored
+only in `subtitle_cues`; compatibility Session snapshots do not append
+`transcript_items`.
+
+`POST /api/meetings/:meetingId/segments/:segmentId/audio-uploads` requires the
+current `X-Meeting-Session-Id`, `X-Meeting-Segment-Id`,
+`X-Meeting-Lease-Id`, and `X-Meeting-Fence-Token` headers before it creates an
+artifact. An artifact created before terminal transition may still complete or
+fail before `purge_at`; completion and failure at or after that deadline return
+`409 meeting_terminal`.
+
+## Meeting Viewer snapshot pagination
+
+`GET /api/shared-meetings/:token` and
+`GET /api/shared-meetings/code/:shortCode` return the newest 100 finalized Cues
+by default. The response includes `pagination.hasMore` and an opaque
+`pagination.nextCursor`; pass that value as `?before=<cursor>` to load the
+previous page. `limit` may be set from 1 through 100.
+
+Viewer reads use one bounded joined Cue query in cloud mode. They do not load
+all Segments or expose Meeting glossary, private settings, audio metadata, or
+live session identifiers. Cursor pages are merged by `cueId` and ordered by
+Segment sequence plus Cue sequence, so Realtime delivery remains idempotent.
+
 ## Meeting export lifecycle (P7)
 
 Assigned members can read the meeting data explicitly covered by RLS and can
@@ -32,11 +156,19 @@ seconds. The API never returns Storage paths, signed URLs in logs, transcript
 text, JWTs, or Storage credentials. Local file-backed mode continues to use
 the existing browser export path.
 
-## Personal Gemini Credential
+## Gemini credential boundary
 
-Authenticated users may use `GET`, `PUT`, and `DELETE /api/profile/gemini-credential`. `PUT` accepts `{ "apiKey": "..." }`; responses contain only configuration metadata such as `configured`, `lastFour`, `keyVersion`, and `verifiedAt`. The full key is stored in Supabase Vault and is never returned.
+The old profile credential API (`/api/profile/gemini-credential`) and its
+`gemini_credentials` store have been removed. Live token issuance accepts only
+the authenticated recorder's request-scoped `geminiApiKey`; it does not read a
+stored key or the server `GEMINI_API_KEY` environment variable. The request key
+is used only to create the short-lived token, then discarded. It is never
+persisted, returned, logged, or included in telemetry. Viewer requests do not
+request or receive a Gemini key or token.
 
-`POST /api/live-token` resolves the Gemini key for the authenticated user in cloud mode. A user without a configured key receives `gemini_credential_not_configured`; the response and request logs never contain the key.
+Non-Live backend workers may use an isolated `GEMINI_API_KEY` when their own
+provider configuration requires it; that key is not part of the Live token
+flow.
 
 ## Realtime subtitle pipeline contract
 
@@ -46,7 +178,8 @@ authoritative recovery path after disconnects. The Vercel Cron worker processes
 durable translation jobs in bounded batches and does not rely on process-local
 polling.
 
-The API treats a finalized source Cue as the stable unit of downstream work.
+The API treats a Cue with at least one finalized side as a stable publishable
+unit. Source and translation completion are independent.
 
 ### Cue read model
 
@@ -61,18 +194,22 @@ The API treats a finalized source Cue as the stable unit of downstream work.
   "sourceLanguageCode": "zh-Hant",
   "targetLanguageCode": "en",
   "sourceText": "正式原文。",
+  "sourceStatus": "finalized",
+  "sourceVersion": 1,
   "initialTranslation": "Initial translation.",
   "refinedTranslation": null,
-  "translationStatus": "completed",
+  "translationStatus": "finalized",
+  "translationVersion": 1,
   "refinementStatus": "queued",
   "version": 1,
   "status": "final"
 }
 ```
 
-`cueId`, `sessionId`, `segmentId`, `sequence`, time range, language identity,
-and `sourceText` are immutable. Initial translation and refinement update this
-same read-model row; they never create a second Cue or alter its ordering.
+`cueId`, `sessionId`, `segmentId`, `sequence`, time range, and language identity
+define immutable Cue identity. Source or translation may initially be empty;
+later versions update the same read-model row and never create a second Cue or
+alter its ordering.
 Consumers compute the effective translation as
 `refinedTranslation → initialTranslation → legacy translatedText`.
 
@@ -209,9 +346,12 @@ event cursor.
 
 Viewer SSE uses `GET /api/shared-meetings/:token/events` or the short-code
 variant. The client may send `after=<eventId>` or rely on `Last-Event-ID`.
-Events are process-local and replayable only within the bounded in-memory
-history. When the cursor is too old, the stream emits `meeting.gap` and the
-Viewer refetches the REST snapshot.
+Requests with `Accept: application/json` return a bounded replay payload
+`{ events, cursor, gap? }` instead of opening an SSE stream; the cloud Realtime
+Viewer uses this form after subscribing. Events are process-local and replayable
+only within the bounded in-memory history when the durable event repository is
+unavailable. When an SSE cursor is too old, the stream emits `meeting.gap` and
+the Viewer refetches the REST snapshot.
 
 ## Session sharing
 
@@ -484,10 +624,12 @@ Returns `201 Created`:
 
 Updates Meeting name, source/target languages, translated-audio playback,
 original-audio recording, shared glossary entries, and
-private glossary entries. A live
-Recorder applies changed language or glossary settings at the next Segment
-boundary; the current Segment keeps its settings snapshot. Completed Meetings
-are read-only and return `409 meeting_settings_locked`.
+private glossary entries. A live Recorder applies changed language or glossary
+settings at the next Segment boundary; provider reconnect within the current
+Segment keeps its settings snapshot. Same-source private Meeting entries
+override selected shared entries. Existing subtitles and already-played
+provider audio are not rewritten. Completed Meetings are read-only and return
+`409 meeting_settings_locked`.
 
 ## `DELETE /api/meetings/:meetingId`
 
@@ -499,7 +641,9 @@ meeting_delete_not_allowed`.
 ## `POST /api/meetings/:meetingId/complete`
 
 Completes a Meeting that has no active Live recording. Existing checkpoints,
-transcripts, and audio artifacts are preserved. Any not-yet-started trailing
+transcripts, and audio artifacts are preserved for the 30-minute retention
+window; `purge_at` is set to 30 minutes after completion for the bounded purge
+worker. Any not-yet-started trailing
 Segment is finalized as an empty completed Segment. Active recordings return
 `409 meeting_complete_not_allowed`.
 
@@ -1130,9 +1274,15 @@ initial status is `created`. The request may include `name`,
 
 ### `PATCH /api/sessions/:sessionId`
 
-Updates Session metadata or lifecycle status. Supported statuses are `created`,
-`active`, `paused`, `stopped`, `failed`, and `expired`; invalid transitions are
-rejected.
+Updates Session metadata, lifecycle status, or the current Meeting Segment
+binding. Supported fields include `name`, `targetLanguageCode`,
+`targetLanguageLabel`, `sourceLanguageCode`, and `segmentId`; supported statuses
+are `created`, `active`, `paused`, `stopped`, `failed`, and `expired`, and invalid
+transitions are rejected. During long-meeting rollover, the old Segment is
+checkpointed and its queued Cues are published before the same Session is
+rebound to the new `segmentId`; new Cues are accepted only after that binding
+update succeeds. Existing Meeting, Session, and Segment authorization checks
+remain in force.
 
 ### Sharing
 
@@ -1150,13 +1300,15 @@ snapshot, allowing reconnect clients to render the latest known state.
 Creates a short-lived Gemini ephemeral token for one browser Live Translate
 session.
 
-The backend uses `GEMINI_API_KEY` server-side to create the token. The response
-must not expose `GEMINI_API_KEY`.
+The authenticated browser sends its lifecycle-memory-only Gemini API Key in this
+request. The backend uses it only for this request to create the token and never
+persists or logs it. The response must not expose `GEMINI_API_KEY`.
 
 ## Request Body
 
 ```json
 {
+  "geminiApiKey": "<user-supplied-key>",
   "targetLanguageCode": "en",
   "sourceLanguageCode": "zh-Hant",
   "echoTargetLanguage": true,
@@ -1166,6 +1318,9 @@ must not expose `GEMINI_API_KEY`.
 
 Fields:
 
+- `geminiApiKey`: Required request-scoped user credential. It must not be stored
+  in localStorage, sessionStorage, cookies, Supabase, Vercel KV, server globals,
+  logs, or any other persistent store.
 - `targetLanguageCode`: Optional string. Defaults to `en`.
 - `sourceLanguageCode`: Optional string. Defaults to `zh-Hant`. This is a soft
   primary input-language hint for model context; it does not prevent mixed
@@ -1232,7 +1387,7 @@ Fields:
 - `echoTargetLanguage` defaults to `true` when omitted.
 - Invalid JSON returns `400`.
 - Oversized request bodies return `413`.
-- Missing `GEMINI_API_KEY` returns `500`.
+- Missing request `geminiApiKey` returns `500` with `server_misconfigured`.
 - Gemini token creation failures return `502`.
 
 Supported language codes:
@@ -1256,11 +1411,11 @@ Invalid language:
 }
 ```
 
-Missing API key:
+Missing request key:
 
 ```json
 {
-  "error": "GEMINI_API_KEY is not configured"
+  "error": "server_misconfigured"
 }
 ```
 
@@ -1392,17 +1547,17 @@ metadata.
 
 ## Account management and meeting membership
 
-Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. Pending profiles may only read `GET /api/profile`; other private APIs return `403 auth_pending`. Disabled profiles receive `403 auth_forbidden`.
+Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. A domain-approved pending profile is activated by the trusted backend before private dispatch. Disabled profiles receive `403 auth_forbidden`.
 
 Private APIs refresh the server-side profile on every request. Disabled profiles receive `403 auth_forbidden`. Members must provide `meetingId` when creating a session and must have an active membership for that meeting; missing meetings and memberships return `403 recorder_forbidden`.
 
 `GET/POST /api/meetings/:meetingId/members` and `DELETE /api/meetings/:meetingId/members/:userId` are restricted to the meeting owner or an active `super_admin`. Admin user listing and enable/disable endpoints require an active `super_admin`; disable requests require `{ "transferToUserId": "<active-user-id>" }`.
 
-Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. `gemini_credentials` are intentionally excluded.
+Successful and failed invite, remove, enable, disable, and transfer operations write safe audit records. Audit records never contain tokens, API keys, credentials, audio, transcript, cue text, or secrets. Transfer is atomic across owner-scoped meeting, transcript, translation, glossary, summary, audio, export, share, queue, DLQ, lease, and event assets. The removed credential store is not part of account transfer.
 
-## Account approval access gate
+## Domain auto-activation access gate
 
-Google Workspace domain matching is the first gate, not immediate application access. New profiles are `member` plus `pending` until an active `super_admin` approves them with `POST /api/admin/users/:id/approve`, which performs `pending -> active`. `GET /api/profile` returns a pending profile; all other private APIs return `403 auth_pending`. Status management preserves `active -> disabled` and `disabled -> active`, and pending profiles cannot be invited to Meetings.
+After the backend verifies the Supabase JWT and exact `AUTH_ALLOWED_EMAIL_DOMAINS` match, it invokes the service-role-only `activate_pending_profile` RPC. The RPC performs only `pending -> active`, preserves role, and returns the current profile when a concurrent operation already changed it. New and existing pending profiles therefore enter the application without administrator approval. Missing profiles or failed activation return `503`; disabled profiles remain `403 auth_forbidden`. `POST /api/admin/users/:id/approve` is removed. Administrator `active -> disabled` and `disabled -> active` controls remain available.
 
 ## Session End Event
 
@@ -1454,4 +1609,17 @@ diagnostics (`status`, provider code/status/message, model, and config field
 names) without prompt text, transcript content, API keys, or tokens.
 ## Application login audit event
 
-`POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server reads the authenticated profile status and writes `auth_login` with `result: success` for active profiles or `result: failure` for pending and disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.
+`POST /api/auth-events` accepts `{ "event": "login" }` with a Supabase bearer token. The server performs the same trusted pending-profile activation, then writes `auth_login` with `result: success` for active profiles or `result: failure` for disabled profiles. The endpoint is rate-limited and origin-checked, returns `202` after a best-effort audit write, and never records provider-level OAuth failures without a safe actor identity.
+## GSK-04 Live credential boundary
+
+Current implementation supersedes any earlier Live-token credential wording in this document: `POST /api/live-token` requires the authenticated recorder request to provide `geminiApiKey`. It does not resolve `/api/profile/gemini-credential`, `gemini_credentials`, or `GEMINI_API_KEY` from the environment. The request key is not persisted or returned, and successful and error responses use `Cache-Control: no-store`.
+
+The former profile credential API, `geminiCredentialApiClient`, and
+`gemini_credentials` store are removed from the current implementation.
+Existing user keys are not migrated to another persistent location. Rollback is
+possible by reverting the application deployment before cleanup; after removal,
+recovery requires a new request-scoped key. Non-Live backend Gemini workflows
+may use an isolated environment key through their own provider composition; it
+is not shared with recorder requests. Logs, metrics, telemetry, and audit
+records must not contain API keys, ephemeral tokens, stored credentials,
+request keys, or secret-bearing payloads.

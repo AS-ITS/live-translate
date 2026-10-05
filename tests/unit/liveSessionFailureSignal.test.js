@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { GoogleGenAI } from '@google/genai';
 import { classifyConnectionFailure } from '../../src/lib/connectionFailures.js';
 import { createAudioContext, LiveTranslateSession } from '../../src/lib/liveSession.js';
 import { createReconnectController } from '../../src/lib/reconnectController.js';
 
-test('live token setup preserves missing Gemini credential error details', async () => {
+test('live token setup does not map retired Gemini credential errors to Live UX copy', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => ({
     ok: false,
@@ -21,8 +22,8 @@ test('live token setup preserves missing Gemini credential error details', async
       (error) => {
         assert.equal(error.code, 'gemini_credential_not_configured');
         assert.equal(error.status, 409);
-        assert.equal(error.message, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。');
-        assert.equal(error.userMessage, '請先在伺服器設定 Gemini API Key，再開始即時翻譯。（HTTP 409）');
+        assert.equal(error.message, '無法準備即時翻譯請求。');
+        assert.equal(error.userMessage, '無法準備即時翻譯請求。（HTTP 409）');
         return true;
       }
     );
@@ -86,6 +87,10 @@ test('unexpected close triggers connection failure after cleanup', async () => {
     liveSessionId: failures[0].diagnostic.liveSessionId,
     segmentId: failures[0].diagnostic.segmentId,
     audioCallbackCount: 0,
+    audioCallbackGapCount: 0,
+    maxAudioCallbackGapMs: 0,
+    lastAudioCallbackGapMs: null,
+    audioCallbackGapP95Ms: 0,
     captureProcessorMode: 'script',
     captureGraphGeneration: 0,
     activeCaptureGraphGeneration: null,
@@ -115,6 +120,14 @@ test('failure diagnostics expose provider codes without exposing credentials', a
   assert.equal(failures[0].diagnostic.providerReason, '[redacted]');
   assert.equal(session.getDebugSnapshot().failureDiagnostics.length, 1);
   assert.equal(JSON.stringify(session.getDebugSnapshot()).includes('secret-token-value'), false);
+});
+
+test('staging-safe debug snapshots redact pending transcript text', () => {
+  const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+  const snapshot = session.getDebugSnapshot({ includeText: false });
+
+  assert.equal(snapshot.pendingInputTranscript, null);
+  assert.equal(snapshot.pendingOutputTranscript, null);
 });
 
 test('expected user stop does not trigger connection failure', async () => {
@@ -337,6 +350,32 @@ test('live session uses Safari webkitAudioContext fallback', async () => {
   }
 });
 
+test('disabled translated audio playback does not enqueue output audio', () => {
+  let createBufferCalls = 0;
+  const outputChunks = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    echoTargetLanguage: false,
+    onOutputAudioChunk: (chunk) => outputChunks.push(chunk)
+  });
+  session.audioContext = {
+    createBuffer() {
+      createBufferCalls += 1;
+    }
+  };
+
+  session.handleMessage({
+    serverContent: {
+      modelTurn: {
+        parts: [{ inlineData: { data: 'AAAA' } }]
+      }
+    }
+  });
+
+  assert.equal(createBufferCalls, 0);
+  assert.deepEqual(outputChunks, []);
+});
+
 test('offline signal emits a recoverable failure after cleanup', async () => {
   const failures = [];
   const session = createTestSession({ onConnectionFailure: (failure) => failures.push(failure) });
@@ -416,6 +455,7 @@ test('provider reconnect rotates live session id across meeting segments', async
     targetLanguageCode: 'en'
   });
   let connectOptions = null;
+  const previousAudioTurnId = session.audioTurnId;
   session.connectProvider = async (options) => {
     connectOptions = options;
     return true;
@@ -431,7 +471,41 @@ test('provider reconnect rotates live session id across meeting segments', async
   );
   assert.equal(session.segmentId, 'segment-2');
   assert.equal(session.liveSessionId, 'live-session-2');
+  assert.notEqual(session.audioTurnId, previousAudioTurnId);
   assert.deepEqual(connectOptions, { forceRefresh: true });
+});
+
+test('transparent provider reconnect preserves the incomplete local audio turn identity', async () => {
+  const session = new LiveTranslateSession({
+    liveSessionId: 'live-session-1',
+    segmentId: 'segment-1',
+    targetLanguageCode: 'en'
+  });
+  const previousAudioTurnId = session.audioTurnId;
+  session.connectProvider = async () => true;
+
+  assert.equal(await session.reconnectProvider({ forceRefresh: true }), true);
+  assert.equal(session.audioTurnId, previousAudioTurnId);
+});
+
+test('turnComplete followed by generationComplete rotates the audio turn only once', () => {
+  const sourceEvents = [];
+  const session = new LiveTranslateSession({
+    targetLanguageCode: 'en',
+    onCueEvent: (event) => {
+      if (event.stream === 'source') sourceEvents.push(event);
+    }
+  });
+
+  session.handleMessage({ eventId: 'text-1', serverContent: { inputTranscription: { text: 'first sentence' } } });
+  session.handleMessage({ eventId: 'turn-1', serverContent: { turnComplete: true } });
+  const nextAudioTurnId = session.audioTurnId;
+  session.handleMessage({ eventId: 'generation-1', serverContent: { generationComplete: true } });
+  assert.equal(session.audioTurnId, nextAudioTurnId);
+
+  session.handleMessage({ eventId: 'text-2', serverContent: { inputTranscription: { text: 'second sentence' } } });
+  assert.equal(sourceEvents.length, 2);
+  assert.notEqual(sourceEvents[0].audioTurnId, sourceEvents[1].audioTurnId);
 });
 
 test('turn completion finalizes preceding input and output transcript partials', () => {
@@ -945,6 +1019,8 @@ test('healthy audio callbacks reset the transient capture-stall recovery budget'
   };
   session.mediaStream = { getTracks: () => [] };
   session.chunker = { push() { return []; }, reset() {} };
+  session.session = { sendRealtimeInput() {} };
+  session.providerReady = true;
 
   session.setupAudioCapture();
   processors[0].onaudioprocess({ inputBuffer: { getChannelData: () => new Float32Array(1600) } });
@@ -1147,13 +1223,13 @@ test('live session applies glossary replacements only to output transcript event
 
   session.handleMessage({
     serverContent: {
-      inputTranscription: { text: '麥克風' },
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone and mic' },
       turnComplete: true
     }
   });
 
-  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: '麥克風', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
+  assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: 'microphone', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
   assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak and Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
@@ -1170,6 +1246,7 @@ test('live session emits final output transcript events after glossary replaceme
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' },
       turnComplete: true
     }
@@ -1191,6 +1268,7 @@ test('turn completion flush keeps replacement text when finalizing output partia
 
   session.handleMessage({
     serverContent: {
+      inputTranscription: { text: 'microphone' },
       outputTranscription: { text: 'microphone' }
     }
   });
@@ -1529,3 +1607,37 @@ function createFakeTimer() {
     }
   };
 }
+test('reconnect passes the latest session resumption handle to live.connect config', async () => {
+  const originalFetch = globalThis.fetch;
+  const probe = new GoogleGenAI({ apiKey: 'test-token' });
+  const livePrototype = Object.getPrototypeOf(probe.live);
+  const originalConnect = livePrototype.connect;
+  let connectOptions;
+  globalThis.fetch = async () => ({
+    ok: true,
+    async json() {
+      return {
+        token: 'ephemeral-token',
+        expiresAt: '2099-01-01T00:00:00.000Z',
+        liveConnectModel: 'gemini-3.5-live-translate-preview',
+        liveConnectConfig: { responseModalities: ['AUDIO'] }
+      };
+    }
+  });
+  livePrototype.connect = async (options) => {
+    connectOptions = options;
+    return { close() {} };
+  };
+
+  try {
+    const session = new LiveTranslateSession({ targetLanguageCode: 'en' });
+    session.resumptionHandle = 'latest-resume-handle';
+    session.waitForSetupComplete = async () => true;
+    session.attachAudioCaptureAfterSetup = async () => true;
+    await session.connectProvider();
+    assert.equal(connectOptions.config.sessionResumption.handle, 'latest-resume-handle');
+  } finally {
+    livePrototype.connect = originalConnect;
+    globalThis.fetch = originalFetch;
+  }
+});

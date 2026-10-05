@@ -6,11 +6,17 @@ export function createSupabaseMeetingCueService({ env = process.env, fetchImpl =
   const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
 
   return Object.freeze({
-    async persist({ meetingId, segmentId, sessionId, cue }) {
-      const sessions = await client.request('sessions', {
-        query: `?select=owner_user_id,id,meeting_id,segment_id&${eq('id', sessionId)}&${eq('meeting_id', meetingId)}&${eq('segment_id', segmentId)}`
-      });
-      const session = sessions[0];
+    async persist({ meetingId, segmentId, sessionId, sessionRecord = null, cue }) {
+      const session = sessionRecord
+        ? {
+            id: sessionRecord.id,
+            meeting_id: sessionRecord.meetingId,
+            segment_id: sessionRecord.segmentId,
+            owner_user_id: sessionRecord.ownerUserId
+          }
+        : (await client.request('sessions', {
+            query: `?select=owner_user_id,id,meeting_id,segment_id&${eq('id', sessionId)}&${eq('meeting_id', meetingId)}&${eq('segment_id', segmentId)}`
+          }))[0];
       if (!session) {
         const error = new Error('Recorder Session does not match the Meeting Segment.');
         error.code = 'recorder_session_mismatch';
@@ -23,10 +29,12 @@ export function createSupabaseMeetingCueService({ env = process.env, fetchImpl =
         session_id: sessionId,
         segment_id: segmentId,
         sequence: cue.sequence,
-        source_text: cue.sourceText,
+        source_text: cue.sourceText || null,
         translated_text: cue.translatedText || null,
-        source_version: cue.sourceVersion || 1,
-        translation_version: cue.translationVersion || 0,
+        source_status: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'),
+        translation_status: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'),
+        source_version: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0),
+        translation_version: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0),
         started_at: cue.startTimeMs,
         ended_at: cue.endTimeMs
       };

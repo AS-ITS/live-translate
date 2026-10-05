@@ -202,7 +202,7 @@ export function createMeetingCheckpointSyncCoordinator({
 
     for (const [key, pending] of pendingChunks) {
       const persisted = persistedByKey.get(key) || persistedBySequence.get(`${pending.stream}:${pending.sequence}`);
-      if (persisted && (sameChunk(persisted, pending) || persistedBySequence.get(`${pending.stream}:${pending.sequence}`))) {
+      if (persisted && sameChunk(persisted, pending)) {
         pendingChunks.delete(key);
       }
     }

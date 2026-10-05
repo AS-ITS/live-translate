@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
 import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseContextClient, requireSupabaseContextClient } from './supabaseRequestClient.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../lib/meetingRetention.js';
 
 export const MEETING_AUDIO_BUCKET = 'meeting-audio';
 export const MEETING_AUDIO_KIND = 'source_webm';
@@ -9,7 +10,8 @@ export const MP3_AUDIO_KIND = 'mp3';
 export const MEETING_AUDIO_MAX_BYTES = 64 * 1024 * 1024;
 export const MEETING_AUDIO_MIME_TYPES = Object.freeze([
   'audio/webm',
-  'audio/webm;codecs=opus'
+  'audio/webm;codecs=opus',
+  'audio/wav'
 ]);
 
 export function createSupabaseMeetingAudioService({
@@ -46,7 +48,7 @@ export function createSupabaseMeetingAudioService({
         session_id: null,
         storage_path: objectPath,
         kind: MEETING_AUDIO_KIND,
-        file_name: 'recording.webm',
+        file_name: mimeType === 'audio/wav' ? 'recording.wav' : 'recording.webm',
         byte_size: byteSize,
         mime_type: mimeType,
         status: 'uploading',
@@ -73,6 +75,7 @@ export function createSupabaseMeetingAudioService({
     async completeUpload({ meetingId, artifactId }) {
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
+      await requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock });
       const object = await storageRequest(fetchImpl, {
         baseUrl,
         secretKey,
@@ -100,6 +103,7 @@ export function createSupabaseMeetingAudioService({
     async failUpload({ meetingId, artifactId }) {
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
+      await requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock });
       if (artifact.status === 'ready') return artifactDTO(artifact);
       const rows = await client.request('audio_artifacts', {
         method: 'PATCH',
@@ -209,6 +213,13 @@ async function requireArtifact(client, { ownerUserId, meetingId, artifactId }) {
   });
   if (!rows[0]) throw audioError('audio_artifact_not_found', 404);
   return rows[0];
+}
+
+async function requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock }) {
+  const rows = await client.request('meetings', {
+    query: `?select=lifecycle_contract_version,status,purge_at&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}`
+  });
+  if (isMeetingContentExpired(rows[0], clock())) throw meetingContentExpiredError();
 }
 
 function artifactDTO(row) {

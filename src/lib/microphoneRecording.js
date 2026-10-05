@@ -25,12 +25,18 @@ export function createMicrophoneRecordingController(options = {}) {
     : 1000;
   const now = options.now || (() => Date.now());
   const onStateChange = typeof options.onStateChange === 'function' ? options.onStateChange : null;
+  const diagnostics = options.diagnostics || null;
+  const onChunk = typeof options.onChunk === 'function' ? options.onChunk : null;
 
   let recorder = null;
   let chunks = [];
   let sessionId = '';
   let startedAt = null;
   let selectedMimeType = '';
+  let chunkSequence = 0;
+  let chunkWriteQueue = Promise.resolve();
+  let chunkWriteError = null;
+  let captureEpoch = 0;
   let state = { ...IDLE_STATE };
 
   function setState(patch) {
@@ -44,6 +50,7 @@ export function createMicrophoneRecordingController(options = {}) {
   }
 
   async function start(input = {}) {
+    if (state.status === 'recording' || state.status === 'finalizing') return getState();
     resetRecordingMetadata(input);
 
     if (!isRecordingSupported(MediaRecorderImpl, BlobImpl)) {
@@ -59,7 +66,7 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     chunks = [];
-    return startRecorder(input.stream);
+    return startRecorder(input.stream, { beginDiagnostics: true });
   }
 
   async function pause() {
@@ -97,10 +104,16 @@ export function createMicrophoneRecordingController(options = {}) {
     if (state.status === 'ready') {
       return getState();
     }
+    diagnostics?.beginFinalize?.();
 
     if (recorder) {
       setState({ status: 'finalizing' });
       await stopRecorder();
+    }
+
+    await chunkWriteQueue;
+    if (chunkWriteError || state.status === 'error') {
+      return getState();
     }
 
     if (state.status === 'error') {
@@ -115,6 +128,7 @@ export function createMicrophoneRecordingController(options = {}) {
     const mimeType = selectedMimeType || chunks.find((chunk) => chunk?.type)?.type || '';
     const extension = extensionForMimeType(mimeType);
     const blob = new BlobImpl(chunks, mimeType ? { type: mimeType } : undefined);
+    diagnostics?.finishFinalize?.(blob);
     return setState({
       status: 'ready',
       blob,
@@ -152,10 +166,13 @@ export function createMicrophoneRecordingController(options = {}) {
     sessionId = input.sessionId || '';
     startedAt = input.startedAt ?? now();
     selectedMimeType = chooseSupportedMimeType(MediaRecorderImpl, preferredMimeTypes);
+    chunkSequence = 0;
+    chunkWriteQueue = Promise.resolve();
+    chunkWriteError = null;
     state = { ...IDLE_STATE };
   }
 
-  function startRecorder(stream) {
+  function startRecorder(stream, { beginDiagnostics = false } = {}) {
     try {
       recorder = selectedMimeType
         ? new MediaRecorderImpl(stream, { mimeType: selectedMimeType })
@@ -166,13 +183,30 @@ export function createMicrophoneRecordingController(options = {}) {
     }
 
     const recorderMimeType = recorder.mimeType || selectedMimeType;
+    const recorderEpoch = ++captureEpoch;
+    if (beginDiagnostics) diagnostics?.reset?.({ mimeType: recorderMimeType });
     selectedMimeType = recorderMimeType;
     recorder.ondataavailable = (event) => {
-      if (collectChunks && event?.data && dataHasContent(event.data)) {
-        chunks.push(event.data);
+      if (recorderEpoch !== captureEpoch) return;
+      if (event?.data && dataHasContent(event.data)) {
+        diagnostics?.recordRecorderChunk?.(event.data);
+        if (collectChunks) chunks.push(event.data);
+        if (onChunk) {
+          const payload = {
+            data: event.data,
+            sequence: ++chunkSequence,
+            mimeType: recorderMimeType,
+            receivedAt: now()
+          };
+        chunkWriteQueue = chunkWriteQueue.then(() => recorderEpoch === captureEpoch ? onChunk(payload) : undefined).catch((error) => {
+            chunkWriteError = error;
+            fail(error?.message || '本機音訊分塊寫入失敗。');
+          });
+        }
       }
     };
     recorder.onerror = (event) => {
+      if (recorderEpoch !== captureEpoch) return;
       fail(event?.error?.message || event?.message || '本機錄音發生錯誤。');
     };
 
@@ -232,7 +266,8 @@ export function createMicrophoneRecordingController(options = {}) {
     resume,
     finalize,
     cleanup,
-    getState
+    getState,
+    getDiagnostics: () => diagnostics?.snapshot?.() || null
   };
 }
 

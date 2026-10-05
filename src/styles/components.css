@@ -22,6 +22,8 @@
 .button.secondary:hover:not(:disabled) { background: var(--color-surface-muted); }
 .button.danger-button { border-color: #e7aaa6; background: var(--color-danger-soft); color: var(--color-danger); }
 .button.detail-button { min-width: auto; min-height: 2.5rem; padding-inline: var(--space-3); font-size: var(--text-sm); }
+.glossary-import-button { flex-shrink: 0; min-height: 2.75rem; padding-inline: var(--space-4); white-space: nowrap; }
+.glossary-import-button svg { flex: 0 0 auto; }
 .dialog-close-button, .global-glossary-modal-header > .icon-button, .glossary-drawer-header > .icon-button, .global-glossary-dialog-header > .icon-button {
   display: inline-flex;
   flex: 0 0 2.75rem;

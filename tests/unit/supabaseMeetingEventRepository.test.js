@@ -51,3 +51,35 @@ test('lists events after a cursor and returns the latest cursor', async () => {
   assert.equal((await repository.listSince('meeting-1', 7, { ownerUserId: 'owner-1' }))[0].eventId, 8);
   assert.deepEqual(await repository.latestCursor('meeting-1', { ownerUserId: 'owner-1' }), { eventId: 8, cueSequence: 4 });
 });
+
+test('delayed translation creates a new durable event for the same Cue ID', async () => {
+  const eventKeys = [];
+  const fetchImpl = async (_url, options) => {
+    const row = JSON.parse(options.body)[0];
+    eventKeys.push(row.event_key);
+    return new Response(JSON.stringify([{
+      ...row,
+      event_id: eventKeys.length,
+      occurred_at: '2026-09-30T00:00:00.000Z'
+    }]), { status: 201, headers: { 'content-type': 'application/json' } });
+  };
+  const repository = createSupabaseMeetingEventRepository({
+    env: { SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SECRET_KEY: 'secret' },
+    fetchImpl,
+    idFactory: () => 'event-id',
+    clock: () => Date.parse('2026-09-30T00:00:00.000Z')
+  });
+  const sourceOnly = {
+    cueId: 'cue-1', sequence: 1, sourceText: '你好', translatedText: '',
+    sourceStatus: 'finalized', translationStatus: 'pending', sourceVersion: 1, translationVersion: 0
+  };
+
+  await repository.append({ ownerUserId: 'owner-1', meetingId: 'meeting-1', cue: sourceOnly });
+  await repository.append({
+    ownerUserId: 'owner-1',
+    meetingId: 'meeting-1',
+    cue: { ...sourceOnly, translatedText: 'hello', translationStatus: 'finalized', translationVersion: 1 }
+  });
+
+  assert.deepEqual(eventKeys, ['cue-1:0:1', 'cue-1:1:1']);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSessionReadApiClient } from '../../src/lib/sessionReadApiClient.js';
+import { createSessionReadApiClient, readSessionDetailWithTranslationHistory } from '../../src/lib/sessionReadApiClient.js';
 
 test('GET /api/sessions uses the correct URL and method', async () => {
   const calls = [];
@@ -165,9 +165,47 @@ test('503 session read errors expose only safe status and error code', async () 
   await assert.rejects(client.getSessionDetail('session-1'), (error) => {
     assert.equal(error.status, 503);
     assert.equal(error.code, 'cloud_capability_unavailable');
+    assert.equal(error.requestId, 'request-1');
     assert.match(error.message, /Cloud capability unavailable/);
     return true;
   });
+});
+
+test('session detail polling stops on dual cloud read failures', async () => {
+  const detailError = new Error('session detail unavailable');
+  detailError.status = 503;
+  detailError.code = 'supabase_request_failed';
+  const translationError = new Error('translation history unavailable');
+  translationError.status = 503;
+  translationError.code = 'supabase_request_failed';
+
+  await assert.rejects(
+    readSessionDetailWithTranslationHistory({
+      apiClient: {
+        getSessionDetail: async () => { throw detailError; },
+        getSessionTranslations: async () => { throw translationError; }
+      },
+      sessionId: 'session-1'
+    }),
+    (error) => error === detailError
+  );
+});
+
+test('session detail polling preserves available detail when history is cloud unavailable', async () => {
+  const detail = detailDTO({ id: 'session-1' });
+  const historyError = new Error('translation history unavailable');
+  historyError.status = 503;
+  historyError.code = 'supabase_request_failed';
+
+  const result = await readSessionDetailWithTranslationHistory({
+    apiClient: {
+      getSessionDetail: async () => detail,
+      getSessionTranslations: async () => { throw historyError; }
+    },
+    sessionId: 'session-1'
+  });
+
+  assert.strictEqual(result, detail);
 });
 
 test('invalid JSON or malformed responses reject safely', async () => {

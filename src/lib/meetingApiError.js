@@ -1,7 +1,6 @@
 const ERROR_MESSAGES = Object.freeze({
   auth_required: '登入狀態已失效，請重新登入。',
   auth_invalid: '登入狀態已失效，請重新登入。',
-  auth_pending: '帳號尚待管理員核准，暫時無法載入會議。',
   auth_forbidden: '目前帳號沒有權限查看這場會議。',
   recorder_forbidden: '目前帳號沒有錄製這場會議的權限。',
   meeting_not_found: '找不到這場會議，請重新整理後再試。',

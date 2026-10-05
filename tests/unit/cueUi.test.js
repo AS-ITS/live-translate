@@ -97,6 +97,16 @@ test('live display hides an unpaired translation partial without source text', (
   }, { requireSourceTextForPartial: true }), []);
 });
 
+test('live display includes a translation-only partial by default', () => {
+  const display = cueListForDisplay({
+    finalCues: [],
+    currentCue: { cueId: 'translation-only', status: 'partial', translatedText: 'translation only' }
+  });
+
+  assert.equal(display.length, 1);
+  assert.equal(display[0].translatedText, 'translation only');
+});
+
 test('live display keeps completed cues as separate sentence rows', () => {
   const first = {
     ...finalCue('cue-1', 1, '123'),

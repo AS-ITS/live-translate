@@ -23,7 +23,7 @@ export function createSupabaseMeetingEventRepository({ env = process.env, fetchI
       if (!meetingId || !cue?.cueId) throw new TypeError('meetingId and cue.cueId are required.');
       const userId = owner(ownerUserId);
       const payload = sanitizeCuePayload(cue);
-      const eventKey = `${cue.cueId}:${Number(cue.translationVersion) || 0}:${Number(cue.sourceVersion) || 1}`;
+      const eventKey = `${cue.cueId}:${Number(cue.translationVersion) || 0}:${Number(cue.sourceVersion) || 0}`;
       const rows = await client.request('meeting_events', {
         method: 'POST',
         headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
@@ -57,5 +57,5 @@ function eventFromRow(row) {
 }
 
 function sanitizeCuePayload(cue) {
-  return Object.fromEntries(Object.entries({ cueId: cue.cueId, sessionId: cue.sessionId, segmentId: cue.segmentId, sequence: cue.sequence, status: 'final', sourceText: cue.sourceText, translatedText: cue.translatedText || '', sourceVersion: cue.sourceVersion || 1, translationVersion: cue.translationVersion || 0, startTimeMs: cue.startTimeMs, endTimeMs: cue.endTimeMs, sourceLanguageCode: cue.sourceLanguageCode, targetLanguageCode: cue.targetLanguageCode }).filter(([, value]) => value !== undefined));
+  return Object.fromEntries(Object.entries({ cueId: cue.cueId, sessionId: cue.sessionId, segmentId: cue.segmentId, sequence: cue.sequence, status: 'final', sourceText: cue.sourceText || '', translatedText: cue.translatedText || '', sourceStatus: cue.sourceStatus || (cue.sourceText ? 'finalized' : 'pending'), translationStatus: cue.translationStatus || (cue.translatedText ? 'finalized' : 'pending'), sourceVersion: Number.isInteger(cue.sourceVersion) ? cue.sourceVersion : (cue.sourceText ? 1 : 0), translationVersion: Number.isInteger(cue.translationVersion) ? cue.translationVersion : (cue.translatedText ? 1 : 0), startTimeMs: cue.startTimeMs, endTimeMs: cue.endTimeMs, sourceLanguageCode: cue.sourceLanguageCode, targetLanguageCode: cue.targetLanguageCode }).filter(([, value]) => value !== undefined));
 }

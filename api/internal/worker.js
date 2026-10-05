@@ -38,6 +38,18 @@ export function createWorkerHandler({
       } catch {
         // Cleanup is best effort and must not prevent queue processing.
       }
+      const meetingExpiration = dependencies.meetingLifecycleService?.expireStaleMeetings
+        ? await runAsUser({ kind: 'worker' }, () => dependencies.meetingLifecycleService.expireStaleMeetings({ limit }))
+        : null;
+      let purges = null;
+      if (dependencies.meetingPurgeWorker?.runOnce) {
+        try {
+          purges = await runAsUser({ kind: 'worker' }, () => dependencies.meetingPurgeWorker.runOnce({ limit }));
+        } catch (error) {
+          logger?.log?.({ level: 'error', event: 'meeting_purge_worker_failed', requestId: getRequestId(req), errorCode: error?.code || 'unknown' });
+          purges = { claimed: 0, purged: 0, failed: 1 };
+        }
+      }
       const result = await runAsUser(
         { kind: 'worker' },
         () => dependencies.translationExecutionWorkerRuntime.runOnce({ limit })
@@ -52,12 +64,23 @@ export function createWorkerHandler({
         }
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ ok: true, translation: result, exports }));
+        res.end(JSON.stringify({
+          ok: true,
+          translation: result,
+          exports,
+          ...(purges === null ? {} : { purges }),
+          ...(meetingExpiration === null ? {} : { meetingExpiration })
+        }));
         return;
       }
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ ok: true, ...result }));
+      res.end(JSON.stringify({
+        ok: true,
+        ...result,
+        ...(purges === null ? {} : { purges }),
+        ...(meetingExpiration === null ? {} : { meetingExpiration })
+      }));
     } catch (error) {
       logWorkerFailure(logger, req, error);
       res.statusCode = 503;

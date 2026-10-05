@@ -23,6 +23,8 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
     targetLanguageCode: meeting?.targetLanguageCode ?? null,
     echoTargetLanguage: meeting?.echoTargetLanguage !== false,
     shouldRecordInputAudio: meeting?.shouldRecordInputAudio === true,
+    lifecycleContractVersion: meeting?.lifecycleContractVersion ?? 1,
+    lifecycleVersion: meeting?.lifecycleVersion ?? 0,
     createdAt: meeting?.createdAt ?? null,
     updatedAt: meeting?.updatedAt ?? null,
     startedAt,
@@ -44,6 +46,7 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
   return {
     meeting: {
       ...summary,
+      purgeAt: meeting?.purgeAt ?? meeting?.purge_at ?? null,
       glossaryEntries: Array.isArray(meeting?.glossaryEntries)
         ? meeting.glossaryEntries.map((entry) => ({
           ...entry,
@@ -63,6 +66,23 @@ export function mapMeetingToDetailDTO({ meeting, segments = [], audioArtifacts =
     cloudAudioArtifacts: sanitizeCloudAudioArtifacts(cloudAudioArtifacts),
     readingContent: buildReadingContent(transcriptItems),
     recordKind: 'meeting'
+  };
+}
+
+export function mapMeetingToViewerDTO({ meeting, cues = [], hasMore = false, nextCursor = null, limit = cues.length } = {}) {
+  return {
+    meeting: mapMeetingToHistoryListItem({ meeting, segments: [] }),
+    cues: [...cues].sort((left, right) => (
+      (Number(left?.segmentSequence) || 0) - (Number(right?.segmentSequence) || 0) ||
+      (Number(left?.sequence) || 0) - (Number(right?.sequence) || 0) ||
+      String(left?.cueId || '').localeCompare(String(right?.cueId || ''))
+    )),
+    pagination: {
+      limit,
+      hasMore: Boolean(hasMore),
+      nextCursor: nextCursor || null
+    },
+    recordKind: 'meetingViewer'
   };
 }
 
@@ -87,7 +107,7 @@ function sanitizeCloudAudioArtifacts(artifacts) {
     .sort((left, right) => (left.segmentSequence ?? Number.MAX_SAFE_INTEGER) - (right.segmentSequence ?? Number.MAX_SAFE_INTEGER));
 }
 
-function finalCuesFromSegments(segments = []) {
+export function finalCuesFromSegments(segments = []) {
   return segments
     .flatMap((segment) => (segment?.checkpoint?.refinedSubtitleStatus === 'completed' && Array.isArray(segment?.checkpoint?.refinedSubtitleCues) && segment.checkpoint.refinedSubtitleCues.length > 0
       ? segment.checkpoint.refinedSubtitleCues.map((cue) => ({ ...cue, segmentSequence: segment.sequence }))
@@ -142,6 +162,8 @@ function mapSegmentToDTO(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    sessionId: segment.sessionId ?? null,
+    lifecycleContractVersion: segment.lifecycleContractVersion ?? 1,
     settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo),
     checkpointUpdatedAt: segment.checkpoint?.updatedAt ?? null,
@@ -163,6 +185,8 @@ function mapSegmentToTimelineItem(segment) {
     endedAt: segment.endedAt ?? null,
     durationMs: durationBetween(segment.startedAt, segment.endedAt),
     liveSessionId: segment.liveSessionId ?? null,
+    sessionId: segment.sessionId ?? null,
+    lifecycleContractVersion: segment.lifecycleContractVersion ?? 1,
     settingsSnapshot: meetingSettingsSnapshotDTO(segment.settingsSnapshot),
     errorInfo: copyRecord(segment.errorInfo)
   };

@@ -2577,7 +2577,9 @@ const activeMeetingCheckpointRef = useRef(null);
           isPaused={liveController.status === 'paused'}
           isStopped={liveController.status === 'stopped'}
           copiedSource={copiedArticleStream === 'source'}
+          copiedTranslation={copiedArticleStream === 'translation'}
           onCopySource={liveController.actions.copyLiveSource}
+          onCopyTranslation={liveController.actions.copyLiveTranslation}
         />
         </div>
         </div>

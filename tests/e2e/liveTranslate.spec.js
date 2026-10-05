@@ -2765,6 +2765,40 @@ test('empty meeting resume draft shows start instead of continue recording', asy
   await expect(page).toHaveURL(/#meetings$/);
 });
 
+test('recover 409 shows its own operation and clears the error after a successful retry', async ({ page }) => {
+  const checkpointRequests = await mockMeetingCheckpointApi(page, {
+    initialSegmentStatus: 'active', initialLiveSessionId: 'live-session-interrupted'
+  });
+  let conflictRemaining = 1;
+  await page.route(`**/api/meetings/${MOCK_MEETING_ID}/segments/*/recover`, async (route) => {
+    if (conflictRemaining-- > 0) {
+      await route.fulfill({
+        status: 409,
+        headers: { 'x-request-id': 'request-recover-409' },
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'checkpoint_conflict', message: 'Segment already advanced.' } })
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  await page.addInitScript(() => {
+    sessionStorage.setItem(`live-translate:meeting-audio:${MOCK_MEETING_ID}`, JSON.stringify({
+      inputDeviceId: '', outputDeviceId: '', inputDeviceLabel: '瀏覽器預設麥克風',
+      outputDeviceLabel: '瀏覽器預設揚聲器', permissionStatus: 'confirmed', confirmedAt: new Date().toISOString()
+    }));
+  });
+  await page.goto(`/#live?meetingId=${MOCK_MEETING_ID}`);
+  await page.getByRole('button', { name: '繼續錄製' }).click();
+  await expect(page.getByText(/recover HTTP 409（checkpoint_conflict）/u)).toBeVisible();
+  await expect(page.getByText(/request-recover-409/u)).toBeVisible();
+  await expect(page.getByRole('button', { name: '繼續錄製' })).toBeEnabled();
+  await page.getByRole('button', { name: '繼續錄製' }).click();
+  await expect.poll(() => checkpointRequests.recoverRequests.length).toBe(1);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect(page.getByText(/recover HTTP 409（checkpoint_conflict）/u)).toHaveCount(0);
+});
+
 test('active segment with a bound live session resumes without subtitles', async ({ page }) => {
   const checkpointRequests = await mockMeetingCheckpointApi(page, {
     initialSegmentStatus: 'active',

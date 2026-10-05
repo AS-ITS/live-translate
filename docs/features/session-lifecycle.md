@@ -160,6 +160,15 @@ state, cleanup reason, and connection epoch. User-visible errors identify the
 failed stage instead of treating token, socket, AudioContext, and PCM failures
 as microphone permission failures.
 
+Legacy meeting resume reads the server's latest active or created segment before
+starting or recovering; a stale local draft cannot select an interrupted
+predecessor. A recover conflict is retried at most once, and only if the server
+has advanced to another open segment. An unchanged conflict stops automatic
+retry, preserves the local resume draft and recording data, and reports the
+actual operation, status, error code, and request ID when available. Reconnect
+binds the new Live session and cue identity to the recovered segment before
+callbacks run; stop/end cancellation cannot start that replacement session.
+
 ## UI State Mapping
 
 | State | Start Button | Stop Button | Device Selector | Export Controls | Status Message | Error Display |

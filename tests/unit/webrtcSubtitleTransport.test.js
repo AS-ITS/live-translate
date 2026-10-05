@@ -247,6 +247,43 @@ test('late join from an old connection epoch cannot replace the current peer', a
   await transport.stop();
 });
 
+test('join 503 recovers, and a failed leave does not prevent the same participant from joining again', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const requests = [];
+  let joins = 0;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-stable',
+    fetchImpl: async (url, init = {}) => {
+      requests.push({ url, body: init.body && JSON.parse(init.body) });
+      if (url.endsWith('/join')) return response(++joins === 1 ? 503 : 200, joins === 1
+        ? { error: { code: 'webrtc_signaling_unavailable' } }
+        : { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/leave')) return response(503, { error: { code: 'webrtc_signaling_unavailable' } });
+      if (url.includes('/signal?')) return response(200, { messages: [], after: 0 });
+      return response(200, { accepted: true, sequence: 1 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; }
+  });
+  transport.start();
+  await flush();
+  const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+  assert.ok(retry);
+  retry.fn();
+  await flush();
+  assert.equal(joins, 2);
+  await transport.stop();
+  transport.start();
+  await flush();
+  assert.equal(joins, 3);
+  assert.deepEqual(requests.filter((item) => item.url.endsWith('/join')).map((item) => item.body.participantId),
+    ['device-stable', 'device-stable', 'device-stable']);
+  await transport.stop();
+});
+
 test('transport stops after six bounded reconnect attempts', async () => {
   const timers = [];
   const statuses = [];

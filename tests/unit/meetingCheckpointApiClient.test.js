@@ -309,6 +309,26 @@ test('meeting checkpoint API client preserves structured checkpoint error detail
   );
 });
 
+test('recover 409 retains operation, response code, and requestId without claiming checkpoint failed', async () => {
+  const client = createMeetingCheckpointApiClient({
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      headers: { get: () => 'request-recover-409' },
+      json: async () => ({ error: { code: 'checkpoint_conflict', message: 'Recovery conflict.' } })
+    })
+  });
+  await assert.rejects(client.recoverSegment({
+    meetingId: 'meeting-1', segmentId: 'segment-1', idempotencyKey: 'recover-1',
+    checkpoint: { idempotencyKey: 'checkpoint-1', durableChunks: [], pendingPartial: null },
+    nextLiveSessionId: 'live-2', failureReason: 'manual_resume', failureCategory: 'user_intent', outcome: 'interrupted'
+  }), (error) => error.operation === 'recover-segment'
+    && error.status === 409
+    && error.code === 'checkpoint_conflict'
+    && error.requestId === 'request-recover-409'
+    && /^Meeting recover API/.test(error.message));
+});
+
 function ok(body) {
   return {
     ok: true,

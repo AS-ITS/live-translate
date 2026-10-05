@@ -292,7 +292,12 @@ async function assertOkResponse(response, { operation = null } = {}) {
     // Keep the HTTP status when the server response is not JSON.
   }
 
-  const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  const operationLabel = operation === 'recover-segment' ? 'recover'
+    : operation === 'update-checkpoint' || operation === 'get-checkpoint' ? 'checkpoint'
+      : operation === 'start-meeting' ? 'start'
+        : operation === 'rollover-segment' ? 'rollover'
+          : operation || 'meeting';
+  const error = new Error(`Meeting ${operationLabel} API request failed with HTTP ${response.status}.`);
   error.status = response.status;
   error.operation = operation;
   error.code = body?.error?.code || body?.code;

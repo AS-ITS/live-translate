@@ -363,12 +363,14 @@ export function useLiveRecordingController({
       }
       const current = cue.stateRef.current;
       const wasProcessed = Boolean(event?.eventId && current.processedEventIds?.includes(event.eventId));
+      let dropReason = null;
       let next = applySubtitleCueEvent(current, event, {
         targetLanguageCode,
         sourceLanguageCode,
         sessionId: cue.getSessionId?.(),
         segmentId: cue.getSegmentId?.() || null,
-        sessionClock: () => cue.getSessionTime?.() ?? 0
+        sessionClock: () => cue.getSessionTime?.() ?? 0,
+        onDrop: ({ reason }) => { dropReason = reason; }
       });
       if (event?.localFinalize) {
         next = finalizePendingSubtitleCue(next, {
@@ -414,7 +416,9 @@ export function useLiveRecordingController({
           finalCueSequences: (next.finalCues || []).map((item) => item.sequence)
         }));
       }
-      const transition = describeCueTransition(current, next, event, { wasProcessed });
+      const transition = dropReason
+        ? { cueAction: 'drop', dropReason }
+        : describeCueTransition(current, next, event, { wasProcessed });
       recordCueTrace({ cue, event, previous: current, next, ...transition });
       if (next === current) return;
       cue.stateRef.current = next;

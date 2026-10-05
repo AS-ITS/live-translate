@@ -901,7 +901,10 @@ export class LiveTranslateSession {
     this.tracePipeline('PCM_CAPTURED', {
       audioTurnId: record.audioTurnId,
       pcmSequence: record.sequence,
-      pcmBytes: bytes.byteLength
+      pcmBytes: bytes.byteLength,
+      pcmSampleCount: bytes.byteLength / 2,
+      pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+      pcmCaptureTimestampMs: record.timestamp
     });
     while (
       this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
@@ -950,7 +953,10 @@ export class LiveTranslateSession {
     this.tracePipeline('PCM_CAPTURED', {
       audioTurnId: record.audioTurnId,
       pcmSequence: record.sequence,
-      pcmBytes: bytes.byteLength
+      pcmBytes: bytes.byteLength,
+      pcmSampleCount: bytes.byteLength / 2,
+      pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+      pcmCaptureTimestampMs: record.timestamp
     });
     liveCueLatencyTracker.recordAudioTurnStarted({ audioTurnId: record.audioTurnId });
     this.trace('pcm.generated', { bytes: bytes.byteLength, sequence: record.sequence });
@@ -1006,7 +1012,10 @@ export class LiveTranslateSession {
       traceDetails: {
         audioTurnId: record.audioTurnId,
         pcmSequence: record.sequence,
-        pcmBytes: bytes.byteLength
+        pcmBytes: bytes.byteLength,
+        pcmSampleCount: bytes.byteLength / 2,
+        pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+        pcmCaptureTimestampMs: record.timestamp ?? null
       }
     });
     if (!this.firstPcmChunkSent && outcome.result !== 'sync-throw' && outcome.result !== 'unsupported') {

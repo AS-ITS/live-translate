@@ -20,7 +20,7 @@ export function meetingExportSource(detail = {}) {
       segmentSequence: cue.segmentSequence ?? null,
       sequence: cue.sequence ?? null,
       status: cue.status,
-      sourceText: cue.sourceText ?? '',
+      sourceText: cue.rawSource ?? cue.sourceText ?? '',
       translatedText: cue.translatedText ?? '',
       sourceVersion: cue.sourceVersion ?? 1,
       translationVersion: cue.translationVersion ?? 0,

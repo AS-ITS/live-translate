@@ -75,6 +75,20 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   if (!event.stream) {
     return applyBoundary(marked, event, options);
   }
+  if (event.isLateTranscript
+    && !turnIdentityFor(event)
+    && !Number.isInteger(event.turnIndex)
+    && (state.currentCue || state.pendingCues.length > 0)) {
+    const identitylessTarget = findIdentitylessLateTarget(state, event, options);
+    if (identitylessTarget) {
+      if (identitylessTarget.key === 'final') {
+        return updateFinalCue(marked, identitylessTarget.target, event);
+      }
+      return updateCue(marked, identitylessTarget.target, event);
+    }
+    options.onDrop?.({ event, reason: 'late_transcript_missing_turn_identity' });
+    return marked;
+  }
 
   let eventState = marked;
   eventState = moveClosedCurrentCue(eventState, event);
@@ -440,6 +454,27 @@ function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
     : DEFAULT_FINAL_CUE_REVISION_WINDOW_MS;
   const finalizedAtMs = Number.isFinite(state.lastFinalizedAtMs) ? state.lastFinalizedAtMs : cue.endTimeMs;
   return Number.isFinite(event.sessionTimeMs) && event.sessionTimeMs >= finalizedAtMs && event.sessionTimeMs <= finalizedAtMs + windowMs;
+}
+
+function findIdentitylessLateTarget(state, event, options = {}) {
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  const incomingText = normalizeText(event.text);
+  const pendingCandidates = state.pendingCues
+    .map((cue, index) => ({ key: `pending:${index}`, target: { key: `pending:${index}`, cue } }))
+    .filter(({ target }) => (
+      cueScopeMatchesEvent(target.cue, event)
+      && normalizeText(target.cue[field]) === incomingText
+      && (event.turnIndex === null || target.cue.turnIndex === null || event.turnIndex === target.cue.turnIndex)
+    ));
+  const finalCandidates = state.finalCues
+    .map((cue, index) => ({ key: 'final', target: { index, cue } }))
+    .filter(({ target }) => (
+      cueScopeMatchesEvent(target.cue, event)
+      && normalizeText(target.cue[field]) === incomingText
+      && isWithinFinalRevisionWindow(state, target.cue, event, options)
+    ));
+  const candidates = [...pendingCandidates, ...finalCandidates];
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 function findLateCounterpartCue(state, event) {

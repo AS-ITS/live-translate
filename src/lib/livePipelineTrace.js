@@ -90,6 +90,9 @@ export function createLivePipelineTrace({
       cueAction,
       pcmSequence: input.pcmSequence ?? null,
       pcmBytes: input.pcmBytes ?? null,
+      pcmSampleCount: Number.isFinite(input.pcmSampleCount) ? input.pcmSampleCount : null,
+      pcmDurationMs: Number.isFinite(input.pcmDurationMs) ? input.pcmDurationMs : null,
+      pcmCaptureTimestampMs: Number.isFinite(input.pcmCaptureTimestampMs) ? input.pcmCaptureTimestampMs : null,
       transportResult: safeId(input.transportResult)
     });
     entries.push(entry);

@@ -1485,7 +1485,7 @@ const activeMeetingCheckpointRef = useRef(null);
       segmentId: cue.segmentId || activeMeetingCheckpointRef.current?.segmentId,
       sourceLanguageCode: cue.sourceLanguageCode || sourceLanguageCode,
       targetLanguageCode: cue.targetLanguageCode === undefined ? targetLanguageCode : cue.targetLanguageCode,
-      sourceText: cue.sourceText ?? cue.rawSource ?? '',
+      sourceText: cue.rawSource ?? cue.sourceText ?? '',
       translatedText: cue.translatedText ?? cue.rawTranslation ?? '',
       status: cue.status || 'final',
       finalizedReason: cue.finalizedReason || 'final'
@@ -1612,7 +1612,7 @@ const activeMeetingCheckpointRef = useRef(null);
             recordingId: sessionId,
             segmentId: meetingCheckpoint.segmentId,
             cueId: cue.cueId,
-            sourceText: cue.sourceText || '',
+            sourceText: cue.rawSource ?? cue.sourceText ?? '',
             translationText: cue.translatedText || '',
             turnKey: cue.turnKey || null,
             audioTurnId: cue.audioTurnId || null,

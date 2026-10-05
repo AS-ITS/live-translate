@@ -45,13 +45,19 @@ export function sortMeetingCues(cues = []) {
 }
 
 export function mergeMeetingCues(existing = [], incoming = []) {
-  const byId = new Map(existing.filter((cue) => cue?.cueId).map((cue) => [cue.cueId, cue]));
+  const byId = new Map(existing.filter((cue) => cue?.cueId).map((cue) => [cue.cueId, canonicalSourceCue(cue)]));
   for (const cue of incoming) {
     if (!cue?.cueId) continue;
-    const previous = byId.get(cue.cueId);
-    byId.set(cue.cueId, previous ? mergeCue(previous, cue) : cue);
+    const canonicalCue = canonicalSourceCue(cue);
+    const previous = byId.get(canonicalCue.cueId);
+    byId.set(canonicalCue.cueId, previous ? mergeCue(previous, canonicalCue) : canonicalCue);
   }
   return sortMeetingCues([...byId.values()]);
+}
+
+function canonicalSourceCue(cue) {
+  const sourceText = cue.rawSource ?? cue.sourceText;
+  return sourceText === undefined ? cue : { ...cue, sourceText };
 }
 
 function positiveSequence(value) {

@@ -97,6 +97,48 @@ test('trace allowlist excludes secrets and PCM audio content', () => {
   assert.equal(serialized.includes('pcmAudioContent'), false);
 });
 
+test('PCM trace allowlist preserves numeric continuity fields without payloads or credentials', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'PCM_CAPTURED',
+    pcmSequence: 7,
+    pcmBytes: 320,
+    pcmSampleCount: 160,
+    pcmDurationMs: 10,
+    pcmCaptureTimestampMs: 1234.5,
+    payload: 'audio-payload',
+    base64: 'encoded-audio',
+    token: 'secret-token'
+  });
+  trace.record({
+    stage: 'PCM_SENT',
+    pcmSequence: 7,
+    pcmBytes: 320,
+    pcmSampleCount: 160,
+    pcmDurationMs: 10,
+    pcmCaptureTimestampMs: 1234.5,
+    transportResult: 'sync-return',
+    payload: { audio: { data: 'encoded-audio' } },
+    Authorization: 'Bearer secret-token'
+  });
+
+  const entries = trace.get();
+  assert.deepEqual(entries.map((entry) => ({
+    stage: entry.stage,
+    pcmSampleCount: entry.pcmSampleCount,
+    pcmDurationMs: entry.pcmDurationMs,
+    pcmCaptureTimestampMs: entry.pcmCaptureTimestampMs
+  })), [
+    { stage: 'PCM_CAPTURED', pcmSampleCount: 160, pcmDurationMs: 10, pcmCaptureTimestampMs: 1234.5 },
+    { stage: 'PCM_SENT', pcmSampleCount: 160, pcmDurationMs: 10, pcmCaptureTimestampMs: 1234.5 }
+  ]);
+  const serialized = JSON.stringify(entries);
+  assert.equal(serialized.includes('audio-payload'), false);
+  assert.equal(serialized.includes('encoded-audio'), false);
+  assert.equal(serialized.includes('secret-token'), false);
+  assert.equal(serialized.includes('Authorization'), false);
+});
+
 test('full debug trace API is exposed only while runtime trace is enabled', () => {
   const previousWindow = globalThis.window;
   globalThis.window = {};

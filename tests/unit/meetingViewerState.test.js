@@ -106,3 +106,27 @@ test('later partial update keeps a Cue order key and independently newer text', 
   assert.equal(state[1].translatedText, 'late translation');
   assert.equal(state[1].segmentSequence, 2);
 });
+test('Viewer snapshot update and replay keep canonical raw source', () => {
+  const initial = {
+    ...cue('cue-raw', 1, 1, 'translation'),
+    sourceText: 'refined source',
+    rawSource: 'raw source',
+    refinedSource: 'refined source',
+    sourceVersion: 1
+  };
+  let state = mergeMeetingViewerSnapshot(null, { cursor: { eventId: 1, cueSequence: 1 }, cues: [initial] });
+  assert.equal(state.cues[0].sourceText, 'raw source');
+
+  const update = {
+    ...initial,
+    sourceText: 'new refined source',
+    rawSource: 'raw source updated',
+    refinedSource: 'new refined source',
+    sourceVersion: 2
+  };
+  state = applyMeetingCueEvent(state, { type: 'cue.update', eventId: 2, cue: update });
+  state = applyMeetingCueEvent(state, { type: 'cue.update', eventId: 2, cue: update });
+
+  assert.equal(state.cues[0].sourceText, 'raw source updated');
+  assert.equal(state.cues[0].refinedSource, 'new refined source');
+});

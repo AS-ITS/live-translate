@@ -53,6 +53,8 @@ lease model, or security model.
 
 ## User Experience
 
+Live Recorder 與 Viewer 共用同一套原文／翻譯顯示切換規則。兩個按鈕始終可操作；若使用者隱藏目前唯一可見的字幕，系統會同步顯示另一側，確保原文與翻譯不會同時隱藏。
+
 ### Meeting Management home
 
 The home route displays only the Meeting Management list. The left-side feature

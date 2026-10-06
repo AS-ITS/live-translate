@@ -509,9 +509,8 @@ export function MeetingViewerPage({ token, code }) {
           <div className="viewer-toolbar-actions">
             {detail ? (
               <div className="subtitle-visibility-controls">
-                <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} disabled={showSource && !showTranslation} aria-describedby={showSource && !showTranslation ? 'viewer-subtitle-visibility-hint' : undefined} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>
-                <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} disabled={showTranslation && !showSource} aria-describedby={showTranslation && !showSource ? 'viewer-subtitle-visibility-hint' : undefined} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
-                {(!showSource || !showTranslation) ? <p className="subtitle-visibility-hint" id="viewer-subtitle-visibility-hint" role="status">至少顯示原文或翻譯</p> : null}
+                <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+                <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
               </div>
             ) : null}
             {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}

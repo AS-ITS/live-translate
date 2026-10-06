@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- 錄製頁與 Viewer 新增各自獨立且可保存的原文／翻譯顯示開關，至少保留一側可見；無效的全隱藏偏好會自動修復，隱藏只影響畫面，不影響 Cue 接收、同步、儲存、複製或匯出。
+- 優化錄製頁與 Viewer 的原文／翻譯顯示開關：按鈕不再因至少顯示一側而停用；隱藏唯一可見字幕時會自動切換至另一側，且不再顯示冗餘提示。無效的全隱藏偏好仍會自動修復，顯示選擇不影響 Cue 接收、同步、儲存、複製或匯出。
 
 - 修正 Live Recorder 在單邊字幕延遲補齊時，WebRTC cue revision 與 source/translation side version 比較不一致，導致 `null` DataChannel envelope 的白畫面回歸。`subtitle-webrtc/v1` 現由共用 builder/validator 允許 source-only 與 translation-only，固定以 `rawSource` 為 canonical source，拒絕完全空白 Cue，並在 transport boundary 隔離、追蹤失敗發布而不中斷錄音 UI。
 - 修正 Viewer 即時 Cue 缺少 `segmentSequence` 時被排在新字幕之後的回歸：依相同 `segmentId` 的已知順序補齊，讓新字幕維持在列表底部；加入正式 Viewer DOM 的連續發布、回看、延遲翻譯與斷線補齊測試。

@@ -14,6 +14,7 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .meeting-viewer-page .viewer-connection-status {
@@ -75,13 +76,18 @@
 
 .meeting-viewer-page .viewer-toolbar-actions {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: flex-end;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .meeting-viewer-page .viewer-toolbar .button,
 .meeting-viewer-page .viewer-follow-latest {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   min-height: 2.75rem;
   white-space: nowrap;
 }
@@ -89,6 +95,10 @@
 .meeting-viewer-page .subtitle-visibility-controls { display: grid; grid-template-columns: repeat(2, max-content); justify-content: end; gap: var(--space-2); }
 .meeting-viewer-page .subtitle-visibility-hint { grid-column: 1 / -1; margin: 0; color: var(--color-text-muted); font-size: var(--text-xs); line-height: 1.3; text-align: right; }
 .meeting-viewer-page .viewer-visibility-toggle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   border-color: var(--color-primary);
   background: var(--color-surface);
   color: var(--color-primary);
@@ -276,10 +286,29 @@
 @media (max-width: 440px) {
   .meeting-viewer-page .viewer-toolbar { flex-wrap: wrap; }
   .meeting-viewer-page .viewer-connection-status { flex: 1; }
-  .meeting-viewer-page .viewer-toolbar-actions { width: 100%; }
-  .meeting-viewer-page .subtitle-visibility-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
-  .meeting-viewer-page .viewer-toolbar-actions .button { min-width: 0; padding-inline: var(--space-2); }
-  .meeting-viewer-page .viewer-follow-latest, .meeting-viewer-page .viewer-retry-button { flex: 1; }
+  .meeting-viewer-page .viewer-toolbar-actions {
+    width: 100%;
+    gap: clamp(.25rem, 1.5vw, var(--space-2));
+  }
+  .meeting-viewer-page .subtitle-visibility-controls {
+    flex: 1 1 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+  }
+  .meeting-viewer-page .viewer-visibility-toggle {
+    padding-inline: clamp(.625rem, 3vw, 1.25rem);
+    font-size: clamp(.875rem, 4vw, 1.125rem);
+  }
+  .meeting-viewer-page .viewer-follow-latest {
+    flex: 0 1 auto;
+    padding-inline: clamp(.375rem, 2vw, .75rem);
+    font-size: clamp(.75rem, 3.4vw, 1rem);
+  }
+  .meeting-viewer-page .viewer-retry-button {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding-inline: var(--space-2);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

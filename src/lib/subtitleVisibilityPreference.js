@@ -48,11 +48,15 @@ export function writeSubtitleVisibilityPreference(storageKey, value, storage = g
 export function toggleSubtitleVisibility(preference, stream) {
   const current = normalizeSubtitleVisibilityPreference(preference);
   if (stream === 'source') {
-    if (current.showSource && !current.showTranslation) return current;
+    if (current.showSource && !current.showTranslation) {
+      return { showSource: false, showTranslation: true };
+    }
     return { ...current, showSource: !current.showSource };
   }
   if (stream === 'translation') {
-    if (current.showTranslation && !current.showSource) return current;
+    if (current.showTranslation && !current.showSource) {
+      return { showSource: true, showTranslation: false };
+    }
     return { ...current, showTranslation: !current.showTranslation };
   }
   return current;

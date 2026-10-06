@@ -3357,18 +3357,27 @@ test('live subtitles prioritize translation and can collapse the source column',
 
   await translationToggle.click();
   await expect(translationToggle).toHaveText('顯示翻譯');
-  await expect(toggle).toBeDisabled();
+  await expect(toggle).toBeEnabled();
   await expect(panel.getByTestId('cue-translated-text')).toHaveCount(0);
-  await expect(panel.getByText('至少顯示原文或翻譯')).toBeVisible();
+  await expect(panel.getByText('至少顯示原文或翻譯')).toHaveCount(0);
 
-  await translationToggle.click();
-  await expect(panel.getByText('translated sentence')).toBeVisible();
   await toggle.click();
   await expect(toggle).toHaveText('顯示原文');
-  await expect(translationToggle).toBeDisabled();
+  await expect(translationToggle).toHaveText('隱藏翻譯');
+  await expect(translationToggle).toBeEnabled();
+  await expect(panel.getByTestId('cue-source-text')).toHaveCount(0);
+  await expect(panel.getByText('translated sentence')).toBeVisible();
+
+  await translationToggle.click();
+  await expect(toggle).toHaveText('隱藏原文');
+  await expect(translationToggle).toHaveText('顯示翻譯');
+  await expect(toggle).toBeEnabled();
+  await expect(panel.getByTestId('cue-translated-text')).toHaveCount(0);
+  await expect(panel.getByText('source sentence')).toBeVisible();
   await page.reload();
-  await expect(liveCuePanel(page).getByTestId('source-visibility-toggle')).toHaveText('顯示原文');
-  await expect(liveCuePanel(page).getByTestId('translation-visibility-toggle')).toBeDisabled();
+  await expect(liveCuePanel(page).getByTestId('source-visibility-toggle')).toHaveText('隱藏原文');
+  await expect(liveCuePanel(page).getByTestId('translation-visibility-toggle')).toHaveText('顯示翻譯');
+  await expect(liveCuePanel(page).getByTestId('source-visibility-toggle')).toBeEnabled();
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileControlBounds = await liveCuePanel(page).locator('.subtitle-visibility-controls').boundingBox();
   expect(mobileControlBounds).not.toBeNull();

@@ -90,10 +90,10 @@ test('Meeting Viewer persists independent subtitle visibility and keeps hidden u
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('live-translate:subtitle-visibility:recorder:v1')))).toEqual({ showSource: true, showTranslation: false });
 
   await translationToggle.click();
-  await expect(sourceToggle).toBeDisabled();
+  await expect(sourceToggle).toBeEnabled();
   await expect(page.locator('.viewer-cue-translation')).toHaveCount(0);
   await expect(page.getByText('僅原文', { exact: true })).toBeVisible();
-  await expect(page.getByText('至少顯示原文或翻譯')).toBeVisible();
+  await expect(page.getByText('至少顯示原文或翻譯')).toHaveCount(0);
   snapshotCues = snapshotCues.map((cue) => cue.cueId === 'cue-1'
     ? { ...cue, sourceText: '最新原文', translatedText: 'Latest hidden translation', sourceVersion: 2, translationVersion: 2 }
     : cue);
@@ -104,12 +104,19 @@ test('Meeting Viewer persists independent subtitle visibility and keeps hidden u
   await page.getByTestId('viewer-translation-toggle').click();
   await expect(page.getByText('Latest hidden translation')).toBeVisible();
   await page.getByTestId('viewer-source-toggle').click();
-  await expect(page.getByTestId('viewer-translation-toggle')).toBeDisabled();
+  await expect(page.getByTestId('viewer-translation-toggle')).toBeEnabled();
   await expect(page.locator('.viewer-cue-source')).toHaveCount(0);
   await expect(page.getByText('Translation only', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByTestId('viewer-source-toggle')).toHaveText('顯示原文');
-  await expect(page.getByTestId('viewer-translation-toggle')).toBeDisabled();
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveText('隱藏翻譯');
+  await expect(page.getByTestId('viewer-translation-toggle')).toBeEnabled();
+  await page.getByTestId('viewer-translation-toggle').click();
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveText('隱藏原文');
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveText('顯示翻譯');
+  await expect(page.getByTestId('viewer-source-toggle')).toBeEnabled();
+  await expect(page.locator('.viewer-cue-source').first()).toBeVisible();
+  await expect(page.locator('.viewer-cue-translation')).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileControlBounds = await page.locator('.subtitle-visibility-controls').boundingBox();
   expect(mobileControlBounds).not.toBeNull();

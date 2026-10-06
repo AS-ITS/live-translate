@@ -3,6 +3,26 @@ import test from 'node:test';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createPcm16WavBytes } from '../../src/lib/audio.js';
 
+test('expired recording still returns settings but neither segments nor audio', async () => {
+  const expired = { id: 'meeting-expired', name: 'settings retained', status: 'completed',
+    retentionPolicyVersion: 2, purgeAt: '2000-01-01T00:30:00.000Z' };
+  let contentReads = 0;
+  const service = createMeetingReadQueryService({ meetingRepository: {
+    async listMeetings() { return [expired]; },
+    async getMeeting() { return expired; },
+    async listMeetingSegments() { contentReads += 1; return []; }
+  } });
+  const history = await service.listMeetingHistory();
+  const detail = await service.getMeetingDetail(expired.id);
+  assert.equal(history[0].contentState, 'expired');
+  assert.equal(detail.meeting.name, 'settings retained');
+  assert.equal(detail.meeting.contentState, 'expired');
+  assert.deepEqual(detail.cues, []);
+  assert.deepEqual(detail.cloudAudioArtifacts, []);
+  assert.equal(contentReads, 0);
+  await assert.rejects(service.getMeetingViewerPage(expired.id), { code: 'meeting_content_expired', status: 410 });
+});
+
 test('meeting detail exposes whole-meeting audio artifact download metadata from linked session', async () => {
   const service = createMeetingReadQueryService({
     meetingRepository: {

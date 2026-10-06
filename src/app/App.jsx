@@ -13,6 +13,7 @@ import { createSessionCommandApiClient } from '../lib/sessionCommandApiClient.js
 import { createMeetingCheckpointApiClient } from '../lib/meetingCheckpointApiClient.js';
 import { createMeetingCueApiClient } from '../lib/meetingCueApiClient.js';
 import { createLocalMeetingPersistence } from '../lib/localMeetingPersistence.js';
+import { createLocalMeetingRetention } from '../lib/localMeetingRetention.js';
 import { mergeMeetingDetailWithLocalCues, persistFinalMeetingCues } from '../lib/meetingLocalTranscript.js';
 import { createTranslationCommandApiClient } from '../lib/translationCommandApiClient.js';
 import { createGlossaryApiClient } from '../lib/glossaryApiClient.js';
@@ -219,7 +220,8 @@ export function App() {
   const pendingSessionSnapshotItemIdsRef = useRef(new Map());
   const meetingCheckpointApiClientRef = useRef(createMeetingCheckpointApiClient());
   const meetingCueApiClientRef = useRef(createMeetingCueApiClient({ fetchImpl: authenticatedFetch(fetch) }));
-  const localMeetingPersistenceRef = useRef(null);
+const localMeetingPersistenceRef = useRef(null);
+const localMeetingRetentionRef = useRef(null);
   const localMeetingCuePersistenceQueueRef = useRef(Promise.resolve());
 const meetingRecordsRequestRef = useRef(null);
 const activeMeetingCheckpointRef = useRef(null);
@@ -584,6 +586,29 @@ const activeMeetingCheckpointRef = useRef(null);
     };
     window.addEventListener('pagehide', handlePageHide);
     return () => window.removeEventListener('pagehide', handlePageHide);
+  }, []);
+
+  useEffect(() => {
+    if (!globalThis.indexedDB || !globalThis.navigator?.storage) return undefined;
+    const retention = createLocalMeetingRetention();
+    localMeetingRetentionRef.current = retention;
+    const sweep = () => {
+      void retention.check().catch(() => {});
+      setMeetingRecords((items) => items.map((item) =>
+        isVisibleMeetingExpired(item) ? { ...item, contentState: 'expired' } : item));
+      setSelectedMeetingDetail((detail) => stripExpiredMeetingContent(detail));
+      for (const [id, detail] of meetingDetailCacheRef.current) {
+        meetingDetailCacheRef.current.set(id, stripExpiredMeetingContent(detail));
+      }
+    };
+    sweep();
+    const interval = window.setInterval(sweep, 60_000);
+    const foreground = () => { if (document.visibilityState === 'visible') sweep(); };
+    document.addEventListener('visibilitychange', foreground);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', foreground);
+    };
   }, []);
 
   useEffect(() => {
@@ -1806,6 +1831,7 @@ const activeMeetingCheckpointRef = useRef(null);
     const request = meetingReadApiClientRef.current.listMeetingHistory()
       .then((meetings) => {
         setMeetingRecords([...meetings].sort((a, b) => meetingRecordSortTime(b) - meetingRecordSortTime(a)));
+        void localMeetingRetentionRef.current?.syncMeetings(meetings).catch(() => {});
         return meetings;
       })
       .catch(() => null)
@@ -2084,6 +2110,11 @@ const activeMeetingCheckpointRef = useRef(null);
   async function loadMeetingDetailWithLocalTranscript(id) {
     const detail = await meetingReadApiClientRef.current.getMeetingDetail(id);
     if (!detail) return detail;
+    await localMeetingRetentionRef.current?.observeMeeting(detail.meeting);
+    if (detail.meeting?.contentState === 'expired') {
+      void localMeetingRetentionRef.current?.check(id).catch(() => {});
+      return detail;
+    }
 
     try {
       const persistence = getLocalMeetingPersistence();
@@ -2624,4 +2655,24 @@ const activeMeetingCheckpointRef = useRef(null);
   };
 
   return <AppRouter page={page} views={{ ...views, workspace: workspaceView }} />;
+}
+
+function isVisibleMeetingExpired(meeting, now = Date.now()) {
+  const deadline = Date.parse(meeting?.expiresAt || '');
+  return meeting?.status === 'completed' && Number.isFinite(deadline) && deadline <= now;
+}
+
+function stripExpiredMeetingContent(detail) {
+  if (!detail?.meeting || !isVisibleMeetingExpired(detail.meeting)) return detail;
+  if (detail.meeting.contentState === 'expired' && !detail.segments?.length &&
+    !detail.timeline?.length && !detail.transcriptItems?.length && !detail.cues?.length &&
+    !Object.keys(detail.audioArtifacts || {}).length && !detail.cloudAudioArtifacts?.length &&
+    !detail.readingContent?.sourceTranscript?.text && !detail.readingContent?.translationArticle?.text) return detail;
+  const meeting = { ...detail.meeting, contentState: 'expired' };
+  const readingContent = {
+    sourceTranscript: { kind: 'sourceTranscript', status: 'empty', text: '', paragraphs: [] },
+    translationArticle: { kind: 'translationArticle', status: 'empty', text: '', paragraphs: [] }
+  };
+  return { ...detail, meeting, segments: [], timeline: [], transcriptItems: [], cues: [],
+    audioArtifacts: {}, cloudAudioArtifacts: [], readingContent };
 }

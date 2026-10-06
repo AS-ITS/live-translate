@@ -82,21 +82,24 @@ owner or super-admin force takeover with explicit confirmation. Provider
 reconnect does not create a Segment. Pause/resume, rollover, and browser-crash
 recovery do.
 
-The authenticated CRON worker invokes the service-role-only
-`expire_stale_meetings` RPC in bounded batches. A lifecycle v2 Meeting with no
-persisted heartbeat for 15 minutes is stopped with `recorder_lost`, its active
-Segment is marked `interrupted`, its Viewer shares and recorder lease are
-revoked, and `purge_at` is set 30 minutes later. `claim_due_meeting_purges`
-provides an atomic, locked claim contract for the bounded purge worker. The
-worker deletes `meeting-audio` and `meeting-exports` Storage objects before
-deleting the Meeting row, allowing its database cascade to remove dependent
-transcript, Session, Segment, share, and artifact metadata. Partial failures
-mark the claim retryable as `failed`.
+Successful completion alone freezes the database-generated `ended_at` and
+`purge_at = ended_at + 30 minutes` for one Meeting recording, including all
+rollover Sessions/Segments. Pause, reconnect, interruption, and stale-heartbeat
+handling do not start retention. Old records without a reliable completion
+anchor are not bulk-deleted. Direct authenticated Supabase table/Storage reads
+and late writes are restricted by RLS and triggers; signed download URLs are
+clipped to the remaining retention window.
 
-After `purge_at`, owner-scoped Meeting detail, export source, and audio
-completion/download operations return `410 meeting_content_expired`. After the
-worker deletes the Meeting row, these resources return the normal not-found
-response. Legacy v1 rows remain readable during the transition.
+At expiry, `GET /api/meetings/:meetingId` remains `200` with settings,
+`contentState: "expired"`, `expiresAt`, no recording content, and a separate
+`physicalCleanupState`. Viewer snapshot/replay/token, audio and export
+download/content routes return `410 meeting_content_expired`. The Meeting,
+settings, members, glossary, and audit history stay. Existing Meeting GETs
+trigger managed `waitUntil` cleanup: one Meeting per request, at most 20
+Storage objects or 50 DB rows, a persistent 15-second cross-instance throttle,
+and resumable claims. Cleanup errors do not alter Meeting completion or the
+HTTP read response. No Cron is configured. Without API traffic, cloud physical
+data may remain after 30 minutes until a later request.
 
 Completed or failed lifecycle v2 Meetings return `409 meeting_terminal` for
 new recording lifecycle commands and reject new Session, Segment, Viewer-share,
@@ -646,19 +649,24 @@ provider audio are not rewritten. Completed Meetings are read-only and return
 
 ## `DELETE /api/meetings/:meetingId`
 
-Deletes a Meeting only when its status is `created` and recording has not
-started. The Meeting's created Segments and Recorder shares are removed with
-it. Active, completed, interrupted, or failed Meetings return `409
-meeting_delete_not_allowed`.
+The owner or active super-admin may delete a created or completed Meeting,
+including one whose recording content is expired or already cleared. An active
+or otherwise resumable Meeting keeps its existing `409` restriction. Deletion
+removes Meeting-specific children and Storage objects but retains shared
+glossary, accounts, credentials, audit history, and a protected minimal deletion
+tombstone. Bounded Storage deletion may return `202 {"status":"deleting"}`;
+retry the same DELETE until `204`. A repeat `204` is authorized using the
+tombstone's original owner (or active super-admin), never deleted membership
+rows. Another computer's OPFS is cleaned on its next successful sync or local
+expiry check, not immediately by this API.
 
 ## `POST /api/meetings/:meetingId/complete`
 
-Completes a Meeting that has no active Live recording. Existing checkpoints,
-transcripts, and audio artifacts are preserved for the 30-minute retention
-window; `purge_at` is set to 30 minutes after completion for the bounded purge
-worker. Any not-yet-started trailing
-Segment is finalized as an empty completed Segment. Active recordings return
-`409 meeting_complete_not_allowed`.
+Completes the Meeting only after the recording has successfully ended. The
+backend/database returns one immutable 30-minute expiration shared by all
+associated Sessions; repeated completion does not extend it. Cleanup is
+independent of this command and cannot make completion fail or reset the
+recorded deadline. Active recordings return `409 meeting_complete_not_allowed`.
 
 ## `GET|POST /api/meetings/:meetingId/shares`
 

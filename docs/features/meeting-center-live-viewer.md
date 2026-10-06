@@ -328,14 +328,30 @@ historical data behavior before the next phase begins.
 
 ## Short-lived retention behavior
 
-Completed lifecycle v2 Meetings expose `purgeAt` to the owner detail view so
-the 30-minute export/audio window is explicit. Before physical deletion,
-expired owner content returns `410 meeting_content_expired`; after deletion it
-returns the normal not-found response. The retention worker records bounded
-claim, completion, failure, and latency metrics without content or Storage
-paths. Legacy v1 rows remain readable while v2 writes stop populating legacy
-`sessions.segment_id`, `meeting_segments.live_session_id`, and
-`sessions.transcript_items` fields.
+Only successful Meeting completion starts one recording-wide 30-minute deadline;
+all Sessions and rollover Segments in that recording share it. The database
+sets and freezes `ended_at` and `purge_at`. Pauses, reconnects, rollovers,
+interruption, and failed sessions do not start or extend it. Legacy rows without
+a verified completion anchor are not bulk-deleted.
+
+At expiry, recording content, Viewer snapshot/replay, new cues, checkpoint
+writes, background output, and direct authenticated Storage access are rejected.
+Meeting settings, members, glossary, and audit records remain. The UI separates
+"錄製資料已到期" from "實體資料已清除". Local OPFS and IndexedDB copies are
+checked on startup, foreground, every minute, and before reads/exports; a
+crashed/closed browser cleans on next opening. An export started before expiry
+may finish while its browser lock delays local deletion. Downloaded files are
+outside application control.
+
+There is no Supabase Cron, Vercel Cron, or external scheduler. Existing Meeting
+GET requests opportunistically trigger a managed background batch: at most one
+Meeting, 20 Storage objects or 50 database rows, with a persistent 15-second
+cross-instance throttle and a short retryable claim. With no website/API
+traffic, cloud physical data may remain past the 30-minute deadline until the
+next relevant request; access is still denied at expiry. Storage objects are
+removed through the official Storage API. A completed or expired Meeting can
+still be manually deleted; only its owner or an active super-admin can retry a
+completed deletion using the protected minimal tombstone.
 
 ## Security and Compatibility Constraints
 

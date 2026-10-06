@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正已結束會議因舊 Session 狀態及 audit 外鍵而無法刪除；新增受保護刪除標記、限量 Storage 刪除與冪等授權。完成錄製後由資料庫固定 30 分鐘期限；到期後封鎖內容、Viewer、直接 Supabase 讀寫與遲到工作，保留會議設定及稽核。既有會議 GET 觸發持久節流的分批雲端清理，本機 IndexedDB／OPFS 以持久期限和分頁鎖清理。無 Cron 時雲端實體清理不保證準點。
+
 - 修正 QR Viewer 即時字幕排序與連線恢復：雲端事件和錄音端 DataChannel 補齊經驗證的 Segment 順序，原文／翻譯版本分別合併；Viewer 晚加入會要求定向協商，多位 Viewer 使用獨立 PeerConnection，舊 epoch 訊息不再覆蓋新連線，replay 超出保留範圍時改送 snapshot。WebRTC 已連線時仍發布雲端 Cue 供補漏，Viewer 將兩條通道狀態分開，虛擬列表於最新列更新與高度變更後維持跟隨。跨網路 TURN 與真實手機仍待 Preview 雙機驗證。
 
 - 修正 QR Viewer 長時間與暫時斷線恢復：signaling `/join` heartbeat 續租 participant、8 秒 request timeout、協商完成後停止高頻 poll、5 秒 disconnected grace、Device ICE restart、6 次 jitter backoff、online/前景恢復與舊 connection epoch 隔離；DataChannel 使用 source ID 做 snapshot/replay，Viewer 在 snapshot 503 與 Realtime/SSE 重連時保留 Cue，terminal share 立即停止，並提供「已恢復連線」與手動「重新連線」。新增 server-only `WEBRTC_ICE_SERVERS_JSON` 嚴格 STUN/TURN 驗證；TURN 與跨網路實機仍待 Preview 驗收。

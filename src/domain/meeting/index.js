@@ -34,7 +34,9 @@ export class Meeting {
     this.status = assertMeetingStatus(input.status ?? 'created');
     this.startedAt = input.startedAt ?? null;
   this.endedAt = input.endedAt ?? null;
-  this.purgeAt = input.purgeAt ?? input.purge_at ?? null;
+    this.purgeAt = input.purgeAt ?? input.purge_at ?? null;
+    this.purgeStatus = input.purgeStatus ?? input.purge_status ?? null;
+    this.retentionPolicyVersion = input.retentionPolicyVersion ?? input.retention_policy_version ?? null;
     this.createdAt = assertTimestamp(input.createdAt, 'createdAt');
     this.updatedAt = assertTimestamp(input.updatedAt ?? input.createdAt, 'updatedAt');
     this.failureInfo = deepClone(input.failureInfo ?? null);
@@ -96,6 +98,8 @@ export class Meeting {
       startedAt: Object.hasOwn(patch, 'startedAt') ? patch.startedAt : this.startedAt,
       endedAt: Object.hasOwn(patch, 'endedAt') ? patch.endedAt : this.endedAt,
       purgeAt: Object.hasOwn(patch, 'purgeAt') ? patch.purgeAt : this.purgeAt,
+      purgeStatus: this.purgeStatus,
+      retentionPolicyVersion: this.retentionPolicyVersion,
       createdAt: this.createdAt,
       updatedAt: patch.updatedAt ?? patch.endedAt ?? patch.startedAt ?? this.updatedAt,
       failureInfo: Object.hasOwn(patch, 'failureInfo') ? patch.failureInfo : this.failureInfo,

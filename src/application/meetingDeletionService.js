@@ -4,6 +4,7 @@ export function createMeetingDeletionService({
   meetingRepository,
   sessionRepository,
   sessionAudioArtifactRepository,
+  deletionRepository,
   deleteMeetingAudio,
   deleteMeetingExports,
   revokeMeetingShares
@@ -13,6 +14,11 @@ export function createMeetingDeletionService({
   assertMethod(meetingRepository, 'deleteMeeting', 'meetingRepository');
   assertMethod(sessionRepository, 'listSessionRecords', 'sessionRepository');
   assertMethod(sessionRepository, 'deleteSessionRecord', 'sessionRepository');
+  if (deletionRepository) {
+    for (const method of ['getTombstone', 'begin', 'finish', 'removeStorageBatch']) {
+      assertMethod(deletionRepository, method, 'deletionRepository');
+    }
+  }
   if (sessionAudioArtifactRepository && typeof sessionAudioArtifactRepository.deleteMany !== 'function') {
     throw new TypeError('sessionAudioArtifactRepository.deleteMany must be a function.');
   }
@@ -27,9 +33,19 @@ export function createMeetingDeletionService({
   }
 
   return Object.freeze({
-    async deleteMeeting({ meetingId } = {}) {
+    async getDeletionTombstone(meetingId) {
+      return deletionRepository?.getTombstone(meetingId) || null;
+    },
+    async deleteMeeting({ meetingId, actorUserId, actorRole } = {}) {
       const meeting = await meetingRepository.getMeeting(meetingId);
       if (!meeting) {
+        const tombstone = await deletionRepository?.getTombstone(meetingId);
+        if (tombstone?.state === 'deleted') {
+          if (actorUserId !== tombstone.ownerUserId && actorRole !== 'super_admin') {
+            throw codedError('auth_forbidden', 'Access is not allowed.');
+          }
+          return { meeting: null, alreadyDeleted: true, deletedSessionCount: 0, deletedSegmentCount: 0 };
+        }
         throw codedError('meeting_not_found', `Meeting not found: ${meetingId}`);
       }
 
@@ -37,24 +53,43 @@ export function createMeetingDeletionService({
       const records = (await sessionRepository.listSessionRecords())
         .filter((record) => record?.meetingId === meetingId);
 
-      if (meeting.status === 'active' || segments.some((segment) => segment.status === 'active') || records.some((record) => ACTIVE_SESSION_STATUSES.has(record.status))) {
+      // A completed meeting is terminal even if an older Session snapshot was not
+      // finalized. Keep the child-state guard for meetings that can still record.
+      if (meeting.status !== 'completed' && (
+        meeting.status === 'active'
+        || segments.some((segment) => segment.status === 'active')
+        || records.some((record) => ACTIVE_SESSION_STATUSES.has(record.status))
+      )) {
         throw codedError('meeting_delete_active_not_allowed', 'Active meetings cannot be deleted.');
       }
 
-      await deleteMeetingExports?.(meetingId);
-
-      for (const record of records) {
-        await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
-        await sessionRepository.deleteSessionRecord(record.id);
-    }
-
-    await deleteMeetingAudio?.(meetingId);
-
-    const deletedMeeting = await meetingRepository.deleteMeeting(meetingId);
-      await revokeMeetingShares?.(meetingId);
+      if (deletionRepository) {
+        if (!actorUserId) throw codedError('auth_required', 'Authenticated actor required.');
+        await deletionRepository.begin({ meetingId, actorUserId });
+        const storage = await deletionRepository.removeStorageBatch({
+          meetingId,
+          ownerUserId: meeting.ownerUserId
+        });
+        if (!storage.complete) {
+          return { meeting, deleting: true, deletedSessionCount: 0, deletedSegmentCount: 0 };
+        }
+        for (const record of records) {
+          await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
+        }
+        await deletionRepository.finish({ meetingId, actorUserId });
+      } else {
+        await deleteMeetingExports?.(meetingId);
+        for (const record of records) {
+          await sessionAudioArtifactRepository?.deleteMany?.(record.audioArtifacts);
+          await sessionRepository.deleteSessionRecord(record.id);
+        }
+        await deleteMeetingAudio?.(meetingId);
+        await meetingRepository.deleteMeeting(meetingId);
+        await revokeMeetingShares?.(meetingId);
+      }
 
       return {
-        meeting: deletedMeeting,
+        meeting,
         deletedSessionCount: records.length,
         deletedSegmentCount: segments.length
       };

@@ -240,7 +240,7 @@ export function useLiveRecordingController({
       }
       await audio.getLocalMeetingPersistence?.().start({
         meetingId: meetingCheckpoint.meetingId,
-        recordingId: record?.id,
+        recordingId: record?.recordingId,
         segmentId: meetingCheckpoint.segmentId
       });
       const nextState = await this.recordingController().start({
@@ -727,6 +727,7 @@ export function useLiveRecordingController({
           echoTargetLanguage,
           shouldRecordInputAudio,
           meetingId: meetingCheckpoint?.meetingId,
+          recordingId: persisted?.session?.recordingId || null,
           segmentId: meetingCheckpoint?.segmentId,
           meetingGlossaryEntries: recovery.currentMeetingGlossaryEntries(),
           ...recovery.selectedInputDeviceSnapshot()

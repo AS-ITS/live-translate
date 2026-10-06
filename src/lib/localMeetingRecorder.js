@@ -64,7 +64,7 @@ export function createLocalMeetingRecorder({ manifestStore, chunkStore, now = ()
         return persist(operationId, 'start');
       }
       meetingId = nextMeetingId;
-      recordingId = requestedRecordingId || `recording:${meetingId}`;
+      recordingId = requestedRecordingId || globalThis.crypto?.randomUUID?.() || `recording:${meetingId}:${now()}`;
       segmentId = requestedSegmentId || `segment:${recordingId}:1`;
       segmentNumber = 1;
       captureEpoch += 1;

@@ -30,12 +30,13 @@ import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.
 import { createProfileService } from './profileService.js';
 import { cloudEnvironmentError } from './cloudEnvironment.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
-import { currentRequestActorId, currentRequestOwnerId, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { currentRequestActorId, currentRequestOwnerId, currentRequestScope, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 import { createExportController } from './exportController.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../src/lib/meetingRetention.js';
 import { createPublicRuntimeConfig } from './publicRuntimeConfig.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
@@ -1072,6 +1073,8 @@ async function handleRequestWithSessionReadController(
       enforceRateLimit(`${clientIp}:${path}`);
       const share = await resolveSharedMeeting(path, sessionShareService);
       if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+      if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) throw meetingContentExpiredError();
       const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
       if (observabilityMetrics || observabilityMetricRepository) {
         const metric = {
@@ -1183,13 +1186,13 @@ if (req.method === 'POST' && path === '/api/auth-events') {
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       let authorizationStage = 'private_resource';
       try {
-    const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, meetingDeletionService, meetingRepository, profileService, sessionRepository });
     if (scope) {
       setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
       updateRequestScope(scope.ownerUserId);
     }
     authorizationStage = 'translation_resource';
-    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository, meetingRepository });
     if (translationScope) {
       setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
       updateRequestScope(translationScope.ownerUserId);
@@ -1755,7 +1758,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingDeletionService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
-      await meetingDeletionService.deleteMeeting({ meetingId });
+      const result = await meetingDeletionService.deleteMeeting({ meetingId, actorUserId: authenticatedUser?.id, actorRole: authenticatedUser?.role });
+        if (result.deleting) {
+          statusCode = 202;
+          sendJson(res, statusCode, { status: 'deleting' }, requestId);
+          return;
+        }
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
@@ -2148,6 +2156,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       enforceRateLimit(clientIp);
       const share = await resolveSharedMeeting(path, sessionShareService);
       if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+      if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) throw meetingContentExpiredError();
       statusCode = 200;
       res.setHeader?.('Cache-Control', 'no-store');
       sendJson(res, statusCode, await viewerRealtimeTokenService.issue(share), requestId);
@@ -2163,6 +2173,11 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     const share = await resolveSharedMeeting(path, sessionShareService);
     if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') {
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
+      return;
+    }
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+    if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) {
+      sendJson(res, 410, errorPayload('meeting_content_expired', requestId), requestId);
       return;
     }
     const wantsJsonReplay = req.headers?.accept?.includes('application/json');
@@ -2813,7 +2828,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         body,
         user: authenticatedUser,
         meetingMembershipService,
-        translationRepository
+        translationRepository,
+        meetingRepository
       });
       if (scope) {
         setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
@@ -3095,7 +3111,7 @@ function isPublicApiPath(method, path) {
   )) || (method === 'POST' && (path === '/api/auth-events' || isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
-async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository }) {
+async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository, meetingRepository }) {
   if (!user?.id || !translationRepository) return null;
   let sessionId = body?.sessionId;
   let executionId = body?.executionId;
@@ -3120,14 +3136,22 @@ async function authorizeTranslationResource({ req, path, body, user, meetingMemb
   const context = await meetingMembershipService.getSessionOwner(sessionId);
   if (!context?.meetingId || !context.ownerUserId) throw createHttpError('auth_forbidden');
   if (!await meetingMembershipService.canManage(context.meetingId, user)) throw createHttpError('auth_forbidden');
+  if (isMeetingContentExpired(await readAuthorizedMeeting(meetingRepository, context.meetingId, context.ownerUserId, user))) throw meetingContentExpiredError();
   return { ownerUserId: context.ownerUserId };
 }
 
-async function authorizePrivateResource({ req, path, user, meetingMembershipService }) {
+async function authorizePrivateResource({ req, path, user, meetingMembershipService, meetingDeletionService, meetingRepository }) {
   const meetingMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
   const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)/u);
   if (meetingMatch && meetingMatch[1] !== 'glossary') {
     const meetingId = safeDecodePathComponent(meetingMatch[1]);
+    if (req.method === 'DELETE' && isMeetingDetailPath(path)) {
+      const tombstone = await meetingDeletionService?.getDeletionTombstone?.(meetingId);
+      if (tombstone?.state === 'deleted') {
+        if (user?.id !== tombstone.ownerUserId && user?.role !== 'super_admin') throw createHttpError('auth_forbidden');
+        return { ownerUserId: tombstone.ownerUserId };
+      }
+    }
     const canRecord = isMemberMeetingRecordingPath(req.method, path);
     const canEditSettings = req.method === 'GET' || req.method === 'PATCH';
     const canManageShares = isMeetingShareCollectionPath(path) && (req.method === 'GET' || req.method === 'POST');
@@ -3140,6 +3164,12 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
     const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
     if (!ownerUserId) {
       throw createHttpError(user.role === 'super_admin' ? 'meeting_not_found' : (canRecord ? 'recorder_forbidden' : 'auth_forbidden'));
+    }
+    if (!(req.method === 'GET' && isMeetingDetailPath(path)) &&
+      !(req.method === 'DELETE' && isMeetingDetailPath(path)) &&
+      !(req.method === 'PATCH' && isMeetingDetailPath(path))) {
+      const meeting = await readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user);
+      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
     }
     return { ownerUserId };
   }
@@ -3154,10 +3184,24 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
         ? await meetingMembershipService.canRecord(meetingId, user.id)
         : await meetingMembershipService.canManage(meetingId, user);
       if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
-      if (ownerUserId) return { ownerUserId };
+      if (ownerUserId) {
+        if (isMeetingContentExpired(await readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user))) throw meetingContentExpiredError();
+        return { ownerUserId };
+      }
     }
   }
   return null;
+}
+
+async function readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user) {
+  if (!meetingRepository || !ownerUserId) return null;
+  return runWithRequestUser({
+    ...user,
+    requestScope: {
+      ...currentRequestScope(),
+      resourceOwnerUserId: ownerUserId
+    }
+  }, () => meetingRepository.getMeeting(meetingId));
 }
 
 async function canAccessMeeting(meetingMembershipService, meetingId, user) {

@@ -50,20 +50,22 @@ Function invocation.
   optimistic `lifecycle_version` for competing commands.
 - Recorder liveness is renewed every 3 seconds; Meeting liveness is persisted
   at most once per 30 seconds and retains the 15-minute lost-recorder policy.
-- The CRON worker calls `expire_stale_meetings` in bounded batches. A v2
-  Meeting with no persisted heartbeat for 15 minutes ends atomically: its active
-  Segment becomes `interrupted`, its open Session stops, Viewer shares and the
-  recorder lease are revoked, and retention is scheduled for 30 minutes later.
-- Terminal v2 Meetings reject new lifecycle, Segment, share, and Cue writes.
-  `retention_policy_version` and the purge claim fields provide a
-  `FOR UPDATE SKIP LOCKED` handoff to the bounded CRON purge worker. The
-  worker deletes private audio/export Storage objects before deleting the
-  Meeting row; database cascades remove dependent transcript, Session,
-  Segment, share, and artifact metadata. Failed claims remain retryable.
-- The read model exposes `purge_at` as `purgeAt` for owner UI deadline
-  guidance. Expired v2 content uses stable `410 meeting_content_expired` before
-  physical deletion. Purge counters and latency use low-cardinality
-  `retention` observability labels; metric failures never affect cleanup.
+- Lost-recorder handling may interrupt a stale active Meeting, but does not
+  start the 30-minute countdown. Only successful completion freezes one
+  database-generated `ended_at` and `purge_at` per recording. The stable
+  `meeting_recordings.id` groups every related Session/rollover Segment;
+  provider Session IDs are not recording IDs.
+- A protected deletion tombstone and restrictive table/Storage policies reject
+  late writes and direct reads after deletion or expiration. Meeting settings,
+  membership, glossary, and audit history survive automatic content cleanup.
+  Manual deletion remains owner/super-admin-authorized and may require several
+  bounded Storage batches before the Meeting row is removed.
+- Existing Meeting GETs schedule managed background cleanup, never an
+  unmanaged Promise or Cron: one claim per request, 15-second durable throttle,
+  at most 20 Storage objects or 50 DB rows, with 1.2-second per-request timeout.
+  Storage deletion uses the Storage API; DB cleanup is phased and retryable.
+  An idle site may retain inaccessible cloud bytes until the next API request.
+  Local OPFS/IndexedDB cleanup uses persisted deadlines and browser locks.
 - v2 repository writes leave legacy `sessions.segment_id`,
   `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or
   null while retaining read compatibility for v1 rows.

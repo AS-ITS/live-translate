@@ -1,4 +1,4 @@
-export const LOCAL_MEETING_SCHEMA_VERSION = 4;
+export const LOCAL_MEETING_SCHEMA_VERSION = 5;
 
 export const LOCAL_CHUNK_STATES = Object.freeze([
   'writing',
@@ -223,6 +223,62 @@ export function createIndexedDbLocalMeetingManifestStore({
   let databasePromise;
 
   return Object.freeze({
+    async getRetention(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readonly', async (transaction) =>
+        (await request(transaction.objectStore('retentions').get(meetingId))) || null);
+    },
+    async listRetentions() {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readonly', async (transaction) =>
+        request(transaction.objectStore('retentions').getAll()));
+    },
+    async saveRetention(input) {
+      const database = await openDatabase();
+      return runNamedTransaction(database, 'retentions', 'readwrite', async (transaction) => {
+        const store = transaction.objectStore('retentions');
+        const previous = await request(store.get(input.meetingId));
+        const previousExpiry = Date.parse(previous?.expiresAt || '');
+        const nextExpiry = Date.parse(input.expiresAt || '');
+        const record = {
+          ...previous,
+          ...input,
+          recordingId: previous?.recordingId || input.recordingId || null,
+          expiresAt: Number.isFinite(previousExpiry) && Number.isFinite(nextExpiry)
+            ? new Date(Math.min(previousExpiry, nextExpiry)).toISOString()
+            : previous?.expiresAt || input.expiresAt || null,
+          deleted: Boolean(previous?.deleted || input.deleted),
+          physicalCleared: Boolean(previous?.physicalCleared)
+        };
+        await request(store.put(record));
+        return record;
+      });
+    },
+    async listLocalMeetingIds() {
+      const database = await openDatabase();
+      return runNamedTransaction(database, ['recordings', 'chunks', 'cues', 'checkpoints'], 'readonly', async (transaction) => {
+        const records = await Promise.all(['recordings', 'chunks', 'cues', 'checkpoints']
+          .map((name) => request(transaction.objectStore(name).getAll())));
+        return [...new Set(records.flat().map((row) => row.meetingId).filter(Boolean))];
+      });
+    },
+    async clearMeetingContent(meetingId) {
+      const database = await openDatabase();
+      return runNamedTransaction(database,
+        ['recordings', 'chunks', 'operations', 'cues', 'checkpoints', 'retentions'], 'readwrite',
+        async (transaction) => {
+          for (const name of ['recordings', 'chunks', 'operations', 'cues', 'checkpoints']) {
+            const store = transaction.objectStore(name);
+            const records = await request(store.getAll());
+            for (const row of records) {
+              if (row.meetingId === meetingId) await request(store.delete(name === 'recordings' ? meetingId : row.key || row.chunkId));
+            }
+          }
+          const retentions = transaction.objectStore('retentions');
+          const record = await request(retentions.get(meetingId));
+          if (record) await request(retentions.put({ ...record, physicalCleared: true, cleanupError: null }));
+        });
+    },
     async getRecording(meetingId) {
       const database = await openDatabase();
       return runNamedTransaction(database, 'recordings', 'readwrite', async (transaction) => {
@@ -402,6 +458,9 @@ export function createIndexedDbLocalMeetingManifestStore({
           if (!database.objectStoreNames.contains('checkpoints')) {
             database.createObjectStore('checkpoints', { keyPath: 'key' });
           }
+          if (!database.objectStoreNames.contains('retentions')) {
+            database.createObjectStore('retentions', { keyPath: 'meetingId' });
+          }
         };
         requestHandle.onsuccess = () => resolve(requestHandle.result);
         requestHandle.onerror = () => reject(requestHandle.error || new Error('IndexedDB open failed.'));
@@ -441,6 +500,23 @@ export function createOpfsChunkStore({ rootDirectory = null } = {}) {
     async remove(path) {
       const { directory, name } = await parentDirectory(rootDirectory, path, false);
       await directory.removeEntry(name);
+    },
+    async removeMeeting(meetingId) {
+      const name = safePathPart(meetingId, 'meetingId');
+      const root = rootDirectory || await globalThis.navigator?.storage?.getDirectory?.();
+      if (!root) throw new Error('OPFS is unavailable.');
+      let meetings;
+      try {
+        meetings = await root.getDirectoryHandle('meetings');
+      } catch (error) {
+        if (error?.name === 'NotFoundError') return;
+        throw error;
+      }
+      try {
+        await meetings.removeEntry(name, { recursive: true });
+      } catch (error) {
+        if (error?.name !== 'NotFoundError') throw error;
+      }
     }
   });
 }

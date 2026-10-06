@@ -42,8 +42,8 @@ test('local recorder reserves, writes, and seals chunks before Stop', async () =
 
   assert.equal(stopped.state, 'stopped_local');
   assert.equal(stopped.meetingId, 'meeting-1');
-  assert.equal(stopped.recordingId, 'recording:meeting-1');
-  assert.equal(stopped.segmentId, 'segment:recording:meeting-1:1');
+  assert.notEqual(stopped.recordingId, stopped.meetingId);
+  assert.equal(stopped.segmentId, `segment:${stopped.recordingId}:1`);
   assert.equal(stopped.captureEpoch, 1);
   assert.equal(stopped.providerEpoch, 0);
   assert.equal(stopped.finalSequence, 2);

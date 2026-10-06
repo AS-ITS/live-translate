@@ -22,7 +22,7 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       const items = await Promise.all(
         [...meetings].map(async (meeting) => mapMeetingToHistoryListItem({
           meeting,
-          segments: await meetingRepository.listMeetingSegments(meeting.id)
+          segments: isMeetingContentExpired(meeting) ? [] : await meetingRepository.listMeetingSegments(meeting.id)
         }))
       );
 
@@ -35,7 +35,9 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
       if (!meeting) {
         return null;
       }
-      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
+      if (isMeetingContentExpired(meeting)) {
+        return mapMeetingToDetailDTO({ meeting, segments: [], audioArtifacts: {}, cloudAudioArtifacts: [] });
+      }
 
       const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
       const cloudAudioArtifacts = meetingAudioService

@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { isMeetingContentExpired, meetingContentExpiredError } from '../../src/lib/meetingRetention.js';
 
-test('v2 terminal Meeting content expires at purgeAt while legacy content remains compatible', () => {
+test('only successful, database-anchored retention expires; legacy dates remain compatible', () => {
   const now = Date.parse('2026-09-24T01:00:00.000Z');
-  assert.equal(isMeetingContentExpired({ lifecycleContractVersion: 2, status: 'completed', purgeAt: '2026-09-24T00:59:59.000Z' }, now), true);
-  assert.equal(isMeetingContentExpired({ lifecycleContractVersion: 2, status: 'active', purgeAt: '2026-09-24T00:00:00.000Z' }, now), false);
+  assert.equal(isMeetingContentExpired({ retentionPolicyVersion: 2, status: 'completed', purgeAt: '2026-09-24T00:59:59.000Z' }, now), true);
+  assert.equal(isMeetingContentExpired({ retentionPolicyVersion: 2, status: 'active', purgeAt: '2026-09-24T00:00:00.000Z' }, now), false);
   assert.equal(isMeetingContentExpired({ status: 'completed', purgeAt: '2026-09-24T00:00:00.000Z' }, now), false);
 });
 

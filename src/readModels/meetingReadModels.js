@@ -1,6 +1,7 @@
 import { buildTranscriptArticleParagraphs, formatTranscriptArticleText } from '../lib/transcript.js';
 import { sanitizeAudioArtifactsForDTO } from '../infrastructure/sessionAudioArtifacts.js';
 import { meetingGlossaryAliasesForTarget } from '../lib/meetingGlossary.js';
+import { isMeetingContentExpired } from '../lib/meetingRetention.js';
 
 const EMPTY_TRANSCRIPT_SUMMARY = Object.freeze({
   totalItems: 0,
@@ -29,6 +30,10 @@ export function mapMeetingToHistoryListItem({ meeting, segments = [] } = {}) {
     updatedAt: meeting?.updatedAt ?? null,
     startedAt,
     endedAt,
+    expiresAt: Number(meeting?.retentionPolicyVersion ?? meeting?.retention_policy_version) === 2
+      ? meeting?.purgeAt ?? meeting?.purge_at ?? null : null,
+    contentState: isMeetingContentExpired(meeting) ? 'expired' : 'available',
+    physicalCleanupState: meeting?.purgeStatus ?? meeting?.purge_status ?? null,
     durationMs: durationBetween(startedAt, endedAt),
     segmentSummary: buildSegmentSummary(normalizedSegments),
     transcriptSummary: summarizeTranscriptItems(transcriptItems),

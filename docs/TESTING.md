@@ -795,3 +795,13 @@ Mocks, unit tests, Playwright, and DOM inspection cannot mark these real-device
 cases as passing. Each case passes only after the spoken text is confirmed
 through PCM, provider, normalized transcript, Cue state, React render, and the
 visible subtitle.
+# Recording retention and completed Meeting deletion
+
+Run focused tests with `node --test tests/unit/localMeetingRetention.test.js tests/unit/supabaseMeetingCleanupWorker.test.js tests/unit/meetingDeletionService.test.js tests/unit/meetingDeletionHttpApi.test.js tests/unit/meetingReadQueryService.test.js`.
+With local Supabase running and migrations applied, execute
+`psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f tests/integration/recording_retention_local.sql`
+and the equivalent `meeting_deletion_local.sql`. Both fixtures roll back;
+they do not call Production, wait 30 minutes, or invoke Gemini. The SQL test
+checks direct RLS/Storage visibility, immutable deadlines, late writes,
+authorization, persisted cleanup throttling, and bounded continuation.
+Browser UI regression: `playwright test tests/e2e/meetingManagementDelete.spec.js --config tests/e2e/playwright.config.js`.

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createWebRtcSignalingClient } from '../../src/webrtc/signalingClient.js';
 import { candidatePairEvidence, createWebRtcSubtitleTransport } from '../../src/webrtc/subtitleTransport.js';
+import { configureLivePipelineTrace, livePipelineTrace } from '../../src/lib/livePipelineTrace.js';
 
 class FakeDataChannel {
   constructor() {
@@ -138,7 +139,7 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   oldPeer.ondatachannel({ channel: oldChannel });
   oldChannel.open();
   oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
-    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1' }] });
+    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1', sourceText: 'one' }] });
   oldChannel.error();
   const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
   assert.ok(retry);
@@ -148,9 +149,9 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   newPeer.ondatachannel({ channel: newChannel });
   newChannel.open();
   newChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
-    sourceId: 'source-2', sequence: 2, cues: [{ cueId: 'cue-2' }] });
+    sourceId: 'source-2', sequence: 2, cues: [{ cueId: 'cue-2', sourceText: 'two' }] });
   oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1',
-    sourceId: 'source-1', sequence: 3, cue: { cueId: 'late-old' } });
+    sourceId: 'source-1', sequence: 3, cue: { cueId: 'late-old', sourceText: 'late' } });
   assert.deepEqual(received.flatMap((packet) => packet.cues?.map((cue) => cue.cueId) || [packet.cue?.cueId]), ['cue-1', 'cue-2']);
   assert.equal(statuses.includes('reconnecting'), true);
   assert.equal(statuses.at(-1), 'restored');
@@ -162,6 +163,7 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   const requests = [];
   const timers = [];
   const statuses = [];
+  const publicationErrors = [];
   let deliveredReady = false;
   const fetchImpl = async (url, init = {}) => {
     requests.push({ url, init, body: init.body ? JSON.parse(init.body) : null });
@@ -187,6 +189,7 @@ test('Device transport starts independently, publishes snapshot/update, and clea
     clearTimer(timer) { timer.cleared = true; },
     initialCues: [{ cueId: 'cue-1', sequence: 1, sourceText: '初稿' }],
     onStatus: (status) => statuses.push(status.value),
+    onError: (error) => publicationErrors.push(error),
   });
 
   assert.doesNotThrow(() => transport.start());
@@ -203,6 +206,45 @@ test('Device transport starts independently, publishes snapshot/update, and clea
   assert.equal(peer.channel.sent[0].type, 'snapshot');
   transport.publishCue({ cueId: 'cue-1', sequence: 1, sourceText: '修正版' });
   assert.equal(peer.channel.sent.at(-1).type, 'cue.update');
+
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  assert.doesNotThrow(() => {
+    transport.publishCue({ cueId: 'normal-1', rawSource: '正常原文 1', translatedText: 'normal 1' });
+    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'partial' });
+    transport.publishCue({ cueId: 'source-first', rawSource: '先到原文', sourceVersion: 8, sourceStatus: 'finalized', translatedText: 'late translation', translationVersion: 1, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'translation-first', translatedText: 'translation first', translationVersion: 4, translationStatus: 'pending' });
+    transport.publishCue({ cueId: 'translation-first', rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
+    transport.publishCue({ cueId: 'late-without-turn-id', rawSource: '無 turn id 後到原文', sourceVersion: 1 });
+    transport.publishCue({ cueId: 'normal-2', rawSource: '正常原文 2', translatedText: 'normal 2' });
+  });
+  const published = peer.channel.sent.filter((packet) => packet.type === 'cue.append' || packet.type === 'cue.update');
+  assert.deepEqual(published.slice(-7).map((packet) => packet.type), [
+    'cue.append', 'cue.append', 'cue.update', 'cue.append', 'cue.update', 'cue.append', 'cue.append'
+  ]);
+  assert.equal(published.find((packet) => packet.cue.cueId === 'source-first' && packet.type === 'cue.append').cue.sourceText, '先到原文');
+
+  assert.doesNotThrow(() => transport.publishCue({ cueId: 'malformed', rawSource: '', translatedText: '', sourceVersion: 1 }));
+  assert.equal(publicationErrors.at(-1)?.code, 'empty_cue_content');
+  const rejection = livePipelineTrace.get({ stage: 'DATA_CHANNEL_ENVELOPE_REJECTED' }).at(-1);
+  assert.deepEqual({
+    meetingId: rejection.meetingId,
+    cueId: rejection.cueId,
+    messageType: rejection.messageType,
+    sourcePresent: rejection.sourcePresent,
+    translationPresent: rejection.translationPresent,
+    rawSourcePresent: rejection.rawSourcePresent,
+    refinedSourcePresent: rejection.refinedSourcePresent,
+    sourceVersion: rejection.sourceVersion,
+    audioTurnIdPresent: rejection.audioTurnIdPresent,
+    validatorCode: rejection.validatorCode
+  }, {
+    meetingId: 'meeting-1', cueId: 'malformed', messageType: 'cue.append',
+    sourcePresent: false, translationPresent: false, rawSourcePresent: false,
+    refinedSourcePresent: false, sourceVersion: 1, audioTurnIdPresent: false,
+    validatorCode: 'empty_cue_content'
+  });
+  configureLivePipelineTrace(false);
   assert.equal(statuses.includes('connected'), true);
 
   await transport.stop();

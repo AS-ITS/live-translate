@@ -8,7 +8,7 @@ const CONSOLE_STAGES = new Set([
   'SPEECH_ACTIVITY_STARTED', 'SPEECH_ACTIVITY_CONTINUED', 'LOCAL_SILENCE_DETECTED',
   'PROVIDER_RECONNECT', 'PROVIDER_ROLLOVER', 'SEGMENT_ROLLOVER',
   'EVENT_DEDUPED', 'EVENT_DROPPED', 'CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED',
-  'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'REACT_RENDER'
+  'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'REACT_RENDER', 'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
 
@@ -61,8 +61,18 @@ export function createLivePipelineTrace({
       providerTurnId: safeId(input.providerTurnId),
       turnKey: safeId(input.turnKey),
       cueId: safeId(input.cueId),
+      meetingId: safeId(input.meetingId),
+      messageType: safeId(input.messageType),
+      sourcePresent: input.sourcePresent ?? null,
+      translationPresent: input.translationPresent ?? null,
+      rawSourcePresent: input.rawSourcePresent ?? null,
+      refinedSourcePresent: input.refinedSourcePresent ?? null,
       sourceStatus: safeId(input.sourceStatus),
       translationStatus: safeId(input.translationStatus),
+      sourceVersion: Number.isSafeInteger(input.sourceVersion) ? input.sourceVersion : null,
+      translationVersion: Number.isSafeInteger(input.translationVersion) ? input.translationVersion : null,
+      audioTurnIdPresent: input.audioTurnIdPresent ?? null,
+      validatorCode: safeId(input.validatorCode),
       speechObservedSinceBoundary: input.speechObservedSinceBoundary ?? null,
       turnState: safeId(input.turnState),
       reason: safeId(REASONED_STAGES.has(stage) ? (reason || 'unspecified_reason') : reason),

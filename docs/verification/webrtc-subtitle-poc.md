@@ -26,6 +26,8 @@ git diff --check
 
 Vercel share authorization/signaling 先驗證 meeting、participant、role 與 `webrtc:signal` scope，再交換 offer、answer、ICE candidate；不可把 share authorization 當成媒體或字幕已送達。DataChannel payload 使用既有 `subtitle-webrtc/v1` envelope，可包含合成字幕 `cue.append`、`snapshot`、`cue.update`、`replay.request` 與 `replay.response`。`cueId`、sequence/revision 與 replay 用來做去重、排序與補發。
 
+Cue envelope 共用 `buildSubtitleEnvelope` 與 `assertEnvelope` contract。`cueId`、meeting scope、message type 與 sequence/revision 必須有效；source 或 translation 至少一側有內容。source-only 與 translation-only 都是合法中間狀態，原文以 `rawSource` 為 canonical value，`refinedSource` 只保留為可選 metadata。完全空白 Cue 會在 transport boundary 被拒絕並產生 `DATA_CHANNEL_ENVELOPE_REJECTED` trace，不可讓例外逃到 Recorder React flow。
+
 既有 Relay core（`server/relay/**`、`src/relay/**`）是 WebRTC 直連不可用時的備援候選，不是本 harness 的網路測試結果，也不把 relay ACK 解讀成所有 Viewer 已渲染或錄音已落盤。連線策略是 direct-first，TURN 只作有限 fallback，並且只在實際 Preview/跨網路測試中記錄是否選到 relay。
 
 ## Browser selected candidate-pair 證據

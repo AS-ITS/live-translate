@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Live Recorder 在單邊字幕延遲補齊時，WebRTC cue revision 與 source/translation side version 比較不一致，導致 `null` DataChannel envelope 的白畫面回歸。`subtitle-webrtc/v1` 現由共用 builder/validator 允許 source-only 與 translation-only，固定以 `rawSource` 為 canonical source，拒絕完全空白 Cue，並在 transport boundary 隔離、追蹤失敗發布而不中斷錄音 UI。
 - 修正 Viewer 即時 Cue 缺少 `segmentSequence` 時被排在新字幕之後的回歸：依相同 `segmentId` 的已知順序補齊，讓新字幕維持在列表底部；加入正式 Viewer DOM 的連續發布、回看、延遲翻譯與斷線補齊測試。
 - 修正已結束會議因舊 Session 狀態及 audit 外鍵而無法刪除；新增受保護刪除標記、限量 Storage 刪除與冪等授權。完成錄製後由資料庫固定 30 分鐘期限；到期後封鎖內容、Viewer、直接 Supabase 讀寫與遲到工作，保留會議設定及稽核。既有會議 GET 觸發持久節流的分批雲端清理，本機 IndexedDB／OPFS 以持久期限和分頁鎖清理。無 Cron 時雲端實體清理不保證準點。
 

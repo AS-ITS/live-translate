@@ -9,22 +9,48 @@ export const SUBTITLE_ENVELOPE_TYPES = Object.freeze({
 });
 
 const CUE_TYPES = new Set([SUBTITLE_ENVELOPE_TYPES.cueAppend, SUBTITLE_ENVELOPE_TYPES.cueUpdate]);
+const ENVELOPE_TYPES = new Set(Object.values(SUBTITLE_ENVELOPE_TYPES));
+const SIDE_STATUSES = new Set(['empty', 'pending', 'partial', 'final', 'finalized', 'unavailable', 'failed']);
 
 export function createEnvelope(type, fields = {}) {
-  const envelope = { protocol: SUBTITLE_DATA_CHANNEL_PROTOCOL, type, ...fields };
+  return buildSubtitleEnvelope(type, fields);
+}
+
+export function buildSubtitleEnvelope(type, fields = {}) {
+  const envelope = { ...fields, protocol: SUBTITLE_DATA_CHANNEL_PROTOCOL, type };
+  if (CUE_TYPES.has(type)) envelope.cue = normalizeSubtitleCue(fields.cue);
+  if (type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
+    envelope.cues = (fields.cues || []).map(normalizeSubtitleCue);
+  }
+  if (type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
+    envelope.events = (fields.events || []).map((event) => buildSubtitleEnvelope(event?.type, event));
+  }
   return assertEnvelope(envelope);
 }
 
 export function assertEnvelope(envelope) {
   if (!envelope || envelope.protocol !== SUBTITLE_DATA_CHANNEL_PROTOCOL || typeof envelope.type !== 'string') {
-    throw new TypeError('Invalid subtitle DataChannel envelope.');
+    throw validationError('invalid_envelope', 'Invalid subtitle DataChannel envelope.');
   }
-  if (!nonEmpty(envelope.meetingId)) throw new TypeError('Subtitle envelope requires meetingId.');
+  if (!ENVELOPE_TYPES.has(envelope.type)) throw validationError('invalid_message_type', 'Unsupported subtitle DataChannel message type.');
+  if (!nonEmpty(envelope.meetingId)) throw validationError('invalid_meeting_scope', 'Subtitle envelope requires meetingId.');
   if (CUE_TYPES.has(envelope.type) && (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1)) {
-    throw new TypeError('Cue envelope requires a positive sequence.');
+    throw validationError('invalid_sequence', 'Cue envelope requires a positive sequence.');
+  }
+  if (CUE_TYPES.has(envelope.type)) validateSubtitleCue(envelope.cue);
+  if (envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
+    if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 0) {
+      throw validationError('invalid_sequence', 'Snapshot envelope requires a non-negative sequence.');
+    }
+    if (!Array.isArray(envelope.cues)) throw validationError('invalid_snapshot_cues', 'Snapshot envelope requires cues.');
+    envelope.cues.forEach(validateSubtitleCue);
+  }
+  if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
+    if (!Array.isArray(envelope.events)) throw validationError('invalid_replay_events', 'Replay response requires events.');
+    envelope.events.forEach(assertEnvelope);
   }
   if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayRequest && !nonEmpty(envelope.requestId)) {
-    throw new TypeError('Replay request requires requestId.');
+    throw validationError('invalid_request_id', 'Replay request requires requestId.');
   }
   return envelope;
 }
@@ -41,9 +67,9 @@ export function createSubtitleSource({ meetingId, sourceId = createSourceId(), m
     if (!cue || !nonEmpty(cue.cueId)) throw new TypeError('Cue requires cueId.');
     if (cue.meetingId !== undefined && cue.meetingId !== meetingId) throw new TypeError('Cue meetingId mismatch.');
     const current = cues.get(cue.cueId);
-    const revision = cueRevision(cue);
-    if (current && revision <= cueRevision(current)) return null;
-    const event = createEnvelope(type, { meetingId, sourceId, sequence: ++sequence, cue: structuredClone(cue) });
+    const revision = publicationRevision(cue);
+    if (current && revision <= publicationRevision(current)) return null;
+    const event = buildSubtitleEnvelope(type, { meetingId, sourceId, sequence: ++sequence, cue });
     cues.set(cue.cueId, event.cue);
     history.push(event);
     while (history.length > maxHistory) history.shift();
@@ -133,6 +159,60 @@ function cueRevision(cue) {
   );
 }
 
+function publicationRevision(cue) {
+  return Number.isSafeInteger(cue?.revision) && cue.revision >= 0 ? cue.revision : cueRevision(cue);
+}
+
+function normalizeSubtitleCue(cue) {
+  if (!cue || typeof cue !== 'object' || Array.isArray(cue)) {
+    throw validationError('invalid_cue', 'Subtitle envelope requires a cue object.');
+  }
+  const normalized = structuredClone(cue);
+  const rawSource = text(cue.rawSource) || text(cue.sourceText);
+  const rawTranslation = text(cue.rawTranslation) || text(cue.translatedText);
+  if (rawSource) {
+    normalized.rawSource = rawSource;
+    normalized.sourceText = rawSource;
+  }
+  if (rawTranslation) {
+    normalized.rawTranslation = rawTranslation;
+    normalized.translatedText = rawTranslation;
+  }
+  validateSubtitleCue(normalized);
+  return normalized;
+}
+
+function validateSubtitleCue(cue) {
+  if (!cue || typeof cue !== 'object' || Array.isArray(cue)) {
+    throw validationError('invalid_cue', 'Subtitle envelope requires a cue object.');
+  }
+  if (!nonEmpty(cue.cueId)) throw validationError('invalid_cue_id', 'Subtitle cue requires cueId.');
+  if (!text(cue.rawSource) && !text(cue.sourceText) && !text(cue.rawTranslation) && !text(cue.translatedText)) {
+    throw validationError('empty_cue_content', 'Subtitle cue requires source or translation content.');
+  }
+  for (const field of ['revision', 'sourceVersion', 'translationVersion']) {
+    if (cue[field] !== undefined && (!Number.isSafeInteger(cue[field]) || cue[field] < 0)) {
+      throw validationError(`invalid_${field}`, `Subtitle cue ${field} must be a non-negative integer.`);
+    }
+  }
+  for (const field of ['sourceStatus', 'translationStatus']) {
+    if (cue[field] !== undefined && cue[field] !== null && !SIDE_STATUSES.has(cue[field])) {
+      throw validationError(`invalid_${field}`, `Subtitle cue ${field} is invalid.`);
+    }
+  }
+  return cue;
+}
+
+function validationError(code, message) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
+}
+
+function text(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function nonEmpty(value) {
   return typeof value === 'string' && value.length > 0;
 }
@@ -169,8 +249,13 @@ export function createSubtitleDataChannelAdapter(channel, { onEnvelope, onError 
     open,
     send(envelope) {
       if (channel.readyState !== 'open') return false;
-      channel.send(JSON.stringify(assertEnvelope(envelope)));
-      return true;
+      try {
+        channel.send(JSON.stringify(assertEnvelope(envelope)));
+        return true;
+      } catch (error) {
+        onError?.(error);
+        return false;
+      }
     },
     close() { channel.close?.(); }
   };

@@ -2339,6 +2339,97 @@ test('keeps page fixed while the live subtitle list scrolls independently', asyn
   await expect(page.locator('.status-pill').getByText('已停止', { exact: true })).toBeVisible();
 });
 
+test('keeps Recorder mounted when one-sided cues receive late DataChannel updates', async ({ page }) => {
+  const uncaught = [];
+  page.on('pageerror', (error) => uncaught.push(error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' && message.text().includes('Invalid subtitle DataChannel envelope')) uncaught.push(message.text());
+  });
+  await page.addInitScript(() => {
+    window.__mockSubtitlePackets = [];
+    class MockSubtitleChannel {
+      constructor() {
+        this.readyState = 'connecting';
+        this.listeners = new Map();
+        queueMicrotask(() => {
+          this.readyState = 'open';
+          this.onopen?.();
+          this.listeners.get('open')?.();
+        });
+      }
+      addEventListener(type, handler) { this.listeners.set(type, handler); }
+      send(value) { window.__mockSubtitlePackets.push(JSON.parse(value)); }
+      close() { this.readyState = 'closed'; }
+    }
+    window.RTCPeerConnection = class MockSubtitlePeerConnection {
+      constructor() { this.connectionState = 'new'; this.localDescription = null; }
+      createDataChannel() { return new MockSubtitleChannel(); }
+      async createOffer() { return { type: 'offer', sdp: 'mock-offer' }; }
+      async setLocalDescription(description) { this.localDescription = description; }
+      async setRemoteDescription() {}
+      async addIceCandidate() {}
+      async getStats() { return new Map(); }
+      close() { this.connectionState = 'closed'; }
+    };
+  });
+  let viewerReadySent = false;
+  await page.route('**/api/webrtc/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/join')) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ttlMs: 60_000, iceServers: [] }) });
+      return;
+    }
+    if (route.request().method() === 'GET' && url.pathname.endsWith('/signal')) {
+      const messages = viewerReadySent ? [] : [{ sequence: 1, participantId: 'browser-viewer', type: 'viewer-ready', negotiationId: 'browser-negotiation', payload: {} }];
+      viewerReadySent = true;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ messages, after: 1 }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accepted: true, sequence: 2 }) });
+  });
+
+  await mockMeetingCheckpointApi(page);
+  await mockLiveSessionCreateApi(page);
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__mockSubtitlePackets.some((packet) => packet.type === 'snapshot'))).toBe(true);
+  await emitFinalTranscript(page, '正常原文 1', 'normal translation 1', { waitMs: 50 });
+  await page.evaluate(() => {
+    const liveSession = window.__mockGoogleGenAI.liveSessions.at(-1);
+    for (let version = 1; version <= 8; version += 1) liveSession.emitMessage({ serverContent: { turnIndex: 101, inputTranscription: { text: `先到原文 ${version}` } } });
+    liveSession.emitMessage({ serverContent: { turnIndex: 101, turnComplete: true } });
+  });
+  await expect.poll(() => page.evaluate(() => window.__mockSubtitlePackets.some((packet) => (
+    (packet.type === 'cue.append' || packet.type === 'cue.update') && packet.cue?.rawSource && !packet.cue?.translatedText
+  )))).toBe(true);
+  await page.evaluate(() => window.__mockGoogleGenAI.liveSessions.at(-1).emitMessage({ serverContent: { turnIndex: 101, outputTranscription: { text: 'late translation' } } }));
+  await expect.poll(() => page.evaluate(() => typeof window.__liveTranslateWebRtcPublishTestCue)).toBe('function');
+  await page.evaluate(() => {
+    window.__liveTranslateWebRtcPublishTestCue({ cueId: 'translation-first-browser', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
+  });
+  await expect.poll(() => page.evaluate(() => window.__mockSubtitlePackets.some((packet) => (
+    (packet.type === 'cue.append' || packet.type === 'cue.update') && packet.cue?.translatedText && !packet.cue?.rawSource
+  )))).toBe(true);
+  await page.evaluate(() => {
+    window.__liveTranslateWebRtcPublishTestCue({ cueId: 'translation-first-browser', rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'finalized', translatedText: 'translation first', translationVersion: 4, translationStatus: 'finalized' });
+    window.__liveTranslateWebRtcPublishTestCue({ cueId: 'malformed-browser', rawSource: '', translatedText: '' });
+    window.__liveTranslateWebRtcPublishTestCue({ cueId: 'normal-browser-2', rawSource: '正常原文 2', translatedText: 'normal translation 2' });
+  });
+  await emitFinalTranscript(page, '正常原文 2', 'normal translation 2', { waitMs: 100 });
+
+  await expect(page.locator('#root')).toBeVisible();
+  await expect(page.getByTestId('live-cue-panel')).toBeVisible();
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  expect(uncaught).toEqual([]);
+  const cuePackets = await page.evaluate(() => window.__mockSubtitlePackets.filter((packet) => packet.type === 'cue.append' || packet.type === 'cue.update'));
+  expect(cuePackets.some((packet) => packet.cue?.rawSource && !packet.cue?.translatedText)).toBe(true);
+  expect(cuePackets.some((packet) => packet.cue?.translatedText && !packet.cue?.rawSource)).toBe(true);
+  expect(cuePackets.some((packet) => packet.cue?.cueId === 'normal-browser-2' && packet.cue?.rawSource === '正常原文 2')).toBe(true);
+});
+
 test('pause and resume drains first speech from the replacement pre-roll', async ({ page }) => {
   await mockMeetingCheckpointApi(page);
   await mockLiveSessionCreateApi(page);

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertEnvelope,
+  buildSubtitleEnvelope,
   createEnvelope,
   createReplayRequest,
   createSubtitleDataChannelAdapter,
@@ -10,11 +12,82 @@ import {
   SUBTITLE_ENVELOPE_TYPES
 } from '../../src/webrtc/subtitleDataChannel.js';
 
+test('canonical cue envelopes support one-sided and late-arriving subtitle content', () => {
+  const sourceOnly = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueAppend, {
+    meetingId: 'm-1',
+    sourceId: 'source-1',
+    sequence: 1,
+    cue: { cueId: 'source-first', rawSource: '原始逐字稿', sourceVersion: 8, sourceStatus: 'partial' }
+  });
+  assert.equal(assertEnvelope(sourceOnly), sourceOnly);
+  assert.equal(sourceOnly.cue.rawSource, '原始逐字稿');
+
+  const sourceUpdated = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueUpdate, {
+    ...sourceOnly,
+    type: undefined,
+    sequence: 2,
+    cue: { ...sourceOnly.cue, translatedText: 'Original transcript', translationVersion: 1, translationStatus: 'final' }
+  });
+  assert.equal(assertEnvelope(sourceUpdated), sourceUpdated);
+
+  const translationOnly = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueAppend, {
+    meetingId: 'm-1',
+    sourceId: 'source-1',
+    sequence: 3,
+    cue: { cueId: 'translation-first', translatedText: 'Translation first', translationVersion: 4, translationStatus: 'partial' }
+  });
+  assert.equal(assertEnvelope(translationOnly), translationOnly);
+
+  const translationUpdated = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueUpdate, {
+    ...translationOnly,
+    type: undefined,
+    sequence: 4,
+    cue: { ...translationOnly.cue, rawSource: '後到原文', sourceVersion: 1, sourceStatus: 'final' }
+  });
+  assert.equal(assertEnvelope(translationUpdated), translationUpdated);
+});
+
+test('canonical cue publication keeps rawSource and treats refinement metadata as optional', () => {
+  const withoutRefinement = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueAppend, {
+    meetingId: 'm-1', sourceId: 'source-1', sequence: 1,
+    cue: { cueId: 'c-1', rawSource: '原始內容', sourceText: '舊欄位', sourceVersion: 1 }
+  });
+  assert.equal(withoutRefinement.cue.rawSource, '原始內容');
+  assert.equal(withoutRefinement.cue.sourceText, '原始內容');
+
+  const withRefinement = buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueUpdate, {
+    meetingId: 'm-1', sourceId: 'source-1', sequence: 2,
+    cue: { cueId: 'c-1', rawSource: '原始內容', refinedSource: '潤飾內容', sourceVersion: 2 }
+  });
+  assert.equal(withRefinement.cue.rawSource, '原始內容');
+  assert.equal(withRefinement.cue.sourceText, '原始內容');
+  assert.equal(withRefinement.cue.refinedSource, '潤飾內容');
+});
+
+test('canonical cue publication rejects a completely empty cue', () => {
+  assert.throws(() => buildSubtitleEnvelope(SUBTITLE_ENVELOPE_TYPES.cueAppend, {
+    meetingId: 'm-1', sourceId: 'source-1', sequence: 1,
+    cue: { cueId: 'empty', rawSource: '', translatedText: '' }
+  }), /content/i);
+});
+
+test('source revision remains monotonic when side versions arrive out of order', () => {
+  const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-1' });
+  const append = source.append({ cueId: 'c-1', revision: 1, rawSource: '原文', sourceVersion: 8 });
+  const update = source.update({
+    cueId: 'c-1', revision: 2, rawSource: '原文', sourceVersion: 8,
+    translatedText: 'translation', translationVersion: 1
+  });
+  assert.equal(append.type, SUBTITLE_ENVELOPE_TYPES.cueAppend);
+  assert.equal(update.type, SUBTITLE_ENVELOPE_TYPES.cueUpdate);
+  assert.equal(update.cue.revision, 2);
+});
+
 test('source creates bounded snapshot and replay envelopes', () => {
   const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-1', maxHistory: 2 });
-  source.append({ cueId: 'c-1', revision: 1, text: 'one' });
-  source.append({ cueId: 'c-2', revision: 1, text: 'two' });
-  source.append({ cueId: 'c-3', revision: 1, text: 'three' });
+  source.append({ cueId: 'c-1', revision: 1, sourceText: 'one' });
+  source.append({ cueId: 'c-2', revision: 1, sourceText: 'two' });
+  source.append({ cueId: 'c-3', revision: 1, sourceText: 'three' });
   assert.equal(source.history.length, 2);
   assert.deepEqual(source.snapshot().cues.map((cue) => cue.cueId), ['c-1', 'c-2', 'c-3']);
   const replay = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'r-1', afterSequence: 1 }));
@@ -26,7 +99,7 @@ test('source creates bounded snapshot and replay envelopes', () => {
 
 test('source sends snapshot when replay cursor predates bounded history', () => {
   const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-1', maxHistory: 2 });
-  for (let index = 1; index <= 4; index += 1) source.append({ cueId: `c-${index}`, revision: 1 });
+  for (let index = 1; index <= 4; index += 1) source.append({ cueId: `c-${index}`, revision: 1, sourceText: `text-${index}` });
   const recovered = source.replay(createReplayRequest({ meetingId: 'm-1', requestId: 'gap',
     sourceId: 'source-1', afterSequence: 1 }));
   assert.equal(recovered.type, 'snapshot');
@@ -35,8 +108,8 @@ test('source sends snapshot when replay cursor predates bounded history', () => 
 
 test('source replays the same stream cursor and snapshots a replacement stream', () => {
   const source = createSubtitleSource({ meetingId: 'm-1', sourceId: 'source-current' });
-  source.append({ cueId: 'c-1', revision: 1, text: 'one' });
-  source.append({ cueId: 'c-2', revision: 1, text: 'two' });
+  source.append({ cueId: 'c-1', revision: 1, sourceText: 'one' });
+  source.append({ cueId: 'c-2', revision: 1, sourceText: 'two' });
 
   const replay = source.replay(createReplayRequest({
     meetingId: 'm-1', requestId: 'same-stream', sourceId: 'source-current', afterSequence: 1,
@@ -54,19 +127,19 @@ test('source replays the same stream cursor and snapshots a replacement stream',
 
 test('source deduplicates cue revisions and keeps monotonic sequence', () => {
   const source = createSubtitleSource({ meetingId: 'm-1' });
-  assert.equal(source.append({ cueId: 'c-1', revision: 1, text: 'one' }).sequence, 1);
-  assert.equal(source.update({ cueId: 'c-1', revision: 1, text: 'duplicate' }), null);
-  assert.equal(source.update({ cueId: 'c-1', revision: 2, text: 'updated' }).sequence, 2);
-  assert.throws(() => source.append({ cueId: 'c-2', meetingId: 'm-2', revision: 1 }), /meetingId/);
+  assert.equal(source.append({ cueId: 'c-1', revision: 1, sourceText: 'one' }).sequence, 1);
+  assert.equal(source.update({ cueId: 'c-1', revision: 1, sourceText: 'duplicate' }), null);
+  assert.equal(source.update({ cueId: 'c-1', revision: 2, sourceText: 'updated' }).sequence, 2);
+  assert.throws(() => source.append({ cueId: 'c-2', meetingId: 'm-2', revision: 1, sourceText: 'two' }), /meetingId/);
 });
 
 test('merge accepts append/update once, rejects cross-meeting and out-of-order packets', () => {
-  const append = createEnvelope('cue.append', { meetingId: 'm-1', sequence: 1, cue: { cueId: 'c-1', revision: 1, text: 'one' } });
-  const update = createEnvelope('cue.update', { meetingId: 'm-1', sequence: 2, cue: { cueId: 'c-1', revision: 2, text: 'two' } });
+  const append = createEnvelope('cue.append', { meetingId: 'm-1', sequence: 1, cue: { cueId: 'c-1', revision: 1, sourceText: 'one' } });
+  const update = createEnvelope('cue.update', { meetingId: 'm-1', sequence: 2, cue: { cueId: 'c-1', revision: 2, sourceText: 'two' } });
   let state = mergeSubtitleEnvelope(createSubtitleState('m-1'), append);
   state = mergeSubtitleEnvelope(state, append);
   state = mergeSubtitleEnvelope(state, update);
-  assert.equal(state.cues[0].text, 'two');
+  assert.equal(state.cues[0].sourceText, 'two');
   assert.throws(() => mergeSubtitleEnvelope(state, { ...update, meetingId: 'm-2', sequence: 3 }), /mismatch/);
   assert.throws(() => mergeSubtitleEnvelope(state, { ...append, sequence: 1 }), /Out-of-order/);
 });

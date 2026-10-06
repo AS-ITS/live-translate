@@ -52,11 +52,14 @@ export function useWebRtcDeviceSidecar({ meetingId, enabled, lifecycleStatus = '
     });
     transportRef.current = transport;
     const getStats = () => transport.getStats();
+    const publishTestCue = (cue) => transport.publishCue(cue);
     globalThis.__liveTranslateWebRtcGetStats = getStats;
+    if (import.meta.env.DEV) globalThis.__liveTranslateWebRtcPublishTestCue = publishTestCue;
     transport.start();
     return () => {
       disposed = true;
       if (globalThis.__liveTranslateWebRtcGetStats === getStats) delete globalThis.__liveTranslateWebRtcGetStats;
+      if (globalThis.__liveTranslateWebRtcPublishTestCue === publishTestCue) delete globalThis.__liveTranslateWebRtcPublishTestCue;
       if (transportRef.current === transport) transportRef.current = null;
       void transport.stop({ revoke: lifecycleStatusRef.current === 'stopped' });
     };

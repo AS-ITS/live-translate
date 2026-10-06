@@ -543,16 +543,49 @@ export function createWebRtcSubtitleTransport({
 
   function publishCue(cue) {
     if (!source || !cue?.cueId) return false;
-    const serialized = JSON.stringify(cue);
     const previous = cueVersions.get(cue.cueId);
-    if (previous?.serialized === serialized) return false;
-    const revision = (previous?.revision || 0) + 1;
-    const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
-    const envelope = previous ? source.update(normalized) : source.append(normalized);
-    cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
-    let sent = false;
-    for (const context of devicePeers.values()) sent = Boolean(context.adapter?.send(envelope)) || sent;
-    return sent;
+    const messageType = previous ? SUBTITLE_ENVELOPE_TYPES.cueUpdate : SUBTITLE_ENVELOPE_TYPES.cueAppend;
+    try {
+      const serialized = JSON.stringify(cue);
+      if (previous?.serialized === serialized) return false;
+      const revision = (previous?.revision || 0) + 1;
+      const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
+      const envelope = previous ? source.update(normalized) : source.append(normalized);
+      if (!envelope) return false;
+      cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
+      let sent = false;
+      for (const context of devicePeers.values()) sent = Boolean(context.adapter?.send(envelope)) || sent;
+      return sent;
+    } catch (error) {
+      recordEnvelopeRejection(cue, messageType, error);
+      onError?.(error);
+      return false;
+    }
+  }
+
+  function recordEnvelopeRejection(cue, messageType, error) {
+    const rawSourcePresent = hasText(cue?.rawSource);
+    const sourcePresent = rawSourcePresent || hasText(cue?.sourceText);
+    const translationPresent = hasText(cue?.rawTranslation) || hasText(cue?.translatedText);
+    recordLivePipelineTrace({
+      stage: 'DATA_CHANNEL_ENVELOPE_REJECTED',
+      meetingId,
+      recordingId: meetingId,
+      cueId: cue?.cueId,
+      messageType,
+      sourcePresent,
+      translationPresent,
+      rawSourcePresent,
+      refinedSourcePresent: hasText(cue?.refinedSource),
+      sourceStatus: cue?.sourceStatus,
+      translationStatus: cue?.translationStatus,
+      sourceVersion: cue?.sourceVersion,
+      translationVersion: cue?.translationVersion,
+      audioTurnIdPresent: hasText(cue?.audioTurnId),
+      reason: error?.message || 'subtitle_envelope_rejected',
+      validatorCode: error?.code || 'unknown_validation_error',
+      transportResult: 'rejected'
+    });
   }
 
   return Object.freeze({
@@ -609,6 +642,10 @@ export function createWebRtcSubtitleTransport({
 
 function isTerminalError(error) {
   return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized'].includes(error?.code);
+}
+
+function hasText(value) {
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function jitter(delay, random) {

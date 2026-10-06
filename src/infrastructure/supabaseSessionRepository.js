@@ -65,10 +65,15 @@ export function createSupabaseSessionRepository(options = {}) {
 
 function sessionRecordFromRow(row) {
   const payload = clone(row.payload || row);
+  const databaseSegmentId = row.current_segment_id || row.segment_id || null;
   const record = {
     ...payload,
     id: row.id || payload.id,
     meetingId: row.meeting_id || payload.meetingId,
+    // Lifecycle v2 moves the active Segment atomically in SQL. The JSON payload
+    // is only a snapshot and can still contain the previous Segment after a
+    // rollover, so it must never override the relational ownership columns.
+    segmentId: databaseSegmentId || payload.segmentId || null,
     recordingId: row.recording_id || payload.recordingId || null,
     ownerUserId: row.owner_user_id || payload.ownerUserId
   };

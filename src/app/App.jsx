@@ -1286,21 +1286,9 @@ const activeMeetingCheckpointRef = useRef(null);
       endpoint: error?.endpoint || error?.cause?.endpoint || null,
       cause: error?.cause?.name || null
     });
-    setStatusLabelOverride('切換失敗，正在暫停');
-    void liveController.actions.pauseSession().then(() => {
-      if (sessionStopRequestedRef.current) return;
-      setError('分段切換失敗，已暫停辨識並保留本機錄音。可按「繼續」重試。');
-    }).catch((pauseError) => {
-      if (sessionStopRequestedRef.current) return;
-      console.error('Meeting segment pause failed.', {
-        code: pauseError?.code || null,
-        status: pauseError?.status || null,
-        requestId: pauseError?.requestId || null
-      });
-      setStatusLabelOverride('切換失敗');
-      setError('分段切換失敗，暫停未完成。請停止錄音後從會議頁恢復。');
-      setStatus('error');
-    });
+    setStatusLabelOverride('分段切換失敗，錄音持續中');
+    setMeetingCheckpointStatus('error');
+    setMeetingCheckpointErrorMessage('分段切換暫時失敗；麥克風、即時字幕與本機錄音仍持續。請保留此頁面以便後續重試。');
   }
 
   function generateLiveSessionId() {
@@ -1528,8 +1516,8 @@ const activeMeetingCheckpointRef = useRef(null);
     const localSave = localMeetingCuePersistenceQueueRef.current.catch(() => {}).then(() => (
       Promise.all(checkpointCues.map((cue) => getLocalMeetingPersistence().saveCue({
         meetingId: activeMeetingCheckpoint?.meetingId,
-        segmentId: activeMeetingCheckpoint?.segmentId,
-        sessionId: activeSessionId,
+        segmentId: cue.segmentId,
+        sessionId: cue.sessionId,
         cue,
         producedAt: cue.finalizedAt || Date.now()
       })))
@@ -1604,7 +1592,7 @@ const activeMeetingCheckpointRef = useRef(null);
       }
     }
     const queued = [...meetingCuePublishQueuesRef.current.entries()]
-      .filter(([key]) => key.startsWith(`${sessionId}:`))
+      .filter(([key]) => key.startsWith(`cue:${sessionId}:`))
       .map(([, promise]) => promise);
     cloudResults.push(...await Promise.allSettled(queued));
     return {
@@ -1614,38 +1602,77 @@ const activeMeetingCheckpointRef = useRef(null);
   }
 
   function enqueueMeetingCuePublish(cue, meetingCheckpoint, sessionId, { allowInactive = false } = {}) {
-    const key = `${sessionId}:${cue.cueId}`;
+    const operation = Object.freeze({
+      meetingId: meetingCheckpoint.meetingId,
+      sessionId,
+      segmentId: cue.segmentId || meetingCheckpoint.segmentId,
+      operationId: `cue:${sessionId}:${cue.segmentId || meetingCheckpoint.segmentId}:${cue.cueId}`,
+      cueId: cue.cueId,
+      cue
+    });
+    const key = operation.operationId;
+    recordLivePipelineTrace({
+      stage: 'DURABLE_OPERATION_CREATED',
+      meetingId: operation.meetingId,
+      sessionId: operation.sessionId,
+      segmentId: operation.segmentId,
+      operationId: operation.operationId,
+      cueId: operation.cueId
+    });
     const previous = meetingCuePublishQueuesRef.current.get(key) || Promise.resolve();
     const next = previous.catch(() => {}).then(async () => {
-      if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
-        || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
-        || activeSessionRecordIdRef.current !== sessionId)) return;
+      if (!allowInactive && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
+        || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
+        || activeSessionRecordIdRef.current !== operation.sessionId)) return;
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (!allowInactive && attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== meetingCheckpoint.meetingId
-          || activeMeetingCheckpointRef.current?.segmentId !== meetingCheckpoint.segmentId
-          || activeSessionRecordIdRef.current !== sessionId)) return;
+        if (!allowInactive && attempt > 0 && (activeMeetingCheckpointRef.current?.meetingId !== operation.meetingId
+          || activeMeetingCheckpointRef.current?.segmentId !== operation.segmentId
+          || activeSessionRecordIdRef.current !== operation.sessionId)) return;
+        recordLivePipelineTrace({
+          stage: attempt === 0 ? 'CUE_PERSIST_REQUEST' : 'DURABLE_OPERATION_RETRY',
+          meetingId: operation.meetingId,
+          sessionId: operation.sessionId,
+          segmentId: operation.segmentId,
+          operationId: operation.operationId,
+          cueId: operation.cueId,
+          audioTurnId: operation.cue.audioTurnId || null
+        });
         try {
           await meetingCueApiClientRef.current.publish({
-            meetingId: meetingCheckpoint.meetingId,
-            segmentId: meetingCheckpoint.segmentId,
-            sessionId,
-            cue,
-            producedAt: cue.finalizedAt || Date.now()
+            meetingId: operation.meetingId,
+            segmentId: operation.segmentId,
+            sessionId: operation.sessionId,
+            cue: operation.cue,
+            producedAt: operation.cue.finalizedAt || Date.now()
           });
           recordLivePipelineTrace({
             stage: 'CUE_PUBLISHED',
-            recordingId: sessionId,
-            segmentId: meetingCheckpoint.segmentId,
-            cueId: cue.cueId,
-            sourceText: cue.rawSource ?? cue.sourceText ?? '',
-            translationText: cue.translatedText || '',
-            turnKey: cue.turnKey || null,
-            audioTurnId: cue.audioTurnId || null,
+            meetingId: operation.meetingId,
+            sessionId: operation.sessionId,
+            recordingId: operation.sessionId,
+            segmentId: operation.segmentId,
+            operationId: operation.operationId,
+            cueId: operation.cueId,
+            sourceText: operation.cue.rawSource ?? operation.cue.sourceText ?? '',
+            translationText: operation.cue.translatedText || '',
+            turnKey: operation.cue.turnKey || null,
+            audioTurnId: operation.cue.audioTurnId || null,
             reason: 'meeting_cue_publish_succeeded'
           });
-          liveCueLatencyTracker.recordViewerPublished({ cue });
+          liveCueLatencyTracker.recordViewerPublished({ cue: operation.cue });
           return;
         } catch (error) {
+          recordLivePipelineTrace({
+            stage: 'CUE_PERSIST_FAILED',
+            meetingId: operation.meetingId,
+            sessionId: operation.sessionId,
+            segmentId: operation.segmentId,
+            operationId: operation.operationId,
+            cueId: operation.cueId,
+            audioTurnId: operation.cue.audioTurnId || null,
+            httpStatus: error?.status,
+            serverErrorCode: error?.code
+          });
           const retryableBindingFailure = error?.status === 403 || error?.status === 404 || error?.status === 409;
           if (retryableBindingFailure && attempt === 0) continue;
           if (import.meta.env?.DEV) {

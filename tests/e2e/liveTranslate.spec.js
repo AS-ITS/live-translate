@@ -444,6 +444,7 @@ function glossaryPanel(page) {
 async function mockMeetingCheckpointApi(page, {
   failCheckpoint = false,
   failCheckpointAttempts = 0,
+  failCueSegments = [],
   waitForSegmentList = null,
   delayMeetingListMs = 0,
   meetingDetailCues = [],
@@ -541,7 +542,15 @@ async function mockMeetingCheckpointApi(page, {
     const cueMatch = url.pathname.match(new RegExp(`^/api/meetings/${MOCK_MEETING_ID}/segments/([^/]+)/cues$`));
     if (method === 'POST' && cueMatch) {
       const body = JSON.parse(request.postData() || '{}');
-      cueRequests.push({ segmentId: cueMatch[1], cue: body.cue });
+      cueRequests.push({ segmentId: cueMatch[1], sessionId: body.sessionId, cue: body.cue });
+      if (failCueSegments.includes(cueMatch[1])) {
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({ error: { code: 'recorder_session_mismatch', requestId: `cue-403-${cueMatch[1]}` } })
+        });
+        return;
+      }
       await route.fulfill({
         status: 202,
         contentType: 'application/json',
@@ -2738,6 +2747,41 @@ test('checkpoint sync failure keeps the live session active and shows retryable 
   await expect(page.getByText('會議模式：保存失敗，等待重試')).toBeVisible({ timeout: 6500 });
   await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
   await expect(page.locator('.error-message')).toContainText('長會議同步暫時失敗');
+});
+
+test('cue HTTP 403 after rollover degrades cloud persistence without stopping recording', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__liveTranslateSegmentSwitchIntervalMs = 2000;
+  });
+  const requests = await mockMeetingCheckpointApi(page, { failCueSegments: [MOCK_SEGMENT_ID(2)] });
+  await mockLiveSessionCreateApi(page);
+
+  await gotoMockMeetingLive(page);
+  await page.getByRole('button', { name: '開始' }).click();
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
+  await emitMicrophoneAudio(page);
+  await expect(page.getByText('聆聽中')).toBeVisible();
+  await emitFinalTranscript(page, 'segment A source', 'segment A translation', { waitMs: 100 });
+  await expect.poll(() => requests.rolloverRequests.length, { timeout: 7000 }).toBe(1);
+  await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(2);
+  await emitMicrophoneAudio(page);
+  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible();
+
+  await emitFinalTranscript(page, 'segment B first source', 'segment B first translation', { waitMs: 100 });
+  await expect.poll(() => requests.cueRequests.some((request) => request.segmentId === MOCK_SEGMENT_ID(2))).toBe(true);
+  await expect(page.getByText('字幕已保存在本機，但雲端同步失敗。結束時會再重試。')).toBeVisible();
+  await expect(page.locator('.status-pill').getByText('聆聽中', { exact: true })).toBeVisible({ timeout: 1000 });
+
+  await emitFinalTranscript(page, 'segment B continues locally', 'segment B local translation', { waitMs: 100 });
+  await expect(page.getByText('segment B continues locally')).toBeVisible();
+  await expect.poll(() => page.evaluate(liveResourceDiagnostics)).toEqual({
+    micTrackCount: 2,
+    activeMicTrackCount: 1,
+    audioContextCount: 2,
+    openAudioContextCount: 1,
+    liveSessionCount: 2,
+    openLiveSessionCount: 1
+  });
 });
 
 test('stop error banner stays above the live workspace', async ({ page }) => {

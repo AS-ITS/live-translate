@@ -8,6 +8,9 @@ const CONSOLE_STAGES = new Set([
   'SPEECH_ACTIVITY_STARTED', 'SPEECH_ACTIVITY_CONTINUED', 'LOCAL_SILENCE_DETECTED',
   'PROVIDER_RECONNECT', 'PROVIDER_ROLLOVER', 'SEGMENT_ROLLOVER',
   'EVENT_DEDUPED', 'EVENT_DROPPED', 'CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED',
+  'SESSION_ROLLOVER_START', 'SESSION_CREATED', 'SESSION_SCOPE_SWITCHED',
+  'CUE_PERSIST_REQUEST', 'CUE_PERSIST_FAILED', 'CHECKPOINT_REQUEST', 'CHECKPOINT_FAILED',
+  'DURABLE_OPERATION_CREATED', 'DURABLE_OPERATION_RETRY', 'RECORDING_PIPELINE_STATE',
   'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'REACT_RENDER', 'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
@@ -49,8 +52,15 @@ export function createLivePipelineTrace({
       traceSequence: ++nextTraceSequence,
       timestamp,
       stage,
+      sessionId: safeId(input.sessionId),
+      oldSessionId: safeId(input.oldSessionId),
+      newSessionId: safeId(input.newSessionId),
       recordingId: safeId(input.recordingId),
       segmentId: safeId(input.segmentId),
+      oldSegmentId: safeId(input.oldSegmentId),
+      newSegmentId: safeId(input.newSegmentId),
+      participantId: safeId(input.participantId),
+      operationId: safeId(input.operationId),
       captureEpoch: input.captureEpoch ?? null,
       providerEpoch: input.providerEpoch ?? null,
       connectionEpoch: input.connectionEpoch ?? null,
@@ -103,7 +113,9 @@ export function createLivePipelineTrace({
       pcmSampleCount: Number.isFinite(input.pcmSampleCount) ? input.pcmSampleCount : null,
       pcmDurationMs: Number.isFinite(input.pcmDurationMs) ? input.pcmDurationMs : null,
       pcmCaptureTimestampMs: Number.isFinite(input.pcmCaptureTimestampMs) ? input.pcmCaptureTimestampMs : null,
-      transportResult: safeId(input.transportResult)
+      transportResult: safeId(input.transportResult),
+      httpStatus: Number.isInteger(input.httpStatus) ? input.httpStatus : null,
+      serverErrorCode: safeId(input.serverErrorCode)
     });
     entries.push(entry);
     if (entries.length > maxEntries) entries.splice(0, entries.length - maxEntries);

@@ -552,7 +552,27 @@ export function useLiveRecordingController({
     meetingCheckpointSyncCoordinator() {
       if (!checkpointControllerRef.current) {
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
-          updateCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload),
+          updateCheckpoint: async (payload) => {
+            recordLivePipelineTrace({
+              stage: 'CHECKPOINT_REQUEST',
+              meetingId: payload.meetingId,
+              segmentId: payload.segmentId,
+              operationId: payload.idempotencyKey
+            });
+            try {
+              return await checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload);
+            } catch (error) {
+              recordLivePipelineTrace({
+                stage: 'CHECKPOINT_FAILED',
+                meetingId: payload.meetingId,
+                segmentId: payload.segmentId,
+                operationId: payload.idempotencyKey,
+                httpStatus: error?.status,
+                serverErrorCode: error?.code
+              });
+              throw error;
+            }
+          },
           getCheckpoint: (payload) => checkpoint.getLocalMeetingPersistence().getCheckpoint(payload),
           delayMs: MEETING_CHECKPOINT_SYNC_DELAY_MS,
           onStatusChange: (status) => {
@@ -1539,6 +1559,14 @@ export function useLiveRecordingController({
 
       let rolloverStage = 'prepare';
       try {
+        recordLivePipelineTrace({
+          stage: 'SESSION_ROLLOVER_START',
+          meetingId: meetingCheckpoint.meetingId,
+          oldSessionId: recovery.activeSessionRecordIdRef.current,
+          oldSegmentId: meetingCheckpoint.segmentId,
+          captureEpoch: previousSession.captureEpoch,
+          providerEpoch: previousSession.providerEpoch
+        });
         recovery.reconnectController().cancel();
         recovery.suspendLiveSessionCallbacks();
         recovery.setError('');
@@ -1553,7 +1581,10 @@ export function useLiveRecordingController({
 
         rolloverStage = 'checkpoint';
         const flushed = await checkpointController.flushMeetingCheckpointSync();
-    if (!flushed) throw new Error('無法同步目前段落 checkpoint。');
+        if (!flushed) {
+          recovery.setMeetingCheckpointStatus?.('error');
+          recovery.setMeetingCheckpointErrorMessage?.('長會議同步暫時失敗，錄音與本機字幕仍會繼續，未同步資料會保留重試。');
+        }
     if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
     recovery.archiveActiveTranscriptSegment();
 
@@ -1574,8 +1605,24 @@ export function useLiveRecordingController({
 
       if (recovery.segmentSwitchCancelledRef.current || recovery.sessionStopRequestedRef.current) return;
       const nextMeetingCheckpoint = { meetingId: meetingCheckpoint.meetingId, segmentId: rollover.segment.id, segmentSequence: rollover.segment.sequence };
+      recordLivePipelineTrace({
+        stage: 'SESSION_CREATED',
+        meetingId: meetingCheckpoint.meetingId,
+        oldSessionId: recovery.activeSessionRecordIdRef.current,
+        newSessionId: rollover.session?.id || recovery.activeSessionRecordIdRef.current,
+        oldSegmentId: meetingCheckpoint.segmentId,
+        newSegmentId: rollover.segment.id
+      });
       recovery.activeMeetingCheckpointRef.current = nextMeetingCheckpoint;
       checkpointController.meetingCheckpointSyncCoordinator().start(nextMeetingCheckpoint);
+      recordLivePipelineTrace({
+        stage: 'SESSION_SCOPE_SWITCHED',
+        meetingId: meetingCheckpoint.meetingId,
+        oldSessionId: recovery.activeSessionRecordIdRef.current,
+        newSessionId: rollover.session?.id || recovery.activeSessionRecordIdRef.current,
+        oldSegmentId: meetingCheckpoint.segmentId,
+        newSegmentId: rollover.segment.id
+      });
       const sessionId = recovery.activeSessionRecordIdRef.current;
       if (sessionId && !meetingLifecycleRef.current) {
         rolloverStage = 'session-metadata';
@@ -1603,7 +1650,30 @@ export function useLiveRecordingController({
       recovery.sessionRef.current = previousSession;
       recovery.setStatusLabelOverride('下一段已開始');
       recovery.setStatus('listening');
+      recordLivePipelineTrace({
+        stage: 'RECORDING_PIPELINE_STATE',
+        meetingId: nextMeetingCheckpoint.meetingId,
+        sessionId: recovery.activeSessionRecordIdRef.current,
+        segmentId: nextMeetingCheckpoint.segmentId,
+        captureEpoch: previousSession.captureEpoch,
+        providerEpoch: previousSession.providerEpoch,
+        reason: 'rollover_continued'
+      });
       } catch (cause) {
+        recovery.activateLiveSessionCallbacks(previousSession.callbackGeneration);
+        recovery.sessionRef.current = previousSession;
+        recovery.setStatus('listening');
+        recordLivePipelineTrace({
+          stage: 'RECORDING_PIPELINE_STATE',
+          meetingId: recovery.activeMeetingCheckpointRef.current?.meetingId,
+          sessionId: recovery.activeSessionRecordIdRef.current,
+          segmentId: recovery.activeMeetingCheckpointRef.current?.segmentId,
+          captureEpoch: previousSession.captureEpoch,
+          providerEpoch: previousSession.providerEpoch,
+          httpStatus: cause?.status,
+          serverErrorCode: cause?.code,
+          reason: 'rollover_failed_recording_continues'
+        });
         const failure = new Error('Meeting segment rollover failed.', { cause });
         failure.rolloverStage = rolloverStage;
         failure.status = cause?.status;

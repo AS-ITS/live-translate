@@ -163,7 +163,7 @@ test('meeting checkpoint sync coordinator flushes immediately on stop', async ()
   assert.equal(calls.length, 1);
 });
 
-test('queued flush from an old segment is ignored after a new segment starts', async () => {
+test('queued flush keeps its original segment ownership after a new segment starts', async () => {
   const calls = [];
   let resolveFirstUpdate;
   const firstUpdate = new Promise((resolve) => { resolveFirstUpdate = resolve; });
@@ -186,9 +186,83 @@ test('queued flush from an old segment is ignored after a new segment starts', a
   await oldFlush;
   await coordinator.flush();
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].segmentId, 'segment-2');
-  assert.deepEqual(calls[0].durableChunks.map((item) => item.idempotencyKey), ['new']);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].segmentId, 'segment-1');
+  assert.deepEqual(calls[0].durableChunks.map((item) => item.idempotencyKey), ['old']);
+  assert.equal(calls[1].segmentId, 'segment-2');
+  assert.deepEqual(calls[1].durableChunks.map((item) => item.idempotencyKey), ['new']);
+});
+
+test('pending retry remains owned by segment A while new operations use segment B', async () => {
+  const calls = [];
+  const retryTimers = [];
+  let failSegmentA = true;
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => {
+      calls.push(payload);
+      if (payload.segmentId === 'segment-a' && failSegmentA) {
+        const error = new Error('temporary checkpoint failure');
+        error.status = 503;
+        throw error;
+      }
+    },
+    delayMs: 0,
+    retryDelayMs: 10,
+    setTimeoutFn: (callback, delayMs) => {
+      retryTimers.push({ callback, delayMs });
+      return callback;
+    },
+    clearTimeoutFn: () => {}
+  });
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-a' });
+  coordinator.enqueueCues([{ cueId: 'cue-a', sessionId: 'session-1', segmentId: 'segment-a', status: 'final', sequence: 1 }]);
+  assert.equal(await coordinator.flush(), false);
+
+  coordinator.start({ meetingId: 'meeting-1', segmentId: 'segment-b' });
+  coordinator.enqueueCues([{ cueId: 'cue-b', sessionId: 'session-1', segmentId: 'segment-b', status: 'final', sequence: 2 }]);
+  assert.equal(await coordinator.flush(), true);
+
+  failSegmentA = false;
+  retryTimers.find((timer) => timer.delayMs === 10).callback();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(calls.map(({ segmentId, finalCues }) => ({
+    segmentId,
+    cueIds: finalCues.map((cue) => cue.cueId)
+  })), [
+    { segmentId: 'segment-a', cueIds: ['cue-a'] },
+    { segmentId: 'segment-b', cueIds: ['cue-b'] },
+    { segmentId: 'segment-a', cueIds: ['cue-a'] }
+  ]);
+});
+
+test('four consecutive segment scopes never mix cue ownership', async () => {
+  const calls = [];
+  const coordinator = createMeetingCheckpointSyncCoordinator({
+    updateCheckpoint: async (payload) => calls.push(payload),
+    setTimeoutFn: () => {},
+    clearTimeoutFn: () => {}
+  });
+
+  for (let index = 1; index <= 4; index += 1) {
+    const segmentId = `segment-${index}`;
+    coordinator.start({ meetingId: 'meeting-1', segmentId });
+    coordinator.enqueueCues([
+      { cueId: `cue-${index}-1`, sessionId: 'session-1', segmentId, status: 'final', sequence: index * 2 - 1 },
+      { cueId: `cue-${index}-2`, sessionId: 'session-1', segmentId, status: 'final', sequence: index * 2 }
+    ]);
+    assert.equal(await coordinator.flush(), true);
+  }
+
+  assert.deepEqual(calls.map(({ segmentId, finalCues }) => ({
+    segmentId,
+    ownedSegments: [...new Set(finalCues.map((cue) => cue.segmentId))]
+  })), Array.from({ length: 4 }, (_, index) => ({
+    segmentId: `segment-${index + 1}`,
+    ownedSegments: [`segment-${index + 1}`]
+  })));
 });
 
 test('segment filtering keeps old chunks and cues out of the current payload', async () => {

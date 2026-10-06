@@ -182,6 +182,10 @@ test('history scrolling keeps new Cues in DOM order and return-to-latest continu
   await viewport.hover();
   await page.mouse.wheel(0, -1800);
   await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+  await page.getByTestId('viewer-translation-toggle').click();
+  await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeGreaterThan(24);
+  await page.getByTestId('viewer-translation-toggle').click();
 
   for (let index = 1; index <= 3; index += 1) {
     await page.evaluate((payload) => window.__emitViewerCue(payload), {

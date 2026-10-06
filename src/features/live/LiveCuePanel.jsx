@@ -5,6 +5,12 @@ import { cueListForDisplay, sourceTextForCopy, sourceTextForDisplay, translation
 import { transcriptTextForDisplay } from './liveTranscriptRecovery.js';
 import { wrapSubtitleText } from '../../lib/subtitleCueExport.js';
 import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import {
+  readSubtitleVisibilityPreference,
+  RECORDER_SUBTITLE_VISIBILITY_STORAGE_KEY,
+  toggleSubtitleVisibility,
+  writeSubtitleVisibilityPreference
+} from '../../lib/subtitleVisibilityPreference.js';
 
 // Async translation/refinement updates the same Cue row without obscuring
 // the live transcript content.
@@ -23,9 +29,14 @@ export function LiveCuePanel({
   const panelRef = useRef(null);
   const cueListRef = useRef(null);
   const [isFollowingLatest, setIsFollowingLatest] = useState(false);
-  const [showSource, setShowSource] = useState(true);
+  const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(RECORDER_SUBTITLE_VISIBILITY_STORAGE_KEY));
+  const { showSource, showTranslation } = visibility;
   const cues = useMemo(() => cueListForDisplay(cueState), [cueState]);
   const hasContent = cues.length > 0 || fallbackTranscriptItems.length > 0;
+
+  useEffect(() => {
+    writeSubtitleVisibilityPreference(RECORDER_SUBTITLE_VISIBILITY_STORAGE_KEY, visibility);
+  }, [visibility]);
 
   useEffect(() => {
     const list = cueListRef.current;
@@ -40,7 +51,7 @@ export function LiveCuePanel({
     const list = cueListRef.current;
     if (!list || !isFollowingLatest || cues.length === 0) return;
     list.scrollTo({ top: list.scrollHeight, behavior: cues.at(-1)?.status === 'final' ? 'smooth' : 'auto' });
-  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest]);
+  }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.updatedTimeMs, isFollowingLatest, showSource, showTranslation]);
 
   useEffect(() => {
     for (const cue of cues) {
@@ -67,24 +78,28 @@ export function LiveCuePanel({
         <div><h2>即時字幕</h2><p className="meeting-settings-card-description">{isPaused ? '已暫停，字幕內容會保留。' : isStopped ? '本次工作階段已結束。' : '錄音會即時轉成來源語言字幕，翻譯會在句子完成後更新。'}</p></div>
         <div className="cue-panel-actions">
           <span className={`live-inline-status live-inline-status-${status} status-pill`} aria-label={`即時字幕狀態：${statusLabel(status, statusLabelOverride)}`}><Radio size={15} aria-hidden="true" />{statusLabel(status, statusLabelOverride)}</span>
-          <button className={`button detail-button source-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" data-testid="source-visibility-toggle" aria-pressed={showSource} onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
+          <div className="subtitle-visibility-controls">
+            <button className={`button detail-button subtitle-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" data-testid="source-visibility-toggle" aria-pressed={showSource} disabled={showSource && !showTranslation} aria-describedby={showSource && !showTranslation ? 'recorder-subtitle-visibility-hint' : undefined} onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+            <button className={`button detail-button subtitle-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" data-testid="translation-visibility-toggle" aria-pressed={showTranslation} disabled={showTranslation && !showSource} aria-describedby={showTranslation && !showSource ? 'recorder-subtitle-visibility-hint' : undefined} onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
+            {(!showSource || !showTranslation) ? <p className="subtitle-visibility-hint" id="recorder-subtitle-visibility-hint" role="status">至少顯示原文或翻譯</p> : null}
+          </div>
           {hasContent && !isFollowingLatest ? <button className="button detail-button" type="button" data-testid="follow-latest-button" onClick={() => { cueListRef.current?.scrollTo({ top: cueListRef.current.scrollHeight, behavior: 'smooth' }); setIsFollowingLatest(true); }}>回到最新字幕</button> : null}
         </div>
       </div>
       <div ref={cueListRef} onScroll={(event) => setIsFollowingLatest(isCueListAtLatestPosition(event.currentTarget))} className={`cue-list ${hasContent ? '' : 'cue-list-empty'}`} data-testid="cue-list" role="log" aria-live="polite" aria-label="字幕列表">
         {!hasContent ? <p className="cue-empty cue-empty-prominent" data-testid="cue-empty-state">開始錄音後，來源語音字幕會顯示在這裡</p> : null}
-        {hasContent ? <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}`}>
+        {hasContent ? <div className={`cue-reading-layout${showSource ? '' : ' is-source-hidden'}${showTranslation ? '' : ' is-translation-hidden'}`}>
           {showSource ? <CueLanguageHeader stream="source" onCopy={onCopySource} copied={copiedSource} disabled={!sourceTextForCopy(cueState.finalCues)} /> : null}
-          <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} />
+          {showTranslation ? <CueLanguageHeader stream="translation" onCopy={onCopyTranslation} copied={copiedTranslation} disabled={!translationTextForCopy(cueState.finalCues)} /> : null}
           {fallbackTranscriptItems.length > 0 ? <div className="cue-recovery-fallback" data-testid="cue-recovery-fallback" aria-label="已保存但尚未整理的逐字稿">
             {fallbackTranscriptItems.map((item) => <article className="cue-row cue-row-recovered" key={`recovered-${item.id}`}>
               <div className="cue-text-toggle">
                 {showSource && item.stream === 'source' ? <SourceCueText text={wrapSubtitleText(transcriptTextForDisplay(item), item.sourceLanguageCode)} /> : null}
-                {item.stream === 'translation' ? <TranslatedCueText text={wrapSubtitleText(item.text, item.targetLanguageCode)} /> : null}
+                {showTranslation && item.stream === 'translation' ? <TranslatedCueText text={wrapSubtitleText(item.text, item.targetLanguageCode)} /> : null}
               </div>
             </article>)}
           </div> : null}
-          <div className="cue-section-list" data-testid="cue-paired-list">{cues.map((cue) => cue.status === 'final' ? <FinalCueRow key={cue.cueId} cue={cue} showSource={showSource} /> : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} showSource={showSource} />)}</div>
+          <div className="cue-section-list" data-testid="cue-paired-list">{cues.map((cue) => cue.status === 'final' ? <FinalCueRow key={cue.cueId} cue={cue} showSource={showSource} showTranslation={showTranslation} /> : <PartialCueRow key={`partial-${cue.cueId || 'current'}`} cue={cue} showSource={showSource} showTranslation={showTranslation} />)}</div>
         </div> : null}
       </div>
     </section>
@@ -98,13 +113,13 @@ function CueLanguageHeader({ stream, onCopy, copied, disabled }) {
 function FinalCueRow({ cue, ...props }) { return <CueRow cue={cue} {...props} />; }
 function PartialCueRow({ cue, ...props }) { return <CueRow cue={cue} partial {...props} />; }
 
-function CueRow({ cue, partial = false, stream, paired = false, showSource = true }) {
+function CueRow({ cue, partial = false, stream, paired = false, showSource = true, showTranslation = true }) {
   const label = cue.terminalStatus === 'saved-pending' ? '未完成語句已保存' : partial ? '辨識中' : `字幕 ${cue.sequence || ''}`;
   const sourceText = sourceTextForDisplay(cue, 'raw');
   const translationText = effectiveTranslationForCue(cue);
   return <article className={`cue-row${partial ? ' cue-row-partial' : ''}`} data-testid={partial ? 'cue-partial-row' : 'cue-final-row'} data-cue-id={cue.cueId || undefined} aria-label={label}>
     {partial ? <div className="cue-row-meta"><span className="cue-partial-status">{label}</span></div> : null}
-    <div className="cue-text-toggle">{showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}{!partial ? <TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} /> : null}</div>
+    <div className="cue-text-toggle">{showSource ? <SourceCueText text={wrapSubtitleText(sourceText, cue.sourceLanguageCode)} /> : null}{showTranslation && !partial ? <TranslatedCueText text={wrapSubtitleText(translationText, cue.targetLanguageCode)} /> : null}</div>
   </article>;
 }
 

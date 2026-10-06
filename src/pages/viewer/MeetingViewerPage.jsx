@@ -9,6 +9,12 @@ import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import {
+  readSubtitleVisibilityPreference,
+  toggleSubtitleVisibility,
+  VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY,
+  writeSubtitleVisibilityPreference
+} from '../../lib/subtitleVisibilityPreference.js';
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -24,13 +30,23 @@ export function MeetingViewerPage({ token, code }) {
   const latencySamplesRef = useRef([]);
   const rowHeightsRef = useRef(new Map());
   const [rowLayoutVersion, setRowLayoutVersion] = useState(0);
-  const [showSource, setShowSource] = useState(true);
+  const [visibility, setVisibility] = useState(() => readSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY));
+  const { showSource, showTranslation } = visibility;
   const [isFollowingLatest, setIsFollowingLatest] = useState(true);
   const [hasOlderCues, setHasOlderCues] = useState(false);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
   const [retryVersion, setRetryVersion] = useState(0);
   const estimatedRowHeight = 64;
+
+  useEffect(() => {
+    writeSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY, visibility);
+  }, [visibility]);
+
+  useEffect(() => {
+    rowHeightsRef.current.clear();
+    setRowLayoutVersion((version) => version + 1);
+  }, [showSource, showTranslation]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -467,7 +483,7 @@ export function MeetingViewerPage({ token, code }) {
     });
     viewport.querySelectorAll('.viewer-cue-row').forEach((row) => observer.observe(row));
     return () => observer.disconnect();
-  }, [cues, endIndex, startIndex]);
+  }, [cues, endIndex, showSource, showTranslation, startIndex]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -476,7 +492,7 @@ export function MeetingViewerPage({ token, code }) {
     const frame = requestAnimationFrame(() => viewport.scrollTo({ top: rowLayout.totalHeight, behavior: 'auto' }));
     return () => cancelAnimationFrame(frame);
   }, [cues.length, cues.at(-1)?.cueId, cues.at(-1)?.sourceText, cues.at(-1)?.translatedText,
-    isFollowingLatest, rowLayout.totalHeight, showSource]);
+    isFollowingLatest, rowLayout.totalHeight, showSource, showTranslation]);
 
   function scrollToLatest() {
     setIsFollowingLatest(true);
@@ -492,7 +508,11 @@ export function MeetingViewerPage({ token, code }) {
           </div>
           <div className="viewer-toolbar-actions">
             {detail ? (
-              <button className={`button detail-button viewer-source-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} data-testid="viewer-source-toggle" onClick={() => setShowSource((visible) => !visible)}>顯示原文</button>
+              <div className="subtitle-visibility-controls">
+                <button className={`button detail-button viewer-visibility-toggle${showSource ? ' is-active' : ''}`} type="button" aria-pressed={showSource} disabled={showSource && !showTranslation} aria-describedby={showSource && !showTranslation ? 'viewer-subtitle-visibility-hint' : undefined} data-testid="viewer-source-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'source'))}>{showSource ? '隱藏原文' : '顯示原文'}</button>
+                <button className={`button detail-button viewer-visibility-toggle${showTranslation ? ' is-active' : ''}`} type="button" aria-pressed={showTranslation} disabled={showTranslation && !showSource} aria-describedby={showTranslation && !showSource ? 'viewer-subtitle-visibility-hint' : undefined} data-testid="viewer-translation-toggle" onClick={() => setVisibility((current) => toggleSubtitleVisibility(current, 'translation'))}>{showTranslation ? '隱藏翻譯' : '顯示翻譯'}</button>
+                {(!showSource || !showTranslation) ? <p className="subtitle-visibility-hint" id="viewer-subtitle-visibility-hint" role="status">至少顯示原文或翻譯</p> : null}
+              </div>
             ) : null}
             {detail && !isFollowingLatest ? <button className="button detail-button viewer-follow-latest" type="button" data-testid="viewer-follow-latest-button" onClick={scrollToLatest}>回到最新字幕</button> : null}
             {shareConnection.value === 'failed' ? (
@@ -503,7 +523,7 @@ export function MeetingViewerPage({ token, code }) {
         {error ? <p className="error-message viewer-error" role="alert">{error}</p> : null}
         {!detail && !error ? <p className="history-empty viewer-loading">正在載入會議字幕…</p> : null}
         {detail ? (
-          <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}`} aria-label="Meeting 完整字幕">
+          <section className={`viewer-cue-panel${showSource ? '' : ' viewer-source-hidden'}${showTranslation ? '' : ' viewer-translation-hidden'}`} aria-label="Meeting 完整字幕">
             {cues.length === 0 ? <div className="viewer-empty-state"><span className="viewer-empty-mark" aria-hidden="true" /><p>等待錄音端送出第一句字幕</p><span>連線期間會自動顯示，不需要重新整理。</span></div> : <>
               {hasOlderCues ? <button className="button detail-button viewer-load-older" type="button" data-testid="viewer-load-older-button" onClick={() => void loadOlderCues()} disabled={isLoadingOlder}>{isLoadingOlder ? '載入中…' : '載入較舊字幕'}</button> : null}
               <div ref={viewportRef} className="viewer-cue-viewport"
@@ -521,8 +541,8 @@ export function MeetingViewerPage({ token, code }) {
                   {visibleCues.map((cue, index) => {
                     const cueIndex = startIndex + index;
                     return <article className={`viewer-cue-row${cueIndex === cues.length - 1 ? ' is-latest' : ''}`} key={cue.cueId || `${cue.sequence}-${cueIndex}`} style={{ position: 'absolute', top: rowLayout.offsets[cueIndex], left: 0, right: 0 }} data-cue-index={cueIndex} data-cue-id={cue.cueId || undefined} data-testid="meeting-viewer-cue-row">
-                    {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
-                      {cue.translatedText ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText}</p></div> : null}
+                      {showSource ? <div className="viewer-cue-source"><span className="viewer-cue-language">原文</span><p>{cue.sourceText || '—'}</p></div> : null}
+                      {showTranslation && (cue.translatedText || !showSource) ? <div className="viewer-cue-translation"><span className="viewer-cue-language">翻譯</span><p>{cue.translatedText || '翻譯處理中…'}</p></div> : null}
                     </article>;
                   })}
                 </div>

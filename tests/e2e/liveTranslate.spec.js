@@ -3261,15 +3261,26 @@ test('final Cues stay paired and one partial Cue remains at the tail', async ({ 
 });
 
 test('live subtitles prioritize translation and can collapse the source column', async ({ page }) => {
-  await gotoMockMeetingLive(page);
-  await page.getByRole('button', { name: '開始' }).click();
-  await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, 'source sentence', 'translated sentence');
+  await mockMeetingCheckpointApi(page, { meetingDetailCues: [{
+    cueId: `cue:visibility:${MOCK_SEGMENT_ID(1)}:1`,
+    sessionId: 'visibility-session',
+    segmentId: MOCK_SEGMENT_ID(1),
+    sequence: 1,
+    startTimeMs: 1_000,
+    endTimeMs: 2_000,
+    sourceText: 'source sentence',
+    translatedText: 'translated sentence',
+    status: 'final'
+  }] });
+  await gotoMockMeetingLive(page, { meetingStatus: 'active' });
 
   const panel = liveCuePanel(page);
   const toggle = panel.getByTestId('source-visibility-toggle');
+  const translationToggle = panel.getByTestId('translation-visibility-toggle');
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  expect(await panel.locator('.cue-panel-actions > *').evaluateAll((items) => items.findIndex((item) => item.matches('.live-inline-status')) < items.findIndex((item) => item.matches('[data-testid="source-visibility-toggle"]')))).toBe(true);
+  await expect(toggle).toHaveText('隱藏原文');
+  await expect(translationToggle).toHaveText('隱藏翻譯');
+  expect(await panel.locator('.cue-panel-actions > *').evaluateAll((items) => items.findIndex((item) => item.matches('.live-inline-status')) < items.findIndex((item) => item.matches('.subtitle-visibility-controls')))).toBe(true);
   await expect(panel.getByRole('region', { name: '即時字幕原文' })).toBeVisible();
   await expect(panel.getByTestId('cue-paired-list').getByText('translated sentence')).toBeVisible();
   await page.screenshot({ path: test.info().outputPath('live-subtitles-source-visible.png'), fullPage: true });
@@ -3299,6 +3310,26 @@ test('live subtitles prioritize translation and can collapse the source column',
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   await expect(panel.getByTestId('cue-paired-list').getByText('source sentence')).toBeVisible();
+
+  await translationToggle.click();
+  await expect(translationToggle).toHaveText('顯示翻譯');
+  await expect(toggle).toBeDisabled();
+  await expect(panel.getByTestId('cue-translated-text')).toHaveCount(0);
+  await expect(panel.getByText('至少顯示原文或翻譯')).toBeVisible();
+
+  await translationToggle.click();
+  await expect(panel.getByText('translated sentence')).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toHaveText('顯示原文');
+  await expect(translationToggle).toBeDisabled();
+  await page.reload();
+  await expect(liveCuePanel(page).getByTestId('source-visibility-toggle')).toHaveText('顯示原文');
+  await expect(liveCuePanel(page).getByTestId('translation-visibility-toggle')).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileControlBounds = await liveCuePanel(page).locator('.subtitle-visibility-controls').boundingBox();
+  expect(mobileControlBounds).not.toBeNull();
+  expect(mobileControlBounds.x).toBeGreaterThanOrEqual(0);
+  expect(mobileControlBounds.x + mobileControlBounds.width).toBeLessThanOrEqual(390);
 });
 
 test('live recording adapts the meeting design system across desktop and mobile widths', async ({ page }) => {

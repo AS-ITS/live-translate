@@ -41,8 +41,80 @@ test('Meeting Viewer keeps the source toggle visible while waiting for the first
   await page.goto('/#viewer?token=meeting-viewer-token');
 
   await expect(page.getByText('等待錄音端送出第一句字幕')).toBeVisible();
-  await expect(page.getByTestId('viewer-source-toggle')).toHaveText('顯示原文');
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveText('隱藏原文');
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveText('隱藏翻譯');
   await expect(page.getByTestId('viewer-source-toggle')).toBeVisible();
+});
+
+test('Meeting Viewer persists independent subtitle visibility and keeps hidden updates', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'RTCPeerConnection', { configurable: true, value: undefined });
+    if (!localStorage.getItem('live-translate:subtitle-visibility:recorder:v1')) {
+      localStorage.setItem('live-translate:subtitle-visibility:recorder:v1', JSON.stringify({ showSource: true, showTranslation: false }));
+    }
+    if (!localStorage.getItem('live-translate:subtitle-visibility:viewer:v1')) {
+      localStorage.setItem('live-translate:subtitle-visibility:viewer:v1', JSON.stringify({ showSource: false, showTranslation: false }));
+    }
+    class MockEventSource extends EventTarget {
+      static instances = [];
+      constructor() {
+        super();
+        MockEventSource.instances.push(this);
+        queueMicrotask(() => this.onopen?.(new Event('open')));
+      }
+      close() {}
+    }
+    window.EventSource = MockEventSource;
+    window.__emitViewerCue = (payload) => MockEventSource.instances.at(-1)?.dispatchEvent(
+      new MessageEvent(payload.type, { data: JSON.stringify(payload) })
+    );
+  });
+  let snapshotCues = [
+    { cueId: 'cue-1', sequence: 1, sourceText: '初始原文', translatedText: 'Initial translation', status: 'final' },
+    { cueId: 'cue-2', sequence: 2, sourceText: '僅原文', translatedText: '', status: 'final' },
+    { cueId: 'cue-3', sequence: 3, sourceText: '', translatedText: 'Translation only', status: 'final' }
+  ];
+  await page.route(/\/api\/shared-meetings\/code\/VISIBILITY1(?:\?.*)?$/, async (route) => route.fulfill({ json: {
+    meeting: { id: 'meeting-1', name: '產品會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+    cues: snapshotCues,
+    cursor: { eventId: 1, cueSequence: 3 }
+  } }));
+  await page.route(/\/api\/shared-meetings\/code\/VISIBILITY1\/events(?:\?.*)?$/, async (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
+  await page.goto('/#viewer?code=VISIBILITY1');
+
+  const sourceToggle = page.getByTestId('viewer-source-toggle');
+  const translationToggle = page.getByTestId('viewer-translation-toggle');
+  await expect(sourceToggle).toHaveText('隱藏原文');
+  await expect(translationToggle).toHaveText('隱藏翻譯');
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('live-translate:subtitle-visibility:viewer:v1')))).toEqual({ showSource: true, showTranslation: true });
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('live-translate:subtitle-visibility:recorder:v1')))).toEqual({ showSource: true, showTranslation: false });
+
+  await translationToggle.click();
+  await expect(sourceToggle).toBeDisabled();
+  await expect(page.locator('.viewer-cue-translation')).toHaveCount(0);
+  await expect(page.getByText('僅原文', { exact: true })).toBeVisible();
+  await expect(page.getByText('至少顯示原文或翻譯')).toBeVisible();
+  snapshotCues = snapshotCues.map((cue) => cue.cueId === 'cue-1'
+    ? { ...cue, sourceText: '最新原文', translatedText: 'Latest hidden translation', sourceVersion: 2, translationVersion: 2 }
+    : cue);
+  await page.reload();
+  await expect(page.getByTestId('viewer-translation-toggle')).toHaveText('顯示翻譯');
+  await expect(page.getByText('Latest hidden translation')).toHaveCount(0);
+
+  await page.getByTestId('viewer-translation-toggle').click();
+  await expect(page.getByText('Latest hidden translation')).toBeVisible();
+  await page.getByTestId('viewer-source-toggle').click();
+  await expect(page.getByTestId('viewer-translation-toggle')).toBeDisabled();
+  await expect(page.locator('.viewer-cue-source')).toHaveCount(0);
+  await expect(page.getByText('Translation only', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId('viewer-source-toggle')).toHaveText('顯示原文');
+  await expect(page.getByTestId('viewer-translation-toggle')).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileControlBounds = await page.locator('.subtitle-visibility-controls').boundingBox();
+  expect(mobileControlBounds).not.toBeNull();
+  expect(mobileControlBounds.x).toBeGreaterThanOrEqual(0);
+  expect(mobileControlBounds.x + mobileControlBounds.width).toBeLessThanOrEqual(390);
 });
 
 test('Meeting Viewer loads older Cues with the opaque pagination cursor', async ({ page }) => {

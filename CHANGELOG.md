@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Viewer 即時 Cue 缺少 `segmentSequence` 時被排在新字幕之後的回歸：依相同 `segmentId` 的已知順序補齊，讓新字幕維持在列表底部；加入正式 Viewer DOM 的連續發布、回看、延遲翻譯與斷線補齊測試。
 - 修正已結束會議因舊 Session 狀態及 audit 外鍵而無法刪除；新增受保護刪除標記、限量 Storage 刪除與冪等授權。完成錄製後由資料庫固定 30 分鐘期限；到期後封鎖內容、Viewer、直接 Supabase 讀寫與遲到工作，保留會議設定及稽核。既有會議 GET 觸發持久節流的分批雲端清理，本機 IndexedDB／OPFS 以持久期限和分頁鎖清理。無 Cron 時雲端實體清理不保證準點。
 
 - 修正 QR Viewer 即時字幕排序與連線恢復：雲端事件和錄音端 DataChannel 補齊經驗證的 Segment 順序，原文／翻譯版本分別合併；Viewer 晚加入會要求定向協商，多位 Viewer 使用獨立 PeerConnection，舊 epoch 訊息不再覆蓋新連線，replay 超出保留範圍時改送 snapshot。WebRTC 已連線時仍發布雲端 Cue 供補漏，Viewer 將兩條通道狀態分開，虛擬列表於最新列更新與高度變更後維持跟隨。跨網路 TURN 與真實手機仍待 Preview 雙機驗證。

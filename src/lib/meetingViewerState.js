@@ -34,7 +34,17 @@ export function meetingEventDuplicateDetected(detail, event) {
 }
 
 export function sortMeetingCues(cues = []) {
-  return [...cues].sort((left, right) => {
+  const segmentOrders = new Map();
+  for (const cue of cues) {
+    const order = positiveSequence(cue?.segmentSequence);
+    if (cue?.segmentId && order !== null && !segmentOrders.has(cue.segmentId)) {
+      segmentOrders.set(cue.segmentId, order);
+    }
+  }
+  return cues.map((cue) => {
+    const order = positiveSequence(cue?.segmentSequence) ?? segmentOrders.get(cue?.segmentId);
+    return order === undefined || order === null ? cue : { ...cue, segmentSequence: order };
+  }).sort((left, right) => {
     const leftSegment = positiveSequence(left?.segmentSequence);
     const rightSegment = positiveSequence(right?.segmentSequence);
     if (leftSegment !== rightSegment) return (leftSegment ?? Infinity) - (rightSegment ?? Infinity);

@@ -289,6 +289,89 @@ test('transport renews the participant heartbeat and uses low-frequency Device p
   await transport.stop();
 });
 
+test('cloud signaling heartbeat 503 preserves an open Viewer DataChannel and later Cue publishes', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const timers = [];
+  const statuses = [];
+  let joins = 0;
+  let deliveredReady = false;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'device', participantId: 'device-persistence-isolation',
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) {
+        joins += 1;
+        if (joins === 2) return response(503, { error: { code: 'cloud_capability_unavailable' } });
+        return response(200, { ttlMs: 12_000, iceServers: [] });
+      }
+      if (url.includes('/signal?')) {
+        if (!deliveredReady) {
+          deliveredReady = true;
+          return response(200, {
+            messages: [{ sequence: 1, participantId: 'viewer-1', type: 'viewer-ready', negotiationId: 'n-1', payload: {} }], after: 1
+          });
+        }
+        return response(200, { messages: [], after: 1 });
+      }
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, {});
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    random: () => 0.5,
+    setTimer(fn, ms) {
+      const timer = { fn, ms, cleared: false, executed: false };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status.value),
+  });
+
+  transport.start();
+  await flush();
+  await flush();
+  const discoveryPoll = timers.find((timer) => timer.ms === 2_000 && !timer.cleared);
+  discoveryPoll.executed = true;
+  await discoveryPoll.fn();
+  await flush();
+  await flush();
+  const peer = FakePeerConnection.instances[0];
+  peer.channel.open();
+  transport.publishCue({ cueId: 'cue-1', sessionId: 'session-1', segmentId: 'segment-1', sequence: 1, sourceText: 'one' });
+
+  const heartbeat = timers.find((timer) => timer.ms === 6_000 && !timer.cleared);
+  heartbeat.executed = true;
+  await heartbeat.fn();
+  await flush();
+
+  assert.equal(peer.closed, undefined);
+  assert.equal(peer.channel.closed, false);
+  assert.equal(statuses.includes('reconnecting'), false);
+  assert.equal(transport.publishCue({ cueId: 'cue-2', sessionId: 'session-1', segmentId: 'segment-1', sequence: 2, sourceText: 'two' }), true);
+
+  const retryHeartbeat = timers.find((timer) => timer.ms === 5_000 && !timer.cleared && !timer.executed);
+  assert.ok(retryHeartbeat);
+  retryHeartbeat.executed = true;
+  await retryHeartbeat.fn();
+  await flush();
+  assert.equal(joins, 3);
+  assert.equal(transport.publishCue({ cueId: 'cue-3', sessionId: 'session-1', segmentId: 'segment-1', sequence: 3, sourceText: 'three' }), true);
+  assert.deepEqual(
+    peer.channel.sent.filter((packet) => packet.type === 'cue.append').map((packet) => packet.cue.cueId),
+    ['cue-1', 'cue-2', 'cue-3']
+  );
+  assert.equal(livePipelineTrace.get({ stage: 'WEBRTC_SIGNALING' }).some((entry) => (
+    entry.eventType === 'heartbeat.failed'
+    && entry.decision === 'preserve_open_data_channel'
+    && entry.errorCode === 'cloud_capability_unavailable'
+  )), true);
+
+  await transport.stop();
+  configureLivePipelineTrace(false);
+});
+
 test('temporary polling failure keeps the current negotiation alive and retries polling', async () => {
   FakePeerConnection.instances = [];
   const timers = [];

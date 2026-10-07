@@ -56,6 +56,47 @@ test('trace bounds text fields and isolates logger failures', () => {
   assert.doesNotThrow(() => trace.record({ stage: 'CUE_UPDATED', cueId: 'cue-1' }));
 });
 
+test('persistence and Viewer transport traces preserve causal state fields', () => {
+  const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
+  trace.record({
+    stage: 'CLOUD_CUE_SAVE_FAILED',
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cueId: 'cue-58',
+    operationId: 'operation-58',
+    recorderEpoch: 7,
+    providerEpoch: 8,
+    transportGeneration: 9,
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    dataChannelState: 'open',
+    realtimeState: 'connected',
+    persistenceState: 'retrying',
+    httpStatus: 503,
+    errorCode: 'cloud_capability_unavailable'
+  });
+
+  assert.deepEqual(trace.get()[0], {
+    ...trace.get()[0],
+    meetingId: 'meeting-1',
+    sessionId: 'session-1',
+    segmentId: 'segment-1',
+    cueId: 'cue-58',
+    operationId: 'operation-58',
+    recorderEpoch: 7,
+    providerEpoch: 8,
+    transportGeneration: 9,
+    connectionState: 'connected',
+    iceConnectionState: 'connected',
+    dataChannelState: 'open',
+    realtimeState: 'connected',
+    persistenceState: 'retrying',
+    httpStatus: 503,
+    errorCode: 'cloud_capability_unavailable'
+  });
+});
+
 test('production-disabled pipeline trace retains and logs nothing', () => {
   const logs = [];
   const trace = createLivePipelineTrace({ enabled: false, logger: (...args) => logs.push(args) });

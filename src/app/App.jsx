@@ -254,6 +254,7 @@ const activeMeetingCheckpointRef = useRef(null);
   const subtitleRefinementTimerRef = useRef(null);
   const refinementRateLimitTimerRef = useRef(null);
   const statusRef = useRef(status);
+  const previousSessionStatusRef = useRef(status);
   const lastSafeHashRef = useRef(canonicalHashForLocation());
   const pendingForcedNavigationHashRef = useRef(null);
   const forcedNavigationStopPromiseRef = useRef(null);
@@ -262,6 +263,20 @@ const activeMeetingCheckpointRef = useRef(null);
   const routeMeetingId = pageInfoFromLocation().meetingId;
   const workspaceInfo = pageInfoFromLocation();
   const isLiveSurface = page === 'live-recording';
+
+  useEffect(() => {
+    if (previousSessionStatusRef.current === status) return;
+    recordLivePipelineTrace({
+      stage: 'SESSION_STATE_CHANGED',
+      meetingId: routeMeetingId,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId,
+      recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
+      eventType: `${previousSessionStatusRef.current}->${status}`,
+      realtimeState: status
+    });
+    previousSessionStatusRef.current = status;
+  }, [routeMeetingId, status]);
 
   useEffect(() => {
     setIsLiveFocusMode(false);
@@ -1101,6 +1116,14 @@ const activeMeetingCheckpointRef = useRef(null);
       active: false
     };
     liveSessionCallbackGenerationRef.current = callbackGeneration;
+    recordLivePipelineTrace({
+      stage: 'RECORDER_GENERATION_CHANGED',
+      meetingId,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: segmentId || liveSessionId,
+      recorderEpoch: callbackGeneration.generation,
+      decision: 'session_created'
+    });
     handledLiveFailureGenerationsRef.current.clear();
 
     const session = new LiveTranslateSession({
@@ -1246,6 +1269,14 @@ const activeMeetingCheckpointRef = useRef(null);
       generation: liveSessionCallbackGenerationRef.current.generation + 1,
       active: false
     };
+    recordLivePipelineTrace({
+      stage: 'RECORDER_GENERATION_CHANGED',
+      meetingId: activeMeetingCheckpointRef.current?.meetingId,
+      sessionId: activeSessionRecordIdRef.current,
+      segmentId: activeMeetingCheckpointRef.current?.segmentId,
+      recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
+      decision: 'callbacks_invalidated'
+    });
   }
 
   function suspendLiveSessionCallbacks() {
@@ -1524,6 +1555,16 @@ const activeMeetingCheckpointRef = useRef(null);
     ));
     localMeetingCuePersistenceQueueRef.current = localSave;
     void localSave.then(async () => {
+      for (const cue of checkpointCues) {
+        recordLivePipelineTrace({
+          stage: 'LOCAL_CUE_SAVED',
+          meetingId: activeMeetingCheckpoint?.meetingId,
+          sessionId: cue.sessionId,
+          segmentId: cue.segmentId,
+          cueId: cue.cueId,
+          persistenceState: 'local_saved'
+        });
+      }
       try {
         await publishMeetingCues(checkpointCues, activeMeetingCheckpoint, activeSessionId);
       } catch {
@@ -1594,6 +1635,17 @@ const activeMeetingCheckpointRef = useRef(null);
     const queued = [...meetingCuePublishQueuesRef.current.entries()]
       .filter(([key]) => key.startsWith(`cue:${sessionId}:`))
       .map(([, promise]) => promise);
+    if (queued.length > 0) {
+      recordLivePipelineTrace({
+        stage: 'DURABLE_BARRIER_WAITING',
+        meetingId: meetingCheckpoint?.meetingId,
+        sessionId,
+        segmentId: meetingCheckpoint?.segmentId,
+        persistenceState: 'waiting',
+        decision: 'terminal_flush_only',
+        eventSequence: queued.length
+      });
+    }
     cloudResults.push(...await Promise.allSettled(queued));
     return {
       localSaved: true,
@@ -1637,6 +1689,17 @@ const activeMeetingCheckpointRef = useRef(null);
           cueId: operation.cueId,
           audioTurnId: operation.cue.audioTurnId || null
         });
+        recordLivePipelineTrace({
+          stage: attempt === 0 ? 'CLOUD_CUE_SAVE_STARTED' : 'DURABLE_QUEUE_RETRYING',
+          meetingId: operation.meetingId,
+          sessionId: operation.sessionId,
+          segmentId: operation.segmentId,
+          operationId: operation.operationId,
+          cueId: operation.cueId,
+          recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
+          providerEpoch: sessionRef.current?.connectionEpoch ?? reconnectSessionRef.current?.connectionEpoch ?? null,
+          persistenceState: attempt === 0 ? 'saving' : 'retrying'
+        });
         try {
           await meetingCueApiClientRef.current.publish({
             meetingId: operation.meetingId,
@@ -1659,6 +1722,15 @@ const activeMeetingCheckpointRef = useRef(null);
             audioTurnId: operation.cue.audioTurnId || null,
             reason: 'meeting_cue_publish_succeeded'
           });
+          recordLivePipelineTrace({
+            stage: 'CLOUD_CUE_SAVE_SUCCEEDED',
+            meetingId: operation.meetingId,
+            sessionId: operation.sessionId,
+            segmentId: operation.segmentId,
+            operationId: operation.operationId,
+            cueId: operation.cueId,
+            persistenceState: 'synced'
+          });
           liveCueLatencyTracker.recordViewerPublished({ cue: operation.cue });
           return;
         } catch (error) {
@@ -1672,6 +1744,18 @@ const activeMeetingCheckpointRef = useRef(null);
             audioTurnId: operation.cue.audioTurnId || null,
             httpStatus: error?.status,
             serverErrorCode: error?.code
+          });
+          recordLivePipelineTrace({
+            stage: 'CLOUD_CUE_SAVE_FAILED',
+            meetingId: operation.meetingId,
+            sessionId: operation.sessionId,
+            segmentId: operation.segmentId,
+            operationId: operation.operationId,
+            cueId: operation.cueId,
+            recorderEpoch: liveSessionCallbackGenerationRef.current.generation,
+            persistenceState: 'retrying',
+            httpStatus: error?.status,
+            errorCode: error?.code
           });
           const retryableBindingFailure = error?.status === 403 || error?.status === 404 || error?.status === 409;
           if (retryableBindingFailure && attempt === 0) continue;

@@ -573,21 +573,39 @@ export function useLiveRecordingController({
         checkpointControllerRef.current = createMeetingCheckpointSyncCoordinator({
           updateCheckpoint: async (payload) => {
             recordLivePipelineTrace({
+              stage: 'CHECKPOINT_SAVE_STARTED',
+              meetingId: payload.meetingId,
+              segmentId: payload.segmentId,
+              operationId: payload.idempotencyKey,
+              persistenceState: 'saving'
+            });
+            recordLivePipelineTrace({
               stage: 'CHECKPOINT_REQUEST',
               meetingId: payload.meetingId,
               segmentId: payload.segmentId,
-              operationId: payload.idempotencyKey
+              operationId: payload.idempotencyKey,
+              persistenceState: 'saving'
             });
             try {
               return await checkpoint.getLocalMeetingPersistence().updateCheckpoint(payload);
             } catch (error) {
               recordLivePipelineTrace({
+                stage: 'CHECKPOINT_SAVE_FAILED',
+                meetingId: payload.meetingId,
+                segmentId: payload.segmentId,
+                operationId: payload.idempotencyKey,
+                persistenceState: 'retrying',
+                httpStatus: error?.status,
+                errorCode: error?.code
+              });
+              recordLivePipelineTrace({
                 stage: 'CHECKPOINT_FAILED',
                 meetingId: payload.meetingId,
                 segmentId: payload.segmentId,
                 operationId: payload.idempotencyKey,
+                persistenceState: 'retrying',
                 httpStatus: error?.status,
-                serverErrorCode: error?.code
+                errorCode: error?.code
               });
               throw error;
             }

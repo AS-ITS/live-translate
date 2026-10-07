@@ -36,12 +36,21 @@ export function createMeetingViewerRealtimeController({
   let reconnectAttempts = 0;
   let generation = 0;
 
+  function recordRealtimeTrace(details) {
+    recordLivePipelineTrace({ stage: 'VIEWER_REALTIME', ...details });
+    recordLivePipelineTrace({
+      stage: 'REALTIME_STATE_CHANGED',
+      realtimeState: details.transportResult,
+      ...details,
+    });
+  }
+
   async function connect() {
     const currentGeneration = ++generation;
     const isCurrent = () => !stopped && currentGeneration === generation;
     clearScheduledReconnect();
-    recordLivePipelineTrace({
-      stage: 'VIEWER_REALTIME', eventType: 'token.request', transportGeneration: currentGeneration,
+    recordRealtimeTrace({
+      eventType: 'token.request', transportGeneration: currentGeneration,
       transportResult: 'connecting',
     });
     onConnecting?.();
@@ -50,8 +59,8 @@ export function createMeetingViewerRealtimeController({
       const authorization = await response.json().catch(() => null);
       if (!response.ok) throw createRealtimeError(response.status, authorization);
       if (!isCurrent()) return;
-      recordLivePipelineTrace({
-        stage: 'VIEWER_REALTIME', eventType: 'token.received', transportGeneration: currentGeneration,
+      recordRealtimeTrace({
+        eventType: 'token.received', transportGeneration: currentGeneration,
         transportResult: 'authorized',
       });
       accessToken = authorization.accessToken;
@@ -69,8 +78,8 @@ export function createMeetingViewerRealtimeController({
         });
       channel.subscribe(async (status) => {
         if (!isCurrent()) return;
-        recordLivePipelineTrace({
-          stage: 'VIEWER_REALTIME', eventType: 'channel.status', channelStatus: status,
+        recordRealtimeTrace({
+          eventType: 'channel.status', channelStatus: status,
           transportGeneration: currentGeneration, transportResult: status,
         });
         if (status === 'SUBSCRIBED') {
@@ -121,8 +130,8 @@ export function createMeetingViewerRealtimeController({
       });
     } catch (error) {
       if (!isCurrent()) return;
-      recordLivePipelineTrace({
-        stage: 'VIEWER_REALTIME', eventType: 'connect.failed', transportGeneration: currentGeneration,
+      recordRealtimeTrace({
+        eventType: 'connect.failed', transportGeneration: currentGeneration,
         reason: error?.code || error?.message, transportResult: 'failed',
       });
       onError?.(error);
@@ -159,8 +168,8 @@ export function createMeetingViewerRealtimeController({
     }
     const delay = jitter(RECONNECT_DELAYS_MS[reconnectAttempts], random);
     reconnectAttempts += 1;
-    recordLivePipelineTrace({
-      stage: 'VIEWER_REALTIME', eventType: 'reconnect.scheduled',
+    recordRealtimeTrace({
+      eventType: 'reconnect.scheduled',
       transportGeneration: generation, eventSequence: reconnectAttempts,
       decision: 'retry', transportResult: 'scheduled',
     });

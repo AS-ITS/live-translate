@@ -11,6 +11,11 @@ node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDat
 npm run build
 ```
 
+`webrtcSubtitleTransport.test.js` 另覆蓋 persistence 故障域隔離：已開啟的
+DataChannel 在 signaling heartbeat 回 `503` 時不得 teardown、不得切換為
+`reconnecting`，Cue 2／Cue 3 必須沿用同一 transport generation 繼續發布；雲端
+control-plane 恢復後只恢復 heartbeat，不得重複發布已送達的 Cue。
+
 這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、Realtime token refresh 與故障 reconnect timer 隔離、reconnect snapshot/replay、Segment sequence domain、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
 
 ## Vercel Relay PoC verification boundary

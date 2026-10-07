@@ -7,6 +7,7 @@ const DISCONNECTED_GRACE_MS = 5_000;
 const ICE_RESTART_TIMEOUT_MS = 10_000;
 const NEGOTIATION_TIMEOUT_MS = 12_000;
 const CONNECTED_POLL_INTERVAL_MS = 2_000;
+const HEARTBEAT_RETRY_INTERVAL_MS = 5_000;
 
 export function createWebRtcSubtitleTransport({
   meetingId,
@@ -54,20 +55,27 @@ export function createWebRtcSubtitleTransport({
   initialCues.forEach(publishCue);
 
   function status(value, details = {}) {
-    recordLivePipelineTrace({
+    const traceDetails = {
       stage: 'WEBRTC_TRANSPORT',
+      meetingId,
       connectionEpoch: details.epoch ?? connectionEpoch,
       eventType: role,
       eventSequence: details.attempt ?? null,
       reason: details.reason || value,
       decision: details.recovered ? 'recovered' : null,
+      connectionState: active?.pc?.connectionState,
+      iceConnectionState: active?.pc?.iceConnectionState,
+      dataChannelState: active?.channel?.readyState,
+      realtimeState: value,
       transportResult: value,
-    });
+    };
+    recordLivePipelineTrace(traceDetails);
+    recordLivePipelineTrace({ ...traceDetails, stage: 'VIEWER_SHARING_STATE_CHANGED' });
     onStatus?.(Object.freeze({ value, ...details }));
   }
 
   function trace(stage, eventType, context = null, details = {}) {
-    recordLivePipelineTrace({
+    const traceDetails = {
       stage,
       meetingId,
       participantId,
@@ -79,7 +87,13 @@ export function createWebRtcSubtitleTransport({
       signalingState: context?.pc?.signalingState,
       dataChannelState: context?.channel?.readyState,
       ...details,
-    });
+    };
+    recordLivePipelineTrace(traceDetails);
+    if (stage === 'WEBRTC_PEER_STATE') {
+      recordLivePipelineTrace({ ...traceDetails, stage: 'WEBRTC_STATE_CHANGED' });
+    } else if (stage === 'WEBRTC_DATA_CHANNEL') {
+      recordLivePipelineTrace({ ...traceDetails, stage: 'DATACHANNEL_STATE_CHANGED' });
+    }
   }
 
   function isCurrent(context) {
@@ -135,9 +149,66 @@ export function createWebRtcSubtitleTransport({
         scheduleHeartbeat(joined.ttlMs, epoch);
       } catch (error) {
         if (stopped || epoch !== connectionEpoch) return;
+        if (hasOpenDataChannel() && !isTerminalSignalingError(error)) {
+          trace('WEBRTC_SIGNALING', 'heartbeat.failed', null, {
+            epoch,
+            errorCode: error?.code,
+            httpStatus: error?.status,
+            decision: 'preserve_open_data_channel',
+            transportResult: 'retrying_signaling_only',
+          });
+          scheduleHeartbeatRetry(epoch);
+          return;
+        }
         handleConnectError(error, 'heartbeat_failed');
       }
     }, interval);
+  }
+
+  function scheduleHeartbeatRetry(epoch) {
+    clearHeartbeat();
+    if (stopped || epoch !== connectionEpoch) return;
+    heartbeatTimer = setTimer(async () => {
+      heartbeatTimer = null;
+      if (stopped || epoch !== connectionEpoch) return;
+      try {
+        const result = await client.join();
+        if (stopped || epoch !== connectionEpoch) return;
+        trace('WEBRTC_SIGNALING', 'heartbeat.recovered', null, {
+          epoch,
+          decision: 'open_data_channel_preserved',
+          transportResult: 'recovered',
+        });
+        scheduleHeartbeat(result.ttlMs, epoch);
+      } catch (error) {
+        if (stopped || epoch !== connectionEpoch) return;
+        if (hasOpenDataChannel() && !isTerminalSignalingError(error)) {
+          trace('WEBRTC_SIGNALING', 'heartbeat.retry_failed', null, {
+            epoch,
+            errorCode: error?.code,
+            httpStatus: error?.status,
+            decision: 'preserve_open_data_channel',
+            transportResult: 'retrying_signaling_only',
+          });
+          scheduleHeartbeatRetry(epoch);
+          return;
+        }
+        handleConnectError(error, 'heartbeat_failed');
+      }
+    }, HEARTBEAT_RETRY_INTERVAL_MS);
+  }
+
+  function hasOpenDataChannel() {
+    if (role === 'device') {
+      return [...devicePeers.values()].some((context) => (
+        context.connected && context.channel?.readyState === 'open'
+      ));
+    }
+    return Boolean(active?.connected && active.channel?.readyState === 'open');
+  }
+
+  function isTerminalSignalingError(error) {
+    return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized'].includes(error?.code);
   }
 
   async function connect({ reconnecting = false } = {}) {
@@ -606,6 +677,15 @@ export function createWebRtcSubtitleTransport({
     try {
       const serialized = JSON.stringify(cue);
       if (previous?.serialized === serialized) return false;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_PUBLISH_STARTED',
+        meetingId,
+        sessionId: cue.sessionId,
+        segmentId: cue.segmentId,
+        cueId: cue.cueId,
+        connectionEpoch,
+        dataChannelState: [...devicePeers.values()].find((context) => context.channel?.readyState === 'open')?.channel?.readyState,
+      });
       const revision = (previous?.revision || 0) + 1;
       const normalized = { ...cue, meetingId, revision: Math.max(Number(cue.revision) || 0, revision) };
       const envelope = previous ? source.update(normalized) : source.append(normalized);
@@ -623,8 +703,28 @@ export function createWebRtcSubtitleTransport({
         decision: sent ? 'sent_live' : 'stored_for_snapshot',
         transportResult: sent ? 'sent' : 'no_open_channel',
       });
+      recordLivePipelineTrace({
+        stage: sent ? 'VIEWER_PUBLISH_SUCCEEDED' : 'VIEWER_PUBLISH_FAILED',
+        meetingId,
+        sessionId: cue.sessionId,
+        segmentId: cue.segmentId,
+        cueId: cue.cueId,
+        connectionEpoch,
+        transportResult: sent ? 'sent' : 'stored_for_snapshot',
+        errorCode: sent ? null : 'no_open_data_channel',
+      });
       return sent;
     } catch (error) {
+      recordLivePipelineTrace({
+        stage: 'VIEWER_PUBLISH_FAILED',
+        meetingId,
+        sessionId: cue.sessionId,
+        segmentId: cue.segmentId,
+        cueId: cue.cueId,
+        connectionEpoch,
+        transportResult: 'rejected',
+        errorCode: error?.code,
+      });
       recordEnvelopeRejection(cue, messageType, error);
       onError?.(error);
       return false;

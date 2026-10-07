@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正 Recorder WebRTC signaling heartbeat 遇到暫時性雲端 503 時錯誤拆除健康 Viewer DataChannel 的問題；既有 Viewer 連線現在持續接收本機 Cue，signaling control-plane 獨立重試，並補齊 persistence、checkpoint、WebRTC、DataChannel、Realtime 與分享狀態的因果 trace。
+
 - Gemini API Key 設定成功後會自動返回進入設定前的內部頁面；從 Live Meeting 進入時會回到同一場會議，可立即開始錄製。直接開啟設定頁則返回會議管理。
 
 - 修正 Viewer 長時間連線後 Supabase Realtime channel 中斷時，被已排程的 JWT refresh timer 阻擋 reconnect 的問題；token refresh 與故障重連改用獨立 timer/generation，並補齊 WebRTC peer/ICE/DataChannel、packet receive/drop、Viewer store 與 React render transport trace。Segment rollover 與 Recorder lifecycle 未變更。

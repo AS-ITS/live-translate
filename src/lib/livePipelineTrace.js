@@ -9,10 +9,14 @@ const CONSOLE_STAGES = new Set([
   'PROVIDER_RECONNECT', 'PROVIDER_ROLLOVER', 'SEGMENT_ROLLOVER',
   'EVENT_DEDUPED', 'EVENT_DROPPED', 'CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED',
   'SESSION_ROLLOVER_START', 'SESSION_CREATED', 'SESSION_SCOPE_SWITCHED',
-  'CUE_PERSIST_REQUEST', 'CUE_PERSIST_FAILED', 'CHECKPOINT_REQUEST', 'CHECKPOINT_FAILED',
-  'DURABLE_OPERATION_CREATED', 'DURABLE_OPERATION_RETRY', 'RECORDING_PIPELINE_STATE',
+  'LOCAL_CUE_SAVED', 'VIEWER_PUBLISH_STARTED', 'VIEWER_PUBLISH_SUCCEEDED', 'VIEWER_PUBLISH_FAILED',
+  'CUE_PERSIST_REQUEST', 'CUE_PERSIST_FAILED', 'CLOUD_CUE_SAVE_STARTED', 'CLOUD_CUE_SAVE_SUCCEEDED', 'CLOUD_CUE_SAVE_FAILED',
+  'CHECKPOINT_REQUEST', 'CHECKPOINT_FAILED', 'CHECKPOINT_SAVE_STARTED', 'CHECKPOINT_SAVE_FAILED',
+  'DURABLE_OPERATION_CREATED', 'DURABLE_OPERATION_RETRY', 'DURABLE_QUEUE_RETRYING', 'DURABLE_BARRIER_WAITING',
+  'SESSION_STATE_CHANGED', 'RECORDER_GENERATION_CHANGED', 'RECORDING_PIPELINE_STATE',
   'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'VIEWER_PACKET_DROPPED', 'VIEWER_STORE_UPDATED', 'REACT_RENDER',
   'WEBRTC_SIGNALING', 'WEBRTC_PEER_STATE', 'WEBRTC_DATA_CHANNEL', 'WEBRTC_CUE_PUBLISH', 'VIEWER_REALTIME',
+  'WEBRTC_STATE_CHANGED', 'DATACHANNEL_STATE_CHANGED', 'REALTIME_STATE_CHANGED', 'VIEWER_SHARING_STATE_CHANGED',
   'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
@@ -66,6 +70,7 @@ export function createLivePipelineTrace({
       sourceId: safeId(input.sourceId),
       operationId: safeId(input.operationId),
       captureEpoch: input.captureEpoch ?? null,
+      recorderEpoch: input.recorderEpoch ?? input.captureEpoch ?? null,
       providerEpoch: input.providerEpoch ?? null,
       connectionEpoch: input.connectionEpoch ?? null,
       transportGeneration: input.transportGeneration ?? input.connectionEpoch ?? null,
@@ -103,6 +108,8 @@ export function createLivePipelineTrace({
       iceConnectionState: safeId(input.iceConnectionState),
       signalingState: safeId(input.signalingState),
       dataChannelState: safeId(input.dataChannelState),
+      realtimeState: safeId(input.realtimeState),
+      persistenceState: safeId(input.persistenceState),
       channelStatus: safeId(input.channelStatus),
       receivedAt: Number.isFinite(input.receivedAt) ? input.receivedAt : null,
       terminalStatus: safeId(input.terminalStatus),
@@ -129,7 +136,8 @@ export function createLivePipelineTrace({
       pcmCaptureTimestampMs: Number.isFinite(input.pcmCaptureTimestampMs) ? input.pcmCaptureTimestampMs : null,
       transportResult: safeId(input.transportResult),
       httpStatus: Number.isInteger(input.httpStatus) ? input.httpStatus : null,
-      serverErrorCode: safeId(input.serverErrorCode)
+      serverErrorCode: safeId(input.serverErrorCode),
+      errorCode: safeId(input.errorCode || input.serverErrorCode)
     });
     entries.push(entry);
     if (entries.length > maxEntries) entries.splice(0, entries.length - maxEntries);

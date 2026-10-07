@@ -1568,6 +1568,8 @@ metadata.
 
 ## Account management and meeting membership
 
+`PATCH /api/admin/users/:userId/role` accepts only `{ "role": "member" }` or `{ "role": "super_admin" }`. It returns `{ "user": <profile>, "changed": true|false }`. Stable role errors are `invalid_account_role`, `account_not_found`, `cannot_demote_self`, and `last_super_admin`; authentication continues to use `auth_required` and `auth_forbidden`. The server derives the actor from the authenticated request. Role mutation and its successful audit row are committed atomically by `update_account_role`; same-role submissions return `changed=false` and do not create role-change audit events.
+
 Authorization resolves `actorUserId` from the authenticated request and `ownerUserId` from the meeting/session resource before repository access; active super-admins use the resource owner scope. A domain-approved pending profile is activated by the trusted backend before private dispatch. Disabled profiles receive `403 auth_forbidden`.
 
 Private APIs refresh the server-side profile on every request. Disabled profiles receive `403 auth_forbidden`. Members must provide `meetingId` when creating a session and must have an active membership for that meeting; missing meetings and memberships return `403 recorder_forbidden`.

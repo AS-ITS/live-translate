@@ -12,6 +12,10 @@ The Auth trigger and profile default remain `pending` so an Auth user is never a
 
 ## Super-admin account management
 
+Active system administrators can change another profile between `member` and `super_admin` through `PATCH /api/admin/users/:userId/role`. The API keeps JWT/profile authorization and calls the service-role-only `public.update_account_role` RPC. That RPC acquires a transaction-scoped advisory lock before re-reading actor and target profiles, requires the actor to still be an active `super_admin`, rejects self-demotion and last-admin demotion, updates only `role`/`updated_at`, and inserts the successful role-change audit row in the same transaction. Same-role requests return `changed=false` without updating the profile or inserting an audit row.
+
+Role changes do not alter `status`, `disabled_at`, Meeting ownership, Meeting membership, or Viewer permissions. `AUTH_ALLOWED_EMAIL_DOMAINS` continues to control only trusted `pending -> active` activation and never grants `super_admin`.
+
 `GET /api/admin/users?page=1&pageSize=12&query=&status=all` returns the requested page. `pageSize` accepts `12`, `24`, or `48`; `status` accepts `all`, `active`, or `disabled`. The account page has no approval action. It retains enable, disable, asset transfer, search, pagination, and current-account display. A transient pending row can appear in an unfiltered list and is labeled as waiting for first login.
 
 `super_admin` bootstrap remains the controlled, service-role-only `public.bootstrap_super_admin(uuid, text)` flow. Disabling an account requires an active transfer target and atomically transfers owner-scoped assets while preserving viewer share IDs. Gemini credentials are not transferred.

@@ -223,6 +223,21 @@ The manual workflow `.github/workflows/cloud-validation.yml` is production-only 
 
 ## Account permissions
 
+Account role management uses the following deterministic service, HTTP, migration, domain-activation, and browser checks:
+
+```bash
+node --test tests/unit/adminService.test.js tests/unit/auditLogService.test.js tests/unit/accountRoleHttpApi.test.js tests/unit/accountRoleManagementMigration.test.js tests/unit/domainAutoActivationMigration.test.js tests/unit/profileService.test.js
+npx playwright test --config tests/e2e/playwright.config.js tests/e2e/accountRoleManagement.spec.js
+```
+
+After local Supabase migrations are applied, run the real concurrent cross-demotion regression:
+
+```bash
+RUN_SUPABASE_ROLE_TESTS=true node --test tests/integration/accountRoleConcurrency.integration.test.js
+```
+
+It starts two active `super_admin` profiles, concurrently attempts A→B and B→A demotions, and verifies exactly one succeeds, at least one administrator remains, the loser receives `auth_forbidden`, and only the successful audit event exists.
+
 Coverage includes actor/resource-owner separation, disabled-profile refresh, member recording scope, owner-only private resources, atomic transfer rollback, credential exclusion, and safe audit failures. Local DB validation uses `supabase migration up --local` followed by `supabase db lint --local`.
 
 Run the deterministic Issue #33 coverage without production Supabase or Gemini:

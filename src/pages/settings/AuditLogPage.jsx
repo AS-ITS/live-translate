@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { createAccountManagementApiClient } from '../../lib/accountManagementApiClient.js';
 import { dataGridProps } from '../../lib/dataGrid.js';
 
-const AUDIT_ACTION_LABELS = { member_invited: '邀請成員', member_removed: '移除成員', user_approved: '核准帳號', user_enabled: '啟用帳號', user_disabled: '停用帳號', asset_transfer: '資產移轉', auth_login: '登入' };
+const AUDIT_ACTION_LABELS = { member_invited: '邀請成員', member_removed: '移除成員', user_approved: '核准帳號', user_enabled: '啟用帳號', user_disabled: '停用帳號', asset_transfer: '資產移轉', auth_login: '登入', 'account.role.promoted': '提升系統管理者', 'account.role.demoted': '降為一般使用者' };
 const AUDIT_ACTION_FILTERS = [{ value: 'all', label: '全部動作' }, ...Object.entries(AUDIT_ACTION_LABELS).map(([value, label]) => ({ value, label }))];
 const AUDIT_RESULT_FILTERS = [{ value: 'all', label: '全部結果' }, { value: 'success', label: '成功' }, { value: 'failure', label: '失敗' }];
 const AUDIT_PAGE_SIZES = [25, 50, 100];

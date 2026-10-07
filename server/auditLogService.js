@@ -1,5 +1,5 @@
-const AUDIT_ACTIONS = new Set(['member_invited', 'member_removed', 'member_recording_permission_changed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer', 'auth_login']);
-const SAFE_KEYS = new Set(['actor_user_id', 'target_user_id', 'target_meeting_id', 'request_id', 'action', 'result', 'created_at']);
+const AUDIT_ACTIONS = new Set(['member_invited', 'member_removed', 'member_recording_permission_changed', 'user_approved', 'user_enabled', 'user_disabled', 'asset_transfer', 'auth_login', 'account.role.promoted', 'account.role.demoted']);
+const SAFE_KEYS = new Set(['actor_user_id', 'target_user_id', 'target_email', 'target_meeting_id', 'old_role', 'new_role', 'request_id', 'action', 'result', 'created_at']);
 const SENSITIVE_KEYS = /token|secret|key|audio|transcript|cue|credential|password|authorization|signed|share|url|path|content|text/i;
 
 export function createAuditLogService({ repository, env = process.env, fetchImpl = globalThis.fetch } = {}) {

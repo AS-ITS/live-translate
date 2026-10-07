@@ -1,8 +1,8 @@
-.account-management-shell { grid-template-rows: auto minmax(0, 1fr); align-content: stretch; row-gap: var(--space-4); height: 100dvh; min-height: 0; overflow: hidden; }
-.account-management-page { display: grid; align-content: start; gap: var(--space-4); min-height: 0; }
+.account-management-shell { grid-template-rows: auto auto; align-content: stretch; row-gap: var(--space-4); height: auto; min-height: 100dvh; overflow: visible; }
+.account-management-page { display: grid; grid-template-rows: max-content max-content; align-content: start; gap: var(--space-4); min-height: 0; overflow-y: visible; }
 .audit-log-page { height: 100%; align-content: stretch; }
 .account-management-status:empty { display: none; }
-.account-management-status { min-height: 0; }
+.account-management-status { position: relative; z-index: 1; min-height: max-content; }
 .account-management-panel { height: fit-content; min-height: 0; padding: var(--space-5); overflow: hidden; }
 .audit-log-page .account-management-panel { display: flex; flex-direction: column; height: 100%; }
 .account-management-panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
@@ -30,12 +30,12 @@
 .account-table-toolbar .meeting-toolbar-input input { min-height: 2.75rem; }
 .account-table-toolbar .meeting-toolbar-input select { min-height: 2.75rem; }
 .account-management-table-region { height: min(24rem, max(16rem, calc(100dvh - 35rem))); min-height: 16rem; }
-.account-management-table-scroll { min-width: 0; width: 100%; height: 100%; min-height: 0; overflow-x: auto; }
+.account-management-table-scroll { min-width: 0; width: 100%; height: 100%; min-height: 0; overflow-x: hidden; }
 .audit-log-page .account-management-table-region { display: flex; flex: 1 1 auto; flex-direction: column; height: auto; min-height: 0; }
 .audit-log-page .account-management-table-scroll { flex: 1 1 auto; height: 100%; min-height: 0; }
 .account-management-data-grid, .account-audit-data-grid { height: 100%; min-height: 0; }
-.account-management-data-grid { min-width: 920px; }
-.account-audit-data-grid { min-width: 1280px; }
+.account-management-data-grid { min-width: 0; }
+.account-audit-data-grid { min-width: 0; }
 .account-table-status, .account-table-role { display: inline-flex; align-items: center; gap: var(--space-2); min-height: 2rem; }
 .account-table-status { color: var(--color-success); font-weight: 700; }
 .account-table-status span { width: .6rem; height: .6rem; border-radius: 50%; background: currentColor; }
@@ -47,6 +47,8 @@
 .account-table-transfer-field select { width: 100%; height: 2.5rem; min-height: 2.5rem; }
 .account-table-muted { color: var(--color-text-subtle); }
 .account-table-action { min-width: 8.5rem; white-space: nowrap; }
+.account-table-actions { display: flex; align-items: center; gap: var(--space-2); height: 100%; }
+.account-table-role-action { min-width: 10.5rem; }
 .account-table-danger-action { border-color: var(--color-warning); background: var(--color-warning); color: #fff; }
 .account-table-danger-action:hover:not(:disabled) { border-color: #7f5000; background: #7f5000; }
 .account-management-empty { display: grid; min-height: 24rem; margin: 0; padding: var(--space-8) 0; place-items: center; box-sizing: border-box; color: var(--color-text-muted); text-align: center; }
@@ -58,11 +60,11 @@
 @media (max-width: 720px) { .account-management-pagination { justify-content: flex-start; } }
 
 @media (max-width: 760px) {
-  .account-summary-grid { grid-template-columns: 1fr; }
-  .account-management-table-region { height: 18rem; min-height: 18rem; }
-  .account-management-table-scroll { height: 100%; min-height: 0; }
-  .account-management-data-grid, .account-management-empty { height: 100%; min-height: 0; }
-  .account-audit-data-grid { height: 100%; min-height: 0; }
+.account-summary-grid { grid-template-columns: 1fr; }
+.account-management-table-region { height: 18rem; min-height: 18rem; }
+.account-management-table-scroll { height: 100%; min-height: 0; overflow-x: hidden; }
+.account-management-data-grid, .account-management-empty { height: 100%; min-width: 0; min-height: 0; }
+.account-audit-data-grid { height: 100%; min-width: 0; min-height: 0; }
   .account-table-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
   .account-search-field, .account-status-filter-field { min-width: 0; }
 }

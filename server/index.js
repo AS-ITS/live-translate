@@ -70,6 +70,10 @@ const ERROR_RESPONSES = {
   profile_not_found: { status: 503, message: 'Authenticated account profile was not created.' },
   profile_activation_failed: { status: 503, message: 'Authenticated account profile could not be activated.' },
   account_not_disabled: { status: 409, message: 'Account is not disabled.' },
+  account_not_found: { status: 404, message: 'Account was not found.' },
+  invalid_account_role: { status: 400, message: 'Account role must be member or super_admin.' },
+  cannot_demote_self: { status: 409, message: 'System administrators cannot demote their own account.' },
+  last_super_admin: { status: 409, message: 'At least one system administrator must remain.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
@@ -798,8 +802,9 @@ export function createRequestHandler(options = {}) {
     sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES,
     translationExecutionMetrics = createTranslationExecutionMetrics()
     , accessControl: requestAccessControl = globalAccessControl
- , profileService = createProfileService()
- , meetingMembershipService: injectedMeetingMembershipService
+    , profileService = createProfileService()
+    , adminService = createAdminService({ auditLogService: createAuditLogService() })
+    , meetingMembershipService: injectedMeetingMembershipService
  , authEventAuditLogService = createAuditLogService()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
@@ -870,6 +875,7 @@ export function createRequestHandler(options = {}) {
       , readinessCheck
       , accessControl: requestAccessControl
       , profileService
+      , adminService
       , authEventAuditLogService
  , strictCheckpointPathIds
  , requestLogger
@@ -1270,7 +1276,7 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
  return;
  }
 
-if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
+if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable|role)$/u.test(path)) {
  try {
  if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
  if (!adminService) throw createHttpError('cloud_capability_unavailable');
@@ -1292,6 +1298,13 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
       statusCode = 200;
       sendJson(res, statusCode, await adminService.listUsers(authenticatedUser, { page, pageSize, query, status }), requestId);
+ } else if (req.method === 'PATCH' && /^\/api\/admin\/users\/[^/]+\/role$/u.test(path)) {
+ const match = path.match(/^\/api\/admin\/users\/([^/]+)\/role$/u);
+ const userId = safeDecodePathComponent(match[1]);
+ const body = await readJson(req, { maxBytes: 8 * 1024 });
+ const result = await adminService.updateUserRole(authenticatedUser, userId, body?.role, requestId);
+ statusCode = 200;
+ sendJson(res, statusCode, result, requestId);
  } else if (req.method === 'POST') {
  const match = path.match(/^\/api\/admin\/users\/([^/]+)\/(enable|disable)$/u);
  if (!match) throw createHttpError('invalid_request');

@@ -48,6 +48,53 @@ test('admin re-enables only disabled users', async () => {
   await assert.rejects(notDisabled.enableUser(admin, 'pending-1', 'request-enable-2'), { code: 'account_not_disabled', status: 409 });
 });
 
+test('admin updates account roles through the atomic RPC and preserves account status', async () => {
+  const calls = [];
+  const service = createAdminService({ env, fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    return json([{ outcome: 'ok', changed: true, id: 'user-2', email: 'user@example.com', role: 'super_admin', status: 'disabled', updated_at: '2026-10-07T00:00:00Z' }]);
+  } });
+
+  const result = await service.updateUserRole(admin, 'user-2', 'super_admin', 'request-role-1');
+
+  assert.equal(result.changed, true);
+  assert.equal(result.user.role, 'super_admin');
+  assert.equal(result.user.status, 'disabled');
+  assert.match(calls[0].url, /\/rest\/v1\/rpc\/update_account_role$/u);
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    p_actor_user_id: 'admin-1',
+    p_target_user_id: 'user-2',
+    p_new_role: 'super_admin',
+    p_request_id: 'request-role-1'
+  });
+});
+
+test('same-role account update returns changed=false without synthesizing an audit event', async () => {
+  const audit = [];
+  const service = createAdminService({
+    env,
+    auditLogService: { record: async (entry) => audit.push(entry) },
+    fetchImpl: async () => json([{ outcome: 'ok', changed: false, id: 'user-2', email: 'user@example.com', role: 'member', status: 'pending', updated_at: '2026-10-01T00:00:00Z' }])
+  });
+
+  const result = await service.updateUserRole(admin, 'user-2', 'member', 'request-role-same');
+
+  assert.equal(result.changed, false);
+  assert.equal(result.user.status, 'pending');
+  assert.deepEqual(audit, []);
+});
+
+test('account role update validates roles and maps atomic RPC domain failures', async () => {
+  const invalid = createAdminService({ env, fetchImpl: async () => { throw new Error('fetch must not run'); } });
+  await assert.rejects(invalid.updateUserRole(admin, 'user-2', 'owner', 'request-invalid'), { code: 'invalid_account_role', status: 400 });
+  await assert.rejects(invalid.updateUserRole({ id: 'member-1', role: 'member', status: 'active' }, 'user-2', 'super_admin', 'request-member'), { code: 'auth_forbidden', status: 403 });
+
+  for (const [outcome, status] of [['account_not_found', 404], ['cannot_demote_self', 409], ['last_super_admin', 409], ['auth_forbidden', 403]]) {
+    const service = createAdminService({ env, fetchImpl: async () => json([{ outcome, changed: false }]) });
+    await assert.rejects(service.updateUserRole(admin, 'user-2', 'member', `request-${outcome}`), { code: outcome, status });
+  }
+});
+
 test('admin list validates pagination and filter options', async () => {
   const service = createAdminService({ env, fetchImpl: async () => json([], 200, '*/0') });
   await assert.rejects(service.listUsers(admin, { page: 0 }), { code: 'invalid_request', status: 400 });

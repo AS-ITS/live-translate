@@ -25,6 +25,7 @@ import { createSegmentTransitionLock } from '../../lib/segmentTransitionLock.js'
 import { stopSessionSafely } from '../../lib/stopSessionSafely.js';
 import { resumeLegacyMeetingSegment } from '../../lib/legacyMeetingResume.js';
 import { clearMeetingLifecycleWriteFence, setMeetingLifecycleWriteFence } from '../../lib/meetingLifecycleWriteFence.js';
+import { isMissingSelectedInputError, requestAudioInputStream } from '../../lib/mediaDevices.js';
 
 const INPUT_AUDIO_RECORDING_SKIPPED_STATE = {
   status: 'skipped',
@@ -44,6 +45,24 @@ const TRANSLATED_AUDIO_IDLE_STATE = {
 
 const SESSION_SNAPSHOT_SYNC_DELAY_MS = 1000;
 const SESSION_SNAPSHOT_SYNC_FINAL_ITEM_BATCH_SIZE = 20;
+
+export async function warmUpMicrophoneInput({
+  inputDeviceId = '',
+  requestStream = requestAudioInputStream,
+  onInputDeviceFallback = () => {}
+} = {}) {
+  try {
+    return await requestStream(inputDeviceId);
+  } catch (error) {
+    if (!inputDeviceId || !isMissingSelectedInputError(error)) throw error;
+    onInputDeviceFallback();
+    return requestStream('');
+  }
+}
+
+function stopMicrophoneStream(stream) {
+  for (const track of stream?.getTracks?.() || []) track.stop?.();
+}
 
 export function activateRecoveredMeetingSegment({
   meetingId,
@@ -1137,6 +1156,8 @@ export function useLiveRecordingController({
       });
     },
     async startSessionLifecycle() {
+      let microphoneWarmupPromise = null;
+      let microphoneStreamClaimed = false;
       const status = state.status ?? 'idle';
       const isActive = Boolean(state.isActive);
       if (status === 'active' || status === 'paused' || isActive || recovery.sessionRef.current || recovery.activeSessionRecordIdRef.current) {
@@ -1176,7 +1197,17 @@ export function useLiveRecordingController({
         audioController.resetInputAudioDownload();
         audioController.resetTranslatedAudioDownload();
         recovery.pendingMicrophoneStreamRef.current = null;
-      const liveSessionId = recovery.generateLiveSessionId();
+        microphoneWarmupPromise = warmUpMicrophoneInput({
+          inputDeviceId: selectedInputDeviceId,
+          onInputDeviceFallback: () => {
+            recovery.setSelectedInputDeviceId?.('');
+            recovery.setDeviceMessage?.('所選麥克風無法使用，已改用瀏覽器預設麥克風。');
+          }
+        }).then(
+          (stream) => ({ stream, error: null }),
+          (error) => ({ stream: null, error })
+        );
+        const liveSessionId = recovery.generateLiveSessionId();
       let meetingCheckpoint;
       let lifecycleSessionId = null;
       if (routeMeetingId && selectedResumableMeeting.lifecycleContractVersion === 2) {
@@ -1228,7 +1259,11 @@ export function useLiveRecordingController({
           segmentId: meetingCheckpoint?.segmentId
         });
         recovery.sessionRef.current = session;
-        const started = await session.start();
+        const microphoneResult = await microphoneWarmupPromise;
+        if (microphoneResult.error) throw microphoneResult.error;
+        recovery.pendingMicrophoneStreamRef.current = microphoneResult.stream;
+        microphoneStreamClaimed = true;
+        const started = await session.start({ inputStream: microphoneResult.stream });
         if (!started) throw new Error('首個音訊資料未成功送出。');
         recovery.activateLiveSessionCallbacks(session.callbackGeneration);
         const activeRecord = recovery.sessionRepositoryRef.current.updateSessionRecord(record.id, { status: 'active', startedAt: record.startedAt || Date.now(), lastLifecycleState: 'listening' });
@@ -1238,6 +1273,9 @@ export function useLiveRecordingController({
         recovery.updateLiveMeetingUrl(meetingCheckpoint.meetingId);
         recovery.startSegmentSwitch?.();
       } catch (error) {
+        if (!microphoneStreamClaimed && microphoneWarmupPromise) {
+          void microphoneWarmupPromise.then(({ stream }) => stopMicrophoneStream(stream));
+        }
         await stopSessionSafely(session);
         if (recovery.sessionStopRequestedRef.current) return;
         if (error?.code === 'meeting_segment_invalid_state' && routeMeetingId) {

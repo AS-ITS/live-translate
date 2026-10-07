@@ -6,7 +6,7 @@ import {
   OUTPUT_SAMPLE_RATE,
   pcm16ToFloat
 } from './audio.js';
-import { applyGlossaryReplacements } from './glossaryReplacement.js';
+import { correctTranslationForSource } from './glossaryReplacement.js';
 import { isMissingSelectedInputError, requestAudioInputStream } from './mediaDevices.js';
 import { setAudioOutputDevice } from './mediaDevices.js';
 import { normalizeGeminiLiveCueEvents } from './geminiLiveCueEvent.js';
@@ -14,6 +14,8 @@ import { authenticatedFetch } from './accessToken.js';
 import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './connectionFailures.js';
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency } from './latencyHistogram.js';
+import { liveCueLatencyTracker } from './liveCueLatency.js';
+import { livePipelineTrace, recordLivePipelineTrace } from './livePipelineTrace.js';
 import { clearLiveCredential, getLiveCredential } from './liveCredentialHolder.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -104,6 +106,9 @@ export class LiveTranslateSession {
     this.audioTurnId = audioTurnId || `audio-turn-${connectionEpoch}-${++nextAudioTurnSequence}`;
     this.previousAudioTurnId = null;
     this.activeTranscriptAudioTurnId = this.audioTurnId;
+    this.activeInputTranscriptAudioTurnId = this.audioTurnId;
+    this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
+    this.turnBoundaryOpen = false;
     this.silenceFinalizeMs = silenceFinalizeMs;
     this.speechActivityRmsThreshold = speechActivityRmsThreshold;
     this.firstPcmTimeoutMs = firstPcmTimeoutMs;
@@ -167,6 +172,10 @@ export class LiveTranslateSession {
     this.lastOutputTranscriptText = '';
     this.awaitingInputTranscriptAfterTurnComplete = false;
     this.awaitingOutputTranscriptAfterTurnComplete = false;
+    this.awaitingInputTranscriptAudioTurnId = null;
+    this.awaitingOutputTranscriptAudioTurnId = null;
+    this.awaitingInputTranscriptReason = null;
+    this.awaitingOutputTranscriptReason = null;
     this.closed = false;
     this.closeExpected = false;
     this.cleaningUp = false;
@@ -175,6 +184,7 @@ export class LiveTranslateSession {
     this.inputTransportFailureSignaled = false;
     this.lastAudioCallbackAt = null;
     this.lastSpeechActivityAt = null;
+    this.speechObservedSinceBoundary = false;
     this.silenceFinalizeTimer = null;
     this.localTurnFinalizeTriggered = false;
     this.audioContextStateHandler = null;
@@ -336,6 +346,7 @@ export class LiveTranslateSession {
   async connectProvider({ forceRefresh = false } = {}) {
     this.startupStage = 'socket';
     const { token, liveConnectModel, liveConnectConfig } = await this.getTokenResponse({ forceRefresh });
+    if (this.closed) return false;
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
     const providerEpoch = ++this.providerEpoch;
@@ -444,19 +455,52 @@ export class LiveTranslateSession {
   } = {}) {
     if (this.closed) return false;
     if (this.providerReconnectInProgress) return this.providerReconnectInProgress;
+    const startsNewSegment = segmentId !== this.segmentId
+      || Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
+    const startsNewProviderRollover = Boolean(liveSessionId && this.liveSessionId && liveSessionId !== this.liveSessionId);
+    this.tracePipeline('PROVIDER_RECONNECT', {
+      segmentId,
+      reason: forceRefresh ? 'token_refresh' : 'provider_reconnect'
+    });
+    if (startsNewProviderRollover) {
+      this.tracePipeline('PROVIDER_ROLLOVER', { segmentId, reason: 'live_session_replaced' });
+    }
+    if (segmentId !== this.segmentId) {
+      this.tracePipeline('SEGMENT_ROLLOVER', { segmentId, reason: 'segment_replaced' });
+    }
     this.segmentId = segmentId;
     this.liveSessionId = liveSessionId || this.liveSessionId;
-    this.providerReconnectInProgress = (async () => {
+    if (startsNewSegment) {
+      this.previousAudioTurnId = this.audioTurnId;
+      this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
+      this.activeTranscriptAudioTurnId = this.audioTurnId;
+      this.activeInputTranscriptAudioTurnId = this.audioTurnId;
+      this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
+      this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
+      this.awaitingOutputTranscriptReason = null;
+      this.lastInputTranscriptText = '';
+      this.lastOutputTranscriptText = '';
+      this.turnBoundaryOpen = false;
+    }
+    this.providerReconnectInProgress = Promise.resolve().then(async () => {
+      if (this.closed) return false;
       this.providerReady = false;
       this.inputSendingEnabled = false;
-      try { this.session?.close?.(); } catch { /* best effort */ }
+      const previousSession = this.session;
       this.session = null;
       this.providerEpoch += 1;
+      try { previousSession?.close?.(); } catch { /* best effort */ }
+      if (this.closed) return false;
+      this.tracePipeline('PROVIDER_RECONNECT', { reason: 'provider_epoch_advanced' });
       const result = await this.connectProvider({ forceRefresh });
       if (result) this.providerReconnectAttempts = 0;
       else this.providerReconnectAttempts += 1;
       return result;
-    })().finally(() => { this.providerReconnectInProgress = null; });
+    }).finally(() => { this.providerReconnectInProgress = null; });
     return this.providerReconnectInProgress;
   }
 
@@ -505,6 +549,10 @@ export class LiveTranslateSession {
       this.lastAudioCallbackAt = callbackAt;
       this.lastAudioCallbackType = this.captureProcessorMode;
       this.audioCaptureStage = `${this.captureProcessorMode}_callback`;
+      this.tracePipeline('MIC_INPUT', {
+        eventType: this.captureProcessorMode,
+        pcmBytes: input.byteLength ?? input.length * Float32Array.BYTES_PER_ELEMENT
+      });
       if (this.audioCallbackCount === 1) this.trace('audio.callback.first');
 
       // Count only consecutive stalls. A later healthy callback means the
@@ -629,6 +677,33 @@ export class LiveTranslateSession {
     const rms = Math.sqrt(sumSquares / samples.length);
     if (rms < this.speechActivityRmsThreshold) return false;
 
+    const speechStage = this.speechObservedSinceBoundary
+      ? 'SPEECH_ACTIVITY_CONTINUED'
+      : 'SPEECH_ACTIVITY_STARTED';
+    if (speechStage === 'SPEECH_ACTIVITY_STARTED' && this.localTurnFinalizeTriggered) {
+      this.previousAudioTurnId = this.audioTurnId;
+      this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
+      this.activeTranscriptAudioTurnId = this.audioTurnId;
+      this.activeInputTranscriptAudioTurnId = this.audioTurnId;
+      this.activeOutputTranscriptAudioTurnId = this.audioTurnId;
+      this.lastInputTranscriptText = '';
+      this.lastOutputTranscriptText = '';
+      if (this.awaitingInputTranscriptReason === 'local-silence') {
+        this.awaitingInputTranscriptAfterTurnComplete = false;
+        this.awaitingInputTranscriptAudioTurnId = null;
+        this.awaitingInputTranscriptReason = null;
+      }
+      if (this.awaitingOutputTranscriptReason === 'local-silence') {
+        this.awaitingOutputTranscriptAfterTurnComplete = false;
+        this.awaitingOutputTranscriptAudioTurnId = null;
+        this.awaitingOutputTranscriptReason = null;
+      }
+    }
+    this.speechObservedSinceBoundary = true;
+    this.tracePipeline(speechStage, {
+      speechObservedSinceBoundary: true,
+      reason: speechStage === 'SPEECH_ACTIVITY_STARTED' ? 'rms_above_threshold' : 'rms_continued'
+    });
     this.lastSpeechActivityAt = Date.now();
     this.localTurnFinalizeTriggered = false;
     this.scheduleSilenceFinalize();
@@ -665,17 +740,27 @@ export class LiveTranslateSession {
     const hadPendingInput = Boolean(this.pendingInputTranscript);
     const hadPendingOutput = Boolean(this.pendingOutputTranscript);
     this.localTurnFinalizeTriggered = true;
+    this.tracePipeline('LOCAL_SILENCE_DETECTED', {
+      audioTurnId: this.audioTurnId,
+      speechObservedSinceBoundary: this.speechObservedSinceBoundary,
+      reason: 'local_silence'
+    });
     this.clearSilenceFinalizeTimer();
     this.flushPendingTranscripts({ localFinalize: true });
     // Keep the late-transcript repair path open without sending a provider
     // boundary that could interfere with the next continuous recording turn.
     this.awaitingInputTranscriptAfterTurnComplete = hadPendingInput;
     this.awaitingOutputTranscriptAfterTurnComplete = hadPendingOutput;
+    this.awaitingInputTranscriptAudioTurnId = hadPendingInput ? this.audioTurnId : null;
+    this.awaitingOutputTranscriptAudioTurnId = hadPendingOutput ? this.audioTurnId : null;
+    this.awaitingInputTranscriptReason = hadPendingInput ? 'local-silence' : null;
+    this.awaitingOutputTranscriptReason = hadPendingOutput ? 'local-silence' : null;
     this.logLiveEvent('transcripts.finalized locally', {
       connectionEpoch: this.connectionEpoch,
       sessionId: this.liveSessionId,
       silenceMs: this.silenceFinalizeMs
     });
+    this.speechObservedSinceBoundary = false;
     return true;
   }
 
@@ -813,6 +898,14 @@ export class LiveTranslateSession {
       timestamp: monotonicTimestamp(),
       bytes
     };
+    this.tracePipeline('PCM_CAPTURED', {
+      audioTurnId: record.audioTurnId,
+      pcmSequence: record.sequence,
+      pcmBytes: bytes.byteLength,
+      pcmSampleCount: bytes.byteLength / 2,
+      pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+      pcmCaptureTimestampMs: record.timestamp
+    });
     while (
       this.pendingInputAudioChunks.length >= MAX_PENDING_INPUT_AUDIO_CHUNKS
       || this.pendingInputAudioBytes + bytes.byteLength > MAX_PRE_ROLL_BYTES
@@ -857,6 +950,15 @@ export class LiveTranslateSession {
       timestamp: monotonicTimestamp(),
       bytes
     };
+    this.tracePipeline('PCM_CAPTURED', {
+      audioTurnId: record.audioTurnId,
+      pcmSequence: record.sequence,
+      pcmBytes: bytes.byteLength,
+      pcmSampleCount: bytes.byteLength / 2,
+      pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+      pcmCaptureTimestampMs: record.timestamp
+    });
+    liveCueLatencyTracker.recordAudioTurnStarted({ audioTurnId: record.audioTurnId });
     this.trace('pcm.generated', { bytes: bytes.byteLength, sequence: record.sequence });
     this.onInputAudioChunk?.(new Uint8Array(bytes), {
       connectionEpoch: epoch,
@@ -906,7 +1008,16 @@ export class LiveTranslateSession {
         data: bytesToBase64(bytes),
         mimeType: 'audio/pcm;rate=16000'
       }
-    }, 'pcm');
+    }, 'pcm', {
+      traceDetails: {
+        audioTurnId: record.audioTurnId,
+        pcmSequence: record.sequence,
+        pcmBytes: bytes.byteLength,
+        pcmSampleCount: bytes.byteLength / 2,
+        pcmDurationMs: (bytes.byteLength / 2 / 16000) * 1000,
+        pcmCaptureTimestampMs: record.timestamp ?? null
+      }
+    });
     if (!this.firstPcmChunkSent && outcome.result !== 'sync-throw' && outcome.result !== 'unsupported') {
       this.firstPcmChunkSent = true;
       this.markStartupMilestone('first_pcm_sent', { result: outcome.result });
@@ -1079,9 +1190,26 @@ export class LiveTranslateSession {
 
   handleMessage(message, epoch = this.connectionEpoch) {
     if (epoch !== this.providerEpoch || this.closed) {
+      this.tracePipeline('PROVIDER_EVENT', {
+        eventId: providerMessageId(message),
+        providerEventId: providerMessageId(message),
+        eventType: providerEventType(message),
+        ...providerBoundaryMetadata(message),
+        cueAction: 'drop',
+        dropReason: this.closed ? 'session_closed' : 'stale_provider_epoch'
+      });
       this.logLiveEvent('stale.callback.ignored', { kind: 'message', connectionEpoch: epoch, activeConnectionEpoch: this.connectionEpoch, sessionId: this.liveSessionId });
       return;
     }
+    this.tracePipeline('PROVIDER_EVENT', {
+      eventId: providerMessageId(message),
+      providerEventId: providerMessageId(message),
+      eventType: providerEventType(message),
+      isFinal: Boolean(message?.serverContent?.turnComplete || message?.serverContent?.generationComplete),
+      ...providerBoundaryMetadata(message),
+      sourceText: message?.serverContent?.inputTranscription?.text || message?.serverContent?.interimInputTranscription?.text || '',
+      translationText: message?.serverContent?.outputTranscription?.text || ''
+    });
     if (message?.sessionResumptionUpdate?.newHandle) {
       this.resumptionHandle = message.sessionResumptionUpdate.newHandle;
       this.trace('session.resumption.updated');
@@ -1110,8 +1238,14 @@ export class LiveTranslateSession {
     ));
     const inputTranscriptArrivedAfterBoundary = this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptArrivedAfterBoundary = this.awaitingOutputTranscriptAfterTurnComplete;
+    const awaitedInputAudioTurnId = this.awaitingInputTranscriptAudioTurnId;
+    const awaitedOutputAudioTurnId = this.awaitingOutputTranscriptAudioTurnId;
+    const awaitedInputReason = this.awaitingInputTranscriptReason;
+    const awaitedOutputReason = this.awaitingOutputTranscriptReason;
     const inputTranscriptIsFinal = isFinal || this.awaitingInputTranscriptAfterTurnComplete;
     const outputTranscriptIsFinal = isFinal || this.awaitingOutputTranscriptAfterTurnComplete;
+    const hasSourceTranscript = Boolean(content?.inputTranscription?.text || content?.interimInputTranscription?.text);
+    const hasOutputTranscript = Boolean(content?.outputTranscription?.text);
     this.eventSequence += 1;
     const transcriptEventId = message?.eventId || message?.event_id || message?.id
       || `${this.liveSessionId || this.sessionId || 'live'}:message:${this.eventSequence}`;
@@ -1129,26 +1263,49 @@ export class LiveTranslateSession {
       content?.turn?.turnIndex,
       message?.turnIndex
     );
-    const likelyFragmentContinuation = isLikelyTranscriptContinuation(
+    const likelyInputFragmentContinuation = isLikelyTranscriptContinuation(
       this.lastInputTranscriptText,
       content?.inputTranscription?.text || content?.interimInputTranscription?.text,
       { stream: 'source', turnIndex: providerTurnIndex }
-    ) || isLikelyTranscriptContinuation(
+    );
+    const likelyOutputFragmentContinuation = isLikelyTranscriptContinuation(
       this.lastOutputTranscriptText,
       content?.outputTranscription?.text,
       { stream: 'translation', turnIndex: providerTurnIndex }
     );
+    const sourceContinuesPreviousTurn = inputTranscriptArrivedAfterBoundary
+      || cumulativeInputContinuation
+      || likelyInputFragmentContinuation;
+    const translationContinuesPreviousTurn = outputTranscriptArrivedAfterBoundary
+      || cumulativeOutputContinuation
+      || likelyOutputFragmentContinuation;
+    const startsNewTurn = this.turnBoundaryOpen && (
+      (hasSourceTranscript && !sourceContinuesPreviousTurn)
+      || (hasOutputTranscript && !translationContinuesPreviousTurn)
+    );
+    const acceptsBoundary = isFinal && (!this.turnBoundaryOpen || startsNewTurn);
     const inputTextMergeMode = transcriptMergeMode(this.lastInputTranscriptText, content?.inputTranscription?.text || content?.interimInputTranscription?.text);
     const outputTextMergeMode = transcriptMergeMode(this.lastOutputTranscriptText, content?.outputTranscription?.text);
     const providerTurnId = providerTurnIndex === undefined || providerTurnIndex === null
       ? null
-      : `provider-turn-${this.connectionEpoch}-${providerTurnIndex}`;
-    const eventAudioTurnId = providerTurnId || ((inputTranscriptArrivedAfterBoundary || outputTranscriptArrivedAfterBoundary
-      || cumulativeInputContinuation || cumulativeOutputContinuation || likelyFragmentContinuation)
-      ? (this.activeTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId)
+      : `provider-turn-${this.connectionEpoch}-${this.providerEpoch}-${providerTurnIndex}`;
+    const sourceAudioTurnId = providerTurnId || (sourceContinuesPreviousTurn
+      ? (inputTranscriptArrivedAfterBoundary
+          ? (awaitedInputAudioTurnId || this.previousAudioTurnId || this.activeInputTranscriptAudioTurnId || this.audioTurnId)
+          : (this.activeInputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId))
       : this.audioTurnId);
-    if (content?.inputTranscription?.text || content?.interimInputTranscription?.text || content?.outputTranscription?.text) {
-      this.activeTranscriptAudioTurnId = eventAudioTurnId;
+    const translationAudioTurnId = providerTurnId || (translationContinuesPreviousTurn
+      ? (outputTranscriptArrivedAfterBoundary
+          ? (awaitedOutputAudioTurnId || this.previousAudioTurnId || this.activeOutputTranscriptAudioTurnId || this.audioTurnId)
+          : (this.activeOutputTranscriptAudioTurnId || this.previousAudioTurnId || this.audioTurnId))
+      : this.audioTurnId);
+    const boundaryAudioTurnId = providerTurnId || (this.turnBoundaryOpen && !startsNewTurn
+      ? (this.previousAudioTurnId || this.audioTurnId)
+      : this.audioTurnId);
+    if (hasSourceTranscript) this.activeInputTranscriptAudioTurnId = sourceAudioTurnId;
+    if (hasOutputTranscript) this.activeOutputTranscriptAudioTurnId = translationAudioTurnId;
+    if (hasSourceTranscript || hasOutputTranscript) {
+      this.activeTranscriptAudioTurnId = hasSourceTranscript ? sourceAudioTurnId : translationAudioTurnId;
     }
     this.logLiveEvent('transcript.normalized', {
       raw: summarizeLiveEvent(message),
@@ -1157,9 +1314,13 @@ export class LiveTranslateSession {
       outputTranscriptIsFinal,
       cumulativeInputContinuation,
       cumulativeOutputContinuation,
+      likelyInputFragmentContinuation,
+      likelyOutputFragmentContinuation,
       inputTextMergeMode,
       outputTextMergeMode,
-      eventAudioTurnId,
+      sourceAudioTurnId,
+      translationAudioTurnId,
+      boundaryAudioTurnId,
       eventSequence: this.eventSequence
     });
     const normalizedEvents = this.mode === 'transcription'
@@ -1169,9 +1330,14 @@ export class LiveTranslateSession {
         segmentId: this.segmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
+        providerEpoch: this.providerEpoch,
         eventSequence: this.eventSequence,
-        audioTurnId: eventAudioTurnId,
-        turnKey: `local:${eventAudioTurnId}`,
+        audioTurnId: sourceAudioTurnId,
+        sourceAudioTurnId,
+        boundaryAudioTurnId,
+        turnKey: `local:${sourceAudioTurnId}`,
+        sourceTurnKey: `local:${sourceAudioTurnId}`,
+        boundaryTurnKey: `local:${boundaryAudioTurnId}`,
         turnIdentitySource: 'local',
         sessionClock: this.sessionClock,
         inputTranscriptIsFinal,
@@ -1185,9 +1351,16 @@ export class LiveTranslateSession {
       sourceLanguageCode: this.sourceLanguageCode,
       targetLanguageCode: this.targetLanguageCode,
       connectionEpoch: this.connectionEpoch,
+      providerEpoch: this.providerEpoch,
       eventSequence: this.eventSequence,
-      audioTurnId: eventAudioTurnId,
-      turnKey: `local:${eventAudioTurnId}`,
+      audioTurnId: sourceAudioTurnId,
+      sourceAudioTurnId,
+      translationAudioTurnId,
+      boundaryAudioTurnId,
+      turnKey: `local:${sourceAudioTurnId}`,
+      sourceTurnKey: `local:${sourceAudioTurnId}`,
+      translationTurnKey: `local:${translationAudioTurnId}`,
+      boundaryTurnKey: `local:${boundaryAudioTurnId}`,
       turnIdentitySource: 'local',
       sessionClock: this.sessionClock,
       inputTranscriptIsFinal,
@@ -1199,6 +1372,49 @@ export class LiveTranslateSession {
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
     for (const event of normalizedEvents) {
+      liveCueLatencyTracker.linkAudioTurn({
+        fromAudioTurnId: this.audioTurnId,
+        toAudioTurnId: event.audioTurnId
+      });
+      liveCueLatencyTracker.recordCueEvent(event);
+      this.tracePipeline('TRANSCRIPT_NORMALIZED', {
+        audioTurnId: event.audioTurnId,
+        eventId: event.eventId,
+        eventSequence: event.eventSequence,
+        providerEventId: event.providerEventId,
+        normalizedEventId: event.eventId,
+        eventType: event.eventType,
+        isFinal: event.isFinal,
+        isLateTranscript: event.isLateTranscript,
+        turnComplete: event.turnComplete,
+        generationComplete: event.generationComplete,
+        providerTurnIndex: event.turnIndex,
+        providerTurnId: event.turnIndex === null || event.turnIndex === undefined
+          ? null
+          : `provider-turn-${event.connectionEpoch}-${event.providerEpoch}-${event.turnIndex}`,
+        turnKey: event.turnKey,
+        turnIdentitySource: event.turnIdentitySource,
+        sourceText: event.stream === 'source' ? event.text : '',
+        translationText: event.stream === 'translation' ? event.text : '',
+        sourceStatus: event.stream === 'source' ? (event.isFinal ? 'final' : 'partial') : null,
+        translationStatus: event.stream === 'translation' ? (event.isFinal ? 'final' : 'partial') : null,
+        speechObservedSinceBoundary: null,
+        turnState: event.isFinal ? 'final' : 'active'
+      });
+      this.tracePipeline('TURN_ASSIGNED', {
+        audioTurnId: event.audioTurnId,
+        eventSequence: event.eventSequence,
+        normalizedEventId: event.eventId,
+        providerEventId: providerMessageId(message),
+        providerTurnId: event.turnIndex === null || event.turnIndex === undefined
+          ? null
+          : `provider-turn-${event.connectionEpoch}-${event.providerEpoch}-${event.turnIndex}`,
+        turnKey: event.turnKey,
+        turnState: event.isFinal ? 'final' : 'partial',
+        sourceStatus: event.stream === 'source' ? (event.isFinal ? 'final' : 'partial') : null,
+        translationStatus: event.stream === 'translation' ? (event.isFinal ? 'final' : 'partial') : null,
+        reason: event.turnIdentitySource || 'normalized_event'
+      });
       this.logLiveEvent('cue.normalized', {
         stream: event.stream,
         text: event.text,
@@ -1226,6 +1442,18 @@ export class LiveTranslateSession {
     if (isFinal) {
       this.logLiveEvent('turnComplete.received', { connectionEpoch: epoch, sessionId: this.liveSessionId });
       if (content?.generationComplete) this.trace('generationComplete.received');
+      this.tracePipeline('TURN_COMPLETED', {
+        audioTurnId: boundaryAudioTurnId,
+        providerEventId: providerMessageId(message),
+        providerTurnId: providerTurnId || null,
+        turnComplete: Boolean(content?.turnComplete),
+        generationComplete: Boolean(content?.generationComplete),
+        sourceStatus: hasSourceTranscript ? 'present' : null,
+        translationStatus: hasOutputTranscript ? 'present' : null,
+        turnState: 'complete',
+        reason: content?.generationComplete ? 'generation_complete' : 'turn_complete'
+      });
+      this.speechObservedSinceBoundary = false;
     }
 
     if (content?.inputTranscription?.text && !isRetranslationResponse) {
@@ -1237,7 +1465,7 @@ export class LiveTranslateSession {
         segmentId: this.segmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
-        audioTurnId: eventAudioTurnId,
+        audioTurnId: sourceAudioTurnId,
         ...(inputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(content.inputTranscription.sourceLanguageDetection === undefined
           ? {}
@@ -1250,7 +1478,11 @@ export class LiveTranslateSession {
       this.lastInputTranscriptText = transcript.text;
       this.pendingInputTranscript = transcript.isFinal ? null : transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = !transcript.isFinal;
-      this.awaitingInputTranscriptAfterTurnComplete = false;
+      if (awaitedInputReason !== 'local-silence') {
+        this.awaitingInputTranscriptAfterTurnComplete = false;
+        this.awaitingInputTranscriptAudioTurnId = null;
+        this.awaitingInputTranscriptReason = null;
+      }
     } else if (content?.interimInputTranscription?.text) {
       const transcript = withTranscriptEventId({
         text: content.interimInputTranscription.text,
@@ -1260,7 +1492,7 @@ export class LiveTranslateSession {
         segmentId: this.segmentId,
         sourceLanguageCode: this.sourceLanguageCode,
         connectionEpoch: this.connectionEpoch,
-        audioTurnId: eventAudioTurnId,
+        audioTurnId: sourceAudioTurnId,
         ...(content.interimInputTranscription.sourceLanguageDetection === undefined
           ? {}
           : { sourceLanguageDetection: content.interimInputTranscription.sourceLanguageDetection })
@@ -1272,21 +1504,28 @@ export class LiveTranslateSession {
       this.lastInputTranscriptText = transcript.text;
       this.pendingInputTranscript = transcript;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
-    } else if (isFinal && this.pendingInputTranscript && this.pendingInputTranscriptFinalizableOnTurnComplete) {
+    } else if (acceptsBoundary && this.pendingInputTranscript && this.pendingInputTranscriptFinalizableOnTurnComplete) {
       const transcript = withTranscriptEventId({ ...this.pendingInputTranscript, isFinal: true }, this.pendingInputTranscript.eventId);
       this.logLiveEvent('inputTranscription.flushOnTurnComplete', { transcript });
       this.onInputTranscript?.(transcript);
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
-      this.awaitingInputTranscriptAfterTurnComplete = true;
-    } else if (isFinal) {
+      this.awaitingInputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
+    } else if (acceptsBoundary) {
       this.logLiveEvent('inputTranscription.awaitingLateText');
       this.awaitingInputTranscriptAfterTurnComplete = true;
+      this.awaitingInputTranscriptAudioTurnId = boundaryAudioTurnId;
+      this.awaitingInputTranscriptReason = 'provider-boundary';
     }
 
     if (this.mode !== 'transcription' && content?.outputTranscription?.text) {
       const transcript = withTranscriptEventId({
-        text: applyGlossaryReplacements(content.outputTranscription.text, this.liveGlossaryEntries),
+        text: correctTranslationForSource({
+          sourceText: content.inputTranscription?.text || content.interimInputTranscription?.text || this.lastInputTranscriptText,
+          translatedText: content.outputTranscription.text
+        }, this.liveGlossaryEntries),
         isFinal: isFinal || this.awaitingOutputTranscriptAfterTurnComplete,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,
@@ -1294,7 +1533,7 @@ export class LiveTranslateSession {
         sourceLanguageCode: this.sourceLanguageCode,
         targetLanguageCode: this.targetLanguageCode,
         connectionEpoch: this.connectionEpoch,
-        audioTurnId: eventAudioTurnId,
+        audioTurnId: translationAudioTurnId,
         ...(outputTranscriptArrivedAfterBoundary ? { isLateTranscript: true } : {}),
         ...(isRetranslationResponse ? { retranslationCueId } : {})
       }, transcriptEventId);
@@ -1302,25 +1541,35 @@ export class LiveTranslateSession {
       this.onOutputTranscript?.(transcript);
       this.lastOutputTranscriptText = transcript.text;
       this.pendingOutputTranscript = transcript.isFinal ? null : transcript;
-      this.awaitingOutputTranscriptAfterTurnComplete = false;
-    } else if (this.mode !== 'transcription' && isFinal && this.pendingOutputTranscript) {
+      if (awaitedOutputReason !== 'local-silence') {
+        this.awaitingOutputTranscriptAfterTurnComplete = false;
+        this.awaitingOutputTranscriptAudioTurnId = null;
+        this.awaitingOutputTranscriptReason = null;
+      }
+    } else if (this.mode !== 'transcription' && acceptsBoundary && this.pendingOutputTranscript) {
       const transcript = withTranscriptEventId({ ...this.pendingOutputTranscript, isFinal: true }, this.pendingOutputTranscript.eventId);
       this.logLiveEvent('outputTranscription.flushOnTurnComplete', { transcript });
       this.onOutputTranscript?.(transcript);
       this.pendingOutputTranscript = null;
-      this.awaitingOutputTranscriptAfterTurnComplete = true;
-    } else if (this.mode !== 'transcription' && isFinal) {
+      this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptReason = null;
+    } else if (this.mode !== 'transcription' && acceptsBoundary) {
       this.logLiveEvent('outputTranscription.awaitingLateText');
       this.awaitingOutputTranscriptAfterTurnComplete = true;
+      this.awaitingOutputTranscriptAudioTurnId = boundaryAudioTurnId;
+      this.awaitingOutputTranscriptReason = 'provider-boundary';
     }
 
     if (content?.interrupted) {
       this.clearPlaybackQueue();
     }
 
-    if (isFinal && !inputTranscriptArrivedAfterBoundary && !outputTranscriptArrivedAfterBoundary) {
+    if (startsNewTurn) this.turnBoundaryOpen = false;
+    if (acceptsBoundary && !inputTranscriptArrivedAfterBoundary && !outputTranscriptArrivedAfterBoundary) {
       this.previousAudioTurnId = this.audioTurnId;
       this.audioTurnId = `audio-turn-${this.connectionEpoch}-${++nextAudioTurnSequence}`;
+      this.turnBoundaryOpen = true;
     }
 
     if (this.mode !== 'transcription') {
@@ -1530,9 +1779,15 @@ export class LiveTranslateSession {
     return true;
   }
 
-  sendProviderInput(payload, method, { inputEnd = false } = {}) {
+  sendProviderInput(payload, method, { inputEnd = false, traceDetails = null } = {}) {
     if (!this.session?.sendRealtimeInput) {
       const outcome = { method, payload, result: 'unsupported', at: nowIso() };
+      if (method === 'pcm') this.tracePipeline('PCM_SEND_ATTEMPT', {
+        ...traceDetails,
+        transportResult: 'unsupported',
+        cueAction: 'drop',
+        dropReason: 'provider_input_unsupported'
+      });
       if (inputEnd) {
         this.lastInputEnd = outcome;
         this.lastAudioStreamEnd = outcome;
@@ -1541,7 +1796,10 @@ export class LiveTranslateSession {
       return { result: 'unsupported' };
     }
     if (inputEnd) this.trace('input.end.invoked', { method, payload });
-    else if (method === 'pcm') this.trace('provider.send.invoked', { bytes: payload.audio?.data ? atob(payload.audio.data).length : 0 });
+    else if (method === 'pcm') {
+      this.trace('provider.send.invoked', { bytes: payload.audio?.data ? atob(payload.audio.data).length : 0 });
+      this.tracePipeline('PCM_SEND_ATTEMPT', traceDetails || {});
+    }
     if (method === 'pcm') {
       this.pcmSendAttemptCount += 1;
       this.firstPcmSendAttemptAt ||= nowIso();
@@ -1556,10 +1814,15 @@ export class LiveTranslateSession {
         if (!result || typeof result.then !== 'function') this.pcmSendAcceptedCount += 1;
         this.lastPcmSendAt = nowIso();
         this.trace('provider.send.returned', { result: result === undefined ? 'sdk-returned-void' : 'returned' });
+        if (!result || typeof result.then !== 'function') this.tracePipeline('PCM_SENT', {
+          ...traceDetails,
+          transportResult: result === undefined ? 'sdk-returned-void' : 'returned'
+        });
       }
       if (result && typeof result.then === 'function') {
         void result.then(() => {
           if (method === 'pcm') this.pcmSendAcceptedCount += 1;
+          if (method === 'pcm') this.tracePipeline('PCM_SENT', { ...traceDetails, transportResult: 'async-resolved' });
           this.trace(inputEnd ? 'input.end.returned' : 'provider.send.returned', { result: 'async-resolved' });
         })
           .catch((error) => {
@@ -1569,6 +1832,12 @@ export class LiveTranslateSession {
             }
             else {
               this.pcmSendAsyncRejectCount += 1;
+              this.tracePipeline('PCM_SEND_ATTEMPT', {
+                ...traceDetails,
+                transportResult: 'async-reject',
+                cueAction: 'drop',
+                dropReason: 'pcm_send_async_reject'
+              });
               void this.handleAudioCaptureFailure('pcm_send_failed', error?.message || 'PCM 音訊未送達 Gemini。');
             }
             this.trace(inputEnd ? 'input.end.asyncReject' : 'provider.send.asyncReject', { method, message: error?.message || String(error) });
@@ -1582,6 +1851,12 @@ export class LiveTranslateSession {
       }
       else if (method === 'pcm') {
         this.pcmSendSyncThrowCount += 1;
+        this.tracePipeline('PCM_SEND_ATTEMPT', {
+          ...traceDetails,
+          transportResult: 'sync-throw',
+          cueAction: 'drop',
+          dropReason: 'pcm_send_sync_throw'
+        });
         void this.handleAudioCaptureFailure('pcm_send_failed', error?.message || 'PCM 音訊未送達 Gemini。');
       }
       this.trace(inputEnd ? 'input.end.syncThrow' : 'provider.send.syncThrow', { method, message: error?.message || String(error) });
@@ -1631,6 +1906,7 @@ export class LiveTranslateSession {
         terminalReason: localFinalize ? 'local-silence' : 'provider-final-unconfirmed',
         providerEndMethod: this.lastInputEnd?.method || null,
         providerEndResult: this.lastInputEnd?.result || null,
+        speechObservedSinceBoundary: this.speechObservedSinceBoundary,
         audioTurnId: this.audioTurnId,
         liveSessionId: this.liveSessionId,
         sessionId: this.sessionId,
@@ -1642,8 +1918,13 @@ export class LiveTranslateSession {
       this.onCueEvent?.({
         ...transcript,
         eventId: `${transcript.eventId || `${this.liveSessionId || this.sessionId || 'live'}:pending`}:terminal-final`,
+        originEventId: transcript.eventId || null,
+        providerEventId: transcript.eventId || null,
         stream: isInput ? 'source' : 'translation',
         eventType: isInput ? 'input' : 'output',
+        turnKey: transcript.turnKey || `local:${transcript.audioTurnId || this.audioTurnId}`,
+        turnIdentitySource: transcript.turnIdentitySource || 'local',
+        isTerminalReplay: localFinalize,
         localFinalize: emitLocalFinalize,
         finalizedReason: emitLocalFinalize ? 'localSilence' : undefined,
         turnComplete: false,
@@ -1682,6 +1963,19 @@ export class LiveTranslateSession {
 
     const eventSequence = details.eventSequence || ++this.traceSequence;
     console.debug('[Gemini Live event]', { stage, ...this.traceContext(), eventSequence, ...details });
+  }
+
+  tracePipeline(stage, details = {}) {
+    return recordLivePipelineTrace({
+      stage,
+      recordingId: this.sessionId || this.liveSessionId,
+      segmentId: this.segmentId,
+      connectionEpoch: this.connectionEpoch,
+      captureEpoch: this.activeCaptureGraphGeneration,
+      providerEpoch: this.providerEpoch,
+      audioTurnId: this.audioTurnId,
+      ...details
+    });
   }
 
   trace(stage, details = {}) {
@@ -1829,9 +2123,13 @@ export class LiveTranslateSession {
       this.localTurnFinalizeTriggered = false;
       this.pendingInputTranscript = null;
       this.pendingInputTranscriptFinalizableOnTurnComplete = false;
-      this.pendingOutputTranscript = null;
+    this.pendingOutputTranscript = null;
       this.awaitingInputTranscriptAfterTurnComplete = false;
       this.awaitingOutputTranscriptAfterTurnComplete = false;
+      this.awaitingInputTranscriptAudioTurnId = null;
+      this.awaitingOutputTranscriptAudioTurnId = null;
+      this.awaitingInputTranscriptReason = null;
+      this.awaitingOutputTranscriptReason = null;
       this.nextPlaybackTime = 0;
       if (activeDebugSession === this) activeDebugSession = this;
     } finally {
@@ -1923,19 +2221,23 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
   const events = [];
   const providerEventId = message?.eventId || message?.event_id || message?.id || content.eventId || content.event_id;
   const eventSequence = context.eventSequence ?? null;
+  const providerIdentity = providerEventId
+    ? `${context.providerEpoch ?? context.connectionEpoch ?? 'epoch-unknown'}|${providerEventId}`
+    : `${context.liveSessionId || context.sessionId || 'session'}|${eventSequence ?? 'sequence-unknown'}`;
   const sessionTimeMs = typeof context.sessionClock === 'function' ? context.sessionClock() : null;
   const input = content.inputTranscription || content.interimInputTranscription;
   if (input?.text) {
     const eventType = content.inputTranscription?.text ? 'input' : 'input-interim';
     const isFinal = Boolean(content.inputTranscription?.text && (content.turnComplete || content.generationComplete || context.inputTranscriptIsFinal));
     events.push({
-      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}|${eventSequence ?? 'sequence-unknown'}:source:${eventType}:${String(input.text).trim()}`,
+      eventId: `${providerIdentity}:source:${eventType}:${String(input.text).trim()}`,
       liveSessionId: context.liveSessionId || null,
       sessionId: context.sessionId || null,
       segmentId: context.segmentId || null,
       connectionEpoch: context.connectionEpoch ?? null,
+      providerEpoch: context.providerEpoch ?? null,
       audioTurnId: context.audioTurnId || null,
-      turnKey: context.turnKey || context.audioTurnId || null,
+      turnKey: context.turnKey || null,
       turnIdentitySource: context.turnIdentitySource || (context.audioTurnId ? 'local' : null),
       stream: 'source',
       eventType,
@@ -1953,12 +2255,15 @@ function normalizeTranscriptionCueEvents(message, context = {}) {
   }
   if (content.turnComplete || content.generationComplete) {
     events.push({
-      eventId: `${providerEventId || context.liveSessionId || context.sessionId || 'session'}:control:boundary:${eventSequence || ''}`,
+      eventId: `${providerIdentity}:control:boundary`,
       liveSessionId: context.liveSessionId || null,
       sessionId: context.sessionId || null,
       segmentId: context.segmentId || null,
       connectionEpoch: context.connectionEpoch ?? null,
-      audioTurnId: context.audioTurnId || null,
+      providerEpoch: context.providerEpoch ?? null,
+      audioTurnId: context.boundaryAudioTurnId || context.audioTurnId || null,
+      turnKey: context.boundaryTurnKey || context.turnKey || null,
+      turnIdentitySource: context.turnIdentitySource || (context.boundaryAudioTurnId || context.audioTurnId ? 'local' : null),
       stream: null,
       eventType: 'boundary',
       text: '',
@@ -2082,9 +2387,73 @@ function safeDiagnosticText(value) {
     .slice(0, 160);
 }
 
-function exposeLiveTranslateDebug() {
-  if (typeof window === 'undefined' || !LIVE_DIAGNOSTICS_ENABLED) return;
+function providerMessageId(message) {
+  const content = message?.serverContent;
+  return message?.eventId || message?.event_id || message?.id || content?.eventId || content?.event_id || null;
+}
+
+function providerEventType(message) {
+  if (message?.setupComplete) return 'setupComplete';
+  if (message?.goAway) return 'goAway';
+  const content = message?.serverContent;
+  if (!content) return 'unknown';
+  const types = [];
+  if (content.interimInputTranscription?.text) types.push('partial');
+  if (content.inputTranscription?.text || content.outputTranscription?.text) types.push('transcript');
+  if (content.turnComplete) types.push('turnComplete');
+  if (content.generationComplete) types.push('generationComplete');
+  if (content.interrupted) types.push('interrupted');
+  return types.join('+') || 'serverContent';
+}
+
+function providerBoundaryMetadata(message) {
+  const content = message?.serverContent;
+  const providerTurnIndex = firstDefined(
+    content?.turnIndex,
+    content?.turn?.index,
+    content?.turn?.turnIndex,
+    message?.turnIndex
+  );
+  const rawProviderTurnId = firstDefined(
+    content?.turnId,
+    content?.turn?.id,
+    message?.turnId,
+    message?.turn_id
+  );
+  return {
+    turnComplete: Boolean(content?.turnComplete),
+    generationComplete: Boolean(content?.generationComplete),
+    providerTurnIndex: providerTurnIndex ?? null,
+    providerTurnId: typeof rawProviderTurnId === 'string' || typeof rawProviderTurnId === 'number'
+      ? String(rawProviderTurnId).slice(0, 160)
+      : null
+  };
+}
+
+export function exposeLiveTranslateDebug() {
+  if (typeof window === 'undefined') return;
+  const pipelineTraceEnabled = livePipelineTrace.isEnabled();
+  if (!LIVE_DIAGNOSTICS_ENABLED && !pipelineTraceEnabled) {
+    if (window.__liveTranslateDebug) {
+      delete window.__liveTranslateDebug.getPipelineTrace;
+      delete window.__liveTranslateDebug.getTurnTrace;
+      delete window.__liveTranslateDebug.clearPipelineTrace;
+      delete window.__liveTranslateDebug.exportPipelineTrace;
+    }
+    return;
+  }
   window.__liveTranslateDebug = window.__liveTranslateDebug || {};
+  if (pipelineTraceEnabled) {
+    window.__liveTranslateDebug.getPipelineTrace = (filter = {}) => livePipelineTrace.get(filter);
+    window.__liveTranslateDebug.getTurnTrace = (audioTurnId) => livePipelineTrace.getTurn(audioTurnId);
+    window.__liveTranslateDebug.clearPipelineTrace = () => livePipelineTrace.clear();
+    window.__liveTranslateDebug.exportPipelineTrace = () => livePipelineTrace.exportJson();
+  } else {
+    delete window.__liveTranslateDebug.getPipelineTrace;
+    delete window.__liveTranslateDebug.getTurnTrace;
+    delete window.__liveTranslateDebug.clearPipelineTrace;
+    delete window.__liveTranslateDebug.exportPipelineTrace;
+  }
   window.__liveTranslateDebug.getSnapshot = () => activeDebugSession?.getDebugSnapshot?.({ includeText: LIVE_EVENT_LOG_ENABLED }) || {
     activeConnectionEpoch: null,
     activeSessionId: null,

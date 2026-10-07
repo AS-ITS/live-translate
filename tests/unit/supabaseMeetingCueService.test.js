@@ -45,6 +45,11 @@ test('meeting cue persistence uses the already validated session record', async 
     assert.deepEqual(result, { id: 'cue-1' });
     assert.equal(requests.length, 1);
     assert.match(requests[0].url, /\/rest\/v1\/subtitle_cues/u);
+    const row = JSON.parse(requests[0].options.body)[0];
+    assert.equal(row.source_status, 'finalized');
+    assert.equal(row.translation_status, 'finalized');
+    assert.equal(row.source_version, 1);
+    assert.equal(row.translation_version, 0);
   } finally {
     setRequestScope(null);
   }

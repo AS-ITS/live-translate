@@ -30,6 +30,20 @@ test('settings route has an explicit meeting management return target', async ()
   assert.equal(canonicalHashForLocation(), MEETING_MANAGEMENT_HASH);
 });
 
+test('Gemini settings remembers the previous internal page and rejects public Viewer returns', async () => {
+  const {
+    MEETING_MANAGEMENT_HASH,
+    consumeGeminiSettingsReturnLocation,
+    rememberGeminiSettingsReturnLocation,
+  } = await import('../../src/app/routes.js');
+
+  assert.equal(rememberGeminiSettingsReturnLocation('#live?meetingId=meeting-1'), '#live?meetingId=meeting-1');
+  assert.equal(consumeGeminiSettingsReturnLocation(), '#live?meetingId=meeting-1');
+  assert.equal(consumeGeminiSettingsReturnLocation(), MEETING_MANAGEMENT_HASH);
+  assert.equal(rememberGeminiSettingsReturnLocation('#viewer?code=PUBLIC'), MEETING_MANAGEMENT_HASH);
+  assert.equal(rememberGeminiSettingsReturnLocation('#settings'), MEETING_MANAGEMENT_HASH);
+});
+
 test('meeting detail routes stay on the standalone record page', async () => {
   const { pageInfoFromLocation, canonicalHashForLocation } = await import('../../src/app/routes.js');
 

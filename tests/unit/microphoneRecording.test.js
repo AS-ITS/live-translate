@@ -112,6 +112,42 @@ test('controller can track recording state without retaining MediaRecorder chunk
   assert.equal(state.blob, null);
 });
 
+test('controller serializes local chunk writes and waits for them before finalize', async () => {
+  const recorderInstances = [];
+  const writes = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async (chunk) => {
+      await Promise.resolve();
+      writes.push({ sequence: chunk.sequence, text: await chunk.data.text() });
+    }
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-spool' });
+  recorderInstances[0].emitChunk(new Blob(['one'], { type: 'audio/webm' }));
+  recorderInstances[0].emitChunk(new Blob(['two'], { type: 'audio/webm' }));
+  await controller.finalize();
+
+  assert.deepEqual(writes, [{ sequence: 1, text: 'one' }, { sequence: 2, text: 'two' }]);
+});
+
+test('local chunk write failure makes finalize independently recoverable', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async () => { throw new Error('OPFS quota exceeded'); }
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-spool-error' });
+  recorderInstances[0].emitChunk(new Blob(['one'], { type: 'audio/webm' }));
+  const state = await controller.finalize();
+
+  assert.equal(state.status, 'error');
+  assert.equal(state.errorMessage, 'OPFS quota exceeded');
+});
+
 test('controller methods are idempotent around empty pause, finalize, and cleanup', async () => {
   const controller = createMicrophoneRecordingController({
     MediaRecorderImpl: mockMediaRecorderClass(),
@@ -127,6 +163,48 @@ test('controller methods are idempotent around empty pause, finalize, and cleanu
   assert.equal((await controller.pause()).status, 'paused');
   assert.equal((await controller.cleanup({ discard: true })).status, 'idle');
   assert.equal(controller.getState().blob, null);
+});
+
+test('stale MediaRecorder callbacks from a replaced capture epoch are ignored', async () => {
+  const recorderInstances = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob
+  });
+
+  await controller.start({ stream: fakeStream(), sessionId: 'session-epoch' });
+  await controller.pause();
+  await controller.resume({ stream: fakeStream() });
+  recorderInstances[0].emitChunk(new Blob(['stale'], { type: 'audio/webm' }));
+  recorderInstances[1].emitChunk(new Blob(['current'], { type: 'audio/webm' }));
+
+  const finalized = await controller.finalize();
+  assert.equal(await finalized.blob.text(), 'current');
+});
+
+test('rapid duplicate Start creates one MediaRecorder owner and stale callbacks cannot cross capture epochs', async () => {
+  const recorderInstances = [];
+  const writes = [];
+  const controller = createMicrophoneRecordingController({
+    MediaRecorderImpl: mockMediaRecorderClass({ instances: recorderInstances }),
+    BlobImpl: Blob,
+    onChunk: async (chunk) => writes.push(await chunk.data.text())
+  });
+  const firstStream = fakeStream();
+
+  await Promise.all([
+    controller.start({ stream: firstStream, sessionId: 'session-rapid' }),
+    controller.start({ stream: firstStream, sessionId: 'session-rapid' })
+  ]);
+  assert.equal(recorderInstances.length, 1);
+
+  await controller.pause();
+  await controller.resume({ stream: fakeStream() });
+  recorderInstances[0].emitChunk(new Blob(['stale'], { type: 'audio/webm' }));
+  recorderInstances[1].emitChunk(new Blob(['current'], { type: 'audio/webm' }));
+  await controller.finalize();
+
+  assert.deepEqual(writes, ['current']);
 });
 
 test('recorder error becomes independent error state', async () => {

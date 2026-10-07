@@ -191,6 +191,25 @@ test('glossary entry routes accept a custom category ID', async () => {
   assert.equal(received.category, 'glossary-project');
 });
 
+test('glossary entry routes accept a cloud category UUID', async () => {
+  let received;
+  const handler = createRequestHandler({
+    glossaryController: {
+      async createEntry(input) { received = input; return { id: 'entry-1', ...input }; }
+    }
+  });
+  const category = '6342fd3a-859d-4307-816a-d2df220f736d';
+
+  const response = await request(handler, {
+    method: 'POST',
+    url: '/api/glossary/entries',
+    body: { source: 'cvvvc', translations: { en: 'fder' }, category }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(received.category, category);
+});
+
 test('glossary HTTP routes reject invalid replacement aliases', async () => {
   const handler = createRequestHandler({
     glossaryController: {

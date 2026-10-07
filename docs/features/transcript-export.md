@@ -6,8 +6,10 @@ P7 adds the Supabase cloud lifecycle for Meeting exports. Cloud TXT, SRT, and VT
 exports are server-canonical and asynchronous. The API reads persisted Final
 Cues first, falls back to persisted transcript items when no Final Cues exist,
 stores the result in the private `meeting-exports` bucket, and exposes only a
-60-second signed download URL. Local file-backed mode keeps the existing
-browser download path is disabled in local mode.
+60-second signed download URL. When the recording browser has IndexedDB Final
+Cues for same Meeting, completed Meeting detail browser TXT/SRT/VTT export
+use those durable local Cues first. Cloud export remains the fallback when
+local Cues unavailable.
 
 The export artifact key is `(owner_user_id, meeting_id, source_hash, format,
 stream)`. Repeating a request for the same source is idempotent. `queued` and

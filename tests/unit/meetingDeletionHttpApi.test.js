@@ -67,6 +67,39 @@ test('DELETE meeting rejects a non-owner before the deletion service runs', asyn
   assert.ok(await repository.getMeeting('meeting-1'));
 });
 
+test('DELETE returns 202 while bounded Storage cleanup must continue', async () => {
+  const handler = createRequestHandler({
+    meetingDeletionService: {
+      async getDeletionTombstone() { return null; },
+      async deleteMeeting() { return { deleting: true }; }
+    },
+    accessControl: { async validateRequest() { return { id: 'owner-1', role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canManage() { return true; },
+      async getMeetingOwner() { return 'owner-1'; }
+    }
+  });
+  const response = await request(handler, { method: 'DELETE', url: '/api/meetings/meeting-1' });
+  assert.equal(response.status, 202);
+  assert.equal(response.json().status, 'deleting');
+});
+
+test('DELETE returns 204 for the original owner after the meeting row is gone', async () => {
+  const handler = createRequestHandler({
+    meetingDeletionService: {
+      async getDeletionTombstone() { return { ownerUserId: 'owner-1', state: 'deleted' }; },
+      async deleteMeeting() { return { alreadyDeleted: true }; }
+    },
+    accessControl: { async validateRequest() { return { id: 'owner-1', role: 'member', status: 'active' }; } },
+    meetingMembershipService: {
+      async canManage() { return false; },
+      async getMeetingOwner() { return null; }
+    }
+  });
+  const response = await request(handler, { method: 'DELETE', url: '/api/meetings/meeting-1' });
+  assert.equal(response.status, 204);
+});
+
 function createDeletionService(meetingRepository) {
   return createMeetingDeletionService({
     meetingRepository,

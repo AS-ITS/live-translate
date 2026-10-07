@@ -67,3 +67,40 @@ test('Supabase readiness checks core tables, RPCs, and Storage buckets', async (
   ]);
   assert.ok(calls.every(({ options }) => options.headers.Authorization === 'Bearer service-key'));
 });
+
+test('Supabase REST errors retain only safe upstream diagnostics', async () => {
+  const client = createSupabaseUserClient({
+    env: {
+      SUPABASE_URL: 'https://project.supabase.co',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    accessToken: 'user-jwt',
+    fetchImpl: async () => ({
+      ok: false,
+      status: 409,
+      async json() {
+        return {
+          code: '23503',
+          message: 'insert or update violates foreign key constraint "subtitle_cues_session_segment_relationship_fkey"',
+          details: 'Key values and private row data must not be retained.'
+        };
+      }
+    })
+  });
+
+  await assert.rejects(
+    client.request('subtitle_cues', { method: 'POST', body: [] }),
+    (error) => {
+      assert.equal(error.code, 'supabase_request_failed');
+      assert.equal(error.supabaseStatus, 409);
+      assert.equal(error.supabaseCode, '23503');
+      assert.equal(error.supabaseErrorClass, 'foreign_key_violation');
+      assert.equal(error.supabaseConstraint, 'subtitle_cues_session_segment_relationship_fkey');
+      assert.equal(error.supabaseResource, 'subtitle_cues');
+      assert.equal(error.supabaseOperation, 'POST');
+      assert.equal(error.supabaseDetails, undefined);
+      assert.doesNotMatch(JSON.stringify(error), /private row data/u);
+      return true;
+    }
+  );
+});

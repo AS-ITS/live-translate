@@ -75,6 +75,20 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
   if (!event.stream) {
     return applyBoundary(marked, event, options);
   }
+  if (event.isLateTranscript
+    && !turnIdentityFor(event)
+    && !Number.isInteger(event.turnIndex)
+    && (state.currentCue || state.pendingCues.length > 0)) {
+    const identitylessTarget = findIdentitylessLateTarget(state, event, options);
+    if (identitylessTarget) {
+      if (identitylessTarget.key === 'final') {
+        return updateFinalCue(marked, identitylessTarget.target, event);
+      }
+      return updateCue(marked, identitylessTarget.target, event);
+    }
+    options.onDrop?.({ event, reason: 'late_transcript_missing_turn_identity' });
+    return marked;
+  }
 
   let eventState = marked;
   eventState = moveClosedCurrentCue(eventState, event);
@@ -95,10 +109,10 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
     }));
   }
   if (revisionFinalTarget) return updateFinalCue(eventState, revisionFinalTarget, event);
-  const lateSourceOnlyTarget = !eventState.currentCue && eventState.pendingCues.length === 0 && event.stream === 'translation'
-    ? findLateSourceOnlyCue(eventState, event)
+  const lateCounterpartTarget = !eventState.currentCue && eventState.pendingCues.length === 0
+    ? findLateCounterpartCue(eventState, event)
     : null;
-  if (lateSourceOnlyTarget) return updateFinalCue(eventState, lateSourceOnlyTarget, event);
+  if (lateCounterpartTarget) return updateFinalCue(eventState, lateCounterpartTarget, event);
   const target = findPairingCue(eventState, event);
   const next = target
     ? updateCue(eventState, target, event)
@@ -116,14 +130,16 @@ export function finalizePendingSubtitleCue(stateInput, options = {}) {
   const state = createSubtitleCueState(stateInput);
   const nowMs = resolveSessionTimeMs(options);
   if (!Number.isFinite(nowMs)) return stateInput;
+  const terminal = Boolean(options.force) || isTerminalFinalizationReason(options.reason);
   const candidates = [state.currentCue, ...state.pendingCues]
-    .filter(isCueSubmittable)
+    .filter((cue) => isCueSubmittable(cue) || (terminal && cueHasText(cue)))
     .sort((left, right) => left.startTimeMs - right.startTimeMs);
   if (candidates.length === 0) return stateInput;
   let next = state;
   for (const cue of candidates) {
     const candidate = cueForState(next, cue.key || stablePendingKey(cue));
-    next = finalizeCue(next, candidate, {
+    const finalizationCandidate = terminal ? stabilizePresentSides(candidate, options.reason) : candidate;
+    next = finalizeCue(next, finalizationCandidate, {
       ...options,
       nowMs: cue.endTimeMs,
       reason: options.reason || 'flush',
@@ -204,9 +220,9 @@ export function resolveIdleSubtitleCue(stateInput, options = {}) {
     return { state: requested, action: 'needs-retranslation', cue: cueForState(requested, candidate.key) };
   }
 
-  // A model output without recognized source text is not durable transcript
-  // content and must not enter final Cues or checkpoints.
-  return { state: removeCandidate(state, candidate), action: 'discarded-translation-only' };
+  // Translation may arrive before source. Keep the active Cue so a later
+  // source event can merge into the same identity instead of losing text.
+  return { state: stateInput, action: 'waiting-for-source', cue };
 }
 
 export function subtitleCuesForDisplay(stateInput) {
@@ -297,6 +313,8 @@ function applyBoundary(state, event, options) {
   const nowMs = event.sessionTimeMs;
   const update = (cue) => cue ? {
     ...cue,
+    sourceStatus: normalizeSideStatus(cue.sourceStatus, cue.sourceText, { finalizePresent: true }),
+    translationStatus: normalizeSideStatus(cue.translationStatus, cue.translatedText, { finalizePresent: true }),
     turnCompleteSeen: cue.turnCompleteSeen || event.turnComplete,
     generationCompleteSeen: cue.generationCompleteSeen || event.generationComplete,
     boundaryAtMs: nowMs
@@ -396,10 +414,28 @@ function findSameAudioTurnFinalCue(state, event) {
     if (turnIdentityFor(cue) !== eventIdentity
       || !cueScopeMatchesEvent(cue, event)) continue;
     const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
-    if (!isCumulativeTextUpdate(cue[field], event)) continue;
-    return { index, cue, snapshot: true };
+    const finalizesSameText = event.isFinal
+      && cue[statusFieldForStream(event.stream)] !== 'finalized'
+      && normalizeText(cue[field]) === normalizeText(event.text);
+    const repeatsLateSameText = event.isLateTranscript
+      && normalizeText(cue[field]) === normalizeText(event.text);
+    const localTerminalReplay = isLocalTerminalReplay(cue[field], event);
+    if (normalizeText(cue[field])
+      && !isCumulativeTextUpdate(cue[field], event)
+      && !finalizesSameText
+      && !repeatsLateSameText
+      && !localTerminalReplay) continue;
+    return { index, cue, snapshot: Boolean(normalizeText(cue[field])) };
   }
   return null;
+}
+
+function isLocalTerminalReplay(currentText, event) {
+  if (event.terminalStatus !== 'local-final' || event.terminalReason !== 'local-silence') return false;
+  const current = normalizeText(currentText);
+  const incoming = normalizeText(event.text);
+  return Boolean(current && incoming)
+    && (current === incoming || isRedundantTextUpdate(current, incoming));
 }
 
 function findNumericCorrectionCue(state, event) {
@@ -420,10 +456,32 @@ function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
   return Number.isFinite(event.sessionTimeMs) && event.sessionTimeMs >= finalizedAtMs && event.sessionTimeMs <= finalizedAtMs + windowMs;
 }
 
-function findLateSourceOnlyCue(state, event) {
+function findIdentitylessLateTarget(state, event, options = {}) {
+  const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  const incomingText = normalizeText(event.text);
+  const pendingCandidates = state.pendingCues
+    .map((cue, index) => ({ key: `pending:${index}`, target: { key: `pending:${index}`, cue } }))
+    .filter(({ target }) => (
+      cueScopeMatchesEvent(target.cue, event)
+      && normalizeText(target.cue[field]) === incomingText
+      && (event.turnIndex === null || target.cue.turnIndex === null || event.turnIndex === target.cue.turnIndex)
+    ));
+  const finalCandidates = state.finalCues
+    .map((cue, index) => ({ key: 'final', target: { index, cue } }))
+    .filter(({ target }) => (
+      cueScopeMatchesEvent(target.cue, event)
+      && normalizeText(target.cue[field]) === incomingText
+      && isWithinFinalRevisionWindow(state, target.cue, event, options)
+    ));
+  const candidates = [...pendingCandidates, ...finalCandidates];
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+function findLateCounterpartCue(state, event) {
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
-    if (cue.translatedText || !cue.sourceText || !cue.retranslationRequested) continue;
+    const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+    if (normalizeText(cue[field])) continue;
     if (!cueScopeMatchesEvent(cue, event)) continue;
     if (!sameAudioTurnId(cue, event)) continue;
     if (event.turnIndex !== null && cue.turnIndex !== null && event.turnIndex !== cue.turnIndex) continue;
@@ -495,15 +553,26 @@ function commonPrefixLength(left, right) {
 
 function updateFinalCue(state, target, event) {
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  const statusField = statusFieldForStream(event.stream);
+  const versionField = versionFieldForStream(event.stream);
   const finalCues = [...state.finalCues];
   const nextText = target.snapshot
     ? replaceCumulativeText(target.cue[field], event.text)
     : target.replace
       ? normalizeText(event.text)
       : mergeCueText(target.cue[field], event.text, event);
+  const nextStatus = event.isFinal ? 'finalized' : normalizeSideStatus(target.cue[statusField], nextText);
   finalCues[target.index] = {
     ...target.cue,
     [field]: nextText,
+    ...(event.stream === 'source'
+      ? { rawSource: nextText }
+      : { rawTranslation: nextText, initialTranslation: nextText }),
+    [statusField]: nextStatus,
+    [versionField]: nextSideVersion(target.cue[versionField], target.cue[field], nextText, {
+      previousStatus: target.cue[statusField],
+      nextStatus
+    }),
     ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(target.cue.endTimeMs, event.sessionTimeMs),
@@ -574,8 +643,15 @@ function needsTextSeparator(currentText, incomingText, context = {}) {
 }
 
 function isCueSubmittable(cue) {
-  return Boolean(cue && normalizeText(cue.sourceText)
-    && (!cue.targetLanguageCode || normalizeText(cue.translatedText)));
+  if (!cue) return false;
+  const sourceText = normalizeText(cue.sourceText);
+  const translatedText = normalizeText(cue.translatedText);
+  if (sourceText && translatedText) return true;
+  if (sourceText && !cue.targetLanguageCode) return true;
+  return Boolean(
+    (sourceText && cueSideIsStable(cue, 'source'))
+    || (translatedText && cueSideIsStable(cue, 'translation'))
+  );
 }
 
 function addCue(state, event) {
@@ -594,6 +670,10 @@ function addCue(state, event) {
     mode: event.targetLanguageCode ? 'translation' : 'transcription',
     sourceText: event.stream === 'source' ? event.text : '',
     translatedText: event.stream === 'translation' ? event.text : '',
+    sourceStatus: event.stream === 'source' && event.isFinal ? 'finalized' : 'pending',
+    translationStatus: event.stream === 'translation' && event.isFinal ? 'finalized' : 'pending',
+    sourceVersion: event.stream === 'source' ? 1 : 0,
+    translationVersion: event.stream === 'translation' ? 1 : 0,
     status: 'partial',
     ...(event.terminalStatus ? { terminalStatus: event.terminalStatus } : {}),
     ...(event.terminalReason ? { terminalReason: event.terminalReason } : {}),
@@ -618,12 +698,20 @@ function addCue(state, event) {
 function updateCue(state, target, event) {
   const cue = target.cue;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+  const statusField = statusFieldForStream(event.stream);
+  const versionField = versionFieldForStream(event.stream);
   const nextText = isIdentityBoundSourceSnapshot(cue, event)
     ? replaceCumulativeText(cue[field], event.text)
     : mergeCueText(cue[field], event.text, event);
+  const nextStatus = event.isFinal ? 'finalized' : normalizeSideStatus(cue[statusField], nextText);
   const updated = {
     ...cue,
     [field]: nextText,
+    [statusField]: nextStatus,
+    [versionField]: nextSideVersion(cue[versionField], cue[field], nextText, {
+      previousStatus: cue[statusField],
+      nextStatus
+    }),
     ...(event.sourceLanguageCode ? { sourceLanguageCode: event.sourceLanguageCode } : {}),
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(cue.endTimeMs, event.sessionTimeMs),
@@ -678,12 +766,6 @@ function updateCandidate(state, candidate, patch) {
   return { ...state, pendingCues };
 }
 
-function removeCandidate(state, candidate) {
-  if (candidate.key === 'current') return { ...state, currentCue: null };
-  const index = Number(candidate.key.slice('pending:'.length));
-  return { ...state, pendingCues: state.pendingCues.filter((_, itemIndex) => itemIndex !== index) };
-}
-
 function currentKey(state) { return state.currentCue ? 'current' : null; }
 
 function finalizeCue(state, cue, options = {}) {
@@ -710,6 +792,10 @@ function finalizeCue(state, cue, options = {}) {
     mode,
     sourceText: normalizeText(cue.sourceText),
     translatedText: normalizeText(cue.translatedText),
+    sourceStatus: finalSideStatus(cue.sourceStatus, cue.sourceText, reason),
+    translationStatus: finalSideStatus(cue.translationStatus, cue.translatedText, reason),
+    sourceVersion: normalizeSideVersion(cue.sourceVersion, cue.sourceText),
+    translationVersion: normalizeSideVersion(cue.translationVersion, cue.translatedText),
     ...(mode === 'transcription' ? {} : {
       rawSource: normalizeText(cue.rawSource || cue.sourceText),
       rawTranslation: normalizeText(cue.rawTranslation || cue.translatedText),
@@ -777,10 +863,16 @@ function finalizeCue(state, cue, options = {}) {
 
 function mergeAdjacentFinalCues(previousCue, nextCue, options = {}) {
   if (!previousCue || !canMergeAdjacentFinalCues(previousCue, nextCue, options)) return null;
+  const sourceText = mergeCueText(previousCue.sourceText, nextCue.sourceText);
+  const translatedText = mergeCueText(previousCue.translatedText, nextCue.translatedText);
   return {
     ...previousCue,
-    sourceText: mergeCueText(previousCue.sourceText, nextCue.sourceText),
-    translatedText: mergeCueText(previousCue.translatedText, nextCue.translatedText),
+    sourceText,
+    translatedText,
+    sourceStatus: 'finalized',
+    translationStatus: 'finalized',
+    sourceVersion: nextSideVersion(previousCue.sourceVersion, previousCue.sourceText, sourceText),
+    translationVersion: nextSideVersion(previousCue.translationVersion, previousCue.translatedText, translatedText),
     rawSource: mergeCueText(previousCue.rawSource || previousCue.sourceText, nextCue.rawSource || nextCue.sourceText),
     rawTranslation: mergeCueText(previousCue.rawTranslation || previousCue.translatedText, nextCue.rawTranslation || nextCue.translatedText),
     refinedSource: null,
@@ -837,6 +929,63 @@ function isNumericFragment(text) {
 
 function endsSentence(text) {
   return /[.!?。！？…]+["'”’」』）)]*$/u.test(normalizeText(text));
+}
+
+function statusFieldForStream(stream) {
+  return stream === 'source' ? 'sourceStatus' : 'translationStatus';
+}
+
+function versionFieldForStream(stream) {
+  return stream === 'source' ? 'sourceVersion' : 'translationVersion';
+}
+
+function cueHasText(cue) {
+  return Boolean(normalizeText(cue?.sourceText) || normalizeText(cue?.translatedText));
+}
+
+function cueSideIsStable(cue, stream) {
+  const status = cue?.[statusFieldForStream(stream)];
+  if (status === 'finalized') return true;
+  if (status === 'pending' || status === 'unavailable') return false;
+  return cue?.status === 'final' || cue?.turnCompleteSeen || cue?.generationCompleteSeen;
+}
+
+function normalizeSideStatus(status, text, { finalizePresent = false } = {}) {
+  if (status === 'finalized' || status === 'unavailable') return status;
+  if (finalizePresent && normalizeText(text)) return 'finalized';
+  return 'pending';
+}
+
+function normalizeSideVersion(version, text) {
+  if (Number.isInteger(version) && version >= 0) return version;
+  return normalizeText(text) ? 1 : 0;
+}
+
+function nextSideVersion(version, previousText, nextText, { previousStatus, nextStatus } = {}) {
+  const current = normalizeSideVersion(version, previousText);
+  const textChanged = normalizeText(previousText) !== normalizeText(nextText);
+  const statusChanged = previousStatus !== undefined && nextStatus !== undefined && previousStatus !== nextStatus;
+  return textChanged || statusChanged ? current + 1 : current;
+}
+
+function finalSideStatus(status, text, reason) {
+  if (normalizeText(text)) return 'finalized';
+  if (status === 'unavailable' || isTerminalFinalizationReason(reason)) return 'unavailable';
+  return 'pending';
+}
+
+function stabilizePresentSides(cue, reason) {
+  if (!cue) return cue;
+  return {
+    ...cue,
+    sourceStatus: finalSideStatus(cue.sourceStatus, cue.sourceText, reason),
+    translationStatus: finalSideStatus(cue.translationStatus, cue.translatedText, reason)
+  };
+}
+
+function isTerminalFinalizationReason(reason) {
+  return ['stop', 'complete', 'resume', 'rollover', 'provider-rollover', 'recover', 'failure', 'connection-failure']
+    .includes(String(reason || '').toLowerCase());
 }
 
 function resolveSessionTimeMs(input = {}) {

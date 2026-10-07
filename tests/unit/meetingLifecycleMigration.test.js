@@ -82,3 +82,18 @@ test('Issue #37 hardening migration protects stale v2 meetings and retention cla
   assert.match(sql, /revoke all on function public\.expire_stale_meetings\(integer\) from public, anon, authenticated;/u);
   assert.match(sql, /grant execute on function public\.claim_due_meeting_purges\(text, integer\) to service_role;/u);
 });
+
+test('Issue #37 Cue relationship accepts lifecycle v1 and keeps Viewer segment join', async () => {
+  const migration = new URL(
+    '../../supabase/migrations/20261001000000_fix_legacy_cue_segment_fk.sql',
+    import.meta.url
+  );
+  const sql = await readFile(migration, 'utf8');
+
+  assert.match(sql, /subtitle_cues_session_segment_relationship_fkey/u);
+  assert.match(
+    sql,
+    /foreign key \(owner_user_id, segment_id\)[\s\S]*references public\.meeting_segments\(owner_user_id, id\)/u
+  );
+  assert.doesNotMatch(sql, /foreign key \(owner_user_id, session_id, segment_id\)/u);
+});

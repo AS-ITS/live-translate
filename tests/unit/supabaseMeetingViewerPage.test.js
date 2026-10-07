@@ -26,7 +26,10 @@ test('Supabase viewer page uses a bounded joined cue query instead of segment hy
     assert.equal(page.cues[0].cueId, 'cue-2');
     assert.equal(page.hasMore, true);
     assert.equal(calls.length, 2);
-    assert.match(calls[1].url, /meeting_segments!inner\(sequence,settings_snapshot\)/u);
+  assert.match(
+    calls[1].url,
+    /meeting_segments:meeting_segments!subtitle_cues_session_segment_relationship_fkey!inner\(sequence,settings_snapshot\)/u
+  );
     assert.match(calls[1].url, /limit=2/u);
     assert.equal(calls.some(({ url }) => url.includes('/rest/v1/meeting_segments?')), false);
   } finally {

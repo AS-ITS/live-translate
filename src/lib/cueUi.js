@@ -86,7 +86,7 @@ export function cueListForDisplay(state = {}, {
   }));
 }
 
-export function sourceTextForDisplay(cue, variant = 'refined') {
+export function sourceTextForDisplay(cue, variant = 'raw') {
   const text = effectiveSourceForCue(cue, variant);
   return cue?.sourceLanguageCode === 'zh-Hans' ? text : toTraditionalChineseText(text);
 }

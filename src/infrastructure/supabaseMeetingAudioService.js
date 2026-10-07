@@ -10,7 +10,8 @@ export const MP3_AUDIO_KIND = 'mp3';
 export const MEETING_AUDIO_MAX_BYTES = 64 * 1024 * 1024;
 export const MEETING_AUDIO_MIME_TYPES = Object.freeze([
   'audio/webm',
-  'audio/webm;codecs=opus'
+  'audio/webm;codecs=opus',
+  'audio/wav'
 ]);
 
 export function createSupabaseMeetingAudioService({
@@ -47,7 +48,7 @@ export function createSupabaseMeetingAudioService({
         session_id: null,
         storage_path: objectPath,
         kind: MEETING_AUDIO_KIND,
-        file_name: 'recording.webm',
+        file_name: mimeType === 'audio/wav' ? 'recording.wav' : 'recording.webm',
         byte_size: byteSize,
         mime_type: mimeType,
         status: 'uploading',
@@ -130,18 +131,23 @@ export function createSupabaseMeetingAudioService({
       const ownerUserId = owner();
       const artifact = await requireArtifact(client, { ownerUserId, meetingId, artifactId });
       if (artifact.status !== 'ready') throw audioError('audio_artifact_not_ready', 409);
+      const meeting = await requireArtifactMutationBeforePurge(client, { ownerUserId, meetingId, clock });
+      const deadline = Date.parse(meeting?.purge_at || '');
+      const remainingSeconds = Number.isFinite(deadline) ? Math.floor((deadline - clock()) / 1000) : expiresIn;
+      const signedLifetime = Math.min(expiresIn, remainingSeconds);
+      if (signedLifetime < 1) throw meetingContentExpiredError();
       const signed = await storageRequest(fetchImpl, {
         baseUrl,
         secretKey,
         method: 'POST',
         path: `/object/sign/${MEETING_AUDIO_BUCKET}/${encodeStoragePath(artifact.storage_path)}`,
-        body: { expiresIn }
+        body: { expiresIn: signedLifetime }
       });
       const signedPath = signed?.signedURL || signed?.signedUrl;
       if (!signedPath) throw audioError('cloud_capability_unavailable', 503);
       return {
         url: signedPath.startsWith('http') ? signedPath : `${baseUrl}/storage/v1${signedPath}`,
-        expiresAt: clock() + expiresIn * 1000,
+        expiresAt: clock() + signedLifetime * 1000,
         fileName: artifact.file_name || 'recording.webm',
         mimeType: artifact.mime_type,
         byteSize: artifact.byte_size
@@ -219,6 +225,7 @@ async function requireArtifactMutationBeforePurge(client, { ownerUserId, meeting
     query: `?select=lifecycle_contract_version,status,purge_at&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}`
   });
   if (isMeetingContentExpired(rows[0], clock())) throw meetingContentExpiredError();
+  return rows[0];
 }
 
 function artifactDTO(row) {

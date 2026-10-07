@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import test from 'node:test';
 import { createRequestHandler } from '../../server/index.js';
-import { buildTokenConfig, normalizeTokenRequest } from '../../server/tokenService.js';
+import { buildTokenConfig, createLiveToken, normalizeTokenRequest } from '../../server/tokenService.js';
 import { createTranslationExecutionMetrics } from '../../src/application/translation/translationExecutionMetrics.js';
 
 let requestHandler;
@@ -173,23 +173,18 @@ test('POST /api/live-token returns an ephemeral token without calling real Gemin
 });
 
 test('POST /api/live-token can return the server-constrained live connect config', async () => {
+  let providerConfig;
   requestHandler = createRequestHandler({
     accessControl: { validateRequest: async () => ({ id: 'recorder-1', role: 'member', status: 'active' }) },
     profileService: { async getProfile() { return { role: 'member', status: 'active' }; } },
     meetingMembershipService: { async canRecord() { return true; }, async getMeetingOwner() { return 'owner-1'; } },
     sessionReadController: { async getSession() { return { sessionRecord: { meetingId: 'meeting-1', targetLanguageCode: 'en', sourceLanguageCode: 'zh-Hant' } }; } },
     async liveTokenCreator(body) {
-      const config = buildTokenConfig({
-        ...normalizeTokenRequest(body),
-        glossaryEntries: [{ source: 'Codex', target: 'コーデックス' }]
+      return createLiveToken(body, {
+        client: { authTokens: { async create({ config }) { providerConfig = config; return { name: 'mock-token-name' }; } } },
+        glossary: { entriesFor: async () => [{ source: 'Global', target: 'Global term', replacementAliases: [] }] },
+        meetingRepository: { async getMeeting() { return { id: 'meeting-1', glossaryEntries: [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }] }; } }
       });
-      return {
-        token: 'mock-token-name',
-        expiresAt: config.expireTime,
-        liveConnectModel: config.liveConnectConstraints.model,
-        liveConnectConfig: config.liveConnectConstraints.config,
-        liveGlossaryEntries: [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]
-      };
     }
   });
 
@@ -203,7 +198,12 @@ test('POST /api/live-token can return the server-constrained live connect config
   assert.equal(body.liveConnectModel, 'gemini-3.5-live-translate-preview');
   assert.equal(body.liveConnectConfig.generationConfig.translationConfig.targetLanguageCode, 'ja');
   assert.match(body.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
-  assert.deepEqual(body.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: [] }]);
+  assert.match(body.liveConnectConfig.systemInstruction.parts[0].text, /Global/);
+  assert.deepEqual(body.liveConnectConfig, providerConfig.liveConnectConstraints.config);
+  assert.deepEqual(body.liveGlossaryEntries, [
+    { source: 'Global', target: 'Global term', replacementAliases: [] },
+    { source: 'Codex', target: 'コーデックス', replacementAliases: [] }
+  ]);
 });
 
 test('POST /api/live-token rejects invalid language', async () => {
@@ -260,6 +260,57 @@ test('POST /api/live-token rejects disallowed origin', async () => {
 
   assert.equal(response.status, 403);
   assert.equal(response.json().error.code, 'invalid_origin');
+  assert.equal(response.headers['Access-Control-Allow-Origin'], undefined);
+
+  const malformed = await request({
+    body: JSON.stringify(tokenBody()),
+    headers: { origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app/path?x=1' }
+  });
+  assert.equal(malformed.status, 403);
+  assert.equal(malformed.json().error.code, 'invalid_origin');
+  assert.equal(malformed.headers['Access-Control-Allow-Origin'], undefined);
+});
+
+test('POST /api/live-token accepts the Preview immutable origin and echoes only that origin', async () => {
+  const previous = {
+    VERCEL_ENV: process.env.VERCEL_ENV,
+    APP_ORIGIN: process.env.APP_ORIGIN,
+    VERCEL_URL: process.env.VERCEL_URL,
+    VERCEL_BRANCH_URL: process.env.VERCEL_BRANCH_URL
+  };
+  Object.assign(process.env, {
+    VERCEL_ENV: 'preview',
+    APP_ORIGIN: 'https://live-translate-git-feature-opfs-issue-38.example/',
+    VERCEL_URL: 'live-translate-cefq4qhgz-pochun1021s-projects.vercel.app',
+    VERCEL_BRANCH_URL: 'live-translate-git-feature-opfs-issue-38-pochun1021s-projects.vercel.app'
+  });
+  try {
+    const response = await request({
+      body: JSON.stringify(tokenBody()),
+      headers: {
+        origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app'
+      }
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['Access-Control-Allow-Origin'], 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app');
+
+    const malformed = await request({
+      body: JSON.stringify(tokenBody()),
+      headers: { origin: 'https://live-translate-cefq4qhgz-pochun1021s-projects.vercel.app/path?x=1' }
+    });
+    assert.equal(malformed.status, 403);
+    assert.equal(malformed.json().error.code, 'invalid_origin');
+    assert.equal(malformed.headers['Access-Control-Allow-Origin'], undefined);
+
+    const noOrigin = await request({ body: JSON.stringify(tokenBody()) });
+    assert.equal(noOrigin.status, 200);
+    assert.equal(noOrigin.headers['Access-Control-Allow-Origin'], undefined);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('POST /api/live-token applies IP-based rate limit', async () => {

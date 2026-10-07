@@ -53,6 +53,8 @@ lease model, or security model.
 
 ## User Experience
 
+Live Recorder 與 Viewer 共用同一套原文／翻譯顯示切換規則。兩個按鈕始終可操作；若使用者隱藏目前唯一可見的字幕，系統會同步顯示另一側，確保原文與翻譯不會同時隱藏。
+
 ### Meeting Management home
 
 The home route displays only the Meeting Management list. The left-side feature
@@ -70,12 +72,14 @@ Each Meeting card provides:
 - Source and target languages, plus the last updated time.
 - A concise status explanation backed only by the Meeting read model.
 - Name search and status filtering.
-- A status-appropriate single primary action: open live subtitles, continue
-  live subtitles, view translation history, or edit/start a draft Meeting.
+- A status-appropriate single primary action: unfinished Meetings first open
+  their settings for confirmation before live subtitles, while completed
+  Meetings open translation history.
 
-Cards are arranged in two columns on desktop and one column below 1024px. The
-entire card opens the appropriate independent page or edit flow; its primary
-button stops event propagation so it does not trigger the card navigation twice.
+Cards are arranged in two columns on desktop and one column below 1024px. Created,
+active, and interrupted Meeting cards open settings first; the settings page owns
+the explicit transition to live subtitles. Completed cards open history. Each
+primary button stops event propagation so it does not trigger card navigation twice.
 Draft deletion remains in the Meeting settings danger zone rather than on the
 card. The home route keeps only the product brand and the single `＋ 建立會議`
 Header action; the existing search, status filter, and global glossary controls
@@ -110,8 +114,9 @@ Canonical SPA routes are:
 
 The application uses independent Setting, Live, History Detail, and public
 Viewer pages. Viewer share creation and QR code management remain in the
-Meeting Settings page; the public Viewer is the page opened by participants
-through `#viewer?code=<shortCode>`.
+Meeting Settings page; its viewing URL opens in a new browser tab, and the
+public Viewer is available without a Workspace login through
+`#viewer?code=<shortCode>`.
 
 Removed legacy hashes such as `#history`, `#retranslate`, `#live-recording`,
 `#translation-history`, `#watch`, `#record`, and `#dead-letter-queue` safely
@@ -142,6 +147,7 @@ The Meeting settings shape gains a private collection:
 Rules:
 
 - Private entries never appear in the global glossary list.
+- Global glossary list supports multi-select batch enable, disable, and confirmed delete actions; batch mutations reuse the existing entry APIs sequentially.
 - Editing a private entry never updates the global glossary repository.
 - A private entry is visible only in its owning Meeting and its snapshots.
 - Live translation applies selected global entries and Meeting-private entries.
@@ -154,6 +160,20 @@ The existing Meeting glossary snapshot behavior remains the source of truth for
 later Segments, reconnects, exports, and historical reads.
 
 ## Meeting Viewer Sharing
+
+### Permission separation and stop window
+
+A Viewer share is read-only. Its token or short code grants only the
+sanitized Viewer snapshot and live updates; it cannot record, submit
+Cue/checkpoint/operation/audio queue items, download audio, or create an
+export. Host export is an independent authenticated capability and is never
+inferred from a Viewer share or ordinary Viewer membership.
+
+When the host stops a Meeting, or stale-recorder policy stops it, Viewer and
+Recorder share access is revoked immediately and existing Viewers stop
+receiving new Cues. The host retains a separate 30-minute window to export
+TXT/SRT/VTT and download completed audio; after expiry content returns
+`410 meeting_content_expired`.
 
 Viewer shares are Meeting-scoped while retaining the existing opaque token,
 short-code, expiry, revocation, and anonymous Viewer model.
@@ -193,7 +213,7 @@ Live Session, claims a Recorder lease, or writes a Session/checkpoint.
 In cloud mode, persistence is the broadcast boundary:
 
 ```text
-final bilingual Cue
+stable Cue with source or translation finalized
   -> validate Meeting/Segment/Session relationship
   -> upsert subtitle_cues
   -> database trigger broadcasts cue.append on a private Realtime channel
@@ -213,7 +233,11 @@ The database trigger publishes an event shaped like:
     sequence: 39,
     status: "final",
     sourceText: "確認的原文。",
-    translatedText: "confirmed source text.",
+    sourceStatus: "finalized",
+    sourceVersion: 1,
+    translatedText: "",
+    translationStatus: "pending",
+    translationVersion: 0,
     startTimeMs: 1000,
     endTimeMs: 2800
   }
@@ -233,7 +257,9 @@ The initial snapshot returns the latest 100 Cues and an opaque cursor for
 loading older pages. Each older page is merged by Cue ID without duplicates or
 omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by
 Segment sequence followed by Cue sequence. A newer version may replace the same Cue;
-a stale version cannot overwrite a newer one.
+a stale version cannot overwrite a newer one. Device snapshots and cloud events
+carry validated Segment sequence. A live Cue without resolved Segment order stays
+after ordered historical Cues. Source and translation versions merge independently.
 
 Reconnect behavior:
 
@@ -244,6 +270,29 @@ Reconnect behavior:
 5. Apply new events through the same deduplication and ordering rules.
 6. Refetch the snapshot if a sequence gap is detected.
 
+The WebRTC fast path renews its signaling participant with an authorized `/join`.
+Viewer join requests a fresh negotiation, Device maintains a targeted peer per
+Viewer, and low-frequency discovery polling continues while channels are open.
+Supabase Realtime token refresh and channel-failure reconnect use independent
+timers. A `CHANNEL_ERROR`, `TIMED_OUT`, or `CLOSED` status cancels the current
+generation's refresh timer, tears down that channel, and starts bounded
+reconnect; late callbacks from an old generation cannot remove its replacement.
+The Viewer keeps current Cues during recovery. A transient `disconnected` state receives
+a five-second grace period; the Device then attempts ICE restart and rebuilds
+the peer if recovery does not complete within ten seconds. Full reconnect uses
+at most six attempts with jittered exponential delays capped at ten seconds.
+Snapshot, Realtime, and SSE recovery classify stopped, revoked, and unauthorized
+shares as terminal. Transient snapshot failures retry without clearing Cues;
+retry exhaustion exposes a manual “重新連線” action.
+
+DataChannel snapshot and replay envelopes may include `sourceId`. A Viewer asks
+the same source to replay after its last received transport sequence. A changed
+source starts from a snapshot. Replay older than retained history also returns
+a snapshot. Cloud Cue publication continues while WebRTC is connected, allowing
+snapshot and Realtime replay after a later outage. Cue merge remains authoritative by `cueId` and
+source/translation/refinement versions, so a late snapshot cannot replace a
+newer Cue.
+
 The Viewer follows the latest Cue by default. Manual upward scrolling disables
 automatic scrolling and shows a “back to latest” action. A new Cue does not
 force scrolling while follow mode is disabled.
@@ -253,9 +302,10 @@ that all historical Cues remain available without rendering every row at once.
 
 ## Latency SLA
 
-The measured interval begins when a finalized bilingual Cue is ready for
-broadcast and ends when the Viewer has rendered that Cue. Time waiting for
-Gemini to produce a translation is excluded.
+DEV instrumentation records `audioTurnStartedAt`, `firstSourcePartialAt`,
+`firstTranslationPartialAt`, `sourceFinalAt`, `translationFinalAt`,
+`viewerFirstPublishedAt`, and `viewerTranslationUpdatedAt`. It reports Audio to
+first source/translation and each finalized side to Viewer publication/update.
 
 Acceptance targets under normal connectivity:
 
@@ -284,14 +334,30 @@ historical data behavior before the next phase begins.
 
 ## Short-lived retention behavior
 
-Completed lifecycle v2 Meetings expose `purgeAt` to the owner detail view so
-the 30-minute export/audio window is explicit. Before physical deletion,
-expired owner content returns `410 meeting_content_expired`; after deletion it
-returns the normal not-found response. The retention worker records bounded
-claim, completion, failure, and latency metrics without content or Storage
-paths. Legacy v1 rows remain readable while v2 writes stop populating legacy
-`sessions.segment_id`, `meeting_segments.live_session_id`, and
-`sessions.transcript_items` fields.
+Only successful Meeting completion starts one recording-wide 30-minute deadline;
+all Sessions and rollover Segments in that recording share it. The database
+sets and freezes `ended_at` and `purge_at`. Pauses, reconnects, rollovers,
+interruption, and failed sessions do not start or extend it. Legacy rows without
+a verified completion anchor are not bulk-deleted.
+
+At expiry, recording content, Viewer snapshot/replay, new cues, checkpoint
+writes, background output, and direct authenticated Storage access are rejected.
+Meeting settings, members, glossary, and audit records remain. The UI separates
+"錄製資料已到期" from "實體資料已清除". Local OPFS and IndexedDB copies are
+checked on startup, foreground, every minute, and before reads/exports; a
+crashed/closed browser cleans on next opening. An export started before expiry
+may finish while its browser lock delays local deletion. Downloaded files are
+outside application control.
+
+There is no Supabase Cron, Vercel Cron, or external scheduler. Existing Meeting
+GET requests opportunistically trigger a managed background batch: at most one
+Meeting, 20 Storage objects or 50 database rows, with a persistent 15-second
+cross-instance throttle and a short retryable claim. With no website/API
+traffic, cloud physical data may remain past the 30-minute deadline until the
+next relevant request; access is still denied at expiry. Storage objects are
+removed through the official Storage API. A completed or expired Meeting can
+still be manually deleted; only its owner or an active super-admin can retry a
+completed deletion using the protected minimal tombstone.
 
 ## Security and Compatibility Constraints
 

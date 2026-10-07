@@ -18,7 +18,9 @@ Supabase endpoint, missing migrations, and invalid credentials.
 
 Backend environment variables:
 
-- `GEMINI_API_KEY`: Required for creating Gemini ephemeral tokens.
+- `GEMINI_API_KEY`: Server-only key for isolated non-Live Gemini workers (for
+  example saved transcript translation). Live token issuance uses the
+  recorder's request-scoped `geminiApiKey` instead.
 - `SUPABASE_URL`, `SUPABASE_SECRET_KEY`: server-only Supabase values.
 - `SUPABASE_JWKS_URL`: Supabase public JWKS endpoint used to verify access tokens.
 - `AUTH_ALLOWED_EMAIL_DOMAINS`: comma-separated Workspace email domains.
@@ -26,7 +28,12 @@ Backend environment variables:
 - `P1_PROFILE_ONLY=true`: optional compatibility switch that keeps non-Profile
   cloud capabilities fail-closed. Leave unset for the current owner-scoped
   cloud runtime.
-- Supabase P2 mode stores each user's Gemini API Key in Vault; apply the Vault migration before enabling personal-key token issuance.
+- `LIVE_PIPELINE_TRACE_ENABLED=true`: explicitly enables the browser-memory
+  spoken-turn trace through `/api/runtime-config`. Set only on the Vercel
+  Preview environment used for diagnosis; default and Production are `false`.
+- Supabase P2 does not persist a user's Gemini API Key. The removed profile
+  credential API and `gemini_credentials` store are not part of the current
+  Live flow.
 - `SAVED_RETRANSLATION_TIMEOUT_MS`: Optional timeout for saved transcript
   retranslation Gemini calls. Defaults to `30000`.
 - `dev_frontend_origin`: Development frontend origin. Defaults to
@@ -132,9 +139,9 @@ verification is a rollout task, not an unimplemented P1 capability.
 
 The cloud rollout preflight must apply all migrations through the current migration head, run `npm run db:lint`, and verify `/healthz` plus `/readyz`. Readiness probes the core persistence tables, metric/queue RPCs, and private `meeting-audio` Storage bucket. In production, an invalid server-side cloud contract rejects `/api/*` with `503 cloud_capability_unavailable` so file-backed fallback cannot receive production traffic.
 
-## Account approval behavior
+## Domain auto-activation behavior
 
-`AUTH_ALLOWED_EMAIL_DOMAINS` is the first gate only. A matching Google Workspace user is provisioned as a pending `member`; an active `super_admin` must approve the profile before private application APIs are available. Pending users may only read `/api/profile`, wait, sign out, or switch accounts.
+`AUTH_ALLOWED_EMAIL_DOMAINS` is enforced by the backend after Supabase JWT verification. A matching Google Workspace user is provisioned as a transient pending `member`, then the service-role-only activation RPC changes only `pending -> active` before private API dispatch. Existing pending users follow the same path on their next valid request. Disabled users remain disabled, and missing or failed profile activation returns `503` without an active fallback.
 
 ## Local Development Setup
 
@@ -197,7 +204,9 @@ key.
 
 Steps:
 
-1. Start the backend with `GEMINI_API_KEY` configured.
+1. Start the backend; supply the recorder's request-scoped Gemini key through
+   the UI. Configure `GEMINI_API_KEY` only when exercising an isolated
+   non-Live worker.
 2. Start the frontend development server.
 3. Open the app in the browser.
 4. Select `zh-Hant`.
@@ -288,7 +297,7 @@ available to the smoke runner. Do not place that key in browser-exposed
 `VITE_` variables or commit it.
 ### OAuth Workspace access
 
-Google OAuth can complete successfully while `GET /api/profile` rejects a personal or otherwise unapproved account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
+Google OAuth can complete successfully while `GET /api/profile` rejects a personal-domain or disabled account with `403 auth_forbidden`. `AUTH_ALLOWED_EMAIL_DOMAINS` remains the backend authority; Google `hd` hints are optional UI guidance only and are not an authorization control. The access-denied screen keeps the session long enough to show the current email, and users must choose “切換 Google 帳號” to sign out and reopen the Google account picker with `prompt=select_account`.
 ## Supabase request boundaries
 
 Private owner CRUD may use the authenticated Supabase access token through the user-scoped REST client. Worker, admin, Vault, readiness, and other explicitly privileged operations use the service-role client. The two clients must not be interchangeable.

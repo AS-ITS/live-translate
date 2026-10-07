@@ -21,11 +21,17 @@ export function createSupabaseGlossary({ env = process.env, fetchImpl = globalTh
   const owner = () => currentRequestOwnerId() || env.SUPABASE_WORKER_USER_ID || failOwner();
   const rows = (table, query) => client.request(table, { query });
   const entryDTO = (row) => ({
-    id: row.id, source: row.source, sourceLanguageCode: row.source_language_code,
-    translations: { [row.target_language_code]: row.translation },
-    scope: row.scope || 'both', category: row.category_id || row.category || 'other',
-    tags: row.tags || [], enabled: row.enabled !== false, notes: row.notes || '',
-    createdAt: row.created_at, updatedAt: row.updated_at
+    id: row.id,
+    source: row.source,
+    sourceLanguageCode: row.source_language_code,
+    translations: translationsForRow(row),
+    scope: row.scope || 'both',
+    category: row.category_id || row.category || 'other',
+    tags: row.tags || [],
+    enabled: row.enabled !== false,
+    notes: row.notes || '',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   });
   return Object.freeze({
     requiresRequestIdentity: true,
@@ -106,10 +112,40 @@ export function createSupabaseGlossary({ env = process.env, fetchImpl = globalTh
     return entryDTO(result[0] || { ...normalized, id: input.id || null });
   }
   function normalizeEntry(input) {
-    const target = Object.keys(input.translations || {})[0] || input.targetLanguageCode || 'en';
+    const translations = normalizeTranslations(input);
+    const target = Object.keys(translations)[0];
     const categoryId = input.category || input.categoryId || null;
-    return { source: input.source, translation: input.translation || input.translations?.[target], source_language_code: input.sourceLanguageCode, target_language_code: target, category_id: UUID_PATTERN.test(String(categoryId)) ? categoryId : null, scope: input.scope || 'both', tags: input.tags || [], enabled: input.enabled !== false, notes: input.notes || '' };
+    return {
+      source: input.source,
+      translation: translations[target],
+      translations,
+      source_language_code: input.sourceLanguageCode,
+      target_language_code: target,
+      category_id: UUID_PATTERN.test(String(categoryId)) ? categoryId : null,
+      scope: input.scope || 'both',
+      tags: input.tags || [],
+      enabled: input.enabled !== false,
+      notes: input.notes || ''
+    };
   }
+}
+
+function translationsForRow(row = {}) {
+  if (isPlainObject(row.translations) && Object.keys(row.translations).length > 0) return { ...row.translations };
+  return row.target_language_code && row.translation ? { [row.target_language_code]: row.translation } : {};
+}
+
+function normalizeTranslations(input = {}) {
+  const translations = isPlainObject(input.translations)
+    ? Object.fromEntries(Object.entries(input.translations).filter(([code, text]) => code && typeof text === 'string' && text.trim()))
+    : {};
+  if (Object.keys(translations).length > 0) return translations;
+  const target = input.targetLanguageCode || 'en';
+  return { [target]: input.translation };
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function parseImport({ format, content, sourceLanguageCode, targetLanguageCode, category } = {}) {

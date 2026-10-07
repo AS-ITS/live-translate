@@ -1,0 +1,179 @@
+const DEFAULT_TRACE_LIMIT = 20_000;
+const MAX_TEXT_LENGTH = 512;
+const MAX_ID_LENGTH = 256;
+const TRUNCATION_MARKER = '...[truncated]';
+
+const CONSOLE_STAGES = new Set([
+  'PROVIDER_EVENT', 'TRANSCRIPT_NORMALIZED', 'TURN_ASSIGNED', 'TURN_COMPLETED',
+  'SPEECH_ACTIVITY_STARTED', 'SPEECH_ACTIVITY_CONTINUED', 'LOCAL_SILENCE_DETECTED',
+  'PROVIDER_RECONNECT', 'PROVIDER_ROLLOVER', 'SEGMENT_ROLLOVER',
+  'EVENT_DEDUPED', 'EVENT_DROPPED', 'CUE_CREATED', 'CUE_UPDATED', 'CUE_FINALIZED',
+  'SESSION_ROLLOVER_START', 'SESSION_CREATED', 'SESSION_SCOPE_SWITCHED',
+  'LOCAL_CUE_SAVED', 'VIEWER_PUBLISH_STARTED', 'VIEWER_PUBLISH_SUCCEEDED', 'VIEWER_PUBLISH_FAILED',
+  'CUE_PERSIST_REQUEST', 'CUE_PERSIST_FAILED', 'CLOUD_CUE_SAVE_STARTED', 'CLOUD_CUE_SAVE_SUCCEEDED', 'CLOUD_CUE_SAVE_FAILED',
+  'CHECKPOINT_REQUEST', 'CHECKPOINT_FAILED', 'CHECKPOINT_SAVE_STARTED', 'CHECKPOINT_SAVE_FAILED',
+  'DURABLE_OPERATION_CREATED', 'DURABLE_OPERATION_RETRY', 'DURABLE_QUEUE_RETRYING', 'DURABLE_BARRIER_WAITING',
+  'SESSION_STATE_CHANGED', 'RECORDER_GENERATION_CHANGED', 'RECORDING_PIPELINE_STATE',
+  'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'VIEWER_PACKET_DROPPED', 'VIEWER_STORE_UPDATED', 'REACT_RENDER',
+  'WEBRTC_SIGNALING', 'WEBRTC_PEER_STATE', 'WEBRTC_DATA_CHANNEL', 'WEBRTC_CUE_PUBLISH', 'VIEWER_REALTIME',
+  'WEBRTC_STATE_CHANGED', 'DATACHANNEL_STATE_CHANGED', 'REALTIME_STATE_CHANGED', 'VIEWER_SHARING_STATE_CHANGED',
+  'DATA_CHANNEL_ENVELOPE_REJECTED'
+]);
+const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
+
+function boundedLimit(limit) {
+  return Number.isInteger(limit) && limit > 0 ? Math.min(limit, DEFAULT_TRACE_LIMIT) : DEFAULT_TRACE_LIMIT;
+}
+
+function bounded(value, maxLength) {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return value;
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+}
+
+function safeId(value) { return bounded(value, MAX_ID_LENGTH); }
+function safeText(value) { return bounded(value, MAX_TEXT_LENGTH) || ''; }
+
+export function createLivePipelineTrace({
+  enabled = false,
+  limit = DEFAULT_TRACE_LIMIT,
+  now = () => new Date().toISOString(),
+  logger = (...args) => console.debug(...args)
+} = {}) {
+  let isEnabled = enabled === true;
+  let entries = isEnabled ? [] : null;
+  let nextTraceSequence = 0;
+  const maxEntries = boundedLimit(limit);
+
+  function record(input = {}) {
+    if (!isEnabled || !entries) return null;
+    const stage = safeId(input.stage || 'UNKNOWN');
+    const cueAction = safeId(input.cueAction);
+    const reason = input.reason || input.decisionReason || input.dropReason || input.dedupeReason || null;
+    const providerEventId = safeId(input.providerEventId);
+    const normalizedEventId = safeId(input.normalizedEventId || (stage === 'TRANSCRIPT_NORMALIZED' ? input.eventId : null));
+    let timestamp;
+    try { timestamp = bounded(input.timestamp || now(), MAX_ID_LENGTH); } catch { timestamp = null; }
+    const entry = Object.freeze({
+      traceSequence: ++nextTraceSequence,
+      timestamp,
+      stage,
+      sessionId: safeId(input.sessionId),
+      oldSessionId: safeId(input.oldSessionId),
+      newSessionId: safeId(input.newSessionId),
+      recordingId: safeId(input.recordingId),
+      segmentId: safeId(input.segmentId),
+      oldSegmentId: safeId(input.oldSegmentId),
+      newSegmentId: safeId(input.newSegmentId),
+      participantId: safeId(input.participantId),
+      negotiationId: safeId(input.negotiationId),
+      sourceId: safeId(input.sourceId),
+      operationId: safeId(input.operationId),
+      captureEpoch: input.captureEpoch ?? null,
+      recorderEpoch: input.recorderEpoch ?? input.captureEpoch ?? null,
+      providerEpoch: input.providerEpoch ?? null,
+      connectionEpoch: input.connectionEpoch ?? null,
+      transportGeneration: input.transportGeneration ?? input.connectionEpoch ?? null,
+      snapshotGeneration: input.snapshotGeneration ?? null,
+      audioTurnId: safeId(input.audioTurnId),
+      providerEventId,
+      normalizedEventId,
+      originEventId: safeId(input.originEventId),
+      providerTurnId: safeId(input.providerTurnId),
+      turnKey: safeId(input.turnKey),
+      cueId: safeId(input.cueId),
+      meetingId: safeId(input.meetingId),
+      messageType: safeId(input.messageType),
+      sourcePresent: input.sourcePresent ?? null,
+      translationPresent: input.translationPresent ?? null,
+      rawSourcePresent: input.rawSourcePresent ?? null,
+      refinedSourcePresent: input.refinedSourcePresent ?? null,
+      sourceStatus: safeId(input.sourceStatus),
+      translationStatus: safeId(input.translationStatus),
+      sourceVersion: Number.isSafeInteger(input.sourceVersion) ? input.sourceVersion : null,
+      translationVersion: Number.isSafeInteger(input.translationVersion) ? input.translationVersion : null,
+      audioTurnIdPresent: input.audioTurnIdPresent ?? null,
+      validatorCode: safeId(input.validatorCode),
+      speechObservedSinceBoundary: input.speechObservedSinceBoundary ?? null,
+      turnState: safeId(input.turnState),
+      reason: safeId(REASONED_STAGES.has(stage) ? (reason || 'unspecified_reason') : reason),
+      dropReason: safeId(stage === 'EVENT_DROPPED' || cueAction === 'drop' ? (input.dropReason || reason || 'unspecified_drop') : input.dropReason),
+      decision: safeId(input.decision),
+      eventId: safeId(input.eventId),
+      eventSequence: input.eventSequence ?? null,
+      sequence: input.sequence ?? null,
+      revision: input.revision ?? null,
+      eventType: safeId(input.eventType),
+      connectionState: safeId(input.connectionState),
+      iceConnectionState: safeId(input.iceConnectionState),
+      signalingState: safeId(input.signalingState),
+      dataChannelState: safeId(input.dataChannelState),
+      realtimeState: safeId(input.realtimeState),
+      persistenceState: safeId(input.persistenceState),
+      channelStatus: safeId(input.channelStatus),
+      receivedAt: Number.isFinite(input.receivedAt) ? input.receivedAt : null,
+      terminalStatus: safeId(input.terminalStatus),
+      terminalReason: safeId(input.terminalReason),
+      localFinalize: Boolean(input.localFinalize),
+      isTerminalReplay: Boolean(input.isTerminalReplay),
+      isFinal: Boolean(input.isFinal),
+      isLateTranscript: Boolean(input.isLateTranscript),
+      turnComplete: Boolean(input.turnComplete),
+      generationComplete: Boolean(input.generationComplete),
+      providerTurnIndex: input.providerTurnIndex ?? null,
+      turnIdentitySource: safeId(input.turnIdentitySource),
+      sourceText: safeText(input.sourceText),
+      translationText: safeText(input.translationText),
+      beforeSourceText: safeText(input.beforeSourceText),
+      afterSourceText: safeText(input.afterSourceText),
+      beforeTranslationText: safeText(input.beforeTranslationText),
+      afterTranslationText: safeText(input.afterTranslationText),
+      cueAction,
+      pcmSequence: input.pcmSequence ?? null,
+      pcmBytes: input.pcmBytes ?? null,
+      pcmSampleCount: Number.isFinite(input.pcmSampleCount) ? input.pcmSampleCount : null,
+      pcmDurationMs: Number.isFinite(input.pcmDurationMs) ? input.pcmDurationMs : null,
+      pcmCaptureTimestampMs: Number.isFinite(input.pcmCaptureTimestampMs) ? input.pcmCaptureTimestampMs : null,
+      transportResult: safeId(input.transportResult),
+      httpStatus: Number.isInteger(input.httpStatus) ? input.httpStatus : null,
+      serverErrorCode: safeId(input.serverErrorCode),
+      errorCode: safeId(input.errorCode || input.serverErrorCode)
+    });
+    entries.push(entry);
+    if (entries.length > maxEntries) entries.splice(0, entries.length - maxEntries);
+    if (CONSOLE_STAGES.has(entry.stage) || entry.cueAction === 'drop') {
+      try { logger('[TURN TRACE]', entry); } catch { /* Diagnostics cannot interrupt Live processing. */ }
+    }
+    return entry;
+  }
+
+  function get(filter = {}) {
+    if (!entries) return [];
+    return entries
+      .filter((entry) => Object.entries(filter).every(([key, value]) => value === undefined || value === null || entry[key] === value))
+      .map((entry) => ({ ...entry }));
+  }
+
+  function getTurn(audioTurnId) { return audioTurnId ? get({ audioTurnId }) : []; }
+  function clear() {
+    if (entries) entries.length = 0;
+    nextTraceSequence = 0;
+  }
+  function exportJson() {
+    const exportedAt = safeId(now());
+    const exportedEntries = get();
+    return JSON.stringify({ exportedAt, entryCount: exportedEntries.length, entries: exportedEntries }, null, 2);
+  }
+  function setEnabled(enabledValue) {
+    isEnabled = enabledValue === true;
+    entries = isEnabled ? [] : null;
+    nextTraceSequence = 0;
+    return isEnabled;
+  }
+
+  return Object.freeze({ record, get, getTurn, clear, exportJson, setEnabled, isEnabled: () => isEnabled });
+}
+
+export const livePipelineTrace = createLivePipelineTrace();
+export function configureLivePipelineTrace(enabled) { return livePipelineTrace.setEnabled(enabled === true); }
+export function recordLivePipelineTrace(entry) { return livePipelineTrace.record(entry); }

@@ -11,6 +11,23 @@ export const FEATURE_PAGES = new Set([
   , 'admin', 'audit'
 ]);
 
+let geminiSettingsReturnHash = MEETING_MANAGEMENT_HASH;
+
+export function rememberGeminiSettingsReturnLocation(hash = globalThis.window?.location?.hash) {
+  const value = typeof hash === 'string' ? hash : '';
+  const pageName = value.replace(/^#/u, '').split('?')[0];
+  geminiSettingsReturnHash = FEATURE_PAGES.has(pageName) && !['settings', 'viewer'].includes(pageName)
+    ? value
+    : MEETING_MANAGEMENT_HASH;
+  return geminiSettingsReturnHash;
+}
+
+export function consumeGeminiSettingsReturnLocation() {
+  const returnHash = geminiSettingsReturnHash;
+  geminiSettingsReturnHash = MEETING_MANAGEMENT_HASH;
+  return returnHash;
+}
+
 export function pageFromLocation() {
   return pageInfoFromLocation().page;
 }

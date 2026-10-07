@@ -12,7 +12,7 @@ export function cloudMeetingAudioEnabled() {
 
 export async function uploadMeetingSegmentAudio({ meetingId, segmentId, blob, fetchImpl = globalThis.fetch, UploadImpl = Upload, diagnostics = null, supabaseClient = supabase } = {}) {
   if (!meetingId || !segmentId || !blob || !Number.isFinite(blob.size) || blob.size < 1) return null;
-  const mimeType = normalizeWebmMimeType(blob.type);
+  const mimeType = normalizeMeetingAudioMimeType(blob.type);
   const request = authenticatedFetch(fetchImpl, supabaseClient);
   diagnostics?.beginUpload?.({ byteSize: blob.size });
   const startResponse = await request(`/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/audio-uploads`, {
@@ -102,9 +102,9 @@ function runTusUpload({ blob, upload, accessToken, mimeType, UploadImpl, diagnos
   });
 }
 
-function normalizeWebmMimeType(value) {
+function normalizeMeetingAudioMimeType(value) {
   const normalized = String(value || '').toLowerCase();
-  if (normalized === 'audio/webm' || normalized === 'audio/webm;codecs=opus') return normalized;
+  if (normalized === 'audio/webm' || normalized === 'audio/webm;codecs=opus' || normalized === 'audio/wav') return normalized;
   throw clientError('audio_mime_type_unsupported', 400);
 }
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createAccessControl } from '../../server/accessControl.js';
+import { createAccessControl, isAllowedEmailDomain } from '../../server/accessControl.js';
 
 function request(headers = {}) {
   return { headers };
@@ -26,4 +26,13 @@ test('access control does not accept demo token headers', async () => {
 
 test('unconfigured non-production access remains available to local test adapters', async () => {
   await assert.doesNotReject(createAccessControl({ env: { NODE_ENV: 'test' } }).validateRequest(request()));
+});
+
+test('email domain allowlist uses normalized exact matches and fails closed', () => {
+  assert.equal(isAllowedEmailDomain(' Person@Example.COM ', ' example.com,other.example '), true);
+  assert.equal(isAllowedEmailDomain('person@sub.example.com', 'example.com'), false);
+  assert.equal(isAllowedEmailDomain('person@example.com.evil', 'example.com'), false);
+  assert.equal(isAllowedEmailDomain('person@evil-example.com', 'example.com'), false);
+  assert.equal(isAllowedEmailDomain('person@evil.com@example.com', 'example.com'), false);
+  assert.equal(isAllowedEmailDomain('person@example.com', ''), false);
 });

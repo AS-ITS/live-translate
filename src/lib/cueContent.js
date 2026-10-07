@@ -14,6 +14,10 @@ export function rawTranslationForCue(cue = {}) {
   return textOrEmpty(cue.rawTranslation ?? cue.translatedText);
 }
 
+export function initialTranslationForCue(cue = {}) {
+  return textOrEmpty(cue.initialTranslation);
+}
+
 export function refinedSourceForCue(cue = {}) {
   return textOrEmpty(cue.refinedSource);
 }
@@ -29,7 +33,7 @@ export function effectiveSourceForCue(cue = {}, variant = 'refined') {
 
 export function effectiveTranslationForCue(cue = {}, variant = 'refined') {
   if (variant === 'raw') return rawTranslationForCue(cue);
-  return refinedTranslationForCue(cue) || rawTranslationForCue(cue);
+  return refinedTranslationForCue(cue) || initialTranslationForCue(cue) || rawTranslationForCue(cue);
 }
 
 export function cueRefinementInputHash(cue = {}) {

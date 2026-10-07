@@ -30,13 +30,14 @@ import { composePcm16WavSegments as composeWavSegments } from '../src/lib/audio.
 import { createProfileService } from './profileService.js';
 import { cloudEnvironmentError } from './cloudEnvironment.js';
 import { createMeetingMembershipService } from '../src/application/meetingMembershipService.js';
-import { createGeminiCredentialRepository } from './geminiCredentialRepository.js';
-import { currentRequestActorId, currentRequestOwnerId, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
+import { currentRequestActorId, currentRequestOwnerId, currentRequestScope, setRequestScope, setRequestUser, runWithRequestUser } from './requestIdentity.js';
 import { validateViewerTelemetry } from '../src/application/observability/telemetry.js';
 import { OBSERVABILITY_METRIC_NAMES, providerStatusClass } from '../src/application/observability/observabilityMetricRegistry.js';
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createStructuredLogger } from '../src/infrastructure/structuredLogger.js';
 import { createExportController } from './exportController.js';
+import { isMeetingContentExpired, meetingContentExpiredError } from '../src/lib/meetingRetention.js';
+import { createPublicRuntimeConfig } from './publicRuntimeConfig.js';
 
 const IS_MAIN = process.argv[1] !== undefined && resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1]);
 
@@ -51,13 +52,11 @@ if (IS_MAIN) {
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SERVER_HOST = IS_PRODUCTION ? '0.0.0.0' : '127.0.0.1';
 const SERVER_PORT = IS_PRODUCTION ? 8000 : 3000;
-const RESOLVED_ORIGIN = resolveAllowedOrigin(process.env);
 const DIST_DIR = resolve(fileURLToPath(new URL('../dist', import.meta.url)));
 const INDEX_HTML_PATH = join(DIST_DIR, 'index.html');
 const rateLimitBuckets = new Map();
 
 const ERROR_RESPONSES = {
-  auth_pending: { status: 403, message: 'Account approval is pending.' },
   auth_required: { status: 401, message: 'Access token is required.' },
   auth_invalid: { status: 401, message: 'Access token is invalid.' },
   auth_forbidden: { status: 403, message: 'Access is not allowed.' },
@@ -68,6 +67,9 @@ const ERROR_RESPONSES = {
   supabase_storage_missing: { status: 503, message: 'Supabase Storage configuration is missing.' },
   supabase_credentials_invalid: { status: 503, message: 'Local Supabase service credentials are invalid.' },
   supabase_request_failed: { status: 503, message: 'Local Supabase request failed.' },
+  profile_not_found: { status: 503, message: 'Authenticated account profile was not created.' },
+  profile_activation_failed: { status: 503, message: 'Authenticated account profile could not be activated.' },
+  account_not_disabled: { status: 409, message: 'Account is not disabled.' },
   invalid_json: { status: 400, message: 'Request body must be valid JSON.' },
   invalid_request: { status: 400, message: 'Request body or path parameters are invalid.' },
   invalid_origin: { status: 403, message: 'Request origin is not allowed.' },
@@ -82,9 +84,7 @@ const ERROR_RESPONSES = {
   glossary_revision_conflict: { status: 409, message: 'Glossary changed after the import preview.' },
   meeting_read_unavailable: { status: 503, message: 'Meeting read API is not configured.' },
   provider_unavailable: { status: 502, message: 'Live translation provider is unavailable.' },
-  gemini_credential_unavailable: { status: 503, message: 'Gemini credential storage is not configured.' },
   gemini_credential_not_configured: { status: 409, message: 'Set a Gemini API Key before starting a meeting.' },
-  gemini_credential_invalid: { status: 400, message: 'Gemini API Key is invalid.' },
   rate_limited: { status: 429, message: 'Too many requests. Please try again later.' },
   request_too_large: { status: 413, message: 'Request body is too large.' },
   server_misconfigured: { status: 500, message: 'Server is not configured for live translation.' },
@@ -158,7 +158,7 @@ function sendJson(res, status, payload, requestId, extraHeaders = {}) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -177,7 +177,7 @@ function sendBinary(res, status, bytes, { contentType = 'application/octet-strea
     'Content-Type': contentType,
     'Content-Length': buffer.byteLength,
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -194,7 +194,7 @@ function writeBinaryHeaders(res, status, { contentType = 'application/octet-stre
     'Content-Type': contentType,
     ...(Number.isFinite(contentLength) ? { 'Content-Length': contentLength } : {}),
     'Content-Disposition': `attachment; filename="${String(fileName).replace(/["\\]/g, '')}"`,
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-File-Name',
     'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'",
@@ -278,16 +278,59 @@ function getClientIp(req) {
   return req.socket?.remoteAddress || 'unknown';
 }
 
+function normalizeOrigin(value) {
+  if (typeof value !== 'string' || !value.trim() || value.trim().toLowerCase() === 'null') return '';
+  try {
+    const parsed = new URL(value.trim());
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) return '';
+    if (/\s/u.test(parsed.hostname)) return '';
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeVercelHostname(value) {
+  if (typeof value !== 'string' || !value.trim() || /[/:?#\s]/u.test(value.trim())) return '';
+  return normalizeOrigin(`https://${value.trim()}`);
+}
+
+export function resolveAllowedOrigins(env = process.env) {
+  const origins = new Set();
+  const appOrigin = normalizeOrigin(env.APP_ORIGIN);
+  const vercelEnvironment = String(env.VERCEL_ENV || '').toLowerCase();
+
+  if (vercelEnvironment === 'preview') {
+    if (appOrigin) origins.add(appOrigin);
+    for (const value of [env.VERCEL_URL, env.VERCEL_BRANCH_URL]) {
+      const origin = normalizeVercelHostname(value);
+      if (origin) origins.add(origin);
+    }
+    return origins;
+  }
+
+  if (vercelEnvironment === 'production' || env.NODE_ENV === 'production') {
+    if (appOrigin) origins.add(appOrigin);
+    if (!vercelEnvironment && !appOrigin) {
+      const legacyVercelOrigin = normalizeVercelHostname(env.VERCEL_URL);
+      if (legacyVercelOrigin) origins.add(legacyVercelOrigin);
+    }
+    return origins;
+  }
+
+  const localOrigin = normalizeOrigin(env.dev_frontend_origin) || appOrigin || 'http://127.0.0.1:5173';
+  origins.add(localOrigin);
+  return origins;
+}
+
 export function resolveAllowedOrigin(env = process.env) {
-  const production = env.NODE_ENV === 'production';
-  return production
-    ? (env.APP_ORIGIN || (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : '') || 'http://127.0.0.1:8000')
-    : (env.dev_frontend_origin || env.APP_ORIGIN || 'http://127.0.0.1:5173');
+  return [...resolveAllowedOrigins(env)][0] || 'http://127.0.0.1:8000';
 }
 
 function isAllowedOrigin(req) {
-  const origin = req.headers?.origin;
-  return !origin || origin === RESOLVED_ORIGIN;
+  const rawOrigin = req.headers?.origin;
+  if (!rawOrigin) return true;
+  return resolveAllowedOrigins(process.env).has(rawOrigin);
 }
 
 function isProfileOnlyMode() {
@@ -319,8 +362,9 @@ function enforceRateLimit(clientIp) {
 
 async function enrichAuthenticatedUser(user, profileService) {
   if (!user?.id || typeof profileService?.getProfile !== 'function') return user;
-  const profile = await profileService.getProfile(user);
+  const profile = await profileService.getProfile(user, { activatePending: true });
   if (profile?.status === 'disabled') throw createHttpError('auth_forbidden');
+  if (profile?.status !== 'active') throw createHttpError('profile_activation_failed');
   return {
     ...user,
     role: profile?.role || user.role || 'member',
@@ -423,6 +467,18 @@ function supabaseProjectRef(env = process.env) {
   } catch {
     return null;
   }
+}
+
+function safeSupabaseFailureDiagnostics(error) {
+  return {
+    supabaseStatus: Number.isInteger(error?.supabaseStatus) ? error.supabaseStatus : null,
+    supabaseCode: typeof error?.supabaseCode === 'string' ? error.supabaseCode : null,
+    supabaseErrorClass: typeof error?.supabaseErrorClass === 'string' ? error.supabaseErrorClass : null,
+    supabaseConstraint: typeof error?.supabaseConstraint === 'string' ? error.supabaseConstraint : null,
+    supabaseResource: typeof error?.supabaseResource === 'string' ? error.supabaseResource : null,
+    supabaseOperation: typeof error?.supabaseOperation === 'string' ? error.supabaseOperation : null,
+    supabaseProjectRef: supabaseProjectRef()
+  };
 }
 
 function meetingRequestDiagnostics({ operation = 'meeting.request', meetingId, authenticatedUser, statusCode, errorCode, supabaseStatus = null, resourceOwnerId, resourceOwnerKnown = false }) {
@@ -744,13 +800,13 @@ export function createRequestHandler(options = {}) {
     , accessControl: requestAccessControl = globalAccessControl
  , profileService = createProfileService()
  , meetingMembershipService: injectedMeetingMembershipService
- , credentialRepository = createGeminiCredentialRepository()
  , authEventAuditLogService = createAuditLogService()
     , observabilityMetricRepository = createSupabaseObservabilityMetricRepository()
     , observabilityMetrics
   , readinessCheck
  , strictCheckpointPathIds = true
  , requestLogger = logEvent
+ , publicRuntimeConfig = createPublicRuntimeConfig(process.env)
  } = options;
 
  const resolvedMeetingMembershipService = meetingMembershipService || injectedMeetingMembershipService || createMeetingMembershipService({
@@ -814,10 +870,10 @@ export function createRequestHandler(options = {}) {
       , readinessCheck
       , accessControl: requestAccessControl
       , profileService
-      , credentialRepository
       , authEventAuditLogService
  , strictCheckpointPathIds
  , requestLogger
+ , publicRuntimeConfig
     });
   };
 }
@@ -829,20 +885,24 @@ export async function handleRequest(req, res) {
 async function handleRequestWithSessionReadController(
   req,
   res,
- { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), credentialRepository = createGeminiCredentialRepository(), strictCheckpointPathIds = true } = {}
+ { sessionReadController, sessionRepository, sessionApplicationService, translationRepository, translationCommandController, executionControlController, deadLetterQueueController, translationHistoryController, meetingReadController, meetingCheckpointService, meetingDeletionService, meetingRepository, sessionAudioArtifactRepository, meetingAudioService, meetingCueService, viewerRealtimeTokenService, translationProviderOptionsController, glossaryController, savedTranscriptRetranslationController, sessionRetranslationCommandController, translationExecutionWorkerRuntime, liveTokenCreator = createLiveToken, sessionSnapshotMaxBytes = SESSION_SNAPSHOT_MAX_BYTES, translationOutputMaxBytes = TRANSLATION_OUTPUT_MAX_BYTES, sessionShareService = createSessionShareService(), recorderLeaseService, recorderGrantService = createRecorderGrantService(), sessionEventBroadcaster = createSessionEventBroadcaster(), meetingEventBroadcaster = (IS_PRODUCTION ? null : createMeetingEventBroadcaster()), executionEventBroadcaster, meetingCheckpointMaxBytes = MEETING_CHECKPOINT_MAX_BYTES, sessionAudioMaxBytes = MAX_AUDIO_ARTIFACT_BYTES, translationExecutionMetrics = createTranslationExecutionMetrics(), accessControl: requestAccessControl = globalAccessControl, profileService = createProfileService(), authEventAuditLogService = createAuditLogService(), adminService = createAdminService({ auditLogService: createAuditLogService() }), strictCheckpointPathIds = true } = {}
 ) {
   const exportArtifactService = arguments[2]?.exportArtifactService;
   const meetingEventRepository = arguments[2]?.meetingEventRepository;
   const meetingMembershipService = arguments[2]?.meetingMembershipService;
   const meetingLifecycleService = arguments[2]?.meetingLifecycleService;
   const meetingPurgeWorker = arguments[2]?.meetingPurgeWorker;
+  const observabilityMetricRepository = arguments[2]?.observabilityMetricRepository;
+  const observabilityMetrics = arguments[2]?.observabilityMetrics;
   const requestLogger = arguments[2]?.requestLogger || logEvent;
+  const publicRuntimeConfig = arguments[2]?.publicRuntimeConfig || createPublicRuntimeConfig();
   const requestId = req.headers?.['x-request-id'] || crypto.randomUUID();
   const startedAt = performance.now();
   const path = getRequestPath(req);
   if (path === '/api/live-token') res.setHeader?.('Cache-Control', 'no-store');
   const clientIp = getClientIp(req);
   const origin = req.headers?.origin || '';
+  res.__validatedOrigin = origin && isAllowedOrigin(req) ? origin : '';
   let authenticatedUser = null;
   let requestScope = null;
   const updateRequestScope = (resourceOwnerUserId = null) => {
@@ -870,6 +930,12 @@ async function handleRequestWithSessionReadController(
   if (req.method === 'GET' && (path === '/health' || path === '/healthz')) {
     statusCode = 200;
     sendJson(res, statusCode, { ok: true, requestId }, requestId);
+    return;
+  }
+
+  if (req.method === 'GET' && path === '/api/runtime-config') {
+    statusCode = 200;
+    sendJson(res, statusCode, publicRuntimeConfig, requestId, { 'Cache-Control': 'no-store' });
     return;
   }
 
@@ -972,7 +1038,7 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/profile/gemini-credential', '/api/auth-events'].includes(path)) {
+  if (path.startsWith('/api/') && isProfileOnlyMode() && !['/api/profile', '/api/live-token', '/api/auth-events'].includes(path)) {
     statusCode = 503;
     logEvent({
       level: 'error',
@@ -1007,6 +1073,8 @@ async function handleRequestWithSessionReadController(
       enforceRateLimit(`${clientIp}:${path}`);
       const share = await resolveSharedMeeting(path, sessionShareService);
       if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+      if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) throw meetingContentExpiredError();
       const telemetry = validateViewerTelemetry(await readJson(req, { maxBytes: 2_000 }));
       if (observabilityMetrics || observabilityMetricRepository) {
         const metric = {
@@ -1090,12 +1158,6 @@ async function handleRequestWithSessionReadController(
     }
   }
 
-if (authenticatedUser?.status === 'pending' && !(req.method === 'GET' && path === '/api/profile')) {
-  statusCode = ERROR_RESPONSES.auth_pending.status;
-  sendJson(res, statusCode, errorPayload('auth_pending', requestId), requestId);
-  return;
-}
-
 if (req.method === 'POST' && path === '/api/auth-events') {
  try {
   enforceRateLimit(`${clientIp}:auth-events`);
@@ -1104,7 +1166,7 @@ if (req.method === 'POST' && path === '/api/auth-events') {
   if (!authUser?.id) throw createHttpError('auth_required');
   const body = await readJson(req, { maxBytes: 4 * 1024 });
   if (body?.event !== 'login') throw createHttpError('invalid_request');
-  const profile = await profileService.getProfile(authUser);
+  const profile = await profileService.getProfile(authUser, { activatePending: true });
   const result = profile?.status === 'active' ? 'success' : 'failure';
   try {
    await authEventAuditLogService?.record({ actor_user_id: authUser.id, action: 'auth_login', result, request_id: requestId });
@@ -1124,13 +1186,13 @@ if (req.method === 'POST' && path === '/api/auth-events') {
 if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
       let authorizationStage = 'private_resource';
       try {
-    const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, profileService, sessionRepository });
+        const scope = await authorizePrivateResource({ req, path, user: authenticatedUser, meetingMembershipService, meetingDeletionService, meetingRepository, profileService, sessionRepository });
     if (scope) {
       setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
       updateRequestScope(scope.ownerUserId);
     }
     authorizationStage = 'translation_resource';
-    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository });
+    const translationScope = await authorizeTranslationResource({ req, path, user: authenticatedUser, meetingMembershipService, translationRepository, meetingRepository });
     if (translationScope) {
       setRequestUser({ ...authenticatedUser, ...translationScope, actorUserId: authenticatedUser.id });
       updateRequestScope(translationScope.ownerUserId);
@@ -1208,22 +1270,6 @@ if (authenticatedUser && meetingMembershipService && !hasRecorderHeaders(req)) {
  return;
  }
 
-if (req.method === 'POST' && /^\/api\/admin\/users\/[^/]+\/approve$/u.test(path)) {
-  try {
-    if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
-    if (!adminService) throw createHttpError('cloud_capability_unavailable');
-    const match = path.match(/^\/api\/admin\/users\/([^/]+)\/approve$/u);
-    const result = await adminService.approveUser(authenticatedUser, safeDecodePathComponent(match[1]), requestId);
-    statusCode = 200;
-    sendJson(res, statusCode, { user: result }, requestId);
-  } catch (error) {
-    const code = errorCodeFor(error);
-    statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-    sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-  }
-  return;
-}
-
 if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/admin\/users\/[^/]+\/(enable|disable)$/u.test(path)) {
  try {
  if (authenticatedUser?.role !== 'super_admin' || authenticatedUser?.status !== 'active') throw createHttpError('auth_forbidden');
@@ -1243,7 +1289,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       const pageSize = Number(url.searchParams.get('pageSize') || 12);
       const query = url.searchParams.get('query') || '';
       const status = url.searchParams.get('status') || 'all';
-      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'pending', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
+      if (!Number.isInteger(page) || page < 1 || ![12, 24, 48].includes(pageSize) || !['all', 'active', 'disabled'].includes(status) || query.length > 100) throw createHttpError('invalid_request');
       statusCode = 200;
       sendJson(res, statusCode, await adminService.listUsers(authenticatedUser, { page, pageSize, query, status }), requestId);
  } else if (req.method === 'POST') {
@@ -1265,33 +1311,6 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
  }
  return;
  }
-
- if (path === '/api/profile/gemini-credential' && ['GET', 'PUT', 'DELETE'].includes(req.method)) {
-    try {
-      if (!authenticatedUser?.id) throw createHttpError('auth_required');
-      if (!credentialRepository) throw createHttpError('gemini_credential_unavailable');
-      if (req.method === 'GET') {
-        const credential = await credentialRepository.get(authenticatedUser.id);
-        statusCode = 200;
-        sendJson(res, statusCode, { credential: credential || { configured: false, lastFour: null, keyVersion: null, verifiedAt: null } }, requestId);
-      } else if (req.method === 'PUT') {
-        const body = await readJson(req, { maxBytes: 16 * 1024 });
-        const credential = await credentialRepository.upsert(authenticatedUser.id, body?.apiKey);
-        statusCode = 200;
-        sendJson(res, statusCode, { credential }, requestId);
-      } else {
-        await credentialRepository.remove(authenticatedUser.id);
-        statusCode = 204;
-        res.writeHead(statusCode, { 'X-Request-Id': requestId });
-        res.end();
-      }
-    } catch (error) {
-      const code = errorCodeFor(error);
-      statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
-      sendJson(res, statusCode, errorPayload(code, requestId), requestId);
-    }
-    return;
-  }
 
   if ((req.method === 'GET' || req.method === 'POST') && /^\/api\/meetings\/[^/]+\/members$/u.test(path)) {
     try {
@@ -1739,7 +1758,12 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
     try {
       if (!meetingDeletionService) throw createHttpError('meeting_checkpoint_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
-      await meetingDeletionService.deleteMeeting({ meetingId });
+      const result = await meetingDeletionService.deleteMeeting({ meetingId, actorUserId: authenticatedUser?.id, actorRole: authenticatedUser?.role });
+        if (result.deleting) {
+          statusCode = 202;
+          sendJson(res, statusCode, { status: 'deleting' }, requestId);
+          return;
+        }
       statusCode = 204;
       res.writeHead(statusCode, { 'X-Request-Id': requestId });
       res.end();
@@ -2117,6 +2141,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         path,
         statusCode,
         errorCode: code,
+        ...safeSupabaseFailureDiagnostics(error),
         ...cueRequestContext,
         durationMs: Math.round(performance.now() - startedAt)
       });
@@ -2131,6 +2156,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       enforceRateLimit(clientIp);
       const share = await resolveSharedMeeting(path, sessionShareService);
       if (!share || share.resourceType !== 'meeting' || share.role !== 'viewer') throw createHttpError('meeting_share_invalid');
+      if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+      if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) throw meetingContentExpiredError();
       statusCode = 200;
       res.setHeader?.('Cache-Control', 'no-store');
       sendJson(res, statusCode, await viewerRealtimeTokenService.issue(share), requestId);
@@ -2148,10 +2175,23 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       sendJson(res, 404, errorPayload('meeting_share_invalid', requestId), requestId);
       return;
     }
-    if (viewerRealtimeTokenService && meetingEventRepository) {
+    if (share._ownerUserId) setRequestUser({ id: share._ownerUserId });
+    if (isMeetingContentExpired(await meetingRepository?.getMeeting(share.meetingId))) {
+      sendJson(res, 410, errorPayload('meeting_content_expired', requestId), requestId);
+      return;
+    }
+    const wantsJsonReplay = req.headers?.accept?.includes('application/json');
+    if (meetingEventRepository && (viewerRealtimeTokenService || wantsJsonReplay)) {
       const replay = await meetingEventRepository.listSince(share.meetingId, parseAfterEventId(req), { ownerUserId: share._ownerUserId });
       const cursor = await meetingEventRepository.latestCursor(share.meetingId, { ownerUserId: share._ownerUserId });
       sendJson(res, 200, { events: replay.map(publicMeetingCueEvent), cursor }, requestId);
+    } else if (wantsJsonReplay && meetingEventBroadcaster) {
+      const replay = meetingEventBroadcaster.eventsSince(share.meetingId, parseAfterEventId(req));
+      sendJson(res, 200, {
+        events: replay.events.map(publicMeetingCueEvent),
+        cursor: replay.cursor,
+        gap: replay.gap
+      }, requestId);
     } else if (meetingEventBroadcaster) {
       openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meetingReadController, parseAfterEventId(req));
     } else {
@@ -2226,7 +2266,19 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       statusCode = ERROR_RESPONSES[code]?.status || error.status || 500;
       sendJson(res, statusCode, errorPayload(code, requestId), requestId);
     } finally {
-      logEvent({ level: statusCode >= 500 ? 'error' : 'info', event: 'request', requestId, method: req.method, path, statusCode, errorCode: meetingCheckpointError?.code || null, durationMs: Math.round(performance.now() - startedAt), clientIp, origin });
+      logEvent({
+        level: statusCode >= 500 ? 'error' : 'info',
+        event: 'request',
+        requestId,
+        method: req.method,
+        path,
+        statusCode,
+        errorCode: meetingCheckpointError?.code || null,
+        ...safeSupabaseFailureDiagnostics(meetingCheckpointError),
+        durationMs: Math.round(performance.now() - startedAt),
+        clientIp,
+        origin
+      });
     }
     return;
   }
@@ -2776,7 +2828,8 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
         body,
         user: authenticatedUser,
         meetingMembershipService,
-        translationRepository
+        translationRepository,
+        meetingRepository
       });
       if (scope) {
         setRequestUser({ ...authenticatedUser, ...scope, actorUserId: authenticatedUser.id });
@@ -3058,7 +3111,7 @@ function isPublicApiPath(method, path) {
   )) || (method === 'POST' && (path === '/api/auth-events' || isSharedMeetingRealtimeTokenPath(path) || isSharedMeetingTelemetryPath(path))) || isRecorderLeasePath(method, path) || isSharedMeetingStartPath(path);
 }
 
-async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository }) {
+async function authorizeTranslationResource({ req, path, body, user, meetingMembershipService, translationRepository, meetingRepository }) {
   if (!user?.id || !translationRepository) return null;
   let sessionId = body?.sessionId;
   let executionId = body?.executionId;
@@ -3083,14 +3136,22 @@ async function authorizeTranslationResource({ req, path, body, user, meetingMemb
   const context = await meetingMembershipService.getSessionOwner(sessionId);
   if (!context?.meetingId || !context.ownerUserId) throw createHttpError('auth_forbidden');
   if (!await meetingMembershipService.canManage(context.meetingId, user)) throw createHttpError('auth_forbidden');
+  if (isMeetingContentExpired(await readAuthorizedMeeting(meetingRepository, context.meetingId, context.ownerUserId, user))) throw meetingContentExpiredError();
   return { ownerUserId: context.ownerUserId };
 }
 
-async function authorizePrivateResource({ req, path, user, meetingMembershipService }) {
+async function authorizePrivateResource({ req, path, user, meetingMembershipService, meetingDeletionService, meetingRepository }) {
   const meetingMatch = path.match(/^\/api\/meetings\/([^/]+)/u);
   const sessionMatch = path.match(/^\/api\/sessions\/([^/]+)/u);
   if (meetingMatch && meetingMatch[1] !== 'glossary') {
     const meetingId = safeDecodePathComponent(meetingMatch[1]);
+    if (req.method === 'DELETE' && isMeetingDetailPath(path)) {
+      const tombstone = await meetingDeletionService?.getDeletionTombstone?.(meetingId);
+      if (tombstone?.state === 'deleted') {
+        if (user?.id !== tombstone.ownerUserId && user?.role !== 'super_admin') throw createHttpError('auth_forbidden');
+        return { ownerUserId: tombstone.ownerUserId };
+      }
+    }
     const canRecord = isMemberMeetingRecordingPath(req.method, path);
     const canEditSettings = req.method === 'GET' || req.method === 'PATCH';
     const canManageShares = isMeetingShareCollectionPath(path) && (req.method === 'GET' || req.method === 'POST');
@@ -3103,6 +3164,12 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
     const ownerUserId = await meetingMembershipService.getMeetingOwner(meetingId);
     if (!ownerUserId) {
       throw createHttpError(user.role === 'super_admin' ? 'meeting_not_found' : (canRecord ? 'recorder_forbidden' : 'auth_forbidden'));
+    }
+    if (!(req.method === 'GET' && isMeetingDetailPath(path)) &&
+      !(req.method === 'DELETE' && isMeetingDetailPath(path)) &&
+      !(req.method === 'PATCH' && isMeetingDetailPath(path))) {
+      const meeting = await readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user);
+      if (isMeetingContentExpired(meeting)) throw meetingContentExpiredError();
     }
     return { ownerUserId };
   }
@@ -3117,10 +3184,24 @@ async function authorizePrivateResource({ req, path, user, meetingMembershipServ
         ? await meetingMembershipService.canRecord(meetingId, user.id)
         : await meetingMembershipService.canManage(meetingId, user);
       if (!allowed) throw createHttpError(canRecord ? 'recorder_forbidden' : 'auth_forbidden');
-      if (ownerUserId) return { ownerUserId };
+      if (ownerUserId) {
+        if (isMeetingContentExpired(await readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user))) throw meetingContentExpiredError();
+        return { ownerUserId };
+      }
     }
   }
   return null;
+}
+
+async function readAuthorizedMeeting(meetingRepository, meetingId, ownerUserId, user) {
+  if (!meetingRepository || !ownerUserId) return null;
+  return runWithRequestUser({
+    ...user,
+    requestScope: {
+      ...currentRequestScope(),
+      resourceOwnerUserId: ownerUserId
+    }
+  }, () => meetingRepository.getMeeting(meetingId));
 }
 
 async function canAccessMeeting(meetingMembershipService, meetingId, user) {
@@ -3703,7 +3784,11 @@ function validateGlossaryEntryBody(body) {
 }
 
 function validateGlossaryCategory(value) {
-  if (typeof value !== 'string' || !/^[a-z][a-z0-9_-]*$/.test(value)) throw createHttpError('invalid_request');
+  const legacyCategoryPattern = /^[a-z][a-z0-9_-]*$/;
+  const cloudCategoryPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+  if (typeof value !== 'string' || (!legacyCategoryPattern.test(value) && !cloudCategoryPattern.test(value))) {
+    throw createHttpError('invalid_request');
+  }
   return value;
 }
 
@@ -4224,7 +4309,7 @@ function openSharedSessionEvents(res, req, share, sessionEventBroadcaster) {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -4245,7 +4330,7 @@ function openSharedMeetingEvents(res, req, share, meetingEventBroadcaster, meeti
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
-    'Access-Control-Allow-Origin': RESOLVED_ORIGIN,
+    ...(res.__validatedOrigin ? { 'Access-Control-Allow-Origin': res.__validatedOrigin } : {}),
     'X-Content-Type-Options': 'nosniff'
   });
   if (typeof res.flushHeaders === 'function') res.flushHeaders();
@@ -4288,8 +4373,12 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
     endTimeMs: value.endTimeMs,
     sourceLanguageCode: value.sourceLanguageCode || null,
     targetLanguageCode: value.targetLanguageCode || null,
-    sourceText: value.sourceText,
-    translatedText: value.translatedText,
+    sourceText: value.sourceText ?? '',
+    translatedText: value.translatedText ?? '',
+    sourceStatus: value.sourceStatus || (value.sourceText ? 'finalized' : 'pending'),
+    translationStatus: value.translationStatus || (value.translatedText ? 'finalized' : 'pending'),
+    sourceVersion: Number.isInteger(value.sourceVersion) ? value.sourceVersion : (value.sourceText ? 1 : 0),
+    translationVersion: Number.isInteger(value.translationVersion) ? value.translationVersion : (value.translatedText ? 1 : 0),
     ...(value.rawSource !== undefined ? { rawSource: value.rawSource } : {}),
     ...(value.rawTranslation !== undefined ? { rawTranslation: value.rawTranslation } : {}),
     ...(value.initialTranslation !== undefined ? { initialTranslation: value.initialTranslation } : {}),
@@ -4301,7 +4390,12 @@ function normalizePublishedCue(value, { meetingId, segmentId, sessionId }) {
       !Number.isInteger(cue.sequence) || cue.sequence < 1 ||
       !Number.isFinite(cue.startTimeMs) || cue.startTimeMs < 0 ||
       (cue.endTimeMs !== null && cue.endTimeMs !== undefined && (!Number.isFinite(cue.endTimeMs) || cue.endTimeMs < cue.startTimeMs)) ||
-      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string') {
+      typeof cue.sourceText !== 'string' || typeof cue.translatedText !== 'string' ||
+      (!cue.sourceText.trim() && !cue.translatedText.trim()) ||
+      !['pending', 'finalized', 'unavailable'].includes(cue.sourceStatus) ||
+      !['pending', 'finalized', 'unavailable'].includes(cue.translationStatus) ||
+      !Number.isInteger(cue.sourceVersion) || cue.sourceVersion < 0 ||
+      !Number.isInteger(cue.translationVersion) || cue.translationVersion < 0) {
     throw createHttpError('subtitle_cue_invalid');
   }
   return { ...cue, meetingId };

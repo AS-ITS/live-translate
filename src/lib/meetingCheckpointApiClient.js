@@ -113,7 +113,12 @@ export function createMeetingCheckpointApiClient({ fetchImpl = globalThis.fetch,
         headers: { 'Content-Type': 'application/json', ...authorizationHeadersFor(authorizationHeaders) },
         body: JSON.stringify(body)
       });
-      await assertOkResponse(response, { operation: `recording-${command}` });
+      try {
+        await assertOkResponse(response, { operation: `recording-${command}` });
+      } catch (error) {
+        error.endpoint = path;
+        throw error;
+      }
       return parseLifecycleResponse(response);
     },
 
@@ -292,7 +297,12 @@ async function assertOkResponse(response, { operation = null } = {}) {
     // Keep the HTTP status when the server response is not JSON.
   }
 
-  const error = new Error(`Meeting checkpoint API request failed with HTTP ${response.status}.`);
+  const operationLabel = operation === 'recover-segment' ? 'recover'
+    : operation === 'update-checkpoint' || operation === 'get-checkpoint' ? 'checkpoint'
+      : operation === 'start-meeting' ? 'start'
+        : operation === 'rollover-segment' ? 'rollover'
+          : operation || 'meeting';
+  const error = new Error(`Meeting ${operationLabel} API request failed with HTTP ${response.status}.`);
   error.status = response.status;
   error.operation = operation;
   error.code = body?.error?.code || body?.code;

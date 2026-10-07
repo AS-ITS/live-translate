@@ -104,7 +104,16 @@ export function createExportArtifactService({
       const artifact = await artifactRepository.getById(exportId, ownerUserId, meetingId);
       if (!artifact) throw exportError('export_not_found', 404);
       if (artifact.status !== 'ready') throw exportError('export_not_ready', 409);
-      const signed = await storage.createSignedUrl({ path: artifact.storagePath, expiresIn });
+      const deadline = await sourceReader.getDeadline?.({ ownerUserId, meetingId });
+      const remainingSeconds = deadline ? Math.floor((Date.parse(deadline) - clock()) / 1000) : expiresIn;
+      const signedLifetime = Math.min(expiresIn, remainingSeconds);
+      if (signedLifetime < 1) {
+        const error = new Error('Recording data has expired.');
+        error.code = 'meeting_content_expired';
+        error.status = 410;
+        throw error;
+      }
+      const signed = await storage.createSignedUrl({ path: artifact.storagePath, expiresIn: signedLifetime });
       return {
         url: signed.url,
         expiresAt: signed.expiresAt,

@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { currentRequestOwnerId } from '../../server/requestIdentity.js';
-import { eq } from './supabaseRestClient.js';
+import { createSupabaseServiceRoleClient, eq } from './supabaseRestClient.js';
 import { createSupabaseRequestClient, requireSupabaseRequestClient } from './supabaseRequestClient.js';
 
 const SHORT_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -12,6 +12,7 @@ export function createSupabaseMeetingShareService({
 } = {}) {
   const clientForRequest = createSupabaseRequestClient({ env, fetchImpl });
   const client = { request: (...args) => requireSupabaseRequestClient(clientForRequest).request(...args) };
+  const publicResolveClient = createSupabaseServiceRoleClient({ env, fetchImpl });
 
   return Object.freeze({
     requiresRequestIdentity: true,
@@ -44,12 +45,12 @@ export function createSupabaseMeetingShareService({
 
     async resolveShare(token) {
       if (typeof token !== 'string' || token.length < 20) return null;
-      return resolve(client, { tokenHash: sha256(token), clock });
+      return resolve(publicResolveClient, { tokenHash: sha256(token), clock });
     },
 
     async resolveCode(code) {
       if (typeof code !== 'string' || !/^[A-HJ-NP-Z2-9]{8}$/iu.test(code)) return null;
-      return resolve(client, { shortCodeHash: sha256(code.toUpperCase()), clock });
+      return resolve(publicResolveClient, { shortCodeHash: sha256(code.toUpperCase()), clock });
     },
 
     async revokeShare(meetingId, shareId) {
@@ -99,6 +100,12 @@ async function createMeetingShare(client, { ownerUserId, meetingId, options, clo
 }
 
 async function resolve(client, { tokenHash, shortCodeHash, clock }) {
+  if (!client) {
+    const error = new Error('Supabase public share resolver is unavailable.');
+    error.code = 'cloud_capability_unavailable';
+    error.status = 503;
+    throw error;
+  }
   const filter = tokenHash ? eq('token_hash', tokenHash) : eq('short_code_hash', shortCodeHash);
   const rows = await client.request('viewer_shares', { query: `?select=*&${filter}` });
   const row = rows[0];

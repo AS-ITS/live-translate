@@ -158,6 +158,17 @@ test('refined export is default and raw export remains explicit', () => {
   assert.equal(exportCuesToTxt([refinedCue], { stream: 'translation', variant: 'raw' }), 'raw translation\n');
 });
 
+test('source export keeps raw source when a refined source exists', () => {
+  const refinedCue = cue({
+    rawSource: 'raw source',
+    rawTranslation: 'raw translation',
+    refinedSource: 'refined source',
+    refinedTranslation: 'refined translation'
+  });
+
+  assert.equal(exportCuesToTxt([refinedCue], { stream: 'source' }), 'raw source\n');
+});
+
 test('exports merged identical adjacent Cues with the first start and last end time', () => {
   const cues = [
     cue({ cueId: 'cue-1', sequence: 1, startTimeMs: 1000, endTimeMs: 1800, sourceText: 'same', translatedText: 'same translation' }),

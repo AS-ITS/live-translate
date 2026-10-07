@@ -9,6 +9,14 @@ export function createSupabaseMeetingExportSource({ env = process.env, fetchImpl
   const client = { request: (...args) => requireSupabaseContextClient(clientForContext).request(...args) };
 
   return Object.freeze({
+    async getDeadline({ ownerUserId, meetingId }) {
+      const meetings = await client.request('meetings', {
+        query: `?select=status,purge_at,lifecycle_contract_version&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}&limit=1`
+      });
+      if (!meetings[0]) return null;
+      if (isMeetingContentExpired(meetings[0])) throw meetingContentExpiredError();
+      return meetings[0].status === 'completed' ? meetings[0].purge_at : null;
+    },
     async read({ ownerUserId, meetingId }) {
       const meetings = await client.request('meetings', {
         query: `?select=*&${eq('id', meetingId)}&${eq('owner_user_id', ownerUserId)}&limit=1`

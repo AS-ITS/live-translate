@@ -123,6 +123,41 @@ test('Supabase Session repository ignores transcript mutations for lifecycle v2 
   assert.equal(requests[0].init.method, 'GET');
 });
 
+test('lifecycle v2 Session reads use relational active Segment after rollover', async () => {
+  const repository = createSupabaseSessionRepository({
+    env: {
+      SUPABASE_URL: 'https://example.supabase.co',
+      VITE_SUPABASE_PUBLISHABLE_KEY: 'publishable-key'
+    },
+    fetchImpl: async () => response([{
+      id: 'session-v2',
+      meeting_id: 'meeting-1',
+      segment_id: 'segment-b',
+      current_segment_id: 'segment-b',
+      lifecycle_contract_version: 2,
+      payload: {
+        id: 'session-v2',
+        meetingId: 'meeting-1',
+        segmentId: 'segment-a',
+        targetLanguageCode: 'en',
+        status: 'active'
+      },
+      transcript_items: []
+    }])
+  });
+
+  await runWithRequestUser({ id: 'owner-1' }, async () => {
+    setRequestScope({
+      actorUserId: 'owner-1',
+      resourceOwnerUserId: 'owner-1',
+      accessToken: 'access-token',
+      capability: 'user'
+    });
+    const detail = await repository.getSessionRecord('session-v2');
+    assert.equal(detail.sessionRecord.segmentId, 'segment-b');
+  });
+});
+
 test('lifecycle v2 unrecoverable failure stops instead of recovering', async () => {
   const calls = [];
   const stopped = await stopLifecycleV2AfterFailure({

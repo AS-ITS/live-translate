@@ -29,11 +29,13 @@
   "dependencies": {
     "@google/genai": "^1.0.0",
     "@supabase/supabase-js": "^2.116.0",
+    "@vercel/functions": "^3.9.11",
     "@vitejs/plugin-react": "^6.0.3",
     "ag-grid-community": "^36.1.0",
     "ag-grid-react": "^36.1.0",
     "downshift": "^9.4.0",
     "exceljs": "^4.4.0",
+    "ioredis": "^5.11.1",
     "jose": "^6.2.12",
     "lucide-react": "^0.468.0",
     "opencc-js": "^1.4.1",

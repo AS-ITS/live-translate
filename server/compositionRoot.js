@@ -68,6 +68,7 @@ import { createMemorySessionRepository } from '../src/lib/sessionRepository.js';
 import { createSessionReadRepository } from '../src/repositories/sessionReadRepository.js';
 import { createSubtitleCueRepository } from '../src/repositories/subtitleCueRepository.js';
 import { createSupabaseMeetingRepository } from '../src/infrastructure/supabaseMeetingRepository.js';
+import { createSupabaseMeetingDeletionRepository } from '../src/infrastructure/supabaseMeetingDeletionRepository.js';
 import { createSupabaseSessionRepository } from '../src/infrastructure/supabaseSessionRepository.js';
 import { createSupabaseMeetingAudioService } from '../src/infrastructure/supabaseMeetingAudioService.js';
 import { createSupabaseMeetingShareService } from '../src/infrastructure/supabaseMeetingShareService.js';
@@ -81,7 +82,6 @@ import { createSupabaseDeadLetterQueueRepository } from '../src/infrastructure/s
 import { createSupabaseObservabilityMetricRepository } from '../src/infrastructure/supabaseObservabilityMetricRepository.js';
 import { createSupabaseReadinessCheck } from '../src/infrastructure/supabaseReadiness.js';
 import { createSupabaseExportComposition } from '../src/infrastructure/supabaseExportComposition.js';
-import { createSupabaseMeetingPurgeComposition } from '../src/infrastructure/supabaseMeetingPurgeComposition.js';
 import { createViewerRealtimeTokenService } from './viewerRealtimeTokenService.js';
 import { createSavedTranscriptRetranslationController as createDefaultSavedTranscriptRetranslationController } from './savedTranscriptRetranslationController.js';
 import { createSessionRetranslationCommandController as createDefaultSessionRetranslationCommandController } from './sessionRetranslationCommandController.js';
@@ -365,6 +365,7 @@ export function createApplicationDependencies(options = {}) {
     meetingRepository: resolvedMeetingRepository,
     sessionRepository: sessionReadDependencies.sessionRepository,
     sessionAudioArtifactRepository: resolvedSessionAudioArtifactRepository,
+    deletionRepository: options.meetingDeletionRepository,
     deleteMeetingAudio: meetingAudioService
       ? (meetingId) => meetingAudioService.deleteMeetingArtifacts(meetingId)
       : undefined,
@@ -555,6 +556,11 @@ export function createProductionApplicationDependencies(options = {}) {
     : cloudDataMode
       ? createSupabaseMeetingAudioService({ env })
       : undefined;
+  const meetingDeletionRepository = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingDeletionRepository')
+    ? applicationOptions.meetingDeletionRepository
+    : cloudDataMode
+      ? createSupabaseMeetingDeletionRepository({ env })
+      : undefined;
   const meetingCueService = Object.prototype.hasOwnProperty.call(applicationOptions, 'meetingCueService')
     ? applicationOptions.meetingCueService
     : cloudDataMode
@@ -685,9 +691,6 @@ export function createProductionApplicationDependencies(options = {}) {
   const exportComposition = cloudDataMode
     ? createSupabaseExportComposition({ env, clock: translationQueueClock.now.bind(translationQueueClock) })
     : null;
-  const meetingPurgeComposition = cloudDataMode
-    ? createSupabaseMeetingPurgeComposition({ env, observabilityMetrics })
-    : null;
   const applicationDependencies = createApplicationDependencies({
     ...applicationOptions,
     ...(exportComposition ? { exportArtifactService: exportComposition.exportArtifactService } : {}),
@@ -698,6 +701,7 @@ export function createProductionApplicationDependencies(options = {}) {
     ...(meetingRepository !== undefined ? { meetingRepository } : {}),
     sessionShareService,
     ...(meetingAudioService ? { meetingAudioService } : {}),
+    ...(meetingDeletionRepository ? { meetingDeletionRepository } : {}),
     ...(meetingCueService ? { meetingCueService } : {}),
     ...(meetingEventRepository ? { meetingEventRepository } : {}),
     ...(viewerRealtimeTokenService ? { viewerRealtimeTokenService } : {}),
@@ -762,7 +766,6 @@ export function createProductionApplicationDependencies(options = {}) {
       exportArtifactService: exportComposition.exportArtifactService,
       exportWorker: exportComposition.exportWorker
     } : {}),
-    ...(meetingPurgeComposition ? meetingPurgeComposition : {}),
     ...(translationExecutionWorkerRuntime !== undefined ? { translationExecutionWorkerRuntime } : {}),
     ...(durableTranslationExecutionQueueRepository !== undefined
       ? { durableTranslationExecutionQueueRepository }

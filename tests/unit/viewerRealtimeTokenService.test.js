@@ -5,7 +5,13 @@ import { createViewerRealtimeTokenService } from '../../server/viewerRealtimeTok
 
 test('viewer realtime token is short lived and scoped to one private meeting channel', async () => {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
-  const privateJwk = { ...await exportJWK(privateKey), alg: 'ES256', kid: 'realtime-test' };
+  const privateJwk = {
+    ...await exportJWK(privateKey),
+    alg: 'ES256',
+    kid: 'realtime-test',
+    use: 'sig',
+    key_ops: ['sign', 'verify']
+  };
   const now = Date.parse('2026-09-09T00:00:00.000Z');
   const service = createViewerRealtimeTokenService({
     env: {

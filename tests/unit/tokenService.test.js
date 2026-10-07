@@ -115,7 +115,7 @@ test('createLiveToken resolves live-scoped glossary entries for token and browse
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
 });
 
-test('createLiveToken uses the meeting glossary snapshot instead of the global glossary', async () => {
+test('createLiveToken merges global and meeting glossary entries in provider config', async () => {
   let tokenConfig;
   const client = { authTokens: { async create({ config }) { tokenConfig = config; return { name: 'meeting-token' }; } } };
   const result = await createLiveToken(
@@ -132,8 +132,82 @@ test('createLiveToken uses the meeting glossary snapshot instead of the global g
     }
   );
 
-  assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Acme', target: 'アクメ', replacementAliases: ['ACME'] }]);
-  assert.match(tokenConfig.liveConnectConstraints.config.systemInstruction.parts[0].text, /Acme/);
+  assert.deepEqual(result.liveGlossaryEntries, [
+    { source: 'global', target: '全域', replacementAliases: [] },
+    { source: 'Acme', target: 'アクメ', replacementAliases: ['ACME'] }
+  ]);
+  const instruction = tokenConfig.liveConnectConstraints.config.systemInstruction.parts[0].text;
+  assert.match(instruction, /current target language/);
+  assert.match(instruction, /Source term: global\nRequired translation: 全域/);
+  assert.match(instruction, /Source term: Acme\nRequired translation: アクメ/);
+});
+
+test('createLiveToken lets meeting glossary override the same global source in provider config', async () => {
+  let tokenConfig;
+  const client = { authTokens: { async create({ config }) { tokenConfig = config; return { name: 'meeting-token' }; } } };
+  const result = await createLiveToken(
+    { targetLanguageCode: 'en', meetingId: 'meeting-1' },
+    {
+      client,
+      glossary: { entriesFor: async () => [{ source: 'Acme', target: 'Global Acme', replacementAliases: [] }] },
+      meetingRepository: { async getMeeting() { return { id: 'meeting-1', glossaryEntries: [{ source: 'Acme', target: 'Meeting Acme', replacementAliases: [] }] }; } }
+    }
+  );
+
+  assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Acme', target: 'Meeting Acme', replacementAliases: [] }]);
+  const instruction = tokenConfig.liveConnectConstraints.config.systemInstruction.parts[0].text;
+  assert.match(instruction, /Required translation: Meeting Acme/);
+  assert.doesNotMatch(instruction, /Required translation: Global Acme/);
+});
+
+test('createLiveToken waits for global glossary before creating a meeting token', async () => {
+  let resolveEntries;
+  let tokenCreates = 0;
+  const pendingEntries = new Promise((resolve) => { resolveEntries = resolve; });
+  const token = createLiveToken(
+    { targetLanguageCode: 'en', meetingId: 'meeting-1' },
+    {
+      client: { authTokens: { async create() { tokenCreates += 1; return { name: 'meeting-token' }; } } },
+      glossary: { entriesFor: async () => pendingEntries },
+      meetingRepository: { async getMeeting() { return { id: 'meeting-1', glossaryEntries: [] }; } }
+    }
+  );
+
+  await Promise.resolve();
+  assert.equal(tokenCreates, 0);
+  resolveEntries([{ source: 'global', target: 'Global term', replacementAliases: [] }]);
+  const result = await token;
+  assert.deepEqual(result.liveGlossaryEntries, [{ source: 'global', target: 'Global term', replacementAliases: [] }]);
+  assert.equal(tokenCreates, 1);
+});
+
+test('meeting-private glossary wins and active Segment snapshot survives token rebuild', async () => {
+  const createdConfigs = [];
+  const client = { authTokens: { async create({ config }) { createdConfigs.push(config); return { name: `token-${createdConfigs.length}` }; } } };
+  const settingsSnapshot = {
+    glossaryEntries: [{ source: '你好', target: 'Hi', replacementAliases: [] }],
+    privateGlossaryEntries: [{ source: '你好', translations: { en: 'speak Hi' }, replacementAliases: { en: [] } }]
+  };
+  const meetingRepository = {
+    async getMeeting() {
+      return { id: 'meeting-1', ...settingsSnapshot };
+    },
+    async listMeetingSegments() {
+      return [{ id: 'segment-1', sequence: 1, status: 'active', settingsSnapshot }];
+    }
+  };
+
+  const first = await createLiveToken({ targetLanguageCode: 'en', meetingId: 'meeting-1' }, { client, meetingRepository });
+  const rebuilt = await createLiveToken({ targetLanguageCode: 'en', meetingId: 'meeting-1' }, { client, meetingRepository });
+
+  const expected = [{ source: '你好', target: 'speak Hi', replacementAliases: ['Hi'] }];
+  assert.deepEqual(first.liveGlossaryEntries, expected);
+  assert.deepEqual(rebuilt.liveGlossaryEntries, expected);
+  for (const config of createdConfigs) {
+    const instruction = config.liveConnectConstraints.config.systemInstruction.parts[0].text;
+    assert.match(instruction, /Source term: 你好\nRequired translation: speak Hi/);
+    assert.equal((instruction.match(/Source term: 你好/g) || []).length, 1);
+  }
 });
 
 test('createLiveToken maps provider failures to 502', async () => {

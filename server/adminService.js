@@ -52,16 +52,13 @@ export function createAdminService({ env = process.env, fetchImpl = globalThis.f
           : `request_id.ilike.*${value}*`);
       }
       const from = (page - 1) * pageSize;
-      const path = `/rest/v1/audit_logs?select=actor_user_id,target_user_id,target_email,target_meeting_id,old_role,new_role,request_id,action,result,created_at&order=created_at.desc${filters.length ? `&${filters.join('&')}` : ''}`;
+      const path = `/rest/v1/audit_logs?select=actor_user_id,target_user_id,target_meeting_id,request_id,action,result,created_at&order=created_at.desc${filters.length ? `&${filters.join('&')}` : ''}`;
       const response = await requestResponse(path, { headers: { Prefer: 'count=exact,return=representation', Range: `${from}-${from + pageSize - 1}` } });
       const rows = await response.json();
       const logs = rows.map((row) => ({
         actor_user_id: row.actor_user_id || null,
         target_user_id: row.target_user_id || null,
-        target_email: row.target_email || null,
         target_meeting_id: row.target_meeting_id || null,
-        old_role: row.old_role || null,
-        new_role: row.new_role || null,
         request_id: row.request_id || null,
         action: row.action,
         result: row.result,

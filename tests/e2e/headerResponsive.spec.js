@@ -35,6 +35,7 @@ async function expectHeaderLayout(page, width) {
       .filter((element) => element.getClientRects().length > 0);
     return {
       headerChildCount: header?.children.length,
+      headerIsCompact: Boolean(header && header.getBoundingClientRect().height <= 96),
       flexWrap: bar ? getComputedStyle(bar).flexWrap : '',
       barFits: Boolean(bar && bar.scrollWidth <= bar.clientWidth),
       controlsFit: visibleControls.every((element) => (
@@ -47,6 +48,7 @@ async function expectHeaderLayout(page, width) {
 
   expect(layout).toEqual({
     headerChildCount: 1,
+    headerIsCompact: true,
     flexWrap: 'nowrap',
     barFits: true,
     controlsFit: true,
@@ -168,4 +170,22 @@ test('desktop feature actions follow direct entry, reload, back, and forward nav
   await page.getByRole('link', { name: '返回會議管理' }).click();
   await expect(page).toHaveURL(/#meetings$/);
   await expectFeatureLinks(actions, null);
+});
+
+test('audit page keeps the header compact above its content', async ({ page }) => {
+  await installE2EAuth(page, { id: 'admin-1', email: 'admin@example.com', role: 'super_admin', status: 'active' });
+  await page.route(/\/api\/admin\/audit-logs(?:\?.*)?$/, (route) => route.fulfill({
+    json: { logs: [], pagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 } }
+  }));
+
+  await page.goto('/#audit');
+  await expect(page.locator('#audit-log-page-title')).toBeVisible();
+  await expectHeaderLayout(page, 1280);
+
+  const gap = await page.evaluate(() => {
+    const header = document.querySelector('.meeting-app-header');
+    const content = document.querySelector('.audit-log-page');
+    return content.getBoundingClientRect().top - header.getBoundingClientRect().bottom;
+  });
+  expect(gap).toBeLessThanOrEqual(32);
 });

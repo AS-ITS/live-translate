@@ -1,4 +1,4 @@
-.account-management-shell { grid-template-rows: auto auto; align-content: stretch; row-gap: var(--space-4); height: auto; min-height: 100dvh; overflow: visible; }
+.account-management-shell { grid-template-rows: auto auto; align-content: start; row-gap: var(--space-4); height: auto; min-height: 100dvh; overflow: visible; }
 .account-management-page { display: grid; grid-template-rows: max-content max-content; align-content: start; gap: var(--space-4); min-height: 0; overflow-y: visible; }
 .audit-log-page { height: 100%; align-content: stretch; }
 .account-management-status:empty { display: none; }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 修正帳號管理與稽核紀錄頁的 grid 剩餘高度被錯誤分配至 header，並讓稽核列表只讀取畫面實際使用的既有欄位，避免新角色稽核欄位尚未部署時回傳 `supabase_request_failed` 503。
+
 - Live 工作區新增以 Meeting `started_at` 推導的 `HH:MM:SS` 會議計時；pause、resume、reconnect 與 rollover 不會重設，也不會產生每秒資料庫寫入。Pipeline trace 同步加入 `meetingElapsedMs` 與 provider epoch 的 `sessionElapsedMs`。
 - Meeting 完成 30 分鐘後改為一般使用者與 Viewer 不可見、`super_admin` 顯示「待刪除」並沿用既有刪除路徑手動清理；移除 Meeting GET 觸發的自動實體清理，保留 immutable `ended_at`／`purge_at` 與 canonical `meeting_content_expired`。
 

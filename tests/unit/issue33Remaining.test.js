@@ -10,7 +10,8 @@ test('audit query validates filters and returns only safe fields with exact pagi
   const service = createAdminService({
     env,
     fetchImpl: async (url, options) => {
-      assert.match(url, /audit_logs\?select=actor_user_id,target_user_id,target_email,target_meeting_id,old_role,new_role,request_id,action,result,created_at&order=created_at.desc/);
+      assert.match(url, /audit_logs\?select=actor_user_id,target_user_id,target_meeting_id,request_id,action,result,created_at&order=created_at.desc/);
+      assert.doesNotMatch(url, /target_email|old_role|new_role/);
       assert.match(url, /action=eq\.member_invited/);
       assert.match(url, /result=eq\.failure/);
       assert.equal(options.headers.Range, '25-49');

@@ -150,9 +150,13 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   newChannel.open();
   newChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
     sourceId: 'source-2', sequence: 2, cues: [{ cueId: 'cue-2', sourceText: 'two' }] });
+  newChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1',
+    sourceId: 'source-2', sequence: 3, cue: { cueId: 'cue-3', sourceText: 'three' } });
+  oldChannel.onclose?.();
   oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1',
     sourceId: 'source-1', sequence: 3, cue: { cueId: 'late-old', sourceText: 'late' } });
-  assert.deepEqual(received.flatMap((packet) => packet.cues?.map((cue) => cue.cueId) || [packet.cue?.cueId]), ['cue-1', 'cue-2']);
+  assert.deepEqual(received.flatMap((packet) => packet.cues?.map((cue) => cue.cueId) || [packet.cue?.cueId]), ['cue-1', 'cue-2', 'cue-3']);
+  assert.equal(newChannel.closed, false, 'old generation close cannot tear down the open replacement channel');
   assert.equal(statuses.includes('reconnecting'), true);
   assert.equal(statuses.at(-1), 'restored');
   await transport.stop();

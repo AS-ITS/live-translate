@@ -7,11 +7,11 @@ Live pipeline trace vocabulary: use `TRANSCRIPT_NORMALIZED`, `TURN_ASSIGNED`, `C
 最小自動化驗證：
 
 ```bash
-node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/meetingViewerSnapshot.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingViewerRealtime.test.js tests/unit/webrtcPocPage.test.js
+node --test tests/unit/webrtcSignalingRoute.test.js tests/unit/webrtcSubtitleDataChannel.test.js tests/unit/webrtcSubtitleTransport.test.js tests/unit/viewerLongSessionRecovery.test.js tests/unit/meetingViewerSnapshot.test.js tests/unit/meetingViewerState.test.js tests/unit/meetingViewerRealtime.test.js tests/unit/webrtcPocPage.test.js
 npm run build
 ```
 
-這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
+這些測試涵蓋 Viewer code/token 分流、Device `canRecord` 授權邊界、拒絕 expired/revoked/mismatch/stopped、Viewer 禁止 offer/stop、participant heartbeat、8 秒 signaling timeout、暫時 poll 失敗、5 秒 disconnected grace、ICE restart、DataChannel close/error、舊 epoch、6 次重試耗盡、Realtime token refresh 與故障 reconnect timer 隔離、reconnect snapshot/replay、Segment sequence domain、snapshot 503 retry、same-source replay、sidecar 清理與 Cue 去重。跨網路實機仍依 [WebRTC Preview runbook](verification/webrtc-browser-deployment.md) 執行，不得以單元測試替代。
 
 ## Vercel Relay PoC verification boundary
 

@@ -1,4 +1,5 @@
 import { createSupabaseViewerRealtimeClient, isSupabaseConfigured } from './supabaseAuth.js';
+import { recordLivePipelineTrace } from './livePipelineTrace.js';
 
 const TOKEN_REFRESH_SKEW_MS = 30_000;
 const RECONNECT_DELAYS_MS = Object.freeze([1_000, 2_000, 4_000, 8_000, 10_000, 10_000]);
@@ -31,6 +32,7 @@ export function createMeetingViewerRealtimeController({
   let accessToken = null;
   let channel = null;
   let reconnectTimer = null;
+  let tokenRefreshTimer = null;
   let reconnectAttempts = 0;
   let generation = 0;
 
@@ -38,12 +40,20 @@ export function createMeetingViewerRealtimeController({
     const currentGeneration = ++generation;
     const isCurrent = () => !stopped && currentGeneration === generation;
     clearScheduledReconnect();
+    recordLivePipelineTrace({
+      stage: 'VIEWER_REALTIME', eventType: 'token.request', transportGeneration: currentGeneration,
+      transportResult: 'connecting',
+    });
     onConnecting?.();
     try {
       const response = await fetchImpl(`${basePath}/realtime-token`, { method: 'POST' });
       const authorization = await response.json().catch(() => null);
       if (!response.ok) throw createRealtimeError(response.status, authorization);
       if (!isCurrent()) return;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_REALTIME', eventType: 'token.received', transportGeneration: currentGeneration,
+        transportResult: 'authorized',
+      });
       accessToken = authorization.accessToken;
       if (!realtimeClient) realtimeClient = clientFactory(async () => accessToken);
       if (!realtimeClient) throw new Error('無法建立即時字幕連線。');
@@ -59,8 +69,11 @@ export function createMeetingViewerRealtimeController({
         });
       channel.subscribe(async (status) => {
         if (!isCurrent()) return;
+        recordLivePipelineTrace({
+          stage: 'VIEWER_REALTIME', eventType: 'channel.status', channelStatus: status,
+          transportGeneration: currentGeneration, transportResult: status,
+        });
         if (status === 'SUBSCRIBED') {
-          reconnectAttempts = 0;
           try {
             await onSubscribed?.({
               isCurrent,
@@ -90,14 +103,28 @@ export function createMeetingViewerRealtimeController({
             scheduleReconnect();
             return;
           }
+          reconnectAttempts = 0;
           const refreshDelay = Math.max(1000, Number(authorization.expiresAt) - Date.now() - TOKEN_REFRESH_SKEW_MS);
-          reconnectTimer = setTimer(() => void reconnect(), refreshDelay);
+          clearTokenRefresh();
+          tokenRefreshTimer = setTimer(() => {
+            tokenRefreshTimer = null;
+            void reconnect();
+          }, refreshDelay);
         } else if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) {
+          const error = new Error('即時字幕連線已中斷。');
+          error.code = 'realtime_channel_interrupted';
+          error.channelStatus = status;
+          error.generation = currentGeneration;
+          onError?.(error);
           scheduleReconnect();
         }
       });
     } catch (error) {
       if (!isCurrent()) return;
+      recordLivePipelineTrace({
+        stage: 'VIEWER_REALTIME', eventType: 'connect.failed', transportGeneration: currentGeneration,
+        reason: error?.code || error?.message, transportResult: 'failed',
+      });
       onError?.(error);
       if (isTerminalRealtimeError(error)) {
         stopped = true;
@@ -113,6 +140,7 @@ export function createMeetingViewerRealtimeController({
     onTelemetry?.('reconnect');
     generation += 1;
     clearScheduledReconnect();
+    clearTokenRefresh();
     const previous = channel;
     channel = null;
     if (previous) await realtimeClient?.removeChannel(previous).catch(() => {});
@@ -121,6 +149,7 @@ export function createMeetingViewerRealtimeController({
 
   function scheduleReconnect() {
     if (stopped || reconnectTimer) return;
+    clearTokenRefresh();
     if (reconnectAttempts >= RECONNECT_DELAYS_MS.length) {
       const exhausted = new Error('多次重新連線後仍無法取得即時字幕。');
       exhausted.code = 'viewer_retry_exhausted';
@@ -130,6 +159,11 @@ export function createMeetingViewerRealtimeController({
     }
     const delay = jitter(RECONNECT_DELAYS_MS[reconnectAttempts], random);
     reconnectAttempts += 1;
+    recordLivePipelineTrace({
+      stage: 'VIEWER_REALTIME', eventType: 'reconnect.scheduled',
+      transportGeneration: generation, eventSequence: reconnectAttempts,
+      decision: 'retry', transportResult: 'scheduled',
+    });
     reconnectTimer = setTimer(() => {
       reconnectTimer = null;
       void reconnect();
@@ -141,6 +175,11 @@ export function createMeetingViewerRealtimeController({
     reconnectTimer = null;
   }
 
+  function clearTokenRefresh() {
+    if (tokenRefreshTimer) clearTimer(tokenRefreshTimer);
+    tokenRefreshTimer = null;
+  }
+
   return Object.freeze({
     start() {
       void connect();
@@ -149,6 +188,7 @@ export function createMeetingViewerRealtimeController({
       stopped = true;
       generation += 1;
       clearScheduledReconnect();
+      clearTokenRefresh();
       const previous = channel;
       channel = null;
       if (previous) await realtimeClient?.removeChannel(previous).catch(() => {});

@@ -273,6 +273,10 @@ Reconnect behavior:
 The WebRTC fast path renews its signaling participant with an authorized `/join`.
 Viewer join requests a fresh negotiation, Device maintains a targeted peer per
 Viewer, and low-frequency discovery polling continues while channels are open.
+Supabase Realtime token refresh and channel-failure reconnect use independent
+timers. A `CHANNEL_ERROR`, `TIMED_OUT`, or `CLOSED` status cancels the current
+generation's refresh timer, tears down that channel, and starts bounded
+reconnect; late callbacks from an old generation cannot remove its replacement.
 The Viewer keeps current Cues during recovery. A transient `disconnected` state receives
 a five-second grace period; the Device then attempts ICE restart and rebuilds
 the peer if recovery does not complete within ten seconds. Full reconnect uses

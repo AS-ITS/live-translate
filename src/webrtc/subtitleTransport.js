@@ -66,6 +66,22 @@ export function createWebRtcSubtitleTransport({
     onStatus?.(Object.freeze({ value, ...details }));
   }
 
+  function trace(stage, eventType, context = null, details = {}) {
+    recordLivePipelineTrace({
+      stage,
+      meetingId,
+      participantId,
+      connectionEpoch: context?.epoch ?? details.epoch ?? connectionEpoch,
+      negotiationId: context?.negotiationId,
+      eventType,
+      connectionState: context?.pc?.connectionState,
+      iceConnectionState: context?.pc?.iceConnectionState,
+      signalingState: context?.pc?.signalingState,
+      dataChannelState: context?.channel?.readyState,
+      ...details,
+    });
+  }
+
   function isCurrent(context) {
     return !stopped && context.epoch === connectionEpoch
       && (role === 'device' ? devicePeers.get(context.viewerId) === context : active === context);
@@ -133,11 +149,13 @@ export function createWebRtcSubtitleTransport({
     devicePollFailures = 0;
     const epoch = ++connectionEpoch;
     status(reconnecting ? 'reconnecting' : 'connecting', { epoch, attempt: retryAttempt });
+    trace('WEBRTC_SIGNALING', 'join.request', null, { epoch, decision: reconnecting ? 'reconnect' : 'connect' });
     try {
       const joinResult = await client.join();
       if (stopped || epoch !== connectionEpoch) return;
       joined = true;
       iceServers = joinResult.iceServers || [];
+      trace('WEBRTC_SIGNALING', 'join.success', null, { epoch, transportResult: 'joined' });
       scheduleHeartbeat(joinResult.ttlMs, epoch);
       if (role === 'device') {
         status('waiting', { epoch });
@@ -163,6 +181,7 @@ export function createWebRtcSubtitleTransport({
       wirePeer(context);
       await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
       if (!isCurrent(context)) return;
+      trace('WEBRTC_SIGNALING', 'viewer-ready.sent', context, { transportResult: 'accepted' });
       status('waiting', { epoch, negotiationId: context.negotiationId });
       context.negotiationTimer = setTimer(() => {
         context.negotiationTimer = null;
@@ -171,6 +190,9 @@ export function createWebRtcSubtitleTransport({
       schedulePoll(context);
     } catch (error) {
       if (stopped || epoch !== connectionEpoch) return;
+      trace('WEBRTC_SIGNALING', 'join.failed', null, {
+        epoch, reason: error?.code || error?.message || 'connect_failed', transportResult: 'failed',
+      });
       handleConnectError(error, 'connect_failed');
     }
   }
@@ -184,6 +206,7 @@ export function createWebRtcSubtitleTransport({
     };
     context.pc.onconnectionstatechange = () => {
       if (!isCurrent(context)) return;
+      trace('WEBRTC_PEER_STATE', 'connectionstatechange', context);
       if (context.pc.connectionState === 'connected') {
         clearContextTimer(context, 'disconnectTimer');
         clearContextTimer(context, 'iceRestartTimer');
@@ -195,7 +218,24 @@ export function createWebRtcSubtitleTransport({
       } else if (context.pc.connectionState === 'failed') {
         if (role === 'device') cleanupDevicePeer(context);
         else scheduleReconnect('peer_failed');
+      } else if (context.pc.connectionState === 'closed') {
+        if (role === 'device') cleanupDevicePeer(context);
+        else scheduleReconnect('peer_closed');
       }
+    };
+    context.pc.oniceconnectionstatechange = () => {
+      if (!isCurrent(context)) return;
+      trace('WEBRTC_PEER_STATE', 'iceconnectionstatechange', context);
+      if (context.pc.iceConnectionState === 'disconnected') {
+        context.connected = false;
+        scheduleDisconnectedRecovery(context);
+      } else if (context.pc.iceConnectionState === 'failed' || context.pc.iceConnectionState === 'closed') {
+        if (role === 'device') cleanupDevicePeer(context);
+        else scheduleReconnect(`ice_${context.pc.iceConnectionState}`);
+      }
+    };
+    context.pc.onsignalingstatechange = () => {
+      if (isCurrent(context)) trace('WEBRTC_PEER_STATE', 'signalingstatechange', context);
     };
     context.pc.ondatachannel = ({ channel }) => wireChannel(context, channel);
   }
@@ -216,19 +256,31 @@ export function createWebRtcSubtitleTransport({
     context.adapter = createSubtitleDataChannelAdapter(nextChannel, {
       onEnvelope: (envelope) => {
         if (!isCurrent(context)) return;
+        trace('WEBRTC_DATA_CHANNEL', 'message.received', context, {
+          messageType: envelope.type,
+          sourceId: envelope.sourceId,
+          sequence: envelope.sequence ?? envelope.toSequence ?? null,
+          cueId: envelope.cue?.cueId,
+          revision: envelope.cue?.revision,
+          segmentId: envelope.cue?.segmentId,
+          sessionId: envelope.cue?.sessionId,
+          receivedAt: Date.now(),
+          transportResult: 'received',
+        });
         if (role === 'device' && envelope.type === SUBTITLE_ENVELOPE_TYPES.replayRequest) {
           context.adapter?.send(source.replay(envelope));
           return;
         }
         if (role === 'viewer') {
-          rememberViewerCursor(envelope);
-          onEnvelope?.(envelope);
+          rememberViewerCursor(context, envelope);
+          onEnvelope?.(envelope, Object.freeze({ transportGeneration: context.epoch, receivedAt: Date.now() }));
         }
       },
       onError: (error) => { if (isCurrent(context)) handleAsyncError(error); },
     });
     nextChannel.onopen = () => {
       if (!isCurrent(context)) return;
+      trace('WEBRTC_DATA_CHANNEL', 'open', context, { transportResult: 'open' });
       markConnected(context);
       if (role === 'device') context.adapter.send(source.snapshot());
       else context.adapter.send(createReplayRequest({
@@ -240,11 +292,15 @@ export function createWebRtcSubtitleTransport({
     };
     nextChannel.onclose = () => {
       if (!isCurrent(context)) return;
+      trace('WEBRTC_DATA_CHANNEL', 'close', context, { transportResult: 'closed' });
       if (role === 'device') cleanupDevicePeer(context);
       else scheduleReconnect('data_channel_closed');
     };
     nextChannel.onerror = (error) => {
       if (!isCurrent(context)) return;
+      trace('WEBRTC_DATA_CHANNEL', 'error', context, {
+        reason: error?.message || 'data_channel_error', transportResult: 'failed',
+      });
       handleAsyncError(error);
       if (role === 'device') cleanupDevicePeer(context);
       else scheduleReconnect('data_channel_error');
@@ -466,6 +522,7 @@ export function createWebRtcSubtitleTransport({
   function scheduleReconnect(reason = 'transport_interrupted', { immediate = false } = {}) {
     if (stopped || reconnectTimer) return;
     hadOutage = true;
+    connectionEpoch += 1;
     clearHeartbeat();
     clearDevicePoll();
     cleanupAllPeers();
@@ -501,7 +558,8 @@ export function createWebRtcSubtitleTransport({
     detachLifecycleListeners();
   }
 
-  function rememberViewerCursor(envelope) {
+  function rememberViewerCursor(context, envelope) {
+    if (!isCurrent(context)) return;
     if (typeof envelope?.sourceId === 'string' && envelope.sourceId.length > 0) {
       if (lastSourceId !== envelope.sourceId) lastSourceSequence = 0;
       lastSourceId = envelope.sourceId;
@@ -555,6 +613,16 @@ export function createWebRtcSubtitleTransport({
       cueVersions.set(cue.cueId, { serialized, revision: normalized.revision });
       let sent = false;
       for (const context of devicePeers.values()) sent = Boolean(context.adapter?.send(envelope)) || sent;
+      trace('WEBRTC_CUE_PUBLISH', messageType, null, {
+        cueId: cue.cueId,
+        sequence: envelope.sequence,
+        revision: normalized.revision,
+        segmentId: cue.segmentId,
+        sessionId: cue.sessionId,
+        sourceId: envelope.sourceId,
+        decision: sent ? 'sent_live' : 'stored_for_snapshot',
+        transportResult: sent ? 'sent' : 'no_open_channel',
+      });
       return sent;
     } catch (error) {
       recordEnvelopeRejection(cue, messageType, error);

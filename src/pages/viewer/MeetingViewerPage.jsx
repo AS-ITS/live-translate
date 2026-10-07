@@ -147,7 +147,7 @@ export function MeetingViewerPage({ token, code }) {
       } else setChannelState('fallback', { value: 'failed' }, value?.message || '無法連線。');
     }
 
-    function applyWebRtcEnvelope(envelope) {
+    function applyWebRtcEnvelope(envelope, transportMeta = {}) {
       if (cancelled || terminal) return;
       if (envelope.type === 'meeting.stopped') {
         terminal = true;
@@ -163,14 +163,21 @@ export function MeetingViewerPage({ token, code }) {
         });
         detailRef.current = merged;
         setDetail(merged);
+        recordLivePipelineTrace({
+          stage: 'VIEWER_STORE_UPDATED', meetingId: merged?.meeting?.id || merged?.meetingId,
+          messageType: 'snapshot', sequence: envelope.sequence, sourceId: envelope.sourceId,
+          transportGeneration: transportMeta.transportGeneration,
+          receivedAt: transportMeta.receivedAt,
+          decision: 'snapshot_merged', transportResult: 'updated',
+        });
         return;
       }
       if (envelope.type === 'replay.response') {
-        (envelope.events || []).forEach(applyWebRtcEnvelope);
+        (envelope.events || []).forEach((event) => applyWebRtcEnvelope(event, transportMeta));
         return;
       }
       if (envelope.type === 'cue.append' || envelope.type === 'cue.update') {
-        applyCuePayload(envelope);
+        applyCuePayload(envelope, transportMeta);
       }
     }
 
@@ -227,28 +234,70 @@ export function MeetingViewerPage({ token, code }) {
       if (retried && sseConnected) setChannelState('fallback', { value: 'restored' });
       return merged;
     }
-    function applyCuePayload(payload) {
+    function applyCuePayload(payload, transportMeta = {}) {
       if (cancelled || terminal) return;
-      const receivedAt = Date.now();
+      const receivedAt = transportMeta.receivedAt || Date.now();
       const receivedCue = payload?.cue && typeof payload.cue === 'object' ? payload.cue : payload;
+      const duplicate = meetingEventDuplicateDetected(detailRef.current, payload);
       recordLivePipelineTrace({
         stage: 'VIEWER_RECEIVED',
+        meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
         recordingId: receivedCue?.sessionId || null,
         segmentId: receivedCue?.segmentId || null,
         audioTurnId: receivedCue?.audioTurnId || null,
         turnKey: receivedCue?.turnKey || null,
         cueId: receivedCue?.cueId || null,
-        reason: payload.type || 'viewer_cue_received'
+        messageType: payload.type || 'viewer_cue_received',
+        sequence: payload.sequence ?? receivedCue?.sequence,
+        revision: receivedCue?.revision,
+        sourceVersion: receivedCue?.sourceVersion,
+        translationVersion: receivedCue?.translationVersion,
+        transportGeneration: transportMeta.transportGeneration,
+        receivedAt,
+        reason: payload.type || 'viewer_cue_received',
+        transportResult: duplicate ? 'deduped' : 'accepted',
       });
+      if (duplicate) {
+        recordLivePipelineTrace({
+          stage: 'VIEWER_PACKET_DROPPED', cueAction: 'drop',
+          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+          cueId: receivedCue?.cueId, messageType: payload.type,
+          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+          sourceVersion: receivedCue?.sourceVersion, translationVersion: receivedCue?.translationVersion,
+          transportGeneration: transportMeta.transportGeneration,
+          receivedAt, dropReason: 'stale_or_duplicate_revision', transportResult: 'dropped',
+        });
+      }
       const next = applyMeetingCueEvent(detailRef.current, payload);
       detailRef.current = next;
       setDetail(next);
+      recordLivePipelineTrace({
+        stage: 'VIEWER_STORE_UPDATED',
+        meetingId: receivedCue?.meetingId || next?.meeting?.id || next?.meetingId,
+        sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+        cueId: receivedCue?.cueId, messageType: payload.type,
+        sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+        transportGeneration: transportMeta.transportGeneration,
+        receivedAt, decision: duplicate ? 'unchanged' : 'merged',
+        transportResult: duplicate ? 'deduped' : 'updated',
+      });
       requestAnimationFrame(() => {
+        const renderedAt = Date.now();
         const sample = viewerLatencySample({
           ...payload,
           timing: { ...(payload.timing || {}), publishedAt: payload.committedAt || payload.timing?.publishedAt, receivedAt }
-        }, { renderedAt: Date.now() });
+        }, { renderedAt });
         if (sample) latencySamplesRef.current.push(sample);
+        recordLivePipelineTrace({
+          stage: 'REACT_RENDER',
+          meetingId: receivedCue?.meetingId || detailRef.current?.meeting?.id || detailRef.current?.meetingId,
+          sessionId: receivedCue?.sessionId, segmentId: receivedCue?.segmentId,
+          cueId: receivedCue?.cueId, messageType: payload.type,
+          sequence: payload.sequence ?? receivedCue?.sequence, revision: receivedCue?.revision,
+          transportGeneration: transportMeta.transportGeneration,
+          receivedAt, timestamp: renderedAt, transportResult: 'rendered',
+        });
       });
     }
     let sseConnected = false;

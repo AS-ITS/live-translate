@@ -11,7 +11,9 @@ const CONSOLE_STAGES = new Set([
   'SESSION_ROLLOVER_START', 'SESSION_CREATED', 'SESSION_SCOPE_SWITCHED',
   'CUE_PERSIST_REQUEST', 'CUE_PERSIST_FAILED', 'CHECKPOINT_REQUEST', 'CHECKPOINT_FAILED',
   'DURABLE_OPERATION_CREATED', 'DURABLE_OPERATION_RETRY', 'RECORDING_PIPELINE_STATE',
-  'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'REACT_RENDER', 'DATA_CHANNEL_ENVELOPE_REJECTED'
+  'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'VIEWER_PACKET_DROPPED', 'VIEWER_STORE_UPDATED', 'REACT_RENDER',
+  'WEBRTC_SIGNALING', 'WEBRTC_PEER_STATE', 'WEBRTC_DATA_CHANNEL', 'WEBRTC_CUE_PUBLISH', 'VIEWER_REALTIME',
+  'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
 
@@ -60,10 +62,14 @@ export function createLivePipelineTrace({
       oldSegmentId: safeId(input.oldSegmentId),
       newSegmentId: safeId(input.newSegmentId),
       participantId: safeId(input.participantId),
+      negotiationId: safeId(input.negotiationId),
+      sourceId: safeId(input.sourceId),
       operationId: safeId(input.operationId),
       captureEpoch: input.captureEpoch ?? null,
       providerEpoch: input.providerEpoch ?? null,
       connectionEpoch: input.connectionEpoch ?? null,
+      transportGeneration: input.transportGeneration ?? input.connectionEpoch ?? null,
+      snapshotGeneration: input.snapshotGeneration ?? null,
       audioTurnId: safeId(input.audioTurnId),
       providerEventId,
       normalizedEventId,
@@ -90,7 +96,15 @@ export function createLivePipelineTrace({
       decision: safeId(input.decision),
       eventId: safeId(input.eventId),
       eventSequence: input.eventSequence ?? null,
+      sequence: input.sequence ?? null,
+      revision: input.revision ?? null,
       eventType: safeId(input.eventType),
+      connectionState: safeId(input.connectionState),
+      iceConnectionState: safeId(input.iceConnectionState),
+      signalingState: safeId(input.signalingState),
+      dataChannelState: safeId(input.dataChannelState),
+      channelStatus: safeId(input.channelStatus),
+      receivedAt: Number.isFinite(input.receivedAt) ? input.receivedAt : null,
       terminalStatus: safeId(input.terminalStatus),
       terminalReason: safeId(input.terminalReason),
       localFinalize: Boolean(input.localFinalize),

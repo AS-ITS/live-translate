@@ -25,10 +25,8 @@ test('guides users from the meeting flow to the Gemini Key settings page', async
   await expect(input).toBeVisible();
   await input.fill('test-ABcd');
   await page.getByRole('button', { name: '設定金鑰' }).click();
-  await expect(page.getByText('...ABcd', { exact: true })).toBeVisible();
-  await expect(page.locator('body')).not.toContainText('test-ABcd');
-  await page.getByRole('link', { name: '返回會議管理' }).click();
   await expect(page).toHaveURL(/#meetings$/);
+  await expect(page.locator('body')).not.toContainText('test-ABcd');
   await expect(page.locator('.header-key-action')).not.toHaveClass(/is-missing/);
   await expect(page.locator('.gemini-credential-notice')).toHaveCount(0);
   await page.getByRole('link', { name: 'Gemini Key' }).click();
@@ -36,7 +34,7 @@ test('guides users from the meeting flow to the Gemini Key settings page', async
   await expect(page.getByText('...ABcd', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '撤消金鑰' }).click();
   await expect(page.getByText('...ABcd', { exact: true })).toHaveCount(0);
-  await page.getByRole('link', { name: '返回會議管理' }).click();
+  await page.getByRole('link', { name: '返回上一頁' }).click();
   await expect(page).toHaveURL(/#meetings$/);
   await expect(page.locator('.header-key-action')).toHaveClass(/is-missing/);
 });

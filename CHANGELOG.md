@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Gemini API Key 設定成功後會自動返回進入設定前的內部頁面；從 Live Meeting 進入時會回到同一場會議，可立即開始錄製。直接開啟設定頁則返回會議管理。
+
+- 修正 Viewer 長時間連線後 Supabase Realtime channel 中斷時，被已排程的 JWT refresh timer 阻擋 reconnect 的問題；token refresh 與故障重連改用獨立 timer/generation，並補齊 WebRTC peer/ICE/DataChannel、packet receive/drop、Viewer store 與 React render transport trace。Segment rollover 與 Recorder lifecycle 未變更。
+
 - Viewer 頂部新增常駐會議分享 Header，共用 Meeting Settings 的 canonical Viewer URL 與 QR Code 產生邏輯；字幕維持獨立捲動，手機版縮小 QR Code，重連時不會重建 Header。字幕顯示、回到最新與重新連線操作統一使用高對比主色按鈕。
 - 修正 Viewer 在 auto-follow 狀態載入較舊字幕後不顯示「回到最新字幕」的問題；載入歷史字幕現在會明確進入回看狀態，按鈕可回到最新 Cue。
 - 優化錄製頁與 Viewer 的原文／翻譯顯示開關：按鈕不再因至少顯示一側而停用；隱藏唯一可見字幕時會自動切換至另一側，且不再顯示冗餘提示。無效的全隱藏偏好仍會自動修復，顯示選擇不影響 Cue 接收、同步、儲存、複製或匯出。

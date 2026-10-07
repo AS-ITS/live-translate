@@ -24,8 +24,8 @@ test('Viewer snapshot retries transient 503 without discarding the current detai
   assert.deepEqual(waits, [1_000]);
 });
 
-test('Viewer snapshot does not retry revoked, stopped, or unauthorized shares', async () => {
-  for (const [status, code] of [[403, 'share_unauthorized'], [404, 'share_unauthorized'], [410, 'meeting_stopped']]) {
+test('Viewer snapshot does not retry revoked, expired, stopped, or unauthorized shares', async () => {
+  for (const [status, code] of [[403, 'share_unauthorized'], [404, 'share_unauthorized'], [410, 'meeting_stopped'], [410, 'meeting_content_expired']]) {
     let attempts = 0;
     await assert.rejects(() => fetchMeetingViewerSnapshotWithRetry({
       url: '/api/shared-meetings/token',
@@ -34,6 +34,14 @@ test('Viewer snapshot does not retry revoked, stopped, or unauthorized shares', 
     }), (error) => error.code === code);
     assert.equal(attempts, 1);
   }
+});
+
+test('Viewer expiry uses the canonical safe retention message', async () => {
+  await assert.rejects(() => fetchMeetingViewerSnapshotWithRetry({
+    url: '/api/shared-meetings/token',
+    fetchImpl: async () => response(410, { error: { code: 'meeting_content_expired' } }),
+    wait: async () => {}
+  }), (error) => error.code === 'meeting_content_expired' && error.message === '此會議內容已超過保留時間。');
 });
 
 test('Viewer snapshot reports retry exhaustion after six bounded attempts', async () => {

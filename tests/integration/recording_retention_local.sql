@@ -110,49 +110,15 @@ from fixed where r.meeting_id = '30303030-3030-4030-8030-303030303030';
 select set_config('request.jwt.claim.role', 'service_role', true);
 set local role service_role;
 do $$
-declare claim record;
 begin
-  select * into claim from public.claim_due_recording_cleanup('integration-worker');
-  if claim.meeting_id <> '30303030-3030-4030-8030-303030303030' or claim.phase <> 'storage' then
-    raise exception 'due recording was not claimed';
+  if (select count(*) from public.claim_due_recording_cleanup('integration-worker')) <> 0 then
+    raise exception 'automatic recording cleanup claim remained enabled';
   end if;
-  if (select count(*) from public.claim_due_recording_cleanup('second-worker')) <> 0 then
-    raise exception 'persisted throttle allowed immediate second batch';
+  if (select count(*) from public.sessions where meeting_id = '30303030-3030-4030-8030-303030303030') <> 2 then
+    raise exception 'expired Session rows were physically removed before manual deletion';
   end if;
-  if not public.advance_recording_cleanup(claim.recording_id, 'integration-worker', 'outputs') then
-    raise exception 'storage phase did not advance';
-  end if;
-  update public.meeting_cleanup_throttle set next_run_at = '-infinity' where id = true;
-  select * into claim from public.claim_due_recording_cleanup('integration-worker');
-  if claim.phase <> 'outputs' then raise exception 'cleanup did not resume at persisted phase'; end if;
-  begin
-    perform public.purge_recording_content_batch(claim.recording_id, 'integration-worker', 51);
-    raise exception 'row batch over 50 was accepted' using errcode = 'ZX001';
-  exception when sqlstate '22023' then null;
-  end;
-  if public.purge_recording_content_batch(claim.recording_id, 'integration-worker', 50) <> 0 then
-    raise exception 'unexpected content rows removed';
-  end if;
-  if (select cleanup_phase from public.meeting_recordings where id = claim.recording_id) <> 'executions' then
-    raise exception 'cleanup phase did not advance after empty bounded batch';
-  end if;
-  update public.meeting_recordings set cleanup_phase = 'segments' where id = claim.recording_id;
-  update public.meeting_cleanup_throttle set next_run_at = '-infinity' where id = true;
-  select * into claim from public.claim_due_recording_cleanup('integration-worker');
-  if public.purge_recording_content_batch(claim.recording_id, 'integration-worker', 50) <> 1 then
-    raise exception 'expired segment content was not zeroed';
-  end if;
-  if (select checkpoint from public.meeting_segments where id = '50505050-5050-4050-8050-505050505050') <> '{}'::jsonb then
-    raise exception 'segment checkpoint survived bounded cleanup';
-  end if;
-  update public.meeting_recordings set cleanup_phase = 'sessions' where id = claim.recording_id;
-  update public.meeting_cleanup_throttle set next_run_at = '-infinity' where id = true;
-  select * into claim from public.claim_due_recording_cleanup('integration-worker');
-  if public.purge_recording_content_batch(claim.recording_id, 'integration-worker', 50) <> 1 then
-    raise exception 'expired Session payload was not zeroed';
-  end if;
-  if (select payload from public.sessions where id = '70707070-7070-4070-8070-707070707070') <> '{}'::jsonb then
-    raise exception 'Session payload survived bounded cleanup';
+  if (select checkpoint from public.meeting_segments where id = '50505050-5050-4050-8050-505050505050') = '{}'::jsonb then
+    raise exception 'expired segment checkpoint was cleared before manual deletion';
   end if;
 end $$;
 reset role;

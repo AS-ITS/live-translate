@@ -13,9 +13,9 @@ test('meeting list deletes created drafts and completed Meetings without opening
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify([
-          { id: 'meeting-draft', name: '草稿會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
+          { id: 'meeting-draft', name: '草稿會議', status: 'created', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', canDelete: true },
           { id: 'meeting-active', name: '進行中會議', status: 'active', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' },
-          { id: 'meeting-completed', name: '已完成會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }
+          { id: 'meeting-completed', name: '已完成會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', canDelete: true }
         ])
       });
       return;
@@ -77,7 +77,7 @@ test('bounded delete keeps completed Meeting visible until 204', async ({ page }
     const { pathname } = new URL(route.request().url());
     if (route.request().method() === 'GET' && pathname === '/api/meetings') {
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-        { id: 'meeting-completed', name: '待清理會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }
+        { id: 'meeting-completed', name: '待清理會議', status: 'completed', sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en', canDelete: true, isPendingDelete: true, expiresAt: '2026-10-07T00:00:00.000Z' }
       ]) });
     } else if (route.request().method() === 'DELETE' && pathname === '/api/meetings/meeting-completed') {
       deletionAttempts += 1;
@@ -88,6 +88,8 @@ test('bounded delete keeps completed Meeting visible until 204', async ({ page }
   await page.route('**/api/glossary**', (route) => route.fulfill({ json: { entries: [] } }));
   await page.goto('/#meeting');
   const card = page.locator('.meeting-card').filter({ hasText: '待清理會議' });
+  await expect(card.getByText('待刪除')).toBeVisible();
+  await expect(card.getByTestId('meeting-pending-delete')).toContainText('刪除時間');
   const button = card.getByRole('button', { name: '刪除 待清理會議' });
   await expect(button).toBeVisible();
   page.once('dialog', (dialog) => dialog.accept());

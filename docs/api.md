@@ -1,5 +1,16 @@
 # Live Translate API and Events
 
+## Current Meeting expiry policy (2026-10-07)
+
+Successful completion freezes the existing database-generated `ended_at` and
+`purge_at = ended_at + 30 minutes`. At `purge_at`, ordinary Meeting list/detail
+reads hide the Meeting and Viewer/content routes return the canonical
+`410 meeting_content_expired`. Active `super_admin` reads retain metadata with
+derived `isPendingDelete: true`, but not expired recording content. Expiry does
+not run physical cleanup; the existing authorized
+`DELETE /api/meetings/:meetingId` path is the only cloud deletion path. This
+policy supersedes older cleanup-worker wording below.
+
 ## `GET /api/runtime-config`
 
 Public, browser-safe startup configuration. The response is not cached and
@@ -649,9 +660,10 @@ provider audio are not rewritten. Completed Meetings are read-only and return
 
 ## `DELETE /api/meetings/:meetingId`
 
-The owner or active super-admin may delete a created or completed Meeting,
-including one whose recording content is expired or already cleared. An active
-or otherwise resumable Meeting keeps its existing `409` restriction. Deletion
+The owner or active super-admin may delete a non-expired created or completed
+Meeting. After the recording content expires, deletion is restricted to an
+active super-admin. An active or otherwise resumable Meeting keeps its existing
+`409` restriction. Deletion
 removes Meeting-specific children and Storage objects but retains shared
 glossary, accounts, credentials, audit history, and a protected minimal deletion
 tombstone. Bounded Storage deletion may return `202 {"status":"deleting"}`;

@@ -20,6 +20,7 @@ const CONSOLE_STAGES = new Set([
   'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
+let elapsedContext = Object.freeze({ meetingStartedAtMs: null, sessionStartedAtMs: null });
 
 function boundedLimit(limit) {
   return Number.isInteger(limit) && limit > 0 ? Math.min(limit, DEFAULT_TRACE_LIMIT) : DEFAULT_TRACE_LIMIT;
@@ -38,6 +39,8 @@ export function createLivePipelineTrace({
   enabled = false,
   limit = DEFAULT_TRACE_LIMIT,
   now = () => new Date().toISOString(),
+  nowMs = () => Date.now(),
+  getElapsedContext = () => elapsedContext,
   logger = (...args) => console.debug(...args)
 } = {}) {
   let isEnabled = enabled === true;
@@ -54,10 +57,20 @@ export function createLivePipelineTrace({
     const normalizedEventId = safeId(input.normalizedEventId || (stage === 'TRANSCRIPT_NORMALIZED' ? input.eventId : null));
     let timestamp;
     try { timestamp = bounded(input.timestamp || now(), MAX_ID_LENGTH); } catch { timestamp = null; }
+    let currentTimeMs = null;
+    let timing = {};
+    try {
+      currentTimeMs = nowMs();
+      timing = getElapsedContext?.() || {};
+    } catch { /* Trace timing must never interrupt Live processing. */ }
+    const meetingElapsedMs = elapsedFrom(input.meetingElapsedMs, timing.meetingStartedAtMs, currentTimeMs);
+    const sessionElapsedMs = elapsedFrom(input.sessionElapsedMs, timing.sessionStartedAtMs, currentTimeMs);
     const entry = Object.freeze({
       traceSequence: ++nextTraceSequence,
       timestamp,
       stage,
+      meetingElapsedMs,
+      sessionElapsedMs,
       sessionId: safeId(input.sessionId),
       oldSessionId: safeId(input.oldSessionId),
       newSessionId: safeId(input.newSessionId),
@@ -177,3 +190,32 @@ export function createLivePipelineTrace({
 export const livePipelineTrace = createLivePipelineTrace();
 export function configureLivePipelineTrace(enabled) { return livePipelineTrace.setEnabled(enabled === true); }
 export function recordLivePipelineTrace(entry) { return livePipelineTrace.record(entry); }
+
+export function configureLivePipelineElapsedContext({ meetingStartedAt, sessionStartedAt } = {}) {
+  elapsedContext = Object.freeze({
+    meetingStartedAtMs: normalizedTimestamp(meetingStartedAt),
+    sessionStartedAtMs: normalizedTimestamp(sessionStartedAt)
+  });
+  return elapsedContext;
+}
+
+export function updateLivePipelineSessionStartedAt(sessionStartedAt) {
+  elapsedContext = Object.freeze({
+    ...elapsedContext,
+    sessionStartedAtMs: normalizedTimestamp(sessionStartedAt)
+  });
+  return elapsedContext;
+}
+
+function elapsedFrom(explicitValue, startedAtMs, currentTimeMs) {
+  if (Number.isFinite(explicitValue)) return Math.max(0, explicitValue);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(currentTimeMs)) return null;
+  return Math.max(0, currentTimeMs - startedAtMs);
+}
+
+function normalizedTimestamp(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}

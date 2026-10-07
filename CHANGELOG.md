@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Live 工作區新增以 Meeting `started_at` 推導的 `HH:MM:SS` 會議計時；pause、resume、reconnect 與 rollover 不會重設，也不會產生每秒資料庫寫入。Pipeline trace 同步加入 `meetingElapsedMs` 與 provider epoch 的 `sessionElapsedMs`。
+- Meeting 完成 30 分鐘後改為一般使用者與 Viewer 不可見、`super_admin` 顯示「待刪除」並沿用既有刪除路徑手動清理；移除 Meeting GET 觸發的自動實體清理，保留 immutable `ended_at`／`purge_at` 與 canonical `meeting_content_expired`。
+
 - 帳號管理新增 `member`／`super_admin` 升降權。後端與 service-role-only Supabase RPC 會在 advisory lock 內重新驗證操作者、禁止自我降權與最後一位管理者降權，並以同一 transaction 寫入角色變更與既有 audit log；角色與帳號狀態、Meeting ownership、Viewer 權限及 domain auto-activation 維持獨立。
 
 - 修正 Recorder WebRTC signaling heartbeat 遇到暫時性雲端 503 時錯誤拆除健康 Viewer DataChannel 的問題；既有 Viewer 連線現在持續接收本機 Cue，signaling control-plane 獨立重試，並補齊 persistence、checkpoint、WebRTC、DataChannel、Realtime 與分享狀態的因果 trace。

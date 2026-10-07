@@ -56,6 +56,30 @@ test('trace bounds text fields and isolates logger failures', () => {
   assert.doesNotThrow(() => trace.record({ stage: 'CUE_UPDATED', cueId: 'cue-1' }));
 });
 
+test('trace derives meeting and provider session elapsed time without changing event ordering', () => {
+  let nowMs = 4_663_000;
+  const trace = createLivePipelineTrace({
+    enabled: true,
+    nowMs: () => nowMs,
+    getElapsedContext: () => ({ meetingStartedAtMs: 0, sessionStartedAtMs: 4_080_000 }),
+    logger: () => {}
+  });
+
+  trace.record({ stage: 'SESSION_ROLLOVER_START' });
+  nowMs += 2_000;
+  trace.record({ stage: 'CHECKPOINT_FAILED' });
+
+  assert.deepEqual(trace.get().map(({ stage, traceSequence, meetingElapsedMs, sessionElapsedMs }) => ({
+    stage,
+    traceSequence,
+    meetingElapsedMs,
+    sessionElapsedMs
+  })), [
+    { stage: 'SESSION_ROLLOVER_START', traceSequence: 1, meetingElapsedMs: 4_663_000, sessionElapsedMs: 583_000 },
+    { stage: 'CHECKPOINT_FAILED', traceSequence: 2, meetingElapsedMs: 4_665_000, sessionElapsedMs: 585_000 }
+  ]);
+});
+
 test('persistence and Viewer transport traces preserve causal state fields', () => {
   const trace = createLivePipelineTrace({ enabled: true, logger: () => {} });
   trace.record({

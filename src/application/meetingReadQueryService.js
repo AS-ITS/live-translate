@@ -17,39 +17,66 @@ export function createMeetingReadQueryService({ meetingRepository, sessionReposi
   assertMeetingRepository(meetingRepository);
 
   return Object.freeze({
-    async listMeetingHistory() {
-      const meetings = await meetingRepository.listMeetings();
+    async listMeetingHistory({ actorUserId = null, isSystemAdmin = false, now = Date.now() } = {}) {
+      const meetings = await meetingRepository.listMeetings({ includeAll: isSystemAdmin });
+      const visibleMeetings = isSystemAdmin
+        ? meetings
+        : meetings.filter((meeting) => !isMeetingContentExpired(meeting, now));
       const items = await Promise.all(
-        [...meetings].map(async (meeting) => mapMeetingToHistoryListItem({
-          meeting,
-          segments: isMeetingContentExpired(meeting) ? [] : await meetingRepository.listMeetingSegments(meeting.id)
-        }))
+        [...visibleMeetings].map(async (meeting) => {
+          const expired = isMeetingContentExpired(meeting, now);
+          return {
+            ...mapMeetingToHistoryListItem({
+              meeting,
+              segments: expired ? [] : await meetingRepository.listMeetingSegments(meeting.id, meeting.ownerUserId)
+            }),
+            isPendingDelete: Boolean(isSystemAdmin && expired),
+            canDelete: Boolean(isSystemAdmin || !meeting.ownerUserId || (actorUserId && meeting.ownerUserId === actorUserId))
+          };
+        })
       );
 
       return items.sort(compareMeetingHistoryItems);
     },
 
-    async getMeetingDetail(meetingId) {
+    async getMeetingDetail(meetingId, { actorUserId = null, isSystemAdmin = false, now = Date.now() } = {}) {
       const normalizedMeetingId = validateRequiredString(meetingId, 'meetingId');
       const meeting = await meetingRepository.getMeeting(normalizedMeetingId);
       if (!meeting) {
         return null;
       }
-      if (isMeetingContentExpired(meeting)) {
-        return mapMeetingToDetailDTO({ meeting, segments: [], audioArtifacts: {}, cloudAudioArtifacts: [] });
+      if (isMeetingContentExpired(meeting, now)) {
+        if (!isSystemAdmin) throw meetingContentExpiredError();
+        const detail = mapMeetingToDetailDTO({ meeting, segments: [], audioArtifacts: {}, cloudAudioArtifacts: [] });
+        return {
+          ...detail,
+          meeting: {
+            ...detail.meeting,
+            isPendingDelete: true,
+            canDelete: true
+          }
+        };
       }
 
-      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId);
+      const segments = await meetingRepository.listMeetingSegments(normalizedMeetingId, meeting.ownerUserId);
       const cloudAudioArtifacts = meetingAudioService
         ? await listCloudAudioArtifacts(meetingAudioService, normalizedMeetingId)
         : [];
 
-      return mapMeetingToDetailDTO({
+      const detail = mapMeetingToDetailDTO({
         meeting,
         segments,
         audioArtifacts: await audioArtifactsForMeeting(sessionRepository, normalizedMeetingId, segments),
         cloudAudioArtifacts: attachSegmentSequence(cloudAudioArtifacts, segments)
       });
+      return {
+        ...detail,
+        meeting: {
+          ...detail.meeting,
+          isPendingDelete: false,
+          canDelete: Boolean(isSystemAdmin || !meeting.ownerUserId || (actorUserId && meeting.ownerUserId === actorUserId))
+        }
+      };
     },
 
     async getMeetingViewerPage(meetingId, options = {}) {

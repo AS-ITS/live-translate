@@ -11,7 +11,7 @@ import {
 import { missingNumericIntegrity } from '../../lib/numericIntegrity.js';
 import { enqueueLiveCueEvent } from '../../lib/liveCueEventQueue.js';
 import { applyGlossaryCorrectionsToCueState } from '../../lib/glossaryReplacement.js';
-import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import { createSessionSnapshotSyncCoordinator } from '../../lib/sessionSnapshotSyncCoordinator.js';
 import { checkpointChunksForTranscriptItems, createMeetingCheckpointSyncCoordinator } from '../../lib/meetingCheckpointSyncCoordinator.js';
 import { createReconnectController } from '../../lib/reconnectController.js';
@@ -225,6 +225,19 @@ export function useLiveRecordingController({
   const segmentTransitionLockRef = useRef(null);
   const resumeInFlightRef = useRef(false);
   const meetingLifecycleRef = useRef(null);
+  const meetingTimingRef = useRef({ meetingId: null, startedAt: null });
+  if (meetingTimingRef.current.meetingId !== routeMeetingId) {
+    meetingTimingRef.current = {
+      meetingId: routeMeetingId,
+      startedAt: selectedMeetingDetail?.meeting?.startedAt
+        ?? meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.startedAt
+        ?? null
+    };
+  } else if (!meetingTimingRef.current.startedAt) {
+    meetingTimingRef.current.startedAt = selectedMeetingDetail?.meeting?.startedAt
+      ?? meetingRecords.find((meeting) => meeting.id === routeMeetingId)?.startedAt
+      ?? null;
+  }
   const audioUpload = useMemo(() => {
     if (!audioUploadControllerRef.current && audio.upload) {
       audioUploadControllerRef.current = createLiveAudioBindings(audio.upload);
@@ -1235,6 +1248,11 @@ export function useLiveRecordingController({
           operationId: nextOperationId('start'),
           expectedLifecycleVersion: selectedResumableMeeting.lifecycleVersion ?? 0
         });
+        meetingTimingRef.current = {
+          meetingId: routeMeetingId,
+          startedAt: lifecycle.meeting.started_at ?? lifecycle.meeting.startedAt ?? meetingTimingRef.current.startedAt
+        };
+        configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
         meetingLifecycleRef.current = {
           meetingId: routeMeetingId,
           sessionId: lifecycle.session.id,
@@ -1256,6 +1274,11 @@ export function useLiveRecordingController({
           const segment = [...segmentsResult.segments].reverse().find((item) => ['created', 'active'].includes(item.status) && !item.liveSessionId);
           if (!segment) throw new Error('此會議目前沒有可開始的錄音段落。');
           const started = await recovery.meetingCheckpointApiClientRef.current.startMeeting({ meetingId: routeMeetingId, segmentId: segment.id, liveSessionId });
+        meetingTimingRef.current = {
+          meetingId: routeMeetingId,
+          startedAt: started.meeting.startedAt ?? started.meeting.started_at ?? meetingTimingRef.current.startedAt
+        };
+        configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
         meetingCheckpoint = { meetingId: started.meeting.id, segmentId: started.segment.id, segmentSequence: started.segment.sequence };
           recovery.activeMeetingCheckpointRef.current = meetingCheckpoint;
           checkpointController.meetingCheckpointSyncCoordinator().start(meetingCheckpoint);
@@ -1511,6 +1534,11 @@ export function useLiveRecordingController({
             operationId: nextOperationId('takeover'),
             expectedLifecycleVersion: lifecycleMeeting.lifecycleVersion ?? 0
           });
+          meetingTimingRef.current = {
+            meetingId: draft.meetingId,
+            startedAt: lifecycle.meeting.started_at ?? lifecycle.meeting.startedAt ?? lifecycleMeeting.startedAt ?? meetingTimingRef.current.startedAt
+          };
+          configureLivePipelineElapsedContext({ meetingStartedAt: meetingTimingRef.current.startedAt });
           meetingLifecycleRef.current = {
             meetingId: draft.meetingId,
             sessionId: lifecycle.session.id,
@@ -1789,6 +1817,7 @@ export function useLiveRecordingController({
     hasSessionControl: Boolean(state.hasSessionControl),
     isActive: Boolean(state.isActive),
     controlsLocked: Boolean(state.controlsLocked),
+    meetingStartedAt: meetingTimingRef.current.startedAt,
     routeMeetingId,
     targetLanguageCode,
     sourceLanguageCode,

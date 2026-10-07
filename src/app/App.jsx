@@ -31,7 +31,7 @@ import { createCueRefinementCoordinator, mergePolishedItemsFromOutputs } from '.
 import { applyCueRefinementExecutionStates, markCuesCompletedByRefinedSubtitleCues, mergeCuesByIdPreferRefinement, refinedSubtitleCuesForDisplay } from '../lib/cueRefinement.js';
 import { effectiveTranslationForCue, rawSourceForCue, rawTranslationForCue } from '../lib/cueContent.js';
 import { liveCueLatencyTracker } from '../lib/liveCueLatency.js';
-import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
+import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 import {
   buildFinalizePatch,
   finalizeActiveSessionRecord
@@ -58,6 +58,7 @@ import { GeminiCredentialPage } from '../pages/settings/GeminiCredentialPage.jsx
 import { AccountManagementPage } from '../pages/settings/AccountManagementPage.jsx';
 import { AuditLogPage } from '../pages/settings/AuditLogPage.jsx';
 import { MeetingViewerPage } from '../pages/viewer/MeetingViewerPage.jsx';
+import { MeetingElapsedTimer } from '../features/live/MeetingElapsedTimer.jsx';
 import { GlobalGlossaryPage } from '../pages/glossary/GlobalGlossaryPage.jsx';
 import { LiveMeetingPicker, LiveRecordingPage } from '../pages/live/LiveRecordingPage.jsx';
 import { LiveCuePanel as LiveCuePanelView } from '../features/live/LiveCuePanel.jsx';
@@ -465,6 +466,9 @@ const activeMeetingCheckpointRef = useRef(null);
       copyLiveTranslation
     }
   });
+  useEffect(() => {
+    configureLivePipelineElapsedContext({ meetingStartedAt: liveController.meetingStartedAt });
+  }, [liveController.meetingStartedAt, routeMeetingId]);
   const webRtcDevice = useWebRtcDeviceSidecar({
     meetingId: routeMeetingId,
     enabled: Boolean(routeMeetingId && ['listening', 'reconnecting', 'switching-segment'].includes(liveController.status)),
@@ -2605,6 +2609,9 @@ const activeMeetingCheckpointRef = useRef(null);
             </div>
 
             <div className="live-toolbar-status">
+              {liveController.meetingStartedAt && ['connecting', 'listening', 'reconnecting', 'switching-segment', 'paused'].includes(liveController.status)
+                ? <MeetingElapsedTimer startedAt={liveController.meetingStartedAt} />
+                : null}
               <span className={`live-save-status status-pill checkpoint-note-${meetingCheckpointStatus}`}>
                 {meetingCheckpointStatusLabel(meetingCheckpointStatus)}
               </span>

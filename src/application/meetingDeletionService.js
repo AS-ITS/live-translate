@@ -1,3 +1,5 @@
+import { isMeetingContentExpired } from '../lib/meetingRetention.js';
+
 const ACTIVE_SESSION_STATUSES = new Set(['active', 'paused']);
 
 export function createMeetingDeletionService({
@@ -47,6 +49,10 @@ export function createMeetingDeletionService({
           return { meeting: null, alreadyDeleted: true, deletedSessionCount: 0, deletedSegmentCount: 0 };
         }
         throw codedError('meeting_not_found', `Meeting not found: ${meetingId}`);
+      }
+
+      if (isMeetingContentExpired(meeting) && actorRole !== 'super_admin') {
+        throw codedError('auth_forbidden', 'Only a system administrator can delete an expired meeting.');
       }
 
       const segments = await meetingRepository.listMeetingSegments(meetingId);

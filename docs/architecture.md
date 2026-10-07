@@ -1,5 +1,14 @@
 # Live Translate Architecture
 
+## Meeting expiry authorization boundary (2026-10-07)
+
+The existing database-generated `started_at`, `ended_at`, and `purge_at`
+timestamps remain authoritative. `purge_at` is a read-authorization deadline:
+ordinary users and Viewer shares lose access at the boundary, while active
+`super_admin` users receive a derived pending-delete metadata view. Physical
+cleanup occurs only through the canonical authorized Meeting deletion service;
+expiry itself never runs a worker, Cron job, or Meeting status transition.
+
 ## System Architecture
 
 Live Translate uses a browser-first real-time path with a narrow backend service.

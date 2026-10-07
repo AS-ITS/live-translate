@@ -30,6 +30,7 @@ import {
   filterMeetingManagementItems,
   meetingManagementLastUpdated,
   meetingManagementStatusLabel,
+  pendingDeleteDescription,
   MEETING_STATUS_FILTERS
 } from '../../lib/meetingManagement.js';
 import { accessTokenHeaders, authenticatedFetch } from '../../lib/accessToken.js';
@@ -406,6 +407,10 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
     return meetingManagementStatusLabel(status);
   }
 
+  function meetingDisplayStatusLabel(meeting) {
+    return meeting?.isPendingDelete ? '待刪除' : meetingCardStatusLabel(meeting?.status);
+  }
+
   function meetingCardDescription(status) {
     if (status === 'active') return '即時字幕正在進行中，可開啟工作區查看。';
     if (status === 'interrupted') return '會議已暫停，現有字幕與翻譯可繼續錄製。';
@@ -487,7 +492,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                 </>
               ) : null}
           </div>
-          {['created', 'completed'].includes(selectedMeeting?.status) ? (
+          {selectedMeeting?.canDelete && ['created', 'completed'].includes(selectedMeeting?.status) ? (
             <section className="meeting-danger-zone" aria-labelledby="meeting-danger-zone-title">
               <div>
                 <h4 id="meeting-danger-zone-title">危險操作</h4>
@@ -549,12 +554,12 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                     openMeetingCard(meeting);
                   }
                 }}
-                aria-label={`${meeting.name || meeting.id || '未命名會議'}，${meetingCardStatusLabel(meeting.status)}`}
+                aria-label={`${meeting.name || meeting.id || '未命名會議'}，${meetingDisplayStatusLabel(meeting)}`}
               >
                 <div className="meeting-card-topline">
                   <span className="meeting-status-badge">
                     <span className="meeting-status-dot" aria-hidden="true" />
-                    {meetingCardStatusLabel(meeting.status)}
+                    {meetingDisplayStatusLabel(meeting)}
                   </span>
                   <span className="meeting-card-icon" aria-hidden="true"><StatusIcon size={27} strokeWidth={1.8} /></span>
                 </div>
@@ -563,10 +568,11 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                   <span><Globe2 size={18} aria-hidden="true" />{meetingLanguageLabel(meeting)}</span>
                   <span><CalendarDays size={18} aria-hidden="true" />開始時間：<time data-testid="meeting-card-started-at" dateTime={startedAt || undefined} title={startedFullTime}>{formatMeetingListTime(startedAt)}</time></span>
                   <span><Clock3 size={18} aria-hidden="true" />最後更新：<time data-testid="meeting-card-updated-at" dateTime={updatedAt || undefined} title={fullTime}>{formatMeetingListTime(updatedAt)}</time></span>
+                  {meeting.isPendingDelete ? <span data-testid="meeting-pending-delete"><Trash2 size={18} aria-hidden="true" />刪除時間：{formatMeetingListTime(meeting.expiresAt)}</span> : null}
                 </div>
                 <div className="meeting-card-divider" />
                 <div className="meeting-card-footer">
-                  <p><StatusIcon size={19} aria-hidden="true" />{meetingCardDescription(meeting.status)}</p>
+                  <p><StatusIcon size={19} aria-hidden="true" />{meeting.isPendingDelete ? pendingDeleteDescription(meeting) : meetingCardDescription(meeting.status)}</p>
                   <div className="meeting-card-actions">
                     <button
                       className="button meeting-card-action"
@@ -578,7 +584,7 @@ export function MeetingManagementPage({ onOpenLive, onOpenHistory, onOpenSetting
                     >
                       <span className="meeting-card-action-label">{meetingCardActionLabel(meeting.status)}</span>
                     </button>
-                    {['created', 'completed'].includes(meeting.status) ? (
+                    {meeting.canDelete && ['created', 'completed'].includes(meeting.status) ? (
                       <button
                         className="button detail-button danger-button meeting-card-delete"
                         type="button"
@@ -2193,9 +2199,9 @@ function meetingRetentionNotice(meeting) {
   const deadline = meeting.expiresAt;
   if (!deadline) return '';
   if (meeting.contentState === 'expired' || Date.parse(deadline) <= Date.now()) {
-    return meeting.physicalCleanupState === 'purged'
-      ? '錄製資料已到期，實體資料已清除；會議設定仍可管理。'
-      : '錄製資料已到期，無法存取；實體資料將於下次網站操作時分批清除。會議設定仍可管理。';
+    return meeting.isPendingDelete
+      ? '待刪除：已到刪除時間，可由系統管理者手動刪除。'
+      : '此會議內容已超過保留時間。';
   }
   return `錄製內容保留至 ${formatRecordTime(deadline)}；請在期限前完成匯出或下載。`;
 }

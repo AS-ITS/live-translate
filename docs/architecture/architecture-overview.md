@@ -37,6 +37,13 @@ and approved Preview/Production Origin/CORS checks.
 
 ## Meeting lifecycle v2
 
+Current expiry policy: `purge_at` is an immutable visibility deadline, not an
+automatic deletion trigger. Ordinary users and Viewer shares lose access at the
+deadline; active `super_admin` users retain a derived pending-delete metadata
+view and may invoke the canonical manual deletion flow. No GET-triggered worker
+or Cron physically deletes expired Meeting content. This supersedes older
+automatic-cleanup wording retained later in this historical overview.
+
 Supabase is the lifecycle source of truth for new Meetings. A single database
 transaction owns each start, pause, resume, rollover, recover, takeover, and
 stop transition. Partial transitions cannot be observed by another Vercel
@@ -57,14 +64,13 @@ Function invocation.
   provider Session IDs are not recording IDs.
 - A protected deletion tombstone and restrictive table/Storage policies reject
   late writes and direct reads after deletion or expiration. Meeting settings,
-  membership, glossary, and audit history survive automatic content cleanup.
-  Manual deletion remains owner/super-admin-authorized and may require several
-  bounded Storage batches before the Meeting row is removed.
-- Existing Meeting GETs schedule managed background cleanup, never an
-  unmanaged Promise or Cron: one claim per request, 15-second durable throttle,
-  at most 20 Storage objects or 50 DB rows, with 1.2-second per-request timeout.
-  Storage deletion uses the Storage API; DB cleanup is phased and retryable.
-  An idle site may retain inaccessible cloud bytes until the next API request.
+membership, glossary, and audit history remain until manual deletion.
+Before expiry, manual deletion remains owner/super-admin-authorized; after
+expiry, only an active super-admin may delete. Cleanup may require several
+bounded Storage batches before the Meeting row is removed.
+- Expiry does not schedule a cleanup worker or Cron job. Legacy cleanup claim
+  RPCs are service-role-only no-ops retained for deployment compatibility.
+  Storage deletion uses the Storage API; DB cleanup remains phased and retryable.
   Local OPFS/IndexedDB cleanup uses persisted deadlines and browser locks.
 - v2 repository writes leave legacy `sessions.segment_id`,
   `meeting_segments.live_session_id`, and `sessions.transcript_items` empty or

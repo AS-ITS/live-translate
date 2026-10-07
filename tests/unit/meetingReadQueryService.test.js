@@ -3,8 +3,8 @@ import test from 'node:test';
 import { createMeetingReadQueryService } from '../../src/application/meetingReadQueryService.js';
 import { createPcm16WavBytes } from '../../src/lib/audio.js';
 
-test('expired recording still returns settings but neither segments nor audio', async () => {
-  const expired = { id: 'meeting-expired', name: 'settings retained', status: 'completed',
+test('expired recording is hidden from normal users but remains visible to system administrators', async () => {
+  const expired = { id: 'meeting-expired', ownerUserId: 'owner-1', name: 'settings retained', status: 'completed',
     retentionPolicyVersion: 2, purgeAt: '2000-01-01T00:30:00.000Z' };
   let contentReads = 0;
   const service = createMeetingReadQueryService({ meetingRepository: {
@@ -12,15 +12,39 @@ test('expired recording still returns settings but neither segments nor audio', 
     async getMeeting() { return expired; },
     async listMeetingSegments() { contentReads += 1; return []; }
   } });
-  const history = await service.listMeetingHistory();
-  const detail = await service.getMeetingDetail(expired.id);
-  assert.equal(history[0].contentState, 'expired');
+  const history = await service.listMeetingHistory({ actorUserId: 'owner-1' });
+  assert.deepEqual(history, []);
+  await assert.rejects(service.getMeetingDetail(expired.id, { actorUserId: 'owner-1' }), { code: 'meeting_content_expired', status: 410 });
+  const adminHistory = await service.listMeetingHistory({ actorUserId: 'admin-1', isSystemAdmin: true });
+  const detail = await service.getMeetingDetail(expired.id, { actorUserId: 'admin-1', isSystemAdmin: true });
+  assert.equal(adminHistory[0].contentState, 'expired');
+  assert.equal(adminHistory[0].isPendingDelete, true);
+  assert.equal(adminHistory[0].canDelete, true);
   assert.equal(detail.meeting.name, 'settings retained');
   assert.equal(detail.meeting.contentState, 'expired');
+  assert.equal(detail.meeting.isPendingDelete, true);
   assert.deepEqual(detail.cues, []);
   assert.deepEqual(detail.cloudAudioArtifacts, []);
   assert.equal(contentReads, 0);
   await assert.rejects(service.getMeetingViewerPage(expired.id), { code: 'meeting_content_expired', status: 410 });
+});
+
+test('normal user visibility changes exactly at the server-side expiration boundary', async () => {
+  const meeting = {
+    id: 'meeting-boundary',
+    ownerUserId: 'owner-1',
+    status: 'completed',
+    retentionPolicyVersion: 2,
+    purgeAt: '2026-10-07T12:00:00.000Z'
+  };
+  const service = createMeetingReadQueryService({ meetingRepository: {
+    async listMeetings() { return [meeting]; },
+    async getMeeting() { return meeting; },
+    async listMeetingSegments() { return []; }
+  } });
+
+  assert.equal((await service.listMeetingHistory({ now: Date.parse('2026-10-07T11:59:59.000Z') })).length, 1);
+  assert.equal((await service.listMeetingHistory({ now: Date.parse('2026-10-07T12:00:00.000Z') })).length, 0);
 });
 
 test('meeting detail exposes whole-meeting audio artifact download metadata from linked session', async () => {

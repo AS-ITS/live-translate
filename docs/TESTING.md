@@ -817,6 +817,12 @@ through PCM, provider, normalized transcript, Cue state, React render, and the
 visible subtitle.
 # Recording retention and completed Meeting deletion
 
+Current policy (2026-10-07): expiry is an authorization boundary only. Targeted
+tests must verify ordinary-user hiding, Viewer `410 meeting_content_expired`,
+active `super_admin` pending-delete visibility, and explicit canonical deletion.
+Legacy cleanup-worker tests cover dormant compatibility code; no GET or timer
+may invoke that worker.
+
 Run focused tests with `node --test tests/unit/localMeetingRetention.test.js tests/unit/supabaseMeetingCleanupWorker.test.js tests/unit/meetingDeletionService.test.js tests/unit/meetingDeletionHttpApi.test.js tests/unit/meetingReadQueryService.test.js`.
 With local Supabase running and migrations applied, execute
 `psql postgresql://postgres:postgres@127.0.0.1:54322/postgres -v ON_ERROR_STOP=1 -f tests/integration/recording_retention_local.sql`

@@ -8,7 +8,7 @@ import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../.
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
-import { recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
+import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import {
   readSubtitleVisibilityPreference,
   toggleSubtitleVisibility,
@@ -229,6 +229,7 @@ export function MeetingViewerPage({ token, code }) {
       setHasOlderCues(Boolean(value.pagination?.hasMore));
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
+      configureLivePipelineElapsedContext({ meetingStartedAt: merged?.meeting?.startedAt });
       setDetail(merged);
       startWebRtc(value.meeting?.id || value.meetingId);
       if (retried && sseConnected) setChannelState('fallback', { value: 'restored' });

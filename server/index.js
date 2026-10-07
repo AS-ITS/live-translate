@@ -1652,7 +1652,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
   if (req.method === 'GET' && path === '/api/meetings') {
     try {
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
-      const meetings = await meetingReadController.listMeetings();
+      const meetings = await meetingReadController.listMeetings(authenticatedUser);
       statusCode = 200;
       sendJson(res, statusCode, meetings, requestId);
     } catch (error) {
@@ -1691,7 +1691,7 @@ if (path === '/api/admin/users' || path === '/api/admin/audit-logs' || /^\/api\/
       if (!meetingReadController) throw createHttpError('meeting_read_unavailable');
       const { meetingId } = parseMeetingDetailPath(path);
       meetingDiagnosticId = meetingId;
-      const meeting = await meetingReadController.getMeeting(meetingId);
+      const meeting = await meetingReadController.getMeeting(meetingId, authenticatedUser);
 
       if (!meeting) {
         statusCode = 404;

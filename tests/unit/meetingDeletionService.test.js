@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createMeetingDeletionService } from '../../src/application/meetingDeletionService.js';
 
-function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped'] } = {}) {
+function dependencies({ meetingStatus = 'completed', sessionStatuses = ['stopped'], meetingOverrides = {} } = {}) {
   const deletedSessions = [];
   const deletedAudio = [];
   const deletedMeetingAudio = [];
   const deletedShares = [];
-  const meeting = { id: 'meeting-1', status: meetingStatus };
+  const meeting = { id: 'meeting-1', status: meetingStatus, ...meetingOverrides };
   const segments = [
     { id: 'segment-1', status: 'completed', sequence: 0 },
     { id: 'segment-2', status: 'completed', sequence: 1 }
@@ -71,6 +71,30 @@ test('deletes a completed meeting even when an older session snapshot remains ac
   const result = await setup.service.deleteMeeting({ meetingId: 'meeting-1' });
   assert.equal(result.deletedSessionCount, 1);
   assert.deepEqual(setup.deletedSessions, ['session-1']);
+});
+
+test('allows only a system administrator to delete an expired meeting', async () => {
+  const expiredMeeting = {
+    retentionPolicyVersion: 2,
+    purgeAt: '2000-01-01T00:00:00.000Z'
+  };
+
+  await assert.rejects(
+    dependencies({ meetingOverrides: expiredMeeting }).service.deleteMeeting({
+      meetingId: 'meeting-1',
+      actorUserId: 'owner-1',
+      actorRole: 'member'
+    }),
+    (error) => error.code === 'auth_forbidden'
+  );
+
+  const setup = dependencies({ meetingOverrides: expiredMeeting });
+  const result = await setup.service.deleteMeeting({
+    meetingId: 'meeting-1',
+    actorUserId: 'admin-1',
+    actorRole: 'super_admin'
+  });
+  assert.equal(result.deletedSessionCount, 1);
 });
 
 test('returns meeting_not_found without attempting cascade deletion', async () => {

@@ -15,7 +15,7 @@ import { httpStatusFromError, userMessageForErrorCode, withHttpStatus } from './
 import { cumulativeTextRelation, isCumulativeExtension } from './cumulativeTranscript.js';
 import { createLatencyHistogram, percentileFromLatencyHistogram, recordLatency } from './latencyHistogram.js';
 import { liveCueLatencyTracker } from './liveCueLatency.js';
-import { livePipelineTrace, recordLivePipelineTrace } from './livePipelineTrace.js';
+import { livePipelineTrace, recordLivePipelineTrace, updateLivePipelineSessionStartedAt } from './livePipelineTrace.js';
 import { clearLiveCredential, getLiveCredential } from './liveCredentialHolder.js';
 
 const TOKEN_TIMEOUT_MS = 10000;
@@ -350,6 +350,7 @@ export class LiveTranslateSession {
     const ai = new GoogleGenAI({ apiKey: token, httpOptions: { apiVersion: 'v1alpha' } });
     const connectionEpoch = this.connectionEpoch;
     const providerEpoch = ++this.providerEpoch;
+    updateLivePipelineSessionStartedAt(Date.now());
     const config = {
       ...(liveConnectConfig || {}),
       ...(this.resumptionHandle ? { sessionResumption: { handle: this.resumptionHandle } } : {})

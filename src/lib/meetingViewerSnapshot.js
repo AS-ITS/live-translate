@@ -34,11 +34,17 @@ export async function fetchMeetingViewerSnapshotWithRetry({
 }
 
 export function isTerminalViewerError(error) {
-  return ['meeting_stopped', 'meeting_revoked', 'share_unauthorized'].includes(error?.code);
+  return ['meeting_stopped', 'meeting_revoked', 'meeting_content_expired', 'share_unauthorized'].includes(error?.code);
 }
 
 function classifySnapshotError(status, body) {
   const responseCode = body?.error?.code || body?.code;
+  if (responseCode === 'meeting_content_expired') {
+    const error = new Error('此會議內容已超過保留時間。');
+    error.code = responseCode;
+    error.status = status;
+    return error;
+  }
   const stopped = responseCode === 'meeting_stopped' || responseCode === 'meeting_revoked' || status === 410;
   const unauthorized = responseCode === 'share_unauthorized' || status === 403 || status === 404;
   const error = new Error(stopped ? '會議已停止。' : (unauthorized ? '分享已失效。' : '字幕服務暫時無法使用。'));

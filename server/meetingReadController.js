@@ -2,12 +2,12 @@ export function createMeetingReadController({ meetingReadQueryService } = {}) {
   assertMeetingReadQueryService(meetingReadQueryService);
 
   return {
-    listMeetings() {
-      return meetingReadQueryService.listMeetingHistory();
+    listMeetings(actor = {}) {
+      return meetingReadQueryService.listMeetingHistory(readOptions(actor));
     },
 
-    getMeeting(meetingId) {
-      return meetingReadQueryService.getMeetingDetail(meetingId);
+    getMeeting(meetingId, actor = {}) {
+      return meetingReadQueryService.getMeetingDetail(meetingId, readOptions(actor));
     },
 
     getMeetingViewerPage(meetingId, options) {
@@ -16,6 +16,13 @@ export function createMeetingReadController({ meetingReadQueryService } = {}) {
       }
       return meetingReadQueryService.getMeetingDetail(meetingId);
     }
+  };
+}
+
+function readOptions(actor) {
+  return {
+    actorUserId: actor?.id || null,
+    isSystemAdmin: actor?.role === 'super_admin' && actor?.status === 'active'
   };
 }
 

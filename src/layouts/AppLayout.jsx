@@ -243,13 +243,14 @@ export function MeetingSettingsLayout({ children, mode = 'create', onBack }) {
   );
 }
 
-export function PublicSessionLayout({ children, className = '', title, subtitle, status }) {
+export function PublicSessionLayout({ children, className = '', title, subtitle, status, showHeader = true }) {
   return (
     <AppLayout
       className={`watch-page ${className}`.trim()}
       title={title}
       subtitle={subtitle}
       headerAction={status ? <span className="status-pill">{status}</span> : null}
+      showHeader={showHeader}
       showHeaderActions={false}
     >
       {children}

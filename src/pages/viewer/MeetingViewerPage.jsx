@@ -15,6 +15,8 @@ import {
   VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY,
   writeSubtitleVisibilityPreference
 } from '../../lib/subtitleVisibilityPreference.js';
+import { canonicalViewerShareUrl } from '../../lib/viewerShare.js';
+import { ViewerShareHeader } from './ViewerShareHeader.jsx';
 
 export function MeetingViewerPage({ token, code }) {
   const [detail, setDetail] = useState(null);
@@ -38,6 +40,7 @@ export function MeetingViewerPage({ token, code }) {
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
   const [retryVersion, setRetryVersion] = useState(0);
   const estimatedRowHeight = 64;
+  const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
 
   useEffect(() => {
     writeSubtitleVisibilityPreference(VIEWER_SUBTITLE_VISIBILITY_STORAGE_KEY, visibility);
@@ -383,6 +386,8 @@ export function MeetingViewerPage({ token, code }) {
       const value = await response.json();
       nextViewerCursorRef.current = value.pagination?.nextCursor || null;
       setHasOlderCues(Boolean(value.pagination?.hasMore));
+      // Loading history is an explicit review action; keep the return-to-latest control available.
+      setIsFollowingLatest(false);
       const merged = mergeMeetingViewerSnapshot(detailRef.current, value);
       detailRef.current = merged;
       setDetail(merged);
@@ -499,7 +504,8 @@ export function MeetingViewerPage({ token, code }) {
   }
 
   return (
-    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕">
+    <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕" showHeader={false}>
+      <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
       <div className="viewer-main">
         <div className="viewer-toolbar">
           <div className={`viewer-connection-status is-${shareConnection.value}`} role="status" aria-live="polite">

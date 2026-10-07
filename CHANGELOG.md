@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Viewer 頂部新增常駐會議分享 Header，共用 Meeting Settings 的 canonical Viewer URL 與 QR Code 產生邏輯；字幕維持獨立捲動，手機版縮小 QR Code，重連時不會重建 Header。字幕顯示、回到最新與重新連線操作統一使用高對比主色按鈕。
+- 修正 Viewer 在 auto-follow 狀態載入較舊字幕後不顯示「回到最新字幕」的問題；載入歷史字幕現在會明確進入回看狀態，按鈕可回到最新 Cue。
 - 優化錄製頁與 Viewer 的原文／翻譯顯示開關：按鈕不再因至少顯示一側而停用；隱藏唯一可見字幕時會自動切換至另一側，且不再顯示冗餘提示。無效的全隱藏偏好仍會自動修復，顯示選擇不影響 Cue 接收、同步、儲存、複製或匯出。
 
 - 修正 Live Recorder 在單邊字幕延遲補齊時，WebRTC cue revision 與 source/translation side version 比較不一致，導致 `null` DataChannel envelope 的白畫面回歸。`subtitle-webrtc/v1` 現由共用 builder/validator 允許 source-only 與 translation-only，固定以 `rawSource` 為 canonical source，拒絕完全空白 Cue，並在 transport boundary 隔離、追蹤失敗發布而不中斷錄音 UI。

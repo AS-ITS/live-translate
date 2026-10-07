@@ -100,15 +100,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   border-color: var(--color-primary);
-  background: var(--color-surface);
-  color: var(--color-primary);
-  box-shadow: 0 4px 12px rgb(11 102 112 / 12%);
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: 0 4px 12px rgb(11 102 112 / 20%);
 }
 
 .meeting-viewer-page .viewer-visibility-toggle:hover:not(:disabled) {
   border-color: var(--color-primary-hover);
-  background: var(--color-primary-soft);
-  color: var(--color-primary-hover);
+  background: var(--color-primary-hover);
+  color: #fff;
 }
 
 .meeting-viewer-page .viewer-visibility-toggle.is-active {
@@ -124,15 +124,28 @@
 }
 
 .meeting-viewer-page .viewer-retry-button {
-  border-color: var(--color-slate-primary);
-  background: var(--color-slate-primary);
+  border-color: var(--color-primary);
+  background: var(--color-primary);
   color: #fff;
-  box-shadow: 0 4px 12px rgb(54 91 135 / 18%);
+  box-shadow: 0 4px 12px rgb(11 102 112 / 20%);
 }
 
 .meeting-viewer-page .viewer-retry-button:hover:not(:disabled) {
-  border-color: var(--color-slate-primary-hover);
-  background: var(--color-slate-primary-hover);
+  border-color: var(--color-primary-hover);
+  background: var(--color-primary-hover);
+  color: #fff;
+}
+
+.meeting-viewer-page .viewer-follow-latest {
+  border-color: var(--color-primary);
+  background: var(--color-primary);
+  color: #fff;
+  box-shadow: 0 4px 12px rgb(11 102 112 / 20%);
+}
+
+.meeting-viewer-page .viewer-follow-latest:hover:not(:disabled) {
+  border-color: var(--color-primary-hover);
+  background: var(--color-primary-hover);
   color: #fff;
 }
 

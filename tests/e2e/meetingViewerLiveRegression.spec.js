@@ -29,6 +29,11 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   }));
   await page.goto('/#viewer?code=LIVEORDER');
   const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  const viewerHeader = page.getByTestId('viewer-share-header');
+  await expect(viewerHeader.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
+  const initialShareUrl = await viewerHeader.getByRole('link', { name: 'Viewer 分享連結' }).textContent();
+  const initialQrCode = await viewerHeader.getByRole('img', { name: 'Viewer 分享連結 QR Code' }).getAttribute('src');
+  await viewerHeader.evaluate((node) => { node.dataset.reconnectMarker = 'stable'; });
   await expect(viewport.locator('[data-cue-id="old-25"]')).toBeVisible();
 
   async function publish(eventId, cueId, segmentId, segmentSequence, sequence, sourceText, extra = {}) {
@@ -74,9 +79,14 @@ test('Viewer keeps receiving and following cues when earlier live cues lack segm
   snapshotCues.push({ cueId: 'new-F', segmentId: 'segment-2', segmentSequence: 2,
     sequence: 6, sourceText: '斷線期間字幕 F', sourceVersion: 1 });
   await page.evaluate(() => window.__disconnectViewer());
+  await expect(viewerHeader).toBeVisible();
+  await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
+  await expect(viewerHeader.getByRole('link', { name: 'Viewer 分享連結' })).toHaveText(initialShareUrl);
+  await expect(viewerHeader.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toHaveAttribute('src', initialQrCode);
   await expect(viewport.locator('[data-cue-id="new-F"]')).toBeVisible();
   await publish(34, 'new-G', 'segment-2', 2, 7, '恢復後字幕 G');
   await expect(viewport.locator('[data-cue-id="new-G"]')).toBeVisible();
   await expect.poll(() => viewport.evaluate((node) =>
     [...node.querySelectorAll('.viewer-cue-row')].at(-1)?.dataset.cueId)).toBe('new-G');
+  await expect(viewerHeader).toHaveAttribute('data-reconnect-marker', 'stable');
 });

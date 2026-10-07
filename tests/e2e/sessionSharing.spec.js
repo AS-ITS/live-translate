@@ -15,10 +15,13 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
     page.goto('/#viewer?token=meeting-viewer-token')
   ]);
   await expect((await snapshotResponse).status()).toBe(200);
-  const viewerHeader = page.locator('.app-header');
+  const canonicalViewerUrl = new URL('/#viewer?token=meeting-viewer-token', page.url()).href;
+  const viewerHeader = page.getByTestId('viewer-share-header');
   await expect(viewerHeader.getByRole('heading', { name: '產品會議' })).toBeVisible();
   await expect(viewerHeader.getByText('即時字幕', { exact: true })).toBeVisible();
-  await expect(viewerHeader.locator('.app-header-actions')).toHaveCount(0);
+  await expect(viewerHeader.getByRole('link', { name: 'Viewer 分享連結' })).toHaveText(canonicalViewerUrl);
+  await expect(viewerHeader.getByRole('img', { name: 'Viewer 分享連結 QR Code' })).toBeVisible();
+  await expect(viewerHeader.getByRole('button')).toHaveCount(0);
   await expect(page.getByText('LIVE TRANSCRIPT')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: '即時翻譯' })).toHaveCount(0);
   await expect(page.getByText('你好。', { exact: true })).toBeVisible();
@@ -28,6 +31,35 @@ test('Meeting Viewer renders historical bilingual Cues without owner controls', 
   await page.getByTestId('viewer-source-toggle').click();
   await expect(page.locator('.viewer-cue-source')).toHaveCount(0);
   await expect(page.locator('.viewer-cue-translation').first()).toBeVisible();
+
+  const cueViewport = page.getByTestId('meeting-viewer-cue-viewport');
+  const headerTop = await viewerHeader.evaluate((node) => node.getBoundingClientRect().top);
+  const initialScrollTop = await cueViewport.evaluate((node) => node.scrollTop);
+  await cueViewport.hover();
+  await page.mouse.wheel(0, -1800);
+  const followLatestButton = page.getByTestId('viewer-follow-latest-button');
+  await expect(followLatestButton).toBeVisible();
+  const visibilityButtonColors = await page.getByTestId('viewer-source-toggle').evaluate((node) => ({ background: getComputedStyle(node).backgroundColor, color: getComputedStyle(node).color }));
+  const followLatestButtonColors = await followLatestButton.evaluate((node) => ({ background: getComputedStyle(node).backgroundColor, color: getComputedStyle(node).color }));
+  for (const colors of [visibilityButtonColors, followLatestButtonColors]) {
+    expect(colors.background).not.toBe('rgba(0, 0, 0, 0)');
+    expect(colors.color).toBe('rgb(255, 255, 255)');
+  }
+  await expect.poll(() => cueViewport.evaluate((node) => node.scrollTop)).toBeLessThan(initialScrollTop);
+  expect(await viewerHeader.evaluate((node) => node.getBoundingClientRect().top)).toBe(headerTop);
+  await followLatestButton.click();
+  await expect.poll(() => cueViewport.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(24);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileLayout = await page.evaluate(() => {
+    const header = document.querySelector('[data-testid="viewer-share-header"]').getBoundingClientRect();
+    const viewport = document.querySelector('[data-testid="meeting-viewer-cue-viewport"]').getBoundingClientRect();
+    const shareUrl = document.querySelector('.viewer-share-url').getBoundingClientRect();
+    return { headerBottom: header.bottom, viewportTop: viewport.top, shareUrlRight: shareUrl.right, pageWidth: document.documentElement.scrollWidth };
+  });
+  expect(mobileLayout.pageWidth).toBeLessThanOrEqual(390);
+  expect(mobileLayout.shareUrlRight).toBeLessThanOrEqual(390);
+  expect(mobileLayout.headerBottom).toBeLessThanOrEqual(mobileLayout.viewportTop);
 });
 
 test('Meeting Viewer keeps the source toggle visible while waiting for the first Cue', async ({ page }) => {
@@ -146,8 +178,14 @@ test('Meeting Viewer loads older Cues with the opaque pagination cursor', async 
   await page.route(/\/api\/shared-meetings\/meeting-viewer-token\/events(?:\?.*)?$/, async (route) => route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }));
 
   await page.goto('/#viewer?token=meeting-viewer-token');
+  const viewport = page.getByTestId('meeting-viewer-cue-viewport');
+  await expect(viewport.locator('[data-cue-id="cue-105"]')).toBeVisible();
   await expect(page.getByTestId('viewer-load-older-button')).toBeVisible();
   await page.getByTestId('viewer-load-older-button').click();
   await expect.poll(() => requestedBefore).toBe('older-cursor');
   await expect(page.getByTestId('viewer-load-older-button')).toHaveCount(0);
+  await expect(page.getByTestId('viewer-follow-latest-button')).toBeVisible();
+  await page.getByTestId('viewer-follow-latest-button').click();
+  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.scrollTop - node.clientHeight)).toBeLessThan(24);
+  await expect(viewport.locator('[data-cue-id="cue-105"]')).toBeVisible();
 });

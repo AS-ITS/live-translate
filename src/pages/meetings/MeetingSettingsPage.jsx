@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import QRCode from 'qrcode';
 import { AlertCircle, ArrowRight, BookOpen, CheckCircle2, ChevronDown, CircleDashed, Copy, Download, LoaderCircle, Mic, Pencil, Plus, Trash2, Volume2, X } from 'lucide-react';
 import { SUPPORTED_LANGUAGES } from '../../lib/languages.js';
 import { createGlossaryApiClient } from '../../lib/glossaryApiClient.js';
@@ -9,6 +8,7 @@ import { meetingApiErrorMessage } from '../../lib/meetingApiError.js';
 import { audioInputDevices, audioOutputDevices, requestAudioInputStream, supportsAudioContextOutputSelection } from '../../lib/mediaDevices.js';
 import { clearMeetingAudioPreference, getMeetingAudioPreference, hasConfirmedMeetingAudioPreference, setMeetingAudioPreference } from '../../lib/meetingAudioPreferences.js';
 import { useBodyScrollLock } from '../../lib/useBodyScrollLock.js';
+import { canonicalizeViewerShareUrl, createViewerShareQrDataUrl } from '../../lib/viewerShare.js';
 
 const DEFAULT_SOURCE_LANGUAGE_CODE = 'zh-Hant';
 const SHARE_SETTINGS_STEP_INDEX = 4;
@@ -316,14 +316,14 @@ export function MeetingSettingsPage({ mode = 'create', meetingId = '', onBack, o
 
   async function createShare(meetingId, role) {
     const result = await managementClient.ensureShareWithRole(meetingId, role, null);
-    const shareUrl = new URL(result.codeUrl || result.url, window.location.href).href;
-    const qrDataUrl = await QRCode.toDataURL(shareUrl, { width: 180, margin: 1 });
+    const shareUrl = canonicalizeViewerShareUrl(result.codeUrl || result.url);
+    const qrDataUrl = await createViewerShareQrDataUrl(shareUrl);
     return { ...result, role, absoluteUrl: shareUrl, qrDataUrl };
   }
 
   async function prepareShareForDisplay(share) {
-    const shareUrl = new URL(share.codeUrl, window.location.href).href;
-    const qrDataUrl = await QRCode.toDataURL(shareUrl, { width: 180, margin: 1 });
+    const shareUrl = canonicalizeViewerShareUrl(share.codeUrl);
+    const qrDataUrl = await createViewerShareQrDataUrl(shareUrl);
     return { share, role: share.role, absoluteUrl: shareUrl, qrDataUrl };
   }
 

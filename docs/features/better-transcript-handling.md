@@ -137,9 +137,14 @@ If the SDK event does not expose a reliable partial/final flag:
 - Transcript events that arrive after a provider turn boundary may revise the
   same active/finalized Cue when they are cumulative extensions within the
   existing revision window; unrelated later turns remain separate.
-- The latest finalized Cue remains revisable for 1500ms. A late source or
+- The latest finalized Cue remains revisable for 5000ms. A late source or
   translation fragment may monotonically merge into that same Cue id, sequence,
   persistence record, and checkpoint.
+- Matching `audioTurnId` and arrival inside the 5000ms revision window provide
+  context but are not sufficient proof that an event revises the same Cue. The
+  event must also be a valid cumulative update, late counterpart, terminal
+  replay, or authoritative late final. Independent complete utterances remain
+  separate even when their text and `audioTurnId` match.
 - Adjacent final bilingual Cues in the same Segment are coalesced when neither
   Cue has reached sentence punctuation and they arrive within the adjacent
   fragment window, including when one or both Cues were finalized after a
@@ -211,11 +216,17 @@ If the SDK event does not expose a reliable partial/final flag:
 
 ### Duplicate Text
 
-- Identical partial text for the same stream should not create a new item.
-- Identical final text should not be appended twice if it matches the last final
-  item in the same stream and arrives within the same segment context.
-- Exact duplicate detection should be stream-local. Source and translation text
-  must not be compared against each other.
+- Text equality is not an event deduplication key. Independent final events with
+  identical text remain independent utterances.
+- Replay deduplication requires the same stable event or revision identity and
+  remains stream-local. Source and translation text must not be compared against
+  each other.
+- A cumulative partial snapshot may replace the previous partial for the same
+  stream identity; an unrelated identical event must not be collapsed into it.
+- Glossary correction preserves every required-target occurrence already emitted
+  by the provider. It may remove a known ordinary-translation alias only when
+  locally adjacent to the corresponding required target; it must not globally
+  delete repeated target text or infer missing repetitions from source counts.
 - Avoid broad fuzzy matching until real SDK event behavior is confirmed.
 
 ### Out-of-Order Events

@@ -92,9 +92,62 @@ test('exact-source dictionary hits canonicalize every provider variant to one ta
   for (const translatedText of ['Hello.', 'Hello. su3cl3.', 'su3cl3.', 'su3cl3. su3cl3.']) {
     assert.equal(
       correctTranslationForSource({ sourceText: '你好', translatedText }, glossaryEntries),
-      'su3cl3'
+      'su3cl3.'
     );
   }
+});
+
+test('sentence glossary correction preserves provider target repetitions without inventing missing ones', () => {
+  const glossaryEntries = [{ source: '哈囉', target: 'Hello', replacementAliases: [] }];
+
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '哈囉哈囉哈囉。',
+      translatedText: 'Hello, hello, hello.'
+    }, glossaryEntries),
+    'Hello, hello, hello.'
+  );
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '哈囉哈囉哈囉。',
+      translatedText: 'Hello.'
+    }, glossaryEntries),
+    'Hello.'
+  );
+});
+
+test('sentence glossary correction removes only adjacent alias-target duplicates', () => {
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '你好你好',
+      translatedText: 'Hello. su3cl3. Hello. su3cl3.'
+    }, glossaryEntries),
+    'su3cl3. su3cl3.'
+  );
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '你好，歡迎參加會議',
+      translatedText: 'Hello, su3cl3, welcome to the meeting.'
+    }, glossaryEntries),
+    'su3cl3, welcome to the meeting.'
+  );
+});
+
+test('sentence glossary correction preserves case punctuation and independent glossary targets', () => {
+  const glossaryEntries = [
+    { source: '你好', target: 'Su3Cl3', replacementAliases: ['hello'] },
+    { source: '會議', target: 'Gathering', replacementAliases: ['meeting'] }
+  ];
+
+  assert.equal(
+    correctTranslationForSource({
+      sourceText: '你好你好，會議會議。',
+      translatedText: 'HELLO! Su3Cl3! su3cl3; Su3Cl3. meeting, Gathering; gathering.'
+    }, glossaryEntries),
+    'Su3Cl3! su3cl3; Su3Cl3. Gathering; gathering.'
+  );
 });
 
 test('meeting dictionary override removes the obsolete global target and duplicate required target', () => {
@@ -111,28 +164,27 @@ test('meeting dictionary override removes the obsolete global target and duplica
   }]);
   assert.equal(
     correctTranslationForSource({ sourceText: '你好', translatedText: 'HelloGlobal. su3cl3.' }, glossaryEntries),
-    'su3cl3'
+    'su3cl3.'
   );
 });
 
-test('sentence dictionary hits replace known aliases and deduplicate the required target', () => {
+test('sentence dictionary hits replace adjacent aliases without deleting provider targets', () => {
   const glossaryEntries = [{
     source: '你好',
     target: 'su3cl3',
     replacementAliases: ['Hello', 'HelloGlobal']
   }];
 
-  for (const translatedText of [
-    "Hello, su3cl3, welcome to today's meeting.",
-    "HelloGlobal, su3cl3, su3cl3, welcome to today's meeting."
+  for (const [translatedText, expected] of [
+    ["Hello, su3cl3, welcome to today's meeting.", "su3cl3, welcome to today's meeting."],
+    ["HelloGlobal, su3cl3, su3cl3, welcome to today's meeting.", "su3cl3, su3cl3, welcome to today's meeting."]
   ]) {
     const corrected = correctTranslationForSource({
       sourceText: '你好，歡迎參加今天的會議',
       translatedText
     }, glossaryEntries);
-    assert.equal(corrected, "su3cl3, welcome to today's meeting.");
+    assert.equal(corrected, expected);
     assert.equal(corrected.includes('Hello'), false);
-    assert.equal(corrected.match(/su3cl3/gu)?.length, 1);
   }
 });
 
@@ -154,11 +206,11 @@ test('partial final and refined updates keep one canonical target on the same cu
     refinedTranslation: 'su3cl3. su3cl3.'
   }, glossaryEntries);
 
-  assert.equal(partialTranslation, 'su3cl3');
+  assert.equal(partialTranslation, 'su3cl3.');
   assert.equal(finalCue.cueId, 'cue-dictionary-1');
-  assert.equal(finalCue.initialTranslation, 'su3cl3');
+  assert.equal(finalCue.initialTranslation, 'su3cl3.');
   assert.equal(refinedCue.cueId, 'cue-dictionary-1');
-  assert.equal(refinedCue.initialTranslation, 'su3cl3');
-  assert.equal(refinedCue.refinedTranslation, 'su3cl3');
+  assert.equal(refinedCue.initialTranslation, 'su3cl3.');
+  assert.equal(refinedCue.refinedTranslation, 'su3cl3.');
   assert.equal(refinedCue.rawTranslation, 'Hello. su3cl3.');
 });

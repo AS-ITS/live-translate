@@ -25,9 +25,7 @@ export function correctTranslationForSource({ sourceText, translatedText } = {},
 
     const target = entry.target.trim();
     if (sourceEqualsTerm(sourceText, entry.source)) {
-      return sourceHasTerminalPunctuation(sourceText)
-        ? `${target}${trailingPunctuation(current)}`
-        : target;
+      return `${target}${trailingPunctuation(current)}`;
     }
 
     const candidates = [entry.source, ...(Array.isArray(entry.replacementAliases) ? entry.replacementAliases : [])]
@@ -35,16 +33,13 @@ export function correctTranslationForSource({ sourceText, translatedText } = {},
       .sort((left, right) => right.length - left.length);
 
     const marker = `\uE000glossary-${entryIndex}\uE001`;
-    const targetAlreadyPresent = containsLiteral(current, target);
     const marked = candidates.reduce(
       (value, candidate) => replaceScopedCandidate(value, candidate, marker),
       current
     );
-    const aliasesResolved = marked === current
+    return marked === current
       ? current
-      : marked.split(marker).join(targetAlreadyPresent ? '' : target);
-
-    return canonicalizeTargetOccurrences(aliasesResolved, target);
+      : resolveMarkedAliases(marked, marker, target);
   }, translatedText);
 }
 
@@ -133,10 +128,6 @@ function stripTerminalPunctuation(value) {
   return value.replace(/[\s\p{P}\p{S}]+$/gu, '');
 }
 
-function sourceHasTerminalPunctuation(value) {
-  return /[\p{P}\p{S}]\s*$/u.test(value);
-}
-
 function trailingPunctuation(value) {
   const match = value.match(/[\s\p{P}\p{S}]+$/u);
   return match?.[0] || '';
@@ -146,14 +137,36 @@ function containsLiteral(value, candidate) {
   return value.normalize('NFKC').toLocaleLowerCase().includes(candidate.normalize('NFKC').toLocaleLowerCase());
 }
 
-function canonicalizeTargetOccurrences(value, target) {
-  let occurrences = 0;
-  const canonicalized = replaceScopedCandidate(value, target, (_match, prefix) => {
-    occurrences += 1;
-    return occurrences === 1 ? `${prefix}${target}` : prefix;
-  });
-  if (occurrences === 0) return value;
-  return normalizeRemovedTranslationPunctuation(canonicalized);
+function resolveMarkedAliases(value, marker, target) {
+  let current = value;
+  let removedAlias = false;
+  let markerIndex = current.indexOf(marker);
+
+  while (markerIndex >= 0) {
+    const before = current.slice(0, markerIndex);
+    const after = current.slice(markerIndex + marker.length);
+    const duplicatesAdjacentTarget = endsWithScopedTarget(before, target)
+      || startsWithScopedTarget(after, target);
+    current = `${before}${duplicatesAdjacentTarget ? '' : target}${after}`;
+    removedAlias ||= duplicatesAdjacentTarget;
+    markerIndex = current.indexOf(marker, markerIndex + (duplicatesAdjacentTarget ? 0 : target.length));
+  }
+
+  return removedAlias ? normalizeRemovedTranslationPunctuation(current) : current;
+}
+
+function startsWithScopedTarget(value, target) {
+  const separator = String.raw`[\s\p{P}\p{S}]*`;
+  const escaped = escapeRegExp(target);
+  const boundary = containsCjk(target) ? '' : String.raw`(?=$|[^\p{L}\p{N}])`;
+  return new RegExp(`^${separator}${escaped}${boundary}`, 'iu').test(value);
+}
+
+function endsWithScopedTarget(value, target) {
+  const separator = String.raw`[\s\p{P}\p{S}]*`;
+  const escaped = escapeRegExp(target);
+  const boundary = containsCjk(target) ? '' : String.raw`(^|[^\p{L}\p{N}])`;
+  return new RegExp(`${boundary}${escaped}${separator}$`, 'iu').test(value);
 }
 
 function normalizeRemovedTranslationPunctuation(value) {

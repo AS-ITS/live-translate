@@ -114,7 +114,9 @@ test('createLiveToken resolves live-scoped glossary entries for token and browse
   assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: ['code x'] }]);
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /replacement rule, not an additional hint/);
-  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /exactly once/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /once for each corresponding occurrence of the source term/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Preserve intentional repetitions, repeated words, pauses, and distinct utterances/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Do not summarize, collapse, or omit repeated speech/);
 });
 
 test('createLiveToken merges global and meeting glossary entries in provider config', async () => {

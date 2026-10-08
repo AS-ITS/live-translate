@@ -7,6 +7,7 @@ import { createMeetingViewerRealtimeController, meetingViewerRealtimeEnabled } f
 import { fetchMeetingViewerSnapshotWithRetry, isTerminalViewerError } from '../../lib/meetingViewerSnapshot.js';
 import { createWebRtcSubtitleTransport } from '../../webrtc/subtitleTransport.js';
 import { webRtcConnectionLabel } from '../../webrtc/useWebRtcDeviceSidecar.js';
+import { resolveViewerTransportState } from '../../webrtc/viewerTransportState.js';
 import { PublicSessionLayout } from '../../layouts/AppLayout.jsx';
 import { configureLivePipelineElapsedContext, recordLivePipelineTrace } from '../../lib/livePipelineTrace.js';
 import {
@@ -107,31 +108,30 @@ export function MeetingViewerPage({ token, code }) {
       setShareConnection({ value: 'restored' });
       setError('');
       restoredTimer = setTimeout(() => {
-        if (!cancelled && !terminal && ['connected', 'restored'].some((value) =>
-          Object.values(channelStates).includes(value))) setShareConnection({ value: 'connected' });
+        const value = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
+        if (!cancelled && !terminal && (value === 'connected' || value === 'restored')) {
+          setShareConnection({ value: 'connected' });
+        }
       }, 3_000);
     }
 
     function setChannelState(channel, next, message = '') {
       if (cancelled || terminal) return;
-      const previousHealthy = Object.values(channelStates).some((value) => value === 'connected' || value === 'restored');
+      const previous = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
       channelStates[channel] = next.value;
-      const healthy = Object.values(channelStates).some((value) => value === 'connected' || value === 'restored');
-      if (healthy) {
-        if (everConnected && (!previousHealthy || next.value === 'restored')) showRestoredConnection();
+      const value = resolveViewerTransportState({ ...channelStates, webRtcRequired: webRtcStarted, everConnected });
+      if (value === 'connected' || value === 'restored') {
+        if (everConnected && (!['connected', 'restored'].includes(previous) || value === 'restored')) showRestoredConnection();
         else setShareConnection({ value: 'connected' });
         everConnected = true;
         setError('');
         return;
       }
-      if (channelStates.fallback === 'failed' && ['failed', 'idle'].includes(channelStates.webRtc)) {
+      if (value === 'failed') {
         setShareConnection({ value: 'failed' });
         setError(message || '多次重新連線後仍無法取得即時字幕。');
-      } else if (everConnected || Object.values(channelStates).includes('reconnecting')) {
-        setShareConnection({ value: 'reconnecting' });
-        setError('');
       } else {
-        setShareConnection({ value: channelStates.webRtc === 'waiting' && channelStates.fallback === 'idle' ? 'waiting' : 'connecting' });
+        setShareConnection({ value });
         setError('');
       }
     }

@@ -253,6 +253,18 @@ uploads, or unrelated background work before notifying Viewers.
 
 ## Viewer Ordering and Reconnect
 
+WebRTC recovery keeps the Redis signaling cursor monotonic for the participant
+heartbeat lifetime, while individual offer/answer/ICE messages retain their
+shorter TTL. This prevents a long quiet connection from resetting a new
+`viewer-ready` message below the Device polling cursor.
+
+Viewer reports `connected` only when PeerConnection is connected, ICE is
+non-terminal, and the subtitle DataChannel is open. DataChannel ping/pong runs
+every ten seconds; a 25-second unanswered ping triggers recovery, while absence
+of Cue traffic alone never marks transport dead. Every replacement DataChannel
+requests replay after the last source sequence and receives a full snapshot
+when the source changed or retained replay history has a gap.
+
 The initial snapshot returns the latest 100 Cues and an opaque cursor for
 loading older pages. Each older page is merged by Cue ID without duplicates or
 omissions. The Viewer uses `cueId` as the idempotency key and orders Cues by

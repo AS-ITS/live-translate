@@ -106,6 +106,7 @@ if current then
   redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
   redis.call('SADD', KEYS[3], ARGV[5])
   redis.call('PEXPIRE', KEYS[3], ARGV[3])
+  redis.call('PEXPIRE', KEYS[4], ARGV[3])
   return {'existing', ARGV[2]}
 end
 for _, member in ipairs(redis.call('SMEMBERS', KEYS[3])) do
@@ -115,6 +116,7 @@ if redis.call('SCARD', KEYS[3]) >= tonumber(ARGV[4]) then return {'cap'} end
 redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
 redis.call('SADD', KEYS[3], ARGV[5])
 redis.call('PEXPIRE', KEYS[3], ARGV[3])
+redis.call('PEXPIRE', KEYS[4], ARGV[3])
 return {'joined', ARGV[2]}`;
 
 export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespace, clock = Date.now, ...overrides } = {}) {
@@ -157,10 +159,11 @@ export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespac
       const keys = meetingKeys(meetingId);
       const result = await redis.eval(
         JOIN_SCRIPT,
-        3,
+        4,
         keys.revoked,
         keys.participant(participantId),
         keys.members,
+        keys.cursor,
         `${keys.base}participant:`,
         serialize(participant),
         String(ttlMs),
@@ -217,7 +220,10 @@ export function createRedisSignalingStore({ redis, namespace = DEFAULTS.namespac
       await redis.zadd(keys.messages, sequence, messageKey);
       await redis.zremrangebyrank(keys.messages, 0, -(config.maxMessageBacklog + 1));
       await redis.pexpire(keys.messages, config.messageTtlMs);
-      await redis.pexpire(keys.cursor, config.messageTtlMs);
+      // The polling cursor must remain monotonic for as long as participants heartbeat.
+      // Expiring it with short-lived messages can reset sequence numbers below a Device's
+      // `after` cursor and make every later Viewer recovery negotiation invisible.
+      await redis.pexpire(keys.cursor, config.participantTtlMs);
       return message;
     },
 

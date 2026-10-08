@@ -169,3 +169,15 @@ test('DataChannel adapter waits for open, sends JSON only when open, and safely 
   adapter.close();
   assert.equal(channel.closed, true);
 });
+
+test('DataChannel liveness ping and pong require a bounded request id', () => {
+  const ping = createEnvelope(SUBTITLE_ENVELOPE_TYPES.livenessPing, {
+    meetingId: 'm-1', requestId: 'ping-1', sentAt: 123,
+  });
+  const pong = createEnvelope(SUBTITLE_ENVELOPE_TYPES.livenessPong, {
+    meetingId: 'm-1', requestId: 'ping-1', sentAt: 124,
+  });
+  assert.equal(assertEnvelope(ping).type, 'liveness.ping');
+  assert.equal(assertEnvelope(pong).requestId, 'ping-1');
+  assert.throws(() => createEnvelope(SUBTITLE_ENVELOPE_TYPES.livenessPing, { meetingId: 'm-1' }), /requestId/u);
+});

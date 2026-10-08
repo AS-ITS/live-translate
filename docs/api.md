@@ -303,6 +303,10 @@ revision returns `409 glossary_revision_conflict`.
 
 ## Meeting Center and Live Viewer
 
+The per-Meeting WebRTC signaling sequence cursor is renewed by participant
+heartbeat and must not reset while a participant remains active; individual
+offer/answer/ICE messages still expire independently.
+
 The deployed WebRTC signaling route requires
 `WEBRTC_SIGNALING_REDIS_URL` and `WEBRTC_SIGNALING_REDIS_TOKEN`. Optional
 server-only `WEBRTC_ICE_SERVERS_JSON` is a JSON `RTCIceServer[]`; only explicit

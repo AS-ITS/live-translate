@@ -38,8 +38,8 @@ class FakeRedis {
   async mget(keys) { return keys.map((key) => this.read(key)); }
   async eval(script, count, ...args) {
     assert.equal(script.includes('webrtc-route-join'), true);
-    assert.equal(count, 3);
-    const [revokedKey, participantKey, membersKey, participantPrefix, participantRaw, ttl, cap, participantId] = args;
+    assert.equal(count, 4);
+    const [revokedKey, participantKey, membersKey, cursorKey, participantPrefix, participantRaw, ttl, cap, participantId] = args;
     if (this.read(revokedKey)) return ['revoked'];
     const existing = this.read(participantKey);
     if (existing) {
@@ -47,6 +47,7 @@ class FakeRedis {
       const members = this.members.get(membersKey) || new Set();
       members.add(participantId);
       this.members.set(membersKey, members);
+      await this.pexpire(cursorKey, ttl);
       return ['existing', participantRaw];
     }
     const members = this.members.get(membersKey) || new Set();
@@ -55,6 +56,7 @@ class FakeRedis {
     await this.set(participantKey, participantRaw, 'PX', ttl);
     members.add(participantId);
     this.members.set(membersKey, members);
+    await this.pexpire(cursorKey, ttl);
     return ['joined', participantRaw];
   }
 }
@@ -150,6 +152,27 @@ test('join heartbeat renews participant identity and TTL after reauthorization',
     url: '/api/webrtc/meeting-1/signal?participantId=viewer-heartbeat&after=0',
   });
   assert.equal(poll.status, 200);
+});
+
+test('join heartbeat preserves monotonic signaling cursor beyond message TTL', async () => {
+  const ctx = setup({ maxMessageBytes: 256 });
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'host-1', role: 'host', shareToken: 'host' } });
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'viewer-1', role: 'viewer', shareToken: 'viewer' } });
+  const first = await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'viewer-1', type: 'viewer-ready', payload: {}, negotiationId: 'generation-1'
+  } });
+  assert.equal(first.json.sequence, 1);
+
+  ctx.setNow(1_015);
+  await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/join', body: { participantId: 'host-1', role: 'host', shareToken: 'host' } });
+  ctx.setNow(1_025);
+  const recovered = await request(ctx.one, { method: 'POST', url: '/api/webrtc/meeting-1/signal', body: {
+    participantId: 'viewer-1', type: 'viewer-ready', payload: {}, negotiationId: 'generation-2'
+  } });
+  assert.equal(recovered.json.sequence, 2, 'recovery message must stay above the Recorder polling cursor');
+
+  const polled = await request(ctx.two, { method: 'GET', url: '/api/webrtc/meeting-1/signal?participantId=host-1&after=1' });
+  assert.deepEqual(polled.json.messages.map((message) => message.negotiationId), ['generation-2']);
 });
 
 test('server-only ICE JSON accepts STUN/TURN entries and rejects unsafe configuration', () => {

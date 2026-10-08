@@ -17,7 +17,7 @@ const CONSOLE_STAGES = new Set([
   'CUE_PUBLISHED', 'VIEWER_RECEIVED', 'VIEWER_PACKET_DROPPED', 'VIEWER_STORE_UPDATED', 'REACT_RENDER',
   'WEBRTC_SIGNALING', 'WEBRTC_PEER_STATE', 'WEBRTC_DATA_CHANNEL', 'WEBRTC_CUE_PUBLISH', 'VIEWER_REALTIME',
   'WEBRTC_STATE_CHANGED', 'DATACHANNEL_STATE_CHANGED', 'REALTIME_STATE_CHANGED', 'VIEWER_SHARING_STATE_CHANGED',
-  'DATA_CHANNEL_ENVELOPE_REJECTED'
+  'WEBRTC_TRANSPORT_RECOVERY', 'DATA_CHANNEL_ENVELOPE_REJECTED'
 ]);
 const REASONED_STAGES = new Set(['EVENT_DEDUPED', 'EVENT_DROPPED']);
 let elapsedContext = Object.freeze({ meetingStartedAtMs: null, sessionStartedAtMs: null });
@@ -79,6 +79,7 @@ export function createLivePipelineTrace({
       oldSegmentId: safeId(input.oldSegmentId),
       newSegmentId: safeId(input.newSegmentId),
       participantId: safeId(input.participantId),
+      peerId: safeId(input.peerId),
       negotiationId: safeId(input.negotiationId),
       sourceId: safeId(input.sourceId),
       operationId: safeId(input.operationId),
@@ -125,6 +126,13 @@ export function createLivePipelineTrace({
       persistenceState: safeId(input.persistenceState),
       channelStatus: safeId(input.channelStatus),
       receivedAt: Number.isFinite(input.receivedAt) ? input.receivedAt : null,
+      lastDataChannelMessageAt: Number.isFinite(input.lastDataChannelMessageAt) ? input.lastDataChannelMessageAt : null,
+      lastCueReceivedAt: Number.isFinite(input.lastCueReceivedAt) ? input.lastCueReceivedAt : null,
+      lastPingAt: Number.isFinite(input.lastPingAt) ? input.lastPingAt : null,
+      lastPongAt: Number.isFinite(input.lastPongAt) ? input.lastPongAt : null,
+      peerCount: Number.isInteger(input.peerCount) ? input.peerCount : null,
+      healthyPeerCount: Number.isInteger(input.healthyPeerCount) ? input.healthyPeerCount : null,
+      signalingHealth: safeId(input.signalingHealth),
       terminalStatus: safeId(input.terminalStatus),
       terminalReason: safeId(input.terminalReason),
       localFinalize: Boolean(input.localFinalize),

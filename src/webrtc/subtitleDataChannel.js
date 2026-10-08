@@ -5,6 +5,8 @@ export const SUBTITLE_ENVELOPE_TYPES = Object.freeze({
   cueUpdate: 'cue.update',
   replayRequest: 'replay.request',
   replayResponse: 'replay.response',
+  livenessPing: 'liveness.ping',
+  livenessPong: 'liveness.pong',
   meetingStopped: 'meeting.stopped'
 });
 
@@ -51,6 +53,10 @@ export function assertEnvelope(envelope) {
   }
   if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayRequest && !nonEmpty(envelope.requestId)) {
     throw validationError('invalid_request_id', 'Replay request requires requestId.');
+  }
+  if ((envelope.type === SUBTITLE_ENVELOPE_TYPES.livenessPing
+    || envelope.type === SUBTITLE_ENVELOPE_TYPES.livenessPong) && !nonEmpty(envelope.requestId)) {
+    throw validationError('invalid_request_id', 'Liveness envelope requires requestId.');
   }
   return envelope;
 }

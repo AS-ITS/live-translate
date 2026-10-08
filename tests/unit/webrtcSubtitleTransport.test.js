@@ -5,7 +5,8 @@ import { candidatePairEvidence, createWebRtcSubtitleTransport } from '../../src/
 import { configureLivePipelineTrace, livePipelineTrace } from '../../src/lib/livePipelineTrace.js';
 
 class FakeDataChannel {
-  constructor() {
+  constructor(peer = null) {
+    this.peer = peer;
     this.readyState = 'connecting';
     this.sent = [];
     this.listeners = new Map();
@@ -14,7 +15,16 @@ class FakeDataChannel {
   addEventListener(type, handler) { this.listeners.set(type, handler); }
   send(value) { this.sent.push(JSON.parse(value)); }
   close() { this.closed = true; this.readyState = 'closed'; }
-  open() { this.readyState = 'open'; this.onopen?.(); this.listeners.get('open')?.(); }
+  open() {
+    this.readyState = 'open';
+    if (this.peer) {
+      this.peer.connectionState = 'connected';
+      this.peer.iceConnectionState = 'connected';
+    }
+    this.onopen?.();
+    this.listeners.get('open')?.();
+  }
+  remoteClose() { this.readyState = 'closed'; this.onclose?.(); this.listeners.get('close')?.(); }
   receive(value) { this.listeners.get('message')?.({ data: JSON.stringify(value) }); }
   error(value = new Error('channel failed')) { this.onerror?.(value); this.listeners.get('error')?.(value); }
 }
@@ -28,7 +38,7 @@ class FakePeerConnection {
     this.channel = null;
     FakePeerConnection.instances.push(this);
   }
-  createDataChannel() { this.channel = new FakeDataChannel(); return this.channel; }
+  createDataChannel() { this.channel = new FakeDataChannel(this); return this.channel; }
   async createOffer() { return { type: 'offer', sdp: 'offer' }; }
   async createAnswer() { return { type: 'answer', sdp: 'answer' }; }
   async setLocalDescription(value) { this.localDescription = value; }
@@ -50,6 +60,24 @@ function deferred() {
   let resolve;
   const promise = new Promise((next) => { resolve = next; });
   return { promise, resolve };
+}
+
+function createViewerTransport({ timers = [], statuses = [], onEnvelope } = {}) {
+  return createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-regression', credential: { shareToken: 'token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status),
+    onEnvelope,
+  });
 }
 
 test('Viewer requests a fresh negotiation when joining after an offer has expired', async () => {
@@ -135,7 +163,7 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   });
   transport.start(); await flush(); await flush();
   const oldPeer = FakePeerConnection.instances[0];
-  const oldChannel = new FakeDataChannel();
+  const oldChannel = new FakeDataChannel(oldPeer);
   oldPeer.ondatachannel({ channel: oldChannel });
   oldChannel.open();
   oldChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
@@ -145,7 +173,7 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   assert.ok(retry);
   await retry.fn(); await flush(); await flush();
   const newPeer = FakePeerConnection.instances[1];
-  const newChannel = new FakeDataChannel();
+  const newChannel = new FakeDataChannel(newPeer);
   newPeer.ondatachannel({ channel: newChannel });
   newChannel.open();
   newChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
@@ -160,6 +188,192 @@ test('Viewer rebuilds its channel after a transient failure and drops late old p
   assert.equal(statuses.includes('reconnecting'), true);
   assert.equal(statuses.at(-1), 'restored');
   await transport.stop();
+});
+
+test('Viewer transient ICE disconnect recovers inside grace without reload or peer rebuild', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  const transport = createViewerTransport({ timers, statuses });
+  transport.start(); await flush(); await flush();
+  const peer = FakePeerConnection.instances[0];
+  const channel = new FakeDataChannel(peer);
+  peer.ondatachannel({ channel });
+  channel.open();
+
+  peer.connectionState = 'disconnected';
+  peer.iceConnectionState = 'disconnected';
+  peer.onconnectionstatechange();
+  const grace = timers.find((timer) => timer.ms === 5_000 && !timer.cleared);
+  assert.ok(grace);
+  assert.equal(statuses.at(-1).value, 'reconnecting');
+
+  peer.connectionState = 'connected';
+  peer.iceConnectionState = 'connected';
+  peer.onconnectionstatechange();
+  assert.equal(grace.cleared, true);
+  assert.equal(FakePeerConnection.instances.length, 1);
+  assert.equal(peer.closed, undefined);
+  assert.equal(statuses.at(-1).value, 'restored');
+  await transport.stop();
+});
+
+test('Viewer closed DataChannel rebuilds peer, opens replacement, and requests replay', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  const transport = createViewerTransport({ timers, statuses });
+  transport.start(); await flush(); await flush();
+  const firstPeer = FakePeerConnection.instances[0];
+  const firstChannel = new FakeDataChannel(firstPeer);
+  firstPeer.ondatachannel({ channel: firstChannel });
+  firstChannel.open();
+  firstChannel.remoteClose();
+  assert.equal(statuses.at(-1).value, 'reconnecting');
+
+  const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+  retry.cleared = true;
+  await retry.fn(); await flush(); await flush();
+  const replacementPeer = FakePeerConnection.instances[1];
+  const replacementChannel = new FakeDataChannel(replacementPeer);
+  replacementPeer.ondatachannel({ channel: replacementChannel });
+  replacementChannel.open();
+  assert.equal(firstPeer.closed, true);
+  assert.equal(replacementChannel.sent.at(-1).type, 'replay.request');
+  assert.equal(statuses.at(-1).value, 'restored');
+  await transport.stop();
+});
+
+test('open but silent DataChannel fails liveness and starts automatic recovery', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const statuses = [];
+  let currentTime = 0;
+  const transport = createWebRtcSubtitleTransport({
+    meetingId: 'meeting-1', role: 'viewer', participantId: 'viewer-liveness', credential: { shareToken: 'token' },
+    fetchImpl: async (url) => {
+      if (url.endsWith('/join')) return response(200, { ttlMs: 60_000, iceServers: [] });
+      if (url.endsWith('/signal')) return response(200, { accepted: true, sequence: 1 });
+      if (url.endsWith('/leave')) return response(200, { left: true });
+      return response(200, { messages: [], after: 0 });
+    },
+    RTCPeerConnectionImpl: FakePeerConnection,
+    now: () => currentTime,
+    random: () => 0.5,
+    setTimer(fn, ms) { const timer = { fn, ms, cleared: false }; timers.push(timer); return timer; },
+    clearTimer(timer) { timer.cleared = true; },
+    onStatus: (status) => statuses.push(status),
+  });
+  transport.start(); await flush(); await flush();
+  const peer = FakePeerConnection.instances[0];
+  const channel = new FakeDataChannel(peer);
+  peer.ondatachannel({ channel });
+  channel.open();
+
+  const firstCheck = timers.find((timer) => timer.ms === 10_000 && !timer.cleared);
+  firstCheck.cleared = true;
+  firstCheck.fn();
+  assert.equal(channel.sent.at(-1).type, 'liveness.ping');
+  currentTime = 30_000;
+  const timeoutCheck = timers.find((timer) => timer.ms === 10_000 && !timer.cleared);
+  timeoutCheck.cleared = true;
+  timeoutCheck.fn();
+  assert.equal(peer.closed, true);
+  assert.equal(statuses.at(-1).value, 'reconnecting');
+  assert.ok(timers.find((timer) => timer.ms === 0 && !timer.cleared));
+  await transport.stop();
+});
+
+test('stale reconnect timer cannot close an already connected replacement generation', async () => {
+  FakePeerConnection.instances = [];
+  configureLivePipelineTrace(true);
+  livePipelineTrace.clear();
+  const timers = [];
+  const transport = createViewerTransport({ timers });
+  transport.start(); await flush(); await flush();
+  const firstPeer = FakePeerConnection.instances[0];
+  const firstChannel = new FakeDataChannel(firstPeer);
+  firstPeer.ondatachannel({ channel: firstChannel });
+  firstChannel.open();
+  firstChannel.remoteClose();
+  const staleTimer = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+
+  transport.retry(); await flush(); await flush();
+  const replacementPeer = FakePeerConnection.instances[1];
+  const replacementChannel = new FakeDataChannel(replacementPeer);
+  replacementPeer.ondatachannel({ channel: replacementChannel });
+  replacementChannel.open();
+  await staleTimer.fn(); await flush();
+
+  assert.equal(replacementPeer.closed, undefined);
+  assert.equal(replacementChannel.closed, false);
+  assert.equal(FakePeerConnection.instances.length, 2);
+  assert.equal(livePipelineTrace.get({ stage: 'WEBRTC_TRANSPORT_RECOVERY' })
+    .some((entry) => entry.eventType === 'STALE_GENERATION_IGNORED'), true);
+  await transport.stop();
+  configureLivePipelineTrace(false);
+});
+
+test('Viewer recovery replays missing cues before continuing live delivery', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const received = [];
+  const transport = createViewerTransport({ timers, onEnvelope: (packet) => received.push(packet) });
+  transport.start(); await flush(); await flush();
+  const firstPeer = FakePeerConnection.instances[0];
+  const firstChannel = new FakeDataChannel(firstPeer);
+  firstPeer.ondatachannel({ channel: firstChannel });
+  firstChannel.open();
+  firstChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'snapshot', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 1, cues: [{ cueId: 'cue-1', sourceText: 'one' }] });
+  firstChannel.remoteClose();
+  const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+  retry.cleared = true;
+  await retry.fn(); await flush(); await flush();
+
+  const replacementPeer = FakePeerConnection.instances[1];
+  const replacementChannel = new FakeDataChannel(replacementPeer);
+  replacementPeer.ondatachannel({ channel: replacementChannel });
+  replacementChannel.open();
+  assert.deepEqual(replacementChannel.sent.at(-1), {
+    protocol: 'subtitle-webrtc/v1', type: 'replay.request', meetingId: 'meeting-1',
+    requestId: replacementChannel.sent.at(-1).requestId, sourceId: 'source-1', afterSequence: 1,
+  });
+  replacementChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'replay.response', meetingId: 'meeting-1',
+    sourceId: 'source-1', requestId: 'replay-response', fromSequence: 1, toSequence: 2,
+    events: [{ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1', sourceId: 'source-1',
+      sequence: 2, cue: { cueId: 'cue-2', sourceText: 'two' } }] });
+  replacementChannel.receive({ protocol: 'subtitle-webrtc/v1', type: 'cue.append', meetingId: 'meeting-1',
+    sourceId: 'source-1', sequence: 3, cue: { cueId: 'cue-3', sourceText: 'three' } });
+  assert.deepEqual(received.flatMap((packet) => packet.cues?.map((cue) => cue.cueId)
+    || packet.events?.map((event) => event.cue.cueId) || [packet.cue?.cueId]), ['cue-1', 'cue-2', 'cue-3']);
+  await transport.stop();
+});
+
+test('Viewer survives ten disconnect and rebuild cycles without stale peers or timers', async () => {
+  FakePeerConnection.instances = [];
+  const timers = [];
+  const transport = createViewerTransport({ timers });
+  transport.start(); await flush(); await flush();
+  for (let cycle = 0; cycle < 10; cycle += 1) {
+    const peer = FakePeerConnection.instances.at(-1);
+    const channel = new FakeDataChannel(peer);
+    peer.ondatachannel({ channel });
+    channel.open();
+    channel.remoteClose();
+    const retry = timers.find((timer) => timer.ms === 1_000 && !timer.cleared);
+    assert.ok(retry, `cycle ${cycle + 1} schedules recovery`);
+    retry.cleared = true;
+    await retry.fn(); await flush(); await flush();
+  }
+  const finalPeer = FakePeerConnection.instances.at(-1);
+  const finalChannel = new FakeDataChannel(finalPeer);
+  finalPeer.ondatachannel({ channel: finalChannel });
+  finalChannel.open();
+  assert.equal(FakePeerConnection.instances.filter((peer) => !peer.closed).length, 1);
+  assert.equal(timers.filter((timer) => !timer.cleared).length <= 4, true);
+  await transport.stop();
+  assert.equal(timers.every((timer) => timer.cleared), true);
 });
 
 test('Device transport starts independently, publishes snapshot/update, and clears timers on stop', async () => {

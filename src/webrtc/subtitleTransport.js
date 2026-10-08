@@ -1,4 +1,4 @@
-import { createReplayRequest, createSubtitleDataChannelAdapter, createSubtitleSource, SUBTITLE_ENVELOPE_TYPES } from './subtitleDataChannel.js';
+import { createEnvelope, createReplayRequest, createSubtitleDataChannelAdapter, createSubtitleSource, SUBTITLE_ENVELOPE_TYPES } from './subtitleDataChannel.js';
 import { createWebRtcSignalingClient } from './signalingClient.js';
 import { recordLivePipelineTrace } from '../lib/livePipelineTrace.js';
 
@@ -8,6 +8,8 @@ const ICE_RESTART_TIMEOUT_MS = 10_000;
 const NEGOTIATION_TIMEOUT_MS = 12_000;
 const CONNECTED_POLL_INTERVAL_MS = 2_000;
 const HEARTBEAT_RETRY_INTERVAL_MS = 5_000;
+const DATA_CHANNEL_PING_INTERVAL_MS = 10_000;
+const DATA_CHANNEL_LIVENESS_TIMEOUT_MS = 25_000;
 
 export function createWebRtcSubtitleTransport({
   meetingId,
@@ -20,6 +22,7 @@ export function createWebRtcSubtitleTransport({
   clearTimer = globalThis.clearTimeout,
   pollIntervalMs = 250,
   random = Math.random,
+  now = Date.now,
   lifecycleTarget = globalThis.window,
   documentRef = globalThis.document,
   isOnline = () => globalThis.navigator?.onLine !== false,
@@ -51,10 +54,12 @@ export function createWebRtcSubtitleTransport({
   let listenersAttached = false;
   let lastSourceId = null;
   let lastSourceSequence = 0;
+  let signalingHealth = 'connecting';
 
   initialCues.forEach(publishCue);
 
   function status(value, details = {}) {
+    const peerCounts = currentPeerCounts();
     const traceDetails = {
       stage: 'WEBRTC_TRANSPORT',
       meetingId,
@@ -68,10 +73,12 @@ export function createWebRtcSubtitleTransport({
       dataChannelState: active?.channel?.readyState,
       realtimeState: value,
       transportResult: value,
+      signalingHealth,
+      ...peerCounts,
     };
     recordLivePipelineTrace(traceDetails);
     recordLivePipelineTrace({ ...traceDetails, stage: 'VIEWER_SHARING_STATE_CHANGED' });
-    onStatus?.(Object.freeze({ value, ...details }));
+    onStatus?.(Object.freeze({ value, signalingHealth, ...peerCounts, ...details }));
   }
 
   function trace(stage, eventType, context = null, details = {}) {
@@ -86,6 +93,12 @@ export function createWebRtcSubtitleTransport({
       iceConnectionState: context?.pc?.iceConnectionState,
       signalingState: context?.pc?.signalingState,
       dataChannelState: context?.channel?.readyState,
+      peerId: context?.peerId || context?.viewerId,
+      lastDataChannelMessageAt: context?.lastDataChannelMessageAt,
+      lastCueReceivedAt: context?.lastCueReceivedAt,
+      lastPingAt: context?.lastPingAt,
+      lastPongAt: context?.lastPongAt,
+      signalingHealth,
       ...details,
     };
     recordLivePipelineTrace(traceDetails);
@@ -94,6 +107,25 @@ export function createWebRtcSubtitleTransport({
     } else if (stage === 'WEBRTC_DATA_CHANNEL') {
       recordLivePipelineTrace({ ...traceDetails, stage: 'DATACHANNEL_STATE_CHANGED' });
     }
+  }
+
+  function recoveryTrace(eventType, context = null, details = {}) {
+    trace('WEBRTC_TRANSPORT_RECOVERY', eventType, context, details);
+  }
+
+  function currentPeerCounts() {
+    const contexts = role === 'device' ? [...devicePeers.values()] : (active ? [active] : []);
+    return {
+      peerCount: contexts.length,
+      healthyPeerCount: contexts.filter(isTransportHealthy).length,
+    };
+  }
+
+  function isTransportHealthy(context) {
+    return Boolean(context
+      && context.pc?.connectionState === 'connected'
+      && !['disconnected', 'failed', 'closed'].includes(context.pc?.iceConnectionState)
+      && context.channel?.readyState === 'open');
   }
 
   function isCurrent(context) {
@@ -113,6 +145,7 @@ export function createWebRtcSubtitleTransport({
     clearContextTimer(context, 'disconnectTimer');
     clearContextTimer(context, 'iceRestartTimer');
     clearContextTimer(context, 'negotiationTimer');
+    clearContextTimer(context, 'livenessTimer');
     if (context.viewerId && devicePeers.get(context.viewerId) === context) devicePeers.delete(context.viewerId);
     context.pendingCandidates = [];
     context.adapter?.close();
@@ -136,6 +169,11 @@ export function createWebRtcSubtitleTransport({
     heartbeatTimer = null;
   }
 
+  function clearReconnect() {
+    if (reconnectTimer) clearTimer(reconnectTimer);
+    reconnectTimer = null;
+  }
+
   function scheduleHeartbeat(ttlMs, epoch) {
     clearHeartbeat();
     if (stopped || epoch !== connectionEpoch) return;
@@ -146,9 +184,18 @@ export function createWebRtcSubtitleTransport({
       try {
         const joined = await client.join();
         if (stopped || epoch !== connectionEpoch) return;
+        if (signalingHealth !== 'healthy') {
+          signalingHealth = 'healthy';
+          recoveryTrace('SIGNALING_RECOVERED', null, { epoch, reason: 'heartbeat_join_succeeded' });
+          if (hasOpenDataChannel()) status('connected', { epoch, reason: 'signaling_recovered' });
+        }
         scheduleHeartbeat(joined.ttlMs, epoch);
       } catch (error) {
         if (stopped || epoch !== connectionEpoch) return;
+        signalingHealth = 'recovering';
+        recoveryTrace('SIGNALING_FAILURE', null, {
+          epoch, reason: error?.code || 'heartbeat_failed', httpStatus: error?.status,
+        });
         if (hasOpenDataChannel() && !isTerminalSignalingError(error)) {
           trace('WEBRTC_SIGNALING', 'heartbeat.failed', null, {
             epoch,
@@ -158,6 +205,7 @@ export function createWebRtcSubtitleTransport({
             transportResult: 'retrying_signaling_only',
           });
           scheduleHeartbeatRetry(epoch);
+          status('connected', { epoch, reason: 'signaling_failure_preserved' });
           return;
         }
         handleConnectError(error, 'heartbeat_failed');
@@ -174,14 +222,21 @@ export function createWebRtcSubtitleTransport({
       try {
         const result = await client.join();
         if (stopped || epoch !== connectionEpoch) return;
+        signalingHealth = 'healthy';
+        recoveryTrace('SIGNALING_RECOVERED', null, { epoch, reason: 'heartbeat_retry_succeeded' });
         trace('WEBRTC_SIGNALING', 'heartbeat.recovered', null, {
           epoch,
           decision: 'open_data_channel_preserved',
           transportResult: 'recovered',
         });
         scheduleHeartbeat(result.ttlMs, epoch);
+        if (hasOpenDataChannel()) status('connected', { epoch, reason: 'signaling_recovered' });
       } catch (error) {
         if (stopped || epoch !== connectionEpoch) return;
+        signalingHealth = 'recovering';
+        recoveryTrace('SIGNALING_FAILURE', null, {
+          epoch, reason: error?.code || 'heartbeat_retry_failed', httpStatus: error?.status,
+        });
         if (hasOpenDataChannel() && !isTerminalSignalingError(error)) {
           trace('WEBRTC_SIGNALING', 'heartbeat.retry_failed', null, {
             epoch,
@@ -200,11 +255,9 @@ export function createWebRtcSubtitleTransport({
 
   function hasOpenDataChannel() {
     if (role === 'device') {
-      return [...devicePeers.values()].some((context) => (
-        context.connected && context.channel?.readyState === 'open'
-      ));
+      return [...devicePeers.values()].some(isTransportHealthy);
     }
-    return Boolean(active?.connected && active.channel?.readyState === 'open');
+    return isTransportHealthy(active);
   }
 
   function isTerminalSignalingError(error) {
@@ -219,12 +272,17 @@ export function createWebRtcSubtitleTransport({
     devicePollAfter = 0;
     devicePollFailures = 0;
     const epoch = ++connectionEpoch;
+    signalingHealth = 'connecting';
     status(reconnecting ? 'reconnecting' : 'connecting', { epoch, attempt: retryAttempt });
+    recoveryTrace(role === 'viewer' ? 'VIEWER_JOIN' : 'SIGNALING_JOIN', null, {
+      epoch, reason: reconnecting ? 'recovery' : 'initial_connect',
+    });
     trace('WEBRTC_SIGNALING', 'join.request', null, { epoch, decision: reconnecting ? 'reconnect' : 'connect' });
     try {
       const joinResult = await client.join();
       if (stopped || epoch !== connectionEpoch) return;
       joined = true;
+      signalingHealth = 'healthy';
       iceServers = joinResult.iceServers || [];
       trace('WEBRTC_SIGNALING', 'join.success', null, { epoch, transportResult: 'joined' });
       scheduleHeartbeat(joinResult.ttlMs, epoch);
@@ -247,8 +305,15 @@ export function createWebRtcSubtitleTransport({
         pollFailures: 0,
         connected: false,
         pendingCandidates: [],
+        livenessTimer: null,
+        pendingPingId: null,
+        lastDataChannelMessageAt: null,
+        lastCueReceivedAt: null,
+        lastPingAt: null,
+        lastPongAt: null,
       };
       active = context;
+      recoveryTrace('PEER_CREATED', context, { reason: reconnecting ? 'recovery' : 'initial_connect' });
       wirePeer(context);
       await client.signal('viewer-ready', {}, { negotiationId: context.negotiationId });
       if (!isCurrent(context)) return;
@@ -261,6 +326,10 @@ export function createWebRtcSubtitleTransport({
       schedulePoll(context);
     } catch (error) {
       if (stopped || epoch !== connectionEpoch) return;
+      signalingHealth = 'recovering';
+      recoveryTrace('SIGNALING_FAILURE', null, {
+        epoch, reason: error?.code || error?.message || 'connect_failed', httpStatus: error?.status,
+      });
       trace('WEBRTC_SIGNALING', 'join.failed', null, {
         epoch, reason: error?.code || error?.message || 'connect_failed', transportResult: 'failed',
       });
@@ -278,18 +347,24 @@ export function createWebRtcSubtitleTransport({
     context.pc.onconnectionstatechange = () => {
       if (!isCurrent(context)) return;
       trace('WEBRTC_PEER_STATE', 'connectionstatechange', context);
+      recoveryTrace('PEER_CONNECTION_STATE', context, { reason: context.pc.connectionState });
       if (context.pc.connectionState === 'connected') {
+        const recoveredFromDisconnect = Boolean(context.disconnectTimer);
         clearContextTimer(context, 'disconnectTimer');
         clearContextTimer(context, 'iceRestartTimer');
+        if (recoveredFromDisconnect) recoveryTrace('DISCONNECT_RECOVERED', context, { reason: 'peer_connected' });
         if (context.channel?.readyState === 'open') markConnected(context);
       } else if (context.pc.connectionState === 'disconnected') {
         context.connected = false;
+        recoveryTrace('TRANSPORT_DISCONNECTED', context, { reason: 'connection_state_disconnected' });
         scheduleDisconnectedRecovery(context);
         if (role === 'viewer') schedulePoll(context);
       } else if (context.pc.connectionState === 'failed') {
+        recoveryTrace('RECOVERY_STARTED', context, { reason: 'peer_failed' });
         if (role === 'device') cleanupDevicePeer(context);
         else scheduleReconnect('peer_failed');
       } else if (context.pc.connectionState === 'closed') {
+        recoveryTrace('RECOVERY_STARTED', context, { reason: 'peer_closed' });
         if (role === 'device') cleanupDevicePeer(context);
         else scheduleReconnect('peer_closed');
       }
@@ -297,10 +372,13 @@ export function createWebRtcSubtitleTransport({
     context.pc.oniceconnectionstatechange = () => {
       if (!isCurrent(context)) return;
       trace('WEBRTC_PEER_STATE', 'iceconnectionstatechange', context);
+      recoveryTrace('ICE_CONNECTION_STATE', context, { reason: context.pc.iceConnectionState });
       if (context.pc.iceConnectionState === 'disconnected') {
         context.connected = false;
+        recoveryTrace('TRANSPORT_DISCONNECTED', context, { reason: 'ice_state_disconnected' });
         scheduleDisconnectedRecovery(context);
       } else if (context.pc.iceConnectionState === 'failed' || context.pc.iceConnectionState === 'closed') {
+        recoveryTrace('RECOVERY_STARTED', context, { reason: `ice_${context.pc.iceConnectionState}` });
         if (role === 'device') cleanupDevicePeer(context);
         else scheduleReconnect(`ice_${context.pc.iceConnectionState}`);
       }
@@ -312,12 +390,15 @@ export function createWebRtcSubtitleTransport({
   }
 
   function markConnected(context) {
+    if (!isCurrent(context) || !isTransportHealthy(context)) return;
     context.connected = true;
     clearContextTimer(context, 'negotiationTimer');
     clearContextTimer(context, 'disconnectTimer');
     clearContextTimer(context, 'iceRestartTimer');
+    clearReconnect();
     retryAttempt = 0;
     status(hadOutage ? 'restored' : 'connected', { epoch: context.epoch, recovered: hadOutage });
+    recoveryTrace('RECOVERY_COMPLETED', context, { reason: hadOutage ? 'transport_restored' : 'transport_connected' });
     hadOutage = false;
   }
 
@@ -327,6 +408,7 @@ export function createWebRtcSubtitleTransport({
     context.adapter = createSubtitleDataChannelAdapter(nextChannel, {
       onEnvelope: (envelope) => {
         if (!isCurrent(context)) return;
+        context.lastDataChannelMessageAt = now();
         trace('WEBRTC_DATA_CHANNEL', 'message.received', context, {
           messageType: envelope.type,
           sourceId: envelope.sourceId,
@@ -338,12 +420,34 @@ export function createWebRtcSubtitleTransport({
           receivedAt: Date.now(),
           transportResult: 'received',
         });
+        if (envelope.type === SUBTITLE_ENVELOPE_TYPES.livenessPing) {
+          context.adapter?.send(createLivenessEnvelope(SUBTITLE_ENVELOPE_TYPES.livenessPong, envelope.requestId));
+          return;
+        }
+        if (envelope.type === SUBTITLE_ENVELOPE_TYPES.livenessPong) {
+          if (envelope.requestId === context.pendingPingId) {
+            context.pendingPingId = null;
+            context.lastPongAt = now();
+          }
+          return;
+        }
+        if (envelope.type === SUBTITLE_ENVELOPE_TYPES.cueAppend
+          || envelope.type === SUBTITLE_ENVELOPE_TYPES.cueUpdate) context.lastCueReceivedAt = now();
         if (role === 'device' && envelope.type === SUBTITLE_ENVELOPE_TYPES.replayRequest) {
-          context.adapter?.send(source.replay(envelope));
+          const replay = source.replay(envelope);
+          context.adapter?.send(replay);
+          recoveryTrace(replay.type === SUBTITLE_ENVELOPE_TYPES.snapshot ? 'SNAPSHOT_RECEIVED' : 'REPLAY_COMPLETED', context, {
+            reason: 'device_response_sent', sequence: replay.sequence ?? replay.toSequence,
+          });
           return;
         }
         if (role === 'viewer') {
           rememberViewerCursor(context, envelope);
+          if (envelope.type === SUBTITLE_ENVELOPE_TYPES.snapshot) {
+            recoveryTrace('SNAPSHOT_RECEIVED', context, { reason: 'recovery_payload', sequence: envelope.sequence });
+          } else if (envelope.type === SUBTITLE_ENVELOPE_TYPES.replayResponse) {
+            recoveryTrace('REPLAY_COMPLETED', context, { reason: 'recovery_payload', sequence: envelope.toSequence });
+          }
           onEnvelope?.(envelope, Object.freeze({ transportGeneration: context.epoch, receivedAt: Date.now() }));
         }
       },
@@ -351,27 +455,42 @@ export function createWebRtcSubtitleTransport({
     });
     nextChannel.onopen = () => {
       if (!isCurrent(context)) return;
+      const openedAt = now();
+      context.lastDataChannelMessageAt = openedAt;
+      context.lastPongAt = openedAt;
       trace('WEBRTC_DATA_CHANNEL', 'open', context, { transportResult: 'open' });
+      recoveryTrace('DATA_CHANNEL_OPEN', context, { reason: 'channel_open' });
+      scheduleLivenessCheck(context);
       markConnected(context);
       if (role === 'device') context.adapter.send(source.snapshot());
-      else context.adapter.send(createReplayRequest({
-        meetingId,
-        requestId: createIdentifier('replay'),
-        ...(lastSourceId ? { sourceId: lastSourceId } : {}),
-        afterSequence: lastSourceSequence,
-      }));
+      else {
+        const request = createReplayRequest({
+          meetingId,
+          requestId: createIdentifier('replay'),
+          ...(lastSourceId ? { sourceId: lastSourceId } : {}),
+          afterSequence: lastSourceSequence,
+        });
+        recoveryTrace('SNAPSHOT_REQUESTED', context, {
+          reason: 'data_channel_open', sequence: lastSourceSequence,
+        });
+        context.adapter.send(request);
+      }
     };
     nextChannel.onclose = () => {
       if (!isCurrent(context)) return;
+      context.connected = false;
       trace('WEBRTC_DATA_CHANNEL', 'close', context, { transportResult: 'closed' });
+      recoveryTrace('DATA_CHANNEL_CLOSE', context, { reason: 'channel_closed' });
       if (role === 'device') cleanupDevicePeer(context);
       else scheduleReconnect('data_channel_closed');
     };
     nextChannel.onerror = (error) => {
       if (!isCurrent(context)) return;
+      context.connected = false;
       trace('WEBRTC_DATA_CHANNEL', 'error', context, {
         reason: error?.message || 'data_channel_error', transportResult: 'failed',
       });
+      recoveryTrace('DATA_CHANNEL_ERROR', context, { reason: error?.message || 'data_channel_error' });
       handleAsyncError(error);
       if (role === 'device') cleanupDevicePeer(context);
       else scheduleReconnect('data_channel_error');
@@ -380,9 +499,13 @@ export function createWebRtcSubtitleTransport({
 
   function cleanupDevicePeer(context) {
     cleanupPeer(context);
-    if (devicePeers.size === 0 && !stopped) {
+    if (!stopped && currentPeerCounts().healthyPeerCount === 0) {
       hadOutage = true;
-      status('reconnecting', { epoch: connectionEpoch, reason: 'device_peer_closed' });
+      status(devicePeers.size === 0 ? 'reconnecting' : 'connecting', {
+        epoch: connectionEpoch, reason: 'device_peer_closed',
+      });
+    } else if (!stopped) {
+      status('connected', { epoch: connectionEpoch, reason: 'viewer_peer_removed' });
     }
   }
 
@@ -395,9 +518,12 @@ export function createWebRtcSubtitleTransport({
       epoch, viewerId, peerId: viewerId, negotiationId,
       pc: new RTCPeerConnectionImpl({ iceServers }), adapter: null, channel: null,
       pollTimer: null, disconnectTimer: null, iceRestartTimer: null, negotiationTimer: null,
+      livenessTimer: null, pendingPingId: null,
+      lastDataChannelMessageAt: null, lastCueReceivedAt: null, lastPingAt: null, lastPongAt: null,
       connected: false, pendingCandidates: [],
     };
     devicePeers.set(viewerId, context);
+    recoveryTrace('PEER_CREATED', context, { reason: 'viewer_ready' });
     wirePeer(context);
     wireChannel(context, context.pc.createDataChannel('subtitles'));
     try {
@@ -419,6 +545,48 @@ export function createWebRtcSubtitleTransport({
         cleanupDevicePeer(context);
       }
     }
+  }
+
+  function createLivenessEnvelope(type, requestId) {
+    return createEnvelope(type, { meetingId, requestId, sentAt: now() });
+  }
+
+  function scheduleLivenessCheck(context) {
+    if (!isCurrent(context) || context.livenessTimer || context.channel?.readyState !== 'open') return;
+    context.livenessTimer = setTimer(() => {
+      context.livenessTimer = null;
+      if (!isCurrent(context) || context.channel?.readyState !== 'open') return;
+      if (documentRef?.visibilityState === 'hidden') {
+        scheduleLivenessCheck(context);
+        return;
+      }
+      const checkedAt = now();
+      if (context.pendingPingId && checkedAt - context.lastPingAt >= DATA_CHANNEL_LIVENESS_TIMEOUT_MS) {
+        context.connected = false;
+        recoveryTrace('TRANSPORT_DISCONNECTED', context, {
+          reason: 'data_channel_liveness_timeout',
+        });
+        if (role === 'device') cleanupDevicePeer(context);
+        else scheduleReconnect('data_channel_liveness_timeout', { immediate: true });
+        return;
+      }
+      if (!context.pendingPingId) {
+        context.pendingPingId = createIdentifier('ping');
+        context.lastPingAt = checkedAt;
+        const sent = context.adapter?.send(createLivenessEnvelope(
+          SUBTITLE_ENVELOPE_TYPES.livenessPing,
+          context.pendingPingId,
+        ));
+        if (!sent) {
+          context.connected = false;
+          recoveryTrace('DATA_CHANNEL_ERROR', context, { reason: 'liveness_ping_send_failed' });
+          if (role === 'device') cleanupDevicePeer(context);
+          else scheduleReconnect('liveness_ping_send_failed', { immediate: true });
+          return;
+        }
+      }
+      scheduleLivenessCheck(context);
+    }, DATA_CHANNEL_PING_INTERVAL_MS);
   }
 
   function scheduleDevicePoll(epoch, delay = CONNECTED_POLL_INTERVAL_MS) {
@@ -532,6 +700,9 @@ export function createWebRtcSubtitleTransport({
   function scheduleDisconnectedRecovery(context) {
     if (!isCurrent(context) || context.disconnectTimer) return;
     hadOutage = true;
+    recoveryTrace('DISCONNECT_GRACE_STARTED', context, {
+      reason: 'transient_disconnected', graceMs: DISCONNECTED_GRACE_MS,
+    });
     if (role === 'viewer' || ![...devicePeers.values()].some((peer) => peer !== context && peer.connected)) {
       status('reconnecting', { epoch: context.epoch, reason: 'peer_disconnected', graceMs: DISCONNECTED_GRACE_MS });
     }
@@ -540,10 +711,12 @@ export function createWebRtcSubtitleTransport({
       if (!isCurrent(context) || context.pc.connectionState === 'connected') return;
       hadOutage = true;
       if (role !== 'device') {
+        recoveryTrace('PEER_REBUILD_STARTED', context, { reason: 'disconnect_grace_expired' });
         scheduleReconnect('disconnected_timeout', { immediate: true });
         return;
       }
       try {
+        recoveryTrace('ICE_RESTART_STARTED', context, { reason: 'disconnect_grace_expired' });
         context.pc.restartIce?.();
         const offer = await context.pc.createOffer({ iceRestart: true });
         if (!isCurrent(context)) return;
@@ -557,11 +730,13 @@ export function createWebRtcSubtitleTransport({
         context.iceRestartTimer = setTimer(() => {
           context.iceRestartTimer = null;
           if (isCurrent(context) && context.pc.connectionState !== 'connected') {
+            recoveryTrace('ICE_RESTART_FAILED', context, { reason: 'ice_restart_timeout' });
             cleanupDevicePeer(context);
           }
         }, ICE_RESTART_TIMEOUT_MS);
       } catch (error) {
         if (!isCurrent(context)) return;
+        recoveryTrace('ICE_RESTART_FAILED', context, { reason: error?.message || 'ice_restart_failed' });
         handleAsyncError(error);
         cleanupDevicePeer(context);
       }
@@ -570,6 +745,10 @@ export function createWebRtcSubtitleTransport({
 
   function handleConnectError(error, reason = 'signaling_failed') {
     const code = error?.code || 'webrtc_signaling_unavailable';
+    signalingHealth = 'recovering';
+    recoveryTrace('SIGNALING_FAILURE', null, {
+      reason: code, httpStatus: error?.status, errorCode: code,
+    });
     if (code === 'meeting_stopped' || code === 'meeting_revoked') {
       terminateTransport();
       status('stopped', { code });
@@ -594,6 +773,9 @@ export function createWebRtcSubtitleTransport({
     if (stopped || reconnectTimer) return;
     hadOutage = true;
     connectionEpoch += 1;
+    const scheduledEpoch = connectionEpoch;
+    recoveryTrace('RECOVERY_STARTED', null, { epoch: scheduledEpoch, reason });
+    recoveryTrace('PEER_REBUILD_STARTED', null, { epoch: scheduledEpoch, reason });
     clearHeartbeat();
     clearDevicePoll();
     cleanupAllPeers();
@@ -613,6 +795,12 @@ export function createWebRtcSubtitleTransport({
     status('reconnecting', { reason, attempt, delay });
     reconnectTimer = setTimer(() => {
       reconnectTimer = null;
+      if (stopped || connectionEpoch !== scheduledEpoch) {
+        recoveryTrace('STALE_GENERATION_IGNORED', null, {
+          epoch: scheduledEpoch, reason: 'reconnect_timer', currentGeneration: connectionEpoch,
+        });
+        return;
+      }
       void connect({ reconnecting: true });
     }, delay);
   }
@@ -622,8 +810,7 @@ export function createWebRtcSubtitleTransport({
     connectionEpoch += 1;
     clearHeartbeat();
     clearDevicePoll();
-    if (reconnectTimer) clearTimer(reconnectTimer);
-    reconnectTimer = null;
+    clearReconnect();
     cleanupAllPeers();
     joined = false;
     detachLifecycleListeners();
@@ -644,8 +831,7 @@ export function createWebRtcSubtitleTransport({
     if (stopped || !isOnline() || documentRef?.visibilityState === 'hidden') return;
     if (!waitingForOnline && !hadOutage && (role === 'device' ? joined : active?.connected)) return;
     waitingForOnline = false;
-    if (reconnectTimer) clearTimer(reconnectTimer);
-    reconnectTimer = null;
+    clearReconnect();
     hadOutage = true;
     void connect({ reconnecting: true });
   }
@@ -775,8 +961,7 @@ export function createWebRtcSubtitleTransport({
       retryAttempt = 0;
       hadOutage = true;
       waitingForOnline = false;
-      if (reconnectTimer) clearTimer(reconnectTimer);
-      reconnectTimer = null;
+      clearReconnect();
       attachLifecycleListeners();
       void connect({ reconnecting: true });
     },
@@ -786,8 +971,7 @@ export function createWebRtcSubtitleTransport({
       connectionEpoch += 1;
       clearHeartbeat();
       clearDevicePoll();
-      if (reconnectTimer) clearTimer(reconnectTimer);
-      reconnectTimer = null;
+      clearReconnect();
       waitingForOnline = false;
       if (revoke && role === 'device') {
         for (const context of devicePeers.values()) {

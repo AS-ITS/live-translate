@@ -1372,7 +1372,18 @@ export class LiveTranslateSession {
       outputTextMergeMode,
       retranslationCueId: isRetranslationResponse ? retranslationCueId : null
     });
-    for (const event of normalizedEvents) {
+    for (const rawEvent of normalizedEvents) {
+      const event = rawEvent.stream === 'translation'
+        ? {
+          ...rawEvent,
+          text: correctTranslationForSource({
+            sourceText: content.inputTranscription?.text
+              || content.interimInputTranscription?.text
+              || this.lastInputTranscriptText,
+            translatedText: rawEvent.text
+          }, this.liveGlossaryEntries)
+        }
+        : rawEvent;
       liveCueLatencyTracker.linkAudioTurn({
         fromAudioTurnId: this.audioTurnId,
         toAudioTurnId: event.audioTurnId

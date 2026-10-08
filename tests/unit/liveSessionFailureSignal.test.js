@@ -1230,7 +1230,7 @@ test('live session applies glossary replacements only to output transcript event
   });
 
   assert.deepEqual(inputEvents.map(transcriptEventSummary), [{ text: 'microphone', isFinal: true, sourceLanguageCode: 'zh-Hant' }]);
-  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak and Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
+  assert.deepEqual(outputEvents.map(transcriptEventSummary), [{ text: 'Alan speak', isFinal: true, sourceLanguageCode: 'zh-Hant', targetLanguageCode: 'en' }]);
 });
 
 test('live session emits final output transcript events after glossary replacement', () => {

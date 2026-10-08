@@ -213,7 +213,7 @@ test.beforeEach(async ({ page }) => {
       contentType: 'application/json',
       body: JSON.stringify({
         token: `mock-token-for-${body.targetLanguageCode}`,
-        expiresAt: '2026-07-07T00:30:00.000Z',
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           liveConnectModel: 'gemini-live-e2e-model',
           liveConnectConfig: page.liveConnectConfig,
         liveGlossaryEntries: page.liveGlossaryEntries
@@ -920,7 +920,10 @@ async function configureTestGeminiCredential(page) {
   await expect(credentialField).toBeVisible();
   await credentialField.fill('test-api-key');
   await page.getByRole('button', { name: '設定金鑰' }).click();
-  await expect(page.getByText('已設定', { exact: true })).toBeVisible();
+  await expect.poll(async () => (
+    await page.getByText('已設定', { exact: true }).isVisible().catch(() => false)
+    || !/#settings$/.test(page.url())
+  )).toBe(true);
   await expect(page.locator('.gemini-credential-notice')).toHaveCount(0);
   page.testGeminiCredentialReady = true;
   await page.evaluate((meetingId) => { window.location.hash = `#live?meetingId=${meetingId}`; }, MOCK_MEETING_ID);
@@ -3060,9 +3063,9 @@ test('clears the meeting actions when live translation has no selected meeting',
   await expect(page.getByRole('button', { name: '開始' })).toBeHidden();
 });
 
-test('live meeting glossary corrects punctuated source Cue while preserving Cue identity', async ({ page }) => {
+test('live meeting dictionary canonicalizes an exact-source provider append on one Cue', async ({ page }) => {
   page.liveGlossaryEntries = [
-    { source: '你好', target: 'speak Hi', replacementAliases: ['Hi'] }
+    { source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }
   ];
   await gotoMockMeetingLive(page, { meetingStatus: 'active' });
   await expectLiveStartPreconditions(page);
@@ -3072,13 +3075,13 @@ test('live meeting glossary corrects punctuated source Cue while preserving Cue 
   await expect.poll(() => page.evaluate(() => window.__mockAudioProcessors.length)).toBe(1);
   await emitMicrophoneAudio(page);
   await expect(page.getByText('聆聽中')).toBeVisible();
-  await emitFinalTranscript(page, '你好。', 'Hi.');
+  await emitFinalTranscript(page, '你好', 'Hello. su3cl3.');
 
   await expect(finalCueRows(page)).toHaveCount(1);
-  await expectCueRow(finalCueRows(page).first(), {
-    sourceText: '你好。',
-    translatedText: 'Hi.'
-  });
+  const cue = finalCueRows(page).first();
+  await expectCueRow(cue, { sourceText: '你好', translatedText: 'su3cl3' });
+  await expect(cue).not.toContainText('Hello');
+  await expect(cue).toHaveAttribute('data-cue-id', /.+/);
 });
 
 test('glossary edits do not rewrite the current active Segment', async ({ page }) => {

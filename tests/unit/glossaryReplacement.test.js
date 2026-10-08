@@ -5,6 +5,7 @@ import {
   applyGlossaryReplacements,
   correctTranslationForSource
 } from '../../src/lib/glossaryReplacement.js';
+import { mergeMeetingGlossaryEntries } from '../../src/lib/meetingGlossary.js';
 
 test('glossary replacement handles source terms, legacy aliases, repeated matches, and longest-first ordering', () => {
   const entries = [
@@ -83,4 +84,81 @@ test('Cue correction retains glossary-corrected initial translation when refinem
   assert.equal(cue.rawTranslation, 'Acme approved.');
   assert.equal(cue.initialTranslation, 'Meeting Acme approved.');
   assert.equal(cue.refinedTranslation, 'Meeting Acme approved.');
+});
+
+test('exact-source dictionary hits canonicalize every provider variant to one target', () => {
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+
+  for (const translatedText of ['Hello.', 'Hello. su3cl3.', 'su3cl3.', 'su3cl3. su3cl3.']) {
+    assert.equal(
+      correctTranslationForSource({ sourceText: '你好', translatedText }, glossaryEntries),
+      'su3cl3'
+    );
+  }
+});
+
+test('meeting dictionary override removes the obsolete global target and duplicate required target', () => {
+  const glossaryEntries = mergeMeetingGlossaryEntries(
+    [{ source: '你好', target: 'HelloGlobal', replacementAliases: [] }],
+    [{ source: '你好', target: 'su3cl3', replacementAliases: [] }],
+    'en'
+  );
+
+  assert.deepEqual(glossaryEntries, [{
+    source: '你好',
+    target: 'su3cl3',
+    replacementAliases: ['HelloGlobal']
+  }]);
+  assert.equal(
+    correctTranslationForSource({ sourceText: '你好', translatedText: 'HelloGlobal. su3cl3.' }, glossaryEntries),
+    'su3cl3'
+  );
+});
+
+test('sentence dictionary hits replace known aliases and deduplicate the required target', () => {
+  const glossaryEntries = [{
+    source: '你好',
+    target: 'su3cl3',
+    replacementAliases: ['Hello', 'HelloGlobal']
+  }];
+
+  for (const translatedText of [
+    "Hello, su3cl3, welcome to today's meeting.",
+    "HelloGlobal, su3cl3, su3cl3, welcome to today's meeting."
+  ]) {
+    const corrected = correctTranslationForSource({
+      sourceText: '你好，歡迎參加今天的會議',
+      translatedText
+    }, glossaryEntries);
+    assert.equal(corrected, "su3cl3, welcome to today's meeting.");
+    assert.equal(corrected.includes('Hello'), false);
+    assert.equal(corrected.match(/su3cl3/gu)?.length, 1);
+  }
+});
+
+test('partial final and refined updates keep one canonical target on the same cue', () => {
+  const glossaryEntries = [{ source: '你好', target: 'su3cl3', replacementAliases: ['Hello'] }];
+  const partialTranslation = correctTranslationForSource({
+    sourceText: '你好',
+    translatedText: 'Hello. su3cl3.'
+  }, glossaryEntries);
+  const finalCue = applyGlossaryCorrectionToCue({
+    cueId: 'cue-dictionary-1',
+    status: 'final',
+    rawSource: '你好',
+    rawTranslation: 'Hello. su3cl3.',
+    translatedText: 'Hello. su3cl3.'
+  }, glossaryEntries);
+  const refinedCue = applyGlossaryCorrectionToCue({
+    ...finalCue,
+    refinedTranslation: 'su3cl3. su3cl3.'
+  }, glossaryEntries);
+
+  assert.equal(partialTranslation, 'su3cl3');
+  assert.equal(finalCue.cueId, 'cue-dictionary-1');
+  assert.equal(finalCue.initialTranslation, 'su3cl3');
+  assert.equal(refinedCue.cueId, 'cue-dictionary-1');
+  assert.equal(refinedCue.initialTranslation, 'su3cl3');
+  assert.equal(refinedCue.refinedTranslation, 'su3cl3');
+  assert.equal(refinedCue.rawTranslation, 'Hello. su3cl3.');
 });

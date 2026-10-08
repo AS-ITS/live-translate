@@ -19,22 +19,32 @@ export function correctTranslationForSource({ sourceText, translatedText } = {},
     return translatedText;
   }
 
-  return glossaryEntries.reduce((current, entry) => {
+  return glossaryEntries.reduce((current, entry, entryIndex) => {
     if (!sourceContainsTerm(sourceText, entry?.source)) return current;
     if (typeof entry?.target !== 'string' || entry.target.trim() === '') return current;
-    if (containsLiteral(current, entry.target)) return current;
+
+    const target = entry.target.trim();
+    if (sourceEqualsTerm(sourceText, entry.source)) {
+      return sourceHasTerminalPunctuation(sourceText)
+        ? `${target}${trailingPunctuation(current)}`
+        : target;
+    }
 
     const candidates = [entry.source, ...(Array.isArray(entry.replacementAliases) ? entry.replacementAliases : [])]
-      .filter((candidate) => typeof candidate === 'string' && candidate.trim() && candidate !== entry.target)
+      .filter((candidate) => typeof candidate === 'string' && candidate.trim() && candidate !== target)
       .sort((left, right) => right.length - left.length);
-    const replaced = candidates.reduce(
-      (value, candidate) => replaceScopedCandidate(value, candidate, entry.target),
+
+    const marker = `\uE000glossary-${entryIndex}\uE001`;
+    const targetAlreadyPresent = containsLiteral(current, target);
+    const marked = candidates.reduce(
+      (value, candidate) => replaceScopedCandidate(value, candidate, marker),
       current
     );
-    if (replaced !== current) return replaced;
-    return sourceEqualsTerm(sourceText, entry.source)
-      ? `${entry.target.trim()}${trailingPunctuation(current)}`
-      : current;
+    const aliasesResolved = marked === current
+      ? current
+      : marked.split(marker).join(targetAlreadyPresent ? '' : target);
+
+    return canonicalizeTargetOccurrences(aliasesResolved, target);
   }, translatedText);
 }
 
@@ -123,6 +133,10 @@ function stripTerminalPunctuation(value) {
   return value.replace(/[\s\p{P}\p{S}]+$/gu, '');
 }
 
+function sourceHasTerminalPunctuation(value) {
+  return /[\p{P}\p{S}]\s*$/u.test(value);
+}
+
 function trailingPunctuation(value) {
   const match = value.match(/[\s\p{P}\p{S}]+$/u);
   return match?.[0] || '';
@@ -132,13 +146,38 @@ function containsLiteral(value, candidate) {
   return value.normalize('NFKC').toLocaleLowerCase().includes(candidate.normalize('NFKC').toLocaleLowerCase());
 }
 
+function canonicalizeTargetOccurrences(value, target) {
+  let occurrences = 0;
+  const canonicalized = replaceScopedCandidate(value, target, (_match, prefix) => {
+    occurrences += 1;
+    return occurrences === 1 ? `${prefix}${target}` : prefix;
+  });
+  if (occurrences === 0) return value;
+  return normalizeRemovedTranslationPunctuation(canonicalized);
+}
+
+function normalizeRemovedTranslationPunctuation(value) {
+  return value
+    .replace(/^[\s\p{P}\p{S}]+/u, '')
+    .replace(/([。！？.!?,，、；;：:])(?:\s*[。！？.!?,，、；;：:])+/gu, '$1')
+    .replace(/\s+([。！？.!?,，、；;：:])/gu, '$1')
+    .replace(/[\t ]{2,}/gu, ' ')
+    .trim();
+}
+
 function replaceScopedCandidate(value, candidate, target) {
+  const replacement = typeof target === 'function'
+    ? target
+    : (_match, prefix = '') => `${prefix}${target}`;
   if (containsCjk(candidate)) {
-    return value.split(candidate).join(target);
+    const pattern = new RegExp(escapeRegExp(candidate), 'gu');
+    return value.replace(pattern, (match) => (
+      typeof target === 'function' ? target(match, '') : target
+    ));
   }
   const escaped = escapeRegExp(candidate);
   const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'giu');
-  return value.replace(pattern, (_match, prefix) => `${prefix}${target}`);
+  return value.replace(pattern, replacement);
 }
 
 function containsCjk(value) {

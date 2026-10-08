@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 修正 Live Meeting 字典命中後被 Gemini 當成附加提示的問題：translation Cue 在進入 canonical state 前會先套用 authoritative replacement；完整 source 命中時只保留一次指定 target，句中命中會先移除已知舊翻譯 alias 再去重，同一 `cueId` 的 partial、final 與 refinement 不再累加普通翻譯或重複 target。
 - 修正帳號管理與稽核紀錄頁的 grid 剩餘高度被錯誤分配至 header，並讓稽核列表只讀取畫面實際使用的既有欄位，避免新角色稽核欄位尚未部署時回傳 `supabase_request_failed` 503。
 
 - Live 工作區新增以 Meeting `started_at` 推導的 `HH:MM:SS` 會議計時；pause、resume、reconnect 與 rollover 不會重設，也不會產生每秒資料庫寫入。Pipeline trace 同步加入 `meetingElapsedMs` 與 provider epoch 的 `sessionElapsedMs`。

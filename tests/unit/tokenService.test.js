@@ -113,6 +113,8 @@ test('createLiveToken resolves live-scoped glossary entries for token and browse
   assert.deepEqual(result.liveConnectConfig, tokenConfig.liveConnectConstraints.config);
   assert.deepEqual(result.liveGlossaryEntries, [{ source: 'Codex', target: 'コーデックス', replacementAliases: ['code x'] }]);
   assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /Codex/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /replacement rule, not an additional hint/);
+  assert.match(result.liveConnectConfig.systemInstruction.parts[0].text, /exactly once/);
 });
 
 test('createLiveToken merges global and meeting glossary entries in provider config', async () => {

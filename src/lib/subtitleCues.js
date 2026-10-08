@@ -92,8 +92,18 @@ export function applySubtitleCueEvent(stateInput, eventInput = {}, options = {})
 
   let eventState = marked;
   eventState = moveClosedCurrentCue(eventState, event);
+  if (!eventState.currentCue && eventState.pendingCues.length === 0
+    && hasStaleSameTurnFinalCue(eventState, event)) {
+    options.onDrop?.({ event, reason: 'stale_cue_revision' });
+    return eventState;
+  }
+  if (!eventState.currentCue && eventState.pendingCues.length === 0
+    && hasExpiredLateSameTurnFinalCue(eventState, event, options)) {
+    options.onDrop?.({ event, reason: 'late_revision_window_expired' });
+    return eventState;
+  }
   const sameTurnFinalTarget = !eventState.currentCue && eventState.pendingCues.length === 0
-    ? findSameAudioTurnFinalCue(eventState, event)
+    ? findSameAudioTurnFinalCue(eventState, event, options)
     : null;
   const revisionFinalTarget = sameTurnFinalTarget || (!eventState.currentCue && eventState.pendingCues.length === 0
     ? findFinalRevisionCue(eventState, event, options)
@@ -393,7 +403,8 @@ function findFinalRevisionCue(state, event, options = {}) {
   const cumulativeContinuation = cue && isCumulativeTurnContinuation(cue, event);
   if ((event.isFinal && Number.isFinite(event.eventSequence) && !event.isLateTranscript && !cumulativeContinuation) || !cue
     || (!event.isLateTranscript && !['turnComplete', 'generationComplete', 'merged'].includes(state.lastFinalizedReason))
-    || (!event.isLateTranscript && !isWithinFinalRevisionWindow(state, cue, event, options))) return null;
+    || !isWithinFinalRevisionWindow(state, cue, event, options)) return null;
+  if (!isNewerCueRevision(cue, event)) return null;
   if (event.audioTurnId && cue.audioTurnId && event.audioTurnId !== cue.audioTurnId && !cumulativeContinuation) return null;
   const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
   const existingText = normalizeText(cue[field]);
@@ -406,26 +417,65 @@ function findFinalRevisionCue(state, event, options = {}) {
   return { index, cue, ...(cumulativeContinuation ? { snapshot: true } : {}) };
 }
 
-function findSameAudioTurnFinalCue(state, event) {
+function findSameAudioTurnFinalCue(state, event, options = {}) {
   const eventIdentity = turnIdentityFor(event);
   if (!eventIdentity) return null;
   for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
     const cue = state.finalCues[index];
     if (turnIdentityFor(cue) !== eventIdentity
       || !cueScopeMatchesEvent(cue, event)) continue;
+    if (!isWithinFinalRevisionWindow(state, cue, event, options)
+      || !isNewerCueRevision(cue, event)) continue;
     const field = event.stream === 'source' ? 'sourceText' : 'translatedText';
+    const currentText = normalizeText(cue[field]);
+    const incomingText = normalizeText(event.text);
     const finalizesSameText = event.isFinal
       && cue[statusFieldForStream(event.stream)] !== 'finalized'
-      && normalizeText(cue[field]) === normalizeText(event.text);
+      && currentText === incomingText;
     const repeatsLateSameText = event.isLateTranscript
-      && normalizeText(cue[field]) === normalizeText(event.text);
+      && currentText === incomingText;
     const localTerminalReplay = isLocalTerminalReplay(cue[field], event);
-    if (normalizeText(cue[field])
+    const idleFragmentContinuation = cue.finalizedReason === 'idle'
+      && !event.isLateTranscript
+      && currentText !== incomingText
+      && !endsSentence(currentText);
+    const lateFinalTranslation = event.stream === 'translation'
+      && event.isLateTranscript
+      && event.isFinal;
+    if (currentText
       && !isCumulativeTextUpdate(cue[field], event)
       && !finalizesSameText
       && !repeatsLateSameText
-      && !localTerminalReplay) continue;
-    return { index, cue, snapshot: Boolean(normalizeText(cue[field])) };
+      && !localTerminalReplay
+      && !idleFragmentContinuation
+      && !lateFinalTranslation) continue;
+    const authoritativeSnapshot = lateFinalTranslation && event.textMergeMode === 'snapshot';
+    return {
+      index,
+      cue,
+      snapshot: authoritativeSnapshot || (!idleFragmentContinuation && Boolean(currentText))
+    };
+  }
+  return null;
+}
+
+function hasStaleSameTurnFinalCue(state, event) {
+  const cue = latestSameTurnFinalCue(state, event);
+  return Boolean(cue && !isNewerCueRevision(cue, event));
+}
+
+function hasExpiredLateSameTurnFinalCue(state, event, options = {}) {
+  if (!event.isLateTranscript) return false;
+  const cue = latestSameTurnFinalCue(state, event);
+  return Boolean(cue && !isWithinFinalRevisionWindow(state, cue, event, options));
+}
+
+function latestSameTurnFinalCue(state, event) {
+  const eventIdentity = turnIdentityFor(event);
+  if (!eventIdentity) return null;
+  for (let index = state.finalCues.length - 1; index >= 0; index -= 1) {
+    const cue = state.finalCues[index];
+    if (turnIdentityFor(cue) === eventIdentity && cueScopeMatchesEvent(cue, event)) return cue;
   }
   return null;
 }
@@ -454,6 +504,14 @@ function isWithinFinalRevisionWindow(state, cue, event, options = {}) {
     : DEFAULT_FINAL_CUE_REVISION_WINDOW_MS;
   const finalizedAtMs = Number.isFinite(state.lastFinalizedAtMs) ? state.lastFinalizedAtMs : cue.endTimeMs;
   return Number.isFinite(event.sessionTimeMs) && event.sessionTimeMs >= finalizedAtMs && event.sessionTimeMs <= finalizedAtMs + windowMs;
+}
+
+function isNewerCueRevision(cue, event) {
+  if (Number.isFinite(cue.providerEventSequence) && Number.isFinite(event.eventSequence)
+    && event.eventSequence <= cue.providerEventSequence) return false;
+  if (Number.isFinite(cue.updatedTimeMs) && Number.isFinite(event.sessionTimeMs)
+    && event.sessionTimeMs < cue.updatedTimeMs) return false;
+  return true;
 }
 
 function findIdentitylessLateTarget(state, event, options = {}) {
@@ -577,6 +635,9 @@ function updateFinalCue(state, target, event) {
     ...(event.targetLanguageCode ? { targetLanguageCode: event.targetLanguageCode } : {}),
     endTimeMs: Math.max(target.cue.endTimeMs, event.sessionTimeMs),
     updatedTimeMs: event.sessionTimeMs,
+    providerEventSequence: Number.isFinite(event.eventSequence)
+      ? event.eventSequence
+      : target.cue.providerEventSequence,
     finalizedReason: target.replace ? 'numeric-correction' : 'merged',
     ...(target.replace ? { numericCorrectionRequested: false } : {})
   };

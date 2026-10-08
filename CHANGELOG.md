@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Viewer 全螢幕在 Fullscreen API 缺席或拒絕時改用 fixed、dynamic viewport height 與 safe-area inset 的 CSS presentation mode，進入／退出不會 remount fullscreen shell，並保留 reconnect、字幕捲動及原文／翻譯顯示狀態。原生全螢幕拒絕提示現在可手動關閉、5 秒自動消失，重複嘗試與 component unmount 會清理舊 timer。
+
 - Viewer bounded transport recovery exhausted 後會進入 `recovery_failed`，保留既有字幕、閱讀位置、顯示偏好與 fullscreen，並在頁內顯示「重新整理頁面」按鈕；系統不會自動 reload，只有使用者點擊才刷新，底層 transport 若自行恢復則回到 connected 並隱藏提示。
 - Viewer 新增穩定 presentation boundary 的 Browser Fullscreen；WebRTC DataChannel generation 重建、replay/snapshot 與 reconnect 不會替換 fullscreen target，並保留原文／翻譯顯示與字幕 auto-follow/scroll state。Viewer Header 與內嵌 QR 位於同一 fullscreen element，重連後仍可見與操作；未修改 signaling/reconnect protocol。
 

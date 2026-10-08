@@ -40,19 +40,31 @@ export function MeetingViewerPage({ token, code }) {
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [shareConnection, setShareConnection] = useState({ value: 'connecting' });
   const [retryVersion, setRetryVersion] = useState(0);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isNativeFullscreen, setIsNativeFullscreen] = useState(false);
+  const [isCssFullscreen, setIsCssFullscreen] = useState(false);
   const [fullscreenError, setFullscreenError] = useState('');
   const fullscreenShellRef = useRef(null);
+  const fullscreenErrorTimerRef = useRef(null);
+  const fullscreenErrorGenerationRef = useRef(0);
+  const isFullscreen = isNativeFullscreen || isCssFullscreen;
   const estimatedRowHeight = 64;
   const shareUrl = useMemo(() => canonicalViewerShareUrl({ code, token }), [code, token]);
 
   useEffect(() => {
     const syncFullscreenState = () => {
-      setIsFullscreen(document.fullscreenElement === fullscreenShellRef.current);
+      setIsNativeFullscreen(document.fullscreenElement === fullscreenShellRef.current);
     };
     syncFullscreenState();
     document.addEventListener('fullscreenchange', syncFullscreenState);
     return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
+  }, []);
+
+  useEffect(() => () => {
+    fullscreenErrorGenerationRef.current += 1;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+      fullscreenErrorTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -570,21 +582,70 @@ export function MeetingViewerPage({ token, code }) {
     setIsFollowingLatest(true);
   }
 
+  function dismissFullscreenError() {
+    fullscreenErrorGenerationRef.current += 1;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+      fullscreenErrorTimerRef.current = null;
+    }
+    setFullscreenError('');
+  }
+
+  function showFullscreenError(message) {
+    fullscreenErrorGenerationRef.current += 1;
+    const generation = fullscreenErrorGenerationRef.current;
+    if (fullscreenErrorTimerRef.current !== null) {
+      window.clearTimeout(fullscreenErrorTimerRef.current);
+    }
+    setFullscreenError(message);
+    fullscreenErrorTimerRef.current = window.setTimeout(() => {
+      if (fullscreenErrorGenerationRef.current !== generation) return;
+      fullscreenErrorTimerRef.current = null;
+      setFullscreenError('');
+    }, 5_000);
+  }
+
   async function toggleFullscreen() {
     const shell = fullscreenShellRef.current;
     if (!shell) return;
-    setFullscreenError('');
+    dismissFullscreenError();
+
+    if (isCssFullscreen) {
+      setIsCssFullscreen(false);
+      return;
+    }
+
+    if (document.fullscreenElement === shell) {
+      try {
+        await document.exitFullscreen();
+      } catch {
+        showFullscreenError('無法結束原生全螢幕，請使用瀏覽器的返回或結束全螢幕操作。');
+      }
+      return;
+    }
+
+    if (typeof shell.requestFullscreen !== 'function' || document.fullscreenEnabled === false) {
+      setIsCssFullscreen(true);
+      return;
+    }
+
     try {
-      if (document.fullscreenElement === shell) await document.exitFullscreen();
-      else await shell.requestFullscreen();
+      await shell.requestFullscreen();
+      setIsNativeFullscreen(true);
     } catch {
-      setFullscreenError('無法切換全螢幕，請確認瀏覽器允許全螢幕顯示。');
+      setIsCssFullscreen(true);
+      showFullscreenError('瀏覽器無法進入原生全螢幕，已改用版面全螢幕；iPhone Safari 工具列仍可能顯示。');
     }
   }
 
   return (
     <PublicSessionLayout className="live-viewer-page meeting-viewer-page" title={detail?.meeting?.name || '即時字幕'} subtitle="即時字幕" showHeader={false}>
-      <div ref={fullscreenShellRef} className="viewer-fullscreen-shell" data-testid="viewer-fullscreen-shell">
+      <div
+        ref={fullscreenShellRef}
+        className={`viewer-fullscreen-shell${isCssFullscreen ? ' is-css-fullscreen' : ''}`}
+        data-fullscreen-mode={isNativeFullscreen ? 'native' : (isCssFullscreen ? 'css' : 'inline')}
+        data-testid="viewer-fullscreen-shell"
+      >
         <ViewerShareHeader meetingTitle={detail?.meeting?.name || '即時字幕'} shareUrl={shareUrl} />
         <div className="viewer-main">
         <div className="viewer-toolbar">
@@ -606,7 +667,12 @@ export function MeetingViewerPage({ token, code }) {
             <button className="button detail-button viewer-fullscreen-toggle" type="button" aria-pressed={isFullscreen} data-testid="viewer-fullscreen-toggle" onClick={() => void toggleFullscreen()}>{isFullscreen ? '結束全螢幕' : '全螢幕'}</button>
           </div>
         </div>
-        {fullscreenError ? <p className="error-message viewer-error" role="alert">{fullscreenError}</p> : null}
+        {fullscreenError ? (
+          <div className="error-message viewer-error viewer-fullscreen-error" role="alert" data-testid="viewer-fullscreen-error">
+            <span>{fullscreenError}</span>
+            <button className="viewer-fullscreen-error-dismiss" type="button" aria-label="關閉全螢幕提示" onClick={dismissFullscreenError}>關閉</button>
+          </div>
+        ) : null}
         {shareConnection.value === 'reconnecting' ? <p className="viewer-reconnecting-detail">正在嘗試恢復即時字幕連線</p> : null}
         {shareConnection.value === 'recovery_failed' ? (
           <div className="viewer-recovery-failed" role="alert" data-testid="viewer-recovery-failed">

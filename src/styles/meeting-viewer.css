@@ -167,6 +167,30 @@
   margin: 0;
 }
 
+.meeting-viewer-page .viewer-fullscreen-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.meeting-viewer-page .viewer-fullscreen-error span {
+  min-width: 0;
+}
+
+.meeting-viewer-page .viewer-fullscreen-error-dismiss {
+  flex: 0 0 auto;
+  padding: .25rem .5rem;
+  border: 1px solid currentcolor;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 .meeting-viewer-page .viewer-reconnecting-detail {
   margin: 0;
   color: var(--color-text-muted);
